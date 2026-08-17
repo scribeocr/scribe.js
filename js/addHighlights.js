@@ -67,6 +67,14 @@ export function bboxToPageSpace(bbox, orientation, dims) {
  */
 export function addHighlights(doc, highlights) {
   const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, highlights.map((h) => h.page));
+  // Continue numbering above every existing hl-N group so ids stay unique across calls and across a .scribe restore.
+  let groupN = 0;
+  for (const pageAnnots of doc.annotations.pages) {
+    for (const annot of pageAnnots) {
+      const m = /^hl-(\d+)$/.exec(annot.groupId);
+      if (m) groupN = Math.max(groupN, Number(m[1]) + 1);
+    }
+  }
   let highlightsApplied = 0;
   let totalLinesHighlighted = 0;
   /** @type {Array<{ page: number, groupId: string, bbox: bbox }>} */
@@ -84,7 +92,7 @@ export function addHighlights(doc, highlights) {
     const color = highlight.color || '#ffe93b';
     // Underline/strikeout are thin strokes drawn on the text, not translucent fills behind it.
     const opacity = highlight.opacity ?? (markup === 'highlight' ? 0.4 : 1);
-    const groupId = `${GROUP_PREFIX}${highlightsApplied}`;
+    const groupId = `${GROUP_PREFIX}${groupN++}`;
     const comment = highlight.comment || '';
 
     if (highlight.startLine != null) {

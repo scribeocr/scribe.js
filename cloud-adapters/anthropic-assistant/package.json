@@ -1,0 +1,23 @@
+{
+  "name": "@scribe.js/anthropic-assistant",
+  "version": "0.1.0",
+  "description": "Anthropic adapter for the Scribe.js document assistant (browser-capable, no SDK dependency).",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "exports": {
+    ".": "./AssistantAdapterAnthropic.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scribeocr/scribe.js.git",
+    "directory": "cloud-adapters/anthropic-assistant"
+  },
+  "author": "Balearica",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "AssistantAdapterAnthropic.js",
+    "LICENSE"
+  ]
+}

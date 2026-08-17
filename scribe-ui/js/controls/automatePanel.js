@@ -1,7 +1,7 @@
-// The Automate panel: the automation surface docked on the right edge.
-// It shows the catalog at rest and one tool's run thread while working, with a strip pinning a live run whenever the catalog is showing.
 import { makeIconButton, formatTimestamp } from './toolbar.js';
 import { AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS } from '../automations/registry.js';
+import { runAssistantTurn } from '../assistant/assistant.js';
+import { VERBS, navigateToReceipt } from '../assistant/verbs.js';
 
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
@@ -10,6 +10,8 @@ const AUTOMATE_SVG = lineIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.
 const BACK_SVG = lineIcon('<path d="M14 6l-6 6 6 6"/>');
 const SEND_SVG = lineIcon('<path d="M4.5 11.4L19.5 4.5 15.6 19.5l-3.9-5.2z"/><path d="M11.7 14.3l7.8-9.8"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
+const STOP_SVG = lineIcon('<rect x="7" y="7" width="10" height="10" rx="1.5"/>');
+const READ_SVG = lineIcon('<path d="M12 5.5C9.8 4 6.8 3.8 4 4.4v14.2c2.8-.6 5.8-.4 8 1.1 2.2-1.5 5.2-1.7 8-1.1V4.4c-2.8-.6-5.8-.4-8 1.1z"/><path d="M12 5.5v14.2"/>');
 const CHECK_SVG = lineIcon('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
 const FLAG_SVG = lineIcon('<path d="M6 21V4.5"/><path d="M6 5h11l-2.5 3.5L17 12H6z"/>');
 const FILE_SVG = lineIcon('<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13 3.5V8h4.5"/>');
@@ -156,6 +158,46 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-cbox input::placeholder { color: var(--scribe-ink-3); }
     .${r} .scribe-am-send { color: var(--scribe-ink-3); }
     .${r} .scribe-am-send.ready { color: var(--scribe-accent); }
+    .${r} .scribe-am-send.stop { color: var(--scribe-ink-2); }
+    .${r} .scribe-as-user { display: grid; justify-items: start; }
+    .${r} .scribe-as-user-tx {
+      background: var(--scribe-sunken); border-radius: 8px; padding: 6px 10px; max-width: 100%; box-sizing: border-box;
+      font-size: 12.5px; color: var(--scribe-ink); line-height: 1.5; overflow-wrap: break-word;
+    }
+    .${r} .scribe-as-prose { font-size: 12.5px; color: var(--scribe-ink); line-height: 1.55; white-space: pre-wrap; overflow-wrap: break-word; }
+    .${r} .scribe-as-rail { display: grid; gap: 6px; border-left: 2px solid var(--scribe-line); margin-left: 5px; padding-left: 10px; }
+    .${r} .scribe-as-receipt {
+      display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--scribe-ink-2); min-width: 0;
+      cursor: pointer; border-radius: 5px; margin: 0 -4px; padding: 1px 4px;
+    }
+    .${r} .scribe-as-receipt:hover { background: var(--scribe-hover); }
+    .${r} .scribe-as-receipt-ic { width: 14px; height: 14px; flex: none; color: var(--scribe-ink-3); }
+    .${r} .scribe-as-receipt.act .scribe-as-receipt-ic { color: #2e7d4f; }
+    .${r}[data-theme="dark"] .scribe-as-receipt.act .scribe-as-receipt-ic { color: #5abd85; }
+    .${r} .scribe-as-receipt-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-as-receipt-act {
+      margin-left: auto; flex: none; border: none; background: none; font: inherit; font-size: 11.5px; font-weight: 600;
+      color: var(--scribe-accent); cursor: pointer; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+    }
+    .${r} .scribe-as-receipt-act:hover { background: var(--scribe-active); }
+    .${r} .scribe-as-receipt.removed .scribe-as-receipt-tx { text-decoration: line-through; color: var(--scribe-ink-3); }
+    .${r} .scribe-as-removed-tag { margin-left: auto; flex: none; font-size: 11.5px; color: var(--scribe-ink-3); padding: 0 6px; }
+    .${r} .scribe-as-ghost { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--scribe-ink-3); min-width: 0; }
+    .${r} .scribe-as-ghost .scribe-as-receipt-ic svg { animation: scribe-as-spin 1s linear infinite; }
+    @keyframes scribe-as-spin { to { transform: rotate(360deg); } }
+    .${r} .scribe-as-flag { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--scribe-ink); }
+    .${r} .scribe-as-flag .scribe-as-receipt-ic { color: var(--scribe-danger); }
+    .${r} .scribe-as-key {
+      display: grid; gap: 8px; border: 1px solid var(--scribe-line); border-radius: 8px; padding: 10px 11px;
+      background: var(--scribe-canvas); font-size: 12.5px; color: var(--scribe-ink); margin: 8px 6px;
+    }
+    .${r} .scribe-as-key input {
+      border: 1px solid var(--scribe-line-strong); border-radius: 7px; background: var(--scribe-surface);
+      font: inherit; font-size: 12.5px; color: var(--scribe-ink); padding: 5px 9px; width: 100%; box-sizing: border-box;
+    }
+    .${r} .scribe-as-key input:focus { outline: none; border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-as-key-note { font-size: 11.5px; color: var(--scribe-ink-3); }
+    .${r} .scribe-as-key-error { font-size: 11.5px; color: var(--scribe-danger); }
   `;
   document.head.appendChild(style);
 }
@@ -206,11 +248,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
   stripIc.innerHTML = SPIN_SVG;
   const stripTx = document.createElement('span');
   stripTx.className = 'scribe-am-strip-tx';
+  const stripStop = document.createElement('button');
+  stripStop.type = 'button';
+  stripStop.className = 'scribe-am-strip-resume';
+  stripStop.textContent = 'Stop';
+  stripStop.style.display = 'none';
   const stripResume = document.createElement('button');
   stripResume.type = 'button';
   stripResume.className = 'scribe-am-strip-resume';
   stripResume.textContent = 'Resume';
-  strip.append(stripIc, stripTx, stripResume);
+  strip.append(stripIc, stripTx, stripStop, stripResume);
 
   const catalog = document.createElement('div');
   catalog.className = 'scribe-am-catalog';
@@ -219,24 +266,29 @@ export function createAutomatePanel(app, rootClass, hooks) {
   thread.className = 'scribe-am-thread';
   thread.style.display = 'none';
 
+  // The assistant conversation view; the active document's rows are swapped in when it opens.
+  const asstThread = document.createElement('div');
+  asstThread.className = 'scribe-am-thread';
+  asstThread.style.display = 'none';
+
   const composer = document.createElement('div');
   composer.className = 'scribe-am-composer';
   const cbox = document.createElement('div');
   cbox.className = 'scribe-am-cbox';
   const cinput = document.createElement('input');
   cinput.type = 'text';
-  cinput.placeholder = 'Search automations';
-  cinput.setAttribute('aria-label', 'Search automations');
+  cinput.placeholder = 'Ask about this document';
+  cinput.setAttribute('aria-label', 'Ask about this document');
   const csend = document.createElement('span');
   csend.className = 'scribe-am-ib scribe-am-send';
   csend.role = 'button';
   csend.tabIndex = 0;
-  csend.title = 'Open the first match';
+  csend.title = 'Send';
   csend.innerHTML = SEND_SVG;
   cbox.append(cinput, csend);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, catalog, thread, composer);
+  panelElem.append(hd, strip, catalog, thread, asstThread, composer);
 
   const toggleElem = makeIconButton('Automate', AUTOMATE_SVG);
   toggleElem.classList.add('cr-labeled-button', 'scribe-automate-toggle', 'scribe-phone-hide');
@@ -245,42 +297,49 @@ export function createAutomatePanel(app, rootClass, hooks) {
   toggleLabel.textContent = 'Automate';
   toggleElem.appendChild(toggleLabel);
 
-  /** 'rest' (catalog) or 'thread' (one tool's run). */
+  /** 'rest' (catalog), 'thread' (one tool's run), or 'assistant' (the conversation). */
   let view = 'rest';
   let openState = false;
   /** @type {?string} The active tool mode's title, for the "For <mode>" catalog group. */
   let modeName = null;
   /** @type {?{entry: Object, title: string, status: 'form'|'running'|'done'|'failed', seen: boolean}} */
   let activeRun = null;
+  /** What the strip currently pins, so its buttons act on the right thing. */
+  let stripMode = 'auto';
 
   const setView = (next) => {
     view = next;
     const rest = next === 'rest';
+    const asst = next === 'assistant';
     catalog.style.display = rest ? '' : 'none';
-    composer.style.display = rest ? '' : 'none';
-    thread.style.display = rest ? 'none' : '';
+    composer.style.display = rest || asst ? '' : 'none';
+    thread.style.display = next === 'thread' ? '' : 'none';
+    asstThread.style.display = asst ? '' : 'none';
     backBtn.style.display = rest ? 'none' : '';
     hdIcon.style.display = rest ? '' : 'none';
-    hdTitle.textContent = rest ? 'Automate' : (activeRun ? activeRun.title : 'Automate');
+    hdTitle.textContent = rest ? 'Automate' : asst ? 'Assistant' : (activeRun ? activeRun.title : 'Automate');
+    if (asst) {
+      const c = app.doc ? convos.get(app.doc) : null;
+      if (c) c.unseen = false;
+    }
     syncStrip();
     if (rest) paintCatalog();
   };
 
   function syncStrip() {
-    const show = view === 'rest' && activeRun
+    const auto = view === 'rest' && activeRun
       && (activeRun.status === 'running' || (activeRun.status !== 'form' && !activeRun.seen));
-    strip.style.display = show ? 'flex' : 'none';
-    if (show) stripTx.textContent = `${activeRun.title} — ${activeRun.status === 'running' ? 'running…' : 'done'}`;
+    const c = app.doc ? convos.get(app.doc) : null;
+    const asst = !auto && view !== 'assistant' && !!c && (c.running || c.unseen);
+    stripMode = auto ? 'auto' : 'asst';
+    strip.style.display = auto || asst ? 'flex' : 'none';
+    stripStop.style.display = asst && c.running ? '' : 'none';
+    if (auto) stripTx.textContent = `${activeRun.title} — ${activeRun.status === 'running' ? 'running…' : 'done'}`;
+    else if (asst) stripTx.textContent = `Assistant — ${c.running ? 'working…' : 'done'}`;
   }
-
-  /** Rows the composer's Enter can launch, refreshed by every catalog paint. */
-  let firstLaunchable = null;
 
   function paintCatalog() {
     catalog.textContent = '';
-    firstLaunchable = null;
-    const filter = cinput.value.trim().toLowerCase();
-    const matches = (entry) => !filter || `${entry.title} ${entry.description}`.toLowerCase().includes(filter);
     const addGroup = (label, entries) => {
       if (!entries.length) return;
       const h = document.createElement('div');
@@ -289,23 +348,13 @@ export function createAutomatePanel(app, rootClass, hooks) {
       catalog.appendChild(h);
       for (const entry of entries) catalog.appendChild(buildRow(entry));
     };
-    let shown = 0;
-    const modeGroup = !filter && modeName ? MODE_GROUPS[modeName] : null;
+    const modeGroup = modeName ? MODE_GROUPS[modeName] : null;
     if (modeGroup) {
       const entries = modeGroup.ids.map((id) => AUTOMATIONS.find((a) => a.id === id)).filter(Boolean);
       addGroup(modeGroup.label, entries);
-      shown += entries.length;
     }
     for (const cat of CATEGORY_ORDER) {
-      const entries = AUTOMATIONS.filter((a) => a.category === cat && matches(a));
-      addGroup(cat, entries);
-      shown += entries.length;
-    }
-    if (!shown) {
-      const empty = document.createElement('div');
-      empty.className = 'scribe-am-empty';
-      empty.textContent = 'No matches';
-      catalog.appendChild(empty);
+      addGroup(cat, AUTOMATIONS.filter((a) => a.category === cat));
     }
   }
 
@@ -339,10 +388,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       chip.textContent = 'AI OPTIONAL';
       row.appendChild(chip);
     }
-    if (!why) {
-      row.addEventListener('click', () => launch(entry));
-      if (!firstLaunchable) firstLaunchable = row;
-    }
+    if (!why) row.addEventListener('click', () => launch(entry));
     return row;
   }
 
@@ -499,23 +545,305 @@ export function createAutomatePanel(app, rootClass, hooks) {
     return row;
   }
 
+  /**
+   * One conversation per document, alive for the document session and gone with it.
+   * `listElem` (display: contents) holds the conversation's rows so they lay out as thread items directly.
+   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean, prose: ?HTMLElement, rail: ?HTMLElement}>}
+   */
+  const convos = new WeakMap();
+
+  /** Aborts for every in-flight turn, so destroy can stop streams whose documents it can no longer reach. */
+  const activeAborts = new Set();
+
+  const convoFor = (doc) => {
+    let c = convos.get(doc);
+    if (!c) {
+      c = {
+        messages: [], listElem: document.createElement('div'), running: false, abort: null, unseen: false, prose: null, rail: null,
+      };
+      c.listElem.style.display = 'contents';
+      convos.set(doc, c);
+    }
+    return c;
+  };
+
+  const scrollAssistant = () => {
+    if (view === 'assistant') asstThread.scrollTop = asstThread.scrollHeight;
+  };
+
+  function openAssistant(doc) {
+    const c = convoFor(doc);
+    if (asstThread.firstChild !== c.listElem) {
+      asstThread.textContent = '';
+      asstThread.appendChild(c.listElem);
+    }
+    setView('assistant');
+    asstThread.scrollTop = asstThread.scrollHeight;
+  }
+
+  const syncComposer = () => {
+    const c = app.doc ? convos.get(app.doc) : null;
+    const running = !!(c && c.running);
+    csend.innerHTML = running ? STOP_SVG : SEND_SVG;
+    csend.title = running ? 'Stop' : 'Send';
+    csend.classList.toggle('stop', running);
+    csend.classList.toggle('ready', !running && !!cinput.value.trim());
+  };
+
+  const stopTurn = () => {
+    const c = app.doc ? convos.get(app.doc) : null;
+    c?.abort?.abort();
+  };
+
+  /**
+   * The receipt row: navigates on click, and carries the act's ordinary removal when it has one.
+   * @param {import('../assistant/verbs.js').VerbReceipt} receipt
+   * @param {number} tier
+   */
+  function receiptRow(receipt, tier) {
+    const row = document.createElement('div');
+    row.className = `scribe-as-receipt${tier >= 1 ? ' act' : ''}`;
+    const ic = document.createElement('span');
+    ic.className = 'scribe-as-receipt-ic';
+    ic.innerHTML = tier >= 1 ? CHECK_SVG : READ_SVG;
+    const tx = document.createElement('span');
+    tx.className = 'scribe-as-receipt-tx';
+    tx.textContent = receipt.label;
+    tx.title = receipt.label;
+    row.append(ic, tx);
+    if (receipt.page != null) row.addEventListener('click', () => navigateToReceipt(app.scribe, receipt));
+    if (receipt.remove) {
+      const act = document.createElement('button');
+      act.type = 'button';
+      act.className = 'scribe-as-receipt-act';
+      act.textContent = receipt.remove.label;
+      act.addEventListener('click', (e) => {
+        e.stopPropagation();
+        receipt.remove.run();
+        row.classList.add('removed');
+        const tag = document.createElement('span');
+        tag.className = 'scribe-as-removed-tag';
+        tag.textContent = 'Removed';
+        act.replaceWith(tag);
+      });
+      row.appendChild(act);
+    }
+    return row;
+  }
+
+  async function runTurn(doc, c, adapter, ask) {
+    c.running = true;
+    c.abort = new AbortController();
+    activeAborts.add(c.abort);
+    syncComposer();
+    syncStrip();
+    let ghost = null;
+    try {
+      c.messages = await runAssistantTurn({
+        host,
+        adapter,
+        messages: c.messages,
+        ask,
+        signal: c.abort.signal,
+        onText: (delta) => {
+          if (!c.prose) {
+            const p = document.createElement('div');
+            p.className = 'scribe-as-prose';
+            c.listElem.appendChild(p);
+            c.prose = p;
+            c.rail = null;
+          }
+          c.prose.textContent += delta;
+          scrollAssistant();
+        },
+        onVerbStart: ({ caption }) => {
+          if (!c.rail) {
+            const r = document.createElement('div');
+            r.className = 'scribe-as-rail';
+            c.listElem.appendChild(r);
+            c.rail = r;
+            c.prose = null;
+          }
+          ghost = document.createElement('div');
+          ghost.className = 'scribe-as-ghost';
+          const ic = document.createElement('span');
+          ic.className = 'scribe-as-receipt-ic';
+          ic.innerHTML = SPIN_SVG;
+          const tx = document.createElement('span');
+          tx.className = 'scribe-as-receipt-tx';
+          tx.textContent = caption;
+          ghost.append(ic, tx);
+          c.rail.appendChild(ghost);
+          scrollAssistant();
+        },
+        onVerbEnd: ({ call, res }) => {
+          if (ghost) {
+            ghost.remove();
+            ghost = null;
+          }
+          if (res.receipt && c.rail) {
+            const tier = VERBS.find((v) => v.name === call.name)?.tier ?? 0;
+            c.rail.appendChild(receiptRow(res.receipt, tier));
+            scrollAssistant();
+          }
+        },
+      });
+    } catch (err) {
+      // A user-initiated Stop aborts the stream mid-read; everything already landed stays, and that is not a failure.
+      if (!c.abort?.signal.aborted) {
+        console.error('The assistant turn failed:', err);
+        const flag = document.createElement('div');
+        flag.className = 'scribe-as-flag';
+        const ic = document.createElement('span');
+        ic.className = 'scribe-as-receipt-ic';
+        ic.innerHTML = FLAG_SVG;
+        const tx = document.createElement('span');
+        tx.className = 'scribe-as-receipt-tx';
+        tx.textContent = 'Something went wrong — see the console for details.';
+        flag.append(ic, tx);
+        c.listElem.appendChild(flag);
+        scrollAssistant();
+      }
+    } finally {
+      if (ghost) ghost.remove();
+      c.running = false;
+      activeAborts.delete(c.abort);
+      c.abort = null;
+      c.prose = null;
+      c.rail = null;
+      c.unseen = view !== 'assistant';
+      syncComposer();
+      syncStrip();
+    }
+  }
+
+  /** @type {?HTMLElement} */
+  let keyCard = null;
+
+  /** The in-panel key surface. Opened by a keyless ask; the pending ask stays in the composer and sends on save. */
+  function showKeyCard() {
+    keyCard?.remove();
+    keyCard = document.createElement('div');
+    keyCard.className = 'scribe-as-key';
+    const title = document.createElement('b');
+    title.textContent = 'AI assistant';
+    const explain = document.createElement('span');
+    explain.style.color = 'var(--scribe-ink-2)';
+    explain.style.fontSize = '12px';
+    explain.textContent = 'Paste an Anthropic API key. Calls go directly from this browser to Anthropic; the key is never sent anywhere else.';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.placeholder = 'sk-ant-…';
+    const error = document.createElement('span');
+    error.className = 'scribe-as-key-error';
+    error.style.display = 'none';
+    const foot = document.createElement('div');
+    foot.className = 'scribe-am-foot';
+    const grow = document.createElement('span');
+    grow.className = 'scribe-am-foot-grow';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'scribe-am-quiet';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => { keyCard.remove(); keyCard = null; });
+    const save = document.createElement('button');
+    save.type = 'button';
+    save.className = 'scribe-am-run';
+    save.textContent = 'Save key';
+    const submit = async () => {
+      const key = input.value.trim();
+      if (!key) { input.focus(); return; }
+      try {
+        await app.setAssistantKey(key);
+      } catch (err) {
+        error.textContent = err instanceof Error ? err.message : String(err);
+        error.style.display = '';
+        return;
+      }
+      keyCard.remove();
+      keyCard = null;
+      submitAsk();
+    };
+    save.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    foot.append(grow, cancel, save);
+    if (app.getStoredAssistantKey?.()) {
+      const forget = document.createElement('button');
+      forget.type = 'button';
+      forget.className = 'scribe-am-quiet';
+      forget.textContent = 'Forget key';
+      forget.addEventListener('click', () => {
+        app.forgetAssistantKey();
+        keyCard.remove();
+        keyCard = null;
+      });
+      foot.insertBefore(forget, grow);
+    }
+    const note = document.createElement('span');
+    note.className = 'scribe-as-key-note';
+    note.textContent = 'The key is saved in this browser until you remove it.';
+    keyCard.append(title, explain, input, error, foot, note);
+    setView('rest');
+    catalog.insertBefore(keyCard, catalog.firstChild);
+    input.focus();
+  }
+
+  async function submitAsk() {
+    const doc = app.doc;
+    if (!doc || doc.pageMetrics.length === 0) return;
+    const text = cinput.value.trim();
+    if (!text) return;
+    const c = convoFor(doc);
+    if (c.running) return;
+    const adapter = await app.getAssistantAdapter();
+    if (!adapter) {
+      showKeyCard();
+      return;
+    }
+    cinput.value = '';
+    openAssistant(doc);
+    const row = document.createElement('div');
+    row.className = 'scribe-as-user';
+    const tx = document.createElement('span');
+    tx.className = 'scribe-as-user-tx';
+    tx.textContent = text;
+    row.appendChild(tx);
+    c.listElem.appendChild(row);
+    c.prose = null;
+    c.rail = null;
+    scrollAssistant();
+    runTurn(doc, c, adapter, text);
+  }
+
   backBtn.addEventListener('click', () => {
     if (activeRun && activeRun.status === 'form') activeRun = null;
     setView('rest');
   });
+  stripStop.addEventListener('click', stopTurn);
   stripResume.addEventListener('click', () => {
+    if (stripMode === 'asst') {
+      if (app.doc) openAssistant(app.doc);
+      return;
+    }
     if (!activeRun) return;
     activeRun.seen = true;
     setView('thread');
   });
 
-  cinput.addEventListener('input', () => {
-    csend.classList.toggle('ready', !!cinput.value.trim());
-    if (view === 'rest') paintCatalog();
+  cinput.addEventListener('input', syncComposer);
+  cinput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const c = app.doc ? convos.get(app.doc) : null;
+      if (!c || !c.running) submitAsk();
+    } else if (e.key === 'Escape') {
+      stopTurn();
+    }
   });
-  const launchFirst = () => { if (firstLaunchable) firstLaunchable.click(); };
-  cinput.addEventListener('keydown', (e) => { if (e.key === 'Enter') launchFirst(); });
-  csend.addEventListener('click', launchFirst);
+  csend.addEventListener('click', () => {
+    const c = app.doc ? convos.get(app.doc) : null;
+    if (c && c.running) stopTurn();
+    else submitAsk();
+  });
 
   const open = () => {
     if (openState) return;
@@ -535,8 +863,14 @@ export function createAutomatePanel(app, rootClass, hooks) {
   toggleElem.addEventListener('click', () => (openState ? close() : open()));
   closeBtn.addEventListener('click', close);
 
-  // The catalog's enabled/disabled reasons depend on the active document.
-  const onDocChange = () => { if (openState && view === 'rest') paintCatalog(); };
+  // The catalog's enabled/disabled reasons and the conversation both belong to the active document.
+  const onDocChange = () => {
+    if (!openState) return;
+    if (view === 'assistant') setView('rest');
+    else if (view === 'rest') paintCatalog();
+    syncComposer();
+    syncStrip();
+  };
   app.container.addEventListener('scribe-active-doc-change', onDocChange);
 
   return {
@@ -561,6 +895,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
       const entry = AUTOMATIONS.find((a) => a.id === 'redact-terms');
       if (entry) launch(entry, { terms: [term] });
     },
-    destroy: () => app.container.removeEventListener('scribe-active-doc-change', onDocChange),
+    destroy: () => {
+      for (const abort of activeAborts) abort.abort();
+      activeAborts.clear();
+      app.container.removeEventListener('scribe-active-doc-change', onDocChange);
+    },
   };
 }
