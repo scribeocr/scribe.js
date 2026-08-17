@@ -191,6 +191,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-lhead > [data-sort-key]:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-lhead .lbl { overflow: hidden; text-overflow: ellipsis; }
 .scribe-pdf-viewer .scribe-library-lhead .ar { font-size: 10px; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-lhead .ar.ghost { visibility: hidden; }
 .scribe-pdf-viewer .scribe-library-lhead > .on { color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-hres { position: absolute; top: 0; right: -4px; width: 9px; height: 100%; z-index: 3; cursor: col-resize; touch-action: none; }
 .scribe-pdf-viewer .scribe-library-hres::before { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: var(--scribe-line); }
@@ -2316,14 +2317,13 @@ export function installLibrary(viewer) {
         cell.tabIndex = 0;
         cell.setAttribute('role', 'button');
         cell.dataset.sortKey = key;
-        // Only the sorted column carries an arrow, so the others keep their full width for the label.
-        if (sortMode === key) {
-          cell.className = 'on';
-          const ar = document.createElement('span');
-          ar.className = 'ar';
-          ar.textContent = sortDir === 1 ? '▲' : '▼';
-          cell.appendChild(ar);
-        }
+        // Each column is fitted to its widest cell, the header among them, so an arrow only the sorted column carries would move the tracks on every sort.
+        const ar = document.createElement('span');
+        const on = sortMode === key;
+        ar.className = on ? 'ar' : 'ar ghost';
+        ar.textContent = on && sortDir === -1 ? '▼' : '▲';
+        if (on) cell.className = 'on';
+        cell.appendChild(ar);
       }
 
       // The last column is the one that flexes to the right edge, so there is no boundary of its own to drag.
