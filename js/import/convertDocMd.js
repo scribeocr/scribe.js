@@ -2,9 +2,9 @@ import ocr from '../objects/ocrObjects.js';
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { calcWordCharMetrics } from '../utils/fontUtils.js';
 import { GlobalFonts, DocFonts } from '../containers/fontContainer.js';
+import { collectMdRefs, parseMdBlocks } from '../utils/parseMd.js';
 
 const FONT_FAMILY = 'Times New Roman';
-const CODE_FONT_FAMILY = 'Courier';
 const FONT_SIZE = 14;
 const CHAR_SPACING = 0;
 const LINE_HEIGHT = 14.4;
@@ -66,165 +66,7 @@ function getTextWidth(text, size, font) {
   return wordWidth;
 }
 
-/**
- * @typedef {Object} MdRun
- * @property {string} text - Literal text, with every markdown syntax character already removed. `'\n'` marks a forced line break.
- * @property {boolean} bold
- * @property {boolean} italic
- * @property {string} font
- * @property {?string} link - Target URL when the text came from a link, otherwise `null`.
- */
-
-/**
- * Convert the inline markdown of one block into styled runs.
- * @param {string} text
- * @param {{bold: boolean, italic: boolean, font: string, link: ?string}} style - Style in effect around `text`.
- * @returns {Array<MdRun>}
- */
-function parseInlineMd(text, style) {
-  /** @type {Array<MdRun>} */
-  const runs = [];
-  let buf = '';
-  const flush = () => {
-    if (buf) runs.push({ text: buf, ...style });
-    buf = '';
-  };
-
-  let i = 0;
-  while (i < text.length) {
-    const char = text[i];
-
-    if (char === '\\' && /[\\`*_{}[\]()#+\-.!>|~]/.test(text[i + 1] || '')) {
-      buf += text[i + 1];
-      i += 2;
-      continue;
-    }
-
-    if (char === '`') {
-      let fence = 0;
-      while (text[i + fence] === '`') fence++;
-      let close = -1;
-      for (let j = i + fence; j < text.length;) {
-        if (text[j] !== '`') {
-          j++;
-        } else {
-          let run = 0;
-          while (text[j + run] === '`') run++;
-          if (run === fence) {
-            close = j;
-            break;
-          }
-          j += run;
-        }
-      }
-      if (close === -1) {
-        buf += '`'.repeat(fence);
-        i += fence;
-        continue;
-      }
-      let code = text.slice(i + fence, close);
-      // A code span drops one space at each end, which is how a span holds a literal backtick without running into its own fence.
-      if (code.length > 2 && code.startsWith(' ') && code.endsWith(' ') && code.trim()) code = code.slice(1, -1);
-      flush();
-      runs.push({
-        text: code, bold: style.bold, italic: style.italic, font: CODE_FONT_FAMILY, link: style.link,
-      });
-      i = close + fence;
-      continue;
-    }
-
-    if (char === '[' || (char === '!' && text[i + 1] === '[')) {
-      const isImage = char === '!';
-      const labelStart = isImage ? i + 1 : i;
-      let depth = 0;
-      let labelEnd = -1;
-      for (let j = labelStart; j < text.length; j++) {
-        if (text[j] === '\\') {
-          j++;
-        } else if (text[j] === '[') {
-          depth++;
-        } else if (text[j] === ']') {
-          depth--;
-          if (depth === 0) {
-            labelEnd = j;
-            break;
-          }
-        }
-      }
-      const destMatch = labelEnd !== -1 ? /^\(\s*(\S*?)(?:\s+"[^"]*")?\s*\)/.exec(text.slice(labelEnd + 1)) : null;
-      if (!destMatch) {
-        buf += char;
-        i++;
-        continue;
-      }
-      flush();
-      if (!isImage) {
-        const url = destMatch[1];
-        const link = /^(https?:|mailto:)/i.test(url) ? url : style.link;
-        runs.push(...parseInlineMd(text.slice(labelStart + 1, labelEnd), { ...style, link }));
-      }
-      i = labelEnd + 1 + destMatch[0].length;
-      continue;
-    }
-
-    if (char === '<') {
-      const autolink = /^<((?:https?:\/\/|mailto:)[^\s<>]+)>/i.exec(text.slice(i));
-      if (autolink) {
-        flush();
-        runs.push({ ...style, text: autolink[1].replace(/^mailto:/i, ''), link: autolink[1] });
-        i += autolink[0].length;
-        continue;
-      }
-    }
-
-    if (char === '*' || char === '_') {
-      let run = 0;
-      while (text[i + run] === char) run++;
-      const charBefore = text[i - 1] || '';
-      const charAfter = text[i + run] || '';
-      // An underscore run only opens or closes at a word boundary, so snake_case identifiers keep their underscores.
-      const canOpen = charAfter !== '' && !/\s/.test(charAfter) && (char === '*' || !/[\p{L}\p{N}]/u.test(charBefore));
-      const use = Math.min(run, 3);
-      let close = -1;
-      if (canOpen) {
-        for (let j = i + run; j < text.length;) {
-          if (text[j] === '\\') {
-            j += 2;
-          } else if (text[j] !== char) {
-            j++;
-          } else {
-            let closeRun = 0;
-            while (text[j + closeRun] === char) closeRun++;
-            const closeBefore = text[j - 1] || '';
-            const closeAfter = text[j + closeRun] || '';
-            if (closeRun >= use && !/\s/.test(closeBefore) && (char === '*' || !/[\p{L}\p{N}]/u.test(closeAfter))) {
-              close = j;
-              break;
-            }
-            j += closeRun;
-          }
-        }
-      }
-      if (close === -1) {
-        buf += char.repeat(run);
-        i += run;
-        continue;
-      }
-      flush();
-      runs.push(...parseInlineMd(text.slice(i + use, close), {
-        ...style, bold: style.bold || use >= 2, italic: style.italic || use === 1 || use === 3,
-      }));
-      i = close + use;
-      continue;
-    }
-
-    buf += char;
-    i++;
-  }
-
-  flush();
-  return runs;
-}
+/** @typedef {import('../utils/parseMd.js').MdRun} MdRun */
 
 /**
  * @typedef {Object} MdBlock
@@ -236,6 +78,7 @@ function parseInlineMd(text, style) {
  * @property {?number} headingLevel
  * @property {string} sourceStyle - Word style name for the markdown construct, matching the names the .docx importer records.
  * @property {boolean} preserveBreaks - Set for code blocks, which keep their source line breaks instead of reflowing.
+ * @property {string} [footnoteLabel] - Label of the footnote definition this block came from.
  */
 
 /**
@@ -247,170 +90,59 @@ function parseInlineMd(text, style) {
 export async function convertDocMd({ mdStr, pageDims = null }) {
   if (!pageDims) pageDims = { width: 612, height: 792 };
 
-  const lines = mdStr.split(/\r?\n/);
+  let lines = mdStr.split(/\r?\n/);
 
-  /** @type {Array<MdBlock>} */
-  const blocks = [];
-  /** @type {?{text: string, type: import('../objects/ocrObjects.js').ParType, fontSize: number, indent: number, parNum: ?string, headingLevel: ?number, sourceStyle: string, bold: boolean}} */
-  let openBlock = null;
-
-  const closeBlock = () => {
-    if (!openBlock) return;
-    const runs = parseInlineMd(openBlock.text, {
-      bold: openBlock.bold, italic: false, font: FONT_FAMILY, link: null,
-    });
-    if (runs.length > 0) {
-      blocks.push({
-        type: openBlock.type,
-        runs,
-        fontSize: openBlock.fontSize,
-        indent: openBlock.indent,
-        parNum: openBlock.parNum,
-        headingLevel: openBlock.headingLevel,
-        sourceStyle: openBlock.sourceStyle,
-        preserveBreaks: false,
-      });
-    }
-    openBlock = null;
-  };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // The contents of a fenced code block are imported verbatim, so the fence is matched before any other construct.
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (fenceMatch) {
-      closeBlock();
-      const closeFence = new RegExp(`^ {0,3}${fenceMatch[1][0]}{${fenceMatch[1].length},}[ \\t]*$`);
-      /** @type {Array<MdRun>} */
-      const runs = [];
-      i++;
-      for (; i < lines.length && !closeFence.test(lines[i]); i++) {
-        if (runs.length > 0) {
-          runs.push({
-            text: '\n', bold: false, italic: false, font: CODE_FONT_FAMILY, link: null,
-          });
-        }
-        runs.push({
-          text: lines[i].replace(/\t/g, '    '), bold: false, italic: false, font: CODE_FONT_FAMILY, link: null,
-        });
+  // A YAML front matter block is metadata, not content. Without this check its closing fence reads as a setext underline, turning the metadata into a heading.
+  if (lines.length > 2 && /^---[ \t]*$/.test(lines[0])) {
+    let close = -1;
+    let hasKey = false;
+    for (let j = 1; j < lines.length; j++) {
+      if (/^(?:---|\.\.\.)[ \t]*$/.test(lines[j])) {
+        close = j;
+        break;
       }
-      if (runs.length > 0) {
-        blocks.push({
-          type: 'body',
-          runs,
-          fontSize: FONT_SIZE,
-          indent: LIST_INDENT,
-          parNum: null,
-          headingLevel: null,
-          sourceStyle: 'HTMLPreformatted',
-          preserveBreaks: true,
-        });
-      }
-      continue;
+      if (/^[A-Za-z0-9_-]+:(?:[ \t]|$)/.test(lines[j])) hasKey = true;
     }
-
-    if (!line.trim()) {
-      closeBlock();
-      continue;
-    }
-
-    const headingMatch = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*#*[ \t]*$/.exec(line);
-    if (headingMatch) {
-      closeBlock();
-      const level = headingMatch[1].length;
-      const runs = parseInlineMd((headingMatch[2] || '').trim(), {
-        bold: true, italic: false, font: FONT_FAMILY, link: null,
-      });
-      if (runs.length > 0) {
-        blocks.push({
-          type: 'title',
-          runs,
-          fontSize: HEADING_SIZES[level - 1],
-          indent: 0,
-          parNum: null,
-          headingLevel: level,
-          sourceStyle: `Heading${level}`,
-          preserveBreaks: false,
-        });
-      }
-      continue;
-    }
-
-    // A dashed underline is also a thematic break, so it is claimed as a setext heading before the rule check below sees it.
-    const setextMatch = openBlock && openBlock.type === 'body' && !openBlock.parNum ? /^ {0,3}(=+|-+)[ \t]*$/.exec(line) : null;
-    if (setextMatch) {
-      const level = setextMatch[1][0] === '=' ? 1 : 2;
-      openBlock.type = 'title';
-      openBlock.headingLevel = level;
-      openBlock.sourceStyle = `Heading${level}`;
-      openBlock.fontSize = HEADING_SIZES[level - 1];
-      openBlock.bold = true;
-      closeBlock();
-      continue;
-    }
-
-    if (/^ {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/.test(line)) {
-      closeBlock();
-      continue;
-    }
-
-    const quoteMatch = /^ {0,3}((?:>[ \t]?)+)(.*)$/.exec(line);
-    if (quoteMatch) {
-      if (!quoteMatch[2].trim()) {
-        closeBlock();
-      } else if (openBlock && openBlock.type === 'blockquote') {
-        openBlock.text += ` ${quoteMatch[2].trim()}`;
-      } else {
-        closeBlock();
-        openBlock = {
-          text: quoteMatch[2].trim(),
-          type: 'blockquote',
-          fontSize: FONT_SIZE,
-          indent: QUOTE_INDENT,
-          parNum: null,
-          headingLevel: null,
-          sourceStyle: 'Quote',
-          bold: false,
-        };
-      }
-      continue;
-    }
-
-    const listMatch = /^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))[ \t]+(.*)$/.exec(line);
-    if (listMatch) {
-      closeBlock();
-      const depth = Math.min(Math.floor(listMatch[1].replace(/\t/g, '    ').length / 2), 3);
-      openBlock = {
-        text: listMatch[5].trim(),
-        type: 'body',
-        fontSize: FONT_SIZE,
-        indent: LIST_INDENT * (depth + 1),
-        // The bullet character stands in for the source's `-`/`*`/`+`, which is syntax rather than something the reader sees.
-        parNum: listMatch[2] ? '•' : `${listMatch[3]}${listMatch[4]}`,
-        headingLevel: null,
-        sourceStyle: 'ListParagraph',
-        bold: false,
-      };
-      continue;
-    }
-
-    if (openBlock) {
-      openBlock.text += ` ${line.trim()}`;
-    } else {
-      openBlock = {
-        text: line.trim(),
-        type: 'body',
-        fontSize: FONT_SIZE,
-        indent: 0,
-        parNum: null,
-        headingLevel: null,
-        sourceStyle: 'Normal',
-        bold: false,
-      };
-    }
+    // A key-shaped line is required so a document that merely opens with a thematic break does not lose everything up to the next rule.
+    if (close !== -1 && hasKey) lines = lines.slice(close + 1);
   }
-  closeBlock();
+
+  const blocks = parseMdBlocks(lines, collectMdRefs(lines), FONT_FAMILY).map((b) => {
+    /** @type {import('../objects/ocrObjects.js').ParType} */
+    let type = 'body';
+    if (b.kind === 'heading') type = 'title';
+    else if (b.kind === 'footnote') type = 'footnote';
+    let sourceStyle = 'Normal';
+    if (b.kind === 'code') sourceStyle = 'HTMLPreformatted';
+    else if (b.kind === 'footnote') sourceStyle = 'FootnoteText';
+    else if (b.kind === 'heading') sourceStyle = `Heading${b.headingLevel}`;
+    else if (b.listDepth !== null) sourceStyle = 'ListParagraph';
+    let indent = 0;
+    if (b.kind === 'code') indent = LIST_INDENT;
+    else if (b.listDepth !== null) indent = LIST_INDENT * (b.listDepth + 1);
+    /** @type {MdBlock} */
+    const block = {
+      type,
+      runs: b.runs,
+      fontSize: b.headingLevel ? HEADING_SIZES[b.headingLevel - 1] : FONT_SIZE,
+      indent,
+      parNum: (b.kind === 'footnote' ? b.footnoteLabel : b.marker) ?? null,
+      headingLevel: b.kind === 'heading' ? b.headingLevel : null,
+      sourceStyle,
+      preserveBreaks: b.kind === 'code',
+      footnoteLabel: b.footnoteLabel,
+    };
+    // A quoted code block keeps its fence identity.
+    // The markdown writer can express a fence or a quote, not both.
+    if (b.quoted && b.kind !== 'code') {
+      block.type = 'blockquote';
+      // The heading level lives only on title paragraphs, so a quoted heading keeps its size and weight instead.
+      block.headingLevel = null;
+      if (block.sourceStyle === 'Normal' || /^Heading/.test(block.sourceStyle)) block.sourceStyle = 'Quote';
+      block.indent += QUOTE_INDENT;
+    }
+    return block;
+  });
 
   const pagesOut = [];
   let pageIndex = 0;
@@ -419,6 +151,11 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
   pagesOut.push({ pageObj, dataTables: new LayoutDataTablePage(pageIndex) });
 
   let currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
+
+  /** @type {Map<string, OcrPar>} */
+  const fnPars = new Map();
+  /** @type {Array<{word: OcrWord, label: string}>} */
+  const fnRefs = [];
 
   for (const block of blocks) {
     const bodyFace = resolveFontFace({ font: FONT_FAMILY });
@@ -474,6 +211,7 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
       parObj.debug.sourceStyle = block.sourceStyle;
       for (const parLine of parObj.lines) parLine.par = parObj;
       page.pars.push(parObj);
+      if (block.footnoteLabel && !fnPars.has(block.footnoteLabel)) fnPars.set(block.footnoteLabel, parObj);
       parLines.length = 0;
       parRight = leftEdge;
     };
@@ -513,13 +251,18 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
           const tailStyle = lastWord.styleRuns && lastWord.styleRuns.length > 0
             ? { ...lastWord.style, ...lastWord.styleRuns[lastWord.styleRuns.length - 1].style }
             : lastWord.style;
-          if (tailStyle.bold !== token.run.bold || tailStyle.italic !== token.run.italic || tailStyle.font !== token.run.font) {
+          if (tailStyle.bold !== token.run.bold || tailStyle.italic !== token.run.italic || tailStyle.font !== token.run.font
+            || !!tailStyle.sup !== !!token.run.sup) {
             lastWord.styleRuns = lastWord.styleRuns || [];
-            lastWord.styleRuns.push({
-              i: lastWord.text.length,
-              style: { bold: token.run.bold, italic: token.run.italic, font: token.run.font },
-            });
+            /** @type {Partial<Style>} */
+            const runStyle = { bold: token.run.bold, italic: token.run.italic, font: token.run.font };
+            // Omitted fields inherit the word's own style, so `sup` is written only where it differs from it.
+            if (!!token.run.sup !== !!lastWord.style.sup) runStyle.sup = !!token.run.sup;
+            lastWord.styleRuns.push({ i: lastWord.text.length, style: runStyle });
           }
+          // A footnote marker fusing into a larger word must not link.
+          // Exports that render real footnotes replace the linked word wholesale, which would drop the rest of its text.
+          if (fnRefs.length > 0 && fnRefs[fnRefs.length - 1].word === lastWord) fnRefs.pop();
           lastWord.text += token.text;
           lastWord.bbox.right = Math.round(lastWord.bbox.right + tokenWidth);
           currentX = lastWord.bbox.right;
@@ -546,8 +289,10 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
         wordObj.style.size = block.fontSize;
         wordObj.style.bold = token.run.bold;
         wordObj.style.italic = token.run.italic;
+        if (token.run.sup) wordObj.style.sup = true;
         if (token.run.link) wordObj.style.link = token.run.link;
         wordObj.visualCoords = false;
+        if (token.run.footnoteLabel && token.text === token.run.footnoteLabel) fnRefs.push({ word: wordObj, label: token.run.footnoteLabel });
         lineObj.words.push(wordObj);
 
         currentX += tokenWidth;
@@ -572,6 +317,13 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
     flushPar(pageObj);
 
     currentY += BLOCK_SPACING;
+  }
+
+  for (const ref of fnRefs) {
+    const notePar = fnPars.get(ref.label);
+    if (!notePar) continue;
+    ref.word.footnoteParId = notePar.id;
+    if (!notePar.footnoteRefId) notePar.footnoteRefId = ref.word.id;
   }
 
   return pagesOut;

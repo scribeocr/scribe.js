@@ -2,6 +2,7 @@ import { makeIconButton, formatTimestamp } from './toolbar.js';
 import { AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS } from '../automations/registry.js';
 import { runAssistantTurn } from '../assistant/assistant.js';
 import { VERBS, navigateToReceipt } from '../assistant/verbs.js';
+import { CODE_FONT_FAMILY, collectMdRefs, parseMdBlocks } from '../../../js/utils/parseMd.js';
 
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
@@ -182,7 +183,19 @@ function addAutomateStyles(rootClass) {
       background: var(--scribe-sunken); border-radius: 8px; padding: 6px 10px; max-width: 100%; box-sizing: border-box;
       font-size: 12.5px; color: var(--scribe-ink); line-height: 1.5; overflow-wrap: break-word;
     }
-    .${r} .scribe-as-prose { font-size: 12.5px; color: var(--scribe-ink); line-height: 1.55; white-space: pre-wrap; overflow-wrap: break-word; }
+    .${r} .scribe-as-prose { font-size: 12.5px; color: var(--scribe-ink); line-height: 1.55; overflow-wrap: break-word; }
+    .${r} .scribe-as-prose p, .${r} .scribe-as-prose blockquote { margin: 0 0 6px; white-space: pre-wrap; }
+    .${r} .scribe-as-prose ul, .${r} .scribe-as-prose ol { margin: 0 0 6px; padding-left: 20px; }
+    .${r} .scribe-as-prose ul ul, .${r} .scribe-as-prose ul ol, .${r} .scribe-as-prose ol ul, .${r} .scribe-as-prose ol ol { margin-bottom: 0; }
+    .${r} .scribe-as-prose li { white-space: pre-wrap; }
+    .${r} .scribe-as-prose blockquote { padding-left: 10px; border-left: 2px solid var(--scribe-line); color: var(--scribe-ink-2); }
+    .${r} .scribe-as-prose blockquote > :last-child { margin-bottom: 0; }
+    .${r} .scribe-as-prose li.scribe-as-task { list-style: none; }
+    .${r} .scribe-as-prose .scribe-as-h { font-weight: 600; margin: 0 0 6px; }
+    .${r} .scribe-as-prose code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11.5px; background: var(--scribe-sunken); border-radius: 4px; padding: 0 3px; }
+    .${r} .scribe-as-prose pre { margin: 0 0 6px; padding: 6px 8px; background: var(--scribe-sunken); border-radius: 6px; overflow-x: auto; }
+    .${r} .scribe-as-prose pre code { display: block; padding: 0; background: none; white-space: pre; }
+    .${r} .scribe-as-prose > :last-child { margin-bottom: 0; }
     .${r} .scribe-as-rail { display: grid; gap: 6px; border-left: 2px solid var(--scribe-line); margin-left: 5px; padding-left: 10px; }
     .${r} .scribe-as-receipt {
       display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--scribe-ink-2); min-width: 0;
@@ -572,7 +585,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   /**
    * One conversation per document, alive for the document session and gone with it.
    * `listElem` (display: contents) holds the conversation's rows so they lay out as thread items directly.
-   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean, prose: ?HTMLElement, rail: ?HTMLElement}>}
+   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean, prose: ?HTMLElement, proseSrc: string, rail: ?HTMLElement}>}
    */
   const convos = new WeakMap();
 
@@ -583,7 +596,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     let c = convos.get(doc);
     if (!c) {
       c = {
-        messages: [], listElem: document.createElement('div'), running: false, abort: null, unseen: false, prose: null, rail: null,
+        messages: [], listElem: document.createElement('div'), running: false, abort: null, unseen: false, prose: null, proseSrc: '', rail: null,
       };
       c.listElem.style.display = 'contents';
       convos.set(doc, c);
@@ -660,6 +673,110 @@ export function createAutomatePanel(app, rootClass, hooks) {
     return row;
   }
 
+  /**
+   * Render one reply segment's accumulated markdown into `el`, replacing its contents.
+   * @param {HTMLElement} el
+   * @param {string} src - The segment's full markdown so far, not just the newest delta.
+   */
+  function renderProse(el, src) {
+    const appendRuns = (parent, runs) => {
+      for (const run of runs) {
+        // Model text reaches the DOM only as text nodes, never through innerHTML.
+        /** @type {Node} */
+        let node = document.createTextNode(run.text);
+        if (run.font === CODE_FONT_FAMILY) {
+          const code = document.createElement('code');
+          code.appendChild(node);
+          node = code;
+        }
+        if (run.sup) {
+          const sup = document.createElement('sup');
+          sup.appendChild(node);
+          node = sup;
+        }
+        if (run.italic) {
+          const it = document.createElement('i');
+          it.appendChild(node);
+          node = it;
+        }
+        if (run.bold) {
+          const b = document.createElement('b');
+          b.appendChild(node);
+          node = b;
+        }
+        // A run's link target is dropped, because a model-authored URL would bypass the external-link guard.
+        parent.appendChild(node);
+      }
+    };
+
+    const lines = src.split('\n');
+    const blocks = parseMdBlocks(lines, collectMdRefs(lines), '');
+    const frag = document.createDocumentFragment();
+    /** @type {Array<{elem: HTMLElement, depth: number, ordered: boolean}>} */
+    let lists = [];
+    /** @type {?HTMLElement} */
+    let quoteEl = null;
+    for (const b of blocks) {
+      if (b.quoted && !quoteEl) {
+        quoteEl = document.createElement('blockquote');
+        frag.appendChild(quoteEl);
+        lists = [];
+      } else if (!b.quoted && quoteEl) {
+        quoteEl = null;
+        lists = [];
+      }
+      const root = quoteEl || frag;
+      if (b.kind === 'code') {
+        lists = [];
+        const pre = document.createElement('pre');
+        const code = document.createElement('code');
+        code.textContent = b.runs.map((r) => r.text).join('');
+        pre.appendChild(code);
+        root.appendChild(pre);
+      } else if (b.kind === 'heading') {
+        lists = [];
+        const h = document.createElement('div');
+        h.className = 'scribe-as-h';
+        appendRuns(h, b.runs);
+        root.appendChild(h);
+      } else if (b.listDepth !== null) {
+        while (lists.length && lists[lists.length - 1].depth > b.listDepth) lists.pop();
+        const ordered = /^\d/.test(b.marker || '');
+        let top = lists[lists.length - 1];
+        if (top && top.depth === b.listDepth && top.ordered !== ordered) {
+          lists.pop();
+          top = lists[lists.length - 1];
+        }
+        if (!top || top.depth < b.listDepth) {
+          const listEl = document.createElement(ordered ? 'ol' : 'ul');
+          const start = ordered && b.marker ? parseInt(b.marker, 10) : 1;
+          if (start !== 1) listEl.start = start;
+          (top ? (top.elem.lastElementChild || top.elem) : root).appendChild(listEl);
+          top = { elem: listEl, depth: b.listDepth, ordered };
+          lists.push(top);
+        }
+        const li = document.createElement('li');
+        if (b.marker === '☐' || b.marker === '☑') {
+          li.className = 'scribe-as-task';
+          li.appendChild(document.createTextNode(`${b.marker} `));
+        }
+        appendRuns(li, b.runs);
+        top.elem.appendChild(li);
+      } else {
+        lists = [];
+        const p = document.createElement('p');
+        if (b.kind === 'footnote' && b.footnoteLabel) {
+          const sup = document.createElement('sup');
+          sup.textContent = b.footnoteLabel;
+          p.append(sup, ' ');
+        }
+        appendRuns(p, b.runs);
+        root.appendChild(p);
+      }
+    }
+    el.replaceChildren(frag);
+  }
+
   async function runTurn(doc, c, adapter, ask) {
     c.running = true;
     c.abort = new AbortController();
@@ -680,9 +797,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
             p.className = 'scribe-as-prose';
             c.listElem.appendChild(p);
             c.prose = p;
+            c.proseSrc = '';
             c.rail = null;
           }
-          c.prose.textContent += delta;
+          c.proseSrc += delta;
+          renderProse(c.prose, c.proseSrc);
           scrollAssistant();
         },
         onVerbStart: ({ caption }) => {
