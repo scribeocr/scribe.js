@@ -784,7 +784,6 @@ export function createThumbnailPanel(scribe, {
       if (reorder.touchActive()) return;
       // The page menu is offered whenever page editing is enabled, so pages can be rotated or copied without entering the Edit Pages mode.
       if (scribe.opt && scribe.opt.enablePageEditing) openContextMenu(e.clientX, e.clientY, idx());
-      else if (!compact) openSizeMenu(e.clientX, e.clientY);
     });
 
     // Edit-mode selection checkbox, shown under `.scribe-pages-room.editing` and `.scribe-thumb-editmode`.
@@ -2120,10 +2119,6 @@ export function createThumbnailPanel(scribe, {
         () => onExtract(multi ? [...selected].sort((a, b) => a - b) : [n]));
     }
     addItem(multi ? 'Delete' : 'Delete page', true, () => (multi ? deleteSelection() : onDelete(n)));
-    if (!compact) {
-      menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
-      appendSizeMenuItems();
-    }
 
     // Show first so the menu has measurable dimensions, then clamp it inside the host.
     menuElem.style.display = '';
@@ -2189,7 +2184,8 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Context menu holding only the thumbnail-size rows, for right-clicks with no page actions to offer.
+   * Context menu holding only the thumbnail-size rows.
+   * Opened by a right-click on empty space with no paste or insert actions to offer.
    * @param {number} clientX
    * @param {number} clientY
    */
