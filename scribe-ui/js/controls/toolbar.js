@@ -1232,6 +1232,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* The panel resize strips are invisible hit areas (cursor only), so widening them costs nothing visually. */
     .${r}.scribe-coarse .scribe-thumb-resize,
     .${r}.scribe-coarse .scribe-bm-resize,
+    .${r}.scribe-coarse .scribe-am-resize,
     .${r}.scribe-coarse .scribe-cm-resize { width: 18px; }
 
     /* Touch priority: controls whose job lives in a gesture on touch (zoom = pinch/double-tap) or is rare enough for the app menu (rotate) leave the bar, so a single row fits tablet widths at 44px targets.

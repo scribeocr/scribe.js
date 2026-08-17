@@ -18,6 +18,8 @@ const FILE_SVG = lineIcon('<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13 3.5V8h
 const ROW_ICON_FALLBACK = AUTOMATE_SVG;
 
 export const AUTOMATE_PANEL_WIDTH = 340;
+const AUTOMATE_MIN_WIDTH = 280;
+const AUTOMATE_MAX_WIDTH = 720;
 
 const injected = new Set();
 
@@ -29,10 +31,14 @@ function addAutomateStyles(rootClass) {
   style.textContent = `
     .${r} .scribe-library-bar .scribe-automate-toggle, .${r} .scribe-library-bar .scribe-automate-sep { display: none; }
     .${r} .scribe-am-panel {
-      position: absolute; right: 0; width: ${AUTOMATE_PANEL_WIDTH}px; z-index: 10; box-sizing: border-box;
+      position: absolute; right: 0; z-index: 10; box-sizing: border-box;
       background: var(--scribe-surface); border-left: 1px solid var(--scribe-line);
       display: flex; flex-direction: column; color: var(--scribe-ink); font-size: 13px; overflow: hidden;
     }
+    .${r} .scribe-am-resize {
+      position: absolute; top: 0; left: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 8; touch-action: none;
+    }
+    .${r} .scribe-am-resize:hover { background: var(--scribe-hover); }
     .${r} .scribe-am-hd {
       display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 8px 0 12px;
       border-bottom: 1px solid var(--scribe-line); flex: none;
@@ -148,14 +154,26 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-result-act:hover { background: var(--scribe-active); }
     .${r} .scribe-am-composer { flex: none; border-top: 1px solid var(--scribe-line); padding: 9px 10px; }
     .${r} .scribe-am-cbox {
-      display: flex; align-items: center; gap: 8px; border: 1px solid var(--scribe-line-strong); border-radius: 9px;
+      display: flex; align-items: flex-end; gap: 8px; border: 1px solid var(--scribe-line-strong); border-radius: 9px;
       background: var(--scribe-surface); padding: 5px 4px 5px 10px; min-width: 0;
     }
     .${r} .scribe-am-cbox:focus-within { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
-    .${r} .scribe-am-cbox input {
+    /* The resting height is the send button's, so a one-line ask sits level with it. */
+    .${r} .scribe-am-cbox textarea {
       flex: 1; border: none; outline: none; background: none; font: inherit; font-size: 12.5px; color: var(--scribe-ink); min-width: 0;
+      box-sizing: border-box; resize: none; overflow-y: auto; line-height: 18px; padding: 4px 0; min-height: 26px; max-height: 152px;
     }
-    .${r} .scribe-am-cbox input::placeholder { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-cbox textarea::placeholder { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-cbox textarea::-webkit-scrollbar { width: 5px; }
+    .${r} .scribe-am-cbox textarea::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-am-cbox textarea::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    /* Firefox lacks ::-webkit-scrollbar and shows a fat native bar in this narrow field.
+       Scoping the standard fallback to non-webkit engines keeps Chrome on the 5px bar above. */
+    @supports not selector(::-webkit-scrollbar) {
+      .${r} .scribe-am-cbox textarea { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
+    }
+    /* Coarse pointers get the 16px input font that keeps iOS from zooming, so the line box and the cap grow with it. */
+    .${r}.scribe-coarse .scribe-am-cbox textarea { line-height: 22px; min-height: 30px; max-height: 184px; }
     .${r} .scribe-am-send { color: var(--scribe-ink-3); }
     .${r} .scribe-am-send.ready { color: var(--scribe-accent); }
     .${r} .scribe-am-send.stop { color: var(--scribe-ink-2); }
@@ -206,7 +224,8 @@ function addAutomateStyles(rootClass) {
  * Build the Automate panel and its toolbar opener.
  * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
  * @param {string} rootClass
- * @param {{onLayoutChange: () => void}} hooks
+ * @param {{onLayoutChange: () => void, onResize: (width: number, phase: 'start'|'move'|'end') => void}} hooks
+ *   `onResize` reports the width a left-edge drag asks for, which the host clamps and applies.
  */
 export function createAutomatePanel(app, rootClass, hooks) {
   addAutomateStyles(rootClass);
@@ -215,6 +234,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-am-panel';
   panelElem.style.display = 'none';
+  panelElem.style.width = `${AUTOMATE_PANEL_WIDTH}px`;
 
   const hd = document.createElement('div');
   hd.className = 'scribe-am-hd';
@@ -275,8 +295,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
   composer.className = 'scribe-am-composer';
   const cbox = document.createElement('div');
   cbox.className = 'scribe-am-cbox';
-  const cinput = document.createElement('input');
-  cinput.type = 'text';
+  const cinput = document.createElement('textarea');
+  cinput.rows = 1;
   cinput.placeholder = 'Ask about this document';
   cinput.setAttribute('aria-label', 'Ask about this document');
   const csend = document.createElement('span');
@@ -289,6 +309,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
   composer.appendChild(cbox);
 
   panelElem.append(hd, strip, catalog, thread, asstThread, composer);
+
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'scribe-am-resize';
+  panelElem.appendChild(resizeHandle);
 
   const toggleElem = makeIconButton('Automate', AUTOMATE_SVG);
   toggleElem.classList.add('cr-labeled-button', 'scribe-automate-toggle', 'scribe-phone-hide');
@@ -581,6 +605,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
     asstThread.scrollTop = asstThread.scrollHeight;
   }
 
+  const fitComposer = () => {
+    cinput.style.height = 'auto';
+    cinput.style.height = `${cinput.scrollHeight}px`;
+  };
+
   const syncComposer = () => {
     const c = app.doc ? convos.get(app.doc) : null;
     const running = !!(c && c.running);
@@ -801,6 +830,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       return;
     }
     cinput.value = '';
+    fitComposer();
     openAssistant(doc);
     const row = document.createElement('div');
     row.className = 'scribe-as-user';
@@ -830,9 +860,14 @@ export function createAutomatePanel(app, rootClass, hooks) {
     setView('thread');
   });
 
-  cinput.addEventListener('input', syncComposer);
+  cinput.addEventListener('input', () => {
+    fitComposer();
+    syncComposer();
+  });
   cinput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !e.isComposing) {
+      if (e.shiftKey && !e.metaKey && !e.ctrlKey) return;
+      e.preventDefault();
       const c = app.doc ? convos.get(app.doc) : null;
       if (!c || !c.running) submitAsk();
     } else if (e.key === 'Escape') {
@@ -843,6 +878,41 @@ export function createAutomatePanel(app, rootClass, hooks) {
     const c = app.doc ? convos.get(app.doc) : null;
     if (c && c.running) stopTurn();
     else submitAsk();
+  });
+
+  /**
+   * Set the panel width.
+   * @param {number} px
+   * @returns {number} The applied width, clamped to the panel's bounds.
+   */
+  const setWidth = (px) => {
+    const containerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || 0;
+    const max = Math.max(AUTOMATE_MIN_WIDTH, Math.min(AUTOMATE_MAX_WIDTH, containerW - 80));
+    const applied = Math.max(AUTOMATE_MIN_WIDTH, Math.min(max, Math.round(px)));
+    panelElem.style.width = `${applied}px`;
+    return applied;
+  };
+
+  let resizeStartX = 0;
+  let resizeStartW = 0;
+  function onResizeMove(e) {
+    hooks.onResize(resizeStartW - (e.clientX - resizeStartX), 'move');
+  }
+  function onResizeEnd(e) {
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeEnd);
+    window.removeEventListener('pointercancel', onResizeEnd);
+    hooks.onResize(resizeStartW - (e.clientX - resizeStartX), 'end');
+  }
+  resizeHandle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    resizeStartX = e.clientX;
+    resizeStartW = parseFloat(panelElem.style.width) || panelElem.getBoundingClientRect().width;
+    hooks.onResize(resizeStartW, 'start');
+    window.addEventListener('pointermove', onResizeMove);
+    window.addEventListener('pointerup', onResizeEnd);
+    // The host stays in its drag regime until an 'end' report, so a canceled drag must deliver one too.
+    window.addEventListener('pointercancel', onResizeEnd);
   });
 
   const open = () => {
@@ -876,7 +946,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
   return {
     panelElem,
     toggleElem,
-    width: AUTOMATE_PANEL_WIDTH,
+    get width() { return parseFloat(panelElem.style.width) || AUTOMATE_PANEL_WIDTH; },
+    setWidth,
     open,
     close,
     isOpen: () => openState,

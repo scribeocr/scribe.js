@@ -492,7 +492,7 @@ class ScribePDFViewer {
     this._sidebarAnim = null;
     /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks/comments-view resize drag. */
     this._sidebarResizeBounds = null;
-    /** True while a sidebar resize drag (any view) is in flight, so `_relayout` skips the scrollbar refresh per move. */
+    /** True while a panel resize drag (any sidebar view, or the Automate panel) is in flight, so `_relayout` skips the scrollbar refresh per move. */
     this._sidebarDragActive = false;
     /**
      * The last view that was open, which the sidebar toggle reopens.
@@ -1058,7 +1058,10 @@ class ScribePDFViewer {
         this._automateReady = import('../js/controls/automatePanel.js')
           .then(({ createAutomatePanel }) => {
             if (this._destroyed) return;
-            this._automatePanel = createAutomatePanel(this, ROOT_CLASS, { onLayoutChange: () => this._relayout() });
+            this._automatePanel = createAutomatePanel(this, ROOT_CLASS, {
+              onLayoutChange: () => this._relayout(),
+              onResize: (w, phase) => this._resizeAutomate(w, phase),
+            });
             // The context menu reads the panel off the viewer, like the other editor-installed hooks.
             this.scribe._automatePanel = this._automatePanel;
             this.pdfViewerElem.appendChild(this._automatePanel.panelElem);
@@ -2484,6 +2487,25 @@ class ScribePDFViewer {
     const applied = b ? Math.max(b.min, Math.min(b.max, desiredWidth)) : desiredWidth;
     this._bookmarksPanel.panelElem.style.width = `${applied}px`;
     if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
+    this._relayout();
+  }
+
+  /**
+   * Apply an Automate-panel resize dragged from its left edge.
+   * @param {number} desiredWidth
+   * @param {'start'|'move'|'end'} phase
+   */
+  _resizeAutomate(desiredWidth, phase) {
+    if (!this._automatePanel) return;
+    if (phase === 'start') {
+      this._beginSidebarResize();
+      return;
+    }
+    this._automatePanel.setWidth(desiredWidth);
+    if (phase === 'end') {
+      this._endSidebarResize();
+      return;
+    }
     this._relayout();
   }
 
