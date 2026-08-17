@@ -1,11 +1,21 @@
 const DEFAULT_MODEL = 'claude-opus-5';
 const DEFAULT_MAX_TOKENS = 4096;
 
+/** The models this adapter offers. Labels and hints are user-facing copy, shown in the picker. */
+const MODELS = [
+  { id: 'claude-opus-5', label: 'Opus 5', hint: 'Best for edits and long documents — default' },
+  { id: 'claude-sonnet-5', label: 'Sonnet 5', hint: 'Quick finds, highlights, and summaries' },
+  { id: 'claude-haiku-4-5', label: 'Haiku 4.5', hint: 'Instant lookups on a page or two' },
+];
+
 /**
  * Anthropic adapter for the Automate panel's assistant.
  * Hand-rolled fetch and SSE rather than the Anthropic SDK, so the class runs in the browser.
  */
 export class AssistantAdapterAnthropic {
+  /** The offered models, exposed statically so a host can validate a stored choice before constructing. */
+  static MODELS = MODELS;
+
   /**
    * @param {Object} opts
    * @param {string} opts.apiKey
@@ -19,6 +29,7 @@ export class AssistantAdapterAnthropic {
     if (!apiKey) throw new Error('An Anthropic API key is required.');
     this.apiKey = apiKey;
     this.model = model;
+    this.models = MODELS;
     this.maxTokens = maxTokens;
     this.baseUrl = baseUrl;
   }

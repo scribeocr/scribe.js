@@ -45,9 +45,19 @@ import { VERBS, runVerb } from './verbs.js';
  */
 
 /**
+ * One model an adapter offers, surfaced by the panel's picker.
+ * @typedef {Object} AssistantModelOption
+ * @property {string} id - The provider's model identifier.
+ * @property {string} label - Short user-facing name.
+ * @property {string} [hint] - One line on when to pick it, in document-task terms.
+ */
+
+/**
  * The injected LLM connection.
  * @typedef {Object} AssistantAdapter
  * @property {(request: AdapterRequest) => AsyncGenerator<AdapterEvent>} send
+ * @property {Array<AssistantModelOption>} [models] - Offered models. When absent, the panel shows no picker.
+ * @property {string} [model] - The model the next send uses, assignable between turns.
  */
 
 /** Model turns per user ask, so a confused model cannot loop the tool cycle forever. */

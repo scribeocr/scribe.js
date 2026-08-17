@@ -106,6 +106,9 @@ const PAGE_LAYOUT_STORAGE_KEY = 'scribe-page-layout';
 /** localStorage key for the assistant's user-pasted API key, deliberately persisted until the key card's Forget action clears it. */
 const ASSISTANT_KEY_STORAGE_KEY = 'scribe-assistant-api-key';
 
+/** localStorage key for the assistant's chosen model, holding the provider's model id rather than its display label. */
+const ASSISTANT_MODEL_STORAGE_KEY = 'scribe-assistant-model';
+
 /** Chevron-down for the Recognize Text mode's language button. */
 const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>';
 
@@ -193,6 +196,7 @@ class ScribePDFViewer {
    * @param {?import('../js/assistant/assistant.js').AssistantAdapter} [options.assistantAdapter=null] - The LLM connection
    *   behind the Automate panel's assistant, injected by hosts that hold their own credentials.
    *   Without it, the panel offers in-app key entry and constructs the Anthropic adapter from the pasted key.
+   *   An adapter that exposes a `models` roster gets the composer's model picker.
    * @param {boolean} [options.library=false] - Enable the document library: a full-screen surface for browsing,
    *   searching, and managing a user-chosen local folder of PDFs, with edits persisted to `.scribe` sidecar files.
    *   Requires the File System Access API (Chromium); on other browsers the option is silently ignored.
@@ -2844,16 +2848,39 @@ class ScribePDFViewer {
     if (!this._assistantAdapterInjected) this._assistantAdapter = null;
   }
 
+  /** @returns {?string} */
+  // eslint-disable-next-line class-methods-use-this
+  getStoredAssistantModel() {
+    try {
+      return window.localStorage.getItem(ASSISTANT_MODEL_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Persist the assistant's model choice on this device and apply it to the live adapter.
+   * The adapter picks it up on its next send, so switching rebuilds neither the adapter nor the conversation.
+   * @param {string} id
+   */
+  setAssistantModel(id) {
+    try {
+      window.localStorage.setItem(ASSISTANT_MODEL_STORAGE_KEY, id);
+    } catch { /* localStorage unavailable */ }
+    if (this._assistantAdapter) this._assistantAdapter.model = id;
+  }
+
   /**
    * Construct the vendor adapter from a key.
    * @param {string} key
    * @returns {Promise<import('../js/assistant/assistant.js').AssistantAdapter>}
    */
-  // eslint-disable-next-line class-methods-use-this
   async _assistantAdapterFromKey(key) {
     // Imported on use, so a session that never sets a key never downloads the vendor code.
     const { AssistantAdapterAnthropic } = await import('../../cloud-adapters/anthropic-assistant/AssistantAdapterAnthropic.js');
-    return new AssistantAdapterAnthropic({ apiKey: key });
+    const stored = this.getStoredAssistantModel();
+    const model = stored && AssistantAdapterAnthropic.MODELS.some((m) => m.id === stored) ? stored : undefined;
+    return new AssistantAdapterAnthropic({ apiKey: key, model });
   }
 
   /** Open the find bar, enable search highlighting, and focus the input. */
