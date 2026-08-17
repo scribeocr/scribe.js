@@ -1,22 +1,8 @@
 /** Jobs resolve to this value when dropped from the queue rather than run. */
 export const SKIPPED = Symbol('scribe.skippedJob');
 
-/**
- * Cap on the number of *staged* (not-yet-running) viewer jobs.
- * When a newer viewer job would push the staged lane past this,
- * the oldest staged job is dropped (resolved to SKIPPED) so the
- * viewer lane cannot grow without bound during rapid navigation.
- * Running jobs are never dropped.
- */
 export const MAX_STAGED_VIEWER_JOBS = 16;
 
-/**
- * Cap on the number of *staged* (not-yet-running) thumbnail jobs.
- * When a rapid scroll requests many previews and pushes the staged lane over this cap,
- * the staged thumbnail farthest from the rail focus is dropped (resolved to SKIPPED) so the background lane cannot pile up a large backlog.
- * The rail re-requests a dropped thumbnail if its row is still shown.
- * Sits above the largest realistic mounted rail window (~30 cells) so on-screen previews are never dropped.
- */
 export const MAX_STAGED_THUMB_JOBS = 32;
 
 /**
@@ -194,6 +180,15 @@ export class TessScheduler {
             console.log(`[render-sched] completed ${kind} ${job.payload?.pageIndex} on worker ${w.id} (ran ${(performance.now() - job.dispatchedAt).toFixed(0)}ms)`);
           }
         } catch (err) {
+          // A dead worker rejects every call instantly, so leaving it in the pool would feed it the entire staged queue.
+          if (err instanceof Error && (err.name === 'WorkerCrashError' || err.name === 'WorkerTerminatedError')) {
+            delete this.#workers[w.id];
+            if (this.getNumWorkers() === 0) {
+              const staged = this.#jobQueue;
+              this.#jobQueue = [];
+              for (const stagedJob of staged) stagedJob.fail(err);
+            }
+          }
           reject(err);
         } finally {
           delete this.#runningWorkers[w.id];
@@ -206,6 +201,8 @@ export class TessScheduler {
       jobFunction.pageIndex = payload?.pageIndex;
       // Thumbnail renders are the only 'jpeg' output.
       jobFunction.isThumb = action === 'renderPdfPage' && payload?.outputFormat === 'jpeg';
+      // Rejects a staged job that can never run because every worker in the pool has died.
+      jobFunction.fail = (failErr) => reject(failErr);
       // Settles a staged job that will never run (lane eviction or pool teardown).
       jobFunction.drop = () => {
         if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
@@ -296,8 +293,9 @@ export class TessScheduler {
   /**
    * Tear the pool down.
    * Staged and in-flight jobs settle to SKIPPED, the codebase's "dropped, ask again" contract, so no caller waits forever.
+   * @param {boolean} [keepWorkers] - Settle the jobs but leave the workers running, for a caller that leases them from a shared pool and returns them itself.
    */
-  async terminate() {
+  async terminate(keepWorkers = false) {
     this.#terminated = true;
     const staged = this.#jobQueue;
     this.#jobQueue = [];
@@ -306,6 +304,7 @@ export class TessScheduler {
     const workers = Object.values(this.#workers);
     this.#workers = {};
     this.#runningWorkers = {};
+    if (keepWorkers) return;
     await Promise.all(workers.map((w) => w.terminate()));
   }
 }

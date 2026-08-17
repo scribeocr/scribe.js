@@ -11,6 +11,7 @@ import { createTablesFromText, extractSingleTableContent, extractTextFromTables 
 import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { GlobalFonts } from './js/containers/fontContainer.js';
 import { gs } from './js/generalWorkerMain.js';
+import { destroyAllPdfWorkers } from './js/pdfWorkerPool.js';
 import { combineOCRPage, buildConsensusLayer } from './js/modifyOCR.js';
 import {
   calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
@@ -395,7 +396,7 @@ class utils {
  * @public
  */
 const terminate = async () => {
-  // Each document holds its own PDF worker pool, and in Node those threads keep the event loop alive on their own.
+  // In Node, PDF worker threads keep the event loop alive on their own.
   // Skipping them here would leave the process running after a caller asked to shut down.
   /** @type {Array<ScribeDoc>} */
   const docs = [];
@@ -408,6 +409,9 @@ const terminate = async () => {
     }
   }
   await Promise.all(docs.map((doc) => doc.close()));
+
+  // Closing the documents only returns their workers to the pool, still spawned, so the pool itself is destroyed here.
+  await destroyAllPdfWorkers();
 
   await gs.terminate();
   GlobalFonts.raw = null;

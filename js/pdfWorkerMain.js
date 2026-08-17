@@ -1,102 +1,10 @@
 import { TessScheduler } from '../tess/TessScheduler.js';
 import { opt } from './containers/app.js';
 import { PdfCore } from './pdf/pdfCore.js';
+import { acquireWorkers, releaseWorkers } from './pdfWorkerPool.js';
 
 /**
- * Creates a single PDF worker and returns an object with wrapped methods.
- * Same pattern as initGeneralWorker() in generalWorkerMain.js.
- */
-export async function initPdfWorker() {
-  const obj = {};
-  let worker;
-  if (typeof process === 'undefined') {
-    worker = new Worker(new URL('./worker/pdfWorker.js', import.meta.url), { type: 'module' });
-  } else {
-    const WorkerNode = (await import('node:worker_threads')).Worker;
-    worker = new WorkerNode(new URL('./worker/pdfWorker.js', import.meta.url));
-  }
-
-  return new Promise((resolve, reject) => {
-    /** @type {?Error} */
-    let workerError = null;
-
-    // A dead worker never answers, so every pending promise must reject or callers hang forever.
-    const errorHandler = (err) => {
-      console.error(err);
-      const message = (err && typeof err === 'object' && 'message' in err && err.message) || 'PDF worker crashed.';
-      workerError = new Error(String(message));
-      workerError.name = 'WorkerCrashError';
-      for (const id of Object.keys(workerPromises)) {
-        workerPromises[id].reject(workerError);
-        delete workerPromises[id];
-      }
-    };
-
-    if (typeof process === 'undefined') {
-      worker.onerror = errorHandler;
-    } else {
-      worker.on('error', errorHandler);
-    }
-
-    const workerPromises = {};
-    let promiseId = 0;
-
-    const ready = new Promise((innerResolve, innerReject) => {
-      workerPromises['0'] = { resolve: innerResolve, reject: innerReject, func: 'ready' };
-    });
-
-    const messageHandler = async (data) => {
-      if (workerPromises[data.id]) {
-        if (data.status === 'reject') {
-          workerPromises[data.id].reject(data.data);
-          delete workerPromises[data.id];
-        } else {
-          workerPromises[data.id].resolve(data.data);
-          delete workerPromises[data.id];
-        }
-      }
-    };
-
-    if (typeof process === 'undefined') {
-      worker.onmessage = (event) => messageHandler(event.data);
-    } else {
-      worker.on('message', messageHandler);
-    }
-
-    function wrap(func) {
-      return function (...args) {
-        if (workerError) return Promise.reject(workerError);
-        return new Promise((innerResolve, innerReject) => {
-          const id = promiseId++;
-          workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
-          worker.postMessage([func, args[0], id]);
-        });
-      };
-    }
-
-    obj.loadPdfForParsing = wrap('loadPdfForParsing');
-    obj.parsePdfPage = wrap('parsePdfPage');
-    obj.renderPdfPage = wrap('renderPdfPage');
-    obj.getPdfFontBytes = wrap('getPdfFontBytes');
-    obj.unloadPdf = wrap('unloadPdf');
-
-    // A killed worker never answers, so teardown rejects outstanding calls too.
-    obj.terminate = () => {
-      workerError = new Error('PDF worker terminated.');
-      workerError.name = 'WorkerTerminatedError';
-      for (const id of Object.keys(workerPromises)) {
-        workerPromises[id].reject(workerError);
-        delete workerPromises[id];
-      }
-      return worker.terminate();
-    };
-
-    ready.then(() => resolve(obj), reject);
-  });
-}
-
-/**
- * Manages a dedicated pool of PDF workers with a TessScheduler.
+ * Schedules one source's PDF work on workers leased from the process-wide pool.
  */
 export class PdfScheduler {
   /**
@@ -106,6 +14,7 @@ export class PdfScheduler {
   constructor(scheduler, workers) {
     this.scheduler = scheduler;
     this.workers = workers;
+    this.released = false;
   }
 
   /**
@@ -163,7 +72,11 @@ export class PdfScheduler {
   }
 
   async terminate() {
-    await this.scheduler.terminate();
+    // A second terminate must be a no-op, because by then these workers may already be leased to another source.
+    if (this.released) return;
+    this.released = true;
+    await this.scheduler.terminate(true);
+    await releaseWorkers(this.workers);
   }
 }
 
@@ -250,20 +163,8 @@ export async function initPdfScheduler(numWorkers) {
   }
 
   const scheduler = new TessScheduler();
-  const workers = [];
-
-  const w0 = await initPdfWorker();
-  w0.id = `pdf-${Math.random().toString(16).slice(3, 8)}`;
-  scheduler.addWorker(w0);
-  workers.push(w0);
-
-  const rest = Array.from({ length: numWorkers - 1 }, async () => {
-    const w = await initPdfWorker();
-    w.id = `pdf-${Math.random().toString(16).slice(3, 8)}`;
-    scheduler.addWorker(w);
-    workers.push(w);
-  });
-  await Promise.all(rest);
+  const workers = await acquireWorkers(numWorkers);
+  for (const w of workers) scheduler.addWorker(w);
 
   return new PdfScheduler(scheduler, workers);
 }
