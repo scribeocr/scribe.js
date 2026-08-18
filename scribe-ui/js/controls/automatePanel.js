@@ -16,6 +16,7 @@ const STOP_SVG = lineIcon('<rect x="7" y="7" width="10" height="10" rx="1.5"/>')
 const READ_SVG = lineIcon('<path d="M12 5.5C9.8 4 6.8 3.8 4 4.4v14.2c2.8-.6 5.8-.4 8 1.1 2.2-1.5 5.2-1.7 8-1.1V4.4c-2.8-.6-5.8-.4-8 1.1z"/><path d="M12 5.5v14.2"/>');
 const CHEVRON_SVG = lineIcon('<path d="M7.5 10l4.5 4.5 4.5-4.5"/>');
 const CHECK_SVG = lineIcon('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
+const X_SVG = lineIcon('<path d="M7 7l10 10M17 7L7 17"/>');
 const FLAG_SVG = lineIcon('<path d="M6 21V4.5"/><path d="M6 5h11l-2.5 3.5L17 12H6z"/>');
 const FILE_SVG = lineIcon('<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13 3.5V8h4.5"/>');
 const ROW_ICON_FALLBACK = AUTOMATE_SVG;
@@ -241,6 +242,11 @@ function addAutomateStyles(rootClass) {
       color: var(--scribe-accent); cursor: pointer; padding: 0 6px; border-radius: 4px; white-space: nowrap;
     }
     .${r} .scribe-as-receipt-act:hover { background: var(--scribe-active); }
+    .${r} .scribe-as-receipt-gact {
+      margin-left: auto; flex: none; border: none; background: none; cursor: pointer; width: 18px; height: 18px;
+      border-radius: 4px; color: var(--scribe-ink-3); display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    }
+    .${r} .scribe-as-receipt-gact:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-as-receipt.removed .scribe-as-receipt-tx { text-decoration: line-through; color: var(--scribe-ink-3); }
     .${r} .scribe-as-removed-tag { margin-left: auto; flex: none; font-size: 11.5px; color: var(--scribe-ink-3); padding: 0 6px; }
     .${r} .scribe-as-batch-dim { flex: none; color: var(--scribe-ink-3); white-space: nowrap; }
@@ -861,8 +867,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (receipt.remove) {
       const act = document.createElement('button');
       act.type = 'button';
-      act.className = 'scribe-as-receipt-act';
-      act.textContent = receipt.remove.label;
+      act.className = 'scribe-as-receipt-gact';
+      act.innerHTML = X_SVG;
+      act.title = receipt.remove.label;
+      act.setAttribute('aria-label', receipt.remove.label);
       act.addEventListener('click', (e) => {
         e.stopPropagation();
         receipt.remove.run();
@@ -1102,8 +1110,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
       } else if (receipt.remove) {
         const act = document.createElement('button');
         act.type = 'button';
-        act.className = 'scribe-as-receipt-act';
-        act.textContent = receipt.remove.label;
+        act.className = 'scribe-as-receipt-gact';
+        act.innerHTML = X_SVG;
+        act.title = receipt.remove.label;
+        act.setAttribute('aria-label', receipt.remove.label);
         act.addEventListener('click', (e) => {
           e.stopPropagation();
           receipt.remove.run();
@@ -1132,7 +1142,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
             if (en.removed) continue;
             en.removed = true;
             en.item.classList.add('removed');
-            en.item.querySelector('.scribe-as-receipt-act')?.replaceWith(removedTag());
+            en.item.querySelector('.scribe-as-receipt-gact')?.replaceWith(removedTag());
           }
           b.row.classList.add('removed');
           b.dim.textContent = '';

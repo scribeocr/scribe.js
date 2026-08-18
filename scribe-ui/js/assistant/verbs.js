@@ -20,6 +20,7 @@ import { removeRedactionGroup } from '../viewerRedactions.js';
  * @property {string} [quote] - The text the act verified against the live page.
  * @property {{label: string, run: () => void}} [remove] - The act's ordinary removal, offered on the receipt row.
  *   Runs the same deletion the user could do by hand, recorded on the undo timeline like any edit.
+ *   `label` is the control's tooltip and accessible name, so it carries the verb's full wording ("Remove highlight").
  * @property {VerbBatch} [batch] - Present when a run of consecutive receipts may fold into one batch row.
  */
 
@@ -465,7 +466,7 @@ export const VERBS = [
             removeAllLabel: params.markup === 'underline' || params.markup === 'strikeout' ? 'Removed markup' : 'Removed highlights',
           },
           remove: group ? {
-            label: 'Remove',
+            label: params.markup === 'underline' ? 'Remove underline' : params.markup === 'strikeout' ? 'Remove strikethrough' : 'Remove highlight',
             run: () => {
               const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, [params.page]);
               doc.annotations.pages[params.page] = doc.annotations.pages[params.page]
@@ -584,7 +585,7 @@ export const VERBS = [
             removeAllLabel: 'Removed redaction marks',
           },
           remove: out.groups.length ? {
-            label: 'Remove marks',
+            label: 'Remove redaction marks',
             run: () => {
               doc.docHistory.group('Removed redaction marks', () => {
                 for (const gid of groupIds) removeRedactionGroup(host.viewer, gid);
