@@ -726,7 +726,8 @@ export function analyzeLayout(pages, opts = {}) {
     }
     // Text on a full-page image is treated as a scan's OCR layer, so its family names are not trusted as author typography.
     const famTrusted = !f.famTaint && !(fullPageImagePages && fullPageImagePages[f.page]);
-    f.famRule = famTrusted && f.nAlnum >= 4 && alnCore && alnCore.length >= 2 && !SPECIALTY_FAMILY_RE.test(alnCore) && !FAMILY_UNTRUSTED_RE.test(alnCore) ? alnCore : '';
+    // TeX faces carry their design size in the family name (rsfs10, msbm7), so the specialty test sees the size-stripped core.
+    f.famRule = famTrusted && f.nAlnum >= 4 && alnCore && alnCore.length >= 2 && !SPECIALTY_FAMILY_RE.test(alnCore.replace(/\d+$/, '')) && !FAMILY_UNTRUSTED_RE.test(alnCore) ? alnCore : '';
   }
   /** @type {Map<number, string>} */
   const pageBodyCore = new Map();
@@ -1909,12 +1910,26 @@ export function analyzeLayout(pages, opts = {}) {
     // (a) the line carries both a body-styled and a distinct-styled word (the run starts/ends mid-line).
     const mixed = words.some(bodyStyled) && words.some((w) => !bodyStyled(w));
     // (b) the distinct run crosses a line boundary into an adjacent non-heading line.
+    // A book can set its marginal note numbers in a third face, which puts a different run against the boundary rather than this heading's continuation.
+    const sameRun = (a, b) => !!a && !!b && !bodyStyled(a) && !bodyStyled(b)
+      && (a.style.font || '') === (b.style.font || '')
+      && (a.style.color || '#000000') === (b.style.color || '#000000');
+    // Uniformity is judged on typeface alone, since a heading closing with a coloured footnote marker is still set as one piece.
+    const uniformFace = words.length > 0
+      && words.every((w) => (w.style.font || '') === (words[0].style.font || ''));
+    // Math and diagram faces are reserved for notation rather than emphasis, so a line set in one is never a heading however uniform it looks.
+    // The design size is stripped first because these families carry it in the name, as in rsfs10 and msbm7.
+    // The trailing pattern covers the XY-pic diagram fonts, which name their commutative-diagram pieces the same way.
+    const bareCore = (f.familyCore || '').replace(/\d+$/, '');
+    const mathFace = SPECIALTY_FAMILY_RE.test(bareCore) || /^xy[a-z]{4}$/.test(bareCore);
+    const crosses = (a, b) => sameRun(a, b)
+      || ((!uniformFace || mathFace) && distinctStyled(a) && distinctStyled(b));
     const prev = i > 0 && feats[i - 1].page === f.page ? feats[i - 1] : null;
     const next = i + 1 < feats.length && feats[i + 1].page === f.page ? feats[i + 1] : null;
     const flowsIn = !!prev && prev.role !== 'heading'
-      && distinctStyled(prev.line.words[prev.line.words.length - 1]) && distinctStyled(words[0]);
+      && crosses(prev.line.words[prev.line.words.length - 1], words[0]);
     const flowsOut = !!next && next.role !== 'heading'
-      && distinctStyled(words[words.length - 1]) && distinctStyled(next.line.words[0]);
+      && crosses(words[words.length - 1], next.line.words[0]);
     if (mixed || flowsIn || flowsOut) f.role = 'body';
   }
 
