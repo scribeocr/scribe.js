@@ -355,6 +355,12 @@ class ScribePDFViewer {
     this._dockElem = null;
     /** @type {?ReturnType<typeof createCompanionStrip>} Persistent page filmstrip + scrubber above the dock (phone only). */
     this._companionStrip = null;
+    /** The session's tucked-bar choice, kept across documents but not across launches. */
+    this._stripTucked = false;
+    /** Strip tuck/reveal drag in progress: the document lays out full-height so the moving bar rides over live pages. */
+    this._stripDragLayout = false;
+    /** @type {?ReturnType<typeof setTimeout>} Timer restoring the strip inset once a reveal's glide lands. */
+    this._stripRelayoutT = null;
     /** @type {?HTMLSpanElement} The dock's Panels button (opens the bottom sheet). */
     this._sheetPanelsBtn = null;
     /** @type {?HTMLSpanElement} The dock's Pages button (opens the Pages view). */
@@ -1532,6 +1538,7 @@ class ScribePDFViewer {
     if (this._companionStrip) {
       this._companionStrip.rebuild(initialPage);
       this._companionStrip.setVisible(this._phoneChrome);
+      this._companionStrip.setTucked(this._stripTucked, false);
       // Showing the strip changes the document's bottom inset.
       if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
     }
@@ -2151,8 +2158,9 @@ class ScribePDFViewer {
     // Before the component is attached the dock has no layout yet; 56 is its safe-area-free height.
     const dock = this._dockElem.offsetHeight || 56;
     // The companion strip sits above the dock while visible, so the document insets above it too.
-    const strip = this._companionStrip && this._companionStrip.stripElem.classList.contains('on')
-      ? this._companionStrip.stripElem.offsetHeight : 0;
+    const cs = this._companionStrip;
+    const strip = cs && cs.stripElem.classList.contains('on') && !cs.isTucked() && !this._stripDragLayout
+      ? cs.stripElem.offsetHeight : 0;
     return dock + strip;
   }
 
@@ -2992,8 +3000,10 @@ class ScribePDFViewer {
         this._dockElem.appendChild(this._appMenu.menuWrap);
         this._dockElem.appendChild(this._searchBar.searchElem);
         if (this._pageInputGroup) this._dockElem.appendChild(this._pageInputGroup);
-        if (this._dockPagesBtn) this._dockElem.appendChild(this._dockPagesBtn);
+        // Pages takes the corner so the tucked bar's tab parks over a button in its own family.
+        // A mis-tap under the tab then opens the Pages room, which closes back onto the bar.
         if (this._sheetPanelsBtn) this._dockElem.appendChild(this._sheetPanelsBtn);
+        if (this._dockPagesBtn) this._dockElem.appendChild(this._dockPagesBtn);
         // Re-anchor the find bar from the hidden toolbar to the root, where the phone CSS pins it full-width to the top edge.
         this.pdfViewerElem.appendChild(this._searchBar.findGroupElem);
         // The recognition progress line rides the dock's top edge instead of the toolbar's bottom.
@@ -3024,6 +3034,7 @@ class ScribePDFViewer {
         if (this._companionStrip) {
           this._companionStrip.setVisible(!!this.doc);
           if (this.doc) this._companionStrip.rebuild(this.scribe.state.cp.n);
+          this._companionStrip.setTucked(this._stripTucked, false);
         }
       } else {
         if (this._companionStrip) this._companionStrip.setVisible(false);
@@ -3073,8 +3084,24 @@ class ScribePDFViewer {
     // The companion strip is the phone's whole Pages surface: a tap on its pull tab or an upward drag expands it into the Pages room.
     this._companionStrip = createCompanionStrip(this.scribe, {
       onExpand: (phase, dy) => this._pagesRoomGesture(phase, dy),
+      tuckPullSurface: dock,
+      onTuckLayout: () => {
+        if (this._stripRelayoutT) { clearTimeout(this._stripRelayoutT); this._stripRelayoutT = null; }
+        this._stripDragLayout = true;
+        this._relayout();
+      },
+      onTuckChange: (t) => {
+        this._stripTucked = t;
+        this._stripDragLayout = false;
+        if (this._stripRelayoutT) { clearTimeout(this._stripRelayoutT); this._stripRelayoutT = null; }
+        // A tucked bar keeps the full-height layout it already has.
+        // A revealed bar re-insets only after its glide, so the settling strip covers live pages instead of a void.
+        if (t) this._relayout();
+        else this._stripRelayoutT = setTimeout(() => { this._stripRelayoutT = null; this._relayout(); }, 260);
+      },
     });
     this.pdfViewerElem.appendChild(this._companionStrip.stripElem);
+    this.pdfViewerElem.appendChild(this._companionStrip.strandElem);
 
     // The full-height Pages room slides up from behind the dock and covers the document while pages are organized.
     const room = document.createElement('div');
@@ -3659,6 +3686,18 @@ class ScribePDFViewer {
     }
     if (phase === 'tap') {
       if (this._roomOpen) { this._closePagesRoom(); return; }
+      // From a tucked bar the room opens as a plain slide, since the morph would have to measure a bar that is not on screen.
+      // The bar reveals invisibly beneath the open room, so closing the room lands on the bar rather than back at the tucked state.
+      if (this._companionStrip && this._companionStrip.isTucked()) {
+        this._openPagesRoom();
+        setTimeout(() => {
+          if (!this._roomOpen || !this._companionStrip) return;
+          this._companionStrip.setTucked(false, false);
+          this._stripTucked = false;
+          this._relayout();
+        }, 320);
+        return;
+      }
       this._cancelRoomSink();
       if (morph && !reduceMotion) {
         this._showPagesRoomContent();
@@ -3823,6 +3862,7 @@ class ScribePDFViewer {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }
+    if (this._stripRelayoutT) { clearTimeout(this._stripRelayoutT); this._stripRelayoutT = null; }
     if (this._pagesMorph) this._pagesMorph.abort(); // cancels the settle rAF and revokes morph-owned thumbnail URLs
     if (this._thumbnailPanel) this._thumbnailPanel.destroy();
     if (this._bookmarksPanel) this._bookmarksPanel.destroy();

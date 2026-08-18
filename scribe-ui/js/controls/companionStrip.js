@@ -14,8 +14,22 @@ function ensureStyles() {
   style.textContent = `
     .scribe-strip{position:absolute;left:0;right:0;z-index:14;display:none;flex-direction:column;
       bottom:calc(56px + env(safe-area-inset-bottom,0px));height:${CELL_H + 12}px;box-sizing:border-box;
-      background:var(--scribe-surface);border-top:1px solid var(--scribe-line);color:var(--scribe-ink);}
+      background:var(--scribe-surface);border-top:1px solid var(--scribe-line);color:var(--scribe-ink);
+      transition:transform .22s ease-out;}
+    .scribe-strip.dragging{transition:none;}
+    /* Tucked, the strip's box sits behind the dock, so this invisible band above the dock edge is the pull-up surface.
+       touch-action:none keeps the browser from claiming a vertical pull that starts on it. */
+    .scribe-strip.tucked{touch-action:none;}
+    .scribe-strip.tucked::before{content:"";position:absolute;top:-20px;left:0;right:0;height:20px;}
     .scribe-phone .scribe-strip.on{display:flex;}
+    /* The tucked bar's reading-position marker, on the dock's top edge.
+       A sibling of the strip rather than a child, so it holds still while the strip rides down. */
+    .scribe-strip-strand{position:absolute;left:0;right:0;z-index:15;height:4px;pointer-events:none;
+      bottom:calc(56px + env(safe-area-inset-bottom,0px));background:var(--scribe-line-strong);
+      opacity:0;transition:opacity .18s;}
+    .scribe-phone .scribe-strip-strand.on{opacity:1;}
+    .scribe-strip-strand-mark{position:absolute;top:0;bottom:0;left:0;width:10px;background:var(--scribe-accent);
+      border-radius:2px;}
     /* The plain 8px lead-in on both sides is deliberate: it keeps a fully-fitting document immobile and clamps rests at the ends, so the bar moves only when new pages come into view.
        (A half-viewport lead-in centered the end pages over dead space and let a fully-visible document shuffle a few px on every page change.) */
     .scribe-strip-row{flex:1;display:flex;align-items:center;gap:8px;padding:6px 8px;
@@ -46,7 +60,7 @@ function ensureStyles() {
     .scribe-strip-tab svg{width:12px;height:12px;}
     .scribe-strip-tab::after{content:"";position:absolute;inset:-14px -18px -4px -18px;}
     .scribe-strip-tab:active{background:var(--scribe-hover);}
-    @media (prefers-reduced-motion:reduce){.scribe-strip-prog,.scribe-strip-prog-fill{transition:none;}}
+    @media (prefers-reduced-motion:reduce){.scribe-strip,.scribe-strip-prog,.scribe-strip-prog-fill,.scribe-strip-strand{transition:none;}}
   `;
   document.head.appendChild(style);
 }
@@ -57,21 +71,34 @@ const CHEV_UP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 /**
  * Build the phone companion strip.
  * @param {import('../../viewer.js').ScribeViewer} scribe
- * @param {{ onExpand?: (phase: 'tap'|'start'|'move'|'end', dy: number) => void }} [handlers]
+ * @param {{
+ *   onExpand?: (phase: 'tap'|'start'|'move'|'end', dy: number) => void,
+ *   onTuckLayout?: () => void,
+ *   onTuckChange?: (tucked: boolean) => void,
+ * }} [handlers]
  *   `onExpand` fires as the strip is pulled up toward the full-height Pages room: `tap` for the pull tab, or `start`/`move`/`end` with the upward travel in px for a live drag.
  *   Travel is re-based to the gesture's engagement point, so `start` always reports 0.
  *   Omitting `onExpand` leaves the strip a pure filmstrip (no tab, no vertical gesture).
+ *   `onTuckLayout` fires when a tuck or reveal drag engages, and for that gesture's lifetime the host must lay the document out as if the bar were absent.
+ *   `onTuckChange` fires with the settled state at the end of every user-driven tuck or reveal, including one that reverts to the state it started from.
+ *   `tuckPullSurface` (the phone dock) extends the tucked reveal's start zone: a press there arms a pull that begins riding once the finger crosses the surface's top edge.
+ *   Plain taps on that surface's own controls are untouched.
  * @returns {{
  *   stripElem: HTMLDivElement,
+ *   strandElem: HTMLDivElement,
  *   setActive: (n: number) => void,
  *   park: () => void,
  *   settle: () => void,
  *   rebuild: (page?: number) => void,
  *   setVisible: (v: boolean) => void,
+ *   setTucked: (t: boolean, animate?: boolean) => void,
+ *   isTucked: () => boolean,
  *   destroy: () => void,
  * }}
  */
-export function createCompanionStrip(scribe, { onExpand } = {}) {
+export function createCompanionStrip(scribe, {
+  onExpand, onTuckLayout, onTuckChange, tuckPullSurface,
+} = {}) {
   ensureStyles();
 
   const stripElem = document.createElement('div');
@@ -88,6 +115,21 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
 
   stripElem.append(row, prog);
 
+  const strandElem = document.createElement('div');
+  strandElem.className = 'scribe-strip-strand';
+  const strandMark = document.createElement('div');
+  strandMark.className = 'scribe-strip-strand-mark';
+  strandElem.appendChild(strandMark);
+
+  // Tucked = the bar rests behind the dock, with only its tab parked on the dock's top edge.
+  // Every strip-initiated workstream is dormant while tucked: no scroll mirror, no thumbnail renders, no rest machinery, and rebuilds deferred to the reveal.
+  const TUCK_H = CELL_H + 12;
+  let tucked = false;
+  let dirty = false;
+  let visibleOn = false;
+  let strandRAF = 0;
+  let swallowTabClick = false;
+
   if (onExpand) {
     const tab = document.createElement('button');
     tab.type = 'button';
@@ -95,20 +137,96 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     tab.title = 'All pages';
     tab.setAttribute('aria-label', 'All pages');
     tab.innerHTML = CHEV_UP_SVG;
-    tab.addEventListener('click', () => onExpand('tap', 0));
+    tab.addEventListener('click', () => {
+      // An engaged drag still lands a click at release, and that gesture already chose its outcome.
+      if (swallowTabClick) { swallowTabClick = false; return; }
+      if (tucked) {
+        applyTucked(false, true);
+        if (onTuckChange) onTuckChange(false);
+        return;
+      }
+      onExpand('tap', 0);
+    });
     stripElem.appendChild(tab);
 
-    /** @type {?{id: number, y0: number, x0: number, sl0: number, base: number, active: boolean, dy: number}} */
+    /** Settle a released or aborted tuck or reveal drag. */
+    function settleTuckDrag(mode, t) {
+      const commit = t > TUCK_H * 0.35;
+      const toTucked = mode === 'tuck' ? commit : !commit;
+      // Flush the dragged position so the settle animates from the finger rather than the last painted frame.
+      stripElem.getBoundingClientRect();
+      stripElem.classList.remove('dragging');
+      applyTucked(toTucked, true);
+      if (onTuckChange) onTuckChange(toTucked);
+    }
+
+    /**
+     * @type {?{id: number, y0: number, x0: number, sl0: number, base: number, active: boolean, dy: number,
+     *   mode: 'room'|'tuck'|'reveal', t: number, fromTab: boolean, fromDock: boolean, belowEdge: boolean, edgeY: number}}
+     */
     let pull = null;
+    let swallowDockClick = false;
     stripElem.addEventListener('pointerdown', (e) => {
       // Ignore additional pointers while a pull is live; a stale un-engaged record is replaced.
       if (pull && pull.active && e.pointerId !== pull.id) return;
+      swallowTabClick = false; // a stale flag from a clickless drag must not eat this press's tap
       pull = {
-        id: e.pointerId, y0: e.clientY, x0: e.clientX, sl0: row.scrollLeft, base: 0, active: false, dy: 0,
+        id: e.pointerId,
+        y0: e.clientY,
+        x0: e.clientX,
+        sl0: row.scrollLeft,
+        base: 0,
+        active: false,
+        dy: 0,
+        mode: 'room',
+        t: 0,
+        fromTab: e.target === tab || tab.contains(/** @type {?Node} */ (e.target)),
+        fromDock: false,
+        belowEdge: false,
+        edgeY: 0,
       };
+      // Tucked presses capture immediately because a fast pull's first move can already be past the band, and an uncaptured move retargets to the document.
+      // A shown press must not capture here or it would steal the row's native horizontal pan.
+      if (tucked) {
+        try { stripElem.setPointerCapture(e.pointerId); } catch { /* untrusted event: moves still bubble here */ }
+      }
     });
-    stripElem.addEventListener('pointermove', (e) => {
+    // A press anywhere on the dock arms a pull as well, with no capture and no preventDefault, so its buttons keep their taps.
+    // The pull only becomes real once the finger crosses up out of the dock.
+    if (tuckPullSurface) {
+      tuckPullSurface.addEventListener('pointerdown', (e) => {
+        if (!tucked) return;
+        if (pull && pull.active && e.pointerId !== pull.id) return;
+        swallowDockClick = false;
+        pull = {
+          id: e.pointerId,
+          y0: e.clientY,
+          x0: e.clientX,
+          sl0: row.scrollLeft,
+          base: 0,
+          active: false,
+          dy: 0,
+          mode: 'room',
+          t: 0,
+          fromTab: false,
+          fromDock: true,
+          belowEdge: true,
+          // The tucked strip's top edge sits exactly on the dock's top edge, which is where band pulls begin.
+          edgeY: stripElem.getBoundingClientRect().top,
+        };
+      });
+    }
+    const onPullMove = (e) => {
       if (!pull || e.pointerId !== pull.id) return;
+      // A dock-armed pull does nothing while the finger is still below the dock's top edge.
+      // Crossing it re-bases the gesture to that edge, so the pull proceeds exactly as if it had started on the band.
+      if (!pull.active && pull.belowEdge) {
+        if (e.clientY > pull.edgeY) return;
+        pull.belowEdge = false;
+        pull.y0 = pull.edgeY;
+        pull.x0 = e.clientX;
+        pull.sl0 = row.scrollLeft;
+      }
       const dy = pull.y0 - e.clientY;
       const dx = Math.abs(e.clientX - pull.x0);
       if (!pull.active) {
@@ -119,43 +237,102 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
         }
         // A fast horizontal flick often leads with a short upward arc, so engagement demands 2:1 steepness or the pull would steal the whole flick at that arc.
         // The 12px floor holds the slope test past the platforms' own pan slop, so steepness is judged on intent rather than first-frame tremor.
-        if (dy > 12 && dy > 2 * dx) {
+        const steepUp = dy > 12 && dy > 2 * dx;
+        const steepDown = -dy > 12 && -dy > 2 * dx;
+        if ((!tucked && (steepUp || steepDown)) || (tucked && steepUp)) {
           pull.active = true;
+          pull.mode = tucked ? 'reveal' : (steepUp ? 'room' : 'tuck');
           pull.base = dy;
           pull.dy = 0;
+          if (pull.fromTab) swallowTabClick = true;
+          if (pull.fromDock) {
+            // The engaged drag must not fire the button it started on, nor leave the pill's input focused.
+            swallowDockClick = true;
+            const ae = document.activeElement;
+            if (tuckPullSurface && ae instanceof HTMLElement && tuckPullSurface.contains(ae)) ae.blur();
+          }
           try { stripElem.setPointerCapture(e.pointerId); } catch { /* untrusted event: move/up still bubble here */ }
-          onExpand('start', 0);
+          if (pull.mode === 'room') {
+            onExpand('start', 0);
+          } else {
+            // The bar rides the finger over live pages, so the document lays out full-height for the gesture.
+            if (pull.mode === 'tuck' && onTuckLayout) onTuckLayout();
+            stripElem.classList.add('dragging');
+          }
         } else if (dx > 14 && dx > Math.abs(dy)) {
           pull = null; // horizontal flip; the row's own scroll owns this gesture
         }
         return;
       }
       pull.dy = dy - pull.base;
-      onExpand('move', pull.dy);
-    });
+      if (pull.mode === 'room') {
+        onExpand('move', pull.dy);
+        return;
+      }
+      pull.t = Math.max(0, Math.min(TUCK_H, pull.mode === 'tuck' ? -pull.dy : pull.dy));
+      stripElem.style.transform = `translateY(${pull.mode === 'tuck' ? pull.t : TUCK_H - pull.t}px)`;
+    };
+    stripElem.addEventListener('pointermove', onPullMove);
     // touch-action is latched at touchstart, so this non-passive preventDefault is the only mid-gesture way to keep the row's pan-x from reclaiming an engaged pull.
     // A takeover fires pointercancel and snaps the half-risen room back.
-    stripElem.addEventListener('touchmove', (e) => {
+    const onTouchMove = (e) => {
       if (pull && pull.active && e.cancelable) e.preventDefault();
-    }, { passive: false });
+    };
+    stripElem.addEventListener('touchmove', onTouchMove, { passive: false });
     const endPull = (e) => {
       if (!pull || e.pointerId !== pull.id) return;
-      const { active, dy: lastDy } = pull;
+      const {
+        active, mode, dy: lastDy, t: lastT, y0, x0, fromDock,
+      } = pull;
       // On a cancel Chrome reports coordinates as (0, 0), which would read as an enormous upward travel and pop the room open; end at the last travel a real move reported instead.
       const dy = e.type === 'pointercancel' ? lastDy : pull.y0 - e.clientY - pull.base;
       pull = null;
-      if (active) onExpand('end', dy);
+      if (!active) {
+        // While tucked, an un-engaged short press on the edge band or tab is a tap: bring the bar back.
+        // Handled here rather than by click because the tucked press's explicit capture retargets the click away from the tab.
+        // Dock-armed presses are excluded: a short press there is a button tap, which must proceed untouched.
+        if (tucked && !fromDock && e.type !== 'pointercancel' && Math.abs(e.clientY - y0) < 8 && Math.abs(e.clientX - x0) < 8) {
+          swallowTabClick = true;
+          applyTucked(false, true);
+          if (onTuckChange) onTuckChange(false);
+        }
+        return;
+      }
+      if (mode === 'room') {
+        onExpand('end', dy);
+        return;
+      }
+      const t = e.type === 'pointercancel' ? lastT : Math.max(0, Math.min(TUCK_H, mode === 'tuck' ? -dy : dy));
+      settleTuckDrag(mode, t);
     };
     stripElem.addEventListener('pointerup', endPull);
     stripElem.addEventListener('pointercancel', endPull);
+    if (tuckPullSurface) {
+      // Before a dock-armed pull engages there is no capture, so its moves and releases arrive here, not at the strip.
+      tuckPullSurface.addEventListener('pointermove', onPullMove);
+      tuckPullSurface.addEventListener('pointerup', endPull);
+      tuckPullSurface.addEventListener('pointercancel', endPull);
+      tuckPullSurface.addEventListener('touchmove', onTouchMove, { passive: false });
+      tuckPullSurface.addEventListener('click', (e) => {
+        if (!swallowDockClick) return;
+        swallowDockClick = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }, true);
+    }
     // Safety net: a capture that dies without an up/cancel ever reaching us would leave the room parked over the strip.
     // Act only when the STRIP loses its own capture.
     // Engaging a touch pull transfers the pointerdown target's implicit capture, so this event fires at the child (bubbling here) the instant every touch pull starts.
     stripElem.addEventListener('lostpointercapture', (e) => {
       if (e.target !== stripElem) return;
       if (!pull || e.pointerId !== pull.id || !pull.active) return;
+      const { mode } = pull;
       pull = null;
-      onExpand('end', 0);
+      if (mode === 'room') {
+        onExpand('end', 0);
+        return;
+      }
+      settleTuckDrag(mode, 0); // a dead capture reverts the drag to the state it started from
     });
   }
 
@@ -204,7 +381,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
 
   /** Render every cell currently in (or near) the strip's viewport. */
   function renderVisible() {
-    if (!cells.length) return;
+    if (tucked || !visibleOn || !cells.length) return;
     geom();
     const margin = 200; // prefetch a screen-ish of cells to either side
     const first = Math.max(0, Math.floor((row.scrollLeft - margin - gPad) / gStride));
@@ -284,7 +461,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
    * @param {boolean} [smooth=true]
    */
   function positionForActive(smooth = true) {
-    if (!cells[activePage]) return;
+    if (tucked || !cells[activePage]) return;
     resting = true;
     // A rest ends the offset's life (the resume re-seeds it); left stale it would skew the wind marker's zero point while parked.
     mirrorOffset = 0;
@@ -302,13 +479,14 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   /** The viewer scroll has been idle: glide the bar onto the reading position's rest. */
   function restSettle() {
     restTimer = null;
-    if (destroyed || userOwns() || !cells[activePage]) return;
+    if (destroyed || tucked || userOwns() || !cells[activePage]) return;
     if (resting) return;
     positionForActive();
   }
 
   /** Instantly rest the strip on the viewer's current page, cancelling any in-flight glide, so a surface covering the strip (the Pages room) can close onto it exactly as it will be revealed. */
   function park() {
+    if (tucked) return;
     const cp = scribe.state && scribe.state.cp;
     if (cp && cp.n !== activePage) setActive(cp.n);
     positionForActive(false);
@@ -318,14 +496,73 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
    * Glide the strip home onto the reading position's rest.
    * A parked bar no longer unwinds on its own, so a caller that displaced the row itself must call this.
    */
-  function settle() { positionForActive(); }
+  function settle() { if (!tucked) positionForActive(); }
+
+  /** Show the strand while the bar is tucked, with its marker at the reading position's fraction of the document. */
+  function updateStrand() {
+    strandRAF = 0;
+    if (destroyed) return;
+    const pages = scribe.doc ? scribe.doc.inputData.pageCount : 0;
+    const show = visibleOn && tucked && pages >= 2;
+    strandElem.classList.toggle('on', show);
+    if (!show) return;
+    const f = scribe.scrollPageFraction();
+    const frac = Number.isFinite(f) ? Math.max(0, Math.min(1, f / (pages - 1))) : 0;
+    const trackW = strandElem.clientWidth;
+    strandMark.style.left = `${Math.max(0, Math.min(trackW - MARKER_PX, frac * trackW - MARKER_PX / 2))}px`;
+  }
+  function scheduleStrand() { if (!strandRAF && !destroyed) strandRAF = requestAnimationFrame(updateStrand); }
+
+  /**
+   * Tuck the bar behind the dock and go dormant, or reveal it and resume.
+   * @param {boolean} t
+   * @param {boolean} animate
+   */
+  function applyTucked(t, animate) {
+    const changed = tucked !== t;
+    tucked = t;
+    stripElem.classList.toggle('tucked', t);
+    if (!animate || reduceMotion()) {
+      // Suppress the transform transition for an instant jump, flushing so it cannot animate from the old position later.
+      stripElem.classList.add('dragging');
+      stripElem.style.transform = t ? `translateY(${TUCK_H}px)` : '';
+      stripElem.getBoundingClientRect();
+      stripElem.classList.remove('dragging');
+    } else {
+      stripElem.style.transform = t ? `translateY(${TUCK_H}px)` : '';
+    }
+    // While tucked the dock doubles as the pull surface, so the browser must not claim vertical drags on it.
+    if (tuckPullSurface) tuckPullSurface.style.touchAction = t ? 'none' : '';
+    if (t) {
+      stopFollow();
+      if (restTimer) { clearTimeout(restTimer); restTimer = null; }
+      resting = false;
+      scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
+    } else if (changed) {
+      if (dirty) {
+        dirty = false;
+        rebuild(scribe.state && scribe.state.cp ? scribe.state.cp.n : activePage);
+      } else {
+        positionForActive(false);
+      }
+    }
+    scheduleStrand();
+  }
+
+  /**
+   * Tuck or reveal the bar on the host's behalf.
+   * This never fires `onTuckChange`, which reports only the user's own gestures and taps.
+   * @param {boolean} t
+   * @param {boolean} [animate=true]
+   */
+  function setTucked(t, animate = true) { if (t !== tucked) applyTucked(t, animate); }
 
   // Mirror the viewer's continuous scroll: move the strip to the reader's fractional-page position.
   // A move within JUMP_GAP snaps 1:1 so the strip's velocity matches the scroll; a larger gap eases via the follow loop.
   const JUMP_GAP = (CELL_W + 8) * 3;
   function syncToViewer() {
     syncRAF = 0;
-    if (destroyed || !cells.length) return;
+    if (destroyed || tucked || !cells.length) return;
     if (userOwns()) return;
     const f = scribe.scrollPageFraction();
     const frac = Number.isFinite(f) ? Math.max(0, Math.min(pageCount - 1, f)) : activePage;
@@ -352,6 +589,10 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     onFlip();
   }
   function onViewerScroll() {
+    if (tucked) {
+      scheduleStrand();
+      return;
+    }
     if (restTimer) clearTimeout(restTimer);
     restTimer = setTimeout(restSettle, REST_MS);
     if (!syncRAF) syncRAF = requestAnimationFrame(syncToViewer);
@@ -368,6 +609,13 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
    */
   function setActive(n) {
     ensureScrollSync();
+    // A tucked bar still tracks the active page, since the reveal parks on it, but leaves its stale cells alone.
+    if (tucked) {
+      const pages = scribe.doc ? scribe.doc.inputData.pageCount : 1;
+      activePage = Math.max(0, Math.min(pages - 1, n));
+      scheduleStrand();
+      return;
+    }
     if (n === activePage && cells[n]?.classList.contains('active')) return;
     cells[activePage]?.classList.remove('active');
     activePage = Math.max(0, Math.min(pageCount - 1, n));
@@ -387,6 +635,12 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   /** @param {number} [page] */
   function rebuild(page = activePage) {
     ensureScrollSync();
+    // Rebuilding a tucked strip would raster thumbnails nobody can see, so the reveal runs it instead.
+    if (tucked) {
+      dirty = true;
+      scheduleStrand();
+      return;
+    }
     hideFeedback();
     row.textContent = '';
     cells = [];
@@ -479,6 +733,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   stripElem.addEventListener('pointercancel', endHold, { passive: true });
 
   function setVisible(v) {
+    visibleOn = v;
     stripElem.classList.toggle('on', v);
     // Wait one frame so the just-shown strip has real widths: a fill computed at the hidden strip's zero track width parks at 0.
     if (v) {
@@ -488,6 +743,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
       // A hidden strip is idle: drop its focus hint so it stops skewing the background render order.
       scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
     }
+    scheduleStrand();
   }
 
   function destroy() {
@@ -495,12 +751,14 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     stopFollow();
     if (restTimer) clearTimeout(restTimer);
     if (syncRAF) cancelAnimationFrame(syncRAF);
+    if (strandRAF) cancelAnimationFrame(strandRAF);
     if (scrollHost) scrollHost.removeEventListener('scroll', onViewerScroll);
     if (geomObserver) geomObserver.disconnect();
     stripElem.remove();
+    strandElem.remove();
   }
 
   return {
-    stripElem, setActive, park, settle, rebuild, setVisible, destroy,
+    stripElem, strandElem, setActive, park, settle, rebuild, setVisible, setTucked, isTucked: () => tucked, destroy,
   };
 }
