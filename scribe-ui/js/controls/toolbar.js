@@ -3013,6 +3013,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 12;
       pointer-events: none;
     }
+    .${r} .scribe-bm-lift.scribe-bm-lift-armed { pointer-events: auto; cursor: grab; }
     .${r} .scribe-bm-lift .scribe-bm-row {
       background: var(--scribe-surface);
       border-radius: 8px;

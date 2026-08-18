@@ -18,6 +18,7 @@ const DOTS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   + '<path d="M5.5 12h.01M12 12h.01M18.5 12h.01"/></svg>';
 // A touch press-drag scrolls the list, so a touch drag arms only after a still press this long.
 const LIFT_HOLD_MS = 250;
+const MENU_HOLD_MS = 350;
 const INDENT_PX = 21;
 
 /** @typedef {import('../../../js/objects/outlineObjects.js').OutlineNode} OutlineNode */
@@ -83,6 +84,7 @@ const INDENT_PX = 21;
  * @property {HTMLElement} railsElem - Container for the legal-depth rails.
  * @property {string} railsKey - The depth range the rails were last built for.
  * @property {HTMLElement} plateElem - Marker for the slot the card will settle into.
+ * @property {boolean} armed - True while the card is parked over its own slot awaiting a grab.
  */
 
 /**
@@ -280,6 +282,44 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   }
 
   /**
+   * Open the phone row menu (Rename / Move / Delete) under the row's dots button.
+   * @param {*} node - Outline node the menu operates on.
+   * @param {HTMLElement} row - The node's rendered row.
+   */
+  function openPhoneRowMenu(node, row) {
+    const label = /** @type {HTMLElement} */ (row.querySelector('.scribe-bm-label'));
+    const wrapper = /** @type {HTMLElement} */ (row.parentElement);
+    const dots = /** @type {HTMLElement} */ (row.querySelector('.scribe-bm-dots'));
+    if (!label || !dots) return;
+    menuElem.textContent = '';
+    const add = (text, enabled, danger, fn) => {
+      const item = document.createElement('div');
+      item.className = danger ? 'scribe-bm-menu-item danger' : 'scribe-bm-menu-item';
+      if (!enabled) item.classList.add('disabled');
+      else item.addEventListener('click', (ev) => { ev.stopPropagation(); closeMenu(); fn(); });
+      item.textContent = text;
+      menuElem.appendChild(item);
+    };
+    add('Rename', true, false, () => startRename(node, label));
+    add('Move', allIds().length > 1, false, () => armMove(node));
+    add('Delete', true, true, () => {
+      const commit = () => { scribe.doc.removeBookmarks([node.id]); afterEdit(); };
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { commit(); return; }
+      wrapper.style.overflow = 'hidden';
+      wrapper.style.height = `${wrapper.getBoundingClientRect().height}px`;
+      wrapper.getBoundingClientRect();
+      wrapper.style.transition = 'height 160ms ease, opacity 160ms ease';
+      wrapper.style.height = '0';
+      wrapper.style.opacity = '0';
+      setTimeout(commit, 180);
+    });
+    const dotsRect = dots.getBoundingClientRect();
+    showMenuAt(dotsRect.left, dotsRect.bottom + 2);
+    const host = (scribe.outerElem || panelElem).getBoundingClientRect();
+    menuElem.style.left = `${Math.max(4, dotsRect.right - menuElem.offsetWidth - host.left)}px`;
+  }
+
+  /**
    * Render one outline node (and, when open, its children) as indented rows.
    * @param {{id: string, title: string, dest: {pageIndex: number, yFrac?: number}|null, children: any[], open: boolean}} node - Outline node to render.
    * @param {number} depth - Nesting depth, used to indent the row.
@@ -328,30 +368,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       dots.innerHTML = DOTS_SVG;
       dots.addEventListener('click', (e) => {
         e.stopPropagation();
-        menuElem.textContent = '';
-        const add = (text, danger, fn) => {
-          const item = document.createElement('div');
-          item.className = danger ? 'scribe-bm-menu-item danger' : 'scribe-bm-menu-item';
-          item.textContent = text;
-          item.addEventListener('click', (ev) => { ev.stopPropagation(); closeMenu(); fn(); });
-          menuElem.appendChild(item);
-        };
-        add('Rename', false, () => startRename(node, label));
-        add('Delete', true, () => {
-          const commit = () => { scribe.doc.removeBookmarks([node.id]); afterEdit(); };
-          if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { commit(); return; }
-          wrapper.style.overflow = 'hidden';
-          wrapper.style.height = `${wrapper.getBoundingClientRect().height}px`;
-          wrapper.getBoundingClientRect();
-          wrapper.style.transition = 'height 160ms ease, opacity 160ms ease';
-          wrapper.style.height = '0';
-          wrapper.style.opacity = '0';
-          setTimeout(commit, 180);
-        });
-        const dotsRect = dots.getBoundingClientRect();
-        showMenuAt(dotsRect.left, dotsRect.bottom + 2);
-        const host = (scribe.outerElem || panelElem).getBoundingClientRect();
-        menuElem.style.left = `${Math.max(4, dotsRect.right - menuElem.offsetWidth - host.left)}px`;
+        openPhoneRowMenu(node, row);
       });
       row.appendChild(dots);
     }
@@ -542,8 +559,17 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   };
   document.addEventListener('pointerdown', dismissMenu, true);
   document.addEventListener('click', dismissMenu, true);
+  // Swallowing the press keeps a tap-away from also starting a row press on whatever it landed on.
+  /** @param {PointerEvent} e */
+  const armedPress = (e) => {
+    if (!drag || !drag.armed || drag.ghostElem.contains(/** @type {Node} */ (e.target))) return;
+    e.stopPropagation();
+    onDragEnd(new PointerEvent('pointerup'));
+  };
+  document.addEventListener('pointerdown', armedPress, true);
   // preventDefault on the pointer events alone does not stop native scrolling once a lifted row owns the touch, so this listener is non-passive.
-  treeElem.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
+  // The listener is on the panel because a drag grabbed from a parked card starts on the ghost, which sits outside the tree.
+  panelElem.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
 
   // Right-edge resize reports the desired width plus a drag phase ('start'/'move'/'end') to the host,
   // which owns the shared clamp/apply so this panel and the rail stay one width.
@@ -682,6 +708,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       adoptElem: null,
       lastX: x,
       lastY: y,
+      armed: false,
     });
     closeMenu();
     panelElem.classList.add('scribe-bm-dragging');
@@ -842,6 +869,11 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     dragPress = null;
     if (!drag) return;
     cancelAnimationFrame(drag.scrollRaf);
+    if (drag.armed) {
+      drag.armed = false;
+      drag.ghostElem.classList.remove('scribe-bm-lift-armed');
+      treeElem.removeEventListener('scroll', setDownArmed);
+    }
     const {
       id, node, drop, srcRow, srcWrapper, ghostElem, cloneElem, railsElem, plateElem, entries, treeLeft, adoptElem,
     } = drag;
@@ -947,6 +979,8 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     dragClickGuard = false;
     if (!editing() || e.button !== 0) return;
     if (e.target instanceof Element && e.target.closest('.scribe-bm-twisty, .scribe-bm-rename, .scribe-bm-dots')) return;
+    // Moving on the phone sheet is reached only through the row menu's Move entry, so no press here lifts a row.
+    if (phoneMode && e.pointerType !== 'touch') return;
     dragPress = {
       id: node.id, node, row, x: e.clientX, y: e.clientY, holdT: null, touch: e.pointerType === 'touch',
     };
@@ -954,16 +988,81 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       const { pointerId } = e;
       dragPress.holdT = setTimeout(() => {
         if (!dragPress || drag) return;
+        if (phoneMode) {
+          window.removeEventListener('pointermove', onDragMove);
+          window.removeEventListener('pointerup', onDragEnd);
+          window.removeEventListener('pointercancel', onDragEnd);
+          dragPress = null;
+          // The finger is still down, so swallow the click that composes at release.
+          dragClickGuard = true;
+          openPhoneRowMenu(node, row);
+          return;
+        }
         dragPress.holdT = null;
         // Capturing on the tree keeps the browser routing the held touch to us.
         try { treeElem.setPointerCapture(pointerId); } catch { /* pointer already released or untrusted */ }
         drag = startDrag(dragPress);
         updateDragVisuals(dragPress.x, dragPress.y);
-      }, LIFT_HOLD_MS);
+      }, phoneMode ? MENU_HOLD_MS : LIFT_HOLD_MS);
     }
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
     window.addEventListener('pointercancel', onDragEnd);
+  }
+
+  /**
+   * Raise a row into the drag card, parked over its own slot, so the next press on the card continues into a normal drag.
+   * A press elsewhere, or a scroll, sets the card back down without an edit.
+   * @param {*} node - Outline node to move.
+   */
+  function armMove(node) {
+    if (drag) return;
+    const row = /** @type {?HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${node.id}"]`));
+    if (!row) return;
+    const rect = row.getBoundingClientRect();
+    drag = startDrag({
+      id: node.id, node, row, x: rect.left + 120, y: rect.top + rect.height / 2, holdT: null, touch: true,
+    });
+    updateDragVisuals(rect.left + 120, rect.top + rect.height / 2);
+    // No pointer is down while the card is parked, so the grabbing cursor and edge auto-scroll stay off until the grab.
+    panelElem.classList.remove('scribe-bm-dragging');
+    cancelAnimationFrame(drag.scrollRaf);
+    drag.armed = true;
+    drag.ghostElem.classList.add('scribe-bm-lift-armed');
+    drag.ghostElem.addEventListener('pointerdown', grabArmed);
+    treeElem.addEventListener('scroll', setDownArmed);
+  }
+
+  /**
+   * Continue a parked Move into a normal drag.
+   * @param {PointerEvent} e
+   */
+  function grabArmed(e) {
+    if (!drag || !drag.armed || e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    drag.armed = false;
+    drag.ghostElem.classList.remove('scribe-bm-lift-armed');
+    treeElem.removeEventListener('scroll', setDownArmed);
+    panelElem.classList.add('scribe-bm-dragging');
+    drag.grabDY = e.clientY - drag.ghostElem.getBoundingClientRect().top;
+    drag.pressX = e.clientX - (drag.drop.depth - drag.ownDepth) * INDENT_PX;
+    drag.lastX = e.clientX;
+    drag.lastY = e.clientY;
+    drag.scrollRaf = requestAnimationFrame(dragScrollTick);
+    try { treeElem.setPointerCapture(e.pointerId); } catch { /* pointer already released or untrusted */ }
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', onDragEnd);
+    window.addEventListener('pointercancel', onDragEnd);
+  }
+
+  /**
+   * Set a parked card back down in place.
+   * The drop lands in its own slot, so no edit is recorded.
+   */
+  function setDownArmed() {
+    if (!drag || !drag.armed) return;
+    onDragEnd(new PointerEvent('pointerup'));
   }
 
   /**
@@ -1105,6 +1204,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     document.removeEventListener('keydown', onKeyDown);
     document.removeEventListener('pointerdown', dismissMenu, true);
     document.removeEventListener('click', dismissMenu, true);
+    document.removeEventListener('pointerdown', armedPress, true);
   }
 
   /**
