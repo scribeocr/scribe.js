@@ -175,7 +175,7 @@ function addAutomateStyles(rootClass) {
     /* Firefox lacks ::-webkit-scrollbar and shows a fat native bar in this narrow field.
        Scoping the standard fallback to non-webkit engines keeps Chrome on the 5px bar above. */
     @supports not selector(::-webkit-scrollbar) {
-      .${r} .scribe-am-cbox textarea { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
+      .${r} .scribe-am-cbox textarea, .${r} .scribe-as-exp { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
     }
     /* Coarse pointers get the 16px input font that keeps iOS from zooming, so the line box and the cap grow with it. */
     .${r}.scribe-coarse .scribe-am-cbox textarea { line-height: 22px; min-height: 30px; max-height: 184px; }
@@ -243,6 +243,26 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-as-receipt-act:hover { background: var(--scribe-active); }
     .${r} .scribe-as-receipt.removed .scribe-as-receipt-tx { text-decoration: line-through; color: var(--scribe-ink-3); }
     .${r} .scribe-as-removed-tag { margin-left: auto; flex: none; font-size: 11.5px; color: var(--scribe-ink-3); padding: 0 6px; }
+    .${r} .scribe-as-batch-dim { flex: none; color: var(--scribe-ink-3); white-space: nowrap; }
+    .${r} .scribe-as-batch-dim:empty { display: none; }
+    .${r} .scribe-as-chev { width: 12px; height: 12px; flex: none; color: var(--scribe-ink-3); transition: transform .16s ease; }
+    .${r} .scribe-as-receipt.open .scribe-as-chev { transform: rotate(180deg); }
+    .${r} .scribe-as-exp {
+      display: grid; gap: 5px; margin: 1px 0 3px 18px; max-height: 176px; overflow-y: auto; padding-right: 4px;
+      transition: max-height .18s ease, opacity .18s ease;
+    }
+    .${r} .scribe-as-exp-fold { max-height: 0 !important; opacity: 0; }
+    .${r} .scribe-as-exp::-webkit-scrollbar { width: 5px; }
+    .${r} .scribe-as-exp::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-as-exp::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    .${r} .scribe-as-item {
+      display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--scribe-ink-2); min-width: 0;
+      cursor: pointer; border-radius: 5px; margin: 0 -4px; padding: 1px 4px;
+    }
+    .${r} .scribe-as-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-as-item-pg { flex: none; font-size: 11px; color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; min-width: 22px; }
+    .${r} .scribe-as-item-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-as-item.removed .scribe-as-item-tx { text-decoration: line-through; color: var(--scribe-ink-3); }
     .${r} .scribe-as-ghost { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--scribe-ink-3); min-width: 0; }
     .${r} .scribe-as-ghost .scribe-as-receipt-ic svg { animation: scribe-as-spin 1s linear infinite; }
     @keyframes scribe-as-spin { to { transform: rotate(360deg); } }
@@ -969,6 +989,172 @@ export function createAutomatePanel(app, rootClass, hooks) {
     syncComposer();
     syncStrip();
     let ghost = null;
+
+    /**
+     * The unbroken run of same-kind receipts currently accumulating on the rail.
+     * @type {?{key: string, verbName: string, pending: Array<{receipt: Object, row: HTMLElement}>, batch: ?Object}}
+     */
+    let actRun = null;
+
+    // Auto-follow yields while the pointer is inside the window, so a row is not scrolled out from under a click.
+    const windowScroll = (exp) => {
+      if (exp.style.display !== 'none' && !exp.matches(':hover')) exp.scrollTop = exp.scrollHeight;
+    };
+
+    /** End the accumulating run and fold its open item window into the resting batch row. */
+    const foldRunWindow = () => {
+      const b = actRun?.batch;
+      actRun = null;
+      if (!b || b.exp.style.display === 'none') return;
+      const exp = b.exp;
+      // The reflow pins the starting height, so the collapse animates instead of jumping.
+      exp.style.maxHeight = `${exp.scrollHeight}px`;
+      exp.getBoundingClientRect();
+      exp.classList.add('scribe-as-exp-fold');
+      b.row.classList.remove('open');
+      setTimeout(() => {
+        exp.classList.remove('scribe-as-exp-fold');
+        exp.style.maxHeight = '';
+        exp.style.display = 'none';
+      }, 200);
+    };
+
+    const removedTag = () => {
+      const tag = document.createElement('span');
+      tag.className = 'scribe-as-removed-tag';
+      tag.textContent = 'Removed';
+      return tag;
+    };
+
+    const appendToBatch = (receipt, alreadyRemoved) => {
+      const b = actRun.batch;
+      b.units += receipt.batch.units ?? 1;
+      b.pages.push(receipt.page);
+      if (receipt.batch.removeAllLabel) b.removeAllLabel = receipt.batch.removeAllLabel;
+      const lo = Math.min(...b.pages) + 1;
+      const hi = Math.max(...b.pages) + 1;
+      b.tx.textContent = receipt.batch.label(b.units, lo === hi ? `page ${lo}` : `pages ${lo}–${hi}`);
+      b.tx.title = b.tx.textContent;
+
+      const item = document.createElement('div');
+      item.className = 'scribe-as-item';
+      item.tabIndex = 0;
+      const pg = document.createElement('span');
+      pg.className = 'scribe-as-item-pg';
+      pg.textContent = String(receipt.page + 1);
+      const tx = document.createElement('span');
+      tx.className = 'scribe-as-item-tx';
+      tx.textContent = receipt.quote ? `“${receipt.quote}”` : receipt.label;
+      tx.title = tx.textContent;
+      item.append(pg, tx);
+      item.addEventListener('click', () => navigateToReceipt(app.scribe, receipt));
+      item.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') navigateToReceipt(app.scribe, receipt);
+      });
+      const entry = { receipt, item, removed: false };
+      const markRemoved = () => {
+        entry.removed = true;
+        item.classList.add('removed');
+        b.removed += 1;
+        b.dim.textContent = `· ${b.removed} removed`;
+      };
+      if (alreadyRemoved) {
+        item.appendChild(removedTag());
+        markRemoved();
+      } else if (receipt.remove) {
+        const act = document.createElement('button');
+        act.type = 'button';
+        act.className = 'scribe-as-receipt-act';
+        act.textContent = receipt.remove.label;
+        act.addEventListener('click', (e) => {
+          e.stopPropagation();
+          receipt.remove.run();
+          act.replaceWith(removedTag());
+          markRemoved();
+        });
+        item.appendChild(act);
+      }
+      b.entries.push(entry);
+      b.exp.appendChild(item);
+      windowScroll(b.exp);
+
+      if (receipt.remove && b.removeAllLabel && !b.actBtn) {
+        const act = document.createElement('button');
+        act.type = 'button';
+        act.className = 'scribe-as-receipt-act';
+        act.textContent = 'Remove all';
+        act.addEventListener('click', (e) => {
+          e.stopPropagation();
+          doc.docHistory.group(b.removeAllLabel, () => {
+            for (const en of b.entries) {
+              if (!en.removed && en.receipt.remove) en.receipt.remove.run();
+            }
+          });
+          for (const en of b.entries) {
+            if (en.removed) continue;
+            en.removed = true;
+            en.item.classList.add('removed');
+            en.item.querySelector('.scribe-as-receipt-act')?.replaceWith(removedTag());
+          }
+          b.row.classList.add('removed');
+          b.dim.textContent = '';
+          b.chev.remove();
+          act.replaceWith(removedTag());
+          b.exp.style.display = 'none';
+          if (actRun?.batch === b) actRun = null;
+        });
+        b.row.insertBefore(act, b.chev);
+        b.chev.style.marginLeft = '';
+        b.actBtn = act;
+      }
+    };
+
+    const convertToBatch = () => {
+      const b = {
+        units: 0, pages: [], removed: 0, entries: [], removeAllLabel: null, actBtn: null,
+      };
+      b.row = document.createElement('div');
+      b.row.className = 'scribe-as-receipt act open';
+      b.row.tabIndex = 0;
+      const ic = document.createElement('span');
+      ic.className = 'scribe-as-receipt-ic';
+      ic.innerHTML = CHECK_SVG;
+      b.tx = document.createElement('span');
+      b.tx.className = 'scribe-as-receipt-tx';
+      b.dim = document.createElement('span');
+      b.dim.className = 'scribe-as-batch-dim';
+      b.chev = document.createElement('span');
+      b.chev.className = 'scribe-as-chev';
+      b.chev.innerHTML = CHEVRON_SVG;
+      b.chev.style.marginLeft = 'auto';
+      b.row.append(ic, b.tx, b.dim, b.chev);
+      b.exp = document.createElement('div');
+      b.exp.className = 'scribe-as-exp';
+      const toggleExp = () => {
+        if (b.row.classList.contains('removed')) return;
+        const open = b.exp.style.display === 'none';
+        b.exp.style.display = open ? '' : 'none';
+        b.row.classList.toggle('open', open);
+      };
+      b.row.addEventListener('click', toggleExp);
+      b.row.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          toggleExp();
+        }
+      });
+      const first = actRun.pending[0].row;
+      c.rail.insertBefore(b.row, first);
+      c.rail.insertBefore(b.exp, first);
+      actRun.batch = b;
+      const pending = actRun.pending;
+      actRun.pending = [];
+      for (const p of pending) {
+        p.row.remove();
+        appendToBatch(p.receipt, p.row.classList.contains('removed'));
+      }
+    };
+
     try {
       c.messages = await runAssistantTurn({
         host,
@@ -979,6 +1165,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
         trace: c.trace ?? undefined,
         onText: (delta) => {
           if (!c.prose) {
+            foldRunWindow();
             const p = document.createElement('div');
             p.className = 'scribe-as-prose';
             c.listElem.appendChild(p);
@@ -990,7 +1177,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
           renderProse(c.prose, c.proseSrc);
           scrollAssistant();
         },
-        onVerbStart: ({ caption }) => {
+        onVerbStart: ({ call, caption }) => {
           if (!c.rail) {
             const r = document.createElement('div');
             r.className = 'scribe-as-rail';
@@ -1007,7 +1194,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
           tx.className = 'scribe-as-receipt-tx';
           tx.textContent = caption;
           ghost.append(ic, tx);
-          c.rail.appendChild(ghost);
+          const b = actRun?.batch;
+          const inWindow = !!b && actRun.verbName === call.name && b.exp.style.display !== 'none';
+          (inWindow ? b.exp : c.rail).appendChild(ghost);
+          if (inWindow) windowScroll(b.exp);
           scrollAssistant();
         },
         onVerbEnd: ({ call, res }) => {
@@ -1015,11 +1205,28 @@ export function createAutomatePanel(app, rootClass, hooks) {
             ghost.remove();
             ghost = null;
           }
-          if (res.receipt && c.rail) {
-            const tier = VERBS.find((v) => v.name === call.name)?.tier ?? 0;
-            c.rail.appendChild(receiptRow(res.receipt, tier));
-            scrollAssistant();
+          if (!res.receipt || !c.rail) return;
+          const receipt = res.receipt;
+          const key = receipt.batch && receipt.page != null ? `${call.name}:${receipt.batch.key}` : null;
+          if (actRun && actRun.key !== key) foldRunWindow();
+          if (!key) {
+            c.rail.appendChild(receiptRow(receipt, VERBS.find((v) => v.name === call.name)?.tier ?? 0));
+          } else {
+            if (!actRun) {
+              actRun = {
+                key, verbName: call.name, pending: [], batch: null,
+              };
+            }
+            if (actRun.batch) {
+              appendToBatch(receipt, false);
+            } else {
+              const row = receiptRow(receipt, VERBS.find((v) => v.name === call.name)?.tier ?? 0);
+              c.rail.appendChild(row);
+              actRun.pending.push({ receipt, row });
+              if (actRun.pending.length >= 3) convertToBatch();
+            }
           }
+          scrollAssistant();
         },
       });
     } catch (err) {
@@ -1040,6 +1247,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       }
     } finally {
       if (ghost) ghost.remove();
+      foldRunWindow();
       c.running = false;
       activeAborts.delete(c.abort);
       c.abort = null;

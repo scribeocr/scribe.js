@@ -17,8 +17,19 @@ import { removeRedactionGroup } from '../viewerRedactions.js';
  * @property {bbox} [bbox] - Passage shown when the receipt navigates, in page coordinates.
  * @property {Array<string>} [wordIds] - The passage's words, for centering and flashing on navigation.
  *   Words that no longer exist (deleted or replaced text) simply degrade navigation to the page.
+ * @property {string} [quote] - The text the act verified against the live page.
  * @property {{label: string, run: () => void}} [remove] - The act's ordinary removal, offered on the receipt row.
  *   Runs the same deletion the user could do by hand, recorded on the undo timeline like any edit.
+ * @property {VerbBatch} [batch] - Present when a run of consecutive receipts may fold into one batch row.
+ */
+
+/**
+ * How a run of consecutive receipts folds into one thread row.
+ * @typedef {Object} VerbBatch
+ * @property {string} key - Receipts fold together only while this matches (e.g. underlines never join a highlight run).
+ * @property {number} [units] - This receipt's contribution to the batch count (default 1).
+ * @property {(n: number, span: string) => string} label - Batch-row text, e.g. "Highlighted 62 passages · pages 127–130".
+ * @property {string} [removeAllLabel] - Undo-timeline label for removing the whole batch as one grouped entry.
  */
 
 /**
@@ -447,6 +458,12 @@ export const VERBS = [
           page: params.page,
           bbox: group ? group.bbox : occ.bbox,
           wordIds: occ.words.map((w) => w.id),
+          quote: params.quote,
+          batch: {
+            key: params.markup === 'underline' ? 'underline' : params.markup === 'strikeout' ? 'strikeout' : 'highlight',
+            label: (n, span) => `${verb} ${n} passages${span ? ` · ${span}` : ''}`,
+            removeAllLabel: params.markup === 'underline' || params.markup === 'strikeout' ? 'Removed markup' : 'Removed highlights',
+          },
           remove: group ? {
             label: 'Remove',
             run: () => {
@@ -559,6 +576,13 @@ export const VERBS = [
           page: params.page,
           bbox: res.occurrences[0].bbox,
           wordIds: res.occurrences[0].words.map((w) => w.id),
+          quote: params.quote,
+          batch: {
+            key: 'redact',
+            units: out.groups.length,
+            label: (n, span) => `Staged ${n} redaction marks${span ? ` · ${span}` : ''}`,
+            removeAllLabel: 'Removed redaction marks',
+          },
           remove: out.groups.length ? {
             label: 'Remove marks',
             run: () => {
