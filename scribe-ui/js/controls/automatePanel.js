@@ -989,6 +989,44 @@ export function createAutomatePanel(app, rootClass, hooks) {
     syncComposer();
     syncStrip();
     let ghost = null;
+    /** @type {?string} The loop's terminal reason. Stays null when the turn throws. */
+    let endReason = null;
+    /** True once the turn rendered anything the user can read. */
+    let sawContent = false;
+
+    // Turn-liveness row, hidden while a verb ghost is already showing the turn is alive.
+    const wait = document.createElement('div');
+    wait.className = 'scribe-as-ghost';
+    const waitIc = document.createElement('span');
+    waitIc.className = 'scribe-as-receipt-ic';
+    waitIc.innerHTML = SPIN_SVG;
+    const waitTx = document.createElement('span');
+    waitTx.className = 'scribe-as-receipt-tx';
+    waitTx.textContent = 'Working…';
+    wait.append(waitIc, waitTx);
+    c.listElem.appendChild(wait);
+
+    const appendFlag = (text) => {
+      const flag = document.createElement('div');
+      flag.className = 'scribe-as-flag';
+      const ic = document.createElement('span');
+      ic.className = 'scribe-as-receipt-ic';
+      ic.innerHTML = FLAG_SVG;
+      const tx = document.createElement('span');
+      tx.className = 'scribe-as-receipt-tx';
+      tx.textContent = text;
+      flag.append(ic, tx);
+      c.listElem.appendChild(flag);
+      scrollAssistant();
+    };
+
+    const appendMark = (text) => {
+      const mark = document.createElement('div');
+      mark.className = 'scribe-as-mark';
+      mark.textContent = text;
+      c.listElem.appendChild(mark);
+      scrollAssistant();
+    };
 
     /**
      * The unbroken run of same-kind receipts currently accumulating on the rail.
@@ -1164,6 +1202,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
         signal: c.abort.signal,
         trace: c.trace ?? undefined,
         onText: (delta) => {
+          sawContent = true;
           if (!c.prose) {
             foldRunWindow();
             const p = document.createElement('div');
@@ -1175,9 +1214,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
           }
           c.proseSrc += delta;
           renderProse(c.prose, c.proseSrc);
+          c.listElem.appendChild(wait);
           scrollAssistant();
         },
         onVerbStart: ({ call, caption }) => {
+          wait.style.display = 'none';
           if (!c.rail) {
             const r = document.createElement('div');
             r.className = 'scribe-as-rail';
@@ -1205,7 +1246,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
             ghost.remove();
             ghost = null;
           }
+          wait.style.display = '';
+          c.listElem.appendChild(wait);
           if (!res.receipt || !c.rail) return;
+          sawContent = true;
           const receipt = res.receipt;
           const key = receipt.batch && receipt.page != null ? `${call.name}:${receipt.batch.key}` : null;
           if (actRun && actRun.key !== key) foldRunWindow();
@@ -1228,26 +1272,28 @@ export function createAutomatePanel(app, rootClass, hooks) {
           }
           scrollAssistant();
         },
+        onTurnEnd: ({ reason }) => { endReason = reason; },
       });
     } catch (err) {
+      // Adopting the settled thread keeps the model's memory matching the rows still on screen.
+      const thrown = /** @type {{thread?: Array<import('../assistant/assistant.js').AssistantMessage>}} */ (err);
+      if (thrown.thread) c.messages = thrown.thread;
       // A user-initiated Stop aborts the stream mid-read; everything already landed stays, and that is not a failure.
-      if (!c.abort?.signal.aborted) {
+      if (c.abort?.signal.aborted) {
+        endReason = 'aborted';
+      } else {
         console.error('The assistant turn failed:', err);
-        const flag = document.createElement('div');
-        flag.className = 'scribe-as-flag';
-        const ic = document.createElement('span');
-        ic.className = 'scribe-as-receipt-ic';
-        ic.innerHTML = FLAG_SVG;
-        const tx = document.createElement('span');
-        tx.className = 'scribe-as-receipt-tx';
-        tx.textContent = 'Something went wrong — see the console for details.';
-        flag.append(ic, tx);
-        c.listElem.appendChild(flag);
-        scrollAssistant();
+        appendFlag('Something went wrong — see the console for details.');
       }
     } finally {
       if (ghost) ghost.remove();
+      wait.remove();
       foldRunWindow();
+      if (endReason === 'max-tokens') appendFlag('The reply hit its length limit before finishing. Say “continue” to pick up where it left off.');
+      else if (endReason === 'refusal') appendFlag('The model declined this request.');
+      else if (endReason === 'max-steps') appendFlag('Stopped at the step limit for a single ask. Send a message to continue.');
+      else if (endReason === 'aborted') appendMark('Stopped');
+      else if (endReason === 'completed' && !sawContent) appendMark('The assistant ended its turn without replying.');
       c.running = false;
       activeAborts.delete(c.abort);
       c.abort = null;

@@ -1,7 +1,8 @@
 /**
  * A scripted adapter that plays back a fixed sequence of model turns.
- * @param {Array<{text?: string, calls?: Array<{name: string, params: Object}>}>} turns
+ * @param {Array<{text?: string, calls?: Array<{name: string, params: Object}>, stopReason?: string}>} turns
  *   One entry per model turn, in order: optional reply text, then optional tool calls.
+ *   `stopReason` rides the turn's done event, mimicking a provider stop like 'max_tokens'.
  *   Turns past the end of the script produce an empty reply, which ends the loop.
  * @param {{delayMs?: number}} [opts] - Delay before each event, so working states last long enough to see and test.
  * @returns {import('./assistant.js').AssistantAdapter & {requests: Array<Object>}}
@@ -31,7 +32,7 @@ export function makeScriptedAdapter(turns, { delayMs = 0 } = {}) {
         callN++;
         yield { type: 'tool_call', call: { id: `call-${callN}`, name: c.name, params: c.params } };
       }
-      yield { type: 'done' };
+      yield { type: 'done', stopReason: turn.stopReason };
     },
   };
 }
