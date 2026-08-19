@@ -457,6 +457,12 @@ class ScribePDFViewer {
      * @type {?{docOpened?: () => void, emptied?: () => void, saveTabIfDirty?: (tab: Object) => Promise<void>, saveAllDirty?: () => Promise<void>}}
      */
     this._libraryHooks = null;
+    /**
+     * Fired when a document's assistant history changes, so the embedder can mark that document's session dirty.
+     * The document is passed rather than assumed active, because a turn can settle after the user switches tabs.
+     * @type {?(doc: Object) => void}
+     */
+    this.onAssistantHistoryEdited = null;
     /** @type {?ReturnType<typeof createPrintControls>} */
     this._print = null;
     /** @type {?ReturnType<typeof createOpenControls>} */

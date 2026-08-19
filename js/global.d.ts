@@ -601,6 +601,52 @@ declare global {
         nativeText?: Array<Record<string, NativeTextWord>>;
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;
+        assistantChats?: AssistantChatRecord[];
+    };
+
+    /**
+     * One entry of an assistant chat's display log, which is the replayable record of what the panel rendered.
+     * The `kind` decides which fields apply.
+     * `user`, `mark`, and `flag` carry `text`, while `prose` carries the reply segment's markdown in `md`.
+     * `receipt` and `batch` carry the rail rows, with a batch's folded per-passage rows in `items`.
+     * `run` records a tool run filed into the chat.
+     */
+    type AssistantChatLogEntry = {
+        kind: "user" | "prose" | "mark" | "flag" | "receipt" | "batch" | "run";
+        text?: string;
+        md?: string;
+        label?: string;
+        page?: number;
+        bbox?: bbox;
+        wordIds?: string[];
+        quote?: string;
+        /** Verb trust tier for the receipt's icon (0 read, 1+ act). */
+        tier?: number;
+        removed?: boolean;
+        items?: Array<{ page?: number; label: string; bbox?: bbox; wordIds?: string[]; removed?: boolean }>;
+        toolId?: string;
+        title?: string;
+        params?: string;
+        /** ISO timestamp of when the run finished. */
+        time?: string;
+        state?: "done" | "failed" | "undone";
+        rows?: Array<{ kind: string; text: string }>;
+        /** True once the run has been described to the model in a recap. */
+        relayed?: boolean;
+    };
+
+    /**
+     * One assistant conversation.
+     * It holds the verbatim provider thread, which continues the chat, and the display log, which replays it.
+     * `messages` stays untyped here because the assistant UI layer owns that format.
+     */
+    type AssistantChatRecord = {
+        id: string;
+        title: string;
+        createdAt: string;
+        updatedAt: string;
+        messages: Array<Object>;
+        log: AssistantChatLogEntry[];
     };
 
     type OutlineDest = import("./objects/outlineObjects.js").OutlineDest;

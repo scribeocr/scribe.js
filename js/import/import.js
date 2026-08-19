@@ -320,6 +320,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
     const sessionEdits = scribeRestoreObj.session.contentEdits || scribeRestoreObj.session.textEdits;
     if (sessionEdits) doc.contentEdits.pages = sessionEdits;
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
+    if (Array.isArray(scribeRestoreObj.session.assistantChats)) doc.assistantChats.chats = scribeRestoreObj.session.assistantChats;
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
         const nt = scribeRestoreObj.session.nativeText[i];

@@ -689,6 +689,13 @@ export class ScribeDoc {
     this.nativeText = { pages: [] };
 
     /**
+     * Assistant conversations, in creation order.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{chats: Array<AssistantChatRecord>}}
+     */
+    this.assistantChats = { chats: [] };
+
+    /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
      * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
      * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
@@ -1114,6 +1121,7 @@ export class ScribeDoc {
     this.annotations.restored = false;
     this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
+    this.assistantChats.chats.length = 0;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;

@@ -3160,6 +3160,11 @@ export function installLibrary(viewer) {
     const tab = viewer._tabs[viewer._activeTab];
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
+  // A turn can settle after a tab switch, so this hook resolves the tab from the document rather than the active tab.
+  viewer.onAssistantHistoryEdited = (doc) => {
+    const tab = viewer._tabs.find((t) => t.doc === doc);
+    if (tab?.libraryHash) tab.libraryDirty = true;
+  };
   const autosaveTimer = window.setInterval(() => {
     saveTabIfDirty(viewer._tabs[viewer._activeTab]);
   }, AUTOSAVE_INTERVAL_MS);

@@ -204,7 +204,9 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     pageSourceIndices: envelope.pageSourceIndices,
     outline: envelope.outline,
     inputData: envelope.inputData,
-    session: envelope.session ? { v: envelope.session.v, fillText: envelope.session.fillText } : undefined,
+    session: envelope.session
+      ? { v: envelope.session.v, fillText: envelope.session.fillText, assistantChats: envelope.session.assistantChats }
+      : undefined,
   };
   yield JSON.stringify(header);
   const contentEdits = envelope.session?.contentEdits || [];
@@ -754,6 +756,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       envelope.session = {
         v: 1, contentEdits: doc.contentEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
+      if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {

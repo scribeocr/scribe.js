@@ -22,6 +22,8 @@ const X_SVG = lineIcon('<path d="M7 7l10 10M17 7L7 17"/>');
 const FLAG_SVG = lineIcon('<path d="M6 21V4.5"/><path d="M6 5h11l-2.5 3.5L17 12H6z"/>');
 const FILE_SVG = lineIcon('<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13 3.5V8h4.5"/>');
 const INFO_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
+const CHAT_SVG = lineIcon('<path d="M4.5 6.5a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-3.5 3v-3h-2v-9z"/>');
+const PLUS_SVG = lineIcon('<path d="M12 5.5v13M5.5 12h13"/>');
 const ROW_ICON_FALLBACK = AUTOMATE_SVG;
 
 export const AUTOMATE_PANEL_WIDTH = 340;
@@ -74,6 +76,35 @@ function addAutomateStyles(rootClass) {
       color: var(--scribe-accent); cursor: pointer; padding: 2px 8px; border-radius: 5px;
     }
     .${r} .scribe-am-strip-resume:hover { background: var(--scribe-active); }
+    .${r} .scribe-am-tray { flex: none; background: var(--scribe-canvas); border-bottom: 1px solid var(--scribe-line); padding: 5px 6px 4px; }
+    .${r} .scribe-am-crow {
+      display: flex; align-items: flex-start; gap: 10px; padding: 8px 11px; border-radius: 7px; cursor: pointer;
+      width: 100%; box-sizing: border-box; border: none; background: none; font: inherit; color: inherit; text-align: left;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-am-crow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-crow:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-am-crow-ic { width: 16px; height: 16px; color: var(--scribe-ink-2); flex: none; margin-top: 2px; }
+    .${r} .scribe-am-crow-col { min-width: 0; flex: 1; display: grid; gap: 1px; }
+    .${r} .scribe-am-crow-title { font-size: 13px; color: var(--scribe-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-am-crow-snip { font-size: 12px; color: var(--scribe-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-am-crow-time { flex: none; font-size: 11px; color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .${r} .scribe-am-tray-all {
+      display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; border: none; background: none;
+      font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-accent); cursor: pointer;
+      padding: 5px 11px; border-radius: 6px; text-align: left; -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-am-tray-all:hover { background: var(--scribe-active); }
+    .${r} .scribe-am-tray-all svg { width: 11px; height: 11px; transform: rotate(-90deg); }
+    .${r} .scribe-as-run { display: grid; gap: 7px; border: 1px solid var(--scribe-line); border-radius: 8px; background: var(--scribe-canvas); padding: 9px 10px; }
+    .${r} .scribe-as-run-hd { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .${r} .scribe-as-run-ic { width: 14px; height: 14px; flex: none; color: var(--scribe-ink-2); }
+    .${r} .scribe-as-run-tt { font-size: 12.5px; font-weight: 600; color: var(--scribe-ink); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-as-run-st { margin-left: auto; flex: none; font-size: 11px; font-weight: 600; color: #2e7d4f; }
+    .${r}[data-theme="dark"] .scribe-as-run-st { color: #5abd85; }
+    .${r} .scribe-as-run-st.undone { color: var(--scribe-ink-3); }
+    .${r} .scribe-as-run-params { font-size: 11.5px; color: var(--scribe-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-as-run-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
     .${r} .scribe-am-catalog { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 4px 6px 8px; min-height: 0; }
     .${r} .scribe-am-cat {
       font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
@@ -347,13 +378,22 @@ export function createAutomatePanel(app, rootClass, hooks) {
   const hdTitle = document.createElement('span');
   hdTitle.className = 'scribe-am-hd-title';
   hdTitle.textContent = 'Automate';
+  const hdGrow = document.createElement('span');
+  hdGrow.style.flex = '1';
+  const plusBtn = document.createElement('span');
+  plusBtn.className = 'scribe-am-ib';
+  plusBtn.role = 'button';
+  plusBtn.tabIndex = 0;
+  plusBtn.title = 'New chat';
+  plusBtn.innerHTML = PLUS_SVG;
+  plusBtn.style.display = 'none';
   const closeBtn = document.createElement('span');
-  closeBtn.className = 'scribe-am-ib scribe-am-hd-close';
+  closeBtn.className = 'scribe-am-ib';
   closeBtn.role = 'button';
   closeBtn.tabIndex = 0;
   closeBtn.title = 'Close panel';
   closeBtn.innerHTML = '×';
-  hd.append(backBtn, hdIcon, hdTitle, closeBtn);
+  hd.append(backBtn, hdIcon, hdTitle, hdGrow, plusBtn, closeBtn);
 
   // Pinned strip for a live (or freshly finished, unseen) run while the catalog is showing.
   const strip = document.createElement('div');
@@ -375,8 +415,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
   stripResume.textContent = 'Resume';
   strip.append(stripIc, stripTx, stripStop, stripResume);
 
+  const tray = document.createElement('div');
+  tray.className = 'scribe-am-tray';
+  tray.style.display = 'none';
+
   const catalog = document.createElement('div');
   catalog.className = 'scribe-am-catalog';
+
+  const chatsElem = document.createElement('div');
+  chatsElem.className = 'scribe-am-catalog';
+  chatsElem.style.display = 'none';
 
   const thread = document.createElement('div');
   thread.className = 'scribe-am-thread';
@@ -418,7 +466,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, catalog, thread, asstThread, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -446,31 +494,53 @@ export function createAutomatePanel(app, rootClass, hooks) {
     closeModelMenu(false);
     const rest = next === 'rest';
     const asst = next === 'assistant';
+    const chatsList = next === 'chats';
     catalog.style.display = rest ? '' : 'none';
+    chatsElem.style.display = chatsList ? '' : 'none';
     composer.style.display = rest || asst ? '' : 'none';
     thread.style.display = next === 'thread' ? '' : 'none';
     asstThread.style.display = asst ? '' : 'none';
     backBtn.style.display = rest ? 'none' : '';
     hdIcon.style.display = rest ? '' : 'none';
-    hdTitle.textContent = rest ? 'Automate' : asst ? 'Assistant' : (activeRun ? activeRun.title : 'Automate');
-    if (asst) {
-      const c = app.doc ? convos.get(app.doc) : null;
-      if (c) c.unseen = false;
+    plusBtn.style.display = asst ? '' : 'none';
+    const st = app.doc ? docStates.get(app.doc) : null;
+    hdTitle.textContent = rest ? 'Automate'
+      : chatsList ? 'Chats'
+        : asst ? (st?.activeRec?.title ?? 'Assistant')
+          : (activeRun ? activeRun.title : 'Automate');
+    if (asst && st) {
+      const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
+      if (live) live.unseen = false;
     }
     syncStrip();
+    paintTray();
     if (rest) paintCatalog();
+    if (chatsList) paintChatsList();
   };
+
+  function stripTarget() {
+    const st = app.doc ? docStates.get(app.doc) : null;
+    if (!st) return null;
+    let unseen = null;
+    for (const live of [...st.live.values(), ...(st.draft ? [st.draft] : [])]) {
+      if (live.running) return live;
+      if (live.unseen && !unseen) unseen = live;
+    }
+    return unseen;
+  }
 
   function syncStrip() {
     const auto = view === 'rest' && activeRun
       && (activeRun.status === 'running' || (activeRun.status !== 'form' && !activeRun.seen));
-    const c = app.doc ? convos.get(app.doc) : null;
-    const asst = !auto && view !== 'assistant' && !!c && (c.running || c.unseen);
+    const st = app.doc ? docStates.get(app.doc) : null;
+    const att = stripTarget();
+    const viewingAtt = view === 'assistant' && !!st && (st.activeRec ? st.live.get(st.activeRec) : st.draft) === att;
+    const asst = !auto && !!att && !viewingAtt;
     stripMode = auto ? 'auto' : 'asst';
     strip.style.display = auto || asst ? 'flex' : 'none';
-    stripStop.style.display = asst && c.running ? '' : 'none';
+    stripStop.style.display = asst && att.running ? '' : 'none';
     if (auto) stripTx.textContent = `${activeRun.title} — ${activeRun.status === 'running' ? 'running…' : 'done'}`;
-    else if (asst) stripTx.textContent = `Assistant — ${c.running ? 'working…' : 'done'}`;
+    else if (asst) stripTx.textContent = `${att.rec?.title ?? 'Assistant'} — ${att.running ? 'working…' : 'done'}`;
   }
 
   function paintCatalog() {
@@ -538,8 +608,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
    * @param {Object} [prefill]
    */
   async function launch(entry, prefill) {
+    // Captured now rather than at completion, because the user may navigate to another chat while the run works.
+    const filingRec = view === 'assistant' && app.doc ? stateFor(app.doc).activeRec : null;
     activeRun = {
-      entry, title: entry.title, status: 'form', seen: true,
+      entry, title: entry.title, status: 'form', seen: true, doc: app.doc, filingRec,
     };
     thread.textContent = '';
     setView('thread');
@@ -593,7 +665,12 @@ export function createAutomatePanel(app, rootClass, hooks) {
 
   function startRun(entry, module, params) {
     const run = {
-      entry, title: entry.title, status: 'running', seen: view === 'thread',
+      entry,
+      title: entry.title,
+      status: 'running',
+      seen: view === 'thread',
+      doc: activeRun?.doc ?? app.doc,
+      filingRec: activeRun?.filingRec ?? null,
     };
     activeRun = run;
     thread.textContent = '';
@@ -630,6 +707,34 @@ export function createAutomatePanel(app, rootClass, hooks) {
       caption.remove();
       statusState.textContent = `Done ${formatTimestamp(new Date().toISOString())}`;
       statusState.classList.add('done');
+      const runDoc = run.doc;
+      let chatRec = null;
+      let chatEntry = null;
+      let chatCard = null;
+      if (runDoc) {
+        // The captured chat may have been evicted by the cap since launch, so fall back to a new one.
+        chatRec = run.filingRec && runDoc.assistantChats.chats.includes(run.filingRec) ? run.filingRec : newChatRecord(runDoc, entry.title);
+        chatEntry = {
+          kind: 'run',
+          toolId: entry.id,
+          title: entry.title,
+          params: paramsLine(module, entry, params),
+          time: new Date().toISOString(),
+          state: 'done',
+          rows: (outcome.rows || []).map((r) => ({ kind: r.kind || 'info', text: r.text })),
+          relayed: false,
+        };
+        chatRec.log.push(chatEntry);
+        const liveChat = docStates.get(runDoc)?.live.get(chatRec);
+        if (liveChat) {
+          liveChat.prose = null;
+          liveChat.rail = null;
+          chatCard = buildRunCard(chatEntry, outcome.review ? { label: outcome.review.label, onClick: outcome.review.onClick } : null);
+          liveChat.listElem.appendChild(chatCard);
+          scrollAssistant();
+        }
+        touchChat(runDoc, chatRec);
+      }
       /** @type {Array<HTMLElement>} Everything the done state adds, so an undo can replace it wholesale. */
       const doneEls = [];
       const append = (el) => { doneEls.push(el); thread.appendChild(el); };
@@ -670,6 +775,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
             statusState.textContent = 'Undone';
             statusState.classList.remove('done');
             thread.appendChild(buildResultRow({ kind: 'info', text: outcome.undo.undoneText }));
+            if (chatEntry) {
+              chatEntry.state = 'undone';
+              chatEntry.rows = [{ kind: 'info', text: outcome.undo.undoneText }];
+              if (chatCard) {
+                const rebuilt = buildRunCard(chatEntry);
+                chatCard.replaceWith(rebuilt);
+                chatCard = rebuilt;
+              }
+              touchChat(runDoc, chatRec);
+            }
           });
           foot.appendChild(undoBtn);
         }
@@ -725,50 +840,348 @@ export function createAutomatePanel(app, rootClass, hooks) {
   }
 
   /**
-   * One conversation per document, alive for the document session and gone with it.
-   * `listElem` (display: contents) holds the conversation's rows so they lay out as thread items directly.
-   * `adapter` holds whichever adapter the last turn ran on, for the export envelope's descriptor.
-   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean,
-   *   prose: ?HTMLElement, proseSrc: string, rail: ?HTMLElement, trace: ?import('../assistant/trace.js').AssistantTrace, adapter: ?Object}>}
+   * Live view state per document.
+   * The chat records themselves live on `doc.assistantChats.chats`, which is what the session block serializes, so anything kept here is lost on reload.
+   * A draft is a chat opened from the "+" button that gets no record until its first content arrives, and `activeRec` stays null while one is open.
+   * @type {WeakMap<Object, {live: Map<AssistantChatRecord, Object>, activeRec: ?AssistantChatRecord, draft: ?Object}>}
    */
-  const convos = new WeakMap();
+  const docStates = new WeakMap();
 
   /** Aborts for every in-flight turn, so destroy can stop streams whose documents it can no longer reach. */
   const activeAborts = new Set();
 
-  const convoFor = (doc) => {
-    let c = convos.get(doc);
-    if (!c) {
-      c = {
-        messages: [],
-        listElem: document.createElement('div'),
-        running: false,
-        abort: null,
-        unseen: false,
-        prose: null,
-        proseSrc: '',
-        rail: null,
-        trace: hooks.assistantTrace ? makeAssistantTrace() : null,
-        adapter: null,
-      };
-      c.listElem.style.display = 'contents';
-      convos.set(doc, c);
+  const stateFor = (doc) => {
+    let st = docStates.get(doc);
+    if (!st) {
+      st = { live: new Map(), activeRec: null, draft: null };
+      docStates.set(doc, st);
     }
-    return c;
+    return st;
+  };
+
+  const CHAT_CAP = 50;
+
+  const newChatRecord = (doc, title) => {
+    const now = new Date().toISOString();
+    const rec = {
+      id: `c${Date.now().toString(36)}-${Math.floor(Math.random() * 36 ** 4).toString(36)}`,
+      title,
+      createdAt: now,
+      updatedAt: now,
+      messages: [],
+      log: [],
+    };
+    const chats = doc.assistantChats.chats;
+    const st = stateFor(doc);
+    chats.push(rec);
+    while (chats.length > CHAT_CAP) {
+      let oldest = -1;
+      for (let i = 0; i < chats.length - 1; i++) {
+        // Evicting a chat mid-turn would leave the turn writing into a record the store no longer holds.
+        if (st.live.get(chats[i])?.running) continue;
+        if (oldest === -1 || chats[i].updatedAt < chats[oldest].updatedAt) oldest = i;
+      }
+      if (oldest === -1) break;
+      const [gone] = chats.splice(oldest, 1);
+      st.live.delete(gone);
+    }
+    return rec;
+  };
+
+  const touchChat = (doc, rec) => {
+    rec.updatedAt = new Date().toISOString();
+    app.onAssistantHistoryEdited?.(doc);
+    paintTray();
+  };
+
+  const mostRecentRec = (doc) => {
+    let latest = null;
+    for (const rec of doc.assistantChats.chats) {
+      if (!latest || rec.updatedAt > latest.updatedAt) latest = rec;
+    }
+    return latest;
+  };
+
+  const newDraft = () => {
+    const live = {
+      rec: null,
+      listElem: document.createElement('div'),
+      running: false,
+      abort: null,
+      unseen: false,
+      prose: null,
+      proseSrc: '',
+      rail: null,
+      trace: hooks.assistantTrace ? makeAssistantTrace() : null,
+      adapter: null,
+    };
+    live.listElem.style.display = 'contents';
+    return live;
+  };
+
+  const removedTag = () => {
+    const tag = document.createElement('span');
+    tag.className = 'scribe-as-removed-tag';
+    tag.textContent = 'Removed';
+    return tag;
+  };
+
+  /**
+   * A tool run's card in the chat.
+   * A restored card gets no `review` action, since that closure died with the session that ran the tool.
+   * @param {AssistantChatLogEntry} entry
+   * @param {?{label: string, onClick: () => void}} [review]
+   */
+  function buildRunCard(entry, review) {
+    const card = document.createElement('div');
+    card.className = 'scribe-as-run';
+    const hdRow = document.createElement('div');
+    hdRow.className = 'scribe-as-run-hd';
+    const ic = document.createElement('span');
+    ic.className = 'scribe-as-run-ic';
+    ic.innerHTML = AUTOMATIONS.find((a) => a.id === entry.toolId)?.svg || AUTOMATE_SVG;
+    const tt = document.createElement('span');
+    tt.className = 'scribe-as-run-tt';
+    tt.textContent = entry.title;
+    const stTx = document.createElement('span');
+    stTx.className = `scribe-as-run-st${entry.state === 'undone' ? ' undone' : ''}`;
+    stTx.textContent = entry.state === 'undone' ? 'Undone' : `Done ${formatTimestamp(entry.time)}`;
+    hdRow.append(ic, tt, stTx);
+    const params = document.createElement('div');
+    params.className = 'scribe-as-run-params';
+    params.textContent = entry.params;
+    params.title = entry.params;
+    card.append(hdRow, params);
+    for (const rowSpec of entry.rows || []) card.appendChild(buildResultRow(rowSpec));
+    if (review && entry.state !== 'undone') {
+      const foot = document.createElement('div');
+      foot.className = 'scribe-as-run-foot';
+      const cta = document.createElement('button');
+      cta.type = 'button';
+      cta.className = 'scribe-am-run';
+      cta.textContent = review.label;
+      cta.addEventListener('click', review.onClick);
+      foot.appendChild(cta);
+      card.appendChild(foot);
+    }
+    return card;
+  }
+
+  /**
+   * The live view for a chat record, replaying its stored log into rows on first touch.
+   * Replayed receipt rows navigate but offer no removal, since those actions closed over annotation objects from the session that recorded them.
+   */
+  const liveFor = (doc, rec) => {
+    const st = stateFor(doc);
+    let live = st.live.get(rec);
+    if (live) return live;
+    live = newDraft();
+    live.rec = rec;
+    if (rec.log.length) {
+      /** @type {?HTMLElement} */
+      let rail = null;
+      for (const entry of rec.log) {
+        if (entry.kind === 'receipt' || entry.kind === 'batch') {
+          if (!rail) {
+            rail = document.createElement('div');
+            rail.className = 'scribe-as-rail';
+            live.listElem.appendChild(rail);
+          }
+        } else {
+          rail = null;
+        }
+        if (entry.kind === 'user') {
+          const row = document.createElement('div');
+          row.className = 'scribe-as-user';
+          const tx = document.createElement('span');
+          tx.className = 'scribe-as-user-tx';
+          tx.textContent = entry.text;
+          row.appendChild(tx);
+          live.listElem.appendChild(row);
+        } else if (entry.kind === 'prose') {
+          const p = document.createElement('div');
+          p.className = 'scribe-as-prose';
+          renderProse(p, entry.md || '');
+          live.listElem.appendChild(p);
+        } else if (entry.kind === 'mark' || entry.kind === 'flag') {
+          const row = document.createElement('div');
+          row.className = entry.kind === 'mark' ? 'scribe-as-mark' : 'scribe-as-flag';
+          if (entry.kind === 'flag') {
+            const ic = document.createElement('span');
+            ic.className = 'scribe-as-receipt-ic';
+            ic.innerHTML = FLAG_SVG;
+            const tx = document.createElement('span');
+            tx.className = 'scribe-as-receipt-tx';
+            tx.textContent = entry.text;
+            row.append(ic, tx);
+          } else {
+            row.textContent = entry.text;
+          }
+          live.listElem.appendChild(row);
+        } else if (entry.kind === 'receipt') {
+          rail.appendChild(receiptRow(entry, entry.tier ?? 0, entry.removed));
+        } else if (entry.kind === 'batch') {
+          const row = document.createElement('div');
+          row.className = `scribe-as-receipt act${entry.removed ? ' removed' : ''}`;
+          row.tabIndex = 0;
+          const ic = document.createElement('span');
+          ic.className = 'scribe-as-receipt-ic';
+          ic.innerHTML = CHECK_SVG;
+          const tx = document.createElement('span');
+          tx.className = 'scribe-as-receipt-tx';
+          tx.textContent = entry.label;
+          tx.title = entry.label;
+          row.append(ic, tx);
+          rail.appendChild(row);
+          if (entry.removed) {
+            row.appendChild(removedTag());
+          } else {
+            const chev = document.createElement('span');
+            chev.className = 'scribe-as-chev';
+            chev.innerHTML = CHEVRON_SVG;
+            chev.style.marginLeft = 'auto';
+            row.appendChild(chev);
+            const exp = document.createElement('div');
+            exp.className = 'scribe-as-exp';
+            exp.style.display = 'none';
+            for (const item of entry.items || []) {
+              const itemRow = document.createElement('div');
+              itemRow.className = `scribe-as-item${item.removed ? ' removed' : ''}`;
+              itemRow.tabIndex = 0;
+              const pg = document.createElement('span');
+              pg.className = 'scribe-as-item-pg';
+              pg.textContent = item.page != null ? String(item.page + 1) : '';
+              const itx = document.createElement('span');
+              itx.className = 'scribe-as-item-tx';
+              itx.textContent = item.label;
+              itx.title = item.label;
+              itemRow.append(pg, itx);
+              if (item.removed) itemRow.appendChild(removedTag());
+              if (item.page != null) {
+                itemRow.addEventListener('click', () => navigateToReceipt(app.scribe, item));
+                itemRow.addEventListener('keydown', (e) => {
+                  if (e.key === 'Enter') navigateToReceipt(app.scribe, item);
+                });
+              }
+              exp.appendChild(itemRow);
+            }
+            rail.appendChild(exp);
+            const toggleExp = () => {
+              const open = exp.style.display === 'none';
+              exp.style.display = open ? '' : 'none';
+              row.classList.toggle('open', open);
+            };
+            row.addEventListener('click', toggleExp);
+            row.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleExp();
+              }
+            });
+          }
+        } else if (entry.kind === 'run') {
+          live.listElem.appendChild(buildRunCard(entry));
+        }
+      }
+      const mark = document.createElement('div');
+      mark.className = 'scribe-as-mark';
+      mark.textContent = `Restored · ${formatTimestamp(rec.updatedAt)}`;
+      live.listElem.appendChild(mark);
+    }
+    st.live.set(rec, live);
+    return live;
   };
 
   const scrollAssistant = () => {
     if (view === 'assistant') asstThread.scrollTop = asstThread.scrollHeight;
   };
 
-  function openAssistant(doc) {
-    const c = convoFor(doc);
-    if (asstThread.firstChild !== c.listElem) {
+  function openChat(doc, live) {
+    const st = stateFor(doc);
+    st.activeRec = live.rec;
+    st.draft = live.rec ? st.draft : live;
+    if (asstThread.firstChild !== live.listElem) {
       asstThread.textContent = '';
-      asstThread.appendChild(c.listElem);
+      asstThread.appendChild(live.listElem);
     }
     setView('assistant');
     asstThread.scrollTop = asstThread.scrollHeight;
+  }
+
+  const chatSnippet = (rec) => {
+    for (let i = rec.log.length - 1; i >= 0; i--) {
+      const entry = rec.log[i];
+      if (entry.kind === 'prose' && entry.md) return entry.md.split('\n', 1)[0];
+      if (entry.kind === 'user') return entry.text || '';
+      if (entry.kind === 'run') return entry.rows?.[0]?.text || entry.title || '';
+      if (entry.kind === 'batch' || entry.kind === 'receipt') return entry.label || '';
+      if (entry.kind === 'flag') return entry.text || '';
+    }
+    return '';
+  };
+
+  const chatRow = (doc, rec) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'scribe-am-crow';
+    const ic = document.createElement('span');
+    ic.className = 'scribe-am-crow-ic';
+    ic.innerHTML = CHAT_SVG;
+    const col = document.createElement('span');
+    col.className = 'scribe-am-crow-col';
+    const title = document.createElement('span');
+    title.className = 'scribe-am-crow-title';
+    title.textContent = rec.title;
+    const snip = document.createElement('span');
+    snip.className = 'scribe-am-crow-snip';
+    snip.textContent = chatSnippet(rec);
+    col.append(title, snip);
+    const time = document.createElement('span');
+    time.className = 'scribe-am-crow-time';
+    time.textContent = formatTimestamp(rec.updatedAt);
+    row.append(ic, col, time);
+    // The active-doc-change event can fire before `app.doc` switches, so a painted row may hold the outgoing document's record.
+    // Re-resolving by id at click time keeps the row bound to whatever document is actually open.
+    row.addEventListener('click', () => {
+      const cur = app.doc;
+      if (!cur) return;
+      const target = cur.assistantChats.chats.find((r) => r.id === rec.id);
+      if (target) openChat(cur, liveFor(cur, target));
+      else paintTray();
+    });
+    return row;
+  };
+
+  const TRAY_CAP = 2;
+
+  function paintTray() {
+    const doc = app.doc;
+    const chats = doc ? doc.assistantChats.chats : [];
+    const show = view === 'rest' && chats.length > 0;
+    tray.style.display = show ? '' : 'none';
+    if (!show) return;
+    tray.textContent = '';
+    const sorted = [...chats].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    for (const rec of sorted.slice(0, TRAY_CAP)) tray.appendChild(chatRow(doc, rec));
+    if (sorted.length > TRAY_CAP) {
+      const all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'scribe-am-tray-all';
+      all.append(document.createTextNode(`All chats (${sorted.length})`));
+      const chev = document.createElement('span');
+      chev.innerHTML = CHEVRON_SVG;
+      all.appendChild(chev.firstElementChild);
+      all.addEventListener('click', () => setView('chats'));
+      tray.appendChild(all);
+    }
+  }
+
+  function paintChatsList() {
+    chatsElem.textContent = '';
+    const doc = app.doc;
+    if (!doc) return;
+    const sorted = [...doc.assistantChats.chats].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    for (const rec of sorted) chatsElem.appendChild(chatRow(doc, rec));
   }
 
   const fitComposer = () => {
@@ -776,9 +1189,21 @@ export function createAutomatePanel(app, rootClass, hooks) {
     cinput.style.height = `${cinput.scrollHeight}px`;
   };
 
+  /**
+   * The document's in-flight turn, if any.
+   * At most one turn runs per document, so the first match is the only one.
+   */
+  const runningLive = (doc) => {
+    const st = doc ? docStates.get(doc) : null;
+    if (!st) return null;
+    for (const live of [...st.live.values(), ...(st.draft ? [st.draft] : [])]) {
+      if (live.running) return live;
+    }
+    return null;
+  };
+
   const syncComposer = () => {
-    const c = app.doc ? convos.get(app.doc) : null;
-    const running = !!(c && c.running);
+    const running = !!runningLive(app.doc);
     csend.innerHTML = running ? STOP_SVG : SEND_SVG;
     csend.title = running ? 'Stop' : 'Send';
     csend.classList.toggle('stop', running);
@@ -786,8 +1211,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   };
 
   const stopTurn = () => {
-    const c = app.doc ? convos.get(app.doc) : null;
-    c?.abort?.abort();
+    runningLive(app.doc)?.abort?.abort();
   };
 
   /** @type {?HTMLElement} */
@@ -834,19 +1258,25 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (!changed) return;
     app.setAssistantModel(option.id);
     setChipLabel(modelLabelFor(adapter));
-    const c = app.doc ? convos.get(app.doc) : null;
-    if (c && c.messages.length) {
-      const last = c.listElem.lastElementChild;
-      if (last && last.classList.contains('scribe-as-mark')) {
+    const doc = app.doc;
+    const st = doc ? docStates.get(doc) : null;
+    const rec = st && view === 'assistant' ? st.activeRec : (doc ? mostRecentRec(doc) : null);
+    const live = rec && st ? st.live.get(rec) : (st?.draft ?? null);
+    if (live && live.rec && live.rec.messages.length) {
+      const last = live.listElem.lastElementChild;
+      const lastLog = live.rec.log[live.rec.log.length - 1];
+      if (last && last.classList.contains('scribe-as-mark') && lastLog?.kind === 'mark') {
         last.textContent = option.label;
+        lastLog.text = option.label;
       } else {
         const mark = document.createElement('div');
         mark.className = 'scribe-as-mark';
         mark.textContent = option.label;
-        c.listElem.appendChild(mark);
+        live.listElem.appendChild(mark);
+        live.rec.log.push({ kind: 'mark', text: option.label });
       }
-      c.prose = null;
-      c.rail = null;
+      live.prose = null;
+      live.rail = null;
       scrollAssistant();
     }
   }
@@ -919,12 +1349,14 @@ export function createAutomatePanel(app, rootClass, hooks) {
 
   /**
    * The receipt row: navigates on click, and carries the act's ordinary removal when it has one.
+   * A replayed row passes `removed`, since its receipt carries no live removal closure.
    * @param {import('../assistant/verbs.js').VerbReceipt} receipt
    * @param {number} tier
+   * @param {boolean} [removed]
    */
-  function receiptRow(receipt, tier) {
+  function receiptRow(receipt, tier, removed) {
     const row = document.createElement('div');
-    row.className = `scribe-as-receipt${tier >= 1 ? ' act' : ''}`;
+    row.className = `scribe-as-receipt${tier >= 1 ? ' act' : ''}${removed ? ' removed' : ''}`;
     const ic = document.createElement('span');
     ic.className = 'scribe-as-receipt-ic';
     ic.innerHTML = tier >= 1 ? CHECK_SVG : READ_SVG;
@@ -933,6 +1365,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     tx.textContent = receipt.label;
     tx.title = receipt.label;
     row.append(ic, tx);
+    if (removed) row.appendChild(removedTag());
     if (receipt.page != null) row.addEventListener('click', () => navigateToReceipt(app.scribe, receipt));
     if (receipt.remove) {
       const act = document.createElement('button');
@@ -1059,7 +1492,12 @@ export function createAutomatePanel(app, rootClass, hooks) {
     el.replaceChildren(frag);
   }
 
+  /**
+   * Run one turn in a chat, which must already have a record.
+   * `ask` is the text sent to the model, which may carry a run recap that the visible user row does not.
+   */
   async function runTurn(doc, c, adapter, ask) {
+    const rec = c.rec;
     c.running = true;
     c.abort = new AbortController();
     c.adapter = adapter;
@@ -1095,6 +1533,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       tx.textContent = text;
       flag.append(ic, tx);
       c.listElem.appendChild(flag);
+      rec.log.push({ kind: 'flag', text });
       scrollAssistant();
     };
 
@@ -1103,6 +1542,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       mark.className = 'scribe-as-mark';
       mark.textContent = text;
       c.listElem.appendChild(mark);
+      rec.log.push({ kind: 'mark', text });
       scrollAssistant();
     };
 
@@ -1135,13 +1575,6 @@ export function createAutomatePanel(app, rootClass, hooks) {
       }, 200);
     };
 
-    const removedTag = () => {
-      const tag = document.createElement('span');
-      tag.className = 'scribe-as-removed-tag';
-      tag.textContent = 'Removed';
-      return tag;
-    };
-
     const appendToBatch = (receipt, alreadyRemoved) => {
       const b = actRun.batch;
       b.units += receipt.batch.units ?? 1;
@@ -1151,6 +1584,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       const hi = Math.max(...b.pages) + 1;
       b.tx.textContent = receipt.batch.label(b.units, lo === hi ? `page ${lo}` : `pages ${lo}–${hi}`);
       b.tx.title = b.tx.textContent;
+      b.logEntry.label = b.tx.textContent;
 
       const item = document.createElement('div');
       item.className = 'scribe-as-item';
@@ -1167,9 +1601,18 @@ export function createAutomatePanel(app, rootClass, hooks) {
       item.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') navigateToReceipt(app.scribe, receipt);
       });
+      const itemLog = {
+        page: receipt.page,
+        label: tx.textContent,
+        bbox: receipt.bbox,
+        wordIds: receipt.wordIds,
+        ...(alreadyRemoved ? { removed: true } : {}),
+      };
+      b.logEntry.items.push(itemLog);
       const entry = { receipt, item, removed: false };
       const markRemoved = () => {
         entry.removed = true;
+        itemLog.removed = true;
         item.classList.add('removed');
         b.removed += 1;
         b.dim.textContent = `· ${b.removed} removed`;
@@ -1189,6 +1632,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
           receipt.remove.run();
           act.replaceWith(removedTag());
           markRemoved();
+          touchChat(doc, rec);
         });
         item.appendChild(act);
       }
@@ -1219,6 +1663,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
           b.chev.remove();
           act.replaceWith(removedTag());
           b.exp.style.display = 'none';
+          b.logEntry.removed = true;
+          for (const it of b.logEntry.items) it.removed = true;
+          touchChat(doc, rec);
           if (actRun?.batch === b) actRun = null;
         });
         b.row.insertBefore(act, b.chev);
@@ -1229,8 +1676,20 @@ export function createAutomatePanel(app, rootClass, hooks) {
 
     const convertToBatch = () => {
       const b = {
-        units: 0, pages: [], removed: 0, entries: [], removeAllLabel: null, actBtn: null,
+        units: 0,
+        pages: [],
+        removed: 0,
+        entries: [],
+        removeAllLabel: null,
+        actBtn: null,
+        logEntry: { kind: 'batch', label: '', items: [] },
       };
+      // The rows just folded into the batch, so their individual log entries must fold too or a restore shows both.
+      for (const p of actRun.pending) {
+        const i = rec.log.indexOf(p.logEntry);
+        if (i !== -1) rec.log.splice(i, 1);
+      }
+      rec.log.push(b.logEntry);
       b.row = document.createElement('div');
       b.row.className = 'scribe-as-receipt act open';
       b.row.tabIndex = 0;
@@ -1274,10 +1733,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
     };
 
     try {
-      c.messages = await runAssistantTurn({
+      rec.messages = await runAssistantTurn({
         host,
         adapter,
-        messages: c.messages,
+        messages: rec.messages,
         ask,
         signal: c.abort.signal,
         trace: c.trace ?? undefined,
@@ -1291,8 +1750,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
             c.prose = p;
             c.proseSrc = '';
             c.rail = null;
+            c.proseLog = { kind: 'prose', md: '' };
+            rec.log.push(c.proseLog);
           }
           c.proseSrc += delta;
+          c.proseLog.md = c.proseSrc;
           renderProse(c.prose, c.proseSrc);
           c.listElem.appendChild(wait);
           scrollAssistant();
@@ -1331,10 +1793,36 @@ export function createAutomatePanel(app, rootClass, hooks) {
           if (!res.receipt || !c.rail) return;
           sawContent = true;
           const receipt = res.receipt;
+          const tier = VERBS.find((v) => v.name === call.name)?.tier ?? 0;
+          // Wrapping the removal keeps the log in step, so a restored chat shows the passage as removed.
+          const logReceipt = () => {
+            const entry = {
+              kind: 'receipt',
+              label: receipt.label,
+              page: receipt.page,
+              bbox: receipt.bbox,
+              wordIds: receipt.wordIds,
+              quote: receipt.quote,
+              tier,
+            };
+            rec.log.push(entry);
+            const shown = receipt.remove ? {
+              ...receipt,
+              remove: {
+                label: receipt.remove.label,
+                run: () => {
+                  receipt.remove.run();
+                  entry.removed = true;
+                  touchChat(doc, rec);
+                },
+              },
+            } : receipt;
+            return { entry, row: receiptRow(shown, tier) };
+          };
           const key = receipt.batch && receipt.page != null ? `${call.name}:${receipt.batch.key}` : null;
           if (actRun && actRun.key !== key) foldRunWindow();
           if (!key) {
-            c.rail.appendChild(receiptRow(receipt, VERBS.find((v) => v.name === call.name)?.tier ?? 0));
+            c.rail.appendChild(logReceipt().row);
           } else {
             if (!actRun) {
               actRun = {
@@ -1344,9 +1832,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
             if (actRun.batch) {
               appendToBatch(receipt, false);
             } else {
-              const row = receiptRow(receipt, VERBS.find((v) => v.name === call.name)?.tier ?? 0);
-              c.rail.appendChild(row);
-              actRun.pending.push({ receipt, row });
+              const logged = logReceipt();
+              c.rail.appendChild(logged.row);
+              actRun.pending.push({ receipt, row: logged.row, logEntry: logged.entry });
               if (actRun.pending.length >= 3) convertToBatch();
             }
           }
@@ -1357,7 +1845,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     } catch (err) {
       // Adopting the settled thread keeps the model's memory matching the rows still on screen.
       const thrown = /** @type {{thread?: Array<import('../assistant/assistant.js').AssistantMessage>}} */ (err);
-      if (thrown.thread) c.messages = thrown.thread;
+      if (thrown.thread) rec.messages = thrown.thread;
       // A user-initiated Stop aborts the stream mid-read; everything already landed stays, and that is not a failure.
       if (c.abort?.signal.aborted) {
         endReason = 'aborted';
@@ -1379,7 +1867,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
       c.abort = null;
       c.prose = null;
       c.rail = null;
-      c.unseen = view !== 'assistant';
+      c.proseLog = null;
+      c.unseen = !(view === 'assistant' && stateFor(doc).activeRec === rec);
+      touchChat(doc, rec);
       syncComposer();
       syncStrip();
     }
@@ -1463,27 +1953,47 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (!doc || doc.pageMetrics.length === 0) return;
     const text = cinput.value.trim();
     if (!text) return;
-    const c = convoFor(doc);
-    if (c.running) return;
+    if (runningLive(doc)) return;
     const adapter = await app.getAssistantAdapter();
     if (!adapter) {
       showKeyCard();
       return;
     }
+    const st = stateFor(doc);
+    let live;
+    if (view === 'assistant') {
+      live = st.activeRec ? liveFor(doc, st.activeRec) : (st.draft ?? newDraft());
+    } else {
+      const rec = mostRecentRec(doc);
+      live = rec ? liveFor(doc, rec) : newDraft();
+    }
+    if (!live.rec) {
+      live.rec = newChatRecord(doc, text.length > 60 ? `${text.slice(0, 57)}…` : text);
+      st.live.set(live.rec, live);
+      if (st.draft === live) st.draft = null;
+    }
     cinput.value = '';
     fitComposer();
-    openAssistant(doc);
+    openChat(doc, live);
     const row = document.createElement('div');
     row.className = 'scribe-as-user';
     const tx = document.createElement('span');
     tx.className = 'scribe-as-user-tx';
     tx.textContent = text;
     row.appendChild(tx);
-    c.listElem.appendChild(row);
-    c.prose = null;
-    c.rail = null;
+    live.listElem.appendChild(row);
+    live.rec.log.push({ kind: 'user', text });
+    live.prose = null;
+    live.rail = null;
     scrollAssistant();
-    runTurn(doc, c, adapter, text);
+    // A catalog run never reaches the model on its own, so an unrelayed one rides ahead of the ask as a recap.
+    const recaps = [];
+    for (const entry of live.rec.log) {
+      if (entry.kind !== 'run' || entry.relayed || entry.state !== 'done') continue;
+      entry.relayed = true;
+      recaps.push(`[Tool run] ${entry.title} — ${entry.params}. Outcome: ${(entry.rows || []).map((r) => r.text).join('; ')}.`);
+    }
+    runTurn(doc, live, adapter, recaps.length ? `${recaps.join('\n')}\n\n${text}` : text);
   }
 
   backBtn.addEventListener('click', () => {
@@ -1493,7 +2003,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
   stripStop.addEventListener('click', stopTurn);
   stripResume.addEventListener('click', () => {
     if (stripMode === 'asst') {
-      if (app.doc) openAssistant(app.doc);
+      const att = stripTarget();
+      if (app.doc && att) openChat(app.doc, att);
       return;
     }
     if (!activeRun) return;
@@ -1509,16 +2020,23 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (e.key === 'Enter' && !e.isComposing) {
       if (e.shiftKey && !e.metaKey && !e.ctrlKey) return;
       e.preventDefault();
-      const c = app.doc ? convos.get(app.doc) : null;
-      if (!c || !c.running) submitAsk();
+      if (!runningLive(app.doc)) submitAsk();
     } else if (e.key === 'Escape') {
       stopTurn();
     }
   });
   csend.addEventListener('click', () => {
-    const c = app.doc ? convos.get(app.doc) : null;
-    if (c && c.running) stopTurn();
+    if (runningLive(app.doc)) stopTurn();
     else submitAsk();
+  });
+  plusBtn.addEventListener('click', () => {
+    if (app.doc) openChat(app.doc, newDraft());
+  });
+  plusBtn.addEventListener('keydown', (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && app.doc) {
+      e.preventDefault();
+      openChat(app.doc, newDraft());
+    }
   });
   modelChip.addEventListener('click', openModelMenu);
 
@@ -1563,6 +2081,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     panelElem.style.display = 'flex';
     toggleElem.classList.add('active');
     if (view === 'rest') paintCatalog();
+    paintTray();
     syncModelChip();
     hooks.onLayoutChange();
   };
@@ -1580,10 +2099,17 @@ export function createAutomatePanel(app, rootClass, hooks) {
   // The catalog's enabled/disabled reasons and the conversation both belong to the active document.
   const onDocChange = () => {
     if (!openState) return;
-    if (view === 'assistant') setView('rest');
+    if (view === 'assistant' || view === 'chats') setView('rest');
     else if (view === 'rest') paintCatalog();
+    paintTray();
     syncComposer();
     syncStrip();
+    // The active-doc-change event can fire before the new document is attached, so repaint again once the switch settles.
+    setTimeout(() => {
+      paintTray();
+      syncComposer();
+      syncStrip();
+    }, 0);
   };
   app.container.addEventListener('scribe-active-doc-change', onDocChange);
 
@@ -1612,13 +2138,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
      */
     exportTrace: (doc) => {
       if (!doc) return null;
-      const c = convos.get(doc);
-      if (!c?.trace) return null;
-      return buildTraceEnvelope(c.trace, {
-        adapter: c.adapter,
+      const st = docStates.get(doc);
+      if (!st) return null;
+      const recent = mostRecentRec(doc);
+      const live = (st.activeRec && st.live.get(st.activeRec)) || st.draft || (recent && st.live.get(recent)) || null;
+      if (!live?.trace) return null;
+      return buildTraceEnvelope(live.trace, {
+        adapter: live.adapter,
         doc: { baseName: app._baseName(), pageCount: doc.pageMetrics.length },
         flags: { automate: true, assistantTrace: true },
-        messages: c.messages,
+        messages: live.rec ? live.rec.messages : [],
       });
     },
     /**

@@ -1381,6 +1381,30 @@ describe('Check native text line deletion and replacement survive .scribe persis
       kind: 'path',
     }]);
     strays = strayFields(srcDoc);
+    srcDoc.assistantChats.chats.push({
+      id: 'c-test-1',
+      title: 'Highlight the key passages',
+      createdAt: '2026-08-19T01:00:00.000Z',
+      updatedAt: '2026-08-19T01:05:00.000Z',
+      messages: [
+        { role: 'user', content: [{ type: 'text', text: 'Highlight the key passages' }] },
+        { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'Done — three passages highlighted.' }] },
+      ],
+      log: [
+        { kind: 'user', text: 'Highlight the key passages' },
+        { kind: 'prose', md: 'Done — three passages highlighted.' },
+        {
+          kind: 'run',
+          toolId: 'redact-terms',
+          title: 'Redact terms',
+          params: 'iris · whole words · all pages',
+          time: '2026-08-19T01:04:00.000Z',
+          state: 'done',
+          rows: [{ kind: 'ok', text: '12 marks staged across 3 pages' }],
+          relayed: false,
+        },
+      ],
+    });
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
@@ -1407,6 +1431,18 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(sessionObj.session?.contentEdits?.[1]?.length, 'the image-delete record is missing from the session block').toBe(1);
     expect(sessionObj.session?.nativeText?.length, 'per-page native-text metadata is missing from the session block').toBe(3);
     expect(Object.keys(sessionObj.session?.nativeText?.[0] || {}).length, 'native-text entries were lost from the edited page\'s session block').toBe(228);
+  });
+
+  test('Assistant chat history survives the .scribe session round-trip', () => {
+    expect(sessionObj.session?.assistantChats?.length, 'the chat store is missing from the session block').toBe(1);
+    const chats = restoredDoc.assistantChats.chats;
+    expect(chats.length, 'the chat record was lost on .scribe restore').toBe(1);
+    expect(chats[0].title, 'the chat title changed on restore').toBe('Highlight the key passages');
+    expect(chats[0].log.length, 'the chat log lost entries on restore').toBe(3);
+    expect(chats[0].log[2].kind, 'the tool-run entry changed kind on restore').toBe('run');
+    expect(chats[0].log[2].rows[0].text, 'the run outcome text changed on restore').toBe('12 marks staged across 3 pages');
+    expect(chats[0].messages.length, 'the provider thread was lost on restore').toBe(2);
+    expect(chats[0].messages[1].content[0].text, 'the reply text changed on restore').toBe('Done — three passages highlighted.');
   });
 
   test('Deleted line, replaced line, and their edit records survive the .scribe round-trip', () => {
