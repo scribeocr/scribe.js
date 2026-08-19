@@ -2,7 +2,7 @@
 // Renders scribe.doc.outline as a navigable tree: clicking a bookmark jumps to its destination.
 // Rows are text-first, like a book's table of contents: hierarchy comes from indentation and type (top-level entries semibold, title-only parents as section labels), not per-row icons.
 import { makeIconButton } from './toolbar.js';
-import { nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
+import { detectHeadingBookmarks, nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
 
 // A bookmark-ribbon glyph for the toolbar toggle (also the view's tab in the unified sidebar's switch strip).
 export const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
@@ -12,8 +12,13 @@ export const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" f
 const TWISTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 // Plus glyph for the header's persistent add button.
 const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
-const SPARKLE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M12 4.5l1.7 4.3 4.3 1.7-4.3 1.7L12 16.5l-1.7-4.3L6 10.5l4.3-1.7L12 4.5Z"/><path d="M18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9.9-2.1Z"/></svg>';
+// The Automate identity glyph, marking controls that open that panel.
+// Copied rather than imported because the panel module is load-gated, and importing it here would defeat that.
+const AUTOMATE_GLYPH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/></svg>';
+// The Generate-bookmarks tool icon, copied from the automation registry for the direct-run button that off builds keep.
+const GEN_HEADINGS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2.3z"/><path d="M14.8 7.5h4.7M14.8 12h4.7M14.8 16.5h3.2"/></svg>';
 const DOTS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<path d="M5.5 12h.01M12 12h.01M18.5 12h.01"/></svg>';
 // A touch press-drag scrolls the list, so a touch drag arms only after a still press this long.
@@ -216,7 +221,30 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     item.textContent = 'Add bookmark at current page';
     item.addEventListener('click', () => { closeMenu(); addBookmarkAtPage(); });
     menuElem.appendChild(item);
+    appendGenerateMenuRow();
     showMenuAt(x, y);
+  }
+
+  /**
+   * Append the Automate hand-off row ("Generate from headings…") to the open menu, behind a separator.
+   * @returns {boolean} Whether the row was added.
+   */
+  function appendGenerateMenuRow() {
+    if (!automateHandOffAvailable() || !scribe.doc || detectHeadingBookmarks(scribe.doc).length < 3) return false;
+    const sep = document.createElement('div');
+    sep.className = 'scribe-bm-menu-sep';
+    menuElem.appendChild(sep);
+    const item = document.createElement('div');
+    item.className = 'scribe-bm-menu-item scribe-bm-menu-hand';
+    const label = document.createElement('span');
+    label.textContent = 'Generate from headings…';
+    const glyph = document.createElement('span');
+    glyph.className = 'scribe-bm-autoglyph';
+    glyph.innerHTML = AUTOMATE_GLYPH_SVG;
+    item.append(label, glyph);
+    item.addEventListener('click', () => { closeMenu(); scribe._automatePanel.launchAutomation('generate-bookmarks'); });
+    menuElem.appendChild(item);
+    return true;
   }
 
   /** Begin inline rename of a bookmark row, committing to doc.renameBookmark on Enter/blur. */
@@ -276,6 +304,11 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       const parent = context(ctx.parentId);
       scribe.doc.moveBookmark(node.id, ctx.grandparentId, parent ? parent.index + 1 : null); afterEdit();
     });
+    if (appendGenerateMenuRow()) {
+      const sep = document.createElement('div');
+      sep.className = 'scribe-bm-menu-sep';
+      menuElem.appendChild(sep);
+    }
     add('Delete', true, () => { scribe.doc.removeBookmarks([node.id]); afterEdit(); });
 
     showMenuAt(x, y);
@@ -459,17 +492,23 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     addBtn.textContent = 'Add bookmark';
     addBtn.addEventListener('click', () => addBookmarkAtPage());
     empty.appendChild(addBtn);
-    const headings = availableHeadings();
+    const headings = scribe.doc ? detectHeadingBookmarks(scribe.doc) : [];
     if (headings.length >= 3) {
       const genBtn = document.createElement('button');
       genBtn.type = 'button';
       genBtn.className = 'scribe-bm-empty-btn';
-      genBtn.innerHTML = `${SPARKLE_SVG}<span>Generate from headings</span>`;
-      genBtn.addEventListener('click', () => generateFromHeadings());
-      empty.appendChild(genBtn);
       const hint = document.createElement('div');
       hint.className = 'scribe-bm-empty-hint';
-      hint.textContent = 'Uses the headings this app already finds in the layout. You can edit or undo the result.';
+      if (automateHandOffAvailable()) {
+        genBtn.innerHTML = `<span>Generate from headings…</span><span class="scribe-bm-autoglyph">${AUTOMATE_GLYPH_SVG}</span>`;
+        genBtn.addEventListener('click', () => scribe._automatePanel.launchAutomation('generate-bookmarks'));
+        hint.textContent = 'Runs in Automate — uses the headings this app already finds. You can edit or undo the result.';
+      } else {
+        genBtn.innerHTML = `${GEN_HEADINGS_SVG}<span>Generate from headings</span>`;
+        genBtn.addEventListener('click', () => generateFromHeadings());
+        hint.textContent = 'Uses the headings this app already finds in the layout. You can edit or undo the result.';
+      }
+      empty.appendChild(genBtn);
       empty.appendChild(hint);
     } else {
       watchTextReady();
@@ -478,28 +517,11 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   }
 
   /**
-   * Detected content headings usable as bookmarks, in reading order.
-   * @returns {Array<{title: string, pageIndex: number, yFrac: ?number, level: ?number}>}
+   * Whether "Generate from headings" should hand off to the Automate panel rather than run directly.
+   * Phone layouts keep the direct path because the Automate panel is desktop-only.
    */
-  function availableHeadings() {
-    if (!scribe.doc || !scribe.doc.inputData || scribe.doc.inputData.pdfType !== 'text') return [];
-    const pages = (scribe.doc.ocr && scribe.doc.ocr.active) || [];
-    const out = [];
-    for (let n = 0; n < pages.length; n += 1) {
-      const page = pages[n];
-      if (!page || !page.pars) continue;
-      for (const par of page.pars) {
-        if (par.type !== 'title') continue;
-        const text = par.lines.map((line) => line.words.map((word) => word.text).join(' ')).join(' ').trim();
-        if (!text || text.length > 150) continue;
-        const pageHeight = page.dims && page.dims.height;
-        const yFrac = pageHeight && par.bbox ? Math.max(0, Math.min(1, par.bbox.top / pageHeight)) : null;
-        out.push({
-          title: text, pageIndex: n, yFrac, level: par.headingLevel ?? null,
-        });
-      }
-    }
-    return out;
+  function automateHandOffAvailable() {
+    return !phoneMode && !!scribe._automatePanel;
   }
 
   // Text extraction is deferred on load, so the headings may not exist yet the first time the empty state renders.
@@ -514,7 +536,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   /** Replace the outline with bookmarks built from the document's detected headings. */
   function generateFromHeadings() {
-    const headings = availableHeadings();
+    const headings = detectHeadingBookmarks(scribe.doc);
     if (!headings.length) return;
     const nodes = nestHeadingOutline(headings);
     const prev = scribe.doc.replaceOutline(nodes);

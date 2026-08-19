@@ -3016,6 +3016,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
     .${r} .scribe-bm-menu-item.danger { color: var(--scribe-danger); }
+    .${r} .scribe-bm-menu-sep { height: 1px; background: var(--scribe-line); margin: 4px 6px; }
+    .${r} .scribe-bm-menu-item.scribe-bm-menu-hand { display: flex; align-items: center; gap: 10px; }
+    .${r} .scribe-bm-menu-item.scribe-bm-menu-hand .scribe-bm-autoglyph { margin-left: auto; }
+    /* Sized explicitly because the glyph markup carries inline width and height of 100%, which would otherwise inflate it. */
+    .${r} .scribe-bm-autoglyph { width: 14px; height: 14px; flex: none; display: inline-flex; color: var(--scribe-ink-3); }
+    .${r} .scribe-bm-autoglyph svg { width: 14px; height: 14px; display: block; }
 
     .${r} .scribe-bm-rails { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; z-index: 8; }
     .${r} .scribe-bm-rails i { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--scribe-accent-ring); }

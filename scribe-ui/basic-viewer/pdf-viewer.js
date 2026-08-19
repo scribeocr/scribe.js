@@ -2473,6 +2473,7 @@ class ScribePDFViewer {
     if (this._commentsPanel) this._commentsPanel.toggleElem.classList.toggle('active', next === 'comments');
     this._transitionSidebar(prev, next);
     this._syncSidebarControls();
+    if (this._automatePanel) this._automatePanel.syncSidebar();
   }
 
   /**

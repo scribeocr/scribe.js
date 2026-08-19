@@ -521,7 +521,7 @@ const redactEverywhereClick = () => {
   const viewer = mv();
   hideContextMenu();
   if (!viewer._automatePanel || !redactEverywhereTerm) return;
-  viewer._automatePanel.stageRedactTerms(redactEverywhereTerm);
+  viewer._automatePanel.launchAutomation('redact-terms', { terms: [redactEverywhereTerm] });
   viewer.clearTextSelection();
 };
 

@@ -1,5 +1,7 @@
 import { makeIconButton, formatTimestamp } from './toolbar.js';
-import { AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS } from '../automations/registry.js';
+import {
+  AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS, SIDEBAR_GROUPS,
+} from '../automations/registry.js';
 import { runAssistantTurn } from '../assistant/assistant.js';
 import { makeAssistantTrace, buildTraceEnvelope } from '../assistant/trace.js';
 import { VERBS, navigateToReceipt } from '../assistant/verbs.js';
@@ -19,6 +21,7 @@ const CHECK_SVG = lineIcon('<path d="M5 12.5l4.5 4.5L19 7.5"/>');
 const X_SVG = lineIcon('<path d="M7 7l10 10M17 7L7 17"/>');
 const FLAG_SVG = lineIcon('<path d="M6 21V4.5"/><path d="M6 5h11l-2.5 3.5L17 12H6z"/>');
 const FILE_SVG = lineIcon('<path d="M6.5 3.5h7l4 4v13h-11z"/><path d="M13 3.5V8h4.5"/>');
+const INFO_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
 const ROW_ICON_FALLBACK = AUTOMATE_SVG;
 
 export const AUTOMATE_PANEL_WIDTH = 340;
@@ -126,6 +129,26 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-opts { display: flex; gap: 14px; flex-wrap: wrap; }
     .${r} .scribe-am-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--scribe-ink); cursor: pointer; }
     .${r} .scribe-am-check input { accent-color: var(--scribe-accent); margin: 0; }
+    .${r} .scribe-am-check.off { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-am-note {
+      display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--scribe-ink-2);
+      background: var(--scribe-canvas); border: 1px solid var(--scribe-line); border-radius: 7px; padding: 8px 10px;
+    }
+    .${r} .scribe-am-note.quiet { background: none; border: none; padding: 0; }
+    .${r} .scribe-am-note-ic { width: 14px; height: 14px; flex: none; color: var(--scribe-ink-3); margin-top: 1px; }
+    .${r} .scribe-am-note-ic svg { width: 100%; height: 100%; display: block; }
+    .${r} .scribe-am-boost { display: grid; gap: 3px; }
+    .${r} .scribe-am-boost-hint { font-size: 11px; color: var(--scribe-ink-3); margin-left: 22px; }
+    .${r} .scribe-am-offer {
+      display: grid; gap: 8px; border: 1px solid var(--scribe-line); border-radius: 7px;
+      background: var(--scribe-canvas); padding: 9px 10px; font-size: 12px; color: var(--scribe-ink-2);
+    }
+    .${r} .scribe-am-offer-row { display: flex; align-items: flex-start; gap: 8px; }
+    .${r} .scribe-am-offer-act {
+      justify-self: end; border: none; background: none; font: inherit; font-size: 12px; font-weight: 600;
+      color: var(--scribe-accent); cursor: pointer; padding: 2px 8px; border-radius: 5px; white-space: nowrap;
+    }
+    .${r} .scribe-am-offer-act:hover { background: var(--scribe-active); }
     .${r} .scribe-am-foot { display: flex; align-items: center; gap: 8px; padding-top: 2px; }
     .${r} .scribe-am-foot-grow { flex: 1; }
     .${r} .scribe-am-run {
@@ -465,6 +488,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
       const entries = modeGroup.ids.map((id) => AUTOMATIONS.find((a) => a.id === id)).filter(Boolean);
       addGroup(modeGroup.label, entries);
     }
+    const sideGroup = SIDEBAR_GROUPS[app._activeSidebar];
+    if (sideGroup) {
+      const entries = sideGroup.ids.map((id) => AUTOMATIONS.find((a) => a.id === id)).filter(Boolean);
+      addGroup(sideGroup.label, entries);
+    }
     for (const cat of CATEGORY_ORDER) {
       addGroup(cat, AUTOMATIONS.filter((a) => a.category === cat));
     }
@@ -602,19 +630,58 @@ export function createAutomatePanel(app, rootClass, hooks) {
       caption.remove();
       statusState.textContent = `Done ${formatTimestamp(new Date().toISOString())}`;
       statusState.classList.add('done');
-      for (const rowSpec of outcome.rows || []) thread.appendChild(buildResultRow(rowSpec));
-      if (outcome.review) {
+      /** @type {Array<HTMLElement>} Everything the done state adds, so an undo can replace it wholesale. */
+      const doneEls = [];
+      const append = (el) => { doneEls.push(el); thread.appendChild(el); };
+      for (const rowSpec of outcome.rows || []) append(buildResultRow(rowSpec));
+      if (outcome.offer) {
+        const block = document.createElement('div');
+        block.className = 'scribe-am-offer';
+        const orow = document.createElement('div');
+        orow.className = 'scribe-am-offer-row';
+        const oic = document.createElement('span');
+        oic.className = 'scribe-am-note-ic';
+        oic.innerHTML = INFO_SVG;
+        const otx = document.createElement('span');
+        otx.textContent = outcome.offer.text;
+        orow.append(oic, otx);
+        const act = document.createElement('button');
+        act.type = 'button';
+        act.className = 'scribe-am-offer-act';
+        act.textContent = outcome.offer.actionLabel;
+        act.addEventListener('click', () => startRun(entry, module, outcome.offer.params));
+        block.append(orow, act);
+        append(block);
+      }
+      if (outcome.review || outcome.undo) {
         const foot = document.createElement('div');
         foot.className = 'scribe-am-foot';
         const grow = document.createElement('span');
         grow.className = 'scribe-am-foot-grow';
-        const cta = document.createElement('button');
-        cta.type = 'button';
-        cta.className = 'scribe-am-run';
-        cta.textContent = outcome.review.label;
-        cta.addEventListener('click', () => outcome.review.onClick());
-        foot.append(grow, cta);
-        thread.appendChild(foot);
+        foot.appendChild(grow);
+        if (outcome.undo) {
+          const undoBtn = document.createElement('button');
+          undoBtn.type = 'button';
+          undoBtn.className = 'scribe-am-quiet';
+          undoBtn.textContent = outcome.undo.label;
+          undoBtn.addEventListener('click', () => {
+            outcome.undo.onClick();
+            for (const el of doneEls) el.remove();
+            statusState.textContent = 'Undone';
+            statusState.classList.remove('done');
+            thread.appendChild(buildResultRow({ kind: 'info', text: outcome.undo.undoneText }));
+          });
+          foot.appendChild(undoBtn);
+        }
+        if (outcome.review) {
+          const cta = document.createElement('button');
+          cta.type = 'button';
+          cta.className = 'scribe-am-run';
+          cta.textContent = outcome.review.label;
+          cta.addEventListener('click', () => outcome.review.onClick());
+          foot.appendChild(cta);
+        }
+        append(foot);
       }
       syncStrip();
     }).catch((err) => {
@@ -640,7 +707,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     row.className = `scribe-am-result ${spec.kind || 'info'}`;
     const ic = document.createElement('span');
     ic.className = 'scribe-am-result-ic';
-    ic.innerHTML = spec.kind === 'ok' ? CHECK_SVG : (spec.kind === 'flag' ? FLAG_SVG : FILE_SVG);
+    ic.innerHTML = spec.kind === 'ok' ? CHECK_SVG : (spec.kind === 'flag' ? FLAG_SVG : (spec.kind === 'file' ? FILE_SVG : INFO_SVG));
     const tx = document.createElement('span');
     tx.className = 'scribe-am-result-tx';
     tx.textContent = spec.text;
@@ -1534,6 +1601,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
       modeName = name;
       if (openState && view === 'rest') paintCatalog();
     },
+    /** Called when the sidebar view changes so the catalog can surface that view's automations. */
+    syncSidebar: () => {
+      if (openState && view === 'rest') paintCatalog();
+    },
     /**
      * The document's conversation trace as a versioned envelope, for the dev-only log export.
      * Null when tracing is off or the document has no conversation.
@@ -1551,13 +1622,15 @@ export function createAutomatePanel(app, rootClass, hooks) {
       });
     },
     /**
-     * Open the panel with Redact terms staged from a selection, for the selection menu's hand-off row.
+     * Open the panel with a tool staged from a hand-off surface (selection menu, bookmarks panel).
      * The form is only staged, so Run stays a deliberate click.
+     * @param {string} id
+     * @param {Object} [prefill]
      */
-    stageRedactTerms: (term) => {
+    launchAutomation: (id, prefill) => {
       open();
-      const entry = AUTOMATIONS.find((a) => a.id === 'redact-terms');
-      if (entry) launch(entry, { terms: [term] });
+      const entry = AUTOMATIONS.find((a) => a.id === id);
+      if (entry) launch(entry, prefill);
     },
     destroy: () => {
       for (const abort of activeAborts) abort.abort();

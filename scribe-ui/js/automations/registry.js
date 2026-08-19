@@ -1,5 +1,6 @@
 // The automation registry: the manifest read by the Automate panel's catalog, the app menu, and the selection menu's hand-off rows.
 // Tool code loads lazily through `load`, so an unused automation costs nothing.
+import { detectHeadingBookmarks } from '../../../js/objects/outlineObjects.js';
 
 const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
@@ -7,6 +8,7 @@ const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const REDACT_TERMS_SVG = lineIcon('<rect x="4.5" y="4.5" width="15" height="15" rx="1.5"/><path d="M7.5 9h9"/>'
   + '<rect x="7.5" y="12" width="6.5" height="3.2" rx="0.6" fill="currentColor" stroke="none"/>');
 const EXTRACT_HIGHLIGHTS_SVG = lineIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M4 14.5h16M10 10v9M15 10v9"/>');
+const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2.3z"/><path d="M14.8 7.5h4.7M14.8 12h4.7M14.8 16.5h3.2"/>');
 
 /**
  * @typedef {Object} AutomationOutcomeRow
@@ -19,6 +21,10 @@ const EXTRACT_HIGHLIGHTS_SVG = lineIcon('<rect x="4" y="5" width="16" height="14
  * @typedef {Object} AutomationOutcome
  * @property {Array<AutomationOutcomeRow>} rows
  * @property {{label: string, onClick: () => (void | Promise<void>)}} [review] - The done state's primary action.
+ * @property {{label: string, onClick: () => void, undoneText: string}} [undo] - Quiet foot action that reverses the run.
+ *   The thread replaces the outcome with `undoneText` once it runs.
+ * @property {{text: string, actionLabel: string, params: Object}} [offer] - Follow-up block under the results.
+ *   Accepting it re-runs the tool with `params`.
  */
 
 /**
@@ -83,6 +89,24 @@ export const AUTOMATIONS = [
     },
     load: () => import('./extractHighlights.js'),
   },
+  {
+    id: 'generate-bookmarks',
+    title: 'Generate bookmarks',
+    description: 'Build bookmarks from the headings detected in the document.',
+    category: 'Assemble',
+    engine: 'ai-assisted',
+    effects: 'mutate',
+    svg: GENERATE_BOOKMARKS_SVG,
+    disabledWhy: (viewer) => {
+      const doc = viewer.doc;
+      if (!doc || !doc.pageMetrics.length) return 'Open a document first';
+      if (!doc.inputData || doc.inputData.pdfType !== 'text') return 'Needs a PDF with original digital text';
+      // While deferred text extraction is still running the candidates are unknowable, so the row stays enabled and the run waits.
+      if (!doc._textReadySettle && detectHeadingBookmarks(doc).length < 3) return 'Not enough headings detected in this document';
+      return null;
+    },
+    load: () => import('./generateBookmarks.js'),
+  },
 ];
 
 /** Catalog group order. */
@@ -95,4 +119,13 @@ export const CATEGORY_ORDER = ['Review', 'Privacy', 'Assemble', 'File'];
  */
 export const MODE_GROUPS = {
   Redact: { label: 'For redacting', ids: ['redact-terms'] },
+};
+
+/**
+ * Tools surfaced in a "For <view>" group atop the catalog while that sidebar view is active.
+ * Keys are the app's sidebar view keys.
+ * @type {Object<string, {label: string, ids: Array<string>}>}
+ */
+export const SIDEBAR_GROUPS = {
+  bookmarks: { label: 'For bookmarks', ids: ['generate-bookmarks'] },
 };

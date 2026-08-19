@@ -5,6 +5,7 @@ import { buildStructuredPageText } from '../../../js/utils/structuredText.js';
 import { bboxToPageSpace, TEXT_MARKUP_ANNOT_TYPES } from '../../../js/addHighlights.js';
 import { calcBboxUnion } from '../../../js/utils/miscUtils.js';
 import { isScanPage } from '../../../js/pdf/ocrPageSelection.js';
+import { detectHeadingBookmarks, nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
 
 /** @typedef {import('../automations/registry.js').AutomationHost} AssistantHost */
@@ -592,6 +593,38 @@ export const VERBS = [
               });
             },
           } : undefined,
+        },
+      };
+    },
+  },
+  {
+    name: 'generate_bookmarks',
+    description: 'Replace the document\'s bookmarks with a list built from the headings the layout detector found. '
+      + 'Works only on text-native PDFs with at least 3 detected headings. '
+      + 'The result is ordinary bookmarks the user can edit or undo.',
+    params: { type: 'object', properties: {} },
+    tier: 1,
+    caption: () => 'Generating bookmarks from headings…',
+    run: async (host) => {
+      const doc = host.viewer.doc;
+      const candidates = detectHeadingBookmarks(doc);
+      if (candidates.length < 3) {
+        return { isError: true, result: { error: 'Fewer than 3 usable headings were detected, so no bookmarks were generated. The document may not be a text-native PDF.' } };
+      }
+      const prev = doc.replaceOutline(nestHeadingOutline(candidates));
+      if (host.viewer.doc === doc) host.app._bookmarksPanel?.rebuild();
+      return {
+        result: { bookmarksAdded: candidates.length, replacedPrevious: prev.length },
+        receipt: {
+          label: `Added ${candidates.length} bookmarks from headings`,
+          page: candidates[0].pageIndex,
+          remove: {
+            label: 'Remove generated bookmarks',
+            run: () => {
+              doc.replaceOutline(prev);
+              if (host.viewer.doc === doc) host.app._bookmarksPanel?.rebuild();
+            },
+          },
         },
       };
     },
