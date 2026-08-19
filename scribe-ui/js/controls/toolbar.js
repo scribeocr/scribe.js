@@ -1407,6 +1407,31 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}.scribe-coarse .scribe-sheet-seg button { min-height: 44px; font-size: 14px; }
     .${r} .scribe-sheet-seg button.on { background: var(--scribe-active); color: var(--scribe-accent); }
     .${r} .scribe-sheet-acts { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+    /* Bookmarks Move session, not a sheet drag. */
+    .${r} .scribe-sheet-movehd { display: none; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; }
+    .${r} .scribe-sheet.scribe-sheet-moving .scribe-sheet-seg,
+    .${r} .scribe-sheet.scribe-sheet-moving .scribe-sheet-acts { display: none; }
+    .${r} .scribe-sheet.scribe-sheet-moving .scribe-sheet-movehd { display: flex; }
+    .${r} .scribe-sheet-moving-title {
+      font: 600 14px/1.25 -apple-system, system-ui, 'Segoe UI', sans-serif;
+      color: var(--scribe-ink);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+    }
+    .${r} .scribe-sheet-moving-done {
+      margin-left: auto;
+      flex: 0 0 auto;
+      border: 0;
+      background: none;
+      color: var(--scribe-accent);
+      cursor: pointer;
+      font: 600 14px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
+      min-height: 44px;
+      padding: 0 10px;
+      border-radius: 8px;
+    }
     .${r} .scribe-sheet-act {
       width: 36px;
       height: 36px;
@@ -2025,8 +2050,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 0 0 2px var(--scribe-accent-ring), var(--scribe-menu-shadow);
     }
     .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
-    /* position: relative anchors the swatch shelf under the header. */
-    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; margin-bottom: 5px; cursor: grab; position: relative; }
+    /* position: relative anchors the swatch shelf under the header.
+       The min-height is the verb button's, reserved even unpinned so the verbs appearing cannot push the thread down. */
+    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; min-height: 20px; margin-bottom: 5px; cursor: grab; position: relative; }
     .${r} .scribe-cmt-quote {
       min-width: 0;
       font-size: 11px;
@@ -2055,9 +2081,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       overflow-wrap: anywhere;
     }
     .${r} .scribe-cmt-text::placeholder { color: var(--scribe-ink-3); }
-    .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 7px; }
-    /* Long conversations scroll inside the card rather than growing it off-screen. */
-    .${r} .scribe-cmt-card.pinned .scribe-cmt-thread { max-height: 320px; overflow-y: auto; }
+    .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; }
     .${r} .scribe-cmt-msg .scribe-cmt-meta { margin-bottom: 2px; }
     .${r} .scribe-cmt-mtext { white-space: pre-wrap; overflow-wrap: anywhere; }
     .${r} .scribe-cmt-card.pinned .scribe-cmt-mtext { cursor: text; }
@@ -2998,6 +3022,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-rails i.on { border-left: 1.5px solid var(--scribe-accent); }
     .${r} .scribe-bm-row.scribe-bm-adopt { background: var(--scribe-accent-soft); }
     .${r} .scribe-bm-row.scribe-bm-adopt .scribe-bm-twisty { color: var(--scribe-accent); }
+    /* The menu can open away from its row, so the subject row carries its own wash. */
+    .${r} .scribe-bm-row.scribe-bm-menu-subject:not(.active) { background: var(--scribe-hover); }
     /* The plate marks the slot the dragged card will settle into. */
     .${r} .scribe-bm-plate {
       position: absolute;
