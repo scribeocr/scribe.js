@@ -101,6 +101,9 @@ function addAutomateStyles(rootClass) {
       flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; min-height: 0;
       display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; align-content: start;
     }
+    .${r} .scribe-am-catalog::-webkit-scrollbar, .${r} .scribe-am-thread::-webkit-scrollbar { width: 5px; }
+    .${r} .scribe-am-catalog::-webkit-scrollbar-track, .${r} .scribe-am-thread::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-am-catalog::-webkit-scrollbar-thumb, .${r} .scribe-am-thread::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
     .${r} .scribe-am-desc { font-size: 12.5px; color: var(--scribe-ink-2); line-height: 1.5; margin: 0; }
     .${r} .scribe-am-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .${r} .scribe-am-label { font-size: 12px; font-weight: 600; color: var(--scribe-ink-2); }
