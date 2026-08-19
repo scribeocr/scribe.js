@@ -2068,26 +2068,46 @@ export function analyzeLayout(pages, opts = {}) {
   for (let p = 0; p < pages.length; p++) pageRules.set(p, pages[p].rules || []);
   model.pageRules = pageRules;
 
-  // Hanging-indent reference lists (a list of cases, a bibliography): entries open at the flush margin and wrap to one shallow hang column, set solid and ragged right.
-  // The shape inverts the document's indent convention — here the indent column marks a continuation and the flush margin an entry start — so runs are detected on positive evidence
-  // and geometricBreak applies the inverted reading only inside them.
+  // Hanging-indent reference lists invert the document's indent convention: the indent column marks a continuation, and the flush margin marks an entry start.
+  // Misreading ordinary indented prose as such a run would flip every paragraph boundary inside it, so the shape tests below stay strict.
   const refListTol = bodySize * 0.5;
-  /** @type {Array<{page:number, flush:number, hang:?number, lines:Array<LineFeat>, evidenced:boolean, qualified:boolean}>} */
+  const refsHeadingRe = /^(?:(?:[0-9]{1,2}|[ivxlcIVXLC]{1,4})[.):]?\s+)?(references?(\s+cited)?|bibliography|works\s+cited|literature(\s+cited)?|citations|references\s+and\s+notes|list\s+of\s+(references|authorities|sources))\s*[:.]?$/i;
+  /** @param {LineFeat} ln */
+  const isRefsHeading = (ln) => ln.nChar <= 48 && refsHeadingRe.test(ln.text.trim());
+  /** @type {Map<number, Array<number>>} tops of references-family heading lines per page */
+  const refHeadTops = new Map();
+  /** @type {Set<number>} pages whose previous page ends on a references-family heading */
+  const refHeadCarry = new Set();
+  for (const [p2, pf2] of featByPage) {
+    const tops = [];
+    for (const ln of pf2) if (isRefsHeading(ln)) tops.push(ln.top);
+    if (tops.length) refHeadTops.set(p2, tops);
+    const tail = pf2.filter((ln) => ln.role === 'body' || ln.role === 'heading').slice(-2);
+    if (tail.some(isRefsHeading)) refHeadCarry.add(p2 + 1);
+  }
+  /** @type {Array<{page:number, flush:number, hang:?number, lines:Array<LineFeat>, evidenced:boolean, qualified:boolean, gapCut?:number}>} */
   const refListRuns = [];
   for (const [p, pf] of featByPage) {
     const flushP = pageFlush.get(p) ?? bodyLeft;
     const pitchP = Math.max(pageBodyPitch.get(p) || 0, leading);
+    // A filing with an attached journal article or book chapter sets the attachment at its own size, so the doc-wide figure would reject every line of the attachment's reference list.
+    const sizeP = pageBodySize.get(p) || bodySize;
+    // The second column of a two-column paper hosts its own stretch of the list, and a book's reference pages need not share the doc-wide body margin.
+    // The shape gates below carry the evidence burden for every anchor.
+    const anchors = [flushP];
+    const pcolsP = pageColumns.get(p);
+    if (pcolsP) for (const c of pcolsP) if (!anchors.some((a) => Math.abs(a - c.left) <= refListTol)) anchors.push(c.left);
     /** @type {?{page:number, flush:number, hang:?number, lines:Array<LineFeat>}} */
     let run = null;
     const flushRun = () => {
       const cur = run;
       run = null;
-      if (!cur || cur.lines.length < 8) return;
-      // A reference list opens at the doc margin or at a detected column's left, where a signature or address block sits at an arbitrary offset (often the page's own most-common left).
-      const pcols = pageColumns.get(p);
-      const colAligned = Math.abs(cur.flush - bodyLeft) <= bodySize
-        || (!!pcols && pcols.some((c) => Math.abs(cur.flush - c.left) <= bodySize));
-      if (!colAligned) return;
+      if (!cur) return;
+      const heads = refHeadTops.get(p);
+      const startTop = cur.lines[0].top;
+      const headed = (!!heads && heads.some((t) => t < startTop && startTop - t <= pitchP * 4))
+        || (refHeadCarry.has(p) && pf.length > 0 && startTop - pf[0].top <= pitchP * 3);
+      if (cur.lines.length < (headed ? 4 : 8)) return;
       // Width is judged in the run's own frame, not the doc's: a list inside a narrower column or box still wraps at its own margin, and doc-frame tests would read every such line as short.
       const runRight = Math.max(...cur.lines.map((ln) => ln.right));
       const runWidth = runRight - cur.flush;
@@ -2100,39 +2120,102 @@ export function analyzeLayout(pages, opts = {}) {
       const hangPrevFull = hangLines.filter((ln) => cur.lines[cur.lines.indexOf(ln) - 1].right >= runRight - runWidth * 0.25).length;
       const earlyHang = hangLines.filter(early).length;
       const earlyFlush = cur.lines.filter((ln) => ln.left <= cur.flush + refListTol && early(ln)).length;
+      // A three-line entry's middle wraps legitimately run the measure out, so a ratio over all hang lines would reject any list averaging more than two lines per entry.
+      let closers = 0;
+      let earlyClosers = 0;
+      for (let i = 0; i < cur.lines.length; i++) {
+        if (cur.lines[i].left <= cur.flush + refListTol) continue;
+        const nxt = cur.lines[i + 1];
+        if (nxt && nxt.left > cur.flush + refListTol) continue;
+        closers += 1;
+        if (early(cur.lines[i])) earlyClosers += 1;
+      }
+      // Some lists are set solid at one margin with no hanging indent, separated instead by a blank half-line between entries.
+      // Frequent gaps read as a uniform spacing regime to the page-level gap machinery, so the split key is recovered here per run instead.
+      // This sits above the sentence veto because a solid list's wraps land at flush and read as prose to it.
+      let gapCut = 0;
+      if (hangLines.length <= cur.lines.length * 0.1 && cur.lines.length >= 8) {
+        const advances = [];
+        for (let i = 1; i < cur.lines.length; i++) {
+          const dt = cur.lines[i].top - cur.lines[i - 1].top;
+          if (dt > 0) advances.push(dt);
+        }
+        advances.sort((a, b) => a - b);
+        let cutAt = -1;
+        let bestRatio = 1.2;
+        for (let i = 1; i < advances.length; i++) {
+          const r = advances[i] / advances[i - 1];
+          if (r > bestRatio) { bestRatio = r; cutAt = i; }
+        }
+        if (cutAt >= 3 && advances.length - cutAt >= 4) {
+          const small = advances.slice(0, cutAt);
+          const big = advances.slice(cutAt);
+          /** @param {number[]} arr */
+          const tight = (arr) => arr[arr.length - 1] <= arr[0] * 1.25;
+          if (tight(small) && tight(big)) {
+            gapCut = (small[small.length - 1] + big[0]) / 2;
+            // A would-be boundary whose predecessor runs the measure out mid-word is a torn paragraph, not a gap between entries.
+            // Prose undercut by taller interleaved lines, such as linked citations carrying extra leading, shows the same two clusters, but real entries close on cites, years, and page numbers.
+            // One stray site is tolerated for the same reason as the sentence veto below.
+            let torn = 0;
+            let bigN = 0;
+            for (let i = 1; i < cur.lines.length; i++) {
+              if (cur.lines[i].top - cur.lines[i - 1].top < gapCut) continue;
+              bigN += 1;
+              if (/\p{L}\s*$/u.test(cur.lines[i - 1].text) && cur.lines[i - 1].right >= runRight - runWidth * 0.25) torn += 1;
+            }
+            if (torn > Math.max(1, bigN * 0.25)) gapCut = 0;
+          }
+        }
+      }
       // A near-full line ending on a bare letter is mid-sentence, and in a true hanging list its continuation always lands on the hang column, never at flush.
-      // One flush line after such a predecessor means the run mixes flush-wrapping prose and must not qualify, or the entry rule would cut those sentences at each line.
+      // A single entry ending on a bare word (a URL tail, an untranslated title) must not void a whole page's list, so flush-wrapping prose is judged as a share.
       // Digit ends are exempt because entries legitimately end on cite and page numbers near the margin; case is not consulted, since caseless scripts wrap the same way.
-      const flushSentenceCont = cur.lines.some((ln, i) => i > 0 && ln.left <= cur.flush + refListTol
-        && /\p{L}\s*$/u.test(cur.lines[i - 1].text)
-        && cur.lines[i - 1].right >= runRight - runWidth * 0.25);
-      if (flushSentenceCont) return;
+      let sentContN = 0;
+      for (let i = 1; i < cur.lines.length; i++) {
+        if (cur.lines[i].left > cur.flush + refListTol) continue;
+        if (/\p{L}\s*$/u.test(cur.lines[i - 1].text) && cur.lines[i - 1].right >= runRight - runWidth * 0.25) sentContN += 1;
+      }
+      if (!gapCut && sentContN > Math.max(1, flushLines * 0.2)) return;
+      // Each entry contributes one early final line, so the flush-line count is the yardstick for the overall-early floor.
       const evidenced = hangLines.length >= 2 && hangPrevFull >= hangLines.length * 0.75
-        && earlyHang >= hangLines.length * 0.65
-        && cur.lines.filter(early).length >= cur.lines.length * 0.3;
+        && closers >= 1 && earlyClosers >= closers * 0.6
+        && cur.lines.filter(early).length >= flushLines * 0.5;
       // A spillover page whose entries all fit one line shows no hang of its own, so it may only chain to an evidenced neighbour below.
       const chainable = earlyFlush >= flushLines * 0.6
         && (hangLines.length === 0 || earlyHang >= hangLines.length * 0.5);
-      if (evidenced || chainable) refListRuns.push({ ...cur, evidenced, qualified: evidenced });
+      // The heading supplies what a hangless run's geometry cannot, so a headed chainable run stands on its own.
+      const standing = evidenced || (headed && chainable) || gapCut > 0;
+      if (standing || chainable) {
+        refListRuns.push({
+          ...cur, evidenced: standing, qualified: standing, gapCut: gapCut > 0 ? gapCut : undefined,
+        });
+      }
     };
     for (const ln of pf) {
-      const okBase = ln.role === 'body' && Math.abs(ln.size - bodySize) <= bodySize * 0.25;
-      const atFlush = okBase && Math.abs(ln.left - flushP) < refListTol;
+      const okBase = ln.role === 'body' && Math.abs(ln.size - sizeP) <= sizeP * 0.25;
+      // A body-typed "References" line would otherwise chain the preceding prose into the list, and the mixed run would fail the prose vetoes as a whole.
+      if (run && isRefsHeading(ln)) flushRun();
       if (run) {
         const dt = ln.top - run.lines[run.lines.length - 1].top;
-        const atHang = okBase && ln.left > flushP + refListTol
-          && (run.hang == null ? ln.left < flushP + bodySize * 4 : Math.abs(ln.left - run.hang) < refListTol);
-        if (dt > 0 && dt <= pitchP * 1.35 && (atFlush || atHang)) {
+        const atFlush = okBase && Math.abs(ln.left - run.flush) < refListTol;
+        const atHang = okBase && ln.left > run.flush + refListTol
+          && (run.hang == null ? ln.left < run.flush + bodySize * 4 : Math.abs(ln.left - run.hang) < refListTol);
+        // A fresh entry at flush may sit a blank half-line below the last (a gap-separated list); a wrap onto the hang column never does, so only the flush advance earns the looser bound.
+        if (dt > 0 && dt <= pitchP * (atFlush ? 2.6 : 1.35) && (atFlush || atHang)) {
           if (atHang && run.hang == null) run.hang = ln.left;
           run.lines.push(ln);
           continue;
         }
         flushRun();
       }
-      if (atFlush) {
-        run = {
-          page: p, flush: flushP, hang: null, lines: [ln],
-        };
+      if (!run && okBase) {
+        const anchor = anchors.find((a) => Math.abs(ln.left - a) < refListTol);
+        if (anchor != null) {
+          run = {
+            page: p, flush: anchor, hang: null, lines: [ln],
+          };
+        }
       }
     }
     flushRun();
@@ -2157,13 +2240,14 @@ export function analyzeLayout(pages, opts = {}) {
         && Math.abs(nextRuns[0].flush - r.flush) <= refListTol;
       if (fromPrev || fromNext) {
         r.qualified = true;
+        if (!r.gapCut) r.gapCut = (fromPrev ? prevRuns[prevRuns.length - 1] : nextRuns[0]).gapCut;
         refChainGrew = true;
       }
     }
   }
   for (const r of refListRuns) {
     if (!r.qualified) continue;
-    const runRef = { flush: r.flush, hang: r.hang };
+    const runRef = { flush: r.flush, hang: r.hang, gapCut: r.gapCut };
     for (const ln of r.lines) ln.refListRun = runRef;
   }
 
@@ -2689,6 +2773,26 @@ function geometricBreak(f, prev, model, curParFirst) {
   // Bare-integer markers carry no enumerator for the numbering rule below, and the sequence flag already confirmed this one, so the break is unconditional and strong.
   if (f.footnoteOpener) return { newPar: true, reason: 'footnote marker' };
 
+  // Inside a hanging-list run (model pass) the convention inverts the geometric rules: the hang column is always a wrap, and a flush line always opens the next entry.
+  // The entry break must not defer to an early right edge or a capitalized opener, since a solid ragged list separates entries by the flush margin alone ("duPont" after a full-width entry).
+  // This sits above the quote/numbering/indent/role rules so none of them pre-empts the run's own reading.
+  // A hang column is inset like a quote, and an entry's wrap can open on a stray "1984.".
+  if (f.refListRun && prev.refListRun === f.refListRun && prev.page === f.page) {
+    // In a gap-mode run the advance is the key: a solid list shares one flush margin between wraps and entry heads, so the margin decides nothing here.
+    // Region-tagged lines fall through to the ordinary rules, since a block quote with an attribution line below it shows the same bimodal spacing and the quote machinery owns it.
+    if (f.refListRun.gapCut) {
+      if (!f.blockRegion && !prev.blockRegion) {
+        if (f.top - prev.top >= f.refListRun.gapCut && !prev.endsHyphen) return { newPar: true, reason: 'hang-list entry' };
+        return { newPar: false, reason: 'hang-list continuation' };
+      }
+    } else {
+      if (f.left > f.refListRun.flush + model.bodySize * 0.5) {
+        return { newPar: false, reason: 'hang-list continuation' };
+      }
+      if (!prev.endsHyphen) return { newPar: true, reason: 'hang-list entry' };
+    }
+  }
+
   const colJump = model.bodySize * 1.5;
   const sameColumn = Math.abs(f.left - prev.left) < model.colWidth * 0.5
     || Math.abs(f.left - model.bodyLeft) < colJump
@@ -3033,15 +3137,6 @@ function geometricBreak(f, prev, model, curParFirst) {
   if (curParFirst && curParFirst.enumerator && curParFirst.enumerator.scheme === 'bullet'
       && !startsContinuation && f.left < curParFirst.left - model.bodySize * 0.5) {
     return { newPar: true, reason: 'list outdent' };
-  }
-
-  // Inside a hanging-list run (model pass) the convention inverts the rules below: the hang column is always a wrap, and a flush line always opens the next entry.
-  // The entry break must not defer to an early right edge or a capitalized opener, since a solid ragged list separates entries by the flush margin alone ("duPont" after a full-width entry).
-  if (f.refListRun && prev.refListRun === f.refListRun && prev.page === f.page) {
-    if (f.left > f.refListRun.flush + model.bodySize * 0.5) {
-      return { newPar: false, reason: 'hang-list continuation' };
-    }
-    if (!prev.endsHyphen) return { newPar: true, reason: 'hang-list entry' };
   }
 
   // A genuine first-line indent is indented relative to its own paragraph: the continuation below pops back leftward to flush (the same principle the model's indent detector uses).
@@ -3787,7 +3882,8 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} hangMarker - short outdented lead (a transcript "Q."/"A." speaker marker or hanging-list lead) with its body text on the same row.
  * @property {boolean} [rowFragment] - small same-row marker token (a note reference beside a taller line) routed out of the top-to-bottom flow.
  * @property {boolean} [inInsetRun] - line sits in a run of >=2 consecutive lines sharing one left edge.
- * @property {?{flush:number, hang:?number}} [refListRun] - hanging-list run membership (a reference list or bibliography): flush opens an entry, the hang column continues it.
+ * @property {?{flush:number, hang:?number, gapCut?:number}} [refListRun] - hanging-list run membership (a reference list or bibliography): flush opens an entry, the hang column continues it.
+ * A gap-mode run (gapCut set) splits on the line advance instead.
  * @property {boolean} [footnoteOpener] - bare-integer note opener confirmed by the page's note-number chain.
  * @property {boolean} [lnSplit] - a leading line number was split off this line, shifting its left bbox right.
  */
