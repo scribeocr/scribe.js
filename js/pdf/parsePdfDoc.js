@@ -1381,12 +1381,14 @@ export function detectPdfType(pdfBytes) {
 
     const pageHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
     const tokens = tokenizeContentStream(contentStreamText);
-    const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts);
+    // Without ExtGStates, text hidden by zero fill alpha counts as visible and skews the verdict.
+    const extGStates = parseFillAlphaExtGStates(objText, objCache);
+    const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts, undefined, extGStates);
 
     // Also count text inside Form XObjects: a document whose entire text layer lives there would otherwise misclassify as image-based.
     // Only character counts feed determinePdfType, not positions, so the geometry args here are trivial (identity CTM, scale 1).
     const formChars = extractFormXObjectText(
-      objText, tokens, fonts, 1, pageHeightPts, [1, 0, 0, 1, 0, 0], objCache, new Set(),
+      objText, tokens, fonts, 1, pageHeightPts, [1, 0, 0, 1, 0, 0], objCache, new Set(), extGStates,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
@@ -1835,9 +1837,13 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       // Faux-bold state: modes 1/2 stroke the glyph outlines with the pen in user space, so the effective width scales with the CTM, not the text matrix.
       const stroked = tr === 1 || tr === 2;
       const strokeWidthPx = stroked ? lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])) * scale : 0;
+      // Zero fill alpha paints nothing at a fill-only render mode, so it hides text the same way mode 3 does.
+      // The stroking modes (1/2/5/6) get their ink from the stroke, which fill alpha does not govern.
+      const fillHidden = fillAlpha === 0 && tr !== 1 && tr !== 2 && tr !== 5 && tr !== 6;
       for (let ci = charsBeforeOp; ci < chars.length; ci++) {
         chars[ci].textColor = textColor;
         chars[ci].alpha = fillAlpha;
+        if (fillHidden) chars[ci].invisible = true;
         if (stroked) {
           chars[ci].renderMode = tr;
           chars[ci].strokeWidthPx = strokeWidthPx;
@@ -1998,7 +2004,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         stretch: Math.abs(matrixStretch - 1) > 0.01 ? matrixStretch : 0,
         _font: font,
         _charCode: charCode,
-        invisible: tr === 3,
+        invisible: tr === 3, // the per-op tag loop also sets this for zero-fill-alpha text
         orientation,
         dirX,
         dirY,

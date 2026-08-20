@@ -856,6 +856,22 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
     expect([...colors]).toEqual(['#000000']);
   });
 
+  // The OCR layer here uses ExtGState fill alpha 0 (`ca 0`) at render mode 0, not `3 Tr`.
+  test('Zero-alpha OCR layer routes the document to "ocr" and imports at opacity 0', async () => {
+    doc = await scribe.openDocument([`${ASSETS_PATH}/hvd-hl5119-7-1787239510.pdf`]);
+    expect(
+      doc.inputData.pdfType,
+      'a scanned page whose OCR layer hides via zero fill alpha must classify as an OCR-layer document, not native text',
+    ).toBe('ocr');
+    const words = doc.ocr.pdf[0].lines.flatMap((l) => l.words);
+    expect(words.length, 'the scan page imports its full word set').toBe(279);
+    expect([...new Set(words.map((w) => w.style.opacity))],
+      'every word of the alpha-hidden layer imports invisible (opacity 0)').toEqual([0]);
+    expect([...new Set(words.map((w) => w.style.color))], 'the layer keeps its literal white fill color').toEqual(['#ffffff']);
+    const hidden = words.find((w) => w.text === 'Honorable');
+    expect(hidden?.style.opacity, 'the alpha-hidden word "Honorable" imports at opacity 0').toBe(0);
+  });
+
   test('OCR text is detected and extracted but not set to main data when `usePDFText.ocr.main` is false', async () => {
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
