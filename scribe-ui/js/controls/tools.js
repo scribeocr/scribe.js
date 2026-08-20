@@ -1404,6 +1404,12 @@ export function createEditTextTool(scribe) {
     const selected = new Set();
     /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
     const frames = new Map();
+    /**
+     * Pick candidates the last phone tap revealed, the only lines the phone layout gives hairline boxes.
+     * @type {Set<import('../../../js/objects/ocrObjects.js').OcrLine>}
+     */
+    let tapReveal = new Set();
+    let lastTap = { x: 0, y: 0, line: /** @type {?import('../../../js/objects/ocrObjects.js').OcrLine} */ (null) };
 
     /**
      * The drawn box for a line, sized to its visible glyphs.
@@ -1472,6 +1478,7 @@ export function createEditTextTool(scribe) {
         if (!idx) continue;
         for (const e of idx.lines) {
           if (!lineEligible(e.line) || e.line === openLine || selected.has(e.line)) continue;
+          if (scribe._phoneChrome && !tapReveal.has(e.line)) continue;
           const group = scribe.getTextGroup(n, e.orientation);
           if (!group) continue;
           let el = lineBoxes.get(e.line);
@@ -1565,9 +1572,13 @@ export function createEditTextTool(scribe) {
       }
       // Every path that changes lines runs through here, so the mode's hairline boxes stay in sync by riding along.
       scheduleLineBoxes();
+      scribe._modeSelectionChanged?.();
     };
     const clearSelection = () => {
       selected.clear();
+      tapReveal = new Set();
+      lastTap.line = null;
+      scribe._modeStatus?.('');
       hideEditHint();
       renderFrames();
     };
@@ -1594,6 +1605,8 @@ export function createEditTextTool(scribe) {
     // The context menu and touch callout offer "Delete Lines" through these while the mode is on.
     scribe._editTextSelectedLines = eligibleSelectedLines;
     scribe._editTextDeleteSelection = deleteSelectedLines;
+    // A phone-layout flip mid-mode changes which lines get hairline boxes, so the app re-derives them through this.
+    scribe._editTextRefreshChrome = renderFrames;
 
     /** @param {'bold'|'italic'} prop */
     const selectionStyleState = (prop) => {
@@ -1675,7 +1688,10 @@ export function createEditTextTool(scribe) {
       navigator.clipboard?.writeText(text).catch(() => {});
     };
 
-    editor = createLineEditor(scribe, { onCommitted: refreshPages });
+    editor = createLineEditor(scribe, {
+      onCommitted: refreshPages,
+      onOpenChanged: (open) => scribe._editTextEditorOpenChanged?.(open),
+    });
     scribe._editTextLineEditor = editor;
 
     /**
@@ -1694,6 +1710,17 @@ export function createEditTextTool(scribe) {
       clearSelection();
       hideHover();
       editor.open(info, null, null, openOpts).finally(scheduleLineBoxes);
+    };
+    // A one-line engine text selection counts as the target, since a long-press produces no box selection.
+    scribe._editTextOpenSelected = () => {
+      validateSelection();
+      if (selected.size === 0) {
+        const lines = eligibleSelectedLines();
+        if (lines.length !== 1) return;
+        selected.add(lines[0]);
+        scribe.clearTextSelection();
+      }
+      openSelectedForEdit({});
     };
 
     const flashSelection = () => {
@@ -1758,6 +1785,8 @@ export function createEditTextTool(scribe) {
 
     const hoverHandler = (ev) => {
       if (!editMode || !scribe.useCustomSelection || !scribe.textSel) return;
+      // Compat mouse events after a tap would paint a stray hover box on the phone, which marks nothing at rest.
+      if (scribe._phoneChrome) { hideHover(); return; }
       if (editor?.isOpen()) { hideHover(); return; }
       if (ev.buttons !== 0) { hideHover(); return; }
       const info = lineHitAt(ev.clientX, ev.clientY);
@@ -1817,10 +1846,69 @@ export function createEditTextTool(scribe) {
       return hits;
     };
 
+    // Stopping or preventing a single touch kills native panning, so the press itself is never consumed.
+    // The movement and hold thresholds mirror the engine's TOUCH_HOLD_PX and TOUCH_HOLD_MS, so a slow tap does not also start a hold-select.
+    const armTouchTap = (down) => {
+      if (editor?.isOpen()) return;
+      const start = {
+        x: down.clientX, y: down.clientY, id: down.pointerId, t: down.timeStamp,
+      };
+      const cancel = () => {
+        window.removeEventListener('pointermove', watch);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', cancel);
+      };
+      const watch = (mv) => {
+        if (mv.pointerId !== start.id) return;
+        if (Math.hypot(mv.clientX - start.x, mv.clientY - start.y) > 10) cancel();
+      };
+      const onUp = (up) => {
+        cancel();
+        if (up.pointerId !== start.id) return;
+        if (up.timeStamp - start.t >= 500) return;
+        if (Math.hypot(up.clientX - start.x, up.clientY - start.y) > 10) return;
+        const x = up.clientX;
+        const y = up.clientY;
+        const R = 24;
+        const near = [...linesInClientRect({
+          left: x - R, top: y - R, right: x + R, bottom: y + R,
+        })];
+        /** @type {Array<{line: import('../../../js/objects/ocrObjects.js').OcrLine, d: number}>} */
+        const ranked = [];
+        for (const line of near) {
+          const found = entryFor(line);
+          if (!found) continue;
+          const p = scribe.clientToPage(x, y);
+          if (p.n !== found.n) continue;
+          const local = scribe.pageToLocal(found.n, found.e.orientation, p.x, p.y);
+          const box = lineDrawBox(line, found.e.lbox);
+          ranked.push({ line, d: Math.abs(local.y - (box.top + box.bottom) / 2) });
+        }
+        ranked.sort((a, b) => a.d - b.d);
+        const candidates = ranked.map((r) => r.line);
+        if (candidates.length === 0) {
+          if (selected.size > 0 || tapReveal.size > 0) clearSelection();
+          return;
+        }
+        const again = lastTap.line && selected.size === 1 && selected.has(lastTap.line)
+          && Math.hypot(x - lastTap.x, y - lastTap.y) <= 28 && candidates.includes(lastTap.line);
+        const i = again ? (candidates.indexOf(lastTap.line) + 1) % candidates.length : 0;
+        selected.clear();
+        selected.add(candidates[i]);
+        tapReveal = new Set(candidates);
+        lastTap = { x, y, line: candidates[i] };
+        renderFrames();
+        scribe._modeStatus?.(candidates.length > 1 ? `${i + 1} of ${candidates.length}` : '1 line');
+      };
+      window.addEventListener('pointermove', watch);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', cancel);
+    };
+
     // Runs at capture and stops propagation so the engine's own pointerdown (text-drag selection, link arming) never sees a press this mode handles.
-    // Touch bails out so the engine's hold-select still works.
     const pointerdownHandler = (ev) => {
-      if (!editMode || ev.button !== 0 || !scribe.textSel || ev.pointerType === 'touch') return;
+      if (!editMode || ev.button !== 0 || !scribe.textSel) return;
+      if (ev.pointerType === 'touch') { armTouchTap(ev); return; }
       const t = ev.target;
       if (t instanceof Element && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
       // The open editor owns only its text band, not its full-width canvas element.
@@ -2015,6 +2103,8 @@ export function createEditTextTool(scribe) {
       scribe._editTextEditLine = null;
       scribe._editTextCopySelection = null;
       scribe._editTextLineEditor = null;
+      scribe._editTextOpenSelected = null;
+      scribe._editTextRefreshChrome = null;
     };
   }
 
@@ -2148,6 +2238,7 @@ export function createGraphicsEditTool(scribe) {
       }
       positionBox(el, sel.n, entry);
     }
+    scribe._modeSelectionChanged?.();
   };
 
   const renderHover = (hit) => {
@@ -2290,7 +2381,8 @@ export function createGraphicsEditTool(scribe) {
         selected.set(hit.entry, { n: hit.n, kind: hit.kind });
         renderHover(null);
         renderFrames();
-        showTouchCallout(scribe, 'graphics');
+        // The phone's docked verb bar carries the delete instead, so the callout would double it there.
+        if (!scribe._phoneChrome) showTouchCallout(scribe, 'graphics');
         return;
       }
       ev.stopPropagation();
@@ -2423,6 +2515,10 @@ export function createGraphicsEditTool(scribe) {
     scribe._graphicsEditSelectedCounts = selectionCounts;
     scribe._graphicsEditDeleteSelection = deleteSelected;
     scribe._graphicsEditSelectionAnchor = selectionAnchor;
+    scribe._graphicsEditClearSelection = () => {
+      selected.clear();
+      renderFrames();
+    };
     return () => {
       scribe.scrollContainer.removeEventListener('pointermove', moveHandler);
       scribe.scrollContainer.removeEventListener('pointerdown', downHandler, true);
@@ -2433,6 +2529,7 @@ export function createGraphicsEditTool(scribe) {
       scribe._graphicsEditSelectedCounts = null;
       scribe._graphicsEditDeleteSelection = null;
       scribe._graphicsEditSelectionAnchor = null;
+      scribe._graphicsEditClearSelection = null;
       clearChrome();
       hideTouchCallout();
     };

@@ -14,7 +14,7 @@ import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
 import ocr, { OcrPage, clonePage } from '../objects/ocrObjects.js';
-import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
+import { removeCircularRefsDataTables, removeCircularRefsRegions } from '../objects/layoutObjects.js';
 import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
 import { bboxToPageSpace } from '../addHighlights.js';
 import { ImageWrapper, imageUtils } from '../objects/imageObjects.js';
@@ -121,6 +121,38 @@ async function paintRedactionsOntoImage(image, rects, pageDims, pageAngle) {
   const imageData = ctx.getImageData(0, 0, width, height);
   const dataUrl = await _buildPngDataUrl(imageData, image.colorMode === 'color' ? 'color' : 'gray');
   return new ImageWrapper(image.n, dataUrl, image.colorMode, image.rotated, image.upscaled);
+}
+
+/**
+ * Resolve an image region's pixels into an embeddable image.
+ * With no `source` set, the pixels are cropped out of the page raster at the region's coordinates and encoded as JPEG.
+ * @param {LayoutImageRegion} region
+ * @param {ImageWrapper} image - Full-page raster of the region's page.
+ * @param {dims} pageDims - Page dimensions in the same frame as the region coordinates.
+ * @returns {Promise<ImageWrapper>}
+ */
+export async function resolveRegionImage(region, image, pageDims) {
+  if (region.source) throw new Error(`Unsupported image region source: ${region.source.kind}`);
+  const drawable = image.imageBitmap || await ca.getImageBitmap(image.ensureSrc());
+  const { width } = imageUtils.getDims(image);
+  // The render preserves aspect ratio, so one axis's ratio maps region coordinates to raster pixels.
+  const scale = width / pageDims.width;
+  const srcX = region.coords.left * scale;
+  const srcY = region.coords.top * scale;
+  const srcW = (region.coords.right - region.coords.left) * scale;
+  const srcH = (region.coords.bottom - region.coords.top) * scale;
+  const outW = Math.max(1, Math.round(srcW));
+  const outH = Math.max(1, Math.round(srcH));
+  const canvas = await ca.createCanvas(outW, outH);
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  ctx.drawImage(drawable, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
+  // `type` for browsers, `mime` for the Node canvas fork: both are needed to get a JPEG (not PNG) Blob.
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality: 0.85 });
+  ca.closeDrawable(canvas);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  for (let j = 0; j < bytes.length; j += 32768) binary += String.fromCharCode(...bytes.subarray(j, j + 32768));
+  return new ImageWrapper(region.page.n, `data:image/jpeg;base64,${btoa(binary)}`, image.colorMode, image.rotated, image.upscaled);
 }
 
 // Transport granularity only: this batch size does not affect the output bytes.
@@ -269,16 +301,12 @@ async function compressStringChunks(chunks, charLimit) {
 export async function exportData(doc, format = 'txt', options = {}) {
   if (format === 'text') format = 'txt';
 
-  // A deferred import's extraction may still be in flight; every format below reads its outputs
-  // (ocr layers, data tables, annotations). Resolved at no cost for non-deferred documents.
   await doc.textReady;
 
   const minPage = options.minPage ?? 0;
   let maxPage = options.maxPage ?? -1;
   let pageArr = options.pageArr ?? null;
 
-  // Every setting resolves as `options.X ?? scribeDocDefaults.X`. There is no per-doc
-  // instance state for settings.
   const displayMode = options.displayMode ?? scribeDocDefaults.displayMode;
   const colorMode = options.colorMode ?? scribeDocDefaults.colorMode;
   const overlayOpacity = options.overlayOpacity ?? scribeDocDefaults.overlayOpacity;
@@ -409,11 +437,27 @@ export async function exportData(doc, format = 'txt', options = {}) {
       console.warn('docInfo is not applied when sanitize is set, which removes document metadata; ignoring.');
     }
 
+    /** @type {Map<number, number>} */
+    const ebookPageScales = new Map();
+    if (displayMode === 'ebook') {
+      for (const i of pageArr) {
+        const pageSize = doc.inputData.pageStats?.[i]?.pageSize;
+        const { dims } = doc.pageMetrics[i];
+        if (!pageSize || !(pageSize[0] > 0) || !(pageSize[1] > 0) || !(dims.width > 0) || !(dims.height > 0)) continue;
+        const scale = pageSize[0] / dims.width;
+        if (scale === 1) continue;
+        // Width and height ratios that disagree mean dims came from a coordinate frame other than the PDF page size.
+        if (Math.abs(pageSize[1] / dims.height / scale - 1) > 0.02) continue;
+        ebookPageScales.set(i, scale);
+      }
+    }
+
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
-        dimsLimit.height = Math.max(dimsLimit.height, doc.pageMetrics[i].dims.height);
-        dimsLimit.width = Math.max(dimsLimit.width, doc.pageMetrics[i].dims.width);
+        const scale = ebookPageScales.get(i) ?? 1;
+        dimsLimit.height = Math.max(dimsLimit.height, Math.round(doc.pageMetrics[i].dims.height * scale * 100) / 100);
+        dimsLimit.width = Math.max(dimsLimit.width, Math.round(doc.pageMetrics[i].dims.width * scale * 100) / 100);
       }
     }
 
@@ -434,9 +478,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayContentEditsPages = doc.contentEdits.pages;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
-          // Page edits (delete/reorder) make each slot's source page (`sourcePageN`) diverge from its display position,
-          // so subset the input PDF to the source order while the overlay arrays stay in display order.
-          // An identity composition (no reordering, full page set) skips the subset.
+          // The base PDF is subset by source page number while the overlay arrays are indexed by display position.
+          // The two are identical until a page is deleted or reordered.
           const sourceArr = pageArr.map((p) => doc.pageMetrics[p]?.sourcePageN ?? p);
           // A page copied from another document carries a foreign `sourceId`, so multiSource flags an export that spans more than one source PDF.
           const sourceIdArr = pageArr.map((p) => doc.pageMetrics[p]?.sourceId ?? doc.images.primarySourceId);
@@ -477,11 +520,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // since highlight consolidation still needs the real word/line geometry to coalesce per-word highlights into per-line quads.
           const annotationOcrArr = overlayOcrArr;
 
-          // convertFullPages and convertBrokenType3 control per-page flatten vs. passthrough.
-          // They default to the legacy path: a full overlay on every page plus broken-Type3 conversion.
-          // The block below overrides that by routing on import-time page categories,
-          // engaged for the searchable ('invis') flow by default and for a visible mode only when routePageCategories is set.
-          // With routing off or categories absent (old .scribe.json sessions), the legacy defaults stand.
           /** @type {?number[]} */
           let convertFullPages = null;
           // Broken-Type3-to-paths conversion rewrites page content and strips a scanned page's invisible OCR text.
@@ -495,10 +533,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
           const suppliedOcrLayer = !!doc.ocr.pdf && ocrSource === doc.ocr['User Upload'];
           if (routeCategories && !convertDupSourceTextToPaths && !suppliedOcrLayer && pageStats && pageStats.length > 0
             && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageStats.length)) {
-            // `flagged` marks each page that is a flattening candidate: it holds content the native text layer cannot surface
-            // (`mayHaveBakedText`, `hasBrokenFontRun`, or `isScanPage`) and was OCR'd (`ocrApplied[i]`).
-            // Gating on `ocrApplied` leaves every page whose text is native unflattened, so that text stays extractable.
-            // With no `ocrApplied` array, nothing is flattened.
+            // Flattening turns the page's own text into paths, leaving the overlay as its only extractable text.
+            // The `ocrApplied` conjunct is what keeps a page that was never OCR'd from losing its text that way.
             const flagged = pageStats.map((s, i) => !!(s && (mayHaveBakedText(s) || hasBrokenFontRun(s) || isScanPage(s)))
               && !!(ocrAppliedArr && ocrAppliedArr[i]));
             // Flatten exists ONLY to support an invisible text layer:
@@ -614,9 +650,66 @@ export async function exportData(doc, format = 'txt', options = {}) {
         });
       }
     } else {
+      let ocrExport = ocrDownload;
+      let pageMetricsExport = doc.pageMetrics;
+      let annotationsExport = annotationsPagesExport;
+      if (ebookPageScales.size > 0) {
+        ocrExport = [...ocrDownload];
+        pageMetricsExport = [...doc.pageMetrics];
+        annotationsExport = [...annotationsPagesExport];
+        for (const [i, scale] of ebookPageScales) {
+          const page = ocrExport[i];
+          if (page) {
+            // scalePage leaves paragraph bboxes in the pixel frame, so the clone's page.pars disagree with everything else on it.
+            // No PDF writer reads them today.
+            const clone = clonePage(page);
+            ocr.scalePage(clone, scale);
+            // scalePage does not scale word.style.size, so a word carrying an explicit size would keep its pixel-frame font size.
+            for (const line of clone.lines) {
+              for (const word of line.words) {
+                if (word.style.size) word.style.size *= scale;
+              }
+            }
+            ocrExport[i] = clone;
+          }
+          pageMetricsExport[i] = {
+            ...pageMetricsExport[i],
+            dims: {
+              width: Math.round(pageMetricsExport[i].dims.width * scale * 100) / 100,
+              height: Math.round(pageMetricsExport[i].dims.height * scale * 100) / 100,
+            },
+          };
+          annotationsExport[i] = (annotationsExport[i] || []).map((annot) => {
+            const scaled = structuredClone(annot);
+            if ('bbox' in scaled) {
+              scaled.bbox.left *= scale;
+              scaled.bbox.top *= scale;
+              scaled.bbox.right *= scale;
+              scaled.bbox.bottom *= scale;
+            }
+            if ('quads' in scaled && scaled.quads) {
+              for (const q of scaled.quads) {
+                q.left *= scale;
+                q.top *= scale;
+                q.right *= scale;
+                q.bottom *= scale;
+              }
+            }
+            if ('points' in scaled) {
+              for (let k = 0; k < scaled.points.length; k++) scaled.points[k] *= scale;
+            }
+            if ('vertices' in scaled) {
+              for (let k = 0; k < scaled.vertices.length; k++) scaled.vertices[k] *= scale;
+            }
+            if ('fontSize' in scaled) scaled.fontSize *= scale;
+            if ('borderWidth' in scaled && scaled.borderWidth) scaled.borderWidth *= scale;
+            return scaled;
+          });
+        }
+      }
       content = await writePdf({
-        ocrArr: ocrDownload,
-        pageMetricsArr: doc.pageMetrics,
+        ocrArr: ocrExport,
+        pageMetricsArr: pageMetricsExport,
         pageArr,
         textMode: displayMode,
         rotateText: false,
@@ -625,7 +718,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         confThreshHigh,
         confThreshMed,
         proofOpacity: overlayOpacity / 100,
-        annotationsPages: annotationsPagesExport,
+        annotationsPages: annotationsExport,
         humanReadable: humanReadablePDF,
         docFonts: doc.fonts,
         doc,
@@ -638,7 +731,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       ocrData: ocrDownload,
       pageArr,
       docFonts: doc.fonts,
-      layoutRegions: doc.layoutRegions,
+      layoutRegions: { pages: removeCircularRefsRegions(doc.layoutRegions.pages) },
       pageMetrics: doc.pageMetrics,
       dataTablesSerialized: doc.serializeLayoutDataTables(),
       doc,
@@ -736,7 +829,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     /** @type {Record<string, any>} */
     const envelope = {
       fontState: doc.fonts.state,
-      layoutRegions: doc.layoutRegions.pages,
+      layoutRegions: removeCircularRefsRegions(doc.layoutRegions.pages),
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
       pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),

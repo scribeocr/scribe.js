@@ -657,6 +657,7 @@ declare global {
     type LayoutDataTable = import("./objects/layoutObjects.js").LayoutDataTable;
     type LayoutDataColumn = import("./objects/layoutObjects.js").LayoutDataColumn;
     type LayoutRegion = import("./objects/layoutObjects.js").LayoutRegion;
+    type LayoutImageRegion = import("./objects/layoutObjects.js").LayoutImageRegion;
 
     interface Point {
         x: number;

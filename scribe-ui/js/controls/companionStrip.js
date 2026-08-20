@@ -3,6 +3,10 @@
 
 const CELL_H = 84;
 const CELL_W = Math.round(CELL_H * (8.5 / 11));
+const STRIP_H = CELL_H + 12;
+// The tuck stops 4px short of the strip's height, the thickness of its top border plus the wind bar under it.
+// That leaves the bar standing on the dock's top edge instead of buried behind it.
+const TUCK_TRAVEL = STRIP_H - 4;
 let stylesInjected = false;
 
 /** Inject the strip's scoped stylesheet once. Tokens (--scribe-*) inherit from the viewer root. */
@@ -13,23 +17,15 @@ function ensureStyles() {
   style.id = 'scribe-strip-styles';
   style.textContent = `
     .scribe-strip{position:absolute;left:0;right:0;z-index:14;display:none;flex-direction:column;
-      bottom:calc(56px + env(safe-area-inset-bottom,0px));height:${CELL_H + 12}px;box-sizing:border-box;
+      bottom:calc(56px + env(safe-area-inset-bottom,0px));height:${STRIP_H}px;box-sizing:border-box;
       background:var(--scribe-surface);border-top:1px solid var(--scribe-line);color:var(--scribe-ink);
       transition:transform .22s ease-out;}
     .scribe-strip.dragging{transition:none;}
-    /* Tucked, the strip's box sits behind the dock, so this invisible band above the dock edge is the pull-up surface.
+    /* Tucked, the strip's body sits behind the dock with only its top edge showing, so this invisible band above that edge is the pull-up surface.
        touch-action:none keeps the browser from claiming a vertical pull that starts on it. */
     .scribe-strip.tucked{touch-action:none;}
     .scribe-strip.tucked::before{content:"";position:absolute;top:-20px;left:0;right:0;height:20px;}
     .scribe-phone .scribe-strip.on{display:flex;}
-    /* The tucked bar's reading-position marker, on the dock's top edge.
-       A sibling of the strip rather than a child, so it holds still while the strip rides down. */
-    .scribe-strip-strand{position:absolute;left:0;right:0;z-index:15;height:4px;pointer-events:none;
-      bottom:calc(56px + env(safe-area-inset-bottom,0px));background:var(--scribe-line-strong);
-      opacity:0;transition:opacity .18s;}
-    .scribe-phone .scribe-strip-strand.on{opacity:1;}
-    .scribe-strip-strand-mark{position:absolute;top:0;bottom:0;left:0;width:10px;background:var(--scribe-accent);
-      border-radius:2px;}
     /* The plain 8px lead-in on both sides is deliberate: it keeps a fully-fitting document immobile and clamps rests at the ends, so the bar moves only when new pages come into view.
        (A half-viewport lead-in centered the end pages over dead space and let a fully-visible document shuffle a few px on every page change.) */
     .scribe-strip-row{flex:1;display:flex;align-items:center;gap:8px;padding:6px 8px;
@@ -60,7 +56,7 @@ function ensureStyles() {
     .scribe-strip-tab svg{width:12px;height:12px;}
     .scribe-strip-tab::after{content:"";position:absolute;inset:-14px -18px -4px -18px;}
     .scribe-strip-tab:active{background:var(--scribe-hover);}
-    @media (prefers-reduced-motion:reduce){.scribe-strip,.scribe-strip-prog,.scribe-strip-prog-fill,.scribe-strip-strand{transition:none;}}
+    @media (prefers-reduced-motion:reduce){.scribe-strip,.scribe-strip-prog,.scribe-strip-prog-fill{transition:none;}}
   `;
   document.head.appendChild(style);
 }
@@ -85,7 +81,6 @@ const CHEV_UP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
  *   Plain taps on that surface's own controls are untouched.
  * @returns {{
  *   stripElem: HTMLDivElement,
- *   strandElem: HTMLDivElement,
  *   setActive: (n: number) => void,
  *   park: () => void,
  *   settle: () => void,
@@ -115,19 +110,12 @@ export function createCompanionStrip(scribe, {
 
   stripElem.append(row, prog);
 
-  const strandElem = document.createElement('div');
-  strandElem.className = 'scribe-strip-strand';
-  const strandMark = document.createElement('div');
-  strandMark.className = 'scribe-strip-strand-mark';
-  strandElem.appendChild(strandMark);
-
-  // Tucked = the bar rests behind the dock, with only its tab parked on the dock's top edge.
+  // Tucked = the strip rests behind the dock, with only its tab and its wind bar parked on the dock's top edge.
   // Every strip-initiated workstream is dormant while tucked: no scroll mirror, no thumbnail renders, no rest machinery, and rebuilds deferred to the reveal.
-  const TUCK_H = CELL_H + 12;
+  // The wind bar is the exception, since it stays on screen and must keep tracking the reading position.
   let tucked = false;
   let dirty = false;
   let visibleOn = false;
-  let strandRAF = 0;
   let swallowTabClick = false;
 
   if (onExpand) {
@@ -151,7 +139,7 @@ export function createCompanionStrip(scribe, {
 
     /** Settle a released or aborted tuck or reveal drag. */
     function settleTuckDrag(mode, t) {
-      const commit = t > TUCK_H * 0.35;
+      const commit = t > TUCK_TRAVEL * 0.35;
       const toTucked = mode === 'tuck' ? commit : !commit;
       // Flush the dragged position so the settle animates from the finger rather than the last painted frame.
       stripElem.getBoundingClientRect();
@@ -269,8 +257,8 @@ export function createCompanionStrip(scribe, {
         onExpand('move', pull.dy);
         return;
       }
-      pull.t = Math.max(0, Math.min(TUCK_H, pull.mode === 'tuck' ? -pull.dy : pull.dy));
-      stripElem.style.transform = `translateY(${pull.mode === 'tuck' ? pull.t : TUCK_H - pull.t}px)`;
+      pull.t = Math.max(0, Math.min(TUCK_TRAVEL, pull.mode === 'tuck' ? -pull.dy : pull.dy));
+      stripElem.style.transform = `translateY(${pull.mode === 'tuck' ? pull.t : TUCK_TRAVEL - pull.t}px)`;
     };
     stripElem.addEventListener('pointermove', onPullMove);
     // touch-action is latched at touchstart, so this non-passive preventDefault is the only mid-gesture way to keep the row's pan-x from reclaiming an engaged pull.
@@ -302,7 +290,7 @@ export function createCompanionStrip(scribe, {
         onExpand('end', dy);
         return;
       }
-      const t = e.type === 'pointercancel' ? lastT : Math.max(0, Math.min(TUCK_H, mode === 'tuck' ? -dy : dy));
+      const t = e.type === 'pointercancel' ? lastT : Math.max(0, Math.min(TUCK_TRAVEL, mode === 'tuck' ? -dy : dy));
       settleTuckDrag(mode, t);
     };
     stripElem.addEventListener('pointerup', endPull);
@@ -427,12 +415,13 @@ export function createCompanionStrip(scribe, {
   let gMaxScroll = 0;
   let gTrackW = 0;
   function measureGeom() {
+    // The wind bar spans the strip, so its track width is readable even while the row is empty (a rebuild deferred by the tuck).
+    gTrackW = stripElem.clientWidth;
     if (!cells.length || row.clientWidth === 0) return; // a hidden row would cache zeros, so keep the fallbacks and retry on the next use
     gPad = cells[0].offsetLeft;
     gStride = cells.length > 1 ? cells[1].offsetLeft - cells[0].offsetLeft : CELL_W + 8;
     gRowW = row.clientWidth;
     gMaxScroll = Math.max(0, row.scrollWidth - row.clientWidth);
-    gTrackW = stripElem.clientWidth;
     geomValid = true;
   }
   function geom() { if (!geomValid) measureGeom(); }
@@ -498,23 +487,8 @@ export function createCompanionStrip(scribe, {
    */
   function settle() { if (!tucked) positionForActive(); }
 
-  /** Show the strand while the bar is tucked, with its marker at the reading position's fraction of the document. */
-  function updateStrand() {
-    strandRAF = 0;
-    if (destroyed) return;
-    const pages = scribe.doc ? scribe.doc.inputData.pageCount : 0;
-    const show = visibleOn && tucked && pages >= 2;
-    strandElem.classList.toggle('on', show);
-    if (!show) return;
-    const f = scribe.scrollPageFraction();
-    const frac = Number.isFinite(f) ? Math.max(0, Math.min(1, f / (pages - 1))) : 0;
-    const trackW = strandElem.clientWidth;
-    strandMark.style.left = `${Math.max(0, Math.min(trackW - MARKER_PX, frac * trackW - MARKER_PX / 2))}px`;
-  }
-  function scheduleStrand() { if (!strandRAF && !destroyed) strandRAF = requestAnimationFrame(updateStrand); }
-
   /**
-   * Tuck the bar behind the dock and go dormant, or reveal it and resume.
+   * Tuck the strip behind the dock and go dormant, or reveal it and resume.
    * @param {boolean} t
    * @param {boolean} animate
    */
@@ -525,11 +499,11 @@ export function createCompanionStrip(scribe, {
     if (!animate || reduceMotion()) {
       // Suppress the transform transition for an instant jump, flushing so it cannot animate from the old position later.
       stripElem.classList.add('dragging');
-      stripElem.style.transform = t ? `translateY(${TUCK_H}px)` : '';
+      stripElem.style.transform = t ? `translateY(${TUCK_TRAVEL}px)` : '';
       stripElem.getBoundingClientRect();
       stripElem.classList.remove('dragging');
     } else {
-      stripElem.style.transform = t ? `translateY(${TUCK_H}px)` : '';
+      stripElem.style.transform = t ? `translateY(${TUCK_TRAVEL}px)` : '';
     }
     // While tucked the dock doubles as the pull surface, so the browser must not claim vertical drags on it.
     if (tuckPullSurface) tuckPullSurface.style.touchAction = t ? 'none' : '';
@@ -546,7 +520,7 @@ export function createCompanionStrip(scribe, {
         positionForActive(false);
       }
     }
-    scheduleStrand();
+    onFlip();
   }
 
   /**
@@ -562,7 +536,9 @@ export function createCompanionStrip(scribe, {
   const JUMP_GAP = (CELL_W + 8) * 3;
   function syncToViewer() {
     syncRAF = 0;
-    if (destroyed || tucked || !cells.length) return;
+    if (destroyed) return;
+    if (tucked) { onFlip(); return; }
+    if (!cells.length) return;
     if (userOwns()) return;
     const f = scribe.scrollPageFraction();
     const frac = Number.isFinite(f) ? Math.max(0, Math.min(pageCount - 1, f)) : activePage;
@@ -589,12 +565,10 @@ export function createCompanionStrip(scribe, {
     onFlip();
   }
   function onViewerScroll() {
-    if (tucked) {
-      scheduleStrand();
-      return;
+    if (!tucked) {
+      if (restTimer) clearTimeout(restTimer);
+      restTimer = setTimeout(restSettle, REST_MS);
     }
-    if (restTimer) clearTimeout(restTimer);
-    restTimer = setTimeout(restSettle, REST_MS);
     if (!syncRAF) syncRAF = requestAnimationFrame(syncToViewer);
   }
   function ensureScrollSync() {
@@ -609,19 +583,16 @@ export function createCompanionStrip(scribe, {
    */
   function setActive(n) {
     ensureScrollSync();
-    // A tucked bar still tracks the active page, since the reveal parks on it, but leaves its stale cells alone.
-    if (tucked) {
-      const pages = scribe.doc ? scribe.doc.inputData.pageCount : 1;
-      activePage = Math.max(0, Math.min(pages - 1, n));
-      scheduleStrand();
-      return;
-    }
-    if (n === activePage && cells[n]?.classList.contains('active')) return;
+    // A rebuild deferred by the tuck leaves `pageCount` describing the previous document.
+    const pages = scribe.doc ? scribe.doc.inputData.pageCount : pageCount;
+    if (n === activePage && cells[activePage]?.classList.contains('active')) return;
+    // Left behind while tucked, the highlight would still be on the old page at the reveal, and the next page change would mark a second cell.
     cells[activePage]?.classList.remove('active');
-    activePage = Math.max(0, Math.min(pageCount - 1, n));
+    activePage = Math.max(0, Math.min(pages - 1, n));
     cells[activePage]?.classList.add('active');
     // Navigating to a page the strip already shows moves no scroll and fires no scroll event; recompute the fill now or it keeps the pre-navigation flip segment.
     onFlip();
+    if (tucked) return;
     onViewerScroll();
   }
 
@@ -638,10 +609,9 @@ export function createCompanionStrip(scribe, {
     // Rebuilding a tucked strip would raster thumbnails nobody can see, so the reveal runs it instead.
     if (tucked) {
       dirty = true;
-      scheduleStrand();
+      onFlip();
       return;
     }
-    hideFeedback();
     row.textContent = '';
     cells = [];
     pageCount = scribe.doc ? scribe.doc.inputData.pageCount : 0;
@@ -679,28 +649,30 @@ export function createCompanionStrip(scribe, {
   }
 
   // ---- the wind bar ----
-  function hideFeedback() { prog.classList.remove('on'); }
-
   // Wide enough to read as a position against the track, short enough not to be mistaken for a flip segment.
   const MARKER_PX = 10;
 
   function onFlip() {
-    const cell = cells[activePage];
-    if (pageCount < 2 || !cell) { hideFeedback(); return; }
+    // A rebuild deferred by the tuck leaves the cells describing the previous document, so the marker divides by the live page count rather than the strip's own.
+    const pages = scribe.doc ? scribe.doc.inputData.pageCount : 0;
+    if (pages < 2) { prog.classList.remove('on'); return; }
     geom();
-    const sl = Math.max(0, Math.min(gMaxScroll, row.scrollLeft));
-    const fraction = Math.max(0, Math.min(pageCount - 1, scribe.scrollPageFraction()));
-    const anchorFrac = fraction / (pageCount - 1);
-    const zero = Math.max(0, Math.min(gMaxScroll, mirrorSl));
-    const DEAD = 4;
-    const d = sl - zero;
+    const f = scribe.scrollPageFraction();
+    const anchorFrac = Number.isFinite(f) ? Math.max(0, Math.min(1, f / (pages - 1))) : 0;
     let flipFrac = anchorFrac;
-    if (d > DEAD && zero < gMaxScroll) {
-      flipFrac = anchorFrac + (1 - anchorFrac) * ((d - DEAD) / Math.max(1, gMaxScroll - zero - DEAD));
-    } else if (d < -DEAD && zero > 0) {
-      flipFrac = anchorFrac - anchorFrac * ((-d - DEAD) / Math.max(1, zero - DEAD));
+    // The parked row keeps whatever offset the last flip left, so a tucked bar would wind out a stale segment instead of showing the marker.
+    if (!tucked && cells.length) {
+      const sl = Math.max(0, Math.min(gMaxScroll, row.scrollLeft));
+      const zero = Math.max(0, Math.min(gMaxScroll, mirrorSl));
+      const DEAD = 4;
+      const d = sl - zero;
+      if (d > DEAD && zero < gMaxScroll) {
+        flipFrac = anchorFrac + (1 - anchorFrac) * ((d - DEAD) / Math.max(1, gMaxScroll - zero - DEAD));
+      } else if (d < -DEAD && zero > 0) {
+        flipFrac = anchorFrac - anchorFrac * ((-d - DEAD) / Math.max(1, zero - DEAD));
+      }
+      flipFrac = Math.max(0, Math.min(1, flipFrac));
     }
-    flipFrac = Math.max(0, Math.min(1, flipFrac));
     const trackW = gTrackW;
     let left = Math.min(anchorFrac, flipFrac) * trackW;
     let width = Math.abs(flipFrac - anchorFrac) * trackW;
@@ -743,7 +715,6 @@ export function createCompanionStrip(scribe, {
       // A hidden strip is idle: drop its focus hint so it stops skewing the background render order.
       scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
     }
-    scheduleStrand();
   }
 
   function destroy() {
@@ -751,14 +722,12 @@ export function createCompanionStrip(scribe, {
     stopFollow();
     if (restTimer) clearTimeout(restTimer);
     if (syncRAF) cancelAnimationFrame(syncRAF);
-    if (strandRAF) cancelAnimationFrame(strandRAF);
     if (scrollHost) scrollHost.removeEventListener('scroll', onViewerScroll);
     if (geomObserver) geomObserver.disconnect();
     stripElem.remove();
-    strandElem.remove();
   }
 
   return {
-    stripElem, strandElem, setActive, park, settle, rebuild, setVisible, setTucked, isTucked: () => tucked, destroy,
+    stripElem, setActive, park, settle, rebuild, setVisible, setTucked, isTucked: () => tucked, destroy,
   };
 }

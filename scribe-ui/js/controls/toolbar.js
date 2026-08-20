@@ -1335,6 +1335,116 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* Toasts clear the dock instead of hiding behind it. */
     .${r}.scribe-phone .scribe-toast-stack { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
 
+    /* ---- Phone editing modes: the Edit slot's mode sheet, the dock's mode bar, and the docked verb bar. ---- */
+    .${r} .scribe-mode-sheet {
+      position: absolute;
+      left: 0; right: 0;
+      bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+      z-index: 25;
+      background: var(--scribe-surface);
+      border-top: 1px solid var(--scribe-line);
+      border-radius: 14px 14px 0 0;
+      box-shadow: 0 -6px 22px rgba(20, 30, 60, .14);
+      padding: 0 0 10px;
+      /* The hidden transform adds the dock offset: the sheet rests one dock-height above the bottom edge, so a bare 102% would leave it peeking over the dock. */
+      transform: translateY(calc(102% + 56px + env(safe-area-inset-bottom, 0px)));
+      transition: transform 0.26s cubic-bezier(0.3, 0.9, 0.3, 1);
+    }
+    .${r} .scribe-mode-sheet.open { transform: translateY(0); }
+    .${r} .scribe-mode-sheet.dragging { transition: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-mode-sheet { transition: none; }
+    }
+    .${r} .scribe-mode-sheet-hd {
+      position: relative;
+      height: 28px;
+      cursor: grab;
+      touch-action: none;
+    }
+    .${r} .scribe-mode-sheet-hd .scribe-sheet-pill { top: 11px; }
+    .${r} .scribe-mode-sheet-row {
+      display: flex; align-items: center; gap: 12px;
+      width: 100%; min-height: 52px; padding: 6px 16px; box-sizing: border-box;
+      background: none; border: none; text-align: left; cursor: pointer;
+      color: var(--scribe-ink);
+      font-family: inherit;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-mode-sheet-row:disabled { opacity: .45; cursor: default; }
+    .${r} .scribe-mode-sheet-row.on { background: var(--scribe-active); }
+    .${r} .scribe-mode-sheet-ic { width: 22px; height: 22px; flex: none; color: var(--scribe-ink-2); }
+    .${r} .scribe-mode-sheet-ic svg { width: 22px; height: 22px; display: block; }
+    .${r} .scribe-mode-sheet-row.on .scribe-mode-sheet-ic, .${r} .scribe-mode-sheet-row.on .scribe-mode-sheet-nm { color: var(--scribe-accent); }
+    .${r} .scribe-mode-sheet-txt { display: flex; flex-direction: column; line-height: 1.3; }
+    .${r} .scribe-mode-sheet-nm { font-size: 15px; font-weight: 600; }
+    .${r} .scribe-mode-sheet-sub { font-size: 12px; color: var(--scribe-ink-3); }
+
+    /* !important because the page pill carries an inline display from the desktop toolbar. */
+    .${r} .scribe-dock-mode { display: none; }
+    .${r} .scribe-dock.scribe-mode-on > :not(.scribe-dock-mode) { display: none !important; }
+    .${r} .scribe-dock.scribe-mode-on .scribe-dock-mode {
+      display: flex; align-items: center; gap: 7px;
+      width: 100%; height: 100%;
+      padding: 0 6px 0 14px; box-sizing: border-box;
+    }
+    .${r} .scribe-dock-mode-ic { width: 20px; height: 20px; flex: none; color: var(--scribe-accent); }
+    .${r} .scribe-dock-mode-ic svg { width: 20px; height: 20px; display: block; }
+    /* The name is the only element that shrinks, so a crowded bar truncates it rather than clipping Done. */
+    .${r} .scribe-dock-mode-nm { font-size: 14px; font-weight: 650; white-space: nowrap; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-dock-mode-status { margin-left: auto; font-size: 12px; color: var(--scribe-ink-3); white-space: nowrap; }
+    .${r} .scribe-dock-mode-done {
+      flex: none; min-height: 44px; padding: 0 14px;
+      background: none; border: none; border-radius: 8px; cursor: pointer;
+      font-family: inherit; font-size: 15px; font-weight: 650; color: var(--scribe-accent);
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* The language menu opens upward from the dock's mode bar, where below is the safe area. */
+    .${r} .scribe-dock-mode .scribe-edit-menu { top: auto; bottom: calc(100% + 8px); }
+    /* The banner sizes Recognize's controls for a mouse row, so the dock re-sizes them as touch targets. */
+    .${r} .scribe-dock-mode .scribe-mode-banner-lang,
+    .${r} .scribe-dock-mode .scribe-mode-banner-run { min-height: 40px; padding-left: 12px; padding-right: 12px; font-size: 13.5px; }
+
+    /* The picked object's verbs, docked above the dock and never over the document. */
+    .${r} .scribe-vbar {
+      position: absolute;
+      left: 0; right: 0;
+      bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+      height: 52px; z-index: 24;
+      display: none; align-items: center; gap: 2px;
+      padding: 0 6px; box-sizing: border-box;
+      background: var(--scribe-surface);
+      border-top: 1px solid var(--scribe-line);
+    }
+    .${r}.scribe-phone .scribe-vbar.on { display: flex; }
+    .${r} .scribe-vbtn {
+      min-height: 44px; min-width: 44px; padding: 0 9px;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      background: none; border: none; border-radius: 8px; cursor: pointer;
+      font-family: inherit; font-size: 12.5px; font-weight: 600; color: var(--scribe-ink);
+      flex: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-vbtn:disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-vbtn:disabled .scribe-vbtn-ic { color: var(--scribe-ink-3); }
+    .${r} .scribe-vbtn.active { background: var(--scribe-active); color: var(--scribe-accent); }
+    .${r} .scribe-vbtn.active .scribe-vbtn-ic { color: var(--scribe-accent); }
+    .${r} .scribe-vbtn-ic { width: 20px; height: 20px; color: var(--scribe-ink-2); }
+    .${r} .scribe-vbtn-ic svg { width: 20px; height: 20px; display: block; }
+    .${r} .scribe-vbtn.danger { color: var(--scribe-danger); }
+    .${r} .scribe-vbtn.danger .scribe-vbtn-ic { color: var(--scribe-danger); }
+    .${r} .scribe-vbtn.danger:disabled { color: var(--scribe-ink-3); }
+    .${r} .scribe-vbtn.danger:disabled .scribe-vbtn-ic { color: var(--scribe-ink-3); }
+    .${r} .scribe-vbtn.accent { color: var(--scribe-accent); font-size: 15px; font-weight: 650; margin-left: auto; }
+    .${r} .scribe-vbar-sep { width: 1px; height: 26px; background: var(--scribe-line); margin: 0 3px; flex: none; }
+    .${r} .scribe-vbar-hint { font-size: 12.5px; color: var(--scribe-ink-3); padding-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+    .${r}.scribe-phone.scribe-vbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+    .${r}.scribe-line-editing .scribe-strip.on { display: none; }
+    .${r}.scribe-phone.scribe-line-editing .scribe-vbar.on {
+      bottom: max(calc(56px + env(safe-area-inset-bottom, 0px)), var(--scribe-kb-inset, 0px));
+      z-index: 31;
+    }
+
     /* ---- Phone panels: one bottom sheet hosts pages/bookmarks/comments. ----
        There is no scrim: opening the sheet reflows the document into the space above it (_docBottomInset), so the page stays interactive and the dock stays visible to toggle the sheet closed.
        The scrim element below is retained but never shown. */

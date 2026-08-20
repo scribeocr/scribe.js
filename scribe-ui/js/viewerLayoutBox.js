@@ -70,7 +70,7 @@ export const setAlpha = (color, alpha) => color.replace(/,\s*[\d.]+\)/, `,${alph
  */
 export class UiLayout {
   /**
-   * @param {LayoutDataColumn|LayoutRegion} layoutBox
+   * @param {LayoutDataColumn|LayoutRegion|LayoutImageRegion} layoutBox
    * @param {import('../viewer.js').ScribeViewer} [viewer] - The viewer this layout belongs to.
    *    Falls back to the default viewer when omitted.
    */
@@ -85,7 +85,7 @@ export class UiLayout {
     // as this will fail for layout boxes that were created in another thread.
     const n = layoutBox.type === 'dataColumn' ? layoutBox.table.page.n : layoutBox.page.n;
 
-    // "Order" boxes are blue, "exclude" boxes are red, data columns are uncolored, as the color is added by the table.
+    // "Order" boxes are blue, "exclude" boxes are red, "image" boxes are purple, data columns are uncolored, as the color is added by the table.
     let fill = '';
     let stroke = '';
     if (layoutBox.type === 'order') {
@@ -94,6 +94,9 @@ export class UiLayout {
     } else if (layoutBox.type === 'exclude') {
       fill = 'rgba(193,84,57,0.25)';
       stroke = 'rgba(0,137,114,0.4)';
+    } else if (layoutBox.type === 'image') {
+      fill = 'rgba(111,66,193,0.25)';
+      stroke = 'rgba(111,66,193,0.4)';
     } else if (layoutBox.type === 'dataColumn') {
       const colIndex = layoutBox.table.boxes.findIndex((x) => x.id === layoutBox.id);
       const colorBase = colColorsHex[colIndex % colColorsHex.length];

@@ -133,7 +133,7 @@ class UiRegionControlVertical extends UiControlLine {
 
 export class UiRegion extends UiLayout {
   /**
-   * @param {LayoutRegion} layoutBox
+   * @param {LayoutRegion|LayoutImageRegion} layoutBox
    * @param {import('../viewer.js').ScribeViewer} [viewer]
    */
   constructor(layoutBox, viewer) {
@@ -373,13 +373,17 @@ export const mergeDataTables = (tables) => {
  * @param {string} type
  */
 export function addLayoutBox(viewer, n, box, type) {
-  const maxPriority = Math.max(...Object.values(viewer.doc.layoutRegions.pages[n].boxes).map((layoutRegion) => layoutRegion.order), -1);
-
   const bbox = {
     left: box.left, top: box.top, right: box.left + box.width, bottom: box.top + box.height,
   };
 
-  const region = new scribe.layout.LayoutRegion(viewer.doc.layoutRegions.pages[n], maxPriority + 1, bbox, type);
+  let region;
+  if (type === 'image') {
+    region = new scribe.layout.LayoutImageRegion(viewer.doc.layoutRegions.pages[n], bbox);
+  } else {
+    const maxPriority = Math.max(...Object.values(viewer.doc.layoutRegions.pages[n].boxes).map((layoutRegion) => layoutRegion.order ?? -1), -1);
+    region = new scribe.layout.LayoutRegion(viewer.doc.layoutRegions.pages[n], maxPriority + 1, bbox, type);
+  }
 
   viewer.doc.layoutRegions.pages[n].boxes[region.id] = region;
 

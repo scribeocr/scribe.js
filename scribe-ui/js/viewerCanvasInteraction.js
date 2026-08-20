@@ -244,17 +244,17 @@ async function addWordManual(viewer, n, box) {
 // Local copy of controls/toolbar.js's lineIcon, not imported because that would cycle (toolbar.js imports viewer.js, which imports this module).
 const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
-const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
-const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
-const CM_BOLD_SVG = menuIcon('<path d="M8 4.5v15"/><path d="M8 4.5h5a3.4 3.4 0 0 1 0 6.8H8"/><path d="M8 11.3h5.7a3.6 3.6 0 0 1 0 7.2H8"/>');
-const CM_ITALIC_SVG = menuIcon('<path d="M10.5 4.5h7"/><path d="M6.5 19.5h7"/><path d="M14 4.5l-4 15"/>');
+export const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
+export const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
+export const CM_BOLD_SVG = menuIcon('<path d="M8 4.5v15"/><path d="M8 4.5h5a3.4 3.4 0 0 1 0 6.8H8"/><path d="M8 11.3h5.7a3.6 3.6 0 0 1 0 7.2H8"/>');
+export const CM_ITALIC_SVG = menuIcon('<path d="M10.5 4.5h7"/><path d="M6.5 19.5h7"/><path d="M14 4.5l-4 15"/>');
 const CM_CHECK_SVG = menuIcon('<path d="M5 12.5l4.8 4.8L19 7.5"/>');
 const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
 const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
 const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
 const CM_REDACT_SVG = menuIcon('<path d="M4 6.6h16"/><path d="M4 17.4h9"/><rect x="4" y="10.3" width="16" height="3.4" rx="0.5" fill="currentColor" stroke="none"/>');
 const CM_BOOKMARK_SVG = menuIcon('<path d="M7 4h10v16l-5-3.6L7 20V4Z"/>');
-const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
+export const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
 const CM_TABLE_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10.5 10v9M15.3 10v9"/>');
@@ -552,7 +552,7 @@ const deleteGraphicsClick = () => {
 };
 
 /** @param {{count: number, images: number, paths: number}} counts */
-const graphicsDeleteLabel = (counts) => {
+export const graphicsDeleteLabel = (counts) => {
   if (counts.count === 1) return counts.paths === 1 ? 'Delete Shape' : 'Delete Image';
   if (counts.paths === 0) return `Delete ${counts.count} Images`;
   if (counts.images === 0) return `Delete ${counts.count} Shapes`;
@@ -1313,7 +1313,8 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     show.strike = true;
     show.comment = !!viewer._openCommentEditor && show.highlight;
     show.redact = !!viewer._redactEnabled;
-    show.deletelines = !!viewer._editTextActive && !!viewer._editTextSelectedLines
+    // On the phone the mode's docked verb bar owns the editing verbs, and the callout keeps only the reading ones.
+    show.deletelines = !!viewer._editTextActive && !viewer._phoneChrome && !!viewer._editTextSelectedLines
       && viewer._editTextSelectedLines().length > 0;
     show.bookmark = bookmarkTargetPage >= 0;
     // Resolving the words is O(selection), so gate on a small single-page range first.
@@ -1847,7 +1848,7 @@ export const mouseupFunc2 = (viewer, event) => {
     viewer.destroyControls(!event.ctrlKey);
     selectLayoutBoxesArea(viewer, marquee);
     UiLayout.updateUI();
-  } else if (['addWord', 'recognizeWord', 'recognizeArea', 'printCoords', 'addLayoutBoxOrder', 'addLayoutBoxExclude', 'addLayoutBoxDataTable'].includes(viewer.mode)) {
+  } else if (['addWord', 'recognizeWord', 'recognizeArea', 'printCoords', 'addLayoutBoxOrder', 'addLayoutBoxExclude', 'addLayoutBoxImage', 'addLayoutBoxDataTable'].includes(viewer.mode)) {
     const { n, box } = viewer.calcSelectionImageCoords();
 
     if (viewer.mode === 'addWord') {
@@ -1870,6 +1871,8 @@ export const mouseupFunc2 = (viewer, event) => {
       addLayoutBox(viewer, n, box, 'order');
     } else if (viewer.mode === 'addLayoutBoxExclude') {
       addLayoutBox(viewer, n, box, 'exclude');
+    } else if (viewer.mode === 'addLayoutBoxImage') {
+      addLayoutBox(viewer, n, box, 'image');
     } else if (viewer.mode === 'addLayoutBoxDataTable') {
       addLayoutDataTable(viewer, n, box);
     }

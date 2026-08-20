@@ -9,7 +9,9 @@ import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
 import { signIntoField } from '../js/viewerFillSign.js';
-import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
+import {
+  destroyContextMenu, graphicsDeleteLabel, CM_COPY_SVG, CM_EDIT_SVG, CM_BOLD_SVG, CM_ITALIC_SVG, CM_TRASH_SVG,
+} from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
   createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG,
@@ -43,13 +45,18 @@ const TOOLBAR_HEIGHT_MAX = 80;
 const TAB_STRIP_HEIGHT = 30;
 
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
-const DOCK_PAGES_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
-  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<rect x="4.5" y="4" width="6" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6" height="6.5" rx="1.2"/>'
-  + '<rect x="4.5" y="13.5" width="6" height="6.5" rx="1.2"/><rect x="13.5" y="13.5" width="6" height="6.5" rx="1.2"/></svg>';
 const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
+// Broken selection corners, for the verb bar's Deselect.
+const DOCK_DESELECT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M5 8V6.5A1.5 1.5 0 0 1 6.5 5H8M16 5h1.5A1.5 1.5 0 0 1 19 6.5V8M19 16v1.5a1.5 1.5 0 0 1-1.5 1.5H16M8 19H6.5A1.5 1.5 0 0 1 5 17.5V16"/>'
+  + '<path d="M9.6 9.6l4.8 4.8M14.4 9.6l-4.8 4.8"/></svg>';
+// Lines with a pencil, for the dock's Edit slot.
+const DOCK_EDIT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
 
 const SIDEBAR_TOGGLE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block" aria-hidden="true">'
@@ -145,6 +152,124 @@ const ICON_AUTOMATE = editIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7
 /**
  * @typedef {'width' | 'height' | 'page' | ((imgDims: {width: number, height: number}, viewerDims: {width: number, height: number}) => FitResult)} FitMode
  */
+
+/**
+ * Make a bottom sheet's header its drag handle.
+ * @param {HTMLElement} sheet
+ * @param {HTMLElement} handle - The sheet's header, whose whole box is the drag surface.
+ * @param {object} opts
+ * @param {HTMLElement} opts.host - Element the resize is measured against.
+ * @param {boolean} opts.resizable - Whether the pull resizes the sheet as it goes, or only dismisses it.
+ * @param {() => void} opts.onDismiss - Close the sheet. The dragged height and transform are left for it to clear.
+ * @param {HTMLElement} [opts.body] - The sheet's content box, pinned at its rest height while a resize drag runs.
+ * @param {() => void} [opts.onEngage] - Runs once per drag, as it passes the slop.
+ * @param {() => void} [opts.onSettle] - Runs on the release of a drag that kept the sheet open.
+ */
+function attachSheetDrag(sheet, handle, {
+  host, resizable, onDismiss, body, onEngage, onSettle,
+}) {
+  let dragActive = false;
+  let dragStartY = 0;
+  let dragStartH = 0;
+  let dragOver = 0;
+  let dragMoved = false;
+  let dragFromButton = false;
+  let unpinT = null;
+  handle.addEventListener('pointerdown', (e) => {
+    // A second concurrent touch must not re-base the gesture mid-drag.
+    if (dragActive) return;
+    dragActive = true;
+    if (unpinT) { clearTimeout(unpinT); unpinT = null; }
+    dragStartY = e.clientY;
+    dragStartH = sheet.getBoundingClientRect().height;
+    dragOver = 0;
+    dragMoved = false;
+    dragFromButton = !!(e.target instanceof Element && e.target.closest('button'));
+    // An immediate capture under a header button retargets that button's click to the handle, so a press starting on one captures only once the drag passes the slop.
+    if (!dragFromButton) {
+      try { handle.setPointerCapture(e.pointerId); } catch { /* untrusted event: move/up still arrive by bubbling */ }
+    }
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (!dragActive) return;
+    const dy = dragStartY - e.clientY;
+    if (!dragMoved && Math.abs(dy) < 6) return;
+    if (!dragMoved && dragFromButton) {
+      try { handle.setPointerCapture(e.pointerId); } catch { /* see above */ }
+    }
+    if (!dragMoved && onEngage) onEngage();
+    // Without the pin, centered content re-centers as the box shrinks and slides within the card.
+    // Measure before flex: none collapses the body to its content height.
+    if (!dragMoved && resizable && body) {
+      const restH = body.getBoundingClientRect().height;
+      body.style.flex = 'none';
+      body.style.height = `${restH}px`;
+      sheet.style.overflow = 'hidden';
+    }
+    dragMoved = true;
+    sheet.classList.add('dragging');
+    if (resizable) {
+      const avail = host.clientHeight;
+      const targetH = dragStartH + dy;
+      // The resize floor doubles as the release-to-close threshold, so the bottom edge detaching announces that letting go dismisses.
+      const floorH = Math.max(140, avail * 0.28);
+      sheet.style.height = `${Math.min(Math.round(avail * 0.5), Math.max(floorH, targetH))}px`;
+      dragOver = Math.max(0, floorH - targetH);
+    } else {
+      dragOver = Math.max(0, -dy);
+    }
+    sheet.style.transform = dragOver ? `translateY(${dragOver}px)` : '';
+  });
+  /** Settle a finished drag from a release or a cancel, snapping the sheet back to its rest position or dismissing it. */
+  const settleDrag = () => {
+    sheet.getBoundingClientRect();
+    sheet.classList.remove('dragging');
+    // The pin outlasts the release, since the snap back to rest height re-centers the contents just as the drag did.
+    if (resizable && body) {
+      unpinT = setTimeout(() => {
+        unpinT = null;
+        body.style.flex = '';
+        body.style.height = '';
+        sheet.style.overflow = '';
+      }, 300);
+    }
+    // A resize only overshoots after crossing its floor, so any overshoot at all commits the dismissal.
+    // A sheet that hugs its content has no floor to cross, so its ride down must clear a quarter of the card.
+    if (dragOver > (resizable ? 0 : Math.min(140, dragStartH * 0.25))) {
+      onDismiss();
+      return;
+    }
+    if (resizable) sheet.style.height = '';
+    sheet.style.transform = '';
+    if (onSettle) onSettle();
+  };
+  handle.addEventListener('pointerup', () => {
+    if (!dragActive) return;
+    dragActive = false;
+    if (!dragMoved) {
+      sheet.classList.remove('dragging');
+      return;
+    }
+    settleDrag();
+  });
+  // A cancelled pointer (browser takeover, palm) must settle like a release, or the sheet strands mid-ride with transitions off.
+  // Settle from the tracked geometry, never the event's coordinates: Chrome reports pointercancel at (0,0).
+  handle.addEventListener('pointercancel', () => {
+    if (!dragActive) return;
+    dragActive = false;
+    if (dragMoved) settleDrag();
+    // No click composes after a cancel, so clear the flag here or the swallow guard below would eat the next real tap.
+    dragMoved = false;
+  });
+  // A drag that began on a button still composes a click on release (the capture retargets it here), so swallow it or the drag would also fire that button.
+  handle.addEventListener('click', (e) => {
+    if (dragMoved) {
+      e.stopPropagation();
+      e.preventDefault();
+      dragMoved = false;
+    }
+  }, true);
+}
 
 class ScribePDFViewer {
   static _coreErrorsWired = false;
@@ -363,8 +488,23 @@ class ScribePDFViewer {
     this._stripRelayoutT = null;
     /** @type {?HTMLSpanElement} The dock's Panels button (opens the bottom sheet). */
     this._sheetPanelsBtn = null;
-    /** @type {?HTMLSpanElement} The dock's Pages button (opens the Pages view). */
-    this._dockPagesBtn = null;
+    /** @type {?HTMLSpanElement} The dock's Edit slot, which raises the mode sheet and lights while a mode runs. */
+    this._dockEditBtn = null;
+    /** @type {?HTMLDivElement} The sheet listing the tool modes, mirrored from their toolbar buttons. */
+    this._modeSheetElem = null;
+    /** @type {?HTMLDivElement} The dock's mode bar, shown in place of the navigation row while a mode runs. */
+    this._dockModeRow = null;
+    /** @type {?{ic: HTMLSpanElement, nm: HTMLSpanElement, status: HTMLSpanElement}} */
+    this._dockModeParts = null;
+    /** @type {?HTMLDivElement} The docked verb bar for the picked line or placement. */
+    this._vbarElem = null;
+    /** @type {?Object<string, HTMLElement>} */
+    this._vbarParts = null;
+    this._phoneLineEditing = false;
+    /** @type {?{zoom: number, left: number, top: number}} The reading position a line edit's zoom must restore. */
+    this._phoneEditRestore = null;
+    /** The software keyboard's current overlap with this component's bottom edge, in px. */
+    this._kbInset = 0;
     /** @type {?HTMLDivElement} */
     this._sheetElem = null;
     /** @type {?HTMLDivElement} */
@@ -540,6 +680,8 @@ class ScribePDFViewer {
         // Resizing from the bookmarks view drives the shared sidebar width (see `_resizeSidebar`).
         onResize: (w, phase) => this._resizeSidebar(w, phase),
         onRenameFocus: (focused) => { if (this._phoneChrome) this._sheetComposeLift(focused); },
+        // The Move session swaps the sheet header for a "Moving bookmarks" bar with Done.
+        onMoveSession: (active) => { if (this._sheetElem) this._sheetElem.classList.toggle('scribe-sheet-moving', active); },
       })
       : null;
 
@@ -813,7 +955,14 @@ class ScribePDFViewer {
       const updateKbInset = () => {
         const kbTop = vv.offsetTop + vv.height;
         const inset = Math.max(0, Math.round(this.pdfViewerElem.getBoundingClientRect().bottom - kbTop));
+        const changed = inset !== this._kbInset;
+        this._kbInset = inset;
         this.pdfViewerElem.style.setProperty('--scribe-kb-inset', `${inset}px`);
+        // The keyboard rises after the editor takes focus, so an open line edit re-insets and re-scrolls here.
+        if (changed && this._phoneLineEditing) {
+          this._relayout();
+          this._phoneEditEnsureVisible();
+        }
       };
       vv.addEventListener('resize', updateKbInset);
       vv.addEventListener('scroll', updateKbInset);
@@ -1004,6 +1153,10 @@ class ScribePDFViewer {
 
     // Destructive one-tap actions (the touch callout's delete) report here for a toast with Undo.
     this.scribe._onDestructiveAction = (message, undo) => this._showToast(message, { actionLabel: 'Undo', onAction: undo });
+
+    this.scribe._modeSelectionChanged = () => this._syncPhoneVerbBar();
+    this.scribe._modeStatus = (text) => { if (this._dockModeParts) this._dockModeParts.status.textContent = text; };
+    this.scribe._editTextEditorOpenChanged = (open) => this._onPhoneLineEditorOpen(open);
 
     // First viewer wins, so embedded pane viewers never steal the app-level error handler.
     if (!ScribePDFViewer._coreErrorsWired) {
@@ -1235,6 +1388,12 @@ class ScribePDFViewer {
       // The boot-time sync ran before these tools existed, so apply the empty-viewer gating to them now.
       this._syncDocGatedControls();
       this._syncModeOverflow();
+      // A phone boot builds the dock before these tools exist, so the mode controls join it here.
+      if (this._phoneChrome && this._dockElem) {
+        this._buildPhoneModeChrome();
+        if (this._dockEditBtn) this._dockElem.insertBefore(this._dockEditBtn, this._sheetPanelsBtn || null);
+        this._syncDocGatedControls();
+      }
     }
 
     // The library is Chromium-only (File System Access API) and dynamically imported so disabled or unsupported viewers never fetch its code or styles.
@@ -1548,7 +1707,6 @@ class ScribePDFViewer {
       // Showing the strip changes the document's bottom inset.
       if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
     }
-    this._syncDockPagesBtn();
     if (this._bookmarksPanel && this._thumbnailPanel) {
       this._bookmarksPanel.rebuild();
       // Hide the toggle for a document with no bookmarks unless editing (where the user can add them).
@@ -1692,7 +1850,6 @@ class ScribePDFViewer {
       if (this.scribe.scrollContainer) this._relayout();
     }
     this._syncSidebarControls();
-    this._syncDockPagesBtn();
     this._syncDocGatedControls();
 
     if (terminatePrev) prev.close().catch(() => {});
@@ -2163,11 +2320,15 @@ class ScribePDFViewer {
     if (!this._phoneChrome || !this._dockElem) return 0;
     // Before the component is attached the dock has no layout yet; 56 is its safe-area-free height.
     const dock = this._dockElem.offsetHeight || 56;
+    const vbar = this._vbarElem && this._vbarElem.classList.contains('on') && !this._phoneLineEditing
+      ? this._vbarElem.offsetHeight : 0;
     // The companion strip sits above the dock while visible, so the document insets above it too.
+    // It stands down entirely during a line edit, where the keyboard owns the bottom of the screen.
     const cs = this._companionStrip;
     const strip = cs && cs.stripElem.classList.contains('on') && !cs.isTucked() && !this._stripDragLayout
+      && !this._phoneLineEditing
       ? cs.stripElem.offsetHeight : 0;
-    return dock + strip;
+    return dock + vbar + strip;
   }
 
   /**
@@ -2175,6 +2336,11 @@ class ScribePDFViewer {
    * @returns {number}
    */
   _docBottomInset() {
+    // While a line edit is open the editing bar rides the keyboard's top edge, and the document keeps clear of both.
+    if (this._phoneChrome && this._phoneLineEditing && this._dockElem) {
+      const barH = this._vbarElem ? this._vbarElem.offsetHeight || 52 : 52;
+      return Math.max(this._chromeBottom(), (this._kbInset || 0) + barH);
+    }
     if (this._phoneChrome && this._sheetOpen && this._sheetElem && this._dockElem) {
       if (this._sheetDragLayout) return this._chromeBottom();
       const dockH = this._dockElem.offsetHeight || 56;
@@ -2280,17 +2446,44 @@ class ScribePDFViewer {
     // A tool with no hint (the unmounted Redact button) gets no banner, so the hint doubles as the banner-eligibility test.
     const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.dataset.modeHint) || null;
     if (this._automatePanel) this._automatePanel.syncMode(activeBtn ? activeBtn.title : null);
+    if (this._dockEditBtn) this._dockEditBtn.classList.toggle('active', !!activeBtn);
     if (!activeBtn) {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
+      if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
       if (this._recognizeExtras) this._recognizeExtras.remove();
       // The palette returns to its floating home so the closed bar holds nothing.
       const idlePal = this._fillSignTool?.paletteElem();
       if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
       this._modeBannerBtn = null;
       if (this._modeTrackWrap) this._syncModeTrackValue();
+      this._syncPhoneVerbBar();
       this._positionBanners();
       return;
     }
+    // On the phone the dock is the mode's bar, so the top banner stays hidden.
+    // A banner would put Done in the top-right corner, out of one-handed reach.
+    if (this._phoneChrome && this._dockModeRow) {
+      if (this._modeBanner) this._modeBanner.style.display = 'none';
+      this._modeBannerBtn = activeBtn;
+      this._dockElem.classList.add('scribe-mode-on');
+      this._dockModeParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
+      this._dockModeParts.nm.textContent = activeBtn.title;
+      if (this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem) {
+        this._ensureRecognizeExtras();
+        const pages = this._deepOcrPageCount();
+        this._recognizeRunBtn.disabled = pages === 0;
+        if (this._recognizeExtras.parentElement !== this._dockModeRow) {
+          this._dockModeRow.insertBefore(this._recognizeExtras, this._dockModeParts.status);
+        }
+      } else if (this._recognizeExtras) {
+        this._recognizeExtras.remove();
+      }
+      if (this._modeTrackWrap) this._syncModeTrackValue();
+      this._syncPhoneVerbBar();
+      this._positionBanners();
+      return;
+    }
+    if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
     if (!this._modeBanner) {
       const banner = document.createElement('div');
       banner.className = 'scribe-mode-banner';
@@ -2334,67 +2527,207 @@ class ScribePDFViewer {
 
     // The Recognize Text mode runs from its banner, so the language and Start controls mount while it is the active mode.
     if (this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem) {
-      if (!this._recognizeExtras) {
-        const tools = document.createElement('span');
-        tools.className = 'scribe-mode-banner-tools';
-        const langWrap = document.createElement('span');
-        langWrap.className = 'scribe-mode-banner-langwrap';
-        const langBtn = document.createElement('button');
-        langBtn.type = 'button';
-        langBtn.className = 'scribe-mode-banner-lang';
-        langBtn.title = 'Recognition language';
-        const langLabel = document.createElement('span');
-        const langMenu = document.createElement('div');
-        langMenu.className = 'scribe-edit-menu';
-        langMenu.style.display = 'none';
-        const current = this.scribe.opt.langs?.[0] || 'eng';
-        /** @type {Array<HTMLDivElement>} */
-        const langItems = [];
-        for (const [code, label] of [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']]) {
-          const item = document.createElement('div');
-          item.className = 'scribe-edit-menu-item';
-          item.textContent = label;
-          if (code === current) { item.classList.add('selected'); langLabel.textContent = label; }
-          item.addEventListener('mousedown', (e) => e.preventDefault());
-          item.addEventListener('click', () => {
-            this.scribe.opt.langs = [code];
-            langLabel.textContent = label;
-            for (const it of langItems) it.classList.toggle('selected', it === item);
-            langMenu.style.display = 'none';
-            langBtn.classList.remove('active');
-          });
-          langItems.push(item);
-          langMenu.appendChild(item);
-        }
-        if (!langLabel.textContent) langLabel.textContent = current;
-        const caret = document.createElement('span');
-        caret.innerHTML = CARET_SVG;
-        langBtn.append(langLabel, caret);
-        this._wireDropdown(langBtn, langMenu);
-        langWrap.append(langBtn, langMenu);
-        const runBtn = document.createElement('button');
-        runBtn.type = 'button';
-        runBtn.className = 'scribe-mode-banner-run';
-        runBtn.textContent = 'Start';
-        runBtn.addEventListener('click', () => {
-          if (runBtn.classList.contains('busy') || runBtn.disabled) return;
-          this._recognizeAll(runBtn);
-        });
-        this._recognizeRunBtn = runBtn;
-        tools.append(langWrap, runBtn);
-        this._recognizeExtras = tools;
-      }
+      this._ensureRecognizeExtras();
       const pages = this._deepOcrPageCount();
       if (pages === 0) this._modeBannerParts.hint.textContent = 'Text is already selectable on every page';
       this._recognizeRunBtn.disabled = pages === 0;
-      if (!this._recognizeExtras.parentElement) this._modeBanner.insertBefore(this._recognizeExtras, this._modeBannerParts.done);
+      if (this._recognizeExtras.parentElement !== this._modeBanner) this._modeBanner.insertBefore(this._recognizeExtras, this._modeBannerParts.done);
     } else if (this._recognizeExtras) {
       this._recognizeExtras.remove();
     }
 
     this._modeBanner.style.display = 'flex';
     if (this._modeTrackWrap) this._syncModeTrackValue();
+    this._syncPhoneVerbBar();
     this._positionBanners();
+  }
+
+  /**
+   * Build the Recognize Text working controls (language picker and Start) once.
+   * The active surface mounts them, either the desktop mode banner or the phone dock's mode bar.
+   */
+  _ensureRecognizeExtras() {
+    if (this._recognizeExtras) return;
+    const tools = document.createElement('span');
+    tools.className = 'scribe-mode-banner-tools';
+    const langWrap = document.createElement('span');
+    langWrap.className = 'scribe-mode-banner-langwrap';
+    const langBtn = document.createElement('button');
+    langBtn.type = 'button';
+    langBtn.className = 'scribe-mode-banner-lang';
+    langBtn.title = 'Recognition language';
+    const langLabel = document.createElement('span');
+    const langMenu = document.createElement('div');
+    langMenu.className = 'scribe-edit-menu';
+    langMenu.style.display = 'none';
+    const current = this.scribe.opt.langs?.[0] || 'eng';
+    /** @type {Array<HTMLDivElement>} */
+    const langItems = [];
+    for (const [code, label] of [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']]) {
+      const item = document.createElement('div');
+      item.className = 'scribe-edit-menu-item';
+      item.textContent = label;
+      if (code === current) { item.classList.add('selected'); langLabel.textContent = label; }
+      item.addEventListener('mousedown', (e) => e.preventDefault());
+      item.addEventListener('click', () => {
+        this.scribe.opt.langs = [code];
+        langLabel.textContent = label;
+        for (const it of langItems) it.classList.toggle('selected', it === item);
+        langMenu.style.display = 'none';
+        langBtn.classList.remove('active');
+      });
+      langItems.push(item);
+      langMenu.appendChild(item);
+    }
+    if (!langLabel.textContent) langLabel.textContent = current;
+    const caret = document.createElement('span');
+    caret.innerHTML = CARET_SVG;
+    langBtn.append(langLabel, caret);
+    this._wireDropdown(langBtn, langMenu);
+    langWrap.append(langBtn, langMenu);
+    const runBtn = document.createElement('button');
+    runBtn.type = 'button';
+    runBtn.className = 'scribe-mode-banner-run';
+    runBtn.textContent = 'Start';
+    runBtn.addEventListener('click', () => {
+      if (runBtn.classList.contains('busy') || runBtn.disabled) return;
+      this._recognizeAll(runBtn);
+    });
+    this._recognizeRunBtn = runBtn;
+    tools.append(langWrap, runBtn);
+    this._recognizeExtras = tools;
+  }
+
+  /**
+   * Reflect the running mode's target in the phone's docked verb bar.
+   * The bar shows the picked lines' editing verbs, the picked placement's delete, or the open line session's toggles.
+   * It stays hidden outside the phone layout and outside a mode.
+   */
+  _syncPhoneVerbBar() {
+    const bar = this._vbarElem;
+    if (!bar) return;
+    const sv = this.scribe;
+    const editing = !!sv._editTextLineEditor?.isOpen();
+    const kind = !this._phoneChrome ? null
+      : (editing || sv._editTextActive) ? 'text'
+        : sv._graphicsEditActive ? 'graphics' : null;
+    const was = bar.classList.contains('on');
+    bar.classList.toggle('on', !!kind);
+    this.pdfViewerElem.classList.toggle('scribe-vbar-on', !!kind);
+    if (kind) {
+      const p = this._vbarParts;
+      const sessionOn = kind === 'text' && editing;
+      p.edit.style.display = kind === 'text' && !sessionOn ? '' : 'none';
+      p.bold.style.display = kind === 'text' ? '' : 'none';
+      p.italic.style.display = kind === 'text' ? '' : 'none';
+      p.copy.style.display = kind === 'text' && !sessionOn ? '' : 'none';
+      p.sep.style.display = '';
+      const sepAnchor = sessionOn ? p.hint : kind === 'graphics' ? p.deselect : p.del;
+      if (p.sep.nextSibling !== sepAnchor) bar.insertBefore(p.sep, sepAnchor);
+      p.del.style.display = !sessionOn ? '' : 'none';
+      p.deselect.style.display = kind === 'graphics' ? '' : 'none';
+      p.hint.style.display = sessionOn ? '' : 'none';
+      p.done.style.display = sessionOn ? '' : 'none';
+      if (kind === 'graphics') {
+        const counts = sv._graphicsEditSelectedCounts?.() || { count: 0, images: 0, paths: 0 };
+        const has = counts.count > 0;
+        p.del.disabled = !has;
+        p.deselect.disabled = !has;
+        p.del.querySelector('.scribe-vbtn-lbl').textContent = has ? graphicsDeleteLabel(counts) : 'Delete';
+      } else if (sessionOn) {
+        const line = sv._editTextLineEditor.lineOpen();
+        const i = line && line.page ? line.page.lines.indexOf(line) : -1;
+        p.hint.textContent = i >= 0 ? `Editing line ${i + 1}` : 'Editing line';
+        p.bold.disabled = false;
+        p.italic.disabled = false;
+        p.bold.classList.remove('active');
+        p.italic.classList.remove('active');
+      } else {
+        const lines = sv._editTextSelectedLines?.() || [];
+        const has = lines.length > 0;
+        p.edit.disabled = lines.length !== 1;
+        p.copy.disabled = !has;
+        p.del.disabled = !has;
+        p.del.querySelector('.scribe-vbtn-lbl').textContent = 'Delete';
+        for (const [prop, btn] of /** @type {Array<['bold'|'italic', HTMLButtonElement]>} */ ([['bold', p.bold], ['italic', p.italic]])) {
+          const s = has && sv._editTextStyleState ? sv._editTextStyleState(prop) : null;
+          btn.disabled = !s || !s.present || s.locked;
+          btn.classList.toggle('active', !!s && s.on);
+        }
+      }
+    }
+    if (was !== !!kind && this.scribe.scrollContainer) this._relayout();
+  }
+
+  /**
+   * Track the line editor's open state in the phone layout.
+   * Opening reserves space above the software keyboard and zooms the line's column to the screen so the caret is placeable.
+   * Closing restores the previous zoom and scroll.
+   * @param {boolean} open
+   */
+  _onPhoneLineEditorOpen(open) {
+    if (!this._phoneChrome) {
+      this._syncPhoneVerbBar();
+      return;
+    }
+    const sv = this.scribe;
+    if (open) {
+      this._phoneLineEditing = true;
+      this.pdfViewerElem.classList.add('scribe-line-editing');
+      if (!this._phoneEditRestore) {
+        this._phoneEditRestore = {
+          zoom: sv.zoomLevel, left: sv.scrollContainer.scrollLeft, top: sv.scrollContainer.scrollTop,
+        };
+      }
+      const line = sv._editTextLineEditor?.lineOpen();
+      const canvas = this.pdfViewerElem.querySelector('.scribe-edit-text-editor');
+      if (line && line.page && canvas && this.scribe._contentWidth > 0) {
+        // The zoom anchors on the editor canvas, so the line holds still instead of drifting with the viewport center.
+        const colBox = line.par?.bbox || line.bbox;
+        const fitZoom = sv.scrollContainer.clientWidth / this.scribe._contentWidth;
+        let target = (sv.scrollContainer.clientWidth - 32) / Math.max(40, colBox.right - colBox.left);
+        target = Math.max(fitZoom, Math.min(target, fitZoom * 2.6));
+        const r = canvas.getBoundingClientRect();
+        sv.zoom(target / sv.zoomLevel, { x: r.left + r.width / 2, y: r.top + r.height / 2 });
+      }
+      this._relayout();
+      this._phoneEditEnsureVisible();
+    } else {
+      this._phoneLineEditing = false;
+      this.pdfViewerElem.classList.remove('scribe-line-editing');
+      const r = this._phoneEditRestore;
+      this._phoneEditRestore = null;
+      this._relayout();
+      // The reading position must land exactly where the edit began, or the zoom out loses the user's place.
+      if (r && sv.scrollContainer) {
+        if (sv.zoomLevel !== r.zoom) sv.zoom(r.zoom / sv.zoomLevel);
+        sv.scrollContainer.scrollLeft = r.left;
+        sv.scrollContainer.scrollTop = r.top;
+      }
+    }
+    this._syncPhoneVerbBar();
+  }
+
+  /**
+   * Scroll the open line edit clear of the keyboard and the editing bar.
+   * Runs on open and again whenever the keyboard inset changes, since the keyboard rises after the focus.
+   */
+  _phoneEditEnsureVisible() {
+    if (!this._phoneLineEditing) return;
+    const sv = this.scribe;
+    const canvas = this.pdfViewerElem.querySelector('.scribe-edit-text-editor');
+    const cont = sv.scrollContainer;
+    if (!canvas || !cont) return;
+    const r = canvas.getBoundingClientRect();
+    const cr = cont.getBoundingClientRect();
+    const dy = (r.top + r.height / 2) - (cr.top + cr.height * 0.4);
+    if (Math.abs(dy) > 4) cont.scrollTop += dy;
+    const line = sv._editTextLineEditor?.lineOpen();
+    if (line && line.page) {
+      const colLeft = (line.par?.bbox || line.bbox).left;
+      const client = sv.contentToClient(line.page.n, { x: colLeft, y: 0 });
+      if (Math.abs(client.x - (cr.left + 16)) > 4) cont.scrollLeft += client.x - (cr.left + 16);
+    }
   }
 
   /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and chrome height. */
@@ -2986,6 +3319,8 @@ class ScribePDFViewer {
   _setPhoneChrome(phone) {
     if (phone === this._phoneChrome) return;
     this._phoneChrome = phone;
+    // Mirrored onto the viewer because the tool modes read it to pick their touch behavior.
+    this.scribe._phoneChrome = phone;
     // The phone layout forces single-page view, and leaving it restores the persisted preference.
     this._applyPageLayoutPref();
     this.pdfViewerElem.classList.toggle('scribe-phone', phone);
@@ -3007,10 +3342,8 @@ class ScribePDFViewer {
         this._dockElem.appendChild(this._appMenu.menuWrap);
         this._dockElem.appendChild(this._searchBar.searchElem);
         if (this._pageInputGroup) this._dockElem.appendChild(this._pageInputGroup);
-        // Pages takes the corner so the tucked bar's tab parks over a button in its own family.
-        // A mis-tap under the tab then opens the Pages room, which closes back onto the bar.
+        if (this._dockEditBtn) this._dockElem.appendChild(this._dockEditBtn);
         if (this._sheetPanelsBtn) this._dockElem.appendChild(this._sheetPanelsBtn);
-        if (this._dockPagesBtn) this._dockElem.appendChild(this._dockPagesBtn);
         // Re-anchor the find bar from the hidden toolbar to the root, where the phone CSS pins it full-width to the top edge.
         this.pdfViewerElem.appendChild(this._searchBar.findGroupElem);
         // The recognition progress line rides the dock's top edge instead of the toolbar's bottom.
@@ -3035,7 +3368,6 @@ class ScribePDFViewer {
         }
         if (this._commentsPanel) this._commentsPanel.setCompact(true);
         if (this._bookmarksPanel) this._bookmarksPanel.setPhoneMode(true);
-        this._syncDockPagesBtn();
         this._syncDockPanelsBtn();
         // Gate on this.doc, not scribe.doc: the latter is a truthy empty ScribeDoc from construction, which would show a blank bar before anything is opened.
         if (this._companionStrip) {
@@ -3074,7 +3406,205 @@ class ScribePDFViewer {
     this._syncDockPageNumWidth();
     this._syncSidebarControls();
     this._syncDocGatedControls();
+    this._closeModeSheet();
+    // A mode can be running through the flip, so its bar moves between the banner and the dock.
+    this._syncModeBanner();
+    this.scribe._editTextRefreshChrome?.();
     if (this.scribe.scrollContainer) this._relayout();
+  }
+
+  /**
+   * Build the phone's editing-mode controls.
+   * These are the dock's Edit slot and its mode sheet, the dock's mode bar, and the docked verb bar.
+   * The dock and the tool modes can be built in either order, so this runs from both paths and returns early once done.
+   */
+  _buildPhoneModeChrome() {
+    if (this._dockEditBtn || !this._dockElem) return;
+    if (![this._editTextTool, this._graphicsEditTool, this._fillSignTool, this._editPagesTool, this._recognizeTool].some((t) => !!t)) return;
+    const dock = this._dockElem;
+    // Each row mirrors its toolbar button and drives it with a programmatic click, so mode exclusivity, Escape, and the doc gating keep their one implementation.
+    const editBtn = makeIconButton('Edit', DOCK_EDIT_SVG, 'Editing tools');
+    this._dockEditBtn = editBtn;
+    const sheet = document.createElement('div');
+    sheet.className = 'scribe-mode-sheet';
+    this._modeSheetElem = sheet;
+    const sheetHd = document.createElement('div');
+    sheetHd.className = 'scribe-mode-sheet-hd';
+    const sheetPill = document.createElement('div');
+    sheetPill.className = 'scribe-sheet-pill';
+    sheetHd.appendChild(sheetPill);
+    const sheetList = document.createElement('div');
+    sheetList.className = 'scribe-mode-sheet-list';
+    sheet.append(sheetHd, sheetList);
+    this.pdfViewerElem.appendChild(sheet);
+    attachSheetDrag(sheet, sheetHd, {
+      host: this.pdfViewerElem,
+      resizable: false,
+      onDismiss: () => this._closeModeSheet(),
+    });
+    editBtn.addEventListener('click', () => {
+      if (editBtn.classList.contains('disabled')) return;
+      if (sheet.classList.contains('open')) { this._closeModeSheet(); return; }
+      sheetList.replaceChildren();
+      // Pages are edited in the Pages room on the phone, so that row opens the room's Edit session instead of the desktop rail mode.
+      const rows = [
+        [this._editTextTool?.toolbarElem, 'Change or remove lines of text', null],
+        [this._graphicsEditTool?.toolbarElem, 'Remove pictures and shapes', null],
+        [this._fillSignTool?.toolbarElem, 'Place checks, crosses and signatures', null],
+        [this._editPagesTool?.toolbarElem, 'Reorder or delete pages', () => {
+          if (!this.doc) return;
+          if (!this._roomOpen) this._pagesRoomGesture('tap', 0);
+          this._setRoomEditing(true);
+        }],
+        [this._recognizeTool?.toolbarElem, 'Make scanned pages selectable', null],
+      ];
+      for (const [btn, sub, act] of rows) {
+        if (!btn) continue;
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'scribe-mode-sheet-row';
+        if (btn.classList.contains('active')) row.classList.add('on');
+        if (btn.classList.contains('disabled')) row.disabled = true;
+        const ic = document.createElement('span');
+        ic.className = 'scribe-mode-sheet-ic';
+        ic.innerHTML = btn.querySelector('.cr-icon')?.innerHTML || '';
+        const txt = document.createElement('span');
+        txt.className = 'scribe-mode-sheet-txt';
+        const nm = document.createElement('span');
+        nm.className = 'scribe-mode-sheet-nm';
+        nm.textContent = btn.title;
+        const sb = document.createElement('span');
+        sb.className = 'scribe-mode-sheet-sub';
+        sb.textContent = sub;
+        txt.append(nm, sb);
+        row.append(ic, txt);
+        row.addEventListener('click', () => {
+          this._closeModeSheet();
+          if (act) act();
+          else btn.click();
+        });
+        sheetList.appendChild(row);
+      }
+      sheet.classList.add('open');
+    });
+    const onModeSheetDocClick = (e) => {
+      if (!sheet.classList.contains('open')) return;
+      const t = /** @type {Node} */ (e.target);
+      if (sheet.contains(t) || editBtn.contains(t)) return;
+      this._closeModeSheet();
+    };
+    document.addEventListener('click', onModeSheetDocClick);
+    this._teardownCallbacks.push(() => document.removeEventListener('click', onModeSheetDocClick));
+    // Capture plus preventDefault, so closing the sheet never also exits an active mode.
+    const onModeSheetKey = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || !sheet.classList.contains('open')) return;
+      e.preventDefault();
+      this._closeModeSheet();
+    };
+    document.addEventListener('keydown', onModeSheetKey, true);
+    this._teardownCallbacks.push(() => document.removeEventListener('keydown', onModeSheetKey, true));
+
+    const modeRow = document.createElement('div');
+    modeRow.className = 'scribe-dock-mode';
+    const mic = document.createElement('span');
+    mic.className = 'scribe-dock-mode-ic';
+    const mnm = document.createElement('span');
+    mnm.className = 'scribe-dock-mode-nm';
+    const mstatus = document.createElement('span');
+    mstatus.className = 'scribe-dock-mode-status';
+    const mdone = document.createElement('button');
+    mdone.type = 'button';
+    mdone.className = 'scribe-dock-mode-done';
+    mdone.textContent = 'Done';
+    mdone.addEventListener('click', () => { if (this._modeBannerBtn) this._modeBannerBtn.click(); });
+    modeRow.append(mic, mnm, mstatus, mdone);
+    dock.appendChild(modeRow);
+    this._dockModeRow = modeRow;
+    this._dockModeParts = { ic: mic, nm: mnm, status: mstatus };
+
+    // The scribe-edit-text-tools class marks the bar for the line editor, whose click-away commit must ignore its presses.
+    const vbar = document.createElement('div');
+    vbar.className = 'scribe-vbar scribe-edit-text-tools';
+    // preventDefault keeps the press from moving focus, which would dismiss the software keyboard mid-edit.
+    vbar.addEventListener('pointerdown', (e) => e.preventDefault());
+    const vb = (label, svg, extraClass) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `scribe-vbtn${extraClass ? ` ${extraClass}` : ''}`;
+      if (svg) {
+        const s = document.createElement('span');
+        s.className = 'scribe-vbtn-ic';
+        s.innerHTML = svg;
+        b.appendChild(s);
+      }
+      const lbl = document.createElement('span');
+      lbl.className = 'scribe-vbtn-lbl';
+      lbl.textContent = label;
+      if (label) b.appendChild(lbl);
+      return b;
+    };
+    const vEdit = vb('Edit', CM_EDIT_SVG);
+    const vBold = vb('', CM_BOLD_SVG);
+    vBold.title = 'Bold';
+    const vItalic = vb('', CM_ITALIC_SVG);
+    vItalic.title = 'Italic';
+    const vCopy = vb('', CM_COPY_SVG);
+    vCopy.title = 'Copy';
+    const vSep = document.createElement('span');
+    vSep.className = 'scribe-vbar-sep';
+    const vDel = vb('Delete', CM_TRASH_SVG, 'danger');
+    const vDeselect = vb('Deselect', DOCK_DESELECT_SVG);
+    const vHint = document.createElement('span');
+    vHint.className = 'scribe-vbar-hint';
+    const vDone = vb('Done', null, 'accent');
+    vEdit.addEventListener('click', () => this.scribe._editTextOpenSelected?.());
+    vBold.addEventListener('click', () => {
+      if (this.scribe._editTextLineEditor?.isOpen()) this.scribe._editTextLineEditor.toggleStyle('bold');
+      else this.scribe._editTextToggleStyle?.('bold');
+    });
+    vItalic.addEventListener('click', () => {
+      if (this.scribe._editTextLineEditor?.isOpen()) this.scribe._editTextLineEditor.toggleStyle('italic');
+      else this.scribe._editTextToggleStyle?.('italic');
+    });
+    vCopy.addEventListener('click', () => this.scribe._editTextCopySelection?.());
+    vDel.addEventListener('click', () => {
+      if (this.scribe._graphicsEditActive) {
+        const counts = this.scribe._graphicsEditSelectedCounts?.() || { count: 0 };
+        if (counts.count === 0 || !this.scribe._graphicsEditDeleteSelection?.()) return;
+        const what = counts.count === 1 ? (counts.paths === 1 ? 'Shape' : 'Image') : `${counts.count} objects`;
+        this._showToast(`${what} removed`, { actionLabel: 'Undo', onAction: () => this.scribe.undo() });
+        return;
+      }
+      const n = this.scribe._editTextSelectedLines?.().length || 0;
+      if (n === 0 || !this.scribe._editTextDeleteSelection?.()) return;
+      this._showToast(`${n === 1 ? 'Line' : `${n} lines`} deleted`, { actionLabel: 'Undo', onAction: () => this.scribe.undo() });
+    });
+    vDeselect.addEventListener('click', () => this.scribe._graphicsEditClearSelection?.());
+    vDone.addEventListener('click', () => {
+      this.scribe._editTextLineEditor?.commit().catch((e) => console.error('Edit Text: commit failed:', e));
+    });
+    vbar.append(vEdit, vBold, vItalic, vCopy, vSep, vDel, vDeselect, vHint, vDone);
+    this.pdfViewerElem.appendChild(vbar);
+    this._vbarElem = vbar;
+    this._vbarParts = {
+      edit: vEdit, bold: vBold, italic: vItalic, copy: vCopy, sep: vSep, del: vDel, deselect: vDeselect, hint: vHint, done: vDone,
+    };
+    // The selection engine has no change seam, so the bar re-reads its target after every release while a mode runs.
+    const onVbarSettle = () => {
+      if (!this._phoneChrome || !this._modeBannerBtn) return;
+      queueMicrotask(() => this._syncPhoneVerbBar());
+    };
+    window.addEventListener('pointerup', onVbarSettle);
+    this._teardownCallbacks.push(() => window.removeEventListener('pointerup', onVbarSettle));
+  }
+
+  /** Lower the mode sheet. */
+  _closeModeSheet() {
+    const sheet = this._modeSheetElem;
+    if (!sheet) return;
+    sheet.classList.remove('open', 'dragging');
+    // An inline offset outranks the class transform, so the one a dismissing drag leaves must not survive to the next open.
+    sheet.style.transform = '';
   }
 
   /**
@@ -3086,6 +3616,9 @@ class ScribePDFViewer {
     dock.className = 'scribe-dock';
     this._dockElem = dock;
     this.pdfViewerElem.appendChild(dock);
+
+    this._buildPhoneModeChrome();
+
     if (!this._thumbnailPanel) return;
 
     // The companion strip is the phone's whole Pages surface: a tap on its pull tab or an upward drag expands it into the Pages room.
@@ -3108,7 +3641,6 @@ class ScribePDFViewer {
       },
     });
     this.pdfViewerElem.appendChild(this._companionStrip.stripElem);
-    this.pdfViewerElem.appendChild(this._companionStrip.strandElem);
 
     // The full-height Pages room slides up from behind the dock and covers the document while pages are organized.
     const room = document.createElement('div');
@@ -3218,7 +3750,6 @@ class ScribePDFViewer {
           morph.settle(!commit, (stillOpen) => {
             if (stillOpen) return;
             this._roomOpen = false;
-            this._syncDockPagesBtn();
             if (this._companionStrip) this._companionStrip.settle();
           });
         }
@@ -3229,7 +3760,6 @@ class ScribePDFViewer {
       room.classList.remove('dragging');
       if (commit) {
         this._roomOpen = false;
-        this._syncDockPagesBtn();
         room.classList.remove('open');
       }
       room.style.transform = '';
@@ -3261,11 +3791,6 @@ class ScribePDFViewer {
     const panelsBtn = makeIconButton('Panels', DOCK_PANELS_SVG, 'Bookmarks and comments');
     panelsBtn.addEventListener('click', () => { if (this._sheetOpen) this._closeSheet(); else this._openSheet(); });
     this._sheetPanelsBtn = panelsBtn;
-
-    // Always present, even with no document, so the dock never re-flows.
-    const pagesBtn = makeIconButton('Pages', DOCK_PAGES_SVG, 'All pages');
-    pagesBtn.addEventListener('click', () => { if (this.doc) this._pagesRoomGesture('tap', 0); });
-    this._dockPagesBtn = pagesBtn;
 
     const scrim = document.createElement('div');
     scrim.className = 'scribe-sheet-scrim';
@@ -3305,7 +3830,19 @@ class ScribePDFViewer {
     });
     this._sheetActBtn = actBtn;
     acts.append(actBtn);
-    hd.append(pill, seg, acts);
+    // Shown in place of the tabs and action slot while a bookmarks Move session is on.
+    const movehd = document.createElement('div');
+    movehd.className = 'scribe-sheet-movehd';
+    const movingTitle = document.createElement('span');
+    movingTitle.className = 'scribe-sheet-moving-title';
+    movingTitle.textContent = 'Moving bookmarks';
+    const movingDone = document.createElement('button');
+    movingDone.type = 'button';
+    movingDone.className = 'scribe-sheet-moving-done';
+    movingDone.textContent = 'Done';
+    movingDone.addEventListener('click', () => { if (this._bookmarksPanel) this._bookmarksPanel.endMoveSession(); });
+    movehd.append(movingTitle, movingDone);
+    hd.append(pill, seg, movehd, acts);
     const content = document.createElement('div');
     content.className = 'scribe-sheet-content';
     this._sheetContentElem = content;
@@ -3313,94 +3850,25 @@ class ScribePDFViewer {
     this._sheetElem = sheet;
     this.pdfViewerElem.append(scrim, sheet, room);
 
-    // Header gestures: a drag resizes the sheet live and snaps back to half, or closed, on release.
-    // Below the smallest useful height the drag stops resizing and the whole card rides the finger down behind the dock, so a dismissal can be dragged to completion.
-    // Capturing under a button would retarget its click to the row, so capture is immediate only off-button and deferred past the slop when the press starts on one.
-    let dragActive = false;
-    let dragStartY = 0;
-    let dragStartH = 0;
-    let dragLastH = 0;
-    let dragOver = 0;
-    let dragMoved = false;
-    let dragFromButton = false;
-    hd.addEventListener('pointerdown', (e) => {
-      // A second concurrent touch must not re-base the gesture mid-drag.
-      if (dragActive) return;
-      dragActive = true;
-      dragStartY = e.clientY;
-      dragStartH = sheet.getBoundingClientRect().height;
-      dragOver = 0;
-      dragMoved = false;
-      dragFromButton = !!(e.target instanceof Element && e.target.closest('button'));
-      if (!dragFromButton) {
-        try { hd.setPointerCapture(e.pointerId); } catch { /* untrusted event: move/up still arrive by bubbling */ }
-      }
-    });
-    hd.addEventListener('pointermove', (e) => {
-      if (!dragActive) return;
-      const dy = dragStartY - e.clientY;
-      if (!dragMoved && Math.abs(dy) < 6) return;
-      if (!dragMoved && dragFromButton) {
-        try { hd.setPointerCapture(e.pointerId); } catch { /* see above */ }
-      }
-      if (!dragMoved) {
+    attachSheetDrag(sheet, hd, {
+      host: this.pdfViewerElem,
+      resizable: true,
+      body: content,
+      onEngage: () => {
         // For the gesture's lifetime the document lays out full-height behind the sheet, so a descending sheet reveals live pages instead of the void its inset left.
         if (this._sheetRelayoutT) { clearTimeout(this._sheetRelayoutT); this._sheetRelayoutT = null; }
         this._sheetDragLayout = true;
         this._relayout();
-      }
-      dragMoved = true;
-      sheet.classList.add('dragging');
-      const avail = this.pdfViewerElem.clientHeight;
-      const targetH = dragStartH + dy;
-      // The resize floor doubles as the release-to-close threshold, so the bottom edge detaching announces that letting go dismisses.
-      const floorH = Math.max(140, avail * 0.28);
-      dragLastH = Math.min(Math.round(avail * 0.5), Math.max(floorH, targetH));
-      dragOver = Math.max(0, floorH - targetH);
-      sheet.style.height = `${dragLastH}px`;
-      sheet.style.transform = dragOver ? `translateY(${dragOver}px)` : '';
+      },
+      onDismiss: () => this._closeSheet(),
+      onSettle: () => {
+        this._sheetRelayoutT = setTimeout(() => {
+          this._sheetRelayoutT = null;
+          this._sheetDragLayout = false;
+          this._relayout();
+        }, 300);
+      },
     });
-    /** Settle a finished drag (release or cancel): snap the sheet back to its half height, or closed. */
-    const settleDrag = () => {
-      sheet.getBoundingClientRect();
-      sheet.classList.remove('dragging');
-      if (dragOver > 0) {
-        this._closeSheet();
-        return;
-      }
-      sheet.style.height = '';
-      this._sheetRelayoutT = setTimeout(() => {
-        this._sheetRelayoutT = null;
-        this._sheetDragLayout = false;
-        this._relayout();
-      }, 300);
-    };
-    hd.addEventListener('pointerup', () => {
-      if (!dragActive) return;
-      dragActive = false;
-      if (!dragMoved) {
-        sheet.classList.remove('dragging');
-        return;
-      }
-      settleDrag();
-    });
-    // A cancelled pointer (browser takeover, palm) must settle like a release, or the sheet strands mid-ride with transitions off.
-    // Settle from the tracked geometry, never the event's coordinates: Chrome reports pointercancel at (0,0).
-    hd.addEventListener('pointercancel', () => {
-      if (!dragActive) return;
-      dragActive = false;
-      if (dragMoved) settleDrag();
-      // No click composes after a cancel, so clear the flag here or the swallow guard below would eat the next real tap.
-      dragMoved = false;
-    });
-    // A drag that began on a tab still composes a click on release (the capture retargets it here), so swallow it or the drag would also switch tabs.
-    hd.addEventListener('click', (e) => {
-      if (dragMoved) {
-        e.stopPropagation();
-        e.preventDefault();
-        dragMoved = false;
-      }
-    }, true);
   }
 
   /** Open the bottom sheet on the last-shown view. */
@@ -3544,7 +4012,6 @@ class ScribePDFViewer {
     this._cancelRoomSink();
     this._closeSheet(true);
     this._roomOpen = true;
-    this._syncDockPagesBtn();
     this._showPagesRoomContent();
     // Clear any residue of an interrupted drag: a leftover inline transform (or the transition-suppressing drag class) would park the room off-position.
     this._pagesRoomElem.classList.remove('dragging');
@@ -3604,7 +4071,6 @@ class ScribePDFViewer {
     if (this._pagesMorph) this._pagesMorph.abort();
     this._setRoomEditing(false);
     this._roomOpen = false;
-    this._syncDockPagesBtn();
     if (this._companionStrip) this._companionStrip.park();
     room.classList.add('sinking');
     room.classList.remove('open');
@@ -3640,7 +4106,6 @@ class ScribePDFViewer {
     if (!instant && this._pagesMorph && this._pagesMorph.isActive()) {
       this._setRoomEditing(false);
       this._roomOpen = false;
-      this._syncDockPagesBtn();
       this._pagesMorph.settle(false);
       return;
     }
@@ -3650,7 +4115,6 @@ class ScribePDFViewer {
     this._setRoomEditing(false);
     if (!this._pagesRoomElem || !this._roomOpen) return;
     this._roomOpen = false;
-    this._syncDockPagesBtn();
     // Park the covered strip on the active page first: the close must reveal it at rest, not still gliding after an in-room navigation.
     if (this._companionStrip) this._companionStrip.park();
     if (!instant && this._pagesMorph
@@ -3687,7 +4151,7 @@ class ScribePDFViewer {
     if (morph && morph.isActive()) {
       if (phase === 'move' && !morph.settling()) { morph.frame(dy); return; }
       if (phase === 'end' && !morph.settling()) {
-        morph.settle(dy > Math.min(140, travel * 0.25), (committed) => { if (committed) this._roomOpen = true; this._syncDockPagesBtn(); });
+        morph.settle(dy > Math.min(140, travel * 0.25), (committed) => { if (committed) this._roomOpen = true; });
       }
       return;
     }
@@ -3709,12 +4173,10 @@ class ScribePDFViewer {
       if (morph && !reduceMotion) {
         this._showPagesRoomContent();
         if (morph.begin()) {
-          if (this._dockPagesBtn) this._dockPagesBtn.classList.add('active');
           morph.frame(0);
           morph.settle(true, (committed) => {
             // The sheet closes only once the grown room covers it, so its relayout does not reflow the document mid-climb.
             if (committed) { this._roomOpen = true; this._closeSheet(true); }
-            this._syncDockPagesBtn();
           });
           return;
         }
@@ -3748,7 +4210,6 @@ class ScribePDFViewer {
     room.style.transform = '';
     if (commit) {
       this._roomOpen = true;
-      this._syncDockPagesBtn();
       setTimeout(() => { if (this._roomOpen && this._thumbnailPanel) this._thumbnailPanel.refit(); }, 300);
     } else {
       room.classList.remove('open');
@@ -3757,12 +4218,6 @@ class ScribePDFViewer {
         this._thumbnailPanel.panelElem.style.display = 'none';
       }
     }
-  }
-
-  /** Keep the dock's Pages button tinted while the Pages view is open. */
-  _syncDockPagesBtn() {
-    if (!this._dockPagesBtn) return;
-    this._dockPagesBtn.classList.toggle('active', this._roomOpen);
   }
 
   /** Disable the controls that need a document while none is loaded. */
@@ -3778,8 +4233,8 @@ class ScribePDFViewer {
       this._bookmarksPanel?.toggleElem,
       this._commentsPanel?.toggleElem,
       this._sidebarToggleElem,
-      this._dockPagesBtn,
       this._sheetPanelsBtn,
+      this._dockEditBtn,
       this._fillSignTool?.toolbarElem,
       this._editPagesTool?.toolbarElem,
       this._recognizeTool?.toolbarElem,

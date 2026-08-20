@@ -96,15 +96,18 @@ const INDENT_PX = 21;
  * Create the bookmarks (document outline) side panel.
  * @param {*} scribe - The ScribeViewer instance.
  * @param {{ onNavigate: (dest: { pageIndex: number, yFrac?: number }) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void,
- *   onRenameFocus?: (focused: boolean) => void }} handlers
+ *   onRenameFocus?: (focused: boolean) => void, onMoveSession?: (active: boolean) => void }} handlers
  *   `onNavigate` receives the clicked bookmark's whole destination, so the host can honor its within-page position (`yFrac`), not just the page.
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase: `start` (pointerdown), `move` (each pointermove), and `end` (release).
  *   `onRenameFocus` fires as an inline rename takes and releases focus, so a phone host can lift the sheet clear of the on-screen keyboard.
+ *   `onMoveSession` fires as the phone Move session starts and ends, so the host can swap the sheet header for the session bar.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void,
  * setActive: () => void, setVisible: (v: boolean) => void, destroy: () => void,
- * addAtPage: (pageIndex?: number) => void, setPhoneMode: (on: boolean) => void }}
+ * addAtPage: (pageIndex?: number) => void, setPhoneMode: (on: boolean) => void, endMoveSession: () => void }}
  */
-export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFocus }) {
+export function createBookmarksPanel(scribe, {
+  onNavigate, onResize, onRenameFocus, onMoveSession,
+}) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-bookmarks-panel';
   panelElem.style.width = '240px';
@@ -146,6 +149,9 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   let activeRow = /** @type {?Element} */ (null);
   let visible = false;
   let phoneMode = false;
+  let moveSession = false;
+  /** @type {?HTMLElement} */
+  let menuSubjectRow = null;
   // Bookmark node ids selected for a bulk action.
   const selected = new Set();
   const editing = () => !!(scribe.opt && scribe.opt.enablePageEditing);
@@ -179,7 +185,26 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     return search(outline(), null, null);
   }
 
-  function closeMenu() { menuElem.style.display = 'none'; menuElem.textContent = ''; }
+  function closeMenu() {
+    menuElem.style.display = 'none';
+    menuElem.textContent = '';
+    if (menuSubjectRow) { menuSubjectRow.classList.remove('scribe-bm-menu-subject'); menuSubjectRow = null; }
+  }
+
+  /** Start the phone Move session, which makes a still press lift rows instead of opening the row menu. */
+  function startMoveSession() {
+    if (moveSession) return;
+    moveSession = true;
+    if (onMoveSession) onMoveSession(true);
+  }
+
+  /** End the phone Move session, setting down whatever card is in hand. */
+  function endMoveSession() {
+    if (!moveSession) return;
+    moveSession = false;
+    if (drag) onDragEnd(new PointerEvent('pointerup'));
+    if (onMoveSession) onMoveSession(false);
+  }
 
   /**
    * Show the reused context menu at viewport point (x, y), positioned within the host.
@@ -315,11 +340,14 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   }
 
   /**
-   * Open the phone row menu (Rename / Move / Delete) under the row's dots button.
+   * Open the phone row menu (Rename / Move / Delete).
+   * A dots tap opens a dropdown below the button; a still press opens a callout centered above the row, clear of the held finger.
+   * Either placement flips to the row's other side when it would run off the sheet.
    * @param {*} node - Outline node the menu operates on.
    * @param {HTMLElement} row - The node's rendered row.
+   * @param {'dots'|'hold'} [invocation]
    */
-  function openPhoneRowMenu(node, row) {
+  function openPhoneRowMenu(node, row, invocation = 'dots') {
     const label = /** @type {HTMLElement} */ (row.querySelector('.scribe-bm-label'));
     const wrapper = /** @type {HTMLElement} */ (row.parentElement);
     const dots = /** @type {HTMLElement} */ (row.querySelector('.scribe-bm-dots'));
@@ -334,7 +362,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       menuElem.appendChild(item);
     };
     add('Rename', true, false, () => startRename(node, label));
-    add('Move', allIds().length > 1, false, () => armMove(node));
+    add('Move', allIds().length > 1, false, () => { startMoveSession(); armMove(node); });
     add('Delete', true, true, () => {
       const commit = () => { scribe.doc.removeBookmarks([node.id]); afterEdit(); };
       if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { commit(); return; }
@@ -346,10 +374,28 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       wrapper.style.opacity = '0';
       setTimeout(commit, 180);
     });
-    const dotsRect = dots.getBoundingClientRect();
-    showMenuAt(dotsRect.left, dotsRect.bottom + 2);
+    menuElem.style.display = 'block';
     const host = (scribe.outerElem || panelElem).getBoundingClientRect();
-    menuElem.style.left = `${Math.max(4, dotsRect.right - menuElem.offsetWidth - host.left)}px`;
+    const panelRect = panelElem.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const mw = menuElem.offsetWidth;
+    const mh = menuElem.offsetHeight;
+    let x;
+    let y;
+    if (invocation === 'hold') {
+      x = rowRect.left + (rowRect.width - mw) / 2;
+      const above = rowRect.top - 2 - mh;
+      y = above >= panelRect.top + 4 ? above : rowRect.bottom + 2;
+    } else {
+      const dotsRect = dots.getBoundingClientRect();
+      x = dotsRect.right - mw;
+      const below = dotsRect.bottom + 2;
+      y = below + mh <= panelRect.bottom - 4 ? below : rowRect.top - 2 - mh;
+    }
+    menuElem.style.left = `${Math.max(4, x - host.left)}px`;
+    menuElem.style.top = `${y - host.top}px`;
+    row.classList.add('scribe-bm-menu-subject');
+    menuSubjectRow = row;
   }
 
   /**
@@ -1008,16 +1054,18 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     };
     if (dragPress.touch) {
       const { pointerId } = e;
+      // In a Move session the hold lifts rows directly, so a run of moves costs no menu trips.
+      const holdOpensMenu = phoneMode && !moveSession;
       dragPress.holdT = setTimeout(() => {
         if (!dragPress || drag) return;
-        if (phoneMode) {
+        if (holdOpensMenu) {
           window.removeEventListener('pointermove', onDragMove);
           window.removeEventListener('pointerup', onDragEnd);
           window.removeEventListener('pointercancel', onDragEnd);
           dragPress = null;
           // The finger is still down, so swallow the click that composes at release.
           dragClickGuard = true;
-          openPhoneRowMenu(node, row);
+          openPhoneRowMenu(node, row, 'hold');
           return;
         }
         dragPress.holdT = null;
@@ -1025,7 +1073,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
         try { treeElem.setPointerCapture(pointerId); } catch { /* pointer already released or untrusted */ }
         drag = startDrag(dragPress);
         updateDragVisuals(dragPress.x, dragPress.y);
-      }, phoneMode ? MENU_HOLD_MS : LIFT_HOLD_MS);
+      }, holdOpensMenu ? MENU_HOLD_MS : LIFT_HOLD_MS);
     }
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragEnd);
@@ -1215,9 +1263,10 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   function setVisible(v) {
     visible = v;
     panelElem.style.display = v ? '' : 'none';
-    if (v) { ensureScrollHook(); rebuild(); } else clearSelection();
+    if (v) { ensureScrollHook(); rebuild(); } else { endMoveSession(); clearSelection(); }
   }
   function destroy() {
+    endMoveSession();
     closeMenu();
     menuElem.remove();
     panelElem.remove();
@@ -1236,6 +1285,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   function setPhoneMode(on) {
     if (phoneMode === !!on) return;
     phoneMode = !!on;
+    if (!phoneMode) endMoveSession();
     if (visible) rebuild();
   }
 
@@ -1249,5 +1299,6 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     destroy,
     addAtPage: addBookmarkAtPage,
     setPhoneMode,
+    endMoveSession,
   };
 }

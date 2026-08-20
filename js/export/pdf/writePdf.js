@@ -33,6 +33,8 @@ import { buildInfoDictBody, patchFileId, FILE_ID_PLACEHOLDER } from './pdfObject
  * @param {number} [params.proofOpacity=0.8] -
  * @param {?Array<ImageWrapper>} [params.images=null] - Array of images to include in PDF
  * @param {boolean} [params.includeImages=false] - Whether to include images in the PDF
+ * @param {?Array<?Array<{image: ImageWrapper, bbox: bbox, rotation?: number}>>} [params.pageImages=null] - Per-page sub-page images, indexed by document page index.
+ *   Each entry is drawn at its bbox (top-left origin, same frame as the page dims) under the page's text content.
  * @param {?Array<Array<Annotation>>} [params.annotationsPages=null] - Per-page annotation arrays
  * @param {boolean} [params.humanReadable=false] - If true, emit uncompressed
  *   streams + hex-wrapped fonts for diffing. Default emits FlateDecode.
@@ -60,6 +62,7 @@ export async function writePdf({
   proofOpacity = 0.8,
   images = null,
   includeImages = false,
+  pageImages = null,
   annotationsPages = null,
   humanReadable = false,
   docFonts,
@@ -100,7 +103,21 @@ export async function writePdf({
   const pdfImageObjStrArr = [];
   const imageObjIndices = [];
 
-  if (includeImages && images && images.length > 0) {
+  const fullPageImages = includeImages && images && images.length > 0 ? images : null;
+
+  /** @type {Array<{i: number, image: ImageWrapper, bbox: bbox, rotation: number}>} */
+  const regionImageArr = [];
+  if (pageImages) {
+    for (const i of pageArr) {
+      for (const r of pageImages[i] || []) regionImageArr.push({
+        i, image: r.image, bbox: r.bbox, rotation: r.rotation || 0,
+      });
+    }
+  }
+  /** @type {Map<number, Array<{objIndex: number, bbox: bbox, rotation: number}>>} */
+  const regionPlacementsByPage = new Map();
+
+  if (fullPageImages || regionImageArr.length > 0) {
     const objectIDeviceN = objectI;
     const colorDevObjects = await createDeviceNRGBA(objectI);
     for (let i = 0; i < colorDevObjects.length; i++) {
@@ -108,11 +125,17 @@ export async function writePdf({
       objectI++;
     }
 
-    const imageObjects = createEmbeddedImages(images, objectI, objectIDeviceN, humanReadable);
+    const embedImages = [...(fullPageImages || []), ...regionImageArr.map((r) => r.image)];
+    const imageObjects = createEmbeddedImages(embedImages, objectI, objectIDeviceN, humanReadable);
     for (let i = 0; i < imageObjects.length; i++) {
       pdfImageObjStrArr.push(imageObjects[i]);
-      imageObjIndices.push(objectI + i);
     }
+    const fullPageCount = fullPageImages ? fullPageImages.length : 0;
+    for (let i = 0; i < fullPageCount; i++) imageObjIndices.push(objectI + i);
+    regionImageArr.forEach((r, k) => {
+      if (!regionPlacementsByPage.has(r.i)) regionPlacementsByPage.set(r.i, []);
+      regionPlacementsByPage.get(r.i)?.push({ objIndex: objectI + fullPageCount + k, bbox: r.bbox, rotation: r.rotation });
+    });
     objectI += imageObjects.length;
   }
 
@@ -125,13 +148,15 @@ export async function writePdf({
   const linkAnnotPatches = [];
 
   const pageIndexArr = [];
-  for (const i of pageArr) {
+  for (const [k, i] of pageArr.entries()) {
     const angle = pageMetricsArr[i].angle || 0;
     const { dims } = pageMetricsArr[i];
 
     const hasImage = includeImages && images && images.length > 0;
     const imageName = hasImage ? 'Im0' : null;
-    const pageImageObjIndices = hasImage ? [imageObjIndices[i % images.length]] : [];
+    // `images` is packed in pageArr order, so it is indexed by export position, not by document page index.
+    const pageImageObjIndices = hasImage ? [imageObjIndices[k % images.length]] : [];
+    const regionImages = regionPlacementsByPage.get(i) || [];
 
     const { pdfObj, pdfFontsUsed: pdfFontsUsedI } = (await ocrPageToPDF({
       pageObj: ocrArr?.[i],
@@ -151,6 +176,7 @@ export async function writePdf({
       confThreshMed,
       imageObjIndices: pageImageObjIndices,
       imageName,
+      regionImages,
       // `type == null` is a legacy highlight (UI/consolidated annots omit `type`).
       // Never emit 'redact' as an annotation; its marks are applied destructively at export instead.
       pageAnnotations: [
@@ -358,6 +384,7 @@ ${xrefOffset}
  * @param {?import('../../font-parser/src/font.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
  * @param {?string} [params.imageName=null]
+ * @param {Array<{objIndex: number, bbox: bbox, rotation: number}>} [params.regionImages=[]] - Sub-page images drawn at their bboxes under the text content.
  * @param {number} [params.pageRotation=0] - User rotation (multiple of 90) written as the page's /Rotate.
  * @param {Array<Annotation>} [params.pageAnnotations=[]] - Annotations (highlights + FreeText) for this page
  * @param {boolean} [params.humanReadable=false]
@@ -382,6 +409,7 @@ async function ocrPageToPDF({
   confThreshMed = 75,
   imageObjIndices = [],
   imageName = null,
+  regionImages = [],
   pageAnnotations = [],
   humanReadable = false,
   docFonts,
@@ -392,7 +420,7 @@ async function ocrPageToPDF({
   }
 
   const noTextContent = !pageObj || pageObj.lines.length === 0 || textMode === 'annot';
-  const noImageContent = !imageName || !imageObjIndices || imageObjIndices.length === 0;
+  const noImageContent = (!imageName || !imageObjIndices || imageObjIndices.length === 0) && regionImages.length === 0;
 
   const pageIndex = firstObjIndex;
   let pageObjStr = `${String(pageIndex)} 0 obj\n<</Type/Page/MediaBox[0 0 ${String(outputDims.width)} ${String(outputDims.height)}]`;
@@ -423,8 +451,12 @@ async function ocrPageToPDF({
     let imageResourceStr = '';
     let imageContentObjStr = '';
 
-    if (imageName && imageObjIndices.length > 0) {
-      imageResourceStr = createImageResourceDict(imageObjIndices);
+    const hasFullPageImage = imageName && imageObjIndices.length > 0;
+    if (hasFullPageImage || regionImages.length > 0) {
+      imageResourceStr = createImageResourceDict([...imageObjIndices, ...regionImages.map((r) => r.objIndex)]);
+    }
+
+    if (hasFullPageImage) {
       let rotation = 0;
       if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
         rotation = angle;
@@ -439,6 +471,13 @@ async function ocrPageToPDF({
 
       imageContentObjStr += drawImageCommands(imageName, x, y, outputDims.width, outputDims.height, rotation);
     }
+
+    // Resource names are positional in the combined index list, so region names start after the full-page entries.
+    regionImages.forEach((r, j) => {
+      const w = r.bbox.right - r.bbox.left;
+      const h = r.bbox.bottom - r.bbox.top;
+      imageContentObjStr += drawImageCommands(`Im${imageObjIndices.length + j}`, r.bbox.left, outputDims.height - r.bbox.bottom, w, h, r.rotation);
+    });
 
     if (noTextContent) {
       resourceDictObjStr += imageResourceStr;

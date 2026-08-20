@@ -50,6 +50,33 @@ export class LayoutRegion extends LayoutBoxBase {
 }
 
 /**
+ * A page rectangle that exports draw as an image.
+ */
+export class LayoutImageRegion extends LayoutBoxBase {
+  /**
+   * Create a layout image region.
+   * @param {LayoutPage} page
+   * @param {bbox} coords - The coordinates of the layout image region.
+   */
+  constructor(page, coords) {
+    super(coords);
+    this.page = page;
+    this.type = 'image';
+    /** @type {boolean} Whether the text under this region is dropped from exported text. */
+    this.excludeText = true;
+    /** @type {number} Rotation in degrees applied when the region is drawn. */
+    this.rotation = 0;
+    /**
+     * Where the region's pixels come from.
+     * `null` means the exporter crops the page raster at `coords`.
+     * Other values are reserved for producers that supply pixels another way.
+     * @type {?{kind: string}}
+     */
+    this.source = null;
+  }
+}
+
+/**
  * @param {number} n - Page number.
  */
 export function LayoutPage(n) {
@@ -57,7 +84,7 @@ export function LayoutPage(n) {
   this.n = n;
   /** @type {boolean} */
   this.default = true;
-  /** @type {Object<string, LayoutRegion>} */
+  /** @type {Object<string, LayoutRegion|LayoutImageRegion>} */
   this.boxes = {};
 }
 
@@ -105,6 +132,36 @@ export function LayoutDataTablePage(n) {
 }
 
 /**
+ * Copy the layout region pages with each region's `page` back-reference removed, so the result can be JSON-serialized.
+ * @param {Array<LayoutPage>} pages - Layout region pages.
+ */
+export const removeCircularRefsRegions = (pages) => {
+  const pagesClone = structuredClone(pages);
+  pagesClone.forEach((page) => {
+    Object.values(page.boxes).forEach((box) => {
+      // @ts-ignore
+      delete box.page;
+    });
+  });
+  return pagesClone;
+};
+
+/**
+ * Restores circular references to an array of deserialized layout region pages.
+ * @param {*} pages
+ * @returns {Array<LayoutPage>}
+ */
+export const addCircularRefsRegions = (pages) => {
+  pages.forEach((page) => {
+    if (!page?.boxes) return;
+    Object.values(page.boxes).forEach((box) => {
+      box.page = page;
+    });
+  });
+  return pages;
+};
+
+/**
  * Serialize the layout data tables as JSON.
  * A special function is needed to remove circular references.
  * @param {Array<LayoutDataTablePage>} pages - Layout data tables.
@@ -145,9 +202,12 @@ export const addCircularRefsDataTables = (pages) => {
 const layout = {
   LayoutDataColumn,
   LayoutDataTable,
+  LayoutImageRegion,
   LayoutRegion,
   removeCircularRefsDataTables,
   addCircularRefsDataTables,
+  removeCircularRefsRegions,
+  addCircularRefsRegions,
 };
 
 export default layout;

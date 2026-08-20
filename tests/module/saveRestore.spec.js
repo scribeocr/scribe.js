@@ -118,6 +118,16 @@ describe('Check .scribe export function.', () => {
       expect(orig.lines[0].words[0].text, 'editing the clone leaves the original word intact').not.toBe('MUTATED');
     }
 
+    const regionPage = doc.layoutRegions.pages[0];
+    const excludeRegion = new scribe.layout.LayoutRegion(regionPage, 0, {
+      left: 100, top: 200, right: 500, bottom: 400,
+    }, 'exclude');
+    regionPage.boxes[excludeRegion.id] = excludeRegion;
+    const imageRegion = new scribe.layout.LayoutImageRegion(regionPage, {
+      left: 600, top: 700, right: 900, bottom: 1000,
+    });
+    regionPage.boxes[imageRegion.id] = imageRegion;
+
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     scribe.ScribeDoc.defaults.compressScribe = true;
@@ -137,6 +147,20 @@ describe('Check .scribe export function.', () => {
     const wordMixed = doc.ocr.active[0].lines[30].words[10];
     expect(wordMixed.text, 'mixed-style word changed on .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'intra-word style runs lost on .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
+
+    const regionsRestored = Object.values(doc.layoutRegions.pages[0].boxes);
+    expect(regionsRestored.length, 'user-drawn layout regions lost on .scribe round-trip').toBe(2);
+    const excludeRestored = regionsRestored.find((b) => b.type === 'exclude');
+    expect(excludeRestored?.coords, 'the exclude region changed coordinates on .scribe round-trip').toEqual({
+      left: 100, top: 200, right: 500, bottom: 400,
+    });
+    const imageRestored = /** @type {LayoutImageRegion} */ (regionsRestored.find((b) => b.type === 'image'));
+    expect(imageRestored?.coords, 'the image region changed coordinates on .scribe round-trip').toEqual({
+      left: 600, top: 700, right: 900, bottom: 1000,
+    });
+    expect(imageRestored?.excludeText, 'the image region lost its text-suppression flag on .scribe round-trip').toBe(true);
+    expect(imageRestored?.source, 'the image region lost its crop-the-raster pixel source on .scribe round-trip').toBe(null);
+    expect(imageRestored?.page?.n, 'the restored image region lost its page back-reference, so region deletion would crash').toBe(0);
 
     // No fixture is large enough to reach the segmented layout naturally, so both exports below force the threshold down to one character.
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
@@ -162,6 +186,7 @@ describe('Check .scribe export function.', () => {
     expect(wordMixedSeg.text, 'mixed-style word changed on segmented .scribe round-trip').toBe('Ltd.,');
     expect(wordMixedSeg.styleRuns, 'intra-word style runs lost on segmented .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
     expect(doc.annotations.pages[0].length, 'highlight annotations lost on segmented .scribe round-trip').toBe(12);
+    expect(Object.values(doc.layoutRegions.pages[0].boxes).length, 'layout regions lost on segmented .scribe round-trip').toBe(2);
 
     await doc.clear();
     await scribe.terminate();

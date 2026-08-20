@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { resolveRegionImage } from '../../js/export/export.js';
+import { writePdf } from '../../js/export/pdf/writePdf.js';
+import { imageUtils } from '../../js/objects/imageObjects.js';
 import { pageImagePlacements, pagePathPlacements } from '../../js/fillSign.js';
 import { getMetadata } from '../../js/pdf/metadata/metadataInspect.js';
 import { ca } from '../../js/canvasAdapter.js';
@@ -1303,6 +1306,9 @@ describe('Check addHighlights and clearHighlights.', () => {
 });
 
 describe('Check intra-word style runs survive a visible-text PDF export -> import round-trip.', () => {
+  /** @type {string} */
+  let pdfText;
+
   beforeAll(async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
@@ -1318,9 +1324,12 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
       left: 604, top: 2255, right: 839, bottom: 2311,
     };
 
+    doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+
     scribe.ScribeDoc.defaults.displayMode = 'ebook';
     const pdfData = await doc.exportData('pdf');
     scribe.ScribeDoc.defaults.displayMode = 'invis';
+    pdfText = new TextDecoder('latin1').decode(pdfData);
     await scribe.terminate();
     doc = await scribe.openDocument({ pdfFiles: [pdfData] });
   });
@@ -1339,6 +1348,29 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     expect(words[3].text, 'dash-joined mixed-style token split or corrupted on PDF round-trip').toBe('alpha—beta');
     expect(words[3].style.italic, 'italic first half lost on the dash-joined token').toBe(true);
     expect(words[3].styleRuns, 'style flip at the dash not captured on PDF round-trip').toEqual([{ i: 6, style: { italic: false } }]);
+  });
+
+  // Regression: the visible-text build wrote the 300-DPI pixel dims as each page's /MediaBox, so a Letter page exported at roughly four times its physical size.
+  // The re-import then tripped the 3500 px width cap instead of returning to the source pixel frame.
+  test('Visible-text export of a physically-sized PDF writes point-frame pages', () => {
+    const mediaBoxes = [...pdfText.matchAll(/\/MediaBox\[([^\]]*)\]/g)].map((m) => m[1]);
+    expect(mediaBoxes, 'every exported page carries the physical page size in points as its MediaBox').toEqual(Array(6).fill('0 0 612 792'));
+  });
+
+  test('Re-import of the point-frame export parses at the true 300-DPI frame', () => {
+    expect(doc.pageMetrics[0].dims, 'the re-import returns to the source pixel frame instead of tripping the width cap').toEqual({ width: 2550, height: 3300 });
+  });
+
+  test('A highlight added before the visible-text export returns to its original position on re-import', () => {
+    const annots = doc.annotations.pages[0];
+    expect(annots.length, 'the highlight survives the visible-text round-trip').toBe(1);
+    const { bbox } = annots[0];
+    const bboxRounded = {
+      left: Math.round(bbox.left), top: Math.round(bbox.top), right: Math.round(bbox.right), bottom: Math.round(bbox.bottom),
+    };
+    expect(bboxRounded, 'the highlight bbox scales with the page, landing at its 300-DPI position').toEqual({
+      left: 852, top: 301, right: 1698, bottom: 357,
+    });
   });
 
   afterAll(async () => {
@@ -1778,6 +1810,86 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   afterAll(async () => {
     scribe.ScribeDoc.defaults.humanReadablePDF = false;
     await scribe.terminate();
+  });
+});
+
+describe('Check page-subset export of an image-input document keeps each page\'s own image.', () => {
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc;
+  /** @type {string} */
+  let pdfText;
+
+  beforeAll(async () => {
+    // Image inputs sort by filename, so the pages are ascenders (648x382), bill (957x307), simple (320x180).
+    doc = await scribe.openDocument([
+      `${ASSETS_PATH}/ascenders_descenders_test.png`,
+      `${ASSETS_PATH}/bill.png`,
+      `${ASSETS_PATH}/simple.jpg`,
+    ]);
+    const pdfData = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { minPage: 1 }));
+    pdfText = new TextDecoder('latin1').decode(new Uint8Array(pdfData));
+  });
+
+  // Regression: writePdf indexed page images by document page index rather than export position.
+  // A multi-page export not starting at page 0 then drew the wrong image on every page.
+  test('Each page of a minPage export carries its own source image', () => {
+    const imageDims = {};
+    for (const m of pdfText.matchAll(/(\d+) 0 obj\s*<<[\s\S]{0,100}?\/Subtype\s*\/Image\s*\/Width\s+(\d+)\s*\/Height\s+(\d+)/g)) {
+      imageDims[m[1]] = `${m[2]}x${m[3]}`;
+    }
+    const resourceImage = {};
+    for (const m of pdfText.matchAll(/(\d+) 0 obj\s*<<\s*\/XObject\s*<<\s*\/Im0 (\d+) 0 R/g)) {
+      resourceImage[m[1]] = m[2];
+    }
+    const pages = [];
+    for (const m of pdfText.matchAll(/<<\/Type\/Page\/MediaBox\[0 0 (\d+) (\d+)\][^>]*?\/Resources (\d+) 0 R/g)) {
+      pages.push(`${m[1]}x${m[2]}:${imageDims[resourceImage[m[3]]]}`);
+    }
+    // Image-input pages size the MediaBox from the image, so each page's embedded image dims must equal its MediaBox.
+    expect(pages, 'a minPage: 1 export of a 3-page image document must contain exactly the last 2 pages, each embedding its own page\'s image').toEqual([
+      '957x307:957x307',
+      '320x180:320x180',
+    ]);
+  });
+
+  test('Sub-page image regions crop from the page raster and embed at their rectangles', async () => {
+    const raster = await doc.images.getNative(1);
+    const regionPage = doc.layoutRegions.pages[1];
+    const region1 = new scribe.layout.LayoutImageRegion(regionPage, {
+      left: 100, top: 50, right: 400, bottom: 250,
+    });
+    const region2 = new scribe.layout.LayoutImageRegion(regionPage, {
+      left: 500, top: 60, right: 650, bottom: 160,
+    });
+
+    const crop1 = await resolveRegionImage(region1, raster, doc.pageMetrics[1].dims);
+    expect(crop1.format, 'a region crop encodes as JPEG').toBe('jpeg');
+    expect(imageUtils.getDims(crop1), 'the crop has exactly the region rectangle dimensions').toEqual({ width: 300, height: 200 });
+    expect(crop1.n, 'the crop carries its source page number').toBe(1);
+    const crop2 = await resolveRegionImage(region2, raster, doc.pageMetrics[1].dims);
+
+    const regionPageImages = [];
+    regionPageImages[1] = [{ image: crop1, bbox: region1.coords }, { image: crop2, bbox: region2.coords }];
+    const regionPdf = await writePdf({
+      pageMetricsArr: doc.pageMetrics, ocrArr: [], pageArr: [1], textMode: 'ebook', docFonts: doc.fonts, pageImages: regionPageImages, humanReadable: true,
+    });
+    const regionPdfText = new TextDecoder('latin1').decode(regionPdf);
+
+    expect([...regionPdfText.matchAll(/\/MediaBox\[([^\]]*)\]/g)].map((m) => m[1]), 'the export contains exactly the requested page at its own size').toEqual(['0 0 957 307']);
+
+    const imageDims = {};
+    for (const m of regionPdfText.matchAll(/(\d+) 0 obj\s*<<[\s\S]{0,100}?\/Subtype\s*\/Image\s*\/Width\s+(\d+)\s*\/Height\s+(\d+)/g)) {
+      imageDims[m[1]] = `${m[2]}x${m[3]}`;
+    }
+    const resourceEntries = [...regionPdfText.matchAll(/\/(Im\d) (\d+) 0 R/g)].map((m) => `${m[1]}=${imageDims[m[2]]}`);
+    expect(resourceEntries, 'both region crops embed as XObjects named by their page position').toEqual(['Im0=300x200', 'Im1=150x100']);
+
+    const draws = [...regionPdfText.matchAll(/q\n([\d. -]+) cm\n\/(Im\d) Do\nQ/g)].map((m) => `${m[2]}@${m[1]}`);
+    expect(draws, 'each region draws at its own rectangle in bottom-up page space').toEqual(['Im0@300 0 0 200 100 57', 'Im1@150 0 0 100 500 147']);
+  });
+
+  afterAll(async () => {
+    if (doc) await doc.clear();
   });
 });
 

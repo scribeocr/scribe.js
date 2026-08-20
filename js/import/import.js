@@ -11,7 +11,9 @@ import {
 import { calcCharMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
-import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
+import {
+  addCircularRefsDataTables, addCircularRefsRegions, LayoutDataTablePage, LayoutPage,
+} from '../objects/layoutObjects.js';
 import { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { reassignOutlineIds } from '../objects/outlineObjects.js';
@@ -305,7 +307,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
     await doc.runOptimization(doc.ocr.active);
   }
   if (scribeRestoreObj.layoutRegions) {
-    doc.layoutRegions.pages = scribeRestoreObj.layoutRegions;
+    doc.layoutRegions.pages = addCircularRefsRegions(scribeRestoreObj.layoutRegions);
   }
   if (scribeRestoreObj.layoutDataTables) {
     addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
@@ -423,6 +425,7 @@ async function _restoreSessionFromLegacyHocr(doc, ocrData) {
 
   // Restore layout data from previous session (if applicable)
   if (ocrData.layoutObj) {
+    addCircularRefsRegions(ocrData.layoutObj);
     for (let i = 0; i < ocrData.layoutObj.length; i++) {
       doc.layoutRegions.pages[i] = ocrData.layoutObj[i];
     }

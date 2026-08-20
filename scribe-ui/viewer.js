@@ -386,7 +386,7 @@ export class ScribeViewer {
       top: 0, left: 0, right: 0, bottom: 0,
     };
 
-    /** @type {('select'|'addWord'|'recognizeWord'|'recognizeArea'|'printCoords'|'addLayoutBoxOrder'|'addLayoutBoxExclude'|'addLayoutBoxDataTable')} */
+    /** @type {('select'|'addWord'|'recognizeWord'|'recognizeArea'|'printCoords'|'addLayoutBoxOrder'|'addLayoutBoxExclude'|'addLayoutBoxImage'|'addLayoutBoxDataTable')} */
     this.mode = 'select';
 
     this.drag = {
@@ -506,6 +506,16 @@ export class ScribeViewer {
     this._touchCalloutShow = null;
     /** @type {?() => void} */
     this._touchCalloutHide = null;
+
+    // Phone-layout seams the hosting app sets and this file only reads.
+    /** @type {boolean} */
+    this._phoneChrome = false;
+    /** @type {?() => void} Fired when an editing mode's selection changed. */
+    this._modeSelectionChanged = null;
+    /** @type {?(text: string) => void} A short status line for the running mode. */
+    this._modeStatus = null;
+    /** @type {?(open: boolean) => void} Fired when the Edit Text line editor opens or closes. */
+    this._editTextEditorOpenChanged = null;
 
     /**
      * Pointer type ('mouse' | 'touch' | 'pen') of the most recent canvas pointerdown.
@@ -2181,6 +2191,8 @@ export class ScribeViewer {
     });
     scrollContainer.addEventListener('pointerup', (event) => {
       if (event.pointerType !== 'touch') return;
+      // In the editing modes a repeat tap cycles the pick through overlapping candidates, so it must not also zoom.
+      if (this._editTextActive || this._graphicsEditActive) { dblTap.lastUpT = 0; return; }
       if (this.mode !== 'select' || this.drag.isPinching
         || performance.now() - this._lastPinchEndT < 300
         || (this.useCustomSelection && this.textSel?.isDragging())) { dblTap.lastUpT = 0; return; }

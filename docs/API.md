@@ -164,7 +164,7 @@ scribe.ScribeDoc()` followed by [`doc.importFiles`](#docimportfilesfiles).
 | `ocr` | `Object<string, Array<OcrPage>>` | OCR versions by name; `ocr.active` is used for export. |
 | `ocrRaw` | `Object<string, Array<string>>` | Raw OCR source data (kept when `ScribeDoc.defaults.keepRawData`). |
 | `pageMetrics` | `Array<PageMetrics>` | Per-page dimensions and rotation. |
-| `layoutRegions` | `{ pages: Array<LayoutPage> }` | Layout regions used for reflow/reorder. |
+| `layoutRegions` | `{ pages: Array<LayoutPage> }` | User-drawn layout regions, one `boxes` dict per page. A region's `type` is `'order'` (reading-order priority), `'exclude'` (drop the text under it), or `'image'` (render the rectangle as an image cropped from the page raster). |
 | `layoutDataTables` | `{ pages: Array<LayoutDataTablePage> }` | Detected data tables. |
 | `annotations` | `{ pages: Array<Array<AnnotationHighlight>> }` | Highlight annotations. |
 | `fonts` | `DocFonts` | Document-scoped font container. |

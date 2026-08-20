@@ -88,9 +88,9 @@ const tokenSpans = (text) => {
 
 /**
  * @param {any} scribe - The viewer instance.
- * @param {{onCommitted?: (pages: Array<number>) => void}} [hooks]
+ * @param {{onCommitted?: (pages: Array<number>) => void, onOpenChanged?: (open: boolean) => void}} [hooks]
  */
-export function createLineEditor(scribe, { onCommitted } = {}) {
+export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
   /** @type {?EditSession} */
   let st = null;
 
@@ -542,6 +542,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     draw();
     hiddenInput.remove();
     document.removeEventListener('pointerdown', onDocPointerdown, true);
+    if (onOpenChanged) onOpenChanged(false);
   };
 
   let lingerToken = 0;
@@ -861,6 +862,8 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   const onDocPointerdown = (ev) => {
     if (!st) return;
     if (ev.target === hiddenInput || containsPoint(ev.clientX, ev.clientY)) return;
+    // The phone's editing toolbar acts on the open session, so its presses must not read as clicking away.
+    if (ev.target instanceof Element && ev.target.closest('.scribe-edit-text-tools')) return;
     commitSafe();
   };
 
@@ -1177,6 +1180,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     fieldOn = true;
     restartBlink();
     draw();
+    if (onOpenChanged) onOpenChanged(true);
   };
 
   return {
@@ -1187,5 +1191,6 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     commit,
     revert: close,
     teardown: close,
+    toggleStyle: toggleWordStyle,
   };
 }
