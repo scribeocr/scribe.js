@@ -128,7 +128,7 @@ export class LayoutDataTable {
     this.boxes = [];
     /** @type {?Array<number>} Bottom y-coordinate of each row. Rows will be detected automatically if not set. */
     this.rowBounds = null;
-    /** @type {'grid' | 'segmented-hline' | 'text'} */
+    /** @type {'text' | 'grid-strong' | 'segmented-hline' | 'header-rule' | 'row-band' | 'textract' | 'azure_doc_intel' | 'abbyy'} */
     this.detectionMethod = 'text';
     /** @type {{ text: string, bbox: {left: number, top: number, right: number, bottom: number} } | null} */
     this.title = null;

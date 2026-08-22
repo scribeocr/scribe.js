@@ -65,6 +65,7 @@ describe('Check AWS Textract table import (syncronous API).', () => {
   test('Should correctly import table structures from AWS Textract', async () => {
     expect(doc.layoutDataTables.pages[0].tables.length === 1).toBe(true);
     expect(doc.layoutDataTables.pages[0].tables[0].boxes.length === 10).toBe(true);
+    expect(doc.layoutDataTables.pages[0].tables[0].detectionMethod, 'vendor table provenance is recorded in detectionMethod').toBe('textract');
   });
 
   test('Should correctly import table structures from AWS Textract', async () => {

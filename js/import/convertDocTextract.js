@@ -563,6 +563,7 @@ function convertTableLayoutTextract(pageNum, tableBlocks, pageDims, blockMap) {
 
   for (const tableBlock of tableBlocks) {
     const table = new LayoutDataTable(tablesPage);
+    table.detectionMethod = 'textract';
     const tableBbox = convertBoundingBox(tableBlock.Geometry.BoundingBox, pageDims);
 
     // Get CELL children

@@ -518,6 +518,7 @@ function convertTableLayoutAbbyy(n, ocrStr) {
     }
 
     const table = new LayoutDataTable(tablesPage);
+    table.detectionMethod = 'abbyy';
 
     for (let j = 0; j < firstRowCells.length; j++) {
       const cell = firstRowCells[j];

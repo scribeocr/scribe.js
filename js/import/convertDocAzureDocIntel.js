@@ -189,6 +189,7 @@ function convertTableLayoutAzure(tables, pageDims, pagesData) {
     const tablesPage = result.get(pageIdx);
 
     const table = new LayoutDataTable(tablesPage);
+    table.detectionMethod = 'azure_doc_intel';
     const { rowCount } = tableData;
 
     const pageData = pagesData[pageIdx];

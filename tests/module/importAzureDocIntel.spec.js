@@ -23,6 +23,7 @@ describe('Check Azure Document Intelligence table import.', () => {
   test('Should correctly import table structures from Azure Document Intelligence', async () => {
     expect(doc.layoutDataTables.pages[0].tables.length).toBe(1);
     expect(doc.layoutDataTables.pages[0].tables[0].boxes.length).toBe(10);
+    expect(doc.layoutDataTables.pages[0].tables[0].detectionMethod, 'vendor table provenance is recorded in detectionMethod').toBe('azure_doc_intel');
   });
 
   test('Should populate rowBounds with correct dimensions', async () => {

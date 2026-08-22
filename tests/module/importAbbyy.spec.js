@@ -186,6 +186,7 @@ describe('Check Abbyy XML table import.', () => {
   test('Should correctly import table structures from Abbyy XML', async () => {
     expect(doc.layoutDataTables.pages[0].tables.length === 1).toBe(true);
     expect(doc.layoutDataTables.pages[0].tables[0].boxes.length === 10).toBe(true);
+    expect(doc.layoutDataTables.pages[0].tables[0].detectionMethod, 'vendor table provenance is recorded in detectionMethod').toBe('abbyy');
   });
 
   test('Should correctly import table structures from Abbyy XML', async () => {
