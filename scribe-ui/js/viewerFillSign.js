@@ -786,6 +786,13 @@ export function createFillSignPalette(app) {
   const checkBtn = iconButton('Check mark', ICON_CHECK);
   const crossBtn = iconButton('Cross mark', ICON_CROSS);
   const signBtn = iconButton('Signature', ICON_SIGN);
+  // The labels show only in the phone layout, where the palette is a docked tool bar.
+  for (const [btn, lbl] of [[textBtn, 'Text'], [checkBtn, 'Check'], [crossBtn, 'Cross'], [signBtn, 'Sign']]) {
+    const s = document.createElement('span');
+    s.className = 'scribe-fs-lbl';
+    s.textContent = lbl;
+    btn.appendChild(s);
+  }
   pal.append(textBtn, checkBtn, crossBtn, signBtn);
 
   /** @type {null | {kind: 'text'|'check'|'cross'} | {kind: 'sig', asset: SignatureAsset}} */
@@ -920,6 +927,11 @@ export function createFillSignPalette(app) {
     });
     menu.appendChild(add);
     pal.appendChild(menu);
+    if (pal.closest('.scribe-phone')) {
+      const palR = pal.getBoundingClientRect();
+      const sigR = signBtn.getBoundingClientRect();
+      menu.style.right = `${Math.max(6, palR.right - sigR.right - 4)}px`;
+    }
   };
   signBtn.addEventListener('click', () => {
     if (armed?.kind === 'sig') { disarm(); closeMenu(); return; }
@@ -1103,8 +1115,7 @@ export function createFillSignPalette(app) {
 
   let dragOff = null;
   pal.addEventListener('pointerdown', (down) => {
-    // Hosted in the mode bar the palette is fixed chrome; only the floating pill drags.
-    if (pal.closest('.scribe-mode-banner')) return;
+    if (pal.closest('.scribe-mode-banner, .scribe-phone')) return;
     if (down.target instanceof Element && down.target.closest('.cr-icon-button, .scribe-fs-menu')) return;
     const r = pal.getBoundingClientRect();
     dragOff = { x: down.clientX - r.left, y: down.clientY - r.top };
@@ -1199,6 +1210,7 @@ export function openSignatureDialog(app, onSaved) {
 
   const close = () => {
     document.removeEventListener('keydown', onKey, true);
+    drawSizeObs.disconnect();
     scrim.remove();
   };
   const onKey = (e) => {
@@ -1212,42 +1224,63 @@ export function openSignatureDialog(app, onSaved) {
   const drawPane = document.createElement('div');
   const drawCanvas = document.createElement('canvas');
   drawCanvas.className = 'scribe-fs-draw';
-  const DRAW_W = 560;
-  const DRAW_H = 180;
-  drawCanvas.width = DRAW_W * 2;
-  drawCanvas.height = DRAW_H * 2;
   const dctx = /** @type {CanvasRenderingContext2D } */ (drawCanvas.getContext('2d'));
-  dctx.scale(2, 2);
-  dctx.lineWidth = 4.5;
-  dctx.lineCap = 'round';
-  dctx.lineJoin = 'round';
-  dctx.strokeStyle = '#101010';
+  const DRAW_OVERSAMPLE = 2;
+  const DRAW_WIDTH = 4.5;
   /** @type {Array<Array<[number, number]>>} */
   let drawStrokes = [];
   /** @type {?Array<[number, number]>} */
   let curStroke = null;
-  drawCanvas.addEventListener('pointerdown', (e) => {
-    const r = drawCanvas.getBoundingClientRect();
-    curStroke = [[e.clientX - r.left, e.clientY - r.top]];
-    drawStrokes.push(curStroke);
-    try { drawCanvas.setPointerCapture(e.pointerId); } catch { /* setPointerCapture throws for synthetic pointer events */ }
-  });
-  drawCanvas.addEventListener('pointermove', (e) => {
-    if (!curStroke) return;
-    const r = drawCanvas.getBoundingClientRect();
-    curStroke.push([e.clientX - r.left, e.clientY - r.top]);
-    dctx.clearRect(0, 0, DRAW_W, DRAW_H);
+  const redrawStrokes = () => {
+    dctx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
     for (const s of drawStrokes) {
       dctx.beginPath();
       s.forEach(([x, y], i) => (i ? dctx.lineTo(x, y) : dctx.moveTo(x, y)));
       dctx.stroke();
     }
+  };
+  // A narrow dialog shrinks this canvas below its 560px width via `max-width`.
+  // A fixed 560-wide backing store would then paint the ink left of the finger.
+  const drawSizeObs = new ResizeObserver(() => {
+    const w = Math.max(1, drawCanvas.clientWidth) * DRAW_OVERSAMPLE;
+    const h = Math.max(1, drawCanvas.clientHeight) * DRAW_OVERSAMPLE;
+    if (drawCanvas.width === w && drawCanvas.height === h) return;
+    drawCanvas.width = w;
+    drawCanvas.height = h;
+    // Resizing the backing store resets the context, so the pen is set up again here.
+    dctx.setTransform(DRAW_OVERSAMPLE, 0, 0, DRAW_OVERSAMPLE, 0, 0);
+    dctx.lineWidth = DRAW_WIDTH;
+    dctx.lineCap = 'round';
+    dctx.lineJoin = 'round';
+    dctx.strokeStyle = '#101010';
+    redrawStrokes();
+  });
+  drawSizeObs.observe(drawCanvas);
+  /**
+   * The pointer position in the canvas content box, which is the space stroke points live in.
+   * @param {PointerEvent} e
+   * @returns {[number, number]}
+   */
+  const drawPoint = (e) => {
+    const r = drawCanvas.getBoundingClientRect();
+    const zoom = r.width / drawCanvas.offsetWidth || 1;
+    return [(e.clientX - r.left) / zoom - drawCanvas.clientLeft, (e.clientY - r.top) / zoom - drawCanvas.clientTop];
+  };
+  drawCanvas.addEventListener('pointerdown', (e) => {
+    curStroke = [drawPoint(e)];
+    drawStrokes.push(curStroke);
+    try { drawCanvas.setPointerCapture(e.pointerId); } catch { /* setPointerCapture throws for synthetic pointer events */ }
+  });
+  drawCanvas.addEventListener('pointermove', (e) => {
+    if (!curStroke) return;
+    curStroke.push(drawPoint(e));
+    redrawStrokes();
   });
   drawCanvas.addEventListener('pointerup', () => { curStroke = null; });
   const drawClear = document.createElement('button');
   drawClear.className = 'scribe-fs-btn';
   drawClear.textContent = 'Clear';
-  drawClear.addEventListener('click', () => { drawStrokes = []; curStroke = null; dctx.clearRect(0, 0, DRAW_W, DRAW_H); });
+  drawClear.addEventListener('click', () => { drawStrokes = []; curStroke = null; redrawStrokes(); });
   drawPane.append(drawCanvas, drawClear);
 
   // Type tab
@@ -1362,7 +1395,7 @@ export function openSignatureDialog(app, onSaved) {
         id,
         kind: 'draw',
         strokes: drawStrokes.map((s) => s.map(([x, y]) => [Math.round((x - minX) * 10) / 10, Math.round((y - minY) * 10) / 10])),
-        width: 4.5,
+        width: DRAW_WIDTH,
       };
     } else if (activeTab === 'Type') {
       const text = typeInput.value.trim();

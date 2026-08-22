@@ -1,4 +1,4 @@
-import { calcBboxUnion, getRandomAlphanum } from '../utils/miscUtils.js';
+import { calcBboxUnion, calcBoxOverlap, getRandomAlphanum } from '../utils/miscUtils.js';
 
 /**
  * Class representing a layout box.
@@ -75,6 +75,22 @@ export class LayoutImageRegion extends LayoutBoxBase {
     this.source = null;
   }
 }
+
+/**
+ * Whether a layout box includes the item with the given bounding box, per the box's inclusion rule.
+ * Item bounding boxes must be in the same frame as the box coordinates (the deskew-adjusted page).
+ * @param {bbox} itemBbox - Bounding box of the word or line tested for membership.
+ * @param {LayoutBoxBase} box
+ * @param {string} [rule] - Overrides the box's own `inclusionRule`.
+ */
+export const layoutBoxIncludes = (itemBbox, box, rule = undefined) => {
+  const ruleFinal = rule ?? box.inclusionRule ?? 'majority';
+  const testBox = ruleFinal === 'left'
+    ? {
+      left: itemBbox.left, top: itemBbox.top, right: itemBbox.left + 1, bottom: itemBbox.bottom,
+    } : itemBbox;
+  return calcBoxOverlap(testBox, box.coords) > 0.5;
+};
 
 /**
  * @param {number} n - Page number.

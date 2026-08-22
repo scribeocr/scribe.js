@@ -45,6 +45,9 @@ function ensureStyles() {
     .scribe-strip-prog.on{opacity:1;}
     .scribe-strip-prog-fill{position:absolute;top:0;bottom:0;left:0;width:0;background:var(--scribe-accent);
       border-radius:2px;transition:left .12s ease-out,width .12s ease-out;}
+    /* While text recognition runs, this underlay fills the track with the run's finished-page fraction. */
+    .scribe-strip-recog{position:absolute;top:0;bottom:0;left:0;width:0;background:var(--scribe-accent-ring);
+      border-radius:2px;transition:width .25s ease-out;}
     /* The pull tab unfolds the strip into the full-height Pages room; it pokes up into the canvas so it costs no strip height and never covers a thumbnail.
        During the strip-to-room morph, pagesMorph.js hides it and rides a pixel-identical stand-in along the room's top edge, so a restyle here must be mirrored there.
        The invisible ::after halo is the real touch target, kept off the row below so it cannot eat cell taps. */
@@ -56,7 +59,7 @@ function ensureStyles() {
     .scribe-strip-tab svg{width:12px;height:12px;}
     .scribe-strip-tab::after{content:"";position:absolute;inset:-14px -18px -4px -18px;}
     .scribe-strip-tab:active{background:var(--scribe-hover);}
-    @media (prefers-reduced-motion:reduce){.scribe-strip,.scribe-strip-prog,.scribe-strip-prog-fill{transition:none;}}
+    @media (prefers-reduced-motion:reduce){.scribe-strip,.scribe-strip-prog,.scribe-strip-prog-fill,.scribe-strip-recog{transition:none;}}
   `;
   document.head.appendChild(style);
 }
@@ -88,6 +91,8 @@ const CHEV_UP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
  *   setVisible: (v: boolean) => void,
  *   setTucked: (t: boolean, animate?: boolean) => void,
  *   isTucked: () => boolean,
+ *   setRecognition: (frac: ?number) => void,
+ *   finishRecognition: () => void,
  *   destroy: () => void,
  * }}
  */
@@ -104,9 +109,11 @@ export function createCompanionStrip(scribe, {
 
   const prog = document.createElement('div');
   prog.className = 'scribe-strip-prog';
+  const recog = document.createElement('div');
+  recog.className = 'scribe-strip-recog';
   const progFill = document.createElement('div');
   progFill.className = 'scribe-strip-prog-fill';
-  prog.appendChild(progFill);
+  prog.append(recog, progFill); // the underlay paints beneath the reading marker
 
   stripElem.append(row, prog);
 
@@ -684,6 +691,52 @@ export function createCompanionStrip(scribe, {
     progFill.style.width = `${width}px`;
     prog.classList.add('on');
   }
+
+  // ---- the recognition underlay ----
+  /** @type {?ReturnType<typeof setTimeout>} */
+  let recogTimer = null;
+
+  /**
+   * Draw the recognition underlay at `frac` of the track, the run's finished-page fraction, or clear it with `null`.
+   * @param {?number} frac
+   */
+  function setRecognition(frac) {
+    if (recogTimer) { clearTimeout(recogTimer); recogTimer = null; }
+    if (frac === null) {
+      recog.style.transition = 'none';
+      recog.style.left = '0';
+      recog.style.width = '0';
+      recog.getBoundingClientRect();
+      recog.style.transition = '';
+      recog.style.background = '';
+      return;
+    }
+    recog.style.background = '';
+    recog.style.left = '0';
+    recog.style.width = `${Math.max(0, Math.min(1, frac)) * 100}%`;
+  }
+
+  /**
+   * Play the run's completion animation, which ends with the underlay cleared.
+   * The clear is invisible because the band has converged onto the reading marker by then, so it needs no fade.
+   */
+  function finishRecognition() {
+    if (recogTimer) clearTimeout(recogTimer);
+    if (reduceMotion()) { setRecognition(null); return; }
+    recog.style.transition = '';
+    recog.style.background = 'var(--scribe-accent)';
+    recog.style.left = '0';
+    recog.style.width = '100%';
+    recogTimer = setTimeout(() => {
+      // Re-anchor the beat's percentage width in px, because a width transition from % to px does not interpolate.
+      recog.style.width = `${stripElem.clientWidth}px`;
+      recog.getBoundingClientRect();
+      recog.style.transition = 'left .55s ease, width .55s ease';
+      recog.style.left = progFill.style.left || '0px';
+      recog.style.width = progFill.style.width || `${MARKER_PX}px`;
+      recogTimer = setTimeout(() => setRecognition(null), 620);
+    }, 600);
+  }
   // A scroll frame while the user owns the strip is their own motion (the mirror is muted then), so it extends the glide window until the fling has actually died out.
   row.addEventListener('scroll', () => {
     if (userOwns()) userGlideT = performance.now();
@@ -721,6 +774,7 @@ export function createCompanionStrip(scribe, {
     destroyed = true;
     stopFollow();
     if (restTimer) clearTimeout(restTimer);
+    if (recogTimer) clearTimeout(recogTimer);
     if (syncRAF) cancelAnimationFrame(syncRAF);
     if (scrollHost) scrollHost.removeEventListener('scroll', onViewerScroll);
     if (geomObserver) geomObserver.disconnect();
@@ -728,6 +782,6 @@ export function createCompanionStrip(scribe, {
   }
 
   return {
-    stripElem, setActive, park, settle, rebuild, setVisible, setTucked, isTucked: () => tucked, destroy,
+    stripElem, setActive, park, settle, rebuild, setVisible, setTucked, isTucked: () => tucked, setRecognition, finishRecognition, destroy,
   };
 }

@@ -1109,7 +1109,12 @@ export class TextSelection {
       && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
 
     // A touch that moves is a pan, so a touch selection has to wait to see whether it holds still.
-    if (event.pointerType === 'touch') { this._armTouchHold(event); return; }
+    if (event.pointerType === 'touch') {
+      // In the phone layout's Edit Text mode a hold selects whole lines through the mode's own gesture, so the engine stands aside.
+      if (this.viewer._editTextActive && this.viewer._phoneUi) return;
+      this._armTouchHold(event);
+      return;
+    }
 
     // A mouse selection replaces any touch-made one, and never shows grips or the callout.
     if (this._handlesOn) {
@@ -1558,7 +1563,7 @@ export class TextSelection {
   _onCopy(event) {
     if (this.isEmpty() || !event.clipboardData || event.defaultPrevented) return;
     // The listener is on `document`, so with several viewers on the page only the one whose UI holds focus answers.
-    // `outerElem` includes the owning app's chrome, so a click on its toolbar does not orphan the selection's copy.
+    // `outerElem` includes the owning app's controls, so a click on its toolbar does not orphan the selection's copy.
     const active = document.activeElement;
     const owner = this.viewer.outerElem || this.viewer.elem;
     if (active && active !== document.body && !owner?.contains(active)) return;

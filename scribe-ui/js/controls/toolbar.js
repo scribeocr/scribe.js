@@ -235,6 +235,9 @@ export function createZoomControls(scribe) {
 export const ROTATE_LEFT_SVG = lineIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 export const ROTATE_RIGHT_SVG = lineIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 
+export const UNDO_SVG = lineIcon('<path d="M8.2 5.8 4.5 9.5l3.7 3.7"/><path d="M4.5 9.5H14a5 5 0 0 1 0 10H9.5"/>');
+export const REDO_SVG = lineIcon('<path d="M15.8 5.8 19.5 9.5l-3.7 3.7"/><path d="M19.5 9.5H10a5 5 0 0 0 0 10h4.5"/>');
+
 /**
  * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -1146,13 +1149,25 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-app-menu-sub { display: none; left: calc(100% - 6px); top: -5px; min-width: 190px; }
     .${r} .scribe-app-menu-subwrap.sub-open .scribe-app-menu-sub { display: block; }
 
-    /* Fill & Sign: FS2b floating pill palette (draggable; phone raises it above the dock). */
     .${r} .scribe-fs-pal { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30;
       background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px;
       box-shadow: var(--scribe-menu-shadow); padding: 4px; display: flex; gap: 2px; align-items: center; cursor: grab; }
     .${r} .scribe-fs-grip { width: 18px; height: 24px; color: var(--scribe-ink-3); display: flex; align-items: center; justify-content: center; }
     .${r} .scribe-fs-grip svg { width: 16px; height: 16px; fill: currentColor; }
-    .${r}.scribe-phone .scribe-fs-pal { bottom: 74px; }
+    .${r} .scribe-fs-lbl { display: none; }
+    /* On phone the palette restyles into a tool bar, in the same bottom slot the verb bar uses. */
+    .${r}.scribe-phone .scribe-fs-pal { left: 0; right: 0; bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+      transform: none; height: 52px; box-sizing: border-box; z-index: 24; justify-content: center;
+      border: none; border-top: 1px solid var(--scribe-line); border-radius: 0; box-shadow: none;
+      padding: 0 6px; cursor: default; }
+    .${r}.scribe-phone .scribe-fs-grip { display: none; }
+    .${r}.scribe-phone .scribe-fs-pal .cr-icon-button { width: auto; height: 44px; min-width: 44px;
+      padding: 0 9px; border-radius: 8px; align-items: center; justify-content: center; gap: 6px;
+      font-size: 12.5px; font-weight: 600; color: var(--scribe-ink); }
+    .${r}.scribe-phone .scribe-fs-pal .cr-icon-button > svg { width: 20px; height: 20px; flex: none; color: var(--scribe-ink-2); }
+    .${r}.scribe-phone .scribe-fs-pal .cr-icon-button.active { color: var(--scribe-accent); }
+    .${r}.scribe-phone .scribe-fs-pal .cr-icon-button.active > svg { color: var(--scribe-accent); }
+    .${r}.scribe-phone .scribe-fs-pal .scribe-fs-lbl { display: inline; }
     .${r} .scribe-fs-menu { position: absolute; bottom: calc(100% + 6px); right: 0; min-width: 210px;
       background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow); padding: 4px; z-index: 31; }
@@ -1161,11 +1176,25 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-fs-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-fs-menu-prev { flex: 1; height: 30px; display: flex; align-items: center; }
     .${r} .scribe-fs-menu-prev svg, .${r} .scribe-fs-menu-prev img { max-width: 150px; max-height: 30px; }
+    /* Safari gives a viewBox-only SVG zero width as a flex item, so the size is set here and not just capped above. */
+    .${r} .scribe-fs-menu-prev svg { width: 100%; height: 100%; }
     .${r} .scribe-fs-menu-del { width: 20px; height: 20px; border-radius: 4px; display: flex; align-items: center;
       justify-content: center; color: var(--scribe-ink-3); font-size: 14px; }
     .${r} .scribe-fs-menu-del:hover { background: var(--scribe-hover); color: #d1493d; }
     .${r} .scribe-fs-menu-ic { width: 18px; height: 18px; display: flex; }
     .${r} .scribe-fs-menu-ic svg { width: 16px; height: 16px; }
+    /* The preview chip stays paper-white in both themes, because a signature is ink on paper. */
+    .${r}.scribe-phone .scribe-fs-menu { min-width: 250px; max-height: 232px; overflow-y: auto; }
+    .${r}.scribe-phone .scribe-fs-menu-item { min-height: 44px; padding: 4px 6px; font-size: 13px; }
+    .${r}.scribe-phone .scribe-fs-menu-item:hover { background: none; }
+    .${r}.scribe-phone .scribe-fs-menu-item:active { background: var(--scribe-hover); }
+    .${r}.scribe-phone .scribe-fs-menu-prev { height: 36px; background: #ffffff; border: 1px solid var(--scribe-line);
+      border-radius: 6px; justify-content: center; }
+    .${r}.scribe-phone .scribe-fs-menu-prev svg, .${r}.scribe-phone .scribe-fs-menu-prev img { max-width: 160px; max-height: 30px; }
+    .${r}.scribe-phone .scribe-fs-menu-del { width: 40px; height: 40px; font-size: 17px; border-radius: 8px; }
+    .${r}.scribe-phone .scribe-fs-menu-del:hover { background: none; color: var(--scribe-ink-3); }
+    .${r}.scribe-phone .scribe-fs-menu-del:active { background: var(--scribe-hover); color: var(--scribe-danger); }
+    .${r}.scribe-phone .scribe-fs-menu-add { padding: 4px 10px; }
 
     /* Fill & Sign: FS3a centered signature dialog. The drawing/preview surfaces stay paper-white in
        both themes — a signature is made on paper. */
@@ -1357,11 +1386,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-mode-sheet-hd {
       position: relative;
-      height: 28px;
+      height: 16px;
       cursor: grab;
       touch-action: none;
     }
-    .${r} .scribe-mode-sheet-hd .scribe-sheet-pill { top: 11px; }
+    .${r} .scribe-mode-sheet-hd .scribe-sheet-pill { top: 6px; }
     .${r} .scribe-mode-sheet-row {
       display: flex; align-items: center; gap: 12px;
       width: 100%; min-height: 52px; padding: 6px 16px; box-sizing: border-box;
@@ -1398,6 +1427,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-family: inherit; font-size: 15px; font-weight: 650; color: var(--scribe-accent);
       -webkit-tap-highlight-color: transparent;
     }
+    .${r} .scribe-dock-mode-save, .${r} .scribe-dock-mode-discard {
+      flex: none; min-height: 44px; padding: 0 12px;
+      background: none; border: none; border-radius: 8px; cursor: pointer;
+      font-family: inherit; font-size: 15px; font-weight: 650; color: var(--scribe-accent);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-dock-mode-discard { font-weight: 600; }
+    .${r} .scribe-dock-mode-save:disabled { color: var(--scribe-ink-3); cursor: default; }
     /* The language menu opens upward from the dock's mode bar, where below is the safe area. */
     .${r} .scribe-dock-mode .scribe-edit-menu { top: auto; bottom: calc(100% + 8px); }
     /* The banner sizes Recognize's controls for a mouse row, so the dock re-sizes them as touch targets. */
@@ -1439,6 +1476,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-vbar-hint { font-size: 12.5px; color: var(--scribe-ink-3); padding-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
     .${r}.scribe-phone.scribe-vbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+    /* The Fill & Sign tool bar occupies the same slot, so the strip yields to it the same way. */
+    .${r}.scribe-phone.scribe-fsbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
     .${r}.scribe-line-editing .scribe-strip.on { display: none; }
     .${r}.scribe-phone.scribe-line-editing .scribe-vbar.on {
       bottom: max(calc(56px + env(safe-area-inset-bottom, 0px)), var(--scribe-kb-inset, 0px));
@@ -3792,6 +3831,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       outline: none;
     }
 
+    @keyframes scribe-undo-swell {
+      0% { background: transparent; }
+      25% { background: var(--scribe-active); }
+      100% { background: transparent; }
+    }
+    .${r} .scribe-undo-swell { animation: scribe-undo-swell .7s ease; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-undo-swell { animation: none; background: var(--scribe-active); }
+    }
+
     /* Message surface: transient toasts (self-evident failures) + a persistent banner (away/non-obvious) */
     .${r} .scribe-toast-stack {
       position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
@@ -3861,8 +3910,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-family: inherit; font-size: 10.5px; font-weight: 600; color: var(--scribe-ink-3);
       border: 1px solid var(--scribe-line-strong); border-radius: 4px; padding: 0 4px; line-height: 1.5;
     }
+    .${r} .scribe-mode-banner-exit { margin-left: auto; display: inline-flex; align-items: center; flex: none; }
+    .${r} .scribe-mode-banner-exit .scribe-mode-banner-done { margin-left: 0; }
+    .${r} .scribe-mode-banner-discard { font-weight: 600; }
+    .${r} .scribe-mode-banner-save:disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-mode-banner-save:disabled kbd { opacity: .6; }
+    .${r} .scribe-mode-banner-save:disabled:hover { background: none; }
     .${r} .scribe-mode-banner-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
-    .${r} .scribe-mode-banner-tools + .scribe-mode-banner-done { margin-left: 0; }
+    .${r} .scribe-mode-banner-tools + .scribe-mode-banner-exit { margin-left: 0; }
 
     /* The Fill & Sign palette hosted in the mode bar: the pill chrome comes off and the signature menu opens downward. */
     .${r} .scribe-mode-banner .scribe-fs-pal {
@@ -3871,7 +3926,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       cursor: default; margin-left: auto; flex: none;
     }
     .${r} .scribe-mode-banner .scribe-fs-grip { display: none; }
-    .${r} .scribe-mode-banner .scribe-fs-pal + .scribe-mode-banner-done { margin-left: 0; }
+    .${r} .scribe-mode-banner .scribe-fs-pal + .scribe-mode-banner-exit { margin-left: 0; }
     .${r} .scribe-mode-banner .scribe-fs-menu { bottom: auto; top: calc(100% + 6px); right: 0; }
     .${r} .scribe-mode-banner-langwrap { position: relative; display: inline-flex; }
     .${r} .scribe-mode-banner-lang {

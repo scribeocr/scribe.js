@@ -1314,7 +1314,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     show.comment = !!viewer._openCommentEditor && show.highlight;
     show.redact = !!viewer._redactEnabled;
     // On the phone the mode's docked verb bar owns the editing verbs, and the callout keeps only the reading ones.
-    show.deletelines = !!viewer._editTextActive && !viewer._phoneChrome && !!viewer._editTextSelectedLines
+    show.deletelines = !!viewer._editTextActive && !viewer._phoneUi && !!viewer._editTextSelectedLines
       && viewer._editTextSelectedLines().length > 0;
     show.bookmark = bookmarkTargetPage >= 0;
     // Resolving the words is O(selection), so gate on a small single-page range first.

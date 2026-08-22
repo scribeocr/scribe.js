@@ -678,10 +678,10 @@ export function installLibrary(viewer) {
 
   // --- Layout -------------------------------------------------------------
 
-  const updateChrome = () => {
-    surface.style.top = `${viewer._chromeTop()}px`;
+  const positionSurface = () => {
+    surface.style.top = `${viewer._topBarsHeight()}px`;
   };
-  const resizeObserver = new ResizeObserver(updateChrome);
+  const resizeObserver = new ResizeObserver(positionSurface);
   resizeObserver.observe(viewer.pdfViewerElem);
 
   /** @type {Array<{el: HTMLElement, display: string}>} */
@@ -728,7 +728,7 @@ export function installLibrary(viewer) {
 
   const showSurface = () => {
     visible = true;
-    updateChrome();
+    positionSurface();
     viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
     viewer._searchBar?.closeSearch();
     swapBarIn();

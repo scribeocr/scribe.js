@@ -24,6 +24,72 @@ The quick brown dog jumped over the lazy fox. The quick brown dog jumped over th
 
     expect(exportedText).toContain('This is a lot of 12 point text');
     expect(exportedText).toContain('The quick brown dog jumped');
+
+    // Regression: exclusion ignored `inclusionLevel`/`inclusionRule` and always dropped whole lines.
+    const layoutPage = doc.layoutRegions.pages[0];
+
+    const wordBox = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 245, top: 85, right: 370, bottom: 124,
+    }, 'exclude');
+    layoutPage.boxes[wordBox.id] = wordBox;
+    expect(await doc.exportData('text', { enableLayout: true }), 'a word-level exclude box (the default) drops exactly the words under it, even mid-line')
+      .toBe(`This is a lot of text to test the ocr code and see if it works on all types of file format.
+The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`);
+    expect(await doc.exportData('text'), 'layout regions stay inert without enableLayout').toBe(testText);
+    delete layoutPage.boxes[wordBox.id];
+
+    const leftBox = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 340, top: 190, right: 360, bottom: 230,
+    }, 'exclude');
+    leftBox.inclusionRule = 'left';
+    layoutPage.boxes[leftBox.id] = leftBox;
+    expect(await doc.exportData('text', { enableLayout: true }), "the 'left' rule drops a word whose left edge is inside the box, though most of the word is outside")
+      .toBe(`This is a lot of 12 point text to test the ocr code and see if it works on all types of file format.
+The quick brown dog over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`);
+    delete layoutPage.boxes[leftBox.id];
+
+    const lineBox = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 30, top: 155, right: 150, bottom: 190,
+    }, 'exclude');
+    lineBox.inclusionLevel = 'line';
+    layoutPage.boxes[lineBox.id] = lineBox;
+    expect(await doc.exportData('text', { enableLayout: true }), 'a line-level exclude box drops the whole line, including words outside the box')
+      .toBe(`This is a lot of 12 point text to test the ocr code and see if it works on all types
+The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`);
+    delete layoutPage.boxes[lineBox.id];
+
+    const orderA = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 30, top: 85, right: 590, bottom: 125,
+    }, 'order');
+    const orderB = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 30, top: 155, right: 230, bottom: 190,
+    }, 'order');
+    layoutPage.boxes[orderA.id] = orderA;
+    layoutPage.boxes[orderB.id] = orderB;
+    expect(await doc.exportData('text', { enableLayout: true }), 'equal-priority order boxes keep original relative order and move ahead of unassigned lines')
+      .toBe(`This is a lot of 12 point text to test the of file format. ocr code and see if it works on all types
+The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`);
+    delete layoutPage.boxes[orderA.id];
+    delete layoutPage.boxes[orderB.id];
+  });
+
+  test('Exclude boxes are tested in the deskew-adjusted frame on skewed pages', async () => {
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/testocr_all_orientations.abbyy.xml`]);
+
+    // Page 1 is detected at about -4.94 degrees.
+    // The box covers "This is a lot" as displayed, while those words' raw bboxes sit about 25px lower and mostly outside it, so a raw-frame test would drop nothing.
+    const layoutPage = doc.layoutRegions.pages[1];
+    const box = new scribe.layout.LayoutRegion(layoutPage, 0, {
+      left: 28, top: 82, right: 205, bottom: 120,
+    }, 'exclude');
+    layoutPage.boxes[box.id] = box;
+    const exportedText = await doc.exportData('text', { pageArr: [1], enableLayout: true });
+    expect(exportedText, 'a box drawn against the deskew-adjusted page drops the words it visibly covers')
+      .toBe(`
+of 12 point text to test the
+ocr code and see if it works on all types
+of file format.
+The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`);
   });
 
   afterAll(async () => {

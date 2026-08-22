@@ -1,6 +1,8 @@
 import ocr from './objects/ocrObjects.js';
 import { calcBoxOverlap } from './utils/miscUtils.js';
-import { LayoutDataColumn, LayoutDataTable, LayoutDataTablePage } from './objects/layoutObjects.js';
+import {
+  LayoutDataColumn, LayoutDataTable, LayoutDataTablePage, layoutBoxIncludes,
+} from './objects/layoutObjects.js';
 
 /**
  *
@@ -58,10 +60,6 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
     if (lineObj.bbox.left > tableBox.right || lineObj.bbox.right < tableBox.left || lineObj.bbox.top > tableBox.bottom || lineObj.bbox.bottom < tableBox.top) continue;
 
     // First, check for overlap with line-level boxes.
-    const lineBoxALeft = {
-      left: lineObj.bbox.left, top: lineObj.bbox.top, right: lineObj.bbox.left + 1, bottom: lineObj.bbox.bottom,
-    };
-
     let boxFoundLine = false;
     // It is possible for a single line to match the inclusion criteria for multiple boxes.
     // Only the first (leftmost) match is used.
@@ -70,8 +68,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
 
       if (obj.inclusionLevel !== 'line') continue;
 
-      const overlap = obj.inclusionRule === 'left' ? calcBoxOverlap(lineBoxALeft, obj.coords) : calcBoxOverlap(lineObj.bbox, obj.coords);
-      if (overlap > 0.5) {
+      if (layoutBoxIncludes(lineObj.bbox, obj)) {
         for (let k = 0; k < lineObj.words.length; k++) {
           const wordObj = lineObj.words[k];
           wordArr.push(wordObj);
@@ -93,13 +90,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
 
         if (obj.inclusionLevel !== 'word') continue;
 
-        const wordBoxALeft = {
-          left: wordObj.bbox.left, top: wordObj.bbox.top, right: wordObj.bbox.left + 1, bottom: wordObj.bbox.bottom,
-        };
-
-        const overlap = obj.inclusionRule === 'left' ? calcBoxOverlap(wordBoxALeft, obj.coords) : calcBoxOverlap(wordObj.bbox, obj.coords);
-
-        if (overlap > 0.5) {
+        if (layoutBoxIncludes(wordObj.bbox, obj)) {
           wordArr.push(wordObj);
           boxArr.push(wordObj.bbox);
           wordPriorityArr.push(j);
@@ -115,9 +106,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
       for (let j = 0; j < boxesArr.length; j++) {
         const obj = boxesArr[j];
 
-        const overlap = calcBoxOverlap(wordObj.bbox, obj.coords);
-
-        if (overlap > 0.5) {
+        if (layoutBoxIncludes(wordObj.bbox, obj, 'majority')) {
           wordArr.push(wordObj);
           boxArr.push(wordObj.bbox);
           wordPriorityArr.push(j);

@@ -1050,11 +1050,25 @@ export function installPageReorder(ctx) {
   }
 
   /**
+   * Retire a gesture whose pointer died without a terminal event.
+   * A gesture left standing refuses every later press in the grid.
+   * @param {PointerEvent} e - The press asking to start a gesture.
+   */
+  function retireStaleTouch(e) {
+    if (!touch || e.pointerId === touch.pointerId) return;
+    // A captured pointer is one the browser still tracks, so that gesture is live.
+    // If it dies, its lost capture cancels it instead.
+    if (ctx.scrollElem.hasPointerCapture(touch.pointerId)) return;
+    abortTouch();
+  }
+
+  /**
    * Press on a page's selection checkbox, in the room's Edit mode or the desktop Edit Pages mode: toggle that page now; sliding on across further checkboxes paints them to the same state.
    * Starting on the checkbox is what disambiguates painting a range from dragging a page.
    * @param {PointerEvent} e @param {number} n
    */
   function onChkPointerDown(e, n) {
+    retireStaleTouch(e);
     if (touch || !(ctx.roomMode === 'edit' || ctx.pageEditMode)) return;
     // A room press on a still-gliding grid catches the scroll, and the badge's click handler swallows the tail.
     // Desktop wheel scrolls share the motion window, so their presses must still land.
@@ -1074,6 +1088,7 @@ export function installPageReorder(ctx) {
 
   /** @param {PointerEvent} e @param {number} n */
   function onThumbTouchStart(e, n) {
+    retireStaleTouch(e);
     if (touch) return; // one gesture at a time
     const mode = ctx.roomMode;
     if (mode === 'browse') {

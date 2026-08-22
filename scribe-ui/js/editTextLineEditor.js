@@ -400,6 +400,30 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
   };
 
   /**
+   * Step the session's typing-level history one entry backward or forward.
+   * @param {boolean} redo
+   * @returns {boolean} Whether a step was applied.
+   */
+  const stepHistory = (redo) => {
+    if (!st) return false;
+    const from = redo ? st.redoStack : st.undoStack;
+    const to = redo ? st.undoStack : st.redoStack;
+    const prev = from.pop();
+    if (!prev) return false;
+    to.push({
+      text: st.text, caret: st.caret, styleOv: new Map(st.styleOv), wordBase: new Map(st.wordBase),
+    });
+    st.text = prev.text;
+    st.caret = prev.caret;
+    st.styleOv = new Map(prev.styleOv);
+    st.wordBase = new Map(prev.wordBase);
+    st.selAnchor = null;
+    restartBlink();
+    draw();
+    return true;
+  };
+
+  /**
    * Shift the per-word toggle and base maps across a text edit at `pos` that removed `removedLen` characters.
    * Words the edit touched collapse to the tokens now spanning that region and inherit the first touched word's state.
    * @param {string} oldText
@@ -645,21 +669,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     if (mod && (ev.key === 'z' || ev.key === 'Z')) {
       // The document's text-edit history can only undo committed edits, so the editor keeps its own typing-level stacks.
       ev.preventDefault();
-      const from = ev.shiftKey ? st.redoStack : st.undoStack;
-      const to = ev.shiftKey ? st.undoStack : st.redoStack;
-      const prev = from.pop();
-      if (prev) {
-        to.push({
-          text: st.text, caret: st.caret, styleOv: new Map(st.styleOv), wordBase: new Map(st.wordBase),
-        });
-        st.text = prev.text;
-        st.caret = prev.caret;
-        st.styleOv = new Map(prev.styleOv);
-        st.wordBase = new Map(prev.wordBase);
-        st.selAnchor = null;
-        restartBlink();
-        draw();
-      }
+      stepHistory(ev.shiftKey);
       return;
     }
     if (mod && (ev.key === 'a' || ev.key === 'A')) {
@@ -1192,5 +1202,9 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     revert: close,
     teardown: close,
     toggleStyle: toggleWordStyle,
+    undo: () => stepHistory(false),
+    redo: () => stepHistory(true),
+    canUndo: () => !!st && st.undoStack.length > 0,
+    canRedo: () => !!st && st.redoStack.length > 0,
   };
 }

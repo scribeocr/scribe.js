@@ -1,4 +1,5 @@
 import ocr from './objects/ocrObjects.js';
+import { layoutBoxIncludes } from './objects/layoutObjects.js';
 import { calcBoxOverlap, getRandomAlphanum } from './utils/miscUtils.js';
 
 /**
@@ -188,6 +189,10 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
 }
 
 /**
+ * Applies a page's layout regions to its text.
+ * `order` boxes assign reading-order priorities, and `exclude` boxes remove the text they cover.
+ * An `exclude` box drops individual words at the `'word'` default, or whole lines when its `inclusionLevel` is `'line'`.
+ * Reading order is a line-level concept, so `order` boxes always match whole lines.
  * @param {OcrPage} page
  * @param {boolean} applyExclude
  * @param {boolean} editInPlace
@@ -206,18 +211,30 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
   // 100 should be lower priority than every assigned value.
   orderArr.fill(100);
 
-  for (let i = 0; i < hocrALines.length; i++) {
-    const hocrALine = hocrALines[i];
-    const lineBoxA = hocrALine.bbox;
+  /** @type {Set<string>} */
+  const excludeWordIds = new Set();
 
-    for (const [id, obj] of Object.entries(layoutObj.boxes)) {
-      const overlap = calcBoxOverlap(lineBoxA, obj.coords);
-      if (overlap > 0.5) {
-        if (obj.type === 'order') {
-          orderArr[i] = obj.order;
-        } else if (obj.type === 'exclude' && applyExclude) {
+  // Layout boxes are drawn against the deskew-adjusted page, so membership is tested on derotated copies.
+  const derotate = Math.abs(pageInt.angle || 0) > 0.05;
+
+  for (let i = 0; i < hocrALines.length; i++) {
+    let lineTest = hocrALines[i];
+    if (derotate) {
+      lineTest = ocr.cloneLine(lineTest);
+      ocr.rotateLine(lineTest, pageInt.angle * -1, pageInt.dims);
+    }
+
+    for (const obj of Object.values(layoutObj.boxes)) {
+      if (obj.type === 'order') {
+        if (layoutBoxIncludes(lineTest.bbox, obj)) orderArr[i] = obj.order;
+      } else if (obj.type === 'exclude' && applyExclude) {
+        if ((obj.inclusionLevel ?? 'word') === 'line') {
           // Priority "101" is used to remove lines
-          orderArr[i] = 101;
+          if (layoutBoxIncludes(lineTest.bbox, obj)) orderArr[i] = 101;
+        } else {
+          for (const word of lineTest.words) {
+            if (layoutBoxIncludes(word.bbox, obj)) excludeWordIds.add(word.id);
+          }
         }
       }
     }
@@ -232,6 +249,8 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
   }
 
   pageInt.lines = linesNew;
+
+  if (excludeWordIds.size > 0) ocr.deletePageWords(pageInt, [...excludeWordIds]);
 
   return pageInt;
 }

@@ -463,6 +463,8 @@ export class ScribeViewer {
 
     // Edit Text mode state, mirrored here by the tool for the context menu, touch callout, and link gating.
     this._editTextActive = false;
+    // True while the tool's line-range drag owns a touch, so the touchmove pan and the long-press context menu stand aside.
+    this._editTextLineDrag = false;
     /** @type {?() => Array<OcrLine>} */
     this._editTextSelectedLines = null;
     /** @type {?() => boolean} */
@@ -509,7 +511,7 @@ export class ScribeViewer {
 
     // Phone-layout seams the hosting app sets and this file only reads.
     /** @type {boolean} */
-    this._phoneChrome = false;
+    this._phoneUi = false;
     /** @type {?() => void} Fired when an editing mode's selection changed. */
     this._modeSelectionChanged = null;
     /** @type {?(text: string) => void} A short status line for the running mode. */
@@ -2009,7 +2011,7 @@ export class ScribeViewer {
     // `contextMenuFunc` lazily builds the shared menu, then shows only the actions that apply
     // (none on a read-only viewer, where it returns before suppressing the browser's own menu).
     scrollContainer.addEventListener('contextmenu', (event) => {
-      if (this.useCustomSelection && this.textSel?.isDragging()) { event.preventDefault(); return; }
+      if ((this.useCustomSelection && this.textSel?.isDragging()) || this._editTextLineDrag) { event.preventDefault(); return; }
       contextMenuFunc(this, event);
     });
 
@@ -2149,8 +2151,8 @@ export class ScribeViewer {
     }, { passive: false });
 
     scrollContainer.addEventListener('touchmove', (event) => {
-      // A press-and-hold has claimed this touch for a text selection; native panning would fight the drag.
-      if (this.useCustomSelection && this.textSel.isDragging()) { event.preventDefault(); return; }
+      // A press-and-hold has claimed this touch for a text selection or a line-range drag; native panning would fight the drag.
+      if ((this.useCustomSelection && this.textSel.isDragging()) || this._editTextLineDrag) { event.preventDefault(); return; }
       if (!event.touches[1]) return;
       event.preventDefault();
       this.executePinchTouch(event);
@@ -2191,7 +2193,7 @@ export class ScribeViewer {
     });
     scrollContainer.addEventListener('pointerup', (event) => {
       if (event.pointerType !== 'touch') return;
-      // In the editing modes a repeat tap cycles the pick through overlapping candidates, so it must not also zoom.
+      // In the editing modes every tap picks an object, so a second one must not also yank the page under the finger by zooming.
       if (this._editTextActive || this._graphicsEditActive) { dblTap.lastUpT = 0; return; }
       if (this.mode !== 'select' || this.drag.isPinching
         || performance.now() - this._lastPinchEndT < 300
