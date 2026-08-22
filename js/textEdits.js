@@ -34,10 +34,13 @@ function snapshotLine(line) {
  * @param {?Array<import('./objects/ocrObjects.js').OcrChar>} chars - The word's char boxes, when known.
  * @param {number} orientation
  * @param {{width: number, height: number}} dims
+ * @param {?number} ascHeight - The line's ascender height, standing in when the word box carries no height of its own.
  */
-export function wordBandRect(b, chars, orientation, dims) {
+export function wordBandRect(b, chars, orientation, dims, ascHeight) {
   const cy = (b.top + b.bottom) / 2;
-  const q = Math.abs(b.bottom - b.top) * 0.15;
+  let q = Math.abs(b.bottom - b.top) * 0.15;
+  // A zero-height band is dropped downstream as degenerate, discarding the delete without a trace.
+  if (!(q > 0)) q = ascHeight > 0 ? ascHeight * 0.25 : 1;
   const ix = Math.min(Math.abs(b.bottom - b.top) * 0.25, Math.abs(b.right - b.left) * 0.25);
   let left = b.left + ix;
   let right = b.right - ix;
@@ -130,7 +133,7 @@ function findSuperimposedWords(page, excludeLines, rects, deletedGlyphs, ntPage)
     /** @type {?{line: OcrLine, ids: Array<string>, boxes: Array<bbox>, words: Array<OcrWord>}} */
     let entry = null;
     for (const w of other.words) {
-      const band = wordBandRect(w.bbox, w.chars, other.orientation, page.dims);
+      const band = wordBandRect(w.bbox, w.chars, other.orientation, page.dims, other.ascHeight);
       const hit = rects.some((r) => Math.min(band.bottom, r.bottom) > Math.max(band.top, r.top)
         && Math.min(band.right, r.right) - Math.max(band.left, r.left) >= 0.6 * (band.right - band.left));
       if (!hit) continue;
@@ -281,7 +284,7 @@ export function deleteTextLines(doc, lines) {
     const nt = nativeTextForPage(doc, page);
     for (const line of pageLines) {
       for (const w of line.words) {
-        rects.push(wordBandRect(w.bbox, w.chars, line.orientation, page.dims));
+        rects.push(wordBandRect(w.bbox, w.chars, line.orientation, page.dims, line.ascHeight));
         wordIds.push(w.id);
         deletedWordBoxes.push(bboxToPageSpace(w.bbox, line.orientation, page.dims));
       }
@@ -703,7 +706,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   /** @type {Array<bbox>} */
   const removedWordBoxes = [];
   for (let m = rs; m < redrawOldEndFinal; m++) {
-    if (!backing.has(lineSnaps[0].snap.words[m].id)) newBands.push(wordBandRect(oldBoxes[m], lineSnaps[0].snap.words[m].chars, o, dims));
+    if (!backing.has(lineSnaps[0].snap.words[m].id)) newBands.push(wordBandRect(oldBoxes[m], lineSnaps[0].snap.words[m].chars, o, dims, lineSnaps[0].snap.ascHeight));
     removedWordBoxes.push(bboxToPageSpace(oldBoxes[m], o, dims));
   }
 

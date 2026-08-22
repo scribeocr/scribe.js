@@ -1178,7 +1178,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     st.caret = Math.max(0, Math.min(origText.length, off));
     if (openOpts.caretEnd) st.caret = origText.length;
 
-    const rects = line.words.map((w) => wordBandRect(w.bbox, w.chars, orientation, dims));
+    const rects = line.words.map((w) => wordBandRect(w.bbox, w.chars, orientation, dims, line.ascHeight));
     // The open line's identities keep the ephemeral suppression from blanking visually-overlapping other text.
     const glyphs = glyphIdentitiesForWords(nativeTextForPage(scribe.doc, line.page), line.words, orientation, dims);
     scribe.doc.images.setEphemeralEditRects(n, rects, glyphs);
