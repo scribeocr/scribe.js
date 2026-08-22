@@ -488,9 +488,12 @@ export function insertParsedPage(doc, n, page, {
 
   doc.inputData.xmlMode[n] = true;
 
-  if (dataTables && Object.keys(doc.layoutDataTables.pages[n].tables).length === 0) {
-    addCircularRefsDataTables([dataTables]);
-    doc.layoutDataTables.pages[n] = dataTables;
+  if (dataTables && dataTables.tables.length > 0) {
+    const existing = doc.layoutDataTables.pages[n];
+    if (!existing || existing.tables.length === 0 || (mainData && existing.default !== false)) {
+      addCircularRefsDataTables([dataTables]);
+      doc.layoutDataTables.pages[n] = dataTables;
+    }
   }
 
   doc.progressHandler({ n, type: 'convert', info: { engineName } });
