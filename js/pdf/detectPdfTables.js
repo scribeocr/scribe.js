@@ -29,8 +29,10 @@ function isRightClusteredNumeric(words) {
 }
 
 /**
- * @typedef {{left: number, right: number, y: number, segments?: Array<{left: number, right: number}>}} HLine - Horizontal line in display coords (y-down, DPI-scaled)
- * @typedef {{top: number, bottom: number, x: number}} VLine - Vertical line in display coords
+ * @typedef {{left: number, right: number, y: number, y0?: number, y1?: number, segments?: Array<{left: number, right: number}>}} HLine - Horizontal line in display coords (y-down, DPI-scaled).
+ * @typedef {{top: number, bottom: number, x: number, x0?: number, x1?: number}} VLine - Vertical line in display coords.
+ * On both, `y`/`x` is the ink midline.
+ * Only `extractGridSegments` records the band bounds `y0`/`y1` and `x0`/`x1`, so lines from other producers omit them.
  * @typedef {{left: number, top: number, right: number, bottom: number, color: number[]}} FilledRect
  * @typedef {{hLines: HLine[], vLines: VLine[], filledRects: FilledRect[]}} TablePathData
  */
@@ -70,10 +72,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   if (paths.length > MAX_TABLE_DETECTION_PATHS) paths = [];
 
   // === Phase 0: Quick bail-out ===
-  // Dot-leader rows ("Gold Star ......... 68,300 63,700 58,800") emit each
-  // visual row as one OCR line, so they produce zero same-y line pairs but
-  // are still tables. The ≥3-rows-within-300pt cluster check distinguishes
-  // them from scattered Table-of-Authorities citations.
+  // Dot-leader rows emit each visual row as one line, so a table of them produces zero same-y line pairs.
+  // Requiring a cluster keeps the scattered dot-leader citations of a table of authorities from reopening the bail-out.
   let sameYPairs = 0;
   for (let i = 0; i < lines.length - 1; i++) {
     if (Math.abs(lines[i].bbox.top - lines[i + 1].bbox.top) < 5) {
@@ -95,7 +95,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
   if (sameYPairs === 0 && !hasDotLeaderCluster) {
-    // Path-only fallback: strict grid + segmented-hline + header-rule.
     const strictEarly = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
       .filter((t) => t.colSeparators.length > 0);
     const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
@@ -119,25 +118,18 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 1: Row analysis and table-like row identification ===
-  // Group lines into rows by y-proximity. Only examine rows with 2+ lines.
-  // Single-line rows can also qualify if they contain a text label followed by 3+ numbers
-  // (e.g., "Total physical volumes (BBtue/d) 51,715 32,429 27,308"). These are table data rows
-  // where the PDF produced a single line object containing both the label and all number columns.
   const rows = groupLinesIntoRows(lines);
   const tableLikeRows = [];
 
   for (const row of rows) {
     if (row.lineIndices.length < 2) {
-      // Single-fragment row: check if it's a single-line table row (label + numbers).
       if (row.lineIndices.length === 1 && isRightClusteredNumeric(lines[row.lineIndices[0]].words)) {
         tableLikeRows.push({ ...row, hasNumbers: true });
       }
       continue;
     }
 
-    // Signal A: Stream-order consecutiveness.
-    // Table cells at the same y are consecutive in the lines array (row-major).
-    // Multi-column text segments at the same y are far apart (column-major).
+    // A table's cells at one y are consecutive in the lines array, while multi-column page text at the same y is written column by column and lands far apart.
     const indices = row.lineIndices;
     let maxGap = 0;
     for (let i = 1; i < indices.length; i++) {
@@ -146,9 +138,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     const isConsecutive = maxGap <= 2;
     if (!isConsecutive) {
-      // On multi-column pages, lines from different page columns at the same y
-      // get grouped into one row, creating large index gaps. Split the row into
-      // consecutive sub-sequences and test each independently.
       const subRows = [];
       let currentSub = [indices[0]];
       for (let j = 1; j < indices.length; j++) {
@@ -161,12 +150,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       subRows.push(currentSub);
 
-      // Column-major stream layout: each cell is its own line, scattered across
-      // the stream (label column first, then col-1 body, col-2 body, ...). This
-      // produces a row with N single-line subs. If 3+ subs are pure-numeric
-      // singletons, accept the whole row as a single multi-segment table row.
-      // (Plain multi-column page text won't pass — its fragments are word-rich
-      // text, not single numeric tokens.)
+      // A table can be written column by column, one cell per line, so its rows fail the consecutiveness test above.
+      // Requiring bare numeric tokens is what keeps ordinary two-column page text out, since its fragments are word-rich.
       if (subRows.length >= 4) {
         let pureNumericSubs = 0;
         for (const sub of subRows) {
@@ -185,7 +170,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
 
       for (const sub of subRows) {
         if (sub.length < 2) {
-          // Single-fragment sub-row: check if it's a single-line table row (label + numbers).
           if (sub.length === 1 && isRightClusteredNumeric(lines[sub[0]].words)) {
             tableLikeRows.push({ y: lines[sub[0]].bbox.top, lineIndices: sub, hasNumbers: true });
           }
@@ -205,7 +189,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       continue;
     }
 
-    // Signal B: Numeric content.
     let numericWordCount = 0;
     for (const idx of indices) {
       for (const word of lines[idx].words) {
@@ -216,8 +199,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     const hasNumbers = numericWordCount >= 1;
 
-    // A row is "table-like" if consecutive in stream order AND
-    // (has numbers OR has 3+ segments).
     if (hasNumbers || indices.length >= 3) {
       tableLikeRows.push({ ...row, hasNumbers });
     }
@@ -274,26 +255,17 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // === Phase 3: Path data classification ===
   const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
 
-  // Correlate paths with candidates
   for (const candidate of candidates) {
     correlatePathsWithCandidate(candidate, pathData);
   }
 
   // === Phase 3.5: Structural row-band extraction ===
-  // Extract regions where filled rectangles form a row-banding pattern with
-  // a consistent disjoint-x column structure. These regions directly encode
-  // both row boundaries and column positions of tables that use row
-  // highlighting or per-cell cell backgrounds.
-  const rowBandRegions = extractRowBandStructure(pathData.filledRects);
+  const rowBandRegions = extractRowBandStructure(pathData.filledRects, lines);
 
   // === Phase 4: Validation ===
   const validated = candidates.filter((c) => validateCandidate(c, lines));
 
-  // Grid-based tables override text-based tables in overlapping regions.
-  // Grid detection (from hLines + vLines) provides exact column positions,
-  // which is more reliable than text-alignment-based column inference.
-  // Only consider grid tables with 1+ interior column separators — a 0-column
-  // grid is just a box, and allowing it to replace a text-based table would destroy valid detections.
+  // A grid with no interior separator is just a box, and letting it replace an overlapping text table would destroy a valid detection.
   const strictGrids = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
     .filter((t) => t.colSeparators.length > 0);
   const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
@@ -363,11 +335,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     cand.bbox.bottom = Math.max(cand.bbox.bottom, rbr.bottom);
     cand.bbox.left = Math.min(cand.bbox.left, rbr.left);
     cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
-    // When extending leftward and the candidate's column structure was
-    // derived from path geometry (header-rule / segmented-hline), the old
-    // bbox.left was the boundary between an unmodeled label column and the
-    // first data column — preserve it as a separator so the new label
-    // segment doesn't merge into the first data column.
+    // Path-derived column structures do not model the label column, so the old bbox.left was its boundary with the first data column and has to survive as a separator.
     if (cand.bbox.left < prevLeft - 5
         && (cand.detectionMethod === 'header-rule'
             || cand.detectionMethod === 'segmented-hline')) {
@@ -382,34 +350,22 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
 
-  // Split a multi-region candidate into one table per region when either:
-  //   (a) 3+ regions each with 5+ bands, or
-  //   (b) adjacent regions are separated by a wide single-segment narrative line (>=2 regions, >=2 bands each).
-  // Regions separated only by a narrow section label are one table and stay merged.
+  // A drawn grid outranks these shading-derived regions, so sectioned row coloring must not split a grid-strong table.
   for (const [cand, regions] of candToRegions) {
     if (regions.length < 2) continue;
+    if (cand.detectionMethod === 'grid-strong') continue;
     const allHaveFiveBands = regions.every((r) => r.rowYs.length >= 5);
     const allHaveTwoBands = regions.every((r) => r.rowYs.length >= 2);
-    // Sibling tables stacked vertically have their own column layouts, while sub-sections of one table share columns.
-    // Compare adjacent regions' colXs (column anchors inferred from band rectangles):
-    // distinct anchors signal distinct tables, matching anchors signal one logical table split by a tall row or warning text.
     const sortedByTop = [...regions].sort((a, b) => a.top - b.top);
     let shouldSplit = false;
     if (regions.length >= 3 && allHaveFiveBands) {
       shouldSplit = true;
     } else if (allHaveTwoBands) {
-      // Sibling tables stacked vertically have THEIR OWN header rows
-      // between the banded sections — column-aligned text cells (multi-
-      // segment row) introducing the next table's columns. Sub-sections
-      // of one table separated by a tall data row or wraparound prose
-      // have NO new column header between sections — the columns continue.
+      // A new column-header row between two banded sections means the second is its own table, while sub-sections of one table run on with no new header.
       let allSeparatedByHeader = true;
       for (let ri = 1; ri < sortedByTop.length; ri++) {
         const gapTop = sortedByTop[ri - 1].bottom;
         const gapBottom = sortedByTop[ri].top;
-        // Group lines in the gap by y (5pt tolerance). A y-group with 2+
-        // line-fragments overlapping the candidate's x-range is a multi-
-        // segment row, characteristic of a new table's column-header band.
         /** @type {Array<{y: number, count: number}>} */
         const yGroups = [];
         for (const line of lines) {
@@ -430,6 +386,24 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (allSeparatedByHeader) shouldSplit = true;
     }
+    // An internal break within one table always carries content, so a gap holding no text at all separates sibling tables.
+    if (!shouldSplit && regions.length >= 2 && regions.every((r) => r.rowYs.length >= 5)) {
+      let allGapsEmpty = true;
+      for (let ri = 1; ri < sortedByTop.length; ri++) {
+        const gapTop = sortedByTop[ri - 1].bottom;
+        const gapBottom = sortedByTop[ri].top;
+        if (gapBottom - gapTop < 5) { allGapsEmpty = false; break; }
+        for (const line of lines) {
+          const yC = (line.bbox.top + line.bbox.bottom) / 2;
+          if (yC <= gapTop || yC >= gapBottom) continue;
+          if (line.bbox.right < cand.bbox.left || line.bbox.left > cand.bbox.right) continue;
+          allGapsEmpty = false;
+          break;
+        }
+        if (!allGapsEmpty) break;
+      }
+      if (allGapsEmpty) shouldSplit = true;
+    }
     if (!shouldSplit) continue;
     candsToRemove.add(cand);
     for (const rbr of regions) {
@@ -437,9 +411,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
 
-  // Unattached regions: synthesize candidates from band geometry.
-  // Text clustering missed these because the table relies on row-shading rather
-  // than on column-aligned text patterns to cohere.
+  // A region with no matching candidate is a table that coheres by row shading rather than by column-aligned text, so text clustering missed it.
   for (const [rbr, cands] of regionMatches) {
     if (cands.length === 0 && rbr.rowYs.length >= 8) {
       for (const c of makeRowBandCandidates(rbr, null, lines)) candsToAdd.push(c);
@@ -452,11 +424,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
   for (const c of candsToAdd) validated.push(c);
 
-  //
-  // Header detection runs FIRST. Downstream passes (column inference in
-  // extractStructure, bbox refinement in refineTableTop) consult
-  // table.headers as a first-class signal rather than re-deriving header
-  // information ad-hoc. See detectHeaders() for the rule set.
+  // Header detection runs before column inference and top refinement, which both read table.headers.
   for (const table of validated) {
     table.headers = detectHeaders(table, lines);
   }
@@ -464,17 +432,9 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     extractStructure(table, lines);
   }
 
-  // Header-rule tables (column-spanning underlines). Yield to grid/segmented-hline
-  // (stronger path geometry). Yield to text-derived tables too, except when the
-  // text table has anomalously narrow columns — a sign that text-clustering split
-  // a $ currency glyph into its own column. In that case the header-rule's column
-  // count is more reliable. Runs AFTER extractStructure so text tables have their
-  // colSeparators populated for the comparison.
+  // Runs after extractStructure so the text tables compared against here already have their colSeparators.
   const headerRuleTables = detectHeaderRuleTables(pathData.hLines, pageObj);
-  // A "narrow" text column is one that's too tight to hold a label or full
-  // numeric value — the typical signature of a $ currency glyph split into
-  // its own column. Threshold tuned to catch the $-split pattern (~10–80px)
-  // without flagging legitimate tight numeric columns (>120px).
+  // A column too tight to hold a label or a full numeric value is the signature of text clustering splitting a currency glyph into a column of its own.
   const hasNarrowTextColumn = (table) => {
     const seps = [table.bbox.left, ...table.colSeparators, table.bbox.right];
     for (let i = 1; i < seps.length; i++) {
@@ -498,10 +458,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       const htCols = ht.colSeparators.length + 1;
       const maxTextCols = Math.max(...overlappingText.map((t) => t.colSeparators.length + 1));
       const anyNarrow = overlappingText.some(hasNarrowTextColumn);
-      // Keep text only when it found strictly more columns AND none of them
-      // are narrow ($-glyph-split signature). Equal column counts let
-      // header-rule win because its bbox is more often correct (it doesn't
-      // truncate the top header rows).
+      // A tie goes to the header-rule table, whose bbox is more often right because it does not truncate the top header rows.
       if (maxTextCols > htCols && !anyNarrow) continue;
     }
     for (let i = validated.length - 1; i >= 0; i--) {
@@ -514,7 +471,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     validated.push(ht);
   }
 
-  // Phase 5.4: Re-attach row-band regions to header-rule tables
+  // === Phase 5.4: Re-attach row-band regions to header-rule tables ===
   for (const cand of validated) {
     if (cand.rowBandRegion) continue;
     /** @type {RowBandRegion[]} */
@@ -552,10 +509,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
 
-  // Split row-band-attached candidates when their data rows have a big
-  // y-gap — sibling sub-tables (e.g. Assets / Liabilities) commonly share a
-  // single header rule and a single banded stripe even though they're
-  // structurally separate. Split candidates inherit column structure.
+  // Sibling sub-tables such as Assets and Liabilities commonly share one header rule and one banded stripe even though they are structurally separate.
   /** @type {Array<{cand: DetectedTable, splits: DetectedTable[]}>} */
   const splitWork = [];
   for (const cand of validated) {
@@ -575,12 +529,9 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
         groups[groups.length - 1].end = i;
       }
     }
-    // Only split when exactly two groups appear. Three-or-more groups are
-    // typically internal sub-sections of one larger table (e.g. plan-asset
-    // categories) rather than truly sibling tables — splitting those would
-    // fragment a single logical table.
+    // Three or more groups are usually internal sub-sections of one larger table, and splitting those would fragment it.
     if (groups.length !== 2) continue;
-    // Only split when both groups close with a "Total …" row.
+    // A gap alone is weak evidence, so each group must also close with a Total row to count as a complete table.
     /** @param {{lineIndices: number[], y: number}} rowSpec */
     const endsInTotal = (rowSpec) => {
       for (const li of rowSpec.lineIndices) {
@@ -628,10 +579,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
         vLines: cand.vLines || [],
         detectionMethod: cand.detectionMethod,
         rowBandRegion: cand.rowBandRegion,
-        // Non-first groups must not extend their bbox.top above their own
-        // first row — refineTableTop's gap-scan would otherwise chain upward
-        // through the previous split's data rows and pull bbox.top to the
-        // shared column-header band.
+        // Without this, refineTableTop's gap scan chains upward through the previous split's data rows and pulls bbox.top to the shared column-header band.
         splitTopLocked: gi > 0,
       });
     }
@@ -643,30 +591,16 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 5.5: Refine table top boundaries using header detection ===
-  // Now that hLine data is available (from Phase 3 path correlation), replace the
-  // generous expansion from Phase 2 with an intelligent header scan. This determines
-  // where the table actually starts by looking for header-like content above the
-  // first detected data row, using hLines as the primary signal and multi-segment /
-  // width analysis as fallback.
-  //
-  // Path-derived methods (segmented-hline, header-rule) carry authoritative
-  // bbox.top from drawn vector geometry and are exempt — except when a row-band
-  // region was attached, which means the band marks the first data row and any
-  // header rows still need to be picked up above it. Grid-strong is always
-  // exempt: the stroked outer rectangle is the table's true top.
+  // A path-derived bbox.top comes from drawn geometry and needs no scan, except when a row band marks the first data row and leaves the header rows above it unclaimed.
+  // Grid-strong is exempt either way, since its stroked outer rectangle is the table's true top.
   for (const table of validated) {
     const hasBand = !!table.rowBandRegion;
     if (table.splitTopLocked) continue;
     if (table.detectionMethod === 'grid-strong') continue;
     if (!hasBand && table.detectionMethod === 'segmented-hline') continue;
     if (!hasBand && table.detectionMethod === 'header-rule') continue;
-    // Lines belonging to another table's bbox must not pull this table's top
-    // upward. Without a floor, a stacked sibling whose data rows visually
-    // resemble headers (multi-segment numerics) chains the upward scan
-    // through the entire neighbor and stops only at its intro prose.
-    // Compare against this table's first data row, not its bbox.top: bbox.top
-    // was inflated by avgRowHeight*3 in groupRowsIntoCandidates, so sibling
-    // bboxes can overlap by tens of points while their data rows don't.
+    // A stacked sibling whose data rows resemble headers would otherwise chain the upward scan through the entire neighbor, stopping only at its intro prose.
+    // The floor keys on this table's first data row because groupRowsIntoCandidates inflated bbox.top by three row heights, so sibling bboxes overlap where their data rows do not.
     const myFirstRowY = table.rows.length > 0
       ? Math.min(...table.rows.map((r) => r.y))
       : table.bbox.top;
@@ -688,13 +622,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     table.title = detectTableTitle(table, lines);
   }
 
-  // Filter out single-column tables (0 column separators) and text-detected
-  // tables with sliver columns. A column too narrow to hold cell content
-  // (≤30px) almost always comes from word-clustering on noise — a stray
-  // footnote marker, page-number, or sidebar element pulled into its own
-  // "column" — not from a real data column. Path-derived methods (grid,
-  // segmented-hline, header-rule) carry authoritative column geometry from
-  // the PDF itself and are exempt.
+  // A column too narrow to hold cell content comes from word clustering on noise, a stray footnote marker or page number pulled into a column of its own.
   const multiCol = validated.filter((t) => {
     if (t.colSeparators.length === 0) return false;
     if (t.detectionMethod !== 'text') return true;
@@ -706,18 +634,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   });
 
   // === Phase 5.6: Extend tables to adjacent structural content ===
-  // Grid detection derives bbox.left from drawn vector lines, which may not
-  // reach a table's leftmost label column (labels rarely carry stroked borders).
-  // Summary rows (e.g. "Previous Year") drawn just below the last stroked grid
-  // line get similarly excluded. This pass rescues both patterns using text
-  // geometry. A purely text-based candidate whose bbox already spans the label
-  // column is unaffected — nothing sits left of bbox.left to extend into.
-  //
-  // Run AFTER the multiCol filter: the extension adds a column separator on
-  // left extension and can add rows on bottom extension, but we don't want
-  // those additions to promote a single-column or sub-3-row non-table into a
-  // valid table. Extending only confirmed multi-column tables keeps this
-  // pass orthogonal from validation.
+  // Runs after the multiCol filter, since the separator and rows the extension adds would otherwise promote a single-column or sub-3-row non-table into a valid one.
   for (const table of multiCol) {
     if (table.detectionMethod === 'grid-strong') continue;
     if (table.detectionMethod === 'segmented-hline') continue;
@@ -726,10 +643,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 5.7: Refine text-table column structure from rule clusters ===
-  // Rule clusters carry authoritative column geometry; word-clustering is a
-  // fallback. Override text seps with rule-gap midpoints when a cluster sits
-  // inside the table; synthesize a label-column sep if the table extends
-  // left of the leftmost rule.
   const ruleClusters = findDisjointRuleClusters(pathData.hLines, pageObj);
   for (const table of multiCol) {
     if (table.detectionMethod !== 'text') continue;
@@ -746,8 +659,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
     }
     if (!bestCluster) continue;
-    // Text > rule col count: rule likely encodes only major groupings while
-    // text captures sub-columns. Keep text.
+    // A rule set can underline only the major groupings while text clustering sees the sub-columns, so a higher text column count wins.
     const wouldSynthesizeLabel = table.bbox.left < bestCluster.cols[0].left - 20;
     const newColCount = bestCluster.cols.length + (wouldSynthesizeLabel ? 1 : 0);
     const currentColCount = table.colSeparators.length + 1;
@@ -767,7 +679,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
 
 /**
  * Collect lines whose bbox sits inside `bbox` and group them into rows.
- * Used by row-band candidate construction and post-snap row repopulation.
  * @param {{left: number, top: number, right: number, bottom: number}} bbox
  * @param {any[]} lines
  */
@@ -790,9 +701,7 @@ function collectRowsInBbox(bbox, lines) {
 }
 
 /**
- * Build synthetic table candidate(s) seeded from a row-band region. Used both
- * for unattached regions (no text candidate covered the band) and to split a
- * text candidate that spans several disjoint regions.
+ * Build synthetic table candidates seeded from a row-band region.
  *
  * @param {RowBandRegion} rbr
  * @param {DetectedTable | null} baseCand
@@ -853,9 +762,8 @@ function makeRowBandCandidates(rbr, baseCand, lines) {
           if (lines[li].bbox.bottom > groupBottom) groupBottom = lines[li].bbox.bottom;
         }
       }
-      // First group keeps the original band-region top so that header rows
-      // above the first data row stay inside; later groups start at their own
-      // first-row y so they don't pull bbox.top back into the previous group.
+      // The first group keeps the band region's top so header rows above the first data row stay inside.
+      // A later group starts at its own first row so its bbox does not reach back into the previous group.
       const subBbox = {
         left,
         top: g.startIdx === 0 ? bbox.top : groupRows[0].y,
@@ -929,24 +837,17 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
   let runStart = 0;
 
   for (let i = 1; i <= tableLikeRows.length; i++) {
-    // Check if this row is vertically close to the previous one.
-    // When the direct gap exceeds the threshold, check if non-table lines (e.g., section headers
-    // in financial tables) bridge the gap — if every step through intervening lines is small, continue.
+    // A section header between two table rows must not end the run, so a gap that a short chain of intervening lines steps across still counts as continuous.
     let isContinuation = false;
     if (i < tableLikeRows.length) {
       const directGap = tableLikeRows[i].y - tableLikeRows[i - 1].y;
       if (directGap < yGapThreshold) {
         isContinuation = true;
       } else {
-        // Check if a small number of non-table lines bridge the gap (section headers in financial
-        // tables are typically 1-2 lines). Only count lines in the same x-region as the table rows
-        // (on two-column pages, lines from the other column shouldn't count as bridges).
         const yLow = tableLikeRows[i - 1].y;
         const yHigh = tableLikeRows[i].y;
 
-        // Compute x-extent using only the two rows bracketing the gap.
-        // Using the full run's x-extent would include rows from other columns on multi-column
-        // pages, causing unrelated cross-column prose to inflate the intervening line count.
+        // Widening this beyond the two rows bracketing the gap would pull in rows from other page columns, letting unrelated prose inflate the intervening-line count.
         let runLeft = Infinity;
         let runRight = -Infinity;
         for (const ri of [i - 1, i]) {
@@ -957,9 +858,6 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
         }
 
         const runWidth = runRight - runLeft;
-        // Tolerance scales with table width: section headers in wide tables can sit
-        // 50-100pt left of the data column due to label-column indentation. Fixed
-        // 50pt is too tight for tables wider than ~1000pt.
         const xTol = Math.max(50, runWidth * 0.05);
         const bracketSet = new Set();
         for (const ri of [i - 1, i]) {
@@ -971,7 +869,7 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
           if (bracketSet.has(li)) continue;
           const ly = lines[li].bbox.top;
           if (ly > yLow && ly < yHigh) {
-            // Only count lines whose x-position overlaps the table's x-region.
+            // A section header sits left of the data at the label-column indent, so the window reaches left of the rows but not right.
             const lx = lines[li].bbox.left;
             if (lx >= runLeft - xTol && lx <= runRight) {
               bridgeYs.push(ly);
@@ -981,7 +879,7 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
             }
           }
         }
-        const interveningCount = bridgeYs.length - 1; // exclude yLow
+        const interveningCount = bridgeYs.length - 1;
         if (interveningCount > 0 && interveningCount <= 3 && !anyWide) {
           bridgeYs.push(yHigh);
           bridgeYs.sort((a, b) => a - b);
@@ -999,15 +897,12 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
     }
 
     if (!isContinuation) {
-      // End of run from runStart to i-1
       const run = tableLikeRows.slice(runStart, i);
       const hasAnyNumbers = run.some((r) => r.hasNumbers);
       const minRows = hasAnyNumbers ? 3 : 4;
 
       if (run.length >= minRows) {
-        // Split run into x-region groups if rows occupy non-overlapping horizontal regions.
-        // On multi-column pages, tables in different columns can be vertically close enough
-        // to form a single run. Splitting by x-overlap separates them into distinct candidates.
+        // Tables in different page columns can sit close enough vertically to form a single run.
         const rowExtents = run.map((r) => {
           let left = Infinity;
           let right = -Infinity;
@@ -1018,7 +913,6 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
           return { left, right };
         });
 
-        // Cluster rows by x-overlap using union-find
         const parent = run.map((_, idx) => idx);
         const find = (idx) => { while (parent[idx] !== idx) { parent[idx] = parent[parent[idx]]; idx = parent[idx]; } return idx; };
         const unite = (a, b) => { parent[find(a)] = find(b); };
@@ -1042,11 +936,8 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
           if (cluster.length < minRows) continue;
           cluster.sort((a, b) => a.y - b.y);
 
-          // Re-check y-gaps within this cluster using cluster-specific dimensions.
-          // During run formation (Stage B), left-column rows can mask gaps between right-column
-          // rows (and vice versa). Now that x-clustering has separated columns, re-evaluate
-          // gaps using the cluster's column width — paragraph text that fills the column (>60%)
-          // will correctly block the bridge, splitting merged tables.
+          // The first bridge test measured width against a cross-column x-extent, so paragraph text filling a single column did not look wide enough to block the bridge.
+          // Now that x-clustering has separated the columns, the same test against the cluster's own width splits the merged tables.
           let clusterLeft = Infinity;
           let clusterRight = -Infinity;
           for (const r of cluster) {
@@ -1105,8 +996,7 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
             const allLineIndices = subCluster.flatMap((r) => r.lineIndices);
             const bbox = computeBboxFromLineIndices(allLineIndices, lines);
             const avgRowHeight = (bbox.bottom - bbox.top) / subCluster.length;
-            // Expand generously for path correlation — the final bbox.top will be
-            // refined in Phase 5.5 (refineTableTop) after hLine data is available.
+            // Expanded generously to give path correlation room, since Phase 5.5 refines the real top once hLine data exists.
             bbox.top = Math.max(0, bbox.top - avgRowHeight * 3);
 
             candidates.push({
@@ -1127,7 +1017,7 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
 }
 
 /**
- * Classify vector paths into horizontal lines, vertical lines, and filled rectangles.
+ * Classify vector paths into horizontal lines, vertical lines, filled rectangles, and header fills.
  * Applies filtering to remove page borders, margin rules, and underlines.
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
  * @param {number} scale
@@ -1140,10 +1030,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
   const pageHeight = pageObj.dims.height;
   const pageWidth = pageObj.dims.width;
 
-  // Minimum hLine width derived from the page's body text size (in PDF points).
-  // A table cell border must be at least as wide as the typical line height,
-  // which approximates one character width. This adapts to the document's
-  // font size rather than using a fixed-point threshold.
+  // A cell border is at least as wide as one character, which the median line height approximates.
   const lineHeightsPts = pageObj.lines
     .map((l) => (l.bbox.bottom - l.bbox.top) / scale)
     .filter((h) => h > 2 && h < 100);
@@ -1152,12 +1039,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     ? lineHeightsPts[Math.floor(lineHeightsPts.length / 2)]
     : 30;
 
-  // Table grid lines are black or gray (achromatic). Chart bars, decorative
-  // designs, and colored elements are chromatic (saturated colors). Filter
-  // chromatic paths from contributing hLines/vLines so that colored chart
-  // content cannot form phantom grids.
-  // Achromatic = all color components roughly equal (gray scale) or near zero
-  // (black). For CMYK, achromatic means C≈M≈Y≈0 with any K value.
+  // Table grid lines are black or gray while chart bars and decorative elements are saturated, so filtering chromatic paths keeps colored chart content from forming phantom grids.
   const isAchromaticColor = (color) => {
     if (!color || color.length === 0) return true;
     if (color.length === 1) return true;
@@ -1179,10 +1061,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     return false;
   };
 
-  // Pre-pass: identify stroked rectangles that tile (share edges with neighbors).
-  // Table cells drawn with `re S` tile perfectly — adjacent cells share their
-  // common border. Org chart boxes, diagram outlines, and other non-table rects
-  // are isolated with gaps. Only tiling rects should be decomposed into edges.
+  // Table cells drawn with `re S` tile perfectly, sharing a border with each neighbor, while org chart boxes and diagram outlines sit isolated with gaps.
   const tilingRectSet = new Set();
   const strokedRectBounds = [];
   for (let pi = 0; pi < paths.length; pi++) {
@@ -1249,11 +1128,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     const w = maxX - minX;
     const h = maxY - minY;
 
-    // Decompose stroked paths containing many M-L segments into individual lines.
-    // Some PDFs draw table grids as many discrete M-L line segments within a single
-    // stroked path, rather than using separate paths or rectangle operators. Each
-    // M-L pair is an individual grid line (horizontal or vertical cell edge).
-    // Also handles occasional M-L-L polyline segments mixed in.
+    // A PDF can draw a whole table grid as many discrete M-L segments inside one stroked path rather than as separate paths or rectangles.
     const cmds = path.commands;
     if (path.stroke && cmds.length >= 4) {
       let mlSegments = 0;
@@ -1290,9 +1165,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       }
     }
 
-    // Decompose batched filled paths into per-cell FilledRects.
-    // Some PDFs draw alternating row backgrounds — or per-cell cell fills — as a single fill
-    // path containing many M-L-L-L-Z subpath rectangles.
+    // A PDF can draw alternating row backgrounds, or per-cell fills, as a single fill path holding many M-L-L-L-Z subpath rectangles.
     if (path.fill && cmds.length >= 10 && isRowBandColor(path.fillColor)) {
       const subRects = [];
       for (let k = 0; k + 4 < cmds.length; k++) {
@@ -1336,12 +1209,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       }
     }
 
-    // Decompose stroked rectangular paths (M-L-L-L-Z) into individual line segments,
-    // but only when the rect tiles with its neighbors (shares an edge). Table cells
-    // drawn with `re S` tile perfectly — adjacent cells share their common border.
-    // Org chart boxes, diagram outlines, and other non-table rects are isolated
-    // (no shared edges) and must not be decomposed — their edges create false
-    // hLine/vLine matches that cluster into phantom grids.
+    // An isolated rect must not be decomposed, since its four edges cluster into a phantom grid.
     if (path.stroke && cmds.length === 5
         && cmds[0].type === 'M' && cmds[1].type === 'L'
         && cmds[2].type === 'L' && cmds[3].type === 'L'
@@ -1382,19 +1250,17 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     const displayBottom = (visualHeightPts - (minY - boxOriginY)) * scale;
 
     if (h < 2 && w >= minHLineWidthPts && isPathAchromatic(path)) {
-      // Horizontal line candidate
       const displayY = (visualHeightPts - ((minY + maxY) / 2 - boxOriginY)) * scale;
 
-      // Filter: skip page border lines (top/bottom 5% of page with nothing nearby)
+      // A rule in the top or bottom 5% of the page is a border, not a table line.
       if (displayY < pageHeight * 0.05 || displayY > pageHeight * 0.95) continue;
 
       hLines.push({ left: displayLeft, right: displayRight, y: displayY });
     } else if (w < 2 && h > 10 && isPathAchromatic(path)) {
-      // Vertical line candidate
       const displayX = ((minX + maxX) / 2 - boxOriginX) * scale;
       const vLineHeight = displayBottom - displayTop;
 
-      // Filter: skip page-spanning margin rules (>80% of page height)
+      // A rule spanning most of the page height is a margin rule.
       if (vLineHeight > pageHeight * 0.8) continue;
 
       vLines.push({ top: displayTop, bottom: displayBottom, x: displayX });
@@ -1409,8 +1275,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       });
     } else if (path.fill && w > minHLineWidthPts * 5 && h >= minHLineWidthPts * 3 && h < pageHeight * 0.3
         && isPathAchromatic(path)) {
-      // Larger filled region — potential table header background.
-      // Too tall for row-band detection but structurally marks a header area.
+      // A fill too tall to be a row band can still mark a header area.
       headerFills.push({
         left: displayLeft,
         top: displayTop,
@@ -1421,18 +1286,9 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     }
   }
 
-  // Reconstitute dashed/dotted lines rendered as many discrete short segments.
-  // Some PDFs draw dashed lines not via the PDF dash-array operator but as separate
-  // stroked paths (e.g., 61 segments of h≈10pt with 0.3pt gaps). These segments
-  // individually fall below the h>10 / w>30 thresholds above, but collectively
-  // represent a single logical line. Detect the pattern and emit reconstituted lines.
   reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight);
 
-  // Identify ruling-row members: ≥2 hLines at the same y with mutually
-  // disjoint x-extents. Together they form a column-spanning rule (header
-  // underlines or column underlines), not text underlines. Exempt them from
-  // the underline filter below — column-rule lines individually look like
-  // word underlines but together encode the table's column geometry.
+  // A column rule's segments individually look like word underlines, so they are exempted from the underline filter below that would otherwise delete the table's column geometry.
   const rulingRowMembers = new Set();
   {
     const yGroups = [];
@@ -1460,38 +1316,33 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     }
   }
 
-  // Filter underline horizontal lines: if an hLine's x-extent closely matches
-  // a single text line directly above it, it's an underline, not a table border.
+  // An hLine whose x-extent matches a single text line just above it is that line's underline, not a table border.
   const filteredHLines = hLines.filter((hl) => {
     if (rulingRowMembers.has(hl)) return true;
     for (const line of pageObj.lines) {
       const lineBottom = line.bbox.bottom;
       const yDist = Math.abs(hl.y - lineBottom);
-      // Within 5pt vertically of the line's bottom (baseline area)
       if (yDist > 5) continue;
       const lineLeft = line.bbox.left;
       const lineRight = line.bbox.right;
-      // Check if hLine x-extent matches this single line (within 10pt)
       if (Math.abs(hl.left - lineLeft) < 10 && Math.abs(hl.right - lineRight) < 10) {
-        return false; // It's an underline
+        return false;
       }
     }
     return true;
   });
 
-  // Merge collinear hLine segments at the same y-position.
-  // Per-cell borders produce separate hLine segments for each cell edge at the
-  // same y-coordinate. Merging recovers full-row lines, which is critical for
-  // x-extent clustering — without merging, the rightmost column's segments can
-  // form a separate cluster, losing the column from the table.
-  const mergedHLines = mergeCollinearSegments(filteredHLines, 'y', 'left', 'right', 5, 10);
+  // Per-cell borders emit a separate segment per cell edge, and unmerged the rightmost column's segments cluster on their own and the column is lost.
+  // Ruling-row members merge only among themselves, since the 5px merge tolerance is looser than the 3px ruling-row grouping and a separate full-width rule just below can land in the same group.
+  // Such a rule overlaps every underline, so merging would fuse the ruling row into one full-width line and erase the column geometry its disjoint segments encode.
+  const rulingHLines = filteredHLines.filter((hl) => rulingRowMembers.has(hl));
+  const nonRulingHLines = filteredHLines.filter((hl) => !rulingRowMembers.has(hl));
+  const mergedHLines = [
+    ...mergeCollinearSegments(rulingHLines, 'y', 'left', 'right', 5, 10),
+    ...mergeCollinearSegments(nonRulingHLines, 'y', 'left', 'right', 5, 10),
+  ];
 
-  // Merge collinear vLine segments at the same x-position.
-  // Some PDFs draw per-cell vertical borders as separate segments rather than
-  // full-column-height lines. Merging recovers the logical column separators
-  // that would otherwise be rejected by downstream overlap filters.
-  // Use tight tolerance (5px) for grouping by x-position, and 10px gap
-  // tolerance to bridge header/data cell border gaps (typically 6-7px).
+  // Per-cell vertical borders arrive as separate segments, and unmerged they are rejected by the downstream overlap filters instead of serving as column separators.
   const mergedVLines = mergeCollinearSegments(vLines, 'x', 'top', 'bottom', 5, 10);
 
   return {
@@ -1509,40 +1360,42 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
  *   rowYs: Array<{top: number, bottom: number}>,
  * }} RowBandRegion
  *
- * A RowBandRegion describes a set of filled rectangles that together form a
- * table-like row-banding pattern. `rowYs` is the list of distinct row-band
- * y-intervals (each interval is one row). `colXs` is the set of column
- * boundary positions inferred from the dominant disjoint-x pattern observed
- * across the bands.
+ * A set of filled rectangles that together form a table-like row-banding pattern.
+ * `rowYs` holds one y-interval per row.
+ * `colXs` holds the column boundary positions inferred from the dominant disjoint-x pattern across the bands.
  */
 
 /**
  * Extract structural row-band regions from filled rectangles.
  *
- * Many tables use alternating row highlighting or per-cell background fills.
- * When the fills decompose into bands at consistent y intervals — and the
- * per-band disjoint-x patterns agree — the fills directly encode both the row
- * boundaries and the column boundaries of the table. This function returns
- * those structural regions.
- *
- * The decomposition happens in two passes:
- *
- * 1. Group fills by (top,bottom) y-interval. A y-group with N+ fills whose
- *    disjoint-x ranges form a repeated pattern is a "row-band row candidate".
- *
- * 2. Collect row candidates into contiguous vertical regions (regular y
- *    intervals, overlapping x extent). A region is accepted as a structural
- *    table if it has 3+ rows whose dominant column positions agree — the
- *    column x-boundaries are computed from the column positions that appear
- *    in a majority of the region's rows.
- *
  * @param {FilledRect[]} filledRects
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} pageLines
  * @returns {RowBandRegion[]}
  */
-function extractRowBandStructure(filledRects) {
+function extractRowBandStructure(filledRects, pageLines) {
   if (!filledRects || filledRects.length < 3) return [];
 
-  // Step 1: group fills by y-range (tolerance 2 display pt)
+  // A fill nested inside a same-color fill has no visible edges, so it contributes no row or column boundary.
+  // Identical duplicates compare on index so that exactly one of them survives.
+  const sameColor = (a, b) => a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) < 0.01);
+  const visible = [];
+  for (let i = 0; i < filledRects.length; i++) {
+    const f = filledRects[i];
+    let contained = false;
+    for (let j = 0; j < filledRects.length; j++) {
+      if (i === j) continue;
+      const g = filledRects[j];
+      if (!sameColor(f.color, g.color)) continue;
+      const inside = f.left >= g.left - 1 && f.right <= g.right + 1 && f.top >= g.top - 1 && f.bottom <= g.bottom + 1;
+      if (!inside) continue;
+      const identical = g.left >= f.left - 1 && g.right <= f.right + 1 && g.top >= f.top - 1 && g.bottom <= f.bottom + 1;
+      if (!identical || j < i) { contained = true; break; }
+    }
+    if (!contained) visible.push(f);
+  }
+  filledRects = visible;
+
+  // Step 1: group fills by y-range
   const yGroups = [];
   for (const f of filledRects) {
     const g = yGroups.find((gg) => Math.abs(gg.top - f.top) < 2 && Math.abs(gg.bottom - f.bottom) < 2);
@@ -1550,14 +1403,9 @@ function extractRowBandStructure(filledRects) {
     else yGroups.push({ top: f.top, bottom: f.bottom, items: [f] });
   }
 
-  // Step 2: within each y-group, compute disjoint x-ranges and keep the raw
-  // per-cell extents.
-  // A disjoint range is a maximal set of adjacent/overlapping fills. Cells
-  // with a true x-gap between them (fills not touching) produce multiple
-  // disjoint ranges, one per column. The merged ranges drive row-bbox geometry;
-  // the raw per-cell extents drive column inference (touching cells share
-  // boundaries that are real column separators, even though they merge into a
-  // single contiguous range).
+  // Step 2: disjoint x-ranges and raw per-cell extents
+  // The merged ranges give the row bbox and the raw per-cell extents give the columns.
+  // A boundary between two touching cells is still a real column separator even though the two merge into one contiguous range.
   /** @type {Array<{top: number, bottom: number, ranges: Array<{left: number, right: number}>, cells: Array<{left: number, right: number}>}>} */
   const rowCandidates = [];
   for (const g of yGroups) {
@@ -1567,9 +1415,6 @@ function extractRowBandStructure(filledRects) {
     for (const f of g.items) {
       cells.push({ left: f.left, right: f.right });
       const last = ranges[ranges.length - 1];
-      // Fills exactly touching (last.right === f.left) are merged: adjacent
-      // cells typically share a border in the PDF. Use a tiny numeric
-      // tolerance (0.5pt) for float precision.
       if (last && f.left <= last.right + 0.5) {
         last.right = Math.max(last.right, f.right);
       } else {
@@ -1581,9 +1426,6 @@ function extractRowBandStructure(filledRects) {
     });
   }
 
-  // Filter: keep only candidates that look like table row bands.
-  // A useful row band either has 2+ disjoint cells (direct column evidence)
-  // OR is a single wide band (contributes row-position evidence only).
   const bands = rowCandidates.filter((c) => {
     if (c.ranges.length === 0) return false;
     const width = c.ranges[c.ranges.length - 1].right - c.ranges[0].left;
@@ -1592,9 +1434,9 @@ function extractRowBandStructure(filledRects) {
 
   if (bands.length < 3) return [];
 
-  // Step 3: Cluster bands into contiguous vertical regions.
-  // Two bands belong to the same region if their y-intervals are close
-  // (gap less than ~2× the typical band height) and their x-extents overlap.
+  // Step 3: cluster bands into regions
+  // A zebra table leaves alternate rows unpainted, so a gap that matches the painted row height and holds text is materialized as a virtual band with no cells.
+  // The empty cells array is what keeps a virtual band out of the painted-band counts below, while rowYs still reports the true row ladder.
   bands.sort((a, b) => a.top - b.top);
 
   /** @type {Array<typeof bands>} */
@@ -1605,30 +1447,82 @@ function extractRowBandStructure(filledRects) {
     let added = false;
     for (const r of regions) {
       const last = r[r.length - 1];
-      const lastBottom = last.bottom;
-      const lastHeight = last.bottom - last.top;
-      const gap = b.top - lastBottom;
-      // Bands in the same region are either contiguous (gap < 2× typical
-      // band height) or within the previous band (y-overlap).
-      const vertClose = gap <= Math.max(lastHeight * 2, 10);
+      const gap = b.top - last.bottom;
       const lastLeft = last.ranges[0].left;
       const lastRight = last.ranges[last.ranges.length - 1].right;
       const hOverlap = bRight > lastLeft && bLeft < lastRight;
-      if (vertClose && hOverlap) {
+      if (!hOverlap) continue;
+      if (gap <= 10) {
         r.push(b);
         added = true;
         break;
+      }
+      const paintedHeights = r.filter((band) => band.cells.length > 0)
+        .map((band) => band.bottom - band.top)
+        .sort((x, y) => x - y);
+      const medH = paintedHeights[Math.floor(paintedHeights.length / 2)];
+      const k = Math.round(gap / medH);
+      const intervalUnpainted = !bands.some((other) => other !== last && other !== b
+        && other.bottom > last.bottom + 1 && other.top < b.top - 1);
+      if (intervalUnpainted && k >= 1 && k <= 2 && Math.abs(gap - k * medH) <= medH * 0.4) {
+        let rLeft = Infinity;
+        let rRight = -Infinity;
+        for (const band of r) {
+          if (band.ranges[0].left < rLeft) rLeft = band.ranges[0].left;
+          if (band.ranges[band.ranges.length - 1].right > rRight) rRight = band.ranges[band.ranges.length - 1].right;
+        }
+        const hasText = pageLines.some((line) => {
+          const yC = (line.bbox.top + line.bbox.bottom) / 2;
+          return yC > last.bottom && yC < b.top && line.bbox.right > rLeft && line.bbox.left < rRight;
+        });
+        if (hasText) {
+          for (let vi = 0; vi < k; vi++) {
+            r.push({
+              top: last.bottom + (gap * vi) / k,
+              bottom: last.bottom + (gap * (vi + 1)) / k,
+              ranges: [{ left: rLeft, right: rRight }],
+              cells: [],
+            });
+          }
+          r.push(b);
+          added = true;
+          break;
+        }
       }
     }
     if (!added) regions.push([b]);
   }
 
-  // Step 4: For each region, decide if its column pattern is consistent
-  // enough to contribute column evidence, and produce a RowBandRegion.
+  // Chaining compares a band only against a region's last band, so a narrow rowspan title cell splits off even though the region's later full-width bands cover it.
+  for (let i = regions.length - 1; i >= 0; i--) {
+    const a = regions[i];
+    const aTop = a[0].top;
+    const aBottom = a[a.length - 1].bottom;
+    const aLeft = Math.min(...a.map((band) => band.ranges[0].left));
+    const aRight = Math.max(...a.map((band) => band.ranges[band.ranges.length - 1].right));
+    for (let j = 0; j < regions.length; j++) {
+      if (i === j) continue;
+      const c = regions[j];
+      const cTop = c[0].top;
+      const cBottom = c[c.length - 1].bottom;
+      const cLeft = Math.min(...c.map((band) => band.ranges[0].left));
+      const cRight = Math.max(...c.map((band) => band.ranges[band.ranges.length - 1].right));
+      const inside = aTop >= cTop - 5 && aBottom <= cBottom + 5 && aLeft >= cLeft - 5 && aRight <= cRight + 5;
+      if (inside && c.length > a.length) {
+        c.push(...a);
+        c.sort((x, y) => x.top - y.top);
+        regions.splice(i, 1);
+        break;
+      }
+    }
+  }
+
+  // Step 4: emit a RowBandRegion per region whose column pattern is consistent
   /** @type {RowBandRegion[]} */
   const results = [];
   for (const region of regions) {
-    if (region.length < 3) continue;
+    const paintedCount = region.filter((band) => band.cells.length > 0).length;
+    if (paintedCount < 3) continue;
 
     const anchorTol = 3;
     const leftAnchors = [];
@@ -1639,7 +1533,6 @@ function extractRowBandStructure(filledRects) {
         rightAnchors.push(c.right);
       }
     }
-    // Cluster anchors within tolerance
     /** @param {number[]} values */
     const cluster = (values) => {
       values.sort((a, b) => a - b);
@@ -1658,11 +1551,8 @@ function extractRowBandStructure(filledRects) {
     const leftClusters = cluster(leftAnchors);
     const rightClusters = cluster(rightAnchors);
 
-    // Keep column anchors that appear in at least half the bands. This is
-    // the "dominant pattern": cells that appear consistently across the
-    // region, as opposed to subtotal-row merged cells that only appear in
-    // one row.
-    const minCount = Math.ceil(region.length / 2);
+    // A subtotal row's merged cells appear in only one band, so a majority vote keeps them out of the column set.
+    const minCount = Math.ceil(paintedCount / 2);
     const dominantLefts = leftClusters
       .filter((c) => c.values.length >= minCount)
       .map((c) => c.mean)
@@ -1674,8 +1564,6 @@ function extractRowBandStructure(filledRects) {
 
     if (dominantLefts.length < 1) continue;
 
-    // The column boundaries (separators) are the midpoints between adjacent
-    // dominant right/left pairs. Pair each right with the next left.
     const colXs = [];
     for (let i = 0; i < dominantLefts.length - 1; i++) {
       const thisRight = dominantRights[i];
@@ -1684,14 +1572,11 @@ function extractRowBandStructure(filledRects) {
       colXs.push((thisRight + nextLeft) / 2);
     }
 
-    // Region bbox: from first band top to last band bottom, full x-span of
-    // dominant columns.
     const left = dominantLefts[0];
     const right = dominantRights[dominantRights.length - 1];
     const top = region[0].top;
     const bottom = region[region.length - 1].bottom;
 
-    // Row boundaries: one per band.
     const rowYs = region.map((b) => ({ top: b.top, bottom: b.bottom }));
 
     results.push({
@@ -1763,14 +1648,6 @@ function mergeCollinearSegments(segments, posKey, startKey, endKey, tolerance, g
 
 /**
  * Reconstitute dashed/dotted lines from discrete short path segments.
- * Some PDFs render dashed lines as many individual stroked segments (e.g., 61 segments
- * of h≈10pt with 0.3pt gaps) rather than using the PDF dash-array operator. These
- * segments are too short to pass the normal h>10 / w>30 thresholds individually.
- * This function detects the pattern and emits reconstituted full-length lines.
- *
- * Dashed-line signature (all must be true):
- * - 5+ collinear segments at the same position (x within 2pt for vertical, y within 2pt for horizontal)
- * - Median gap between consecutive segments < 2pt
  *
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
  * @param {HLine[]} hLines mutated: any reconstituted horizontal lines are pushed here
@@ -1782,7 +1659,7 @@ function mergeCollinearSegments(segments, posKey, startKey, endKey, tolerance, g
  * @param {number} pageHeight
  */
 function reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight) {
-  // Collect thin 2-cmd stroked segments in raw PDF coordinates (no size filter)
+  // A PDF can draw a dashed line as one stroked path per dash instead of using the dash-array operator, leaving segments too short for the normal line-length filter.
   /** @type {Array<{x: number, y1: number, y2: number}>} */
   const vCandidates = [];
   /** @type {Array<{y: number, x1: number, x2: number}>} */
@@ -1914,20 +1791,13 @@ function correlatePathsWithCandidate(candidate, pathData) {
 function validateCandidate(candidate, lines) {
   const rows = candidate.rows;
 
-  // Check 1: At least 3 rows with 2+ segments. A single-line row counts as
-  // multi-segment-equivalent when it matches the right-clustered-numeric
-  // pattern (label + leader/junk + 3+ trailing numeric tokens) — financial
-  // statements with leader dots emit each visual row as one OCR line, so the
-  // segments are inside the line, not across multiple lines.
+  // Rows of a leader-dot financial statement arrive as one line each, so their cells sit inside the line instead of across several.
   const rowIsMultiSeg = (r) => r.lineIndices.length >= 2
     || (r.lineIndices.length === 1 && isRightClusteredNumeric(lines[r.lineIndices[0]].words));
   const multiSegRows = rows.filter(rowIsMultiSeg);
   if (multiSegRows.length < 3) return false;
 
-  // Check 2: Column alignment consistency
-  // Cluster left-edge and right-edge x-positions across all rows.
-  // Right-aligned numeric columns have varying left edges but consistent right edges,
-  // so both edge types must be checked to avoid rejecting financial/statistical tables.
+  // Right-aligned numeric columns have varying left edges but consistent right edges, so counting only one edge type would reject financial and statistical tables.
   const leftEdges = [];
   const rightEdges = [];
   for (const row of rows) {
@@ -1945,15 +1815,8 @@ function validateCandidate(candidate, lines) {
   const alignedRight = Object.values(rightCounts).filter((c) => c >= alignMinCount).length;
   if (alignedLeft + alignedRight < 2) return false;
 
-  // Check 3: Segment count consistency.
-  // Real tables have rows with similar segment counts. Adjacent cells can
-  // coalesce into a single line object when their x-gap is small, so a row
-  // that visually has N cells may emit N-1, N, or N+1 segments.
-  //
-  // Two regimes by sample size: with many rows, allow a ±1 cluster around
-  // the mode (the variability is plausibly coalescence noise). With few
-  // rows, require the modal count to dominate — variability there is more
-  // likely heterogeneous content (a form, not a table) than noise.
+  // Adjacent cells coalesce into one line object when their x-gap is small, so a row of N visual cells can emit N-1, N, or N+1 segments.
+  // Counts within 1 of the mode are pooled only when there are many rows, since scattered counts across a handful of rows point to a form rather than to coalescence noise.
   const segCounts = {};
   for (const row of multiSegRows) {
     const n = row.lineIndices.length;
@@ -1972,14 +1835,8 @@ function validateCandidate(candidate, lines) {
     if (maxSegCount < multiSegRows.length * 0.4) return false;
   }
 
-  // Check 4: Content width — reject candidates dominated by tiny text fragments.
-  // Mathematical equations render subscripts, superscripts, and operators as
-  // separate lines that are individually very narrow (<70px ≈ 2 chars at normal
-  // text size). Real table cells contain words or numbers that are wider.
-  // Typical real tables: <60% tiny. Equation false positives: >85% tiny.
-  // Note: this threshold is intentionally absolute (not text-relative). Equation
-  // fragments are small in an absolute sense regardless of surrounding text size;
-  // a text-relative threshold would become too lenient on small-text pages.
+  // Equations render subscripts, superscripts, and operators as separate lines far narrower than any real table cell.
+  // The width threshold stays absolute rather than scaled to the surrounding text size, which would let equations through on small-text pages.
   let tinyCount = 0;
   let totalLines = 0;
   for (const row of rows) {
@@ -1990,19 +1847,9 @@ function validateCandidate(candidate, lines) {
   }
   if (totalLines > 0 && tinyCount / totalLines > 0.7) return false;
 
-  // Check 5: Prose-cell content — reject candidates whose "row cells" contain
-  // sentence-like prose rather than atomic table cells. Feature diagrams and
-  // infographics frequently sit at aligned y-positions with step-number
-  // badges and surrounding paragraphs of description, getting grouped into
-  // a candidate despite lacking column structure.
-  //
-  // A cell qualifies as prose when it has 3+ alphabetic words AND zero
-  // numeric tokens. The zero-numeric requirement matters: employee
-  // directories, financial schedules, and similar multi-column listings
-  // often merge a multi-word label with its numeric values into one line
-  // object. Those cells carry 3+ alphabetic words but also carry numeric
-  // data — they're data cells, not prose. Pure-prose cells (contact info,
-  // paragraph text, section headers) carry only text.
+  // Infographics and feature diagrams sit at aligned y-positions with step-number badges and paragraphs of description, so they group into a candidate with no column structure.
+  // A cell of several words is still data when it carries numbers, because multi-column listings often merge a multi-word label with its values into one line object.
+  // A row needs two numeric cells to escape, since an infographic row still carries the one number in its step badge.
   const hasLetter = (s) => /[a-zA-Z]/.test(s);
   const isNumToken = (s) => /^[\d,$%.()+-]+$/.test(s) && /\d/.test(s);
   const cellIsProse = (lineIdx) => {
@@ -2020,17 +1867,16 @@ function validateCandidate(candidate, lines) {
   for (const row of rows) {
     if (row.lineIndices.length < 2) continue;
     let proseCells = 0;
+    let numericCells = 0;
     for (const idx of row.lineIndices) {
       if (cellIsProse(idx)) proseCells++;
+      if (lines[idx].words.some((w) => isNumToken(w.text))) numericCells++;
     }
-    if (proseCells >= 2) proseRowCount++;
+    if (proseCells >= 2 && numericCells < 2) proseRowCount++;
   }
   if (proseRowCount > rows.length * 0.4) return false;
 
-  // Check 6: reject a candidate whose multi-segment rows are all narrative cells.
-  // A cell is narrative if it has 2+ words including an alphabetic one.
-  // A row is narrative if every cell is narrative and none is narrow (< half the widest cell).
-  // Real tables anchor each row with at least one narrow atomic cell (a short label or value), which narrative layouts (address blocks, contact-info pairs) lack.
+  // Real tables anchor each row with at least one narrow atomic cell (a short label or value), which narrative layouts like address blocks lack.
   const cellIsTextFragment = (lineIdx) => {
     const words = lines[lineIdx].words;
     if (words.length < 2) return false;
@@ -2062,12 +1908,8 @@ function validateCandidate(candidate, lines) {
 }
 
 /**
- * Extract horizontal and vertical line segments from raw paths for strict-grid
- * detection. More inclusive than `classifyPaths`: every edge of every stroked
- * rectangle is decomposed (no tiling check), and thin filled rectangles are
- * decomposed into single h/v segments. The looser extraction is what lets the
- * detector see column separators that `classifyPaths` drops because the
- * containing per-cell stroked rectangles don't share an edge.
+ * Extract horizontal and vertical line segments from raw paths for strict-grid detection.
+ * Looser than `classifyPaths`, whose tiling filter drops the column separators of tables drawn as per-cell stroked rectangles that do not share an edge.
  *
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
  * @param {number} scale
@@ -2077,45 +1919,47 @@ function validateCandidate(candidate, lines) {
  * @returns {{hLines: HLine[], vLines: VLine[]}}
  */
 function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY) {
-  /** @type {HLine[]} */
-  const hLines = [];
-  /** @type {VLine[]} */
-  const vLines = [];
+  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} */
+  const hPieces = [];
+  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} */
+  const vPieces = [];
 
+  // A piece thin in both directions (a junction or corner stub) goes in both pools, since its ink continues whichever run it abuts.
   /**
    * @param {number} p1x
    * @param {number} p1y
    * @param {number} p2x
    * @param {number} p2y
+   * @param {number} halfThick
    */
-  const addSeg = (p1x, p1y, p2x, p2y) => {
+  const addPiece = (p1x, p1y, p2x, p2y, halfThick) => {
     const segW = Math.abs(p2x - p1x);
     const segH = Math.abs(p2y - p1y);
-    if (segH < 2 && segW > 5) {
-      const y = (visualHeightPts - ((p1y + p2y) / 2 - boxOriginY)) * scale;
-      hLines.push({
-        left: (Math.min(p1x, p2x) - boxOriginX) * scale,
-        right: (Math.max(p1x, p2x) - boxOriginX) * scale,
-        y,
+    if (segH < 2 && segW > 0) {
+      const pos = (p1y + p2y) / 2;
+      hPieces.push({
+        pos, start: Math.min(p1x, p2x), end: Math.max(p1x, p2x), b0: pos - halfThick, b1: pos + halfThick,
       });
-    } else if (segW < 2 && segH > 5) {
-      const x = ((p1x + p2x) / 2 - boxOriginX) * scale;
-      const top = (visualHeightPts - (Math.max(p1y, p2y) - boxOriginY)) * scale;
-      const bottom = (visualHeightPts - (Math.min(p1y, p2y) - boxOriginY)) * scale;
-      vLines.push({ x, top, bottom });
+    }
+    if (segW < 2 && segH > 0) {
+      const pos = (p1x + p2x) / 2;
+      vPieces.push({
+        pos, start: Math.min(p1y, p2y), end: Math.max(p1y, p2y), b0: pos - halfThick, b1: pos + halfThick,
+      });
     }
   };
 
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
     const cmds = path.commands;
+    const halfStroke = (path.lineWidth || 1) / 2;
     if (path.stroke && cmds.length === 5
         && cmds[0].type === 'M' && cmds[1].type === 'L'
         && cmds[2].type === 'L' && cmds[3].type === 'L' && cmds[4].type === 'Z') {
       // Stroked rectangle: emit all 4 edges.
       const pts = [cmds[0], cmds[1], cmds[2], cmds[3]];
       for (let k = 0; k < 4; k++) {
-        addSeg(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y);
+        addPiece(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y, halfStroke);
       }
       continue;
     }
@@ -2123,40 +1967,138 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       // Stroked polyline: emit each M-L segment individually.
       for (let k = 0; k < cmds.length - 1; k++) {
         if ((cmds[k].type === 'M' || cmds[k].type === 'L') && cmds[k + 1].type === 'L') {
-          addSeg(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y);
+          addPiece(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y, halfStroke);
         }
       }
       continue;
     }
     if (path.fill) {
-      // Filled thin rectangle: treat as a single h-seg or v-seg.
+      // Producers batch a whole grid's rules as subpaths of one filled path, so a per-path bbox would aggregate them into one non-thin blob and emit nothing.
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
       let maxY = -Infinity;
+      /** @type {Array<{x: number, y: number}>} */
+      let pts = [];
+      const emitSubpath = () => {
+        if (!Number.isFinite(minX)) { pts = []; return; }
+        const w = maxX - minX;
+        const h = maxY - minY;
+        if (h < 5 && w > 0) {
+          hPieces.push({
+            pos: (minY + maxY) / 2, start: minX, end: maxX, b0: minY, b1: maxY,
+          });
+        }
+        if (w < 5 && h > 0) {
+          vPieces.push({
+            pos: (minX + maxX) / 2, start: minY, end: maxY, b0: minX, b1: maxX,
+          });
+        }
+        // A run of connected borders can be drawn as one closed L or U-shaped fill, thin ink inside a bbox that is wide both ways.
+        // Mean ink thickness is 2*area/perimeter.
+        // Short diagonal edges are the miter stubs at its corners, so only a long one disqualifies the subpath as a chart sliver or a real polygon.
+        if (h >= 5 && w >= 5 && pts.length >= 4) {
+          let area2 = 0;
+          let perim = 0;
+          for (let i = 0; i < pts.length; i++) {
+            const p = pts[i];
+            const q = pts[(i + 1) % pts.length];
+            area2 += p.x * q.y - q.x * p.y;
+            perim += Math.hypot(q.x - p.x, q.y - p.y);
+          }
+          const t = perim > 0 ? Math.abs(area2) / perim : Infinity;
+          let isStrip = t < 5;
+          if (isStrip) {
+            for (let i = 0; i < pts.length; i++) {
+              const p = pts[i];
+              const q = pts[(i + 1) % pts.length];
+              const dx = Math.abs(q.x - p.x);
+              const dy = Math.abs(q.y - p.y);
+              if (dx >= 2 && dy >= 2 && Math.hypot(dx, dy) > Math.max(3 * t, 3)) { isStrip = false; break; }
+            }
+          }
+          if (isStrip) {
+            for (let i = 0; i < pts.length; i++) {
+              const p = pts[i];
+              const q = pts[(i + 1) % pts.length];
+              const dx = Math.abs(q.x - p.x);
+              const dy = Math.abs(q.y - p.y);
+              if ((dx < 2 || dy < 2) && Math.max(dx, dy) > Math.max(3 * t, 5)) {
+                addPiece(p.x, p.y, q.x, q.y, t / 2);
+              }
+            }
+          }
+        }
+        pts = [];
+        minX = Infinity; maxX = -Infinity; minY = Infinity; maxY = -Infinity;
+      };
       for (const c of cmds) {
         if (c.type === 'Z') continue;
+        if (c.type === 'M') emitSubpath();
+        pts.push({ x: c.x, y: c.y });
         if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
         if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
       }
-      if (!Number.isFinite(minX)) continue;
-      const w = maxX - minX;
-      const h = maxY - minY;
-      if (h < 5 && w > 5) {
-        addSeg(minX, (minY + maxY) / 2, maxX, (minY + maxY) / 2);
-      } else if (w < 5 && h > 5) {
-        addSeg((minX + maxX) / 2, minY, (minX + maxX) / 2, maxY);
-      }
+      emitSubpath();
     }
   }
+
+  // Only genuinely touching ink may fuse here, or dashes and dot leaders would merge into phantom rules instead of falling to the length filter.
+  // Filtering per piece instead would discard the sub-length junction stubs that connect a rule's long pieces, leaving holes in a visually unbroken line.
+  /** @param {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} pieces */
+  const mergeAbutting = (pieces) => {
+    /** @type {Array<{pos: number, segs: typeof pieces}>} */
+    const groups = [];
+    for (const piece of pieces) {
+      let group = null;
+      for (const g of groups) {
+        if (Math.abs(piece.pos - g.pos) <= 0.5) { group = g; break; }
+      }
+      if (!group) { group = { pos: piece.pos, segs: [] }; groups.push(group); }
+      group.segs.push(piece);
+    }
+    /** @type {typeof pieces} */
+    const runs = [];
+    for (const g of groups) {
+      g.segs.sort((a, b) => a.start - b.start);
+      let cur = { ...g.segs[0] };
+      for (let i = 1; i < g.segs.length; i++) {
+        const s = g.segs[i];
+        if (s.start <= cur.end + 0.5) {
+          if (s.end > cur.end) cur.end = s.end;
+          if (s.b0 < cur.b0) cur.b0 = s.b0;
+          if (s.b1 > cur.b1) cur.b1 = s.b1;
+        } else {
+          runs.push(cur);
+          cur = { ...s };
+        }
+      }
+      runs.push(cur);
+    }
+    return runs.filter((r) => r.end - r.start > 5);
+  };
+
+  const hLines = mergeAbutting(hPieces).map((r) => ({
+    left: (r.start - boxOriginX) * scale,
+    right: (r.end - boxOriginX) * scale,
+    y: (visualHeightPts - (r.pos - boxOriginY)) * scale,
+    y0: (visualHeightPts - (r.b1 - boxOriginY)) * scale,
+    y1: (visualHeightPts - (r.b0 - boxOriginY)) * scale,
+  }));
+  const vLines = mergeAbutting(vPieces).map((r) => ({
+    x: (r.pos - boxOriginX) * scale,
+    top: (visualHeightPts - (r.end - boxOriginY)) * scale,
+    bottom: (visualHeightPts - (r.start - boxOriginY)) * scale,
+    x0: (r.b0 - boxOriginX) * scale,
+    x1: (r.b1 - boxOriginX) * scale,
+  }));
 
   return { hLines, vLines };
 }
 
 /**
- * Detect tables that are fully bordered grids: outer rectangle + horizontal
- * separator at every row boundary + vertical separator at every column
- * boundary, all connected. Geometry alone fully describes the table.
+ * Detect tables that are fully bordered grids.
+ * The grid must have an outer rectangle, a horizontal separator at every row boundary, and a vertical separator at every column boundary, all connected.
  *
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
@@ -2172,12 +2114,8 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
   const vLines = mergeCollinearSegments(raw.vLines, 'x', 'top', 'bottom', 5, 10);
   if (hLines.length < 3 || vLines.length < 2) return [];
 
-  // Two segments are connected when they intersect (an h-seg crosses a v-seg,
-  // two h-segs at the same y abut or overlap in x, two v-segs at the same x
-  // abut or overlap in y). Segments belonging to the same self-contained grid
-  // are connected through the grid's own joins; segments from a separate grid
-  // or chart on the same page form a different component.
   const TOL = 6;
+  const INK_EPS = 2;
   const N = hLines.length + vLines.length;
   const parent = new Int32Array(N);
   for (let i = 0; i < N; i++) parent[i] = i;
@@ -2200,8 +2138,10 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
     }
     for (let j = 0; j < vLines.length; j++) {
       const v = vLines[j];
-      if (v.x >= a.left - TOL && v.x <= a.right + TOL
-          && a.y >= v.top - TOL && a.y <= v.bottom + TOL) {
+      // Crossing is decided by the two ink rectangles touching, not by midline proximity.
+      // A thick border bar's midline sits half its width from the edge the interior rules actually touch, so midline distance misjudges contact.
+      if ((v.x1 ?? v.x) >= a.left - INK_EPS && (v.x0 ?? v.x) <= a.right + INK_EPS
+          && (a.y1 ?? a.y) >= v.top - INK_EPS && (a.y0 ?? a.y) <= v.bottom + INK_EPS) {
         union(i, hLines.length + j);
       }
     }
@@ -2239,6 +2179,31 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
     const t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj);
     if (t) results.push(t);
   }
+
+  // A table drawn as stacked bordered sections validates as one grid per section.
+  // A break between genuinely separate tables carries at least a caption or blank line.
+  results.sort((a, b) => a.bbox.top - b.bbox.top);
+  for (let i = 0; i + 1 < results.length; i++) {
+    const cur = results[i];
+    const next = results[i + 1];
+    const gap = next.bbox.top - cur.bbox.bottom;
+    if (gap < 0 || gap >= 40) continue;
+    if (Math.abs(cur.bbox.left - next.bbox.left) > 15 || Math.abs(cur.bbox.right - next.bbox.right) > 15) continue;
+    if (cur.colSeparators.length !== next.colSeparators.length) continue;
+    let sameCols = true;
+    for (let c = 0; c < cur.colSeparators.length; c++) {
+      if (Math.abs(cur.colSeparators[c] - next.colSeparators[c]) >= 10) { sameCols = false; break; }
+    }
+    if (!sameCols) continue;
+    cur.bbox.left = Math.min(cur.bbox.left, next.bbox.left);
+    cur.bbox.right = Math.max(cur.bbox.right, next.bbox.right);
+    cur.bbox.bottom = next.bbox.bottom;
+    cur.rows.push(...next.rows);
+    cur.hLines.push(...next.hLines);
+    cur.vLines.push(...next.vLines);
+    results.splice(i + 1, 1);
+    i--;
+  }
   return results;
 }
 
@@ -2265,8 +2230,7 @@ function clusterValuesLocal(values, tol) {
 }
 
 /**
- * Test whether the union of `segs` covers the closed interval `[left, right]`
- * with no gap larger than `tol`.
+ * Test whether the union of `segs` covers the closed interval `[left, right]` with no gap larger than `tol`.
  *
  * @param {Array<{left: number, right: number}>} segs sorted ascending by `left`
  * @param {number} left start of the interval to cover
@@ -2286,9 +2250,6 @@ function unionSpansFully(segs, left, right, tol) {
 
 /**
  * Validate one connected component as a strict grid and emit the table.
- * Returns `null` when the component does not satisfy the four strict-grid
- * conditions (outer border + col separator at every column boundary +
- * row separator at every row boundary + connected).
  *
  * @param {HLine[]} hs h-segments in the component
  * @param {VLine[]} vs v-segments in the component
@@ -2308,8 +2269,6 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
   const minY = ys[0];
   const maxY = ys[ys.length - 1];
 
-  // x-segments grouped by y, sorted by left, used for row-spans and bottom-
-  // span checks below.
   const segsByY = new Map();
   for (const py of ys) {
     const segs = hs
@@ -2326,24 +2285,13 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     const bot = ys[i + 1];
     const stripVs = vs.filter((v) => v.top <= top + 10 && v.bottom >= bot - 10);
     const xs = clusterValuesLocal(stripVs.map((v) => v.x), 10);
-    // Outer-border check: the strip's leftmost column boundary aligns with
-    // the component's left edge, the rightmost with the right edge.
     if (xs.length < 2
         || Math.abs(xs[0] - left) > 15
         || Math.abs(xs[xs.length - 1] - right) > 15) return null;
-    // Top and bottom of the strip must be horizontally closed (a chain of
-    // hSegs covering the full strip width, with small gaps tolerated).
-    if (!unionSpansFully(segsByY.get(top), left, right, 15)) return null;
-    if (!unionSpansFully(segsByY.get(bot), left, right, 15)) return null;
     strips.push({ top, bottom: bot, xs });
   }
   if (strips.length < 2) return null;
 
-  // Data strips share the canonical column-boundary set (max cardinality).
-  // The only allowed asymmetry is a header row whose column boundaries are a
-  // strict subset of the data set — i.e., a header cell may span multiple
-  // data columns ("2007" above "Revenue" / "Expenses"). Anything else
-  // disqualifies the component.
   const maxCols = Math.max(...strips.map((s) => s.xs.length));
   const dataStrips = strips.filter((s) => s.xs.length === maxCols);
   if (dataStrips.length < 2) return null;
@@ -2354,11 +2302,33 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
       if (Math.abs(s.xs[i] - canonicalXs[i]) >= 10) return null;
     }
   }
+  // A header row whose cells span several data columns has fewer boundaries, so a strip may omit a boundary but never add one.
   for (const s of strips) {
     if (s.xs.length === maxCols) continue;
     for (const x of s.xs) {
       if (!canonicalXs.some((cx) => Math.abs(cx - x) < 10)) return null;
     }
+  }
+
+  // Cells merged across an interior row boundary leave its rule broken there, so a gap is allowed only when both ends land on canonical column separators.
+  for (let i = 0; i < ys.length; i++) {
+    const segs = segsByY.get(ys[i]);
+    if (i === 0 || i === ys.length - 1) {
+      if (!unionSpansFully(segs, left, right, 15)) return null;
+      continue;
+    }
+    if (segs[0].left > left + 15) return null;
+    let furthest = segs[0].right;
+    for (let j = 1; j < segs.length; j++) {
+      if (segs[j].left > furthest + 15) {
+        const gapStart = furthest;
+        const gapEnd = segs[j].left;
+        if (!canonicalXs.some((cx) => Math.abs(cx - gapStart) < 10)
+            || !canonicalXs.some((cx) => Math.abs(cx - gapEnd) < 10)) return null;
+      }
+      if (segs[j].right > furthest) furthest = segs[j].right;
+    }
+    if (furthest < right - 15) return null;
   }
 
   const colSeparators = canonicalXs.slice(1, -1);
@@ -2384,6 +2354,46 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
   }
   if (rows.length < 2) return null;
 
+  // A page break can clip the rule above the first row or below the last, leaving the column borders running past the outermost drawn rule with a borderless row of grid text between.
+  const colVs = vs.filter((v) => canonicalXs.some((cx) => Math.abs(cx - v.x) < 10));
+  /**
+   * @param {number} regionTop
+   * @param {number} regionBottom
+   * @param {boolean} atTop
+   */
+  const absorbCutRow = (regionTop, regionBottom, atTop) => {
+    const idxs = [];
+    for (let i = 0; i < pageObj.lines.length; i++) {
+      const ln = pageObj.lines[i];
+      const yC = (ln.bbox.top + ln.bbox.bottom) / 2;
+      if (yC >= regionTop && yC <= regionBottom
+          && ln.bbox.left >= bbox.left - 10 && ln.bbox.right <= bbox.right + 10) {
+        idxs.push(i);
+      }
+    }
+    if (idxs.length === 0) return;
+    const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
+    if (atTop) {
+      rows.unshift({ lineIndices: idxs, y: yMean });
+      bbox.top = regionTop - 5;
+    } else {
+      rows.push({ lineIndices: idxs, y: yMean });
+      bbox.bottom = regionBottom + 5;
+    }
+  };
+  const cutTopVs = colVs.filter((v) => v.top <= minY - 15);
+  if (cutTopVs.length >= 2
+      && Math.min(...cutTopVs.map((v) => v.x)) <= left + 15
+      && Math.max(...cutTopVs.map((v) => v.x)) >= right - 15) {
+    absorbCutRow(Math.min(...cutTopVs.map((v) => v.top)), minY, true);
+  }
+  const cutBotVs = colVs.filter((v) => v.bottom >= maxY + 15);
+  if (cutBotVs.length >= 2
+      && Math.min(...cutBotVs.map((v) => v.x)) <= left + 15
+      && Math.max(...cutBotVs.map((v) => v.x)) >= right - 15) {
+    absorbCutRow(maxY, Math.max(...cutBotVs.map((v) => v.bottom)), false);
+  }
+
   return {
     bbox,
     rows,
@@ -2395,10 +2405,7 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
 }
 
 /**
- * Detect tables whose column structure is encoded by *segments* of horizontal
- * rules (no full-height vertical lines). Preserves the only reachability path
- * to `detectSegmentedHLineTables` after the legacy grid-cluster pipeline was
- * removed.
+ * Detect tables whose column structure is encoded by segments of horizontal rules rather than by vertical rules.
  *
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
@@ -2450,18 +2457,8 @@ function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOr
  */
 
 /**
- * Detect the header band for a candidate table and extract column anchors
- * from whichever header row carries the strongest column-position signal.
- * Headers often sit in a structured pattern (repeated labels, numeral
- * indices, stacked year labels) whose x-positions provide stronger column
- * evidence than sparse data rows. Both `extractStructure` and
- * `refineTableTop` consume the result.
- *
- * Returns `bandTop` (topmost y of header-candidate rows above the data) and
- * `columnAnchors` (x-centers of cells in the primary header row). Confidence
- * is 'strong' when the primary row carries enough cells for unambiguous
- * column evidence; downstream consumers should only OVERRIDE existing column
- * signals on 'strong'.
+ * Detect the header band for a candidate table and extract column anchors from whichever header row carries the strongest column-position signal.
+ * Consumers should override an existing column signal only on 'strong' confidence.
  *
  * @param {object} table - A validated candidate with .bbox and .rows
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines - pageObj.lines
@@ -2494,7 +2491,6 @@ function detectHeaders(table, lines) {
   }
   if (aboveLines.length === 0) return null;
 
-  // Group by y (5pt tolerance).
   const yGroups = [];
   for (const al of aboveLines) {
     let found = null;
@@ -2520,10 +2516,7 @@ function detectHeaders(table, lines) {
     let heightSum = 0;
     for (const w of allWords) heightSum += w.bbox.bottom - w.bbox.top;
     const avgH = heightSum / allWords.length;
-    // Looser gap tolerance than data-row clustering. Header text ("Not
-    // Quoted") is often set with wider inter-word spacing than a data-row
-    // phrase, and the larger tolerance keeps a two-word header cell from
-    // splitting into two spurious anchors.
+    // Header text is often set with wider inter-word spacing than a data-row phrase, so a tighter gap would split a two-word header cell into two spurious anchors.
     const gapThreshold = avgH * 0.6;
     const cells = [];
     let current = {
@@ -2546,8 +2539,7 @@ function detectHeaders(table, lines) {
     return cells;
   };
 
-  // Annotate each y-group with its cells and whether it's an all-text row.
-  yGroups.sort((a, b) => b.y - a.y); // descending — walk from near-data upward
+  yGroups.sort((a, b) => b.y - a.y); // Descending y walks upward from the data, which is what lets the band walk below stop at the first gap.
   const annotated = [];
   for (const g of yGroups) {
     const cells = extractCells(g.items);
@@ -2570,8 +2562,6 @@ function detectHeaders(table, lines) {
     });
   }
 
-  // Pick the primary column-header row: the all-text y-group with the most
-  // cells. This is the row whose cell x-positions will become column anchors.
   let bestGroup = null;
   let bestCells = null;
   for (const a of annotated) {
@@ -2583,9 +2573,7 @@ function detectHeaders(table, lines) {
     }
   }
 
-  // Set bandTop by walking up from the first data row through adjacent header-like rows.
-  // A row is header-like when it is all-text and either has 2+ cells or a single cell of <=4 alphabetic words (a compact section title or unit marker).
-  // A single cell of 5+ words is a paragraph and stops the walk, as does a gap over 2x the average row height.
+  // A lone cell of up to four alphabetic words is a section title or unit marker, while a longer one is a paragraph and no part of the band.
   const countAlpha = (cell) => {
     let n = 0;
     for (const w of cell.words) if (/[a-zA-Z]/.test(w.text)) n++;
@@ -2606,13 +2594,8 @@ function detectHeaders(table, lines) {
     lastAcceptedY = a.y;
   }
 
-  // Rule 2: Stacked 2-cell header. When no single row has 3+ cells, check
-  // whether 2+ rows each with exactly 2 cells share the same x-positions
-  // (within tolerance). Stacked year/unit headers are common in annual
-  // reports: "As at" + "31st March, 2006 31st March, 2005" + "(Rs. in
-  // Crores) (Rs. in Crores)" — each row has 2 cells placed over the same
-  // two numeric columns. The cross-row alignment is a strong structural
-  // signal that individual rows (at 2 cells each) don't carry alone.
+  // A header can be stacked as several 2-cell rows over the same two columns, as an annual report stacks a date row above a units row.
+  // Two cells alone are ambiguous, but the same two x-positions repeating across rows is structural evidence.
   let fromStackedRule = false;
   if (!bestGroup || !bestCells) {
     const twoCellRows = annotated.filter((a) => a.allText && a.cells.length === 2);
@@ -2675,14 +2658,8 @@ function detectHeaders(table, lines) {
     };
   }
 
-  // Filter cells by data-row alignment. A cell is kept only if at least one
-  // data row has a word whose x-center lies WITHIN that cell's x-range. This
-  // rejects spurious cells from over-split headers — a stray currency symbol
-  // sitting between data columns, or a letter-spaced page title where each
-  // single-character cell lands on blank space between data columns.
-  // Checking cell RANGE (not just anchor-center proximity) handles cases
-  // where header text is offset from its data column's x-center (e.g. a
-  // centered header over a right-aligned numeric column).
+  // A header cell survives only when some data word falls in its x-range, which drops the cells of an over-split header that land on blank space between columns.
+  // The test is the range and not the center, since a centered header sits off the x-center of a right-aligned numeric column.
   const alignedCells = [];
   for (const c of bestCells) {
     let aligned = false;
@@ -2699,13 +2676,8 @@ function detectHeaders(table, lines) {
     if (aligned) alignedCells.push(c);
   }
 
-  // Strong confidence gating differs by rule:
-  //   - Rule 1 (single dense row): 4+ aligned cells — a single 3-cell row
-  //     might be a coincidental phrase trio, 4+ is structurally unambiguous.
-  //   - Rule 2 (stacked cross-row): 2+ aligned cells — the cross-row
-  //     alignment IS the structural evidence (each 2-cell row alone would be
-  //     ambiguous, but 2+ rows at matching x-positions is not).
-  // Both require at least half the primary row's cells surviving alignment.
+  // A single header row needs four aligned cells rather than the three that qualified it, since three can be a coincidental phrase trio.
+  // A stacked header needs only two, its evidence being the repetition across rows.
   const alignedAnchors = alignedCells.map((c) => (c.left + c.right) / 2);
   const minAnchors = fromStackedRule ? 2 : 4;
   const confidence = (alignedAnchors.length >= minAnchors && alignedCells.length >= bestCells.length * 0.5)
@@ -2721,15 +2693,13 @@ function detectHeaders(table, lines) {
 }
 
 /**
- * Extract column and row structure for a validated table.
+ * Extract column structure for a validated table.
  * @param {DetectedTable} table
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
  */
 function extractStructure(table, lines) {
-  // If we already have colSeparators (from grid detection), keep them
   if (table.colSeparators.length > 0) return;
 
-  // Try vLine-based column detection
   if (table.vLines.length >= 2) {
     const vLineXPositions = clusterValues(table.vLines.map((vl) => vl.x), 10);
     const interior = vLineXPositions.filter((x) => x > table.bbox.left + 5 && x < table.bbox.right - 5);
@@ -2739,19 +2709,7 @@ function extractStructure(table, lines) {
     }
   }
 
-  // Header-anchor-based column detection. When a strong header row is present,
-  // compute the column separators it WOULD produce and defer the decision:
-  // we'll compare against the word-clustering result below and prefer the
-  // header-based seps ONLY if they produce a larger column count than the
-  // data-word clustering does. This handles SPARSE tables (e.g. a
-  // Quoted/Not-Quoted investment schedule where most rows populate only 1-2
-  // of the 4 numeric sub-columns) where data-word clustering under-counts,
-  // while leaving well-populated tables' column structure alone.
-  //
-  // Separators are midpoints between consecutive anchors. If data rows have
-  // content clearly left of the first anchor, an additional label column is
-  // synthesized with a separator placed at first-anchor minus half an
-  // anchor-to-anchor spacing.
+  // A header rarely labels the row-label column, so anchors that start right of the row labels leave that column to be synthesized.
   let headerSeps = null;
   if (table.headers && table.headers.confidence === 'strong'
       && table.headers.columnAnchors.length >= 2) {
@@ -2780,23 +2738,12 @@ function extractStructure(table, lines) {
     headerSeps = seps;
   }
 
-  // Word-level column detection with two row-level preprocessors:
-  //   1. Phrase merge: consecutive non-currency words with a small inter-word gap (relative to line height) merge into one bbox,
-  //      so a multi-word label doesn't form spurious columns while wide number-column gaps stay split.
-  //   2. Chain-currency merge: a currency symbol (or a run of coincident duplicate currency glyphs) merges with the following non-currency word,
-  //      handling duplicated glyphs and a symbol emitted as a separate line object upstream of its number.
-  // Run at row level, not line level, because broken rows split one logical cell across line objects.
+  // Words are pooled per row rather than per line, since a broken row splits one logical cell across line objects.
   const isCurrencySymbol = (text) => /^[$€£¥¢]+$/.test(text);
   const allWordBboxes = [];
-  // Reject paragraph-like rows that sneak into the candidate (e.g., a footnote
-  // row appended just below the data). A row is considered paragraph-like when
-  // one of its lines is both (a) wider than half the candidate bbox and
-  // (b) long-form prose — 6+ words with fewer than 2 numeric tokens. A data
-  // row containing "$21,458 $19,918 $11,860 $10,509" is wide but almost
-  // entirely numeric, so it stays in.
+  // A footnote row appended just below the data sneaks into the candidate, and its wide prose line would otherwise be clustered as table content.
   const candidateWidth = table.bbox.right - table.bbox.left;
   const isNarrativeLine = (line) => {
-    // Skip leader-filler dots
     let totalCount = 0;
     let numericCount = 0;
     for (const word of line.words) {
@@ -2808,17 +2755,8 @@ function extractStructure(table, lines) {
     if (totalCount <= 6) return false;
     return numericCount / totalCount < 0.5;
   };
-  // Identify header rows so they can be excluded from column inference.
-  //
-  // Header rows contain cell-spanning text ("Change", "2017 vs. 2016") whose
-  // word bboxes sit between the data column boundaries; calcColumnBounds
-  // greedily merges those header bboxes with adjacent data cells, collapsing
-  // multiple data columns into one. The structural distinction: header rows
-  // contain only year-like 4-digit numbers (1900-2099) plus optional text,
-  // while real data rows contain monetary or count values that are typically
-  // outside that range, or contain currency symbols. The first row matching
-  // the data-row signature marks the start of the data area; everything above
-  // it is treated as header.
+  // Header text often spans several columns, putting its word bboxes between the data column boundaries.
+  // calcColumnBounds greedily merges such a bbox with the adjacent data cells and collapses several columns into one, so the rows above the data are skipped here.
   const isYearLike = (text) => /^(?:19|20)\d\d$/.test(text);
   /** @param {string} text */
   const isFootnoteMarker = (text) => /^\(\d\)$/.test(text);
@@ -2880,15 +2818,9 @@ function extractStructure(table, lines) {
       if (lineH > 0) { hSum += lineH; hCount++; }
       for (const word of line.words) rowWords.push(word);
     }
-    // Process phrases in spatial order, not PDF stream order. Streamed rows can
-    // interleave words from different spatial columns (e.g., a line containing
-    // "Country" emitted before a line containing "Amount (mil.)"), which would
-    // otherwise cause the phrase merger to span across columns via the backward x-jump between them.
+    // PDF stream order can interleave words from different columns, and the backward x-jump between them reads as a small gap that the phrase merger would swallow.
     rowWords.sort((a, b) => a.bbox.left - b.bbox.left);
     const avgLineHeight = hCount > 0 ? hSum / hCount : 20;
-    // Gap threshold must be small enough that multi-column headers with narrow
-    // gaps (e.g., 15px apart in different columns) are NOT merged, but large
-    // enough that intra-label word spacing (~9px) IS merged.
     const gapThreshold = avgLineHeight * 0.4;
 
     const expand = (box, b) => ({
@@ -2901,8 +2833,7 @@ function extractStructure(table, lines) {
     let w = 0;
     while (w < rowWords.length) {
       if (isCurrencySymbol(rowWords[w].text)) {
-        // Chain through consecutive currency glyphs, then absorb the first
-        // non-currency word that follows.
+        // A PDF can emit a currency symbol as its own line object, and can repeat coincident copies of the glyph, either of which would otherwise become a column of its own.
         let current = { ...rowWords[w].bbox };
         let j = w + 1;
         while (j < rowWords.length && isCurrencySymbol(rowWords[j].text)) {
@@ -2916,15 +2847,7 @@ function extractStructure(table, lines) {
         allWordBboxes.push(current);
         w = j;
       } else {
-        // Phrase merge: absorb subsequent purely-textual words with small x-gap.
-        // Numeric-containing words are never merged into a phrase — they represent
-        // independent numeric cells and legitimate column boundaries can sit
-        // between them with gaps as small as a space character.
-        //
-        // Long narrative rows (footnotes) are filtered out earlier by the
-        // paragraph-row check, so no chain-length cap is needed here — long
-        // legitimate labels like "Card Member loans evaluated individually
-        // for impairment (a)" (8 words) must merge into one label phrase.
+        // A digit ends the phrase whatever the gap, since a real boundary between numeric cells can be as narrow as a space character.
         let current = { ...rowWords[w].bbox };
         let j = w + 1;
         const hasDigit = (s) => /\d/.test(s);
@@ -2950,11 +2873,7 @@ function extractStructure(table, lines) {
   if (allWordBboxes.length >= 2) {
     const wordColumnBounds = calcColumnBounds(allWordBboxes);
 
-    // Remove columns with very low row coverage. A real table column should
-    // have content in a significant fraction of rows. Low-coverage columns
-    // are typically artifacts from outlier label text that extends into the
-    // gap between label and data columns (e.g., a parenthetical aside in a
-    // long row label that happens to overlap an unused x-region).
+    // A low-coverage column is usually an artifact of outlier label text reaching into the gap between the label and data columns.
     if (wordColumnBounds.length > 2) {
       const yTol = 10;
       const yRows = [];
@@ -2983,7 +2902,6 @@ function extractStructure(table, lines) {
         }
         if (!matched) headerYRows.push({ y: w.bbox.top, bboxes: [w.bbox] });
       };
-      // Header rows that sit inside table.rows but before firstDataRowIdx.
       if (firstDataRowIdx > 0) {
         for (let ri = 0; ri < firstDataRowIdx; ri++) {
           if (table.rows[ri].lineIndices.length < 2) continue;
@@ -2992,8 +2910,7 @@ function extractStructure(table, lines) {
           }
         }
       }
-      // Header lines above table.bbox.top (typical for row-band candidates
-      // whose bbox starts at the first banded data row).
+      // A row-band candidate's bbox starts at the first banded data row, leaving its header lines above the top edge.
       if (table.headers
           && typeof table.headers.bandTop === 'number'
           && typeof table.headers.bandBottom === 'number') {
@@ -3041,11 +2958,8 @@ function extractStructure(table, lines) {
     table.colSeparators = seps;
   }
 
-  // Replace word-clustering separators with header-derived ones in two cases:
-  //   1. Under-count: clustering found <4 columns and the header found more
-  //      (rows that populate only some columns leave clustering with collapsed columns the header still names).
-  //   2. Over-split: clustering found >=2x the header's column count (long label-column sentences split into spurious columns).
-  //      The 2x guard spares an off-by-one, which may be a real sub-column the header didn't name.
+  // Rows that populate only some of their columns leave clustering with columns collapsed together that the header still names.
+  // Over-split wants twice the header's column count, since a single extra column may be a real sub-column the header did not name.
   if (headerSeps) {
     const sparseUnderCount = headerSeps.length > table.colSeparators.length
       && table.colSeparators.length < 3;
@@ -3060,13 +2974,11 @@ function extractStructure(table, lines) {
     }
   }
 
-  // Prefer text-inferred column positions over fill-inferred ones, unless the text columns include a narrow outlier (< ~30% of the median column width).
-  // A narrow outlier means text over-split one cell into multiple phrases, so trust the fill positions there instead.
+  // A text column far narrower than the median means text over-split one cell into phrases, so the fill positions are the better guide.
   if (table.rowBandRegion && table.rowBandRegion.colXs.length > 0 && table.colSeparators.length > 0) {
     const fillSeps = table.rowBandRegion.colXs.slice().sort((a, b) => a - b);
     const textSeps = table.colSeparators;
 
-    // Compute text-inferred column widths (bbox.left → first sep → ... → bbox.right).
     const textColWidths = [];
     let prev = table.bbox.left;
     for (const s of textSeps) { textColWidths.push(s - prev); prev = s; }
@@ -3084,9 +2996,6 @@ function extractStructure(table, lines) {
 
 /**
  * Refine a table's top boundary using header detection.
- * Replaces the generous Phase 2 expansion with a precise boundary based on:
- * 1. hLines (strongest signal): a horizontal line between header and data marks the boundary
- * 2. Header scanning (fallback): chain upward from detected rows accepting header-like lines
  *
  * @param {DetectedTable} table
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines - All page lines
@@ -3096,18 +3005,9 @@ function refineTableTop(table, lines, topFloor = 0) {
   const rows = table.rows;
   if (rows.length === 0) return;
 
-  // If header detection identified a STRONG header (≥4 aligned column
-  // anchors), use its bandTop directly. detectHeaders's scan reaches
-  // farther upward than this function's gap chain (up to ~10×avgRowHeight
-  // vs ~0.45×), so the bandTop is the authoritative answer when we trust
-  // the header. Weak-confidence headers fall through to the existing scan —
-  // they might point at a real header row, but without enough column
-  // alignment evidence to anchor trust, we'd rather let refineTableTop's
-  // conservative gap-based logic decide whether to reach them.
+  // detectHeaders searches a much taller window than the gap chain below, so its bandTop can reach a header row the chain never gets to.
   if (table.headers && table.headers.confidence === 'strong') {
     let strongTop = Math.max(topFloor, table.headers.bandTop - 5);
-    // Even with a strong header, push past any colon-ending prose lines
-    // between strongTop and the first data row.
     const firstDataY = [...rows].sort((a, b) => a.y - b.y)[0].y;
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li];
@@ -3139,9 +3039,7 @@ function refineTableTop(table, lines, topFloor = 0) {
   }
   const firstRowY = sortedRows[firstIdx].y;
   const lastRowY = sortedRows[sortedRows.length - 1].y;
-  // Use the MEDIAN inter-row spacing as the row height. The mean is biased
-  // upward by large gaps from section-break bridging, which makes the
-  // proximity threshold too permissive when scanning back into the header.
+  // A mean would be pulled up by the large gaps that section-break bridging leaves, making the header scan's proximity threshold too permissive.
   let avgRowHeight = 50;
   if (sortedRows.length > 1) {
     const spacings = [];
@@ -3154,12 +3052,7 @@ function refineTableTop(table, lines, topFloor = 0) {
   const allLineIndicesSet = new Set(rows.flatMap((r) => r.lineIndices));
   const candidateWidth = table.bbox.right - table.bbox.left;
 
-  // Determine the scanning anchor: the best starting point for upward header scanning.
-  // If hLines exist above the first detected row, the CLOSEST one (largest y < firstRowY)
-  // marks the header/data boundary (e.g., top border of a table rectangle). Using the
-  // closest rather than the highest avoids picking up decorative lines or section dividers
-  // that are unrelated to the table. The anchor gives the scanner a head start, reaching
-  // headers that are above the boundary.
+  // The horizontal rule closest above the first row is the header/data boundary, while a higher one is more likely a decorative line or a section divider.
   let scanAnchor = firstRowY;
   if (table.hLines.length > 0) {
     const limit = firstRowY - avgRowHeight * 1.5;
@@ -3172,9 +3065,6 @@ function refineTableTop(table, lines, topFloor = 0) {
     }
   }
 
-  // Compute the leftmost x of detected row content. Lines whose left edge is
-  // significantly left of this are page-margin content (section headers, paragraph
-  // text at the body indent) rather than table content (which is indented further).
   let dataLeftEdge = Infinity;
   for (const r of rows) {
     for (const idx of r.lineIndices) {
@@ -3182,17 +3072,8 @@ function refineTableTop(table, lines, topFloor = 0) {
     }
   }
 
-  // Scan upward from the anchor, accepting lines that look like table headers.
-  // The scan chains from the CURRENT headerTop — each accepted line becomes the
-  // new anchor for the next iteration. This lets the scan thread past narrow
-  // section labels like "Current:" or "Deferred:" to reach the real column
-  // header rows sitting above them.
   let headerTop = scanAnchor;
 
-  // Collect non-table lines above the first detected row. The search window
-  // slides upward with headerTop, so pull in every line above firstRowY that
-  // overlaps the table's x-range and let the per-line proximity check decide
-  // how far the chain can reach.
   const aboveLines = [];
   for (let li = 0; li < lines.length; li++) {
     if (allLineIndicesSet.has(li)) continue;
@@ -3202,16 +3083,14 @@ function refineTableTop(table, lines, topFloor = 0) {
     if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
     aboveLines.push({ idx: li, line });
   }
-  aboveLines.sort((a, b) => b.line.bbox.top - a.line.bbox.top); // bottom-up
+  aboveLines.sort((a, b) => b.line.bbox.top - a.line.bbox.top); // Nearest the data first, which is the order the gap chain below requires.
 
-  // Track the running x-extent of consecutive single-segment header lines.
   /** @type {{left: number, right: number} | null} */
   let singleSegRange = null;
 
   for (const { idx, line } of aboveLines) {
     const lineWidth = line.bbox.right - line.bbox.left;
 
-    // Check if multi-segment (another line at the same y within the table's x-range).
     let isMultiSegment = false;
     for (let lj = 0; lj < lines.length; lj++) {
       if (lj === idx) continue;
@@ -3222,17 +3101,7 @@ function refineTableTop(table, lines, topFloor = 0) {
       }
     }
 
-    // Multi-segment rows chain from the CURRENT headerTop with a generous
-    // 2.5× gap, letting the scan thread upward through stacked header rows.
-    // Single-segment rows also chain from headerTop, with a tighter 0.45× gap
-    // — small enough that an oversized page title above
-    // the header band is rejected, but large enough to thread through stacked narrow header rows.
-    // `continue` rather than `break` so a misaligned narrow outlier doesn't
-    // terminate the chain prematurely.
-    // Lines ending with "follows:" are introductory prose ("...as follows:",
-    // "...were as follows:"). Stop the upward scan. Only "follows:" is
-    // checked — short labels like "Deferred:" or "Current:" are legitimate
-    // table sub-headers that must not terminate the scan.
+    // A line ending in "follows:" is the introductory prose above a table, and the test stays this narrow because a sub-header like "Deferred:" or "Current:" also ends in a colon.
     const lineText = line.words.length > 0 ? line.words[line.words.length - 1].text : '';
     if (lineText === 'follows:') break;
 
@@ -3243,14 +3112,13 @@ function refineTableTop(table, lines, topFloor = 0) {
       singleSegRange = null;
       continue;
     }
+    // Skipping rather than breaking lets the chain still reach a multi-segment header row above a misaligned narrow outlier.
     if (gapToHeader > avgRowHeight * 0.45) continue;
 
-    // Single-segment: reject wide lines (>60% of table width) — those are
-    // paragraph text above the table, not header labels.
+    // A wide single-segment line above the table is paragraph text, not a header label.
     if (lineWidth > candidateWidth * 0.6) break;
 
-    // Single-segment: reject lines whose left edge is significantly left of the
-    // table content (page-margin section headers vs indented table content).
+    // Table content is indented past the body text, so a line starting at the page margin is a section header rather than part of the table.
     if (line.bbox.left < dataLeftEdge - 20) break;
 
     if (singleSegRange
@@ -3271,10 +3139,7 @@ function refineTableTop(table, lines, topFloor = 0) {
 
   let finalTop = Math.max(topFloor, headerTop - 5);
 
-  // Post-scan cleanup: push finalTop past any non-header lines that overlap
-  // the region between finalTop and the first detected row. This handles:
-  // (a) Tall lines that straddle the boundary (top above, bottom below finalTop)
-  // (b) Wide paragraph text fully inside the region (above data but below the scan break point)
+  // Each push moves finalTop down over lines that did not overlap before, so the sweep repeats until nothing more does.
   let pushed = true;
   while (pushed) {
     pushed = false;
@@ -3282,17 +3147,14 @@ function refineTableTop(table, lines, topFloor = 0) {
       if (allLineIndicesSet.has(li)) continue;
       const line = lines[li];
       if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
-      // Check if line overlaps with [finalTop, firstRowY]
       if (line.bbox.bottom <= finalTop || line.bbox.top >= firstRowY) continue;
 
-      // Straddling line (top above finalTop, bottom inside)
       if (line.bbox.top < finalTop) {
         finalTop = line.bbox.bottom + 1;
         pushed = true;
         continue;
       }
 
-      // Line ending with "follows:" is introductory prose (e.g., "...as follows:").
       const lastWord = line.words.length > 0 ? line.words[line.words.length - 1].text : '';
       if (lastWord === 'follows:') {
         finalTop = line.bbox.bottom + 1;
@@ -3300,7 +3162,6 @@ function refineTableTop(table, lines, topFloor = 0) {
         continue;
       }
 
-      // Line fully inside — reject if wide single-segment (paragraph text)
       const lineWidth = line.bbox.right - line.bbox.left;
       let isMulti = false;
       for (let lj = 0; lj < lines.length; lj++) {
@@ -3318,9 +3179,7 @@ function refineTableTop(table, lines, topFloor = 0) {
     }
   }
 
-  // Final pass: push past any "follows:"-ending lines at the very top of the table.
-  // These are introductory prose ("...as follows:") captured during candidate
-  // formation because they share the y-position of the first header row.
+  // A "follows:" line sharing the first header row's y-position is captured into table.rows during candidate formation, out of reach of the sweep above.
   for (const r of sortedRows) {
     if (r.y > finalTop + avgRowHeight * 1.5) break;
     let allFollows = true;
@@ -3344,8 +3203,7 @@ function refineTableTop(table, lines, topFloor = 0) {
 }
 
 /**
- * Detect tables anchored to a "ruling row" — a y-band containing 2+ horizontal
- * paths whose x-extents are mutually disjoint.
+ * Detect tables anchored to a "ruling row", a y-band containing three or more horizontal paths whose x-extents are mutually disjoint.
  *
  * @param {HLine[]} hLines - hLines from classifyPaths (post-filter, post-merge)
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
@@ -3373,9 +3231,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
   const rulingRows = [];
   const pageWidth = pageObj.dims.width;
   for (const g of yGroups) {
-    // ≥3 lines guards against 2-line decorative coincidences (form-field
-    // underlines, callout boxes). All real financial table rules in the
-    // training set have ≥3 column rules including the label-column rule.
+    // Two disjoint rules at one y are commonly a coincidence of form-field underlines or callout boxes rather than a table's column rules.
     if (g.lines.length < 3) continue;
     const sorted = [...g.lines].sort((a, b) => a.left - b.left);
     let disjoint = true;
@@ -3383,8 +3239,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
       if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
     }
     if (!disjoint) continue;
-    // The combined x-span must cover a significant fraction of the page.
-    // Reject decorative lines clustered in a corner or footnote area.
+    // A rule set spanning little of the page is decorative, clustered in a corner or a footnote area.
     const xSpan = sorted[sorted.length - 1].right - sorted[0].left;
     if (xSpan < pageWidth * 0.3) continue;
     rulingRows.push({
@@ -3420,7 +3275,6 @@ function detectHeaderRuleTables(hLines, pageObj) {
     if (!isSubtotal) primaryIndices.push(ri);
   }
 
-  // For each primary, precompute geometry shared between passes.
   const primaries = primaryIndices.map((ri) => {
     const rule = rulingRows[ri];
     const ruleLeft = rule.cols[0].left;
@@ -3436,10 +3290,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     };
   });
 
-  // Pass 1: upward header scan for each primary, bounded above by the
-  // previous primary's rule.y. Uses a tight top-to-top gap (1.5× median row
-  // spacing) so a section break or the previous primary's data block stops
-  // the scan.
+  // The upward header scan stops at the previous ruling row so one table's data block is not adopted as the next table's header.
   for (let pii = 0; pii < primaries.length; pii++) {
     const p = primaries[pii];
     const upperBound = pii > 0 ? primaries[pii - 1].rule.y + 5 : 0;
@@ -3454,8 +3305,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     }
     linesAbove.sort((a, b) => b.line.bbox.top - a.line.bbox.top);
 
-    // Estimate row spacing from the lines just above the rule (header rows
-    // are tighter; falls back to a reasonable default if too few lines).
+    // Header rows sit tighter than body rows, so the spacing is measured from the lines just above the rule.
     const tops = linesAbove.slice(0, 8).map((x) => x.line.bbox.top).sort((a, b) => b - a);
     const headerSpacings = [];
     for (let i = 1; i < tops.length; i++) headerSpacings.push(tops[i - 1] - tops[i]);
@@ -3473,9 +3323,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     }
   }
 
-  // Pass 2: downward data scan for each primary, bounded below by the next
-  // primary's header top (so adjacent tables on the same page don't leak
-  // into each other).
+  // The downward data scan stops at the next ruling row's header top so adjacent tables on a page do not leak into each other.
   const results = [];
   for (let pii = 0; pii < primaries.length; pii++) {
     const p = primaries[pii];
@@ -3496,9 +3344,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
 
     if (linesBelow.length < 2) continue;
 
-    // Estimate row spacing from the first few rows (most likely table data,
-    // before any prose break). A gap >2.5× this stops the scan — catches
-    // post-table prose that fits inside the column extent.
+    // Prose below the table can fall inside the column extent and pass the x filter, so a large vertical gap is what ends the data scan.
     const earlySpacings = [];
     const earlyN = Math.min(linesBelow.length - 1, 5);
     for (let i = 1; i <= earlyN; i++) {
@@ -3538,15 +3384,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
 
     if (mappedRows.length < 3) continue;
 
-    // Validate that rows actually distribute numeric content across multiple
-    // columns. A sequence of prose paragraphs that happens to sit below a
-    // 3-line decorative rule lays words out continuously, with at most one
-    // number per row scattered through prose. A real data row places a
-    // numeric value in each numeric column. Two checks:
-    //   1. ≥5 rows where 2+ distinct columns each contain a numeric word.
-    //   2. ≥1 non-label column contains numeric content in ≥50% of rows
-    //      (column-consistency — prose lacks this; real tables have it
-    //      because each metric's column is filled in every row).
+    // Prose paragraphs that happen to sit below a decorative rule lay words out continuously, with at most one number per row.
     const colBounds = [p.ruleLeft, ...colSeparators, p.ruleRight];
     const numColsCount = colBounds.length - 1;
     const colNumericRowCount = new Array(numColsCount).fill(0);
@@ -3570,6 +3408,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
       for (const ci of numColsHit) colNumericRowCount[ci]++;
     }
     if (numericMultiColRows < 5) continue;
+    // The consistency check starts past the label column, since numbers there say nothing about column structure.
     let hasConsistentNumCol = false;
     for (let ci = 1; ci < numColsCount; ci++) {
       if (colNumericRowCount[ci] >= mappedRows.length * 0.5) {
@@ -3594,8 +3433,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
 }
 
 /**
- * Group hLines into y-bands of ≥2 disjoint horizontal segments spanning ≥20%
- * of page width. Used to refine column boundaries of overlapping text tables.
+ * Group hLines into y-bands of 2 or more disjoint horizontal segments spanning at least 20% of page width.
  * @param {HLine[]} hLines
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  */
@@ -3635,9 +3473,8 @@ function findDisjointRuleClusters(hLines, pageObj) {
 }
 
 /**
- * Detect a table from an hLine cluster whose horizontal lines are segmented at
- * consistent break points but lacks the 3+ vLines required for full grid detection.
- * The break points in the segmented hLines encode implicit column separators.
+ * Detect a table from an hLine cluster whose horizontal lines are segmented at consistent break points.
+ * The break points encode implicit column separators.
  *
  * @param {HLine[]} cluster - hLines with consistent x-extent
  * @param {Array<{left: number, top: number, right: number, bottom: number}>} headerFills
@@ -3645,7 +3482,6 @@ function findDisjointRuleClusters(hLines, pageObj) {
  * @returns {DetectedTable[]}
  */
 function detectSegmentedHLineTables(cluster, headerFills, pageObj) {
-  // Extract break points from each hLine's pre-merge segments.
   const rowBreaks = [];
   for (const hl of cluster) {
     if (!hl.segments || hl.segments.length < 2) continue;
@@ -3661,9 +3497,7 @@ function detectSegmentedHLineTables(cluster, headerFills, pageObj) {
 
   if (rowBreaks.length < 3) return [];
 
-  // Group rows by break pattern. A cluster may contain hLines from multiple
-  // tables with different column structures — each distinct break pattern
-  // forms a separate table candidate.
+  // One cluster can hold hLines from several stacked tables whose column structures differ.
   const breakGroups = [];
   for (const rb of rowBreaks) {
     let matched = false;
@@ -3704,8 +3538,6 @@ function detectSegmentedHLineTables(cluster, headerFills, pageObj) {
 
     const groupHLines = group.map((rb) => rb.hl);
 
-    // Find a matching header fill whose x-extent aligns with this group's
-    // hLines and sits at or above the topmost hLine.
     let headerFill = null;
     for (const fill of headerFills) {
       if (Math.abs(fill.left - groupLeft) > 15) continue;
@@ -3817,12 +3649,11 @@ function detectTableTitle(table, lines) {
 }
 
 /**
- * Widen a table's bbox to capture content the stroked-line grid detection missed:
- * an unstroked left label column, a summary/continuation row below the last grid line, and a heading above the header band within that label column.
- * A no-op when the bbox already spans this content. The per-pass gates are documented inline.
+ * Widen a table's bbox to capture adjacent content that detection missed.
+ * That is an unstroked left label column, a summary or continuation row below the last grid line, and a heading above the header band within that label column.
  * @param {DetectedTable} table
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
- * @param {DetectedTable[]} [siblings] - Other tables on the page; clamps the bottom extension so it can't swallow a stacked sibling's rows.
+ * @param {DetectedTable[]} [siblings] - Other tables on the page, which clamp the bottom extension so it cannot swallow a stacked sibling's rows.
  */
 function extendTableToAdjacentContent(table, lines, siblings) {
   if (table.rows.length < 2) return;
@@ -3838,13 +3669,9 @@ function extendTableToAdjacentContent(table, lines, siblings) {
 
   const existingLineSet = new Set(table.rows.flatMap((r) => r.lineIndices));
 
-  // Left extension:
-  // A line is label-column evidence when
-  //   (a) its right edge sits clearly left of bbox.left (not a data row spilling past it),
-  //   (b) it is narrower than half the bbox width (labels are narrow columns), and
-  //   (c) its left edge aligns (within 10 pt) with the other qualifying lines.
-  // "Row-overlap lines" start left of bbox.left but extend into the bbox (a label merged with its first value in one stream line).
-  // They don't confirm a label column, but once one is confirmed they attach to their row so its label text is found.
+  // === Left extension ===
+  // A line starting left of the bbox but running into it is a label merged with its first value in one stream line.
+  // Such a line cannot confirm a label column on its own, but once independent lines confirm one it carries that row's label text.
   const bboxWidth = table.bbox.right - table.bbox.left;
   const leftAdjByRow = new Map();
   const overlapByRow = new Map();
@@ -3887,19 +3714,9 @@ function extendTableToAdjacentContent(table, lines, siblings) {
         }
       }
     }
-    // Page-furniture guard: court filings, line-numbered legal documents, and
-    // similar layouts emit pure-numeric per-row markers (1..N) in the left
-    // margin. These match the narrow-and-clearly-left criteria but are not a
-    // table label column. A real label column carries at least some
-    // descriptive text.
+    // A line-numbered legal filing puts pure-numeric per-row markers in the left margin, which are narrow and clearly left of the bbox without being a label column.
     if (alphabeticLines === 0) return;
-    // Aggregate-width guard: the candidate label column's TOTAL horizontal
-    // span (from leftmost qualifying-line left to rightmost qualifying-line
-    // right) must be narrower than half the current bbox width. This keeps
-    // a side-by-side table in the OTHER page column from being absorbed as
-    // a label column on multi-column page layouts: a parallel table body
-    // is comparable in width to the current table, not narrow like a
-    // label strip.
+    // Each line of a side-by-side table in the next page column can pass the per-line width test, so only the aggregate span keeps a parallel table body from being absorbed as a label strip.
     const candidateLabelSpan = maxRight - newLeft;
     if (candidateLabelSpan >= bboxWidth * 0.5) return;
     if (newLeft < oldBBoxLeft - 10) {
@@ -3913,11 +3730,6 @@ function extendTableToAdjacentContent(table, lines, siblings) {
           }
         }
       }
-      // Attach row-overlap lines (label-merged-with-first-value) to their
-      // matching rows too. These don't satisfy the confirmation criteria
-      // alone, but once the label column is confirmed by independent left-
-      // of-bbox lines, they're the row's label content and should be
-      // included so downstream consumers (e.g. getTableLines) find them.
       for (const [rowY, arr] of overlapByRow) {
         const r = table.rows.find((row) => row.y === rowY);
         if (r) {
@@ -3930,10 +3742,7 @@ function extendTableToAdjacentContent(table, lines, siblings) {
     }
   }
 
-  // === Top extension (only after left extension) ===
-  // Scan for a heading line sitting inside the newly-included label-column
-  // strip above current bbox.top. The heading must fit within the label
-  // column's x-range and be within ~2 median row heights of bbox.top.
+  // === Top extension ===
   if (extendedLeft) {
     const labelColRight = table.colSeparators[0];
     const labelColLeft = table.bbox.left;
@@ -3949,13 +3758,6 @@ function extendTableToAdjacentContent(table, lines, siblings) {
   }
 
   // === Bottom extension ===
-  // A row just below bbox.bottom whose line segments land within the
-  // existing column structure is treated as a continuation data row
-  // (Total / Previous Year). Single-line rows below the grid are skipped
-  // (likely a footnote); the loop breaks once it hits a row whose segments
-  // do NOT align with the table's columns (the table has ended).
-  // Clamp to the next sibling's first data row so this pass can't swallow
-  // a stacked sibling's header band into the current table.
   const colBoundaries = [table.bbox.left, ...table.colSeparators, table.bbox.right];
   let belowLimit = table.bbox.bottom + medianSpacing * 1.5;
   if (siblings) {
@@ -3990,6 +3792,7 @@ function extendTableToAdjacentContent(table, lines, siblings) {
   const sortedBelowYs = [...belowLinesByY.keys()].sort((a, b) => a - b);
   for (const y of sortedBelowYs) {
     const arr = belowLinesByY.get(y);
+    // A lone line below the grid is more likely a footnote than a continuation row.
     if (arr.length < 2) continue;
     let colHits = 0;
     for (const { line } of arr) {
@@ -4016,17 +3819,9 @@ function extendTableToAdjacentContent(table, lines, siblings) {
  * Validate that a table's content follows row-major stream order.
  */
 function validateStreamOrder(table, lines) {
-  // Note: row-to-row stream order is NOT checked. On two-column pages, rows from
-  // both columns (with interleaved line indices) form valid table candidates.
-  // The row-to-row check would reject these because left-column rows (low indices)
-  // alternate with right-column rows (high indices) at similar y-positions.
-
-  // Remove rows where spatial left-to-right order doesn't match stream order.
-  // A single bad row (e.g., chart labels accidentally included) shouldn't reject
-  // the entire table — just remove the offending row.
-  // Skip the check for column-major rows (lineIndices scattered across the stream
-  // by large gaps): in these layouts, each cell is a separate stream segment, so
-  // stream order does not match spatial order by design.
+  // Order between rows is deliberately unchecked, since on a two-column page the left column's rows (low indices) interleave with the right column's (high indices) at similar y-positions.
+  // Failing the whole table over one bad row would lose tables that merely picked up a stray line, so the offending row is dropped instead.
+  // A column-major layout emits each cell as its own stream segment, so its rows are scattered across the stream and spatial order never matches.
   for (let i = table.rows.length - 1; i >= 0; i--) {
     const row = table.rows[i];
     if (row.lineIndices.length < 2) continue;
@@ -4035,7 +3830,7 @@ function validateStreamOrder(table, lines) {
       const g = row.lineIndices[k] - row.lineIndices[k - 1];
       if (g > maxGap) maxGap = g;
     }
-    if (maxGap > 2) continue; // column-major row, skip spatial check
+    if (maxGap > 2) continue;
     const sorted = [...row.lineIndices].sort((a, b) => lines[a].bbox.left - lines[b].bbox.left);
     let bad = false;
     for (let j = 1; j < sorted.length; j++) {
@@ -4092,16 +3887,12 @@ function bboxOverlap(a, b) {
 
 /**
  * Split an hLine cluster into sub-clusters by finding large y-gaps.
- * Recursively splits at the largest gap when the gap ratio exceeds the threshold.
- * Returns an array of sub-clusters (each is an array of hLines).
  * @param {HLine[]} cluster
  */
 function splitClusterByYGap(cluster) {
   const sorted = [...cluster].sort((a, b) => a.y - b.y);
 
-  // Deduplicate y-positions for gap analysis. Per-cell hLine segments at the
-  // same y produce many zero-gaps that corrupt the median. Use unique y-values
-  // to compute meaningful gap statistics, but split the full sorted array.
+  // Per-cell hLine segments at the same y produce many zero gaps that would drag the median to zero.
   const uniqueYEntries = [];
   for (let i = 0; i < sorted.length; i++) {
     if (i === 0 || sorted[i].y - sorted[i - 1].y > 2) {
@@ -4118,22 +3909,19 @@ function splitClusterByYGap(cluster) {
   const sortedGaps = [...gaps].sort((a, b) => a.gap - b.gap);
   const medianGap = sortedGaps[Math.floor((sortedGaps.length - 1) / 2)].gap;
   const maxEntry = sortedGaps[sortedGaps.length - 1];
-  // Large clusters provide a more reliable median, so a tighter ratio is safe.
-  // A gap > 4× the median row spacing strongly indicates a table boundary.
   const gapRatioLimit = uniqueYEntries.length >= 10 ? 4 : 5;
 
   if (medianGap <= 0 || maxEntry.gap <= medianGap * gapRatioLimit) {
-    return [cluster]; // cluster is consistent
+    return [cluster];
   }
 
-  // Split at the largest gap and recurse on each half
   const left = sorted.slice(0, maxEntry.index);
   const right = sorted.slice(maxEntry.index);
   return [...splitClusterByYGap(left), ...splitClusterByYGap(right)];
 }
 
 /**
- * Cluster horizontal lines by overlapping x-extent (>50% overlap).
+ * Cluster horizontal lines by x-extent, joining those that overlap substantially or nearly touch.
  * @param {HLine[]} hLines
  */
 function clusterHLinesByXExtent(hLines) {
@@ -4142,18 +3930,13 @@ function clusterHLinesByXExtent(hLines) {
   for (const hl of hLines) {
     let added = false;
     for (const cluster of clusters) {
-      // Check overlap against the cluster's union extent (not just the first member).
-      // This ensures that a partial-width hLine (e.g., spanning only the left half of
-      // a table) joins the cluster if it overlaps substantially with ANY full-width member,
-      // even if the first member happened to be partial.
       const overlapLeft = Math.max(hl.left, cluster.left);
       const overlapRight = Math.min(hl.right, cluster.right);
       const overlap = Math.max(0, overlapRight - overlapLeft);
       const hlWidth = hl.right - hl.left;
       const clusterWidth = cluster.right - cluster.left;
       const minWidth = Math.min(hlWidth, clusterWidth);
-      // Also check adjacency: segmented grids (e.g., per-cell border segments)
-      // produce hLines that touch at column boundaries but don't overlap.
+      // A grid drawn as per-cell border segments produces hLines that abut at column boundaries without overlapping at all.
       const gap = overlapLeft - overlapRight; // positive = gap, negative = overlap
       if ((minWidth > 0 && overlap / minWidth > 0.5) || (gap >= 0 && gap < 15)) {
         cluster.lines.push(hl);

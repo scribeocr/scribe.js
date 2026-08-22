@@ -654,6 +654,27 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const paths = graphicsHeavy
     ? []
     : parsePagePaths(objText, objCache, tokens, { imagePlacements, pathPlacements, initialCtm });
+  // parsePagePaths applies initialCtm only to the placements it collects, so the returned commands are still in raw user space.
+  // Consumers subtract the box origin themselves, so it is added back here.
+  if (rotate === 90 || rotate === 180 || rotate === 270) {
+    const [a, b, c, d, e, f] = initialCtm;
+    for (const path of paths) {
+      for (const cmd of path.commands) {
+        if (cmd.type === 'Z') continue;
+        if (cmd.type === 'C') {
+          const x1 = a * cmd.x1 + c * cmd.y1 + e + boxOriginX;
+          cmd.y1 = b * cmd.x1 + d * cmd.y1 + f + boxOriginY;
+          cmd.x1 = x1;
+          const x2 = a * cmd.x2 + c * cmd.y2 + e + boxOriginX;
+          cmd.y2 = b * cmd.x2 + d * cmd.y2 + f + boxOriginY;
+          cmd.x2 = x2;
+        }
+        const x = a * cmd.x + c * cmd.y + e + boxOriginX;
+        cmd.y = b * cmd.x + d * cmd.y + f + boxOriginY;
+        cmd.x = x;
+      }
+    }
+  }
   if (graphicsHeavy) {
     // Heavy streams skip path extraction (cost), but image placements must still be collected:
     // a scanned page must not lose its full-page-image classification (largestImageFrac).
@@ -3405,6 +3426,18 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     }
     dataTable.detectionMethod = dt.detectionMethod || 'text';
     dataTable.title = dt.title || null;
+    // Some candidates carry rows for only part of their final bbox, which would fuse everything above into one megarow.
+    if (dt.rows && dt.rows.length > 0) {
+      const bottoms = dt.rows
+        .map((row) => Math.max(...row.lineIndices.map((li) => pageObj.lines[li].bbox.bottom)))
+        .filter((b) => Number.isFinite(b))
+        .sort((a, b) => a - b);
+      const tops = dt.rows
+        .map((row) => Math.min(...row.lineIndices.map((li) => pageObj.lines[li].bbox.top)))
+        .filter((t) => Number.isFinite(t));
+      const rowSpan = bottoms.length > 0 && tops.length > 0 ? bottoms[bottoms.length - 1] - Math.min(...tops) : 0;
+      if (bottoms.length > 0 && rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8) dataTable.rowBounds = bottoms;
+    }
     dataTablePage.tables.push(dataTable);
   }
 
