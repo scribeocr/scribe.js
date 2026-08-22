@@ -600,10 +600,11 @@ export function createAppMenu(rootClass) {
  * @param {object} cfg
  * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
+ * @param {(index: number) => void} cfg.onCloseOthers - Called when the context menu's "Close Others" is picked, with the tab to keep.
  * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number) => void,
  *   setPinnedTab: (elem: ?HTMLElement) => void, setPinnedActive: (on: boolean) => void }}
  */
-export function createTabStrip({ onSelect, onClose }) {
+export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   const tabStripElem = document.createElement('div');
   tabStripElem.className = 'scribe-tab-strip';
 
@@ -713,21 +714,29 @@ export function createTabStrip({ onSelect, onClose }) {
   /**
    * Open the tab context menu at the cursor.
    * @param {number} clientX @param {number} clientY
+   * @param {number} index
    * @param {string} name - The tab's document name.
+   * @param {number} tabCount
    */
-  function openTabMenu(clientX, clientY, name) {
+  function openTabMenu(clientX, clientY, index, name, tabCount) {
     const host = tabStripElem.parentElement;
     if (!host) return;
     if (menuElem.parentElement !== host) host.appendChild(menuElem);
     menuElem.replaceChildren();
-    const item = document.createElement('div');
-    item.className = 'scribe-tab-menu-item';
-    item.textContent = 'Copy name';
-    item.addEventListener('click', () => {
-      closeTabMenu();
-      navigator.clipboard?.writeText(name);
-    });
-    menuElem.appendChild(item);
+    /** @param {string} label @param {() => void} onPick */
+    const addItem = (label, onPick) => {
+      const item = document.createElement('div');
+      item.className = 'scribe-tab-menu-item';
+      item.textContent = label;
+      item.addEventListener('click', () => {
+        closeTabMenu();
+        onPick();
+      });
+      menuElem.appendChild(item);
+    };
+    addItem('Copy Name', () => navigator.clipboard?.writeText(name));
+    addItem('Close', () => onClose(index));
+    if (tabCount > 1) addItem('Close Others', () => onCloseOthers(index));
     // Show first so the menu has measurable dimensions, then clamp it inside the host.
     menuElem.style.display = '';
     const hostRect = host.getBoundingClientRect();
@@ -748,7 +757,6 @@ export function createTabStrip({ onSelect, onClose }) {
    * @param {number} activeIndex
    */
   function render(tabs, activeIndex) {
-    // A menu left open over the rebuilt strip would still copy the name it captured from the old chip.
     closeTabMenu();
     laneElem.textContent = '';
     tabs.forEach((tab, i) => {
@@ -758,7 +766,7 @@ export function createTabStrip({ onSelect, onClose }) {
       chip.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
       chip.addEventListener('contextmenu', (event) => {
         event.preventDefault();
-        openTabMenu(event.clientX, event.clientY, tab.name);
+        openTabMenu(event.clientX, event.clientY, i, tab.name, tabs.length);
       });
 
       const name = document.createElement('span');

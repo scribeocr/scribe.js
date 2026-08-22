@@ -924,6 +924,15 @@ class ScribePDFViewer {
       const tabStrip = createTabStrip({
         onSelect: (i) => this._activateTab(i),
         onClose: (i) => this._closeTab(i),
+        onCloseOthers: async (i) => {
+          const kept = this._tabs[i];
+          if (!kept) return;
+          // Activate the survivor first, so closing the active tab never loads a document that is about to be closed too.
+          if (i !== this._activeTab) await this._activateTab(i);
+          for (let j = this._tabs.length - 1; j >= 0; j--) {
+            if (this._tabs[j] !== kept) this._closeTab(j);
+          }
+        },
       });
       this._tabStrip = tabStrip;
       this._tabStripElem = tabStrip.tabStripElem;
