@@ -572,20 +572,8 @@ export function buildReplacementPageDict(
     dictStr += `/Rotate ${rot}`;
   }
 
-  // Merge source /Annots with extraAnnotRefs (new user-added highlights).
-  // When no extras are supplied we emit the source array verbatim so
-  // pass-through annotations (links, notes, form widgets) survive unchanged.
   const annotsIndirectMatch = /\/Annots\s+(\d+)\s+\d+\s+R/.exec(originalObjText);
-  const annotsArrayMatch = /\/Annots\s*\[([\s\S]*?)\]/.exec(originalObjText);
-  let sourceAnnotRefs = [];
-  if (annotsIndirectMatch && objCache) {
-    const arrayText = objCache.getObjectText(Number(annotsIndirectMatch[1]));
-    if (arrayText) {
-      for (const m of arrayText.matchAll(/(\d+\s+\d+\s+R)/g)) sourceAnnotRefs.push(m[1]);
-    }
-  } else if (annotsArrayMatch) {
-    for (const m of annotsArrayMatch[1].matchAll(/(\d+\s+\d+\s+R)/g)) sourceAnnotRefs.push(m[1]);
-  }
+  let sourceAnnotRefs = collectSourceAnnotRefs(originalObjText, objCache);
   if (keptPageObjNums && objCache) {
     sourceAnnotRefs = sourceAnnotRefs.filter((ref) => {
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
@@ -630,8 +618,7 @@ export function buildReplacementPageDict(
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
       if (!m) return true;
       const annotText = objCache.getObjectText(Number(m[1]));
-      return !annotText || (!annotIsModelManaged(annotText, objCache) && !annotIsLiftedReply(annotText, objCache)
-        && !(linkDestInfo && linkAnnotIsLifted(annotText, objCache, linkDestInfo)));
+      return !annotText || !annotIsLifted(annotText, objCache, linkDestInfo);
     });
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {
