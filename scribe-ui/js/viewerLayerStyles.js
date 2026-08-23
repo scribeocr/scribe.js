@@ -13,6 +13,10 @@ export function ensureLayerStyleSheet() {
   styleEl.textContent = '.scribe-hide-text-layer .scribe-layer-text{display:none}'
     + '.scribe-hide-overlay-layer .scribe-layer-overlay{display:none}'
     + '.scribe-hide-image-layer .scribe-layer-image{display:none!important}'
+    // The `ebook` display mode shows no page raster at all, so beyond hiding the canvas it strips the low-res thumbnail left as each container's background.
+    // That thumbnail would otherwise show through as a blurry page, and swap ghosts carry the image-layer class, so they go too.
+    + '.scribe-ebook .scribe-page{background-image:none!important}'
+    + '.scribe-ebook .scribe-layer-image{display:none!important}'
     // A native selection anchored in the page container reaches the raster, and WebKit paints the whole page image blue.
     // Chrome leaves the canvas out of the range, so this rule looks like a no-op there.
     + '.scribe-layer-image{user-select:none;-webkit-user-select:none}'

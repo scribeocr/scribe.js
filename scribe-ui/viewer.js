@@ -2470,8 +2470,8 @@ export class ScribeViewer {
       }
     }
 
-    // In ebook mode the page raster is hidden so only the (reflowed) text shows.
     const hideBackground = this.state.displayMode === 'ebook';
+    this.elem?.classList.toggle('scribe-ebook', hideBackground);
     for (const pc of this.pageContainerArr) {
       const canvas = pc && /** @type {any} */ (pc)._canvas;
       if (canvas) canvas.style.display = hideBackground ? 'none' : '';

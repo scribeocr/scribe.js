@@ -2010,7 +2010,7 @@ export function createEditTextTool(scribe) {
        */
       const nearestLine = (x, y) => {
         // A finger covers several lines at fit-width, so the nearest band inside the radius wins rather than a strict hit test.
-        const R = 24;
+        const R = 12;
         const near = [...linesInClientRect({
           left: x - R, top: y - R, right: x + R, bottom: y + R,
         })];

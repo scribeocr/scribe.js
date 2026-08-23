@@ -255,14 +255,21 @@ export class ViewerImageCache {
       };
     }
     const srcDensity = srcW / pageDims.width;
-    // Past the source's 1:1 a larger backing store adds no detail.
     const rasterScale = Math.min(srcDensity, displayScale);
+    // A fractional device-pixel edge makes the compositor resample the whole bitmap.
+    const cssW = Math.max(1, Math.round(dispW * displayScale)) / displayScale;
+    const cssH = Math.max(1, Math.round(dispH * displayScale)) / displayScale;
+    if (rotation % 90 === 0 && rasterScale === srcDensity) {
+      // The general branch below re-derives the source height from the page dims, which can land a pixel off the source's own rounding, and the centered draw then smears the page by half a pixel.
+      return {
+        canvasW: swap ? srcH : srcW, canvasH: swap ? srcW : srcH, cssW, cssH, blitScale: 1,
+      };
+    }
     return {
       canvasW: Math.max(1, Math.round(dispW * rasterScale)),
       canvasH: Math.max(1, Math.round(dispH * rasterScale)),
-      // Snapped to whole device pixels: a fractional edge makes the compositor bilinear-blur the whole bitmap.
-      cssW: Math.max(1, Math.round(dispW * displayScale)) / displayScale,
-      cssH: Math.max(1, Math.round(dispH * displayScale)) / displayScale,
+      cssW,
+      cssH,
       blitScale: rasterScale / srcDensity,
     };
   }

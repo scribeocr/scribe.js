@@ -1199,10 +1199,13 @@ function ensureTouchCallout() {
       font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       user-select: none;
       -webkit-user-select: none;
+      /* The pinned width and the inter-row gap make the container bigger than its rows. */
+      pointer-events: none;
     }
     #scribe-touch-callout .scribe-callout-row {
       display: flex;
       align-items: center;
+      pointer-events: auto;
       padding: 3px;
       background: var(--scribe-surface, #ffffff);
       border: 1px solid var(--scribe-line, #e4e8ef);
@@ -1394,15 +1397,25 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   // Show before measuring: a display:none node has no size.
   calloutNode.style.display = 'flex';
   calloutNode.classList.remove('flipped');
+  // Measured with the tail row open so placement reserves its room.
+  // Pinning that width keeps the bar centered on the selection when the tail row is the wider row.
+  calloutNode.style.width = '';
+  if (tailCount > 0) /** @type {HTMLDivElement} */ (calloutRow2).style.display = 'flex';
   const { width: cw, height: ch } = calloutNode.getBoundingClientRect();
-  let top = anchor.top - ch - 10;
-  if (top < hostRect.top + 8) {
+  /** @type {HTMLDivElement} */ (calloutRow2).style.display = 'none';
+  calloutNode.style.width = `${cw}px`;
+  if (anchor.top - ch - 10 >= hostRect.top + 8) {
+    // Pinned by the bar's bottom edge so the tail row opens upward, away from the selected text below it.
+    calloutNode.style.bottom = `${window.innerHeight - (anchor.top - 10)}px`;
+    calloutNode.style.top = 'auto';
+  } else {
     calloutNode.classList.add('flipped');
     // The 26px drop clears the selection's end grips.
-    top = Math.min(anchor.bottom + 26, hostRect.bottom - ch - 8);
+    const top = Math.min(anchor.bottom + 26, hostRect.bottom - ch - 8);
+    calloutNode.style.top = `${Math.max(hostRect.top + 8, top)}px`;
+    calloutNode.style.bottom = 'auto';
   }
   const left = Math.max(hostRect.left + 8, Math.min((anchor.left + anchor.right) / 2 - cw / 2, hostRect.right - cw - 8));
-  calloutNode.style.top = `${Math.max(hostRect.top + 8, top)}px`;
   calloutNode.style.left = `${left}px`;
 
   if (!calloutDismissActive) {
