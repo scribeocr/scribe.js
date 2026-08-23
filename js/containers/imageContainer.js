@@ -634,8 +634,11 @@ export class ImageStore {
 
     const significantRotation = Math.abs(this.#pageMetrics[n].angle || 0) > 0.05;
 
-    const newNative = !this.native[n] || !imageUtils.compatible(this.nativeProps[n], props, significantRotation);
+    const nativeMissing = !this.native[n] || !imageUtils.compatible(this.nativeProps[n], props, significantRotation);
     const newBinary = !nativeOnly && (!this.binary[n] || !imageUtils.compatible(this.binaryProps[n], props, significantRotation));
+    // Recognition releases each page's native raster as it finishes, so a binary read served from cache must not re-render it as a side effect.
+    // A native render is left to native consumers, or to a fresh binary that needs one as its derivation input.
+    const newNative = nativeMissing && (nativeOnly || newBinary);
 
     if (newNative || newBinary) {
       const renderRaw = !this.native[n] || imageUtils.requiresUndo(this.nativeProps[n], props);

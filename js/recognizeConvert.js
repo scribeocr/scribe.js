@@ -643,9 +643,7 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
  * @param {?boolean[]} [ocrPageMask=null] - Per-page mask. When set, only `true` pages are recognized.
  */
 async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null) {
-  // Render all PDF pages to PNG if needed
-  // This step should not create binarized images as they will be created by Tesseract during recognition.
-  if (doc.inputData.pdfMode) await doc.images.preRenderRange({ min: 0, max: doc.images.pageCount - 1, binary: false });
+  const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
 
   if (legacy) {
     const oemText = 'Tesseract Legacy';
@@ -677,10 +675,8 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
   // however this function only returns after all recognition is completed.
   // This provides no performance benefit in absolute terms, however halves the amount of time the user has to wait
   // before seeing the initial recognition results.
-  // When a per-page selection mask is supplied, recognize only the selected pages.
   // `resolvesA`/`resolvesB` are keyed by page index (sparse) so each result lands in its correct slot,
   // while `promisesA`/`promisesB` stay dense for `Promise.all`.
-  const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
   const promisesA = [];
   const resolvesA = [];
   const promisesB = [];
@@ -690,9 +686,13 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
     promisesA.push(new Promise((resolve, reject) => {
       resolvesA[x] = { resolve, reject };
     }));
-    promisesB.push(new Promise((resolve, reject) => {
+    const promiseB = new Promise((resolve, reject) => {
       resolvesB[x] = { resolve, reject };
-    }));
+    });
+    // `promisesB` is awaited only in dual-engine mode, and not at all once `promisesA` rejects.
+    // This no-op handler keeps a page failure from surfacing as an unhandled rejection on those paths.
+    promiseB.catch(() => {});
+    promisesB.push(promiseB);
   }
 
   // Upscaling is enabled only for image data, and only if the user has explicitly enabled it.
@@ -701,8 +701,15 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
 
   const configPage = { upscale };
 
+  // The bound caps how many page rasters are resident at once, since each chain renders its own page and releases it below.
+  // Recognition is 10-20x slower than rendering, so a lookahead this small still keeps every engine busy.
+  const maxInFlight = gs.schedulerInner.getNumWorkers() + 2;
+  /** @type {Set<Promise<void>>} */
+  const inFlight = new Set();
+
   for (const x of inputPages) {
-    recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (resArr) => {
+    while (inFlight.size >= maxInFlight) await Promise.race(inFlight);
+    const chain = recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (resArr) => {
       const res0 = await resArr[0];
 
       if (res0.recognize.debugVis) {
@@ -718,14 +725,27 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
         resolvesA[x].resolve();
       }
 
+      // Releasing here is safe because the compare and font-eval tail read only `binary`, and the LSTM wave below works from the copy its worker already holds.
+      // A deskewed write-back is kept instead, because re-deriving one costs an engine pass rather than a plain re-render.
+      if (doc.inputData.pdfMode && doc.images.nativeProps[x] && !doc.images.nativeProps[x].rotated) {
+        doc.images.native[x] = undefined;
+        doc.images.nativeProps[x] = undefined;
+      }
+
       if (legacy && lstm) {
         (async () => {
           const res1 = await resArr[1];
           await convertPageCallback(doc, res1.convert.lstm, x, false, 'Tesseract LSTM');
           resolvesB[x].resolve();
-        })();
+        })().catch((err) => resolvesB[x].reject(err));
       }
+    }).catch((err) => {
+      // A failed page must neither stall the pump nor hang the run's Promise.all.
+      resolvesA[x].reject(err);
+      resolvesB[x].reject(err);
     });
+    inFlight.add(chain);
+    chain.then(() => inFlight.delete(chain));
   }
 
   await Promise.all(promisesA);
@@ -1362,9 +1382,12 @@ export async function recognize(doc, options = {}) {
       Object.assign(doc.ocr['Tesseract Combined Temp'], res.ocr);
     }
 
-    // Evaluate default fonts using up to 5 pages.
-    const pageNum = Math.min(doc.images.pageCount - 1, 5);
-    await doc.images.preRenderRange({ min: 0, max: pageNum, binary: true });
+    // The font eval skips pages without OCR data, so binarizing an unrecognized page would cost a render plus an engine pass for nothing.
+    const fontEvalPages = [];
+    for (let i = 0; i < doc.images.pageCount && fontEvalPages.length < 6; i++) {
+      if (ocrPageMask[i]) fontEvalPages.push(i);
+    }
+    await doc.images.preRenderRange({ pageArr: fontEvalPages, binary: true });
     const charMetrics = calcCharMetricsFromPages(doc.ocr['Tesseract Combined Temp']);
     if (Object.keys(charMetrics).length > 0) {
       clearObjectProperties(doc.fonts.state.charMetrics);
