@@ -7,7 +7,7 @@ import {
   addLayoutBox,
   addLayoutDataTable,
   checkDataColumnsAdjacent, checkDataTablesAdjacent, UiDataColumn, UiLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
-  renderLayoutDataTable, setActiveTable, copyTablePreviewSelection,
+  renderLayoutDataTable, setActiveTable, copyTablePreviewSelection, getTablePreviewMergeColumns, mergeTablePreviewColumns,
 } from './viewerLayout.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
@@ -467,6 +467,10 @@ const copyTableContentsClick = () => {
 const mergeDataColumnsClick = () => {
   hideContextMenu();
   const viewer = mv();
+  if (viewer.state.tablePreview) {
+    mergeTablePreviewColumns(viewer);
+    return;
+  }
   mergeDataColumns(viewer.CanvasSelection.getUiDataColumns());
   viewer.destroyControls();
 };
@@ -1703,11 +1707,23 @@ export const contextMenuFunc = (viewer, event) => {
           && c >= Math.min(sel.c, sel.c2) && c <= Math.max(sel.c, sel.c2);
         if (!inRange) cellEl.click();
         enableCopyCells = true;
+      } else if (event.target.closest('[data-scribe-tp-col]')) {
+        // A rail press has already put whole columns in the selection, so nothing needs relocating here.
+        enableCopyCells = true;
       } else if (targetObj instanceof UiDataColumn) {
         // Off the active sheet's cell grid, so the press is forwarded to the column's own handler, which makes that table the active sheet and selects the cell under the pointer.
         targetObj.el.dispatchEvent(new MouseEvent('click', { button: 0, clientX: event.clientX, clientY: event.clientY }));
         enableCopyCells = viewer._tpSel?.id === targetObj.layoutBox.table.id;
       }
+    }
+
+    // The copy-cells flag doubles as the test that this right-click landed on the sheet's own surfaces rather than blank page.
+    let previewMergeLabel = '';
+    if (enableCopyCells && getTablePreviewMergeColumns(viewer)) {
+      enableMergeColumns = true;
+      const sel = viewer._tpSel;
+      const letter = (i) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i] || String(i + 1);
+      previewMergeLabel = `Merge Columns ${letter(Math.min(sel.c, sel.c2))}–${letter(Math.max(sel.c, sel.c2))}`;
     }
 
     if (!(enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
@@ -1757,7 +1773,10 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
     if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';
-    if (enableMergeColumns) contextMenuMergeColumnsButtonElem.style.display = 'initial';
+    if (enableMergeColumns) {
+      setMenuLabel(contextMenuMergeColumnsButtonElem, previewMergeLabel || 'Merge Columns');
+      contextMenuMergeColumnsButtonElem.style.display = 'initial';
+    }
     if (enableSplit) contextMenuSplitColumnButtonElem.style.display = 'initial';
     if (enableCaptureLines) {
       const allLine = viewer.CanvasSelection.getUiDataColumns().every((x) => x.layoutBox.inclusionLevel === 'line');

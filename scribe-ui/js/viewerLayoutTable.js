@@ -487,8 +487,25 @@ export class UiDataColumn extends UiLayout {
       this.viewer.layoutTablesEdited(pageN);
     };
     this.el.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0 || !this.viewer.state.tablePreview) return;
-      previewPress(e.clientY, true);
+      if (e.button !== 0) return;
+      if (this.viewer.state.tablePreview) {
+        previewPress(e.clientY, true);
+        return;
+      }
+      // Modifier presses select nothing here, because the click handler's extend and toggle read the selection as it stood before the press.
+      if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+      this.viewer._colSweep = { tableId: this.layoutBox.table.id, anchor: this };
+      document.addEventListener('pointerup', () => { this.viewer._colSweep = null; }, { once: true });
+      this.viewer.CanvasSelection.deselectAll();
+      this.viewer.CanvasSelection.selectLayoutBoxes([this]);
+    });
+    this.el.addEventListener('pointerenter', () => {
+      const sweep = this.viewer._colSweep;
+      if (!sweep || this.viewer.state.tablePreview || sweep.tableId !== this.layoutBox.table.id) return;
+      const lo = Math.min(sweep.anchor.x(), this.x());
+      const hi = Math.max(sweep.anchor.x(), this.x());
+      this.viewer.CanvasSelection.deselectAll();
+      this.viewer.CanvasSelection.selectLayoutBoxes(this.uiTable.columns.filter((c) => c.x() >= lo && c.x() <= hi));
     });
     this.el.addEventListener('click', (e) => {
       if (e.button !== 0) return;
@@ -496,6 +513,24 @@ export class UiDataColumn extends UiLayout {
       const pageN = this.layoutBox.table.page.n;
       if (this.viewer.state.tablePreview) {
         previewPress(e.clientY, false);
+        return;
+      }
+      const selected = this.viewer.CanvasSelection.getUiDataColumnsCopy();
+      if ((e.ctrlKey || e.metaKey) && selected.length > 0) {
+        // No same-table filter here, because a selection spanning two tables is what makes Merge Tables reachable.
+        const next = selected.filter((c) => c.layoutBox.id !== this.layoutBox.id);
+        if (next.length === selected.length) next.push(this);
+        this.viewer.CanvasSelection.deselectAll();
+        this.viewer.CanvasSelection.selectLayoutBoxes(next);
+        return;
+      }
+      const sameTableSel = selected.filter((c) => c.layoutBox.table.id === tableId);
+      if (e.shiftKey && sameTableSel.length > 0) {
+        const xs = [...sameTableSel.map((c) => c.x()), this.x()];
+        const lo = Math.min(...xs);
+        const hi = Math.max(...xs);
+        this.viewer.CanvasSelection.deselectAll();
+        this.viewer.CanvasSelection.selectLayoutBoxes(this.uiTable.columns.filter((c) => c.x() >= lo && c.x() <= hi));
         return;
       }
       if (this.viewer.state.activeTableId === tableId) {
@@ -636,6 +671,43 @@ export const mergeDataColumns = (columns) => {
 
   renderLayoutDataTable(viewer, table);
   viewer.layoutTablesEdited(n);
+};
+
+/**
+ * The columns a Preview Export selection designates for a merge.
+ * Null unless the selection spans whole adjacent columns of the active sheet.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @returns {?Array<UiDataColumn>}
+ */
+export const getTablePreviewMergeColumns = (viewer) => {
+  const sel = viewer.state.tablePreview ? viewer._tpSel : null;
+  if (!sel) return null;
+  const uiTable = viewer.getUiDataTables().find((t) => t.layoutDataTable.id === sel.id);
+  if (!uiTable || !uiTable.tableContent) return null;
+  const rowN = uiTable.tableContent.rowBottomArr.length;
+  const rLo = Math.min(sel.r, sel.r2);
+  const rHi = Math.max(sel.r, sel.r2);
+  const cLo = Math.min(sel.c, sel.c2);
+  const cHi = Math.max(sel.c, sel.c2);
+  if (!(rLo === 0 && rHi === rowN - 1 && cHi > cLo && cHi < uiTable.columns.length)) return null;
+  return uiTable.columns.slice(cLo, cHi + 1);
+};
+
+/**
+ * Merge the whole columns a Preview Export selection spans.
+ * The merged column stays selected.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ */
+export const mergeTablePreviewColumns = (viewer) => {
+  const columns = getTablePreviewMergeColumns(viewer);
+  if (!columns) return;
+  const sel = viewer._tpSel;
+  const rowN = columns[0].uiTable.tableContent.rowBottomArr.length;
+  // The selection write must precede the merge's re-derive, which keeps a selection only when it fits the new sheet.
+  viewer._tpSel = {
+    id: sel.id, r: 0, c: Math.min(sel.c, sel.c2), r2: rowN - 1, c2: Math.min(sel.c, sel.c2),
+  };
+  mergeDataColumns(columns);
 };
 
 /**

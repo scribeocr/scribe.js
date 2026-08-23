@@ -2838,6 +2838,20 @@ export function createExtractTablesTool(app) {
       b.style.cursor = on ? 'default' : 'pointer';
     });
   };
+  // This must beat the mode-exit handler that also listens on document, so it registers in the capture phase and marks the press handled.
+  // A single selected column falls through deliberately, so Escape still exits the mode.
+  const pageEscKey = (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    const t = /** @type {?HTMLElement} */ (e.target);
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    const sv = app.scribe;
+    if (sv.state.tablePreview) return;
+    if (sv.CanvasSelection.getUiDataColumns().length > 1) {
+      e.preventDefault();
+      sv.CanvasSelection.deselectAll();
+    }
+  };
+
   const previewKey = (e) => {
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
@@ -2908,10 +2922,12 @@ export function createExtractTablesTool(app) {
     sv.state.layoutMode = active;
     if (active) {
       sv.clearTextSelection?.();
+      document.addEventListener('keydown', pageEscKey, true);
       // Re-displayed so that displayPage's layout branch paints the window pages' overlays now that the flag is on.
       sv.displayPage(sv.state.cp.n, false, false);
       app._automatePanel?.openTablesWorkspace();
     } else {
+      document.removeEventListener('keydown', pageEscKey, true);
       sv.destroyControls();
       sv.destroyOverlay(false);
       // Re-render the window pages' words to restore the fills the preview's ghosting replaced.
