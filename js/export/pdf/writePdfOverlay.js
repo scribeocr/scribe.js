@@ -937,7 +937,7 @@ export async function overlayPdfText({
 
   // The hash covers only the appended revision, not the whole file.
   // The source bytes are carried verbatim, so hashing them again would cost a full pass over the input on every export.
-  patchFileId(result, trailerStr, trailerStart, pdfBytes.length, newXrefOffset);
+  await patchFileId(result, trailerStr, trailerStart, pdfBytes.length, newXrefOffset);
 
   return result.buffer;
 }

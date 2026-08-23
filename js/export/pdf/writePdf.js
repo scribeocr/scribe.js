@@ -356,7 +356,7 @@ ${xrefOffset}
     }
   }
 
-  patchFileId(result, xrefStr, xrefOffset, 0, xrefOffset);
+  await patchFileId(result, xrefStr, xrefOffset, 0, xrefOffset);
 
   return result.buffer;
 }

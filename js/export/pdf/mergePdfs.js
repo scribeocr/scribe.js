@@ -397,7 +397,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
     }
   }
 
-  patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
+  await patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
 
   return result.buffer;
 }

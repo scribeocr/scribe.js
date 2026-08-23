@@ -1056,7 +1056,7 @@ export async function rebuildPdfSubset({
     }
   }
 
-  patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
+  await patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
 
   return result.buffer;
 }

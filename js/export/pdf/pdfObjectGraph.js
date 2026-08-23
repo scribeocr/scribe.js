@@ -131,9 +131,13 @@ function trailerExtraEntries(extras) {
 }
 
 /** A file-identifier element, as 32 uppercase hex digits. */
-export function fileIdHex(bytes) {
+export async function fileIdHex(bytes) {
+  // The spec only recommends MD5 for /ID, and our outputs are never encrypted, so any deterministic hash serves.
+  // Native SHA-256 is far faster than the JS md5 fallback.
+  const subtle = globalThis.crypto?.subtle;
+  const hash = subtle ? new Uint8Array(await subtle.digest('SHA-256', bytes)).subarray(0, 16) : md5(bytes);
   let out = '';
-  for (const b of md5(bytes)) out += b.toString(16).toUpperCase().padStart(2, '0');
+  for (const b of hash) out += b.toString(16).toUpperCase().padStart(2, '0');
   return out;
 }
 
@@ -149,10 +153,10 @@ export const FILE_ID_PLACEHOLDER = '0'.repeat(32);
  * @param {number} bodyStart - First byte of the range identifying this revision.
  * @param {number} bodyEnd - One past its last byte.
  */
-export function patchFileId(result, trailerStr, trailerStart, bodyStart, bodyEnd) {
+export async function patchFileId(result, trailerStr, trailerStart, bodyStart, bodyEnd) {
   const idIdx = trailerStr.indexOf('/ID [<');
   if (idIdx === -1) return;
-  const hex = fileIdHex(result.subarray(bodyStart, bodyEnd));
+  const hex = await fileIdHex(result.subarray(bodyStart, bodyEnd));
   // Only placeholders match, so a carried permanent identifier is left alone and a first write patches both elements.
   let at = trailerStr.indexOf(FILE_ID_PLACEHOLDER, idIdx);
   while (at !== -1) {
