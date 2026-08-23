@@ -1389,6 +1389,16 @@ export class ScribeDoc {
   }
 
   /**
+   * Render a PDF-backed page to a standalone image at a chosen resolution and encoding.
+   * @param {Parameters<ImageStore['renderPageImage']>[0]} n
+   * @param {Parameters<ImageStore['renderPageImage']>[1]} [options]
+   * @returns {ReturnType<ImageStore['renderPageImage']>}
+   */
+  renderPageImage(n, options) {
+    return this.images.renderPageImage(n, options);
+  }
+
+  /**
    * Export this document's OCR data to the specified format.
    * @param {Parameters<typeof exportDataImpl>[1]} [format]
    * @param {Parameters<typeof exportDataImpl>[2]} [options]

@@ -70,6 +70,33 @@ function dataUrlToPngBytes(dataUrl) {
   return u8;
 }
 
+/**
+ * Image dimensions from raw PNG bytes (IHDR width/height).
+ * @param {Uint8Array} bytes
+ * @returns {[number, number]}
+ */
+function pngDims(bytes) {
+  return [(bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19],
+    (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23]];
+}
+
+/**
+ * Image dimensions from raw JPEG bytes (first SOF marker).
+ * @param {Uint8Array} bytes
+ * @returns {?[number, number]}
+ */
+function jpegSofDims(bytes) {
+  for (let i = 2; i < bytes.length - 9;) {
+    if (bytes[i] !== 0xFF) { i += 1; continue; }
+    const marker = bytes[i + 1];
+    if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
+      return [(bytes[i + 7] << 8) | bytes[i + 8], (bytes[i + 5] << 8) | bytes[i + 6]];
+    }
+    i += 2 + ((bytes[i + 2] << 8) | bytes[i + 3]);
+  }
+  return null;
+}
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -244,6 +271,9 @@ describe('Check export for .pdf files.', () => {
 
     expect(Array.isArray(doc.annotations.pages[0])).toBe(true);
     expect(doc.annotations.pages[0].length).toBe(0);
+
+    await expect(doc.renderPageImage(0), 'renderPageImage must refuse an image-input page rather than render it')
+      .rejects.toThrow('not backed by a PDF');
   });
 
   test('Highlight annotations are preserved through .scribe export and import', async () => {
@@ -641,6 +671,18 @@ describe('Check export for .pdf files.', () => {
 
     expect(doc.ocr.active.length).toBe(3);
     expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+
+    // Dimensions are asserted rather than encoded byte sizes because encoders differ between the Node canvas fork and browsers, while canvas sizing from dpi does not.
+    const jpegRender = await doc.renderPageImage(0, { dpi: 150, format: 'jpeg', quality: 0.75 });
+    expect(jpegRender.ok, 'renderPageImage failed to render a PDF-backed page as JPEG').toBe(true);
+    expect(jpegRender.colorMode, 'renderPageImage downgraded a color page to gray').toBe('color');
+    const jpegBytes = new Uint8Array(await (/** @type {Blob} */ (jpegRender.blob)).arrayBuffer());
+    expect([jpegBytes[0], jpegBytes[1]], 'renderPageImage JPEG output lacks the JPEG SOI marker').toEqual([0xFF, 0xD8]);
+    expect(jpegSofDims(jpegBytes), 'renderPageImage did not honor dpi 150 in its JPEG output').toEqual([1275, 1650]);
+    const pngRender = await doc.renderPageImage(0, { dpi: 72 });
+    expect(pngRender.ok, 'renderPageImage failed to render a PDF-backed page as PNG').toBe(true);
+    expect(pngRender.dataUrl?.startsWith('data:image/png;base64,'), 'renderPageImage PNG output is not a PNG data URL').toBe(true);
+    expect(pngDims(dataUrlToPngBytes(/** @type {string} */ (pngRender.dataUrl))), 'renderPageImage did not render at PDF point size under dpi 72').toEqual([612, 792]);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     scribe.ScribeDoc.defaults.addOverlay = true;

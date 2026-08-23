@@ -790,6 +790,42 @@ export class ImageStore {
   };
 
   /**
+   * Render a PDF-backed page to a standalone image at a chosen resolution and encoding.
+   *
+   * The render does not populate the full-resolution `native[]` cache.
+   * It runs on the background lane, so it never delays an on-screen viewer render.
+   * @param {number} n - Page index.
+   * @param {Object} [options]
+   * @param {number} [options.dpi=300] - Render resolution in dots per inch (72 renders at the PDF's point size).
+   * @param {'png'|'jpeg'|'bitmap'} [options.format='png'] - Output encoding.
+   * @param {number} [options.quality=0.6] - JPEG quality (0-1); ignored for 'png' and 'bitmap'.
+   * @param {'color'|'gray'} [options.colorMode='color'] - Output color mode.
+   * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
+   *   The image in `dataUrl` ('png'), `blob` ('jpeg'), or `bitmap` ('bitmap').
+   *   `colorMode` is the mode actually used, which downgrades to 'gray' on a page with no color.
+   *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever format was requested.
+   */
+  renderPageImage = async (n, options = {}) => {
+    if (!this.pdfDims300[n]) throw new Error(`renderPageImage requires a PDF-backed page; page ${n} is not backed by a PDF.`);
+    const pm = this.#pageMetrics[n];
+    // Display slot `n` may hold a page copied from another document, so render it from its own source, not this doc's.
+    const pdfScheduler = await this.resolveSource(pm).getScheduler();
+    // Display slot `n` may have been reordered, so raster its source page, not its position.
+    const sourcePageN = pm?.sourcePageN ?? n;
+    const result = await pdfScheduler.renderPdfPage({
+      pageIndex: sourcePageN,
+      colorMode: options.colorMode ?? 'color',
+      dpi: options.dpi ?? 300,
+      outputFormat: options.format ?? 'png',
+      quality: options.quality ?? 0.6,
+      edits: this.#editsForPage(n),
+    }, false);
+    // Background-lane renders are never superseded, so a drop here means the scheduler is misbehaving.
+    if (!result || result === SKIPPED) throw new Error(`renderPageImage: render for page ${n} was dropped.`);
+    return result;
+  };
+
+  /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
    * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.

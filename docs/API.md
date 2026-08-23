@@ -295,6 +295,23 @@ Remove all highlights previously added by `addHighlights`.
 Render a page to a canvas, including the OCR text drawn over the page image. `page` is a page
 number or page object.
 
+#### `doc.renderPageImage(n, options?)`
+
+Render a PDF page to an image.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `n` | `number` | — | 0-based page index. |
+| `options.dpi` | `number` | `300` | Render resolution. `72` matches the PDF's point size. |
+| `options.format` | `'png' \| 'jpeg' \| 'bitmap'` | `'png'` | Output encoding. |
+| `options.quality` | `number` | `0.6` | JPEG quality, 0-1. Ignored for other formats. |
+| `options.colorMode` | `'color' \| 'gray'` | `'color'` | Output color mode. |
+
+Returns `Promise<{ dataUrl?, blob?, bitmap?, colorMode, ok }>`. The image is in `dataUrl` for
+`'png'`, `blob` for `'jpeg'`, and `bitmap` for `'bitmap'`. `colorMode` is the mode actually used,
+which is `'gray'` for a page with no color. A failed render returns `ok: false` and a blank PNG.
+Throws for a page not backed by a PDF. (Async)
+
 ### Font methods
 
 #### `doc.runOptimization(ocrArr)`
