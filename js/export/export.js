@@ -484,7 +484,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // A page copied from another document carries a foreign `sourceId`, so multiSource flags an export that spans more than one source PDF.
           const sourceIdArr = pageArr.map((p) => doc.pageMetrics[p]?.sourceId ?? doc.images.primarySourceId);
           const multiSource = sourceIdArr.some((id) => id !== doc.images.primarySourceId);
-          const composed = multiSource || sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < doc.inputData.pageCount;
+          // doc.inputData.pageCount shrinks on page deletion, so comparing against it would read a kept leading prefix as identity and pass the deleted pages through.
+          const sourcePageCount = doc.images.sources.get(doc.images.primarySourceId)?.sourcePageCount
+            || doc.inputData.pageCount;
+          const composed = multiSource || sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < sourcePageCount;
           // [] (not null) makes the writers strip a source's existing /Outlines, but null would preserve them.
           const outlineForOutput = remapOutline(doc.outline || [], pageArrIndexMap(pageArr));
           if (composed) {

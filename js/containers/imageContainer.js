@@ -82,6 +82,13 @@ export class RenderSource {
   /** @type {?ArrayBuffer} Original PDF bytes; used to (re)load the pool and, on export, to subset this source's pages. */
   pdfData = null;
 
+  /**
+   * Page count of `pdfData`.
+   * Page deletions shrink the document's live page counts but never this.
+   * @type {number}
+   */
+  sourcePageCount = 0;
+
   /** @type {?(import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess)} */
   scheduler = null;
 
@@ -900,6 +907,7 @@ export class ImageStore {
     const { pageCount, pages, outline } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
     this.pageCount = pageCount;
+    this.#ensurePrimarySource().sourcePageCount = pageCount;
     // The outline was parsed in the worker, so renumber its ids from the main-thread counter to keep subsequent edits from colliding.
     this.#doc.outline = reassignOutlineIds(outline || []);
 
