@@ -355,6 +355,9 @@ export class ImageStore {
   /** @type {Map<string, Promise<?{ program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>>} */
   #editFontCache = new Map();
 
+  /** @type {Map<string, { program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>} */
+  #editFontResolved = new Map();
+
   /**
    * Fetch the font program for `fontObjNum` from display slot `n`'s source document.
    * In a browser the program is also registered as a FontFace under the returned `faceName`, so the line editor can draw with the exact outlines the raster uses.
@@ -382,13 +385,24 @@ export class ImageStore {
           const face = loadFontFace(faceName, 'normal', 'normal', payload.bytes);
           await face.loaded;
         }
-        return { program, faceName, bytes: payload?.bytes ?? null };
+        const result = { program, faceName, bytes: payload?.bytes ?? null };
+        // Unlike the promise cache above, this keeps failures too, so a render-time consumer never re-fires a lookup that already answered.
+        this.#editFontResolved.set(key, result);
+        return result;
       })();
       this.#editFontCache.set(key, entry);
       entry.catch(() => this.#editFontCache.delete(key));
     }
     return entry;
   };
+
+  /**
+   * The settled `getEditFont` result for `fontObjNum` on display slot `n`, or `undefined` when no lookup has settled.
+   * A settled entry with a null `faceName` means no usable face, so fall back rather than retry.
+   * @param {number} n - Page number
+   * @param {number} fontObjNum
+   */
+  getEditFontSync = (n, fontObjNum) => this.#editFontResolved.get(`${this.#pageMetrics[n]?.sourceId ?? 'p'}_${fontObjNum}`);
 
   /**
    * Drop every cached raster of display slot `n`.
@@ -885,6 +899,7 @@ export class ImageStore {
     this.binaryProps.length = 0;
     this.renderDrawMs.length = 0;
     this.#editFontCache.clear();
+    this.#editFontResolved.clear();
     if (typeof FontFace !== 'undefined') {
       import('./fontContainer.js').then(({ unregisterFontFacesMatching }) => {
         const prefix = `_edit_d${this.#doc.id}_`;

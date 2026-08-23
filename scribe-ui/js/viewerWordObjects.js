@@ -1,4 +1,6 @@
 import scribe from '../../scribe.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
+import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
 
@@ -10,6 +12,14 @@ import { ScribeViewer } from '../viewer.js';
 function getViewer(itext) {
   return itext.viewer || ScribeViewer.getDefault();
 }
+
+/**
+ * Measured line metrics, in em, for each native face by CSS family name.
+ * @type {Map<string, {asc: number, desc: number}>}
+ */
+const nativeFaceMetrics = new Map();
+/** @type {?CanvasRenderingContext2D} */
+let nativeFaceMeasureCtx = null;
 
 let wordStyleSheetInjected = false;
 
@@ -96,9 +106,53 @@ export class UiText {
   }) {
     const _viewer = viewer || ScribeViewer.getDefault();
     ensureWordStyleSheet();
+
+    // In the table preview a word draws with the document's own embedded font once its program has settled and covers the text.
+    // Style runs, small caps, and stroked words keep the substitute path, whose mechanics they need.
+    /** @type {?FontContainerFont} */
+    let fontNative = null;
+    /** @type {?{asc: number, desc: number}} */
+    let fontNativeMetrics = null;
+    if (_viewer.state.tablePreview && !word.styleRuns && !word.style.smallCaps && word.line) {
+      const ntw = nativeTextForPage(_viewer.doc, word.line.page)[word.id];
+      const f = ntw?.fontObjNum;
+      const stroked = !!(ntw && (ntw.renderMode === 1 || ntw.renderMode === 2) && ntw.strokeWidthPx);
+      if (typeof f === 'number' && Number.isFinite(f) && !stroked) {
+        const ef = _viewer.doc.images.getEditFontSync(word.line.page.n, f);
+        // A subset face has only the glyphs this document drew with it, so a word it cannot fully cover falls back.
+        if (ef?.faceName && ef.program?.font
+          && [...word.text].every((ch) => resolveReplacementChar(ch, ef.program, word.style).kind === 'orig')) {
+          // Browsers weigh a font's hhea against its OS/2 metrics differently per platform, and embedded programs routinely carry tables that disagree.
+          // Measuring the face is the only way to get the ascent this browser will lay out, so reading the tables misplaces the baseline on some platforms.
+          let fm = nativeFaceMetrics.get(ef.faceName);
+          if (!fm) {
+            if (!nativeFaceMeasureCtx) nativeFaceMeasureCtx = document.createElement('canvas').getContext('2d');
+            const mctx = /** @type {CanvasRenderingContext2D} */ (nativeFaceMeasureCtx);
+            mctx.font = `1000px "${ef.faceName}"`;
+            const m = mctx.measureText('Hg');
+            fm = { asc: (m.fontBoundingBoxAscent || 0) / 1000, desc: (m.fontBoundingBoxDescent || 0) / 1000 };
+            nativeFaceMetrics.set(ef.faceName, fm);
+          }
+          if (fm.asc > 0) {
+            fontNativeMetrics = fm;
+            // The style keywords stay 'normal' because an embedded face carries its style in its glyphs.
+            fontNative = /** @type {FontContainerFont} */ ({
+              opentype: ef.program.font,
+              fontFaceName: ef.faceName,
+              fontFaceStyle: 'normal',
+              fontFaceWeight: 'normal',
+              smallCapsMult: 0.75,
+              family: ef.program.familyName || ef.program.baseName,
+              src: ef.bytes,
+            });
+          }
+        }
+      }
+    }
+
     const {
       charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-    } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts);
+    } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts, 0, fontNative ? { font: fontNative } : undefined);
 
     const charSpacingFinal = !dynamicWidth ? charSpacing : 0;
 
@@ -125,7 +179,8 @@ export class UiText {
 
     let y = yActual - fontSize * 0.6;
     if (!word.visualCoords && (word.style.sup || word.style.dropcap)) {
-      const fontDesc = font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+      const fontDesc = fontNativeMetrics ? -fontNativeMetrics.desc * fontSize
+        : font.opentype.descender / font.opentype.unitsPerEm * fontSize;
       y = yActual - fontSize * 0.6 + fontDesc;
     }
 
@@ -140,8 +195,11 @@ export class UiText {
     this.smallCapsMult = font.smallCapsMult;
     // Vertical font metrics (ascent/descent) in px, derived from the opentype font rather than a per-word canvas `measureText`.
     // The equivalent `fontBoundingBoxAscent`/`Descent` are per-(font, size) and text-independent, so per-word measurement would add nothing.
-    this.fontAscentPx = font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
-    this.fontDescentPx = -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+    // Native faces use the measured metrics instead, since their tables can disagree with what the browser lays out.
+    this.fontAscentPx = fontNativeMetrics ? fontNativeMetrics.asc * fontSize
+      : font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
+    this.fontDescentPx = fontNativeMetrics ? fontNativeMetrics.desc * fontSize
+      : -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
     // `yActual` is the y value we want to draw the text at, which is usually the baseline.
     this.yActual = yActual;
     // Baseline used to re-derive `yActual` on edit; `UiOcrWord` overrides it with its measured line baseline.

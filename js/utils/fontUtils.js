@@ -155,6 +155,7 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
  * @param {DocFonts} docFonts - Per-document fonts.
  * @param {Object} [settings]
  * @param {boolean} [settings.ligatures]
+ * @param {FontContainerFont} [settings.font] - Use this font instead of resolving the word's style against `docFonts`.
  * @returns {Array<string>}
  */
 export function addLigatures(word, docFonts, settings) {
@@ -162,7 +163,7 @@ export function addLigatures(word, docFonts, settings) {
   // A ligature glyph cannot span two fonts.
   // Collapsing two chars into one would also desync style-run indices from the text.
   if (word.style.smallCaps || word.styleRuns || !ligatures) return word.text.split('');
-  const fontI = docFonts.getWordFont(word);
+  const fontI = settings?.font || docFonts.getWordFont(word);
   const fontOpentype = fontI.opentype;
   return addLigaturesText(word.text, fontOpentype);
 }
@@ -232,7 +233,7 @@ export function calcWordCharMetrics(wordText, fontOpentype, settings) {
     const charI = wordTextArr[i];
     const charJ = wordTextArr[i + 1];
     const glyphI = fontOpentype.charToGlyph(charI);
-    const fontName = fontOpentype.tables.name.postScriptName.en;
+    const fontName = fontOpentype.tables?.name?.postScriptName?.en || 'unknown';
     if (!glyphI || glyphI.name === '.notdef') {
       if (!missingGlyphs[fontName]) missingGlyphs[fontName] = new Set();
       if (!missingGlyphs[fontName].has(charI)) {
@@ -278,11 +279,13 @@ export function calcWordCharMetrics(wordText, fontOpentype, settings) {
  * @param {Object} [settings]
  * @param {boolean} [settings.ligatures]
  * @param {boolean} [settings.kerning]
+ * @param {FontContainerFont} [settings.font] - Use this font instead of resolving the word's style against `docFonts`.
+ *    The caller guarantees the font covers the word's text.
  * @async
  * @return {WordMetrics}
  */
 export function calcWordMetrics(word, docFonts, angle = 0, settings) {
-  const fontI = docFonts.getWordFont(word);
+  const fontI = settings?.font || docFonts.getWordFont(word);
   const fontOpentype = fontI.opentype;
 
   const fontSize = calcWordFontSize(word, docFonts);

@@ -5,6 +5,7 @@ import {
   UiDataColumn, UiLayout, UiRegion, layout,
 } from './js/viewerLayout.js';
 import { clearObjectProperties } from '../js/utils/miscUtils.js';
+import { nativeTextForPage } from '../js/textEdits.js';
 import { loadBuiltInFontsRaw } from '../js/fontContainerMain.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
 import { ViewerImageCache, IOS_WEBKIT } from './js/viewerImageCache.js';
@@ -370,6 +371,11 @@ export class ScribeViewer {
      * @type {Array<Array<UiOcrWord>>}
      */
     this._wordObjs = [];
+    /**
+     * Pages with a table-preview font harvest in flight, so a render never schedules a second one.
+     * @type {Set<number>}
+     */
+    this._tpFontPending = new Set();
     /** @type {Array<Array<UiRegion>>} */
     this._regionObjs = [];
     /** @type {Array<Array<UiDataColumn>>} */
@@ -2390,6 +2396,35 @@ export class ScribeViewer {
       // A document swapped or re-recognized during the await must not paint this page's stale words.
       if (this.doc.ocr.active?.[n] !== ocrData) return;
       this._renderCanvasWords(ocrData);
+
+      // The page re-renders once when faces land, and that re-render finds every key settled, failures included, so it fires nothing and the cycle stops.
+      // Awaiting the lookups instead would block the page on a worker font conversion, since `displayPage` awaits `renderWords`.
+      if (this.state.tablePreview && ocrData.textSource === 'pdf' && !this._tpFontPending.has(n)) {
+        const nt = nativeTextForPage(this.doc, ocrData);
+        const seen = new Set();
+        const pending = [];
+        for (const line of ocrData.lines) {
+          for (const w of line.words) {
+            const f = nt[w.id]?.fontObjNum;
+            if (typeof f !== 'number' || !Number.isFinite(f) || seen.has(f)) continue;
+            seen.add(f);
+            if (this.doc.images.getEditFontSync(n, f) === undefined) pending.push(this.doc.images.getEditFont(n, f));
+          }
+        }
+        if (pending.length) {
+          const doc = this.doc;
+          this._tpFontPending.add(n);
+          Promise.allSettled(pending).then((results) => {
+            this._tpFontPending.delete(n);
+            if (!results.some((r) => r.status === 'fulfilled' && r.value?.faceName)) return;
+            if (!this.state.tablePreview || this.doc !== doc || this.doc.ocr.active?.[n] !== ocrData) return;
+            if (!this.textGroupsRenderIndices.includes(n)) return;
+            this.renderWords(n).then(() => {
+              if (this.state.layoutMode) layout.renderLayoutBoxes(this, n);
+            });
+          });
+        }
+      }
     }
   }
 
