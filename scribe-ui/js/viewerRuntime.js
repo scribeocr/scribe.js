@@ -76,6 +76,11 @@ export class ScribeViewerOpts {
      */
     this.freePan = false;
     /**
+     * Whether the middle mouse button drag-pans the document 1:1 in non-`invis` display modes.
+     * When off, the middle button starts the browser-style autoscroll in every mode instead.
+     */
+    this.middleClickPan = true;
+    /**
      * Author name stamped onto comments and notes created in this viewer (PDF /T). Default `''` (unauthored).
      * Never auto-derived from OS/browser identity; the embedder sets it if wanted.
      */
@@ -399,7 +404,7 @@ document.addEventListener('mousedown', (event) => {
     // Interacting with a viewer makes it the active one (the target of body-level keystrokes).
     _activeViewer = v;
     if (v.doc.pageMetrics.length > 0 && event.button === 1) {
-      if (v.state.displayMode === 'invis') v.startAutoScroll(event);
+      if (v.state.displayMode === 'invis' || !v.opt.middleClickPan) v.startAutoScroll(event);
       else v.startDrag(event);
     }
     return;

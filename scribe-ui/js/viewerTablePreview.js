@@ -110,15 +110,36 @@ export function applyTablePreview(viewer, n) {
     const ys = bandEdges.slice();
     for (let y = bandEdges[bandEdges.length - 1] + rowPitch, i = 0; y < dims.height && i < 250; y += rowPitch, i++) ys.push(y);
     for (let y = tc.top - rowPitch, i = 0; y > 0 && i < 250; y -= rowPitch, i++) ys.push(y);
+    // The backdrop is context around the sheets only, so every line stops at a table's edge.
+    // Running one through would double the table's own separators and repaint the gaps line capture opens in them.
+    const rects = uiTables.map((t) => t.coords);
+    /** Complement of the blocked `[start, end]` spans within `[0, limit]`. */
+    const cutSpans = (blocks, limit) => {
+      const spans = blocks.slice().sort((a, b) => a[0] - b[0]);
+      const out = [];
+      let pos = 0;
+      for (const [s, e] of spans) {
+        if (s > pos) out.push([pos, s]);
+        pos = Math.max(pos, e);
+      }
+      if (pos < limit) out.push([pos, limit]);
+      return out;
+    };
     for (const x of xs) {
-      mk({
-        left: `${x}px`, top: '0', width: `calc(1px / ${Z})`, height: '100%', background: '#e4e8ef',
-      }, bgrid);
+      const blocks = rects.filter((r) => x >= r.left && x <= r.right).map((r) => [r.top, r.bottom]);
+      for (const [s, e] of cutSpans(blocks, dims.height)) {
+        mk({
+          left: `${x}px`, top: `${s}px`, width: `calc(1px / ${Z})`, height: `${e - s}px`, background: '#e4e8ef',
+        }, bgrid);
+      }
     }
     for (const y of ys) {
-      mk({
-        left: '0', top: `${y}px`, width: '100%', height: `calc(1px / ${Z})`, background: '#e4e8ef',
-      }, bgrid);
+      const blocks = rects.filter((r) => y >= r.top && y <= r.bottom).map((r) => [r.left, r.right]);
+      for (const [s, e] of cutSpans(blocks, dims.width)) {
+        mk({
+          left: `${s}px`, top: `${y}px`, width: `${e - s}px`, height: `calc(1px / ${Z})`, background: '#e4e8ef',
+        }, bgrid);
+      }
     }
   }
 

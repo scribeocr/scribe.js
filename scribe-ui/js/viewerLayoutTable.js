@@ -330,18 +330,42 @@ export class UiDataTable {
       });
     }
 
+    // A separator breaks across a row only where a captured word's ink spans it, matching how a spreadsheet drops the border a cell overflows across.
+    // Testing the cell's whole span instead would also drop the borders between later columns whose own values never cross one.
+    /** @type {Map<UiDataColSep, Array<[number, number]>>} */
+    const sepGaps = new Map();
+    if (preview && this.tableContent) {
+      const { rowWordArr, rowBottomArr } = this.tableContent;
+      rowWordArr.forEach((colWordArr, r) => {
+        const bandTop = r === 0 ? tableTop : rowBottomArr[r - 1];
+        const bandBottom = r === rowWordArr.length - 1 ? tableBottom : Math.min(rowBottomArr[r], tableBottom);
+        colWordArr.forEach((words, c) => {
+          if (this.layoutBoxesArr[c].inclusionLevel !== 'line' || words.length === 0) return;
+          this.colLines.forEach((colLine) => {
+            if (!colLine.columnLeft || !colLine.columnRight) return;
+            const x = colLine.x();
+            if (!words.some((w) => w.bbox.left < x && w.bbox.right > x)) return;
+            if (!sepGaps.has(colLine)) sepGaps.set(colLine, []);
+            sepGaps.get(colLine).push([bandTop - colLine.y(), bandBottom - colLine.y()]);
+          });
+        });
+      });
+      sepGaps.forEach((bands) => {
+        bands.sort((a, b) => a[0] - b[0]);
+        for (let i = bands.length - 1; i > 0; i--) {
+          if (bands[i][0] <= bands[i - 1][1]) { bands[i - 1][1] = Math.max(bands[i - 1][1], bands[i][1]); bands.splice(i, 1); }
+        }
+      });
+    }
+
     this.applyChrome = () => {
       this.colLines.forEach((colLine) => {
         const interior = !!(colLine.columnLeft && colLine.columnRight);
         const dashed = interior && colLine.columnLeft.layoutBox.inclusionLevel === 'line';
         if (preview) {
-          colLine.setChrome(dashed
-            ? {
-              accent: true, dashed: true, weight: 2, casing: false,
-            }
-            : {
-              color: '#c9ced6', weight: interior ? 1.5 : 2, casing: false,
-            });
+          colLine.setChrome({
+            color: '#c9ced6', weight: interior ? 1.5 : 2, casing: false, gaps: sepGaps.get(colLine),
+          });
         } else {
           colLine.setChrome({ accent: true, dashed, weight: interior ? 3.5 : 2 });
         }

@@ -470,6 +470,8 @@ class ScribePDFViewer {
      */
     this.scribe = options.scribe || new ScribeViewer();
     this.scribe.opt.keyboardScope = keyboardScope;
+    // This app uses no pan-style navigation in any view mode, so the middle button autoscrolls everywhere.
+    this.scribe.opt.middleClickPan = false;
     this.scribe.opt.enableComments = comments;
     this.scribe.opt.enableForms = true;
     if (edit) {

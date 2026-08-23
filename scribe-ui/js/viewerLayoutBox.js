@@ -445,21 +445,32 @@ export class UiControlLine {
   /**
    * Restyle the bar's visible line.
    * Sizes divide by the zoom var so they stay constant on screen, and the colors are literals rather than theme tokens because this draws over the always-white page.
-   * @param {{accent?: boolean, dashed?: boolean, weight?: number, color?: string, casing?: boolean}} [opts]
+   * `gaps` are [start, end] bands along the bar left undrawn, in page px rather than the zoom-compensated screen px the other sizes take.
+   * @param {{accent?: boolean, dashed?: boolean, weight?: number, color?: string, casing?: boolean, gaps?: Array<[number, number]>}} [opts]
    */
   setChrome({
-    accent = true, dashed = false, weight = 3.5, color = undefined, casing = true,
+    accent = true, dashed = false, weight = 3.5, color = undefined, casing = true, gaps = undefined,
   } = {}) {
     const core = /** @type {HTMLElement} */ (this.el && this.el.firstElementChild);
     if (!core) return;
     const col = color || (accent ? '#1c62d4' : '#6b7482');
     const z = 'var(--scribe-zoom, 1)';
     const cas = 'rgba(255,255,255,0.85)';
+    const angle = this._orientation === 'v' ? '180deg' : '90deg';
     // Longhands rather than the `background` shorthand, because a shorthand holding var() serializes to empty in the CSSOM and anything reading the style back sees nothing.
-    core.style.backgroundColor = dashed ? 'transparent' : col;
-    core.style.backgroundImage = dashed
-      ? `repeating-linear-gradient(${this._orientation === 'v' ? '180deg' : '90deg'}, ${col} 0 calc(7px / ${z}), transparent calc(7px / ${z}) calc(13px / ${z}))`
-      : 'none';
+    core.style.backgroundColor = dashed || gaps?.length ? 'transparent' : col;
+    if (dashed) {
+      core.style.backgroundImage = `repeating-linear-gradient(${angle}, ${col} 0 calc(7px / ${z}), transparent calc(7px / ${z}) calc(13px / ${z}))`;
+    } else if (gaps?.length) {
+      let pos = 0;
+      /** @type {Array<string>} */
+      const stops = [];
+      gaps.forEach(([s, e]) => { stops.push(`${col} ${pos}px ${s}px`, `transparent ${s}px ${e}px`); pos = e; });
+      stops.push(`${col} ${pos}px 100%`);
+      core.style.backgroundImage = `linear-gradient(${angle}, ${stops.join(', ')})`;
+    } else {
+      core.style.backgroundImage = 'none';
+    }
     core.style.opacity = '0.9';
     if (this._orientation === 'h') {
       core.style.height = `calc(${weight}px / ${z})`;
