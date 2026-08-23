@@ -1972,6 +1972,13 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     // Spacing between words comes from glyph positions here, so that padding would only end up inside a word.
     if (/^\s+$/.test(unicode)) unicode = ' ';
     else unicode = unicode.replace(/^\s+|\s+$/g, '');
+    // A ToUnicode value of U+0000 declares that the glyph maps to no text, so it contributes no character while keeping its advance.
+    // Falling through to the charCode fallback would instead fabricate a plausible-wrong letter for CID fonts.
+    let dropNoTextMapping = false;
+    if (!fallbackUsed && unicode.indexOf('\u0000') !== -1) {
+      unicode = unicode.split('\u0000').join('');
+      dropNoTextMapping = unicode === '';
+    }
     // A CID font's /W advances are keyed by CID, which equals the content-stream code only under Identity encoding, so a non-Identity CMap needs the lookup by mapped CID.
     // Otherwise every code misses /W and falls to /DW, which some generators set to 0, collapsing every glyph advance to zero.
     // Simple fonts have no charCodeToCID and keep the code-keyed lookup.
@@ -1995,7 +2002,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const pageX = ctm[0] * ox + ctm[2] * oy + ctm[4];
     const pageY = ctm[1] * ox + ctm[3] * oy + ctm[5];
 
-    if (!dropFallbackControl) {
+    if (!dropFallbackControl && !dropNoTextMapping) {
       // Edit previews lean their glyphs by this ratio.
       // The italic flag alone cannot reproduce the lean.
       const matrixShear = Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05

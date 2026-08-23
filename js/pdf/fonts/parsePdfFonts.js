@@ -1391,30 +1391,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    {
-      const isEmbedded = hasFontFile || hasFontFile2 || hasFontFile3;
-      let identityHighRangeCount = 0;
-      if (toUnicode.size > 0) {
-        for (let cc = 0x80; cc <= 0xFF; cc++) {
-          const tu = toUnicode.get(cc);
-          if (tu && tu.length === 1 && tu.codePointAt(0) === cc) identityHighRangeCount++;
-        }
-      }
-      const isIdentityPlaceholder = identityHighRangeCount >= 76; // 80% of 96 high-range slots
-      if (isEmbedded && isIdentityPlaceholder && encodingUnicode.size > 0) {
-        for (const [cc, eu] of encodingUnicode) {
-          if (cc < 0x80) continue;
-          const tu = toUnicode.get(cc);
-          if (tu === undefined) continue;
-          const tuCp = tu.codePointAt(0);
-          const euCp = eu.codePointAt(0);
-          if (tu.length === 1 && tuCp === cc && euCp !== cc) {
-            toUnicode.set(cc, eu);
-          }
-        }
-      }
-    }
-
     // Some ToUnicode CMaps map a charcode to a control character, so a printable /Encoding mapping at the same charcode wins.
     if (toUnicode.size > 0 && encodingUnicode.size > 0) {
       for (const [cc, tu] of toUnicode) {
@@ -1648,8 +1624,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       if (fdText) {
         const ascentVal = resolveNumValue(fdText, 'Ascent', objCache);
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
-        if ((ascentVal || /\/Ascent\s/.test(fdText)) && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
-        if ((descentVal || /\/Descent\s/.test(fdText)) && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = descentVal;
+        // A descriptor declaring 0 states no metric at all, and taking it literally collapses every box built from it onto the baseline.
+        if (ascentVal !== 0 && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
+        if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = descentVal;
 
         // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);
@@ -2554,6 +2531,20 @@ function parseToUnicodeCMap(cmapText, map) {
     }
     return true;
   };
+  // A value code unit in U+0080-U+009F is a Windows-1252 byte written as a codepoint, so it decodes through that table.
+  // The five bytes CP1252 leaves undefined stay as written, since the table holds placeholders there.
+  const decodeC1 = (s) => {
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const cu = s.charCodeAt(i);
+      if (cu >= 0x80 && cu <= 0x9F && cu !== 0x81 && cu !== 0x8D && cu !== 0x8F && cu !== 0x90 && cu !== 0x9D) {
+        out += win1252Chars[cu - 0x20];
+      } else {
+        out += s[i];
+      }
+    }
+    return out;
+  };
 
   const usecmapMatch = /\/Adobe-(Japan1|Korea1|GB1|CNS1)-UCS2\s+usecmap/.exec(cmapText);
   if (usecmapMatch) {
@@ -2574,7 +2565,7 @@ function parseToUnicodeCMap(cmapText, map) {
       const cid = parseInt(entry[1], 16);
       const unicode = hexToUnicode(entry[2]);
       if (isOnlyReplacementChars(unicode)) continue;
-      map.set(cid, unicode);
+      map.set(cid, decodeC1(unicode));
     }
   }
 
@@ -2598,7 +2589,7 @@ function parseToUnicodeCMap(cmapText, map) {
           let lastCp = dstCps[dstCps.length - 1].codePointAt(0) ?? 0;
           for (let cid = cidStart; cid <= cidEnd; cid++) {
             if (lastCp <= 0x10FFFF && lastCp !== 0xFFFD) {
-              map.set(cid, prefix + String.fromCodePoint(lastCp));
+              map.set(cid, decodeC1(prefix + String.fromCodePoint(lastCp)));
             }
             lastCp++;
           }
@@ -2609,7 +2600,7 @@ function parseToUnicodeCMap(cmapText, map) {
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
           const unicode = hexToUnicode(arrayTokens[idx][1]);
           if (isOnlyReplacementChars(unicode)) continue;
-          map.set(cidStart + idx, unicode);
+          map.set(cidStart + idx, decodeC1(unicode));
         }
       }
     }
