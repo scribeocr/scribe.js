@@ -135,6 +135,24 @@ function addAutomateStyles(rootClass) {
       flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; min-height: 0;
       display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; align-content: start;
     }
+    .${r} .scribe-am-tables { flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .${r} .scribe-am-xtlist { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start; }
+    .${r} .scribe-am-xtrow {
+      display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--scribe-ink);
+      padding: 4px 7px; border-radius: 6px; cursor: pointer; min-width: 0;
+    }
+    .${r} .scribe-am-xtrow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-xtrow.sel { background: var(--scribe-active); }
+    .${r} .scribe-am-xtrow-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-xtfoot { flex: none; border-top: 1px solid var(--scribe-line); margin: 0 -12px -12px; padding: 8px 12px 12px; display: grid; gap: 8px; }
+    .${r} .scribe-am-xtsum {
+      display: flex; align-items: center; gap: 7px; width: 100%; box-sizing: border-box; border: none; background: none;
+      font: inherit; font-size: 12px; color: var(--scribe-ink-2); cursor: pointer; padding: 4px 6px; border-radius: 6px; text-align: left;
+    }
+    .${r} .scribe-am-xtsum:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-xtsum.open svg { transform: rotate(180deg); }
+    .${r} .scribe-am-xtreceipt { display: grid; gap: 6px; border: 1px solid var(--scribe-line); border-radius: 7px; background: var(--scribe-canvas); padding: 9px 10px; }
+    .${r} .scribe-am-xtexport { display: flex; justify-content: flex-end; }
     .${r} .scribe-am-catalog::-webkit-scrollbar, .${r} .scribe-am-thread::-webkit-scrollbar { width: 5px; }
     .${r} .scribe-am-catalog::-webkit-scrollbar-track, .${r} .scribe-am-thread::-webkit-scrollbar-track { background: transparent; }
     .${r} .scribe-am-catalog::-webkit-scrollbar-thumb, .${r} .scribe-am-thread::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
@@ -157,6 +175,12 @@ function addAutomateStyles(rootClass) {
       flex: 1; min-width: 90px; border: none; outline: none; background: none; font: inherit; font-size: 12.5px; color: var(--scribe-ink);
     }
     .${r} .scribe-am-terms-input::placeholder { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-input {
+      border: 1px solid var(--scribe-line-strong); border-radius: 7px; padding: 6px 8px; background: var(--scribe-canvas);
+      font: inherit; font-size: 12.5px; color: var(--scribe-ink); outline: none; width: 130px;
+    }
+    .${r} .scribe-am-input:focus { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-am-input::placeholder { color: var(--scribe-ink-3); }
     .${r} .scribe-am-opts { display: flex; gap: 14px; flex-wrap: wrap; }
     .${r} .scribe-am-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--scribe-ink); cursor: pointer; }
     .${r} .scribe-am-check input { accent-color: var(--scribe-accent); margin: 0; }
@@ -435,6 +459,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
   asstThread.className = 'scribe-am-thread';
   asstThread.style.display = 'none';
 
+  // The tables workspace, populated by the extract-tables module while its mode is active.
+  const tablesElem = document.createElement('div');
+  tablesElem.className = 'scribe-am-tables';
+  tablesElem.style.display = 'none';
+
   const composer = document.createElement('div');
   composer.className = 'scribe-am-composer';
   const cbox = document.createElement('div');
@@ -466,7 +495,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -500,14 +529,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
     composer.style.display = rest || asst ? '' : 'none';
     thread.style.display = next === 'thread' ? '' : 'none';
     asstThread.style.display = asst ? '' : 'none';
+    tablesElem.style.display = next === 'tables' ? '' : 'none';
     backBtn.style.display = rest ? 'none' : '';
     hdIcon.style.display = rest ? '' : 'none';
     plusBtn.style.display = asst ? '' : 'none';
     const st = app.doc ? docStates.get(app.doc) : null;
     hdTitle.textContent = rest ? 'Automate'
       : chatsList ? 'Chats'
-        : asst ? (st?.activeRec?.title ?? 'Assistant')
-          : (activeRun ? activeRun.title : 'Automate');
+        : next === 'tables' ? 'Extract tables'
+          : asst ? (st?.activeRec?.title ?? 'Assistant')
+            : (activeRun ? activeRun.title : 'Automate');
     if (asst && st) {
       const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
       if (live) live.unseen = false;
@@ -598,7 +629,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       chip.textContent = 'AI OPTIONAL';
       row.appendChild(chip);
     }
-    if (!why) row.addEventListener('click', () => launch(entry));
+    if (!why) row.addEventListener('click', () => (entry.openInstead ? entry.openInstead(host) : launch(entry)));
     return row;
   }
 
@@ -1996,7 +2027,34 @@ export function createAutomatePanel(app, rootClass, hooks) {
     runTurn(doc, live, adapter, recaps.length ? `${recaps.join('\n')}\n\n${text}` : text);
   }
 
+  /** @type {?{refresh: () => void}} */
+  let wsHandle = null;
+  let wsPriorView = 'rest';
+
+  async function openTablesWorkspace() {
+    open();
+    if (view !== 'tables') wsPriorView = view;
+    setView('tables');
+    if (wsHandle) { wsHandle.refresh(); return; }
+    const module = await AUTOMATIONS.find((a) => a.id === 'extract-tables').load();
+    // The mode may have exited (or the view moved on) during the await.
+    if (view !== 'tables' || wsHandle) return;
+    tablesElem.textContent = '';
+    wsHandle = module.buildTablesWorkspace(host, tablesElem);
+    app.scribe.onLayoutTablesEdited = () => wsHandle?.refresh();
+  }
+
+  function closeTablesWorkspace() {
+    if (!wsHandle && view !== 'tables') return;
+    app.scribe.onLayoutTablesEdited = null;
+    wsHandle = null;
+    tablesElem.textContent = '';
+    if (view === 'tables') setView(wsPriorView === 'tables' ? 'rest' : wsPriorView);
+  }
+
   backBtn.addEventListener('click', () => {
+    // Panel navigation only, because the canvas mode keeps running whatever the panel shows.
+    // The toolbar button and the banner's Done are that mode's only exits.
     if (activeRun && activeRun.status === 'form') activeRun = null;
     setView('rest');
   });
@@ -2161,6 +2219,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
       const entry = AUTOMATIONS.find((a) => a.id === id);
       if (entry) launch(entry, prefill);
     },
+    /** Called by the Extract Tables mode: show the tables workspace (count note + table list + export block). */
+    openTablesWorkspace,
+    /** Called when the Extract Tables mode exits: tear the workspace down and restore the prior view. */
+    closeTablesWorkspace,
     destroy: () => {
       for (const abort of activeAborts) abort.abort();
       activeAborts.clear();

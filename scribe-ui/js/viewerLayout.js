@@ -11,7 +11,9 @@ import {
   UiDataTableControl, UiDataColSep, renderLayoutDataTables, UiDataTable,
   renderLayoutDataTable, UiDataColumn, checkDataColumnsAdjacent,
   checkDataTablesAdjacent, mergeDataColumns, splitDataColumn, splitDataTable,
+  setActiveTable, pulseTable,
 } from './viewerLayoutTable.js';
+import { applyTablePreview, copyTablePreviewSelection } from './viewerTablePreview.js';
 
 // Re-export the layout-box and table APIs so existing importers can keep using `viewerLayout.js` as the entry point.
 export {
@@ -19,6 +21,7 @@ export {
   UiDataTableControl, UiDataColSep, renderLayoutDataTables, UiDataTable,
   renderLayoutDataTable, UiDataColumn, checkDataColumnsAdjacent,
   checkDataTablesAdjacent, mergeDataColumns, splitDataColumn, splitDataTable,
+  setActiveTable, pulseTable, applyTablePreview, copyTablePreviewSelection,
 };
 
 class UiRegionControlHorizontal extends UiControlLine {
@@ -35,9 +38,11 @@ class UiRegionControlHorizontal extends UiControlLine {
     this.boundTop = 0;
     this.boundBottom = 10000;
 
+    let dragSnap = null;
     makeDraggable(this.el, this.viewer, n, {
       onStart: () => {
         this.viewer.drag.isResizingColumns = true;
+        dragSnap = this.viewer.doc.docHistory.snapshotLayout(this.viewer.doc, [n]);
         if (top) {
           this.boundTop = 0;
           this.boundBottom = this.uiRegion.bottomControl.y() - 20;
@@ -71,7 +76,11 @@ class UiRegionControlHorizontal extends UiControlLine {
           UiText.updateWordCanvas(this.uiRegion.label);
         }
       },
-      onEnd: () => { this.viewer.drag.isResizingColumns = false; },
+      onEnd: () => {
+        this.viewer.drag.isResizingColumns = false;
+        if (dragSnap) this.viewer.doc.docHistory.recordLayout(dragSnap, 'Resized region');
+        dragSnap = null;
+      },
     });
   }
 }
@@ -90,9 +99,11 @@ class UiRegionControlVertical extends UiControlLine {
     this.boundLeft = 0;
     this.boundRight = 10000;
 
+    let dragSnap = null;
     makeDraggable(this.el, this.viewer, n, {
       onStart: () => {
         this.viewer.drag.isResizingColumns = true;
+        dragSnap = this.viewer.doc.docHistory.snapshotLayout(this.viewer.doc, [n]);
         if (left) {
           this.boundLeft = 0;
           this.boundRight = this.uiRegion.rightControl.x() - 20;
@@ -126,7 +137,11 @@ class UiRegionControlVertical extends UiControlLine {
           UiText.updateWordCanvas(this.uiRegion.label);
         }
       },
-      onEnd: () => { this.viewer.drag.isResizingColumns = false; },
+      onEnd: () => {
+        this.viewer.drag.isResizingColumns = false;
+        if (dragSnap) this.viewer.doc.docHistory.recordLayout(dragSnap, 'Resized region');
+        dragSnap = null;
+      },
     });
   }
 }
@@ -346,6 +361,7 @@ export const mergeDataTables = (tables) => {
 
   const n = tableFirst.page.n;
 
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
   for (let i = 1; i < tables.length; i++) {
     tables[i].boxes.forEach((x) => {
       x.table = tableFirst;
@@ -354,12 +370,12 @@ export const mergeDataTables = (tables) => {
     const tableIndex = viewer.doc.layoutDataTables.pages[n].tables.findIndex((x) => x.id === tables[i].id);
     viewer.doc.layoutDataTables.pages[n].tables.splice(tableIndex, 1);
   }
-  viewer.doc.layoutRegions.pages[n].default = false;
-  viewer.doc.layoutDataTables.pages[n].default = false;
 
   cleanLayoutDataColumns(tableFirst);
+  viewer.doc.docHistory.recordLayout(snap, 'Merged tables');
 
   renderLayoutBoxes(viewer, n);
+  viewer.layoutTablesEdited(n);
 };
 
 /**
@@ -377,6 +393,7 @@ export function addLayoutBox(viewer, n, box, type) {
     left: box.left, top: box.top, right: box.left + box.width, bottom: box.top + box.height,
   };
 
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
   let region;
   if (type === 'image') {
     region = new scribe.layout.LayoutImageRegion(viewer.doc.layoutRegions.pages[n], bbox);
@@ -386,6 +403,7 @@ export function addLayoutBox(viewer, n, box, type) {
   }
 
   viewer.doc.layoutRegions.pages[n].boxes[region.id] = region;
+  viewer.doc.docHistory.recordLayout(snap, 'Added layout region');
 
   renderLayoutBoxes(viewer, n);
 }
@@ -428,6 +446,7 @@ export function addLayoutDataTable(viewer, n, box) {
     columnBboxArr = [{ ...bbox }];
   }
 
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
   const dataTable = new scribe.layout.LayoutDataTable(viewer.doc.layoutDataTables.pages[n]);
 
   columnBboxArr.forEach((columnBbox) => {
@@ -436,11 +455,10 @@ export function addLayoutDataTable(viewer, n, box) {
   });
 
   viewer.doc.layoutDataTables.pages[n].tables.push(dataTable);
-
-  viewer.doc.layoutRegions.pages[n].default = false;
-  viewer.doc.layoutDataTables.pages[n].default = false;
+  viewer.doc.docHistory.recordLayout(snap, 'Added table');
 
   renderLayoutDataTable(viewer, dataTable);
+  viewer.layoutTablesEdited(n);
 }
 
 /**

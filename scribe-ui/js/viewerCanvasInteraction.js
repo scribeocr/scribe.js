@@ -7,6 +7,7 @@ import {
   addLayoutBox,
   addLayoutDataTable,
   checkDataColumnsAdjacent, checkDataTablesAdjacent, UiDataColumn, UiLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
+  renderLayoutDataTable, setActiveTable, copyTablePreviewSelection,
 } from './viewerLayout.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
@@ -248,7 +249,6 @@ export const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11
 export const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
 export const CM_BOLD_SVG = menuIcon('<path d="M8 4.5v15"/><path d="M8 4.5h5a3.4 3.4 0 0 1 0 6.8H8"/><path d="M8 11.3h5.7a3.6 3.6 0 0 1 0 7.2H8"/>');
 export const CM_ITALIC_SVG = menuIcon('<path d="M10.5 4.5h7"/><path d="M6.5 19.5h7"/><path d="M14 4.5l-4 15"/>');
-const CM_CHECK_SVG = menuIcon('<path d="M5 12.5l4.8 4.8L19 7.5"/>');
 const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
 const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
 const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
@@ -263,6 +263,9 @@ const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><pa
 // The Highlight row leads with a live color swatch (set to `viewer._highlightColor` on open) instead of a glyph.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
 const CM_AUTOMATE_SVG = menuIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
+
+/* The one treatment for a toggled-on menu row, so a new toggle never invents its own indication. */
+const setMenuToggled = (btn, on) => { btn.querySelector('.scribe-cm-slot')?.classList.toggle('scribe-cm-on', !!on); };
 
 const createContextMenuHTML = () => {
   const menuDiv = document.createElement('div');
@@ -320,6 +323,7 @@ const createContextMenuHTML = () => {
       item('contextMenuEditLineButton', 'Edit Line', CM_EDIT_SVG, editLineClick),
       item('contextMenuCopyLineTextButton', 'Copy Line Text', CM_COPY_SVG, copyLineTextClick),
       item('contextMenuCopyButton', 'Copy', CM_COPY_SVG, copySelectionClick),
+      item('contextMenuCopyCellsButton', 'Copy', CM_COPY_SVG, copyCellsClick),
       item('contextMenuCopyHighlightButton', 'Copy Highlighted Text', CM_COPY_SVG, copyHighlightClick),
       item('contextMenuCopyLayoutTableContentsButton', 'Copy Table Contents', CM_COPY_SVG, copyTableContentsClick),
     ],
@@ -343,6 +347,7 @@ const createContextMenuHTML = () => {
     ],
     [
       item('contextMenuSplitColumnButton', 'Split Column', CM_SPLIT_SVG, splitDataColumnClick),
+      item('contextMenuCaptureLinesButton', 'Capture whole lines', CM_TABLE_SVG, captureLinesClick),
       item('contextMenuMergeColumnsButton', 'Merge Columns', CM_MERGE_SVG, mergeDataColumnsClick),
       item('contextMenuMergeTablesButton', 'Merge Tables', CM_MERGE_SVG, mergeDataTablesClick),
       item('contextMenuSplitTableButton', 'New Table from Columns', CM_TABLE_SVG, splitDataTableClick),
@@ -487,6 +492,32 @@ const splitDataTableClick = () => {
   const viewer = mv();
   splitDataTable(viewer.CanvasSelection.getUiDataColumns());
   viewer.destroyControls();
+};
+
+const copyCellsClick = () => {
+  hideContextMenu();
+  copyTablePreviewSelection(mv());
+};
+
+/* Line capture pairs with the `left` inclusion rule, because indented row labels overhang the column and a majority test would miss exactly the lines this feature exists to catch. */
+const captureLinesClick = () => {
+  hideContextMenu();
+  const viewer = mv();
+  const cols = viewer.CanvasSelection.getUiDataColumnsCopy();
+  if (cols.length === 0) return;
+  const table = cols[0].layoutBox.table;
+  const n = table.page.n;
+  const target = cols.every((c) => c.layoutBox.inclusionLevel === 'line') ? 'word' : 'line';
+  const ids = cols.map((c) => c.layoutBox.id);
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
+  cols.forEach((c) => {
+    c.layoutBox.inclusionLevel = target;
+    c.layoutBox.inclusionRule = target === 'line' ? 'left' : 'majority';
+  });
+  viewer.doc.docHistory.recordLayout(snap, target === 'line' ? 'Set column to capture whole lines' : 'Set column to capture words');
+  renderLayoutDataTable(viewer, table);
+  viewer.CanvasSelection.selectLayoutBoxesById(ids);
+  viewer.layoutTablesEdited(n);
 };
 
 /**
@@ -733,6 +764,8 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuMergeWordsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuMergeColumnsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitColumnButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCaptureLinesButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCopyCellsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutRegionButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyLayoutTableContentsButtonElem;
@@ -800,6 +833,8 @@ function ensureContextMenu() {
   contextMenuMergeWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeWordsButton'));
   contextMenuMergeColumnsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeColumnsButton'));
   contextMenuSplitColumnButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitColumnButton'));
+  contextMenuCaptureLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCaptureLinesButton'));
+  contextMenuCopyCellsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyCellsButton'));
   contextMenuDeleteLayoutRegionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutRegionButton'));
   contextMenuDeleteLayoutTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutTableButton'));
   contextMenuCopyLayoutTableContentsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLayoutTableContentsButton'));
@@ -883,6 +918,12 @@ function ensureContextMenu() {
       height: 16px;
       color: var(--scribe-ink-2, #586170);
     }
+    #scribe-context-menu .scribe-cm-slot.scribe-cm-on {
+      color: var(--scribe-accent, #1c62d4);
+      background: var(--scribe-accent-wash, rgba(28, 98, 212, .14));
+      box-shadow: 0 0 0 3px var(--scribe-accent-wash, rgba(28, 98, 212, .14));
+      border-radius: 4px;
+    }
     #scribe-context-menu .scribe-cm-swatch {
       width: 15px;
       height: 15px;
@@ -931,7 +972,8 @@ function ensureContextMenu() {
 }
 
 // The `--scribe-*` tokens mirrored onto the body-level menu on open, since it lives outside the viewer's scoped token definitions and the cascade can't reach it.
-const CONTEXT_MENU_TOKENS = ['--scribe-surface', '--scribe-line', '--scribe-ink', '--scribe-ink-2', '--scribe-hover', '--scribe-danger', '--scribe-danger-soft', '--scribe-menu-shadow'];
+const CONTEXT_MENU_TOKENS = ['--scribe-surface', '--scribe-line', '--scribe-ink', '--scribe-ink-2', '--scribe-hover', '--scribe-accent',
+  '--scribe-accent-wash', '--scribe-danger', '--scribe-danger-soft', '--scribe-menu-shadow'];
 
 /** Remove the shared context menu, the touch callout, and their styles from the document. */
 export const destroyContextMenu = () => {
@@ -989,6 +1031,8 @@ export const hideContextMenu = () => {
   contextMenuDeleteWordsButtonElem.style.display = 'none';
   contextMenuMergeColumnsButtonElem.style.display = 'none';
   contextMenuSplitColumnButtonElem.style.display = 'none';
+  contextMenuCaptureLinesButtonElem.style.display = 'none';
+  contextMenuCopyCellsButtonElem.style.display = 'none';
   contextMenuDeleteLayoutRegionButtonElem.style.display = 'none';
   contextMenuDeleteLayoutTableButtonElem.style.display = 'none';
   contextMenuCopyLayoutTableContentsButtonElem.style.display = 'none';
@@ -1454,15 +1498,14 @@ export const contextMenuFunc = (viewer, event) => {
       if (lineTarget) contextMenuEditLineButtonElem.style.display = 'initial';
       contextMenuCopyLineTextButtonElem.style.display = 'initial';
       if (viewer._editTextStyleState) {
-        /** @type {Array<['bold'|'italic', HTMLButtonElement, string]>} */
-        const styleRows = [['bold', contextMenuBoldButtonElem, CM_BOLD_SVG], ['italic', contextMenuItalicButtonElem, CM_ITALIC_SVG]];
-        for (const [prop, btn, icon] of styleRows) {
+        /** @type {Array<['bold'|'italic', HTMLButtonElement]>} */
+        const styleRows = [['bold', contextMenuBoldButtonElem], ['italic', contextMenuItalicButtonElem]];
+        for (const [prop, btn] of styleRows) {
           const s = viewer._editTextStyleState(prop);
           btn.style.display = 'initial';
           btn.disabled = s.locked;
           btn.title = s.locked ? `This font is only available in ${prop}.` : '';
-          const slot = btn.querySelector('.scribe-cm-slot');
-          if (slot) slot.innerHTML = s.on ? CM_CHECK_SVG : icon;
+          setMenuToggled(btn, s.on);
         }
       }
       contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
@@ -1511,8 +1554,15 @@ export const contextMenuFunc = (viewer, event) => {
 
     const selectedUiWords = viewer.CanvasSelection.getUiWords();
     const selectedWords = selectedUiWords.map((x) => x.word);
-    const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
+    let selectedColumns = viewer.CanvasSelection.getUiDataColumns();
     const selectedRegions = viewer.CanvasSelection.getUiRegions();
+
+    // A right-click makes the column under it the selection, so the table items enable without a prior left-click.
+    if (!viewer.state.tablePreview && targetObj instanceof UiDataColumn && !selectedColumns.some((c) => c.layoutBox.id === targetObj.layoutBox.id)) {
+      viewer.CanvasSelection.deselectAll();
+      viewer.CanvasSelection.selectLayoutBoxes([targetObj]);
+      selectedColumns = viewer.CanvasSelection.getUiDataColumns();
+    }
 
     viewer.contextMenuPointer = pointerRelative;
 
@@ -1617,28 +1667,50 @@ export const contextMenuFunc = (viewer, event) => {
     let enableMergeTables = false;
     let enableMergeColumns = false;
     let enableSplit = false;
+    let enableCaptureLines = false;
     let enableDeleteRegion = false;
     let enableDeleteTable = false;
     let enableCopyTableContents = false;
     let enableSplitTable = false;
 
-    if (selectedTables.length === 1) {
+    // A column selection left over from the page view must not surface the layout verbs over the spreadsheet.
+    if (viewer.state.tablePreview) {
+      // No layout verbs in the preview.
+    } else if (selectedTables.length === 1) {
       const adjacentColumns = checkDataColumnsAdjacent(selectedColumns);
       if (selectedColumns.length > 1 && adjacentColumns) enableMergeColumns = true;
       if (selectedColumns.length === 1) enableSplit = true;
+      if (selectedColumns.length > 0) enableCaptureLines = true;
       if (selectedRegions.length > 0) enableDeleteRegion = true;
       if (selectedColumns.length > 0 && adjacentColumns && selectedColumns.length < selectedTables[0].boxes.length) enableSplitTable = true;
-      if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].uiTable.columns.length) {
-        enableDeleteTable = true;
-        enableCopyTableContents = true;
-      }
+      // Delete Table acts on the whole table from any column, so any column selection offers it.
+      if (selectedColumns.length > 0) enableDeleteTable = true;
+      if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].uiTable.columns.length) enableCopyTableContents = true;
     } else if (selectedTables.length > 1 && checkDataTablesAdjacent(selectedTables)) {
       enableMergeTables = true;
     } else if (selectedRegions.length > 0) {
       enableDeleteRegion = true;
     }
 
-    if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
+    // A right-click outside the current cell range moves the selection to that cell first, the spreadsheet convention.
+    let enableCopyCells = false;
+    if (viewer.state.tablePreview && event.target instanceof HTMLElement) {
+      const cellEl = event.target.closest('[data-scribe-tp-cell]');
+      if (cellEl instanceof HTMLElement) {
+        const [r, c] = (cellEl.dataset.scribeTpCell || '').split(',').map(Number);
+        const sel = viewer._tpSel;
+        const inRange = sel && r >= Math.min(sel.r, sel.r2) && r <= Math.max(sel.r, sel.r2)
+          && c >= Math.min(sel.c, sel.c2) && c <= Math.max(sel.c, sel.c2);
+        if (!inRange) cellEl.click();
+        enableCopyCells = true;
+      } else if (targetObj instanceof UiDataColumn) {
+        // Off the active sheet's cell grid, so the press is forwarded to the column's own handler, which makes that table the active sheet and selects the cell under the pointer.
+        targetObj.el.dispatchEvent(new MouseEvent('click', { button: 0, clientX: event.clientX, clientY: event.clientY }));
+        enableCopyCells = viewer._tpSel?.id === targetObj.layoutBox.table.id;
+      }
+    }
+
+    if (!(enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
       || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere)) return;
 
@@ -1646,6 +1718,7 @@ export const contextMenuFunc = (viewer, event) => {
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
+    if (enableCopyCells) contextMenuCopyCellsButtonElem.style.display = 'initial';
     if (enableCopyHighlight) {
       setMenuLabel(contextMenuCopyHighlightButtonElem, contextMenuMarkupSlot === 'line' ? 'Copy Marked Text' : 'Copy Highlighted Text');
       contextMenuCopyHighlightButtonElem.style.display = 'initial';
@@ -1686,6 +1759,11 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';
     if (enableMergeColumns) contextMenuMergeColumnsButtonElem.style.display = 'initial';
     if (enableSplit) contextMenuSplitColumnButtonElem.style.display = 'initial';
+    if (enableCaptureLines) {
+      const allLine = viewer.CanvasSelection.getUiDataColumns().every((x) => x.layoutBox.inclusionLevel === 'line');
+      setMenuToggled(contextMenuCaptureLinesButtonElem, allLine);
+      contextMenuCaptureLinesButtonElem.style.display = 'initial';
+    }
     if (enableDeleteRegion) contextMenuDeleteLayoutRegionButtonElem.style.display = 'initial';
     if (enableDeleteTable) contextMenuDeleteLayoutTableButtonElem.style.display = 'initial';
     if (enableCopyTableContents) contextMenuCopyLayoutTableContentsButtonElem.style.display = 'initial';
@@ -1806,6 +1884,16 @@ function selectWords(viewer, box) {
 export function selectLayoutBoxesArea(viewer, box) {
   const shapes = [...viewer.getUiDataColumns(), ...viewer.getUiRegions()];
   const layoutBoxes = shapes.filter((shape) => rectsOverlap(box, shape.getClientRect()));
+
+  // Activating a table re-renders it and replaces these column objects, so the selection has to be re-resolved by id rather than passing them along.
+  const columns = layoutBoxes.filter((shape) => shape instanceof UiDataColumn);
+  if (columns.length > 0 && columns[0].layoutBox.table.id !== viewer.state.activeTableId) {
+    const ids = layoutBoxes.map((shape) => shape.layoutBox.id);
+    setActiveTable(viewer, columns[0].layoutBox.table.id);
+    viewer.CanvasSelection.selectLayoutBoxesById(ids);
+    viewer.layoutTablesEdited(columns[0].layoutBox.table.page.n);
+    return;
+  }
 
   viewer.CanvasSelection.selectLayoutBoxes(layoutBoxes);
 }

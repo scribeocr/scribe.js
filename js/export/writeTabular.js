@@ -155,16 +155,18 @@ function createCellsSingle({
 }
 
 /**
- * Build an XLSX ZIP archive from complete sheet XML and boilerplate files.
- * @param {string} sheetXml - Complete XML for xl/worksheets/sheet1.xml.
- * @param {Array<{path: string, content: string}>} xlsxStrings - Boilerplate files.
+ * Build an XLSX ZIP archive from complete per-sheet XML and boilerplate files.
+ * @param {Array<string>} sheetXmls - Complete XML for xl/worksheets/sheetN.xml, one entry per sheet in workbook order.
+ * @param {Array<{path: string, content: string}>} xlsxStrings - Boilerplate files (must reference the same sheet count).
  * @returns {Promise<Uint8Array>}
  */
-async function buildXlsxZip(sheetXml, xlsxStrings) {
+async function buildXlsxZip(sheetXmls, xlsxStrings) {
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
   const zipFileWriter = new Uint8ArrayWriter();
   const zipWriter = new ZipWriter(zipFileWriter);
-  await zipWriter.add('xl/worksheets/sheet1.xml', new TextReader(sheetXml));
+  for (let i = 0; i < sheetXmls.length; i++) {
+    await zipWriter.add(`xl/worksheets/sheet${i + 1}.xml`, new TextReader(sheetXmls[i]));
+  }
   for (let i = 0; i < xlsxStrings.length; i++) {
     await zipWriter.add(xlsxStrings[i].path, new TextReader(xlsxStrings[i].content));
   }
@@ -221,7 +223,7 @@ export async function writeXlsx({
   }
 
   const sheetXml = `${sheetPreamble}<sheetData>${cellContent}</sheetData>${sheetClose}`;
-  return buildXlsxZip(sheetXml, xlsxStrings);
+  return buildXlsxZip([sheetXml], xlsxStrings);
 }
 
 /**
@@ -234,7 +236,18 @@ export async function writeXlsx({
  */
 export async function writeXlsxFromRows(rows, options = {}) {
   const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
+  const sheetXml = buildSheetXml(rows, options, 0, { sheetPreamble, sheetClose });
+  return buildXlsxZip([sheetXml], xlsxStrings);
+}
 
+/**
+ * Complete worksheet XML for one sheet of plain data.
+ * @param {Array<Array<string|number|null|undefined>>} rows - 2D array of cell values.
+ * @param {Object} options - Same options as `writeXlsxFromRows`.
+ * @param {number} sheetIndex - 0-based workbook position; only sheet 0 keeps the preamble's `tabSelected`.
+ * @param {{sheetPreamble: string, sheetClose: string}} resources
+ */
+function buildSheetXml(rows, options, sheetIndex, resources) {
   const { headerRows = 0, autoFilter = false, columnWidths } = options;
 
   let maxCols = 0;
@@ -291,6 +304,50 @@ export async function writeXlsxFromRows(rows, options = {}) {
     autoFilterXml = `<autoFilter ref="A1:${colIndexToRef(maxCols - 1)}${rows.length}"/>`;
   }
 
-  const sheetXml = `${sheetPreamble}${colsXml}<sheetData>${cellContent}</sheetData>${autoFilterXml}${sheetClose}`;
-  return buildXlsxZip(sheetXml, xlsxStrings);
+  // Only one sheet may claim the selected tab, or Excel flags the workbook.
+  const preamble = sheetIndex === 0 ? resources.sheetPreamble : resources.sheetPreamble.replace(' tabSelected="1"', '');
+  return `${preamble}${colsXml}<sheetData>${cellContent}</sheetData>${autoFilterXml}${resources.sheetClose}`;
+}
+
+/**
+ * Create a multi-sheet xlsx workbook from plain data, one worksheet per entry.
+ * @param {Array<{name: string, rows: Array<Array<string|number|null|undefined>>}>} sheets - Worksheets in workbook order.
+ * @param {Object} [options] - Same options as `writeXlsxFromRows`, applied to every sheet.
+ */
+export async function writeXlsxFromSheets(sheets, options = {}) {
+  const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
+
+  // Sheet names arrive as raw text from the caller, so workbook validity is enforced here rather than at the call sites.
+  /** @type {Array<string>} */
+  const names = [];
+  sheets.forEach((sheet, i) => {
+    let name = String(sheet.name ?? '').replace(/[:\\/?*[\]]/g, '').trim().slice(0, 31);
+    if (!name) name = `Sheet${i + 1}`;
+    let unique = name;
+    for (let suffix = 2; names.includes(unique); suffix++) {
+      const tail = ` ${suffix}`;
+      unique = name.slice(0, 31 - tail.length) + tail;
+    }
+    names.push(unique);
+  });
+
+  const n = names.length;
+  const byPath = new Map(xlsxStrings.map((f) => [f.path, f.content]));
+  const patch = (path, anchor, replacement) => {
+    const patched = byPath.get(path).replace(anchor, replacement);
+    if (patched === byPath.get(path)) throw new Error(`xlsx boilerplate anchor not found in ${path}`);
+    byPath.set(path, patched);
+  };
+  const sheetsXml = names.map((name, i) => `<sheet name="${ocr.escapeXml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('');
+  patch('xl/workbook.xml', '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>', `<sheets>${sheetsXml}</sheets>`);
+  const sheetOverrides = names.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('');
+  patch('[Content_Types].xml', '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>', sheetOverrides);
+  patch('docProps/app.xml', '<vt:variant><vt:i4>1</vt:i4></vt:variant>', `<vt:variant><vt:i4>${n}</vt:i4></vt:variant>`);
+  patch('docProps/app.xml', '<vt:vector size="1" baseType="lpstr"><vt:lpstr>Sheet1</vt:lpstr></vt:vector>', `<vt:vector size="${n}" baseType="lpstr">${names.map((name) => `<vt:lpstr>${ocr.escapeXml(name)}</vt:lpstr>`).join('')}</vt:vector>`);
+  // Adding sheets shifts the theme and styles rIds, leaving no stable anchor to patch, so this file is rebuilt.
+  const relsSheets = names.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('');
+  byPath.set('xl/_rels/workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId${n + 2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/><Relationship Id="rId${n + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="theme/theme1.xml"/>${relsSheets}</Relationships>`);
+
+  const sheetXmls = sheets.map((sheet, i) => buildSheetXml(sheet.rows, options, i, { sheetPreamble, sheetClose }));
+  return buildXlsxZip(sheetXmls, xlsxStrings.map((f) => ({ path: f.path, content: byPath.get(f.path) })));
 }

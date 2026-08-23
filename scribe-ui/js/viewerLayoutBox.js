@@ -17,7 +17,9 @@ export const colColorsHex = ['#287bb5', '#19aa9a', '#099b57'];
  * @param {(p: {x: number, y: number}) => void} [handlers.onMove]
  * @param {() => void} [handlers.onEnd]
  */
-export function makeDraggable(el, viewer, n, { onStart, onMove, onEnd } = {}) {
+export function makeDraggable(el, viewer, n, {
+  onStart, onMove, onEnd, canDrag = () => true,
+} = {}) {
   let active = false;
   const toLocal = (e) => {
     const c = viewer.clientToContent(e.clientX, e.clientY);
@@ -34,6 +36,8 @@ export function makeDraggable(el, viewer, n, { onStart, onMove, onEnd } = {}) {
   };
   el.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) return;
+    // A box that cannot drag right now must let the press bubble, or the click path that selects and activates a table never runs.
+    if (!canDrag()) return;
     e.preventDefault();
     e.stopPropagation();
     active = true;
@@ -98,9 +102,8 @@ export class UiLayout {
       fill = 'rgba(111,66,193,0.25)';
       stroke = 'rgba(111,66,193,0.4)';
     } else if (layoutBox.type === 'dataColumn') {
-      const colIndex = layoutBox.table.boxes.findIndex((x) => x.id === layoutBox.id);
-      const colorBase = colColorsHex[colIndex % colColorsHex.length];
-      fill = hexToRgba(colorBase, 0.3);
+      // Data columns carry no resting paint, because the table's own line overlay states the structure and this div is only a hit surface.
+      fill = '';
     }
 
     /** @type {import('../viewer.js').ScribeViewer} */
@@ -178,7 +181,9 @@ export class UiLayout {
         dynamicWidth: true,
         viewer: _viewer,
         changeTextCallback: async (obj) => {
+          const snap = _viewer.doc.docHistory.snapshotLayout(_viewer.doc, [layoutBox.page.n]);
           layoutBox.order = parseInt(obj.word.text);
+          _viewer.doc.docHistory.recordLayout(snap, 'Changed reading order');
         },
         // eslint-disable-next-line no-unused-vars
         inputTextCallback: async (obj) => {
@@ -317,6 +322,7 @@ export class UiLayout {
   /** Wire whole-box dragging (moves by the pointer delta, then writes the model on release). */
   _wireDrag() {
     makeDraggable(this.el, this.viewer, this._n, {
+      canDrag: () => this._draggable,
       onStart: (p) => {
         if (!this._draggable) return;
         this._grab = { x: p.x - this._x, y: p.y - this._y };
@@ -337,7 +343,8 @@ export class UiLayout {
   }
 
   /**
-   * Write the box's geometry back to its layout-box coordinates and mark the page's layout non-default.
+   * Write the box's geometry back to its layout-box coordinates, as one undoable step.
+   * The layout box is untouched until release, so the snapshot and record pair brackets just this write.
    * @param {UiLayout} uiLayout
    */
   static updateLayoutBoxes(uiLayout) {
@@ -346,12 +353,12 @@ export class UiLayout {
     const height = uiLayout.height() * uiLayout.scaleY();
     const right = uiLayout.x() + width;
     const bottom = uiLayout.y() + height;
+    const viewer = getLayoutViewer(uiLayout);
+    const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
     uiLayout.layoutBox.coords = {
       left: uiLayout.x(), top: uiLayout.y(), right, bottom,
     };
-    const viewer = getLayoutViewer(uiLayout);
-    viewer.doc.layoutRegions.pages[n].default = false;
-    viewer.doc.layoutDataTables.pages[n].default = false;
+    viewer.doc.docHistory.recordLayout(snap, 'Moved region');
   }
 
   /**
@@ -372,23 +379,26 @@ function makeControlElem(orientation, length) {
   el.className = 'scribe-layout-control';
   el.dataset.scribeKind = 'layout-control';
   const common = { position: 'absolute', zIndex: '3', touchAction: 'none' };
+  // The visible line is a child element so that it can be restyled without touching the hit area.
+  const core = document.createElement('div');
+  core.className = 'scribe-layout-control-core';
+  Object.assign(core.style, { position: 'absolute', pointerEvents: 'none' });
   if (orientation === 'h') {
     Object.assign(el.style, common, {
-      height: '6px',
-      marginTop: '-3px',
-      width: `${length}px`,
-      cursor: 'row-resize',
-      background: 'linear-gradient(black, black) center/100% 2px no-repeat',
+      height: '6px', marginTop: '-3px', width: `${length}px`, cursor: 'row-resize',
+    });
+    Object.assign(core.style, {
+      left: '0', right: '0', top: '50%', height: '2px', transform: 'translateY(-50%)', background: 'black',
     });
   } else {
     Object.assign(el.style, common, {
-      width: '6px',
-      marginLeft: '-3px',
-      height: `${length}px`,
-      cursor: 'col-resize',
-      background: 'linear-gradient(black, black) center/2px 100% no-repeat',
+      width: '6px', marginLeft: '-3px', height: `${length}px`, cursor: 'col-resize',
+    });
+    Object.assign(core.style, {
+      top: '0', bottom: '0', left: '50%', width: '2px', transform: 'translateX(-50%)', background: 'black',
     });
   }
+  el.appendChild(core);
   return el;
 }
 
@@ -430,6 +440,34 @@ export class UiControlLine {
   points(arr) {
     this._length = this._orientation === 'h' ? Math.abs(arr[2] - arr[0]) : Math.abs(arr[3] - arr[1]);
     this._position();
+  }
+
+  /**
+   * Restyle the bar's visible line.
+   * Sizes divide by the zoom var so they stay constant on screen, and the colors are literals rather than theme tokens because this draws over the always-white page.
+   * @param {{accent?: boolean, dashed?: boolean, weight?: number, color?: string, casing?: boolean}} [opts]
+   */
+  setChrome({
+    accent = true, dashed = false, weight = 3.5, color = undefined, casing = true,
+  } = {}) {
+    const core = /** @type {HTMLElement} */ (this.el && this.el.firstElementChild);
+    if (!core) return;
+    const col = color || (accent ? '#1c62d4' : '#6b7482');
+    const z = 'var(--scribe-zoom, 1)';
+    const cas = 'rgba(255,255,255,0.85)';
+    // Longhands rather than the `background` shorthand, because a shorthand holding var() serializes to empty in the CSSOM and anything reading the style back sees nothing.
+    core.style.backgroundColor = dashed ? 'transparent' : col;
+    core.style.backgroundImage = dashed
+      ? `repeating-linear-gradient(${this._orientation === 'v' ? '180deg' : '90deg'}, ${col} 0 calc(7px / ${z}), transparent calc(7px / ${z}) calc(13px / ${z}))`
+      : 'none';
+    core.style.opacity = '0.9';
+    if (this._orientation === 'h') {
+      core.style.height = `calc(${weight}px / ${z})`;
+      core.style.boxShadow = casing ? `0 calc(1px / ${z}) 0 ${cas}, 0 calc(-1px / ${z}) 0 ${cas}` : 'none';
+    } else {
+      core.style.width = `calc(${weight}px / ${z})`;
+      core.style.boxShadow = casing ? `calc(1px / ${z}) 0 0 ${cas}, calc(-1px / ${z}) 0 0 ${cas}` : 'none';
+    }
   }
 
   _position() {

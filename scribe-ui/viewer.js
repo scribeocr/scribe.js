@@ -320,6 +320,11 @@ export class ScribeViewer {
      */
     this.onAnnotationsEdited = null;
     /**
+     * Called with the page index after that page's layout data tables change.
+     * @type {?(n: number) => void}
+     */
+    this.onLayoutTablesEdited = null;
+    /**
      * Called with a highlight group id when the pointer enters a highlight, and null when it leaves.
      * The comments panel registers here to light the hovered highlight's row.
      * @type {?(groupId: ?string) => void}
@@ -1355,7 +1360,11 @@ export class ScribeViewer {
       if (this.onPageEditCallback) this.onPageEditCallback();
       return true;
     }
-    for (const n of new Set(res.pages)) {
+    const pageSet = new Set(res.pages);
+    // A layout repaint replaces the overlay DOM, so live selection handles go stale and are dropped first.
+    const layoutRepaint = (n) => (this.state.layoutMode && this.rowDistance(n, this.state.cp.n) < 2) || this.overlayGroupsRenderIndices.includes(n);
+    if ([...pageSet].some(layoutRepaint)) this.destroyControls();
+    for (const n of pageSet) {
       this.refreshPageRaster(n);
       this.renderWords(n);
       this.renderHighlights(n);
@@ -1364,6 +1373,10 @@ export class ScribeViewer {
       this.renderRedactions(n);
       this.renderFormFields(n);
       this.annotationsEdited(n);
+      if (layoutRepaint(n)) {
+        layout.renderLayoutBoxes(this, n);
+        this.layoutTablesEdited(n);
+      }
       if (this.textSel) {
         this.textSel.invalidatePage(n);
         this.textSel.renderPage(n);
@@ -3710,6 +3723,14 @@ export class ScribeViewer {
   annotationsEdited(pageN) {
     if (this.doc && this.doc.id < 0) this.doc._requestHydration?.();
     this.onAnnotationsEdited?.(pageN);
+  }
+
+  /**
+   * Notify the registered listener that page `pageN`'s layout data tables changed.
+   * @param {number} pageN
+   */
+  layoutTablesEdited(pageN) {
+    this.onLayoutTablesEdited?.(pageN);
   }
 
   /**

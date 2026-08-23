@@ -355,8 +355,9 @@ export function handleKeyboardEvent(viewer, event) {
   }
 
   // With no words selected, arrows pan the view; with a selection they drive the word move/resize verbs below.
+  // In the table preview the arrows belong to the cell selection instead, handled by the tool itself.
   if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
-    && !UiText.input && selectedWords.length === 0
+    && !UiText.input && selectedWords.length === 0 && !_viewer.state.tablePreview
     && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
     const step = 40;
     let deltaX = 0;

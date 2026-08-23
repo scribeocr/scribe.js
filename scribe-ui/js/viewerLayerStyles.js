@@ -17,6 +17,13 @@ export function ensureLayerStyleSheet() {
     // That thumbnail would otherwise show through as a blurry page, and swap ghosts carry the image-layer class, so they go too.
     + '.scribe-ebook .scribe-page{background-image:none!important}'
     + '.scribe-ebook .scribe-layer-image{display:none!important}'
+    + '.scribe-tp-flash{animation:scribe-tp-flash .65s ease-in-out forwards}'
+    + '@keyframes scribe-tp-flash{0%{opacity:0}30%{opacity:.16}100%{opacity:0}}'
+    + '.scribe-table-pulse{animation:scribe-table-pulse .8s ease-out forwards}'
+    + '@keyframes scribe-table-pulse{'
+    + '0%{opacity:0;box-shadow:0 0 0 calc(2px/var(--scribe-zoom,1)) rgba(28,98,212,.28),0 0 calc(10px/var(--scribe-zoom,1)) calc(3px/var(--scribe-zoom,1)) rgba(28,98,212,.2)}'
+    + '25%{opacity:1}'
+    + '100%{opacity:0;box-shadow:0 0 0 calc(8px/var(--scribe-zoom,1)) rgba(28,98,212,0),0 0 calc(26px/var(--scribe-zoom,1)) calc(14px/var(--scribe-zoom,1)) rgba(28,98,212,0)}}'
     // A native selection anchored in the page container reaches the raster, and WebKit paints the whole page image blue.
     // Chrome leaves the canvas out of the range, so this rule looks like a no-op there.
     + '.scribe-layer-image{user-select:none;-webkit-user-select:none}'

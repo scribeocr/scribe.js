@@ -1547,6 +1547,8 @@ export class TextSelection {
       event.preventDefault();
       navigator.clipboard?.writeText(text);
     } else if (mod && (event.key === 'a' || event.key === 'A')) {
+      // In the table Preview Export this key belongs to the cell selection, and selecting every word would paint a document-wide selection over the sheet.
+      if (this.viewer.state.tablePreview) return;
       event.preventDefault();
       this.selectAll();
     } else if (event.key === 'Escape' && !this.isEmpty()) {

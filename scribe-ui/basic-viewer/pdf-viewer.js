@@ -23,7 +23,7 @@ import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPane
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
-  createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool,
+  createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
@@ -1447,14 +1447,24 @@ class ScribePDFViewer {
         this._modeTrackRow1.insertBefore(this._recognizeTool.toolbarElem, this._modeTrackChev);
       }
 
+      /** @type {?ReturnType<typeof createExtractTablesTool>} */
+      this._extractTablesTool = null;
+      // The mode's workspace lives in the Automate panel, so the button ships only when that panel does.
+      if (this._modeTrackRow1 && this._automateEnabled) {
+        this._extractTablesTool = createExtractTablesTool(this);
+        this._modeTrackRow1.insertBefore(this._extractTablesTool.toolbarElem, this._modeTrackChev);
+      }
+
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
+      if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · right-click for table actions';
 
       const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
-        this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem].filter((b) => !!b);
+        this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
+        this._extractTablesTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
         btn.addEventListener('click', () => {
@@ -1873,12 +1883,16 @@ class ScribePDFViewer {
     this.scribe.runSetInitial = true;
     await this.scribe.displayPage(initialPage, initialPage > 0);
 
+    this._extractTablesTool?.docChanged?.();
+
     // Deferred import painted the page raster-only, so rebuild the text-dependent surfaces once extraction lands.
     // Text that imported synchronously has no deferred phase and skips this.
     if (doc._textReadySettle) {
       doc.textReady.then(() => {
         if (this.doc !== doc) return;
         this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+        // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
+        this._extractTablesTool?.docChanged?.();
         // The Recognize verdict depends on the page stats a deferred import produces, so re-evaluate once they land.
         if (this._editEnabled) this._updateRecognizeButton();
         if (this._commentsPanel && this._thumbnailPanel) {
@@ -2398,6 +2412,10 @@ class ScribePDFViewer {
   _positionBanners() {
     const top = this._topBarsHeight();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
+    // The automate panel shares the banner's band, so the banner gives up that width rather than overdrawing it.
+    if (this._modeBanner) {
+      this._modeBanner.style.right = (!this._phoneUi && this._automatePanel?.isOpen()) ? `${this._automatePanel.width}px` : '0px';
+    }
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
@@ -2664,6 +2682,15 @@ class ScribePDFViewer {
         if (fsPal.parentElement !== this._modeBanner) this._modeBanner.insertBefore(fsPal, this._modeBannerParts.exit);
       } else if (fsPal.parentElement !== this.pdfViewerElem) {
         this.pdfViewerElem.appendChild(fsPal);
+      }
+    }
+
+    const xtSeg = this._extractTablesTool ? this._extractTablesTool.viewSegElem() : null;
+    if (xtSeg) {
+      if (activeBtn === this._extractTablesTool.toolbarElem) {
+        if (xtSeg.parentElement !== this._modeBanner) this._modeBanner.insertBefore(xtSeg, this._modeBannerParts.name.nextSibling);
+      } else {
+        xtSeg.remove();
       }
     }
 
@@ -4499,6 +4526,7 @@ class ScribePDFViewer {
     if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
     if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
+    if (disabled && this._extractTablesTool?.isActive()) this._extractTablesTool.close();
     for (const el of [
       this._searchBar?.searchElem,
       this._twoPageBtn,
@@ -4511,6 +4539,7 @@ class ScribePDFViewer {
       this._fillSignTool?.toolbarElem,
       this._editPagesTool?.toolbarElem,
       this._recognizeTool?.toolbarElem,
+      this._extractTablesTool?.toolbarElem,
       this._modeTrackViewBtn,
       this._modeTrackChev,
     ]) {

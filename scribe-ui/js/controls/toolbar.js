@@ -1008,6 +1008,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ink: #ffffff;
       --scribe-accent-soft: #e8f0fd;
       --scribe-accent-ring: rgba(28, 98, 212, .30);
+      --scribe-accent-wash: rgba(28, 98, 212, .14);
       --scribe-note: #f4d06a;
       --scribe-danger: #d1493d;
       --scribe-danger-soft: #fbe9e7;
@@ -1034,6 +1035,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ink: #ffffff;
       --scribe-accent-soft: #1e2c44;
       --scribe-accent-ring: rgba(79, 139, 240, .38);
+      --scribe-accent-wash: rgba(79, 139, 240, .22);
       --scribe-note: #f0cd68;
       --scribe-danger: #ef7a6c;
       --scribe-danger-soft: #33201d;

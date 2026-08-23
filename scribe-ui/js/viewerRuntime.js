@@ -7,6 +7,16 @@ export class ScribeViewerState {
   constructor() {
     this.recognizeAllPromise = Promise.resolve();
     this.layoutMode = false;
+    /**
+     * The active table while the Extract Tables mode is on, which is the Preview Export sheet and the review list's selection.
+     * The page view draws every table alike, and null means no table is singled out yet.
+     * @type {?string}
+     */
+    this.activeTableId = null;
+    /** Extract Tables "Preview export" view: the page rasters are off and the words stay pinned in place. */
+    this.tablePreview = false;
+    /** Whether the preview view renders non-exported words as grey ghosts (off = only exported text shows). */
+    this.tablePreviewGhost = false;
     this.searchMode = false;
     /** @type {'color'|'gray'|'binary'} */
     this.colorMode = 'color';

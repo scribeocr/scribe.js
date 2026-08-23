@@ -7,10 +7,12 @@ export const deleteSelectedLayoutDataTable = (viewer) => {
   const selectedColumns = _viewer.CanvasSelection.getUiDataColumns();
   if (selectedColumns.length === 0) return;
 
+  const n = selectedColumns[0].uiTable.layoutDataTable.page.n;
   _viewer.doc.deleteLayoutDataTable(selectedColumns[0].uiTable.layoutDataTable);
 
   selectedColumns[0].uiTable.destroy();
   _viewer.destroyControls();
+  _viewer.layoutTablesEdited(n);
 };
 
 /** @param {import('../viewer.js').ScribeViewer} viewer */

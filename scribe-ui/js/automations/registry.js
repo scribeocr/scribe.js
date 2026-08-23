@@ -8,6 +8,7 @@ const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const REDACT_TERMS_SVG = lineIcon('<rect x="4.5" y="4.5" width="15" height="15" rx="1.5"/><path d="M7.5 9h9"/>'
   + '<rect x="7.5" y="12" width="6.5" height="3.2" rx="0.6" fill="currentColor" stroke="none"/>');
 const EXTRACT_HIGHLIGHTS_SVG = lineIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M4 14.5h16M10 10v9M15 10v9"/>');
+const EXTRACT_TABLES_SVG = lineIcon('<rect x="4" y="4.5" width="16" height="15" rx="1.5"/><path d="M4 9.5h16M4 14.5h16M9.5 9.5v10"/>');
 const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2.3z"/><path d="M14.8 7.5h4.7M14.8 12h4.7M14.8 16.5h3.2"/>');
 
 /**
@@ -52,8 +53,8 @@ const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2
  *   The AI engines render as quiet chips at browse time.
  * @property {'read'|'mutate'|'destructive'} effects
  * @property {string} svg
- * @property {(viewer: import('../../viewer.js').ScribeViewer) => ?string} disabledWhy - Reason the tool
- *   cannot run right now, or null when it can.
+ * @property {(viewer: import('../../viewer.js').ScribeViewer) => ?string} disabledWhy - Reason the tool cannot run right now, or null when it can.
+ * @property {(host: AutomationHost) => void} [openInstead] - Clicking the catalog row runs this instead of opening the form pipeline, for a tool whose surface is a viewer mode's workspace.
  * @property {() => Promise<AutomationModule>} load
  */
 
@@ -71,10 +72,23 @@ export const AUTOMATIONS = [
     load: () => import('./redactTerms.js'),
   },
   {
+    id: 'extract-tables',
+    title: 'Extract tables',
+    description: 'Review every detected table and export the workbook.',
+    category: 'Extract',
+    engine: 'mechanical',
+    effects: 'read',
+    svg: EXTRACT_TABLES_SVG,
+    // No table count in the gate, because "no tables found" is a legitimate result and a document still extracting text has no knowable count yet.
+    disabledWhy: (viewer) => (viewer.doc && viewer.doc.pageMetrics.length ? null : 'Open a document first'),
+    openInstead: (host) => host.app._extractTablesTool?.open(),
+    load: () => import('./extractTables.js'),
+  },
+  {
     id: 'extract-highlights',
     title: 'Extract highlights to Excel',
     description: 'Every highlighted passage with its comment and author, as a spreadsheet.',
-    category: 'Review',
+    category: 'Extract',
     engine: 'mechanical',
     effects: 'read',
     svg: EXTRACT_HIGHLIGHTS_SVG,
@@ -110,7 +124,7 @@ export const AUTOMATIONS = [
 ];
 
 /** Catalog group order. */
-export const CATEGORY_ORDER = ['Review', 'Privacy', 'Assemble', 'File'];
+export const CATEGORY_ORDER = ['Extract', 'Privacy', 'Assemble', 'File'];
 
 /**
  * Tools surfaced in a "For <mode>" group atop the catalog while that tool mode is active.

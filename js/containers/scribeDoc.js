@@ -10,6 +10,7 @@ import {
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
+import { removeCircularRefsRegions, removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import {
   addInk as addInkImpl, addStamp as addStampImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
   detectFillTargets as detectFillTargetsImpl,
@@ -599,6 +600,71 @@ export class DocHistory {
     });
   }
 
+  /**
+   * Capture the layout regions and data tables an edit is about to touch, to pair with a `recordLayout` call after the mutation.
+   * @param {ScribeDoc} doc
+   * @param {?Array<number>} ns - Page indices the edit may touch; null means every page.
+   */
+  // eslint-disable-next-line class-methods-use-this
+  snapshotLayout(doc, ns) {
+    const list = [...new Set(ns ?? doc.layoutDataTables.pages.map((_, i) => i))]
+      .filter((n) => n >= 0 && n < doc.layoutDataTables.pages.length);
+    // Deep clones rather than reference captures: drags and splits mutate coords and back-references in place.
+    const capture = (/** @type {number} */ n) => ({
+      regions: removeCircularRefsRegions([doc.layoutRegions.pages[n]])[0],
+      tables: removeCircularRefsDataTables([doc.layoutDataTables.pages[n]])[0],
+    });
+    return {
+      doc, list, capture, before: list.map(capture),
+    };
+  }
+
+  /**
+   * Record the layout edit performed since `snapshotLayout` as one undoable entry.
+   * It also clears the touched pages' `default` flags, which is what stops a later recognition result from replacing user-edited tables, so undo restores the prior flags too.
+   * @param {ReturnType<DocHistory['snapshotLayout']>} snap
+   * @param {string} label - Description of the edit for the undo timeline, e.g. "Split column".
+   */
+  recordLayout(snap, label) {
+    if (this.suspended) return;
+    const {
+      doc, list, capture, before,
+    } = snap;
+    /** @type {Array<number>} */
+    const changed = [];
+    for (let i = 0; i < list.length; i++) {
+      if (JSON.stringify(capture(list[i])) !== JSON.stringify(before[i])) changed.push(i);
+    }
+    if (changed.length === 0) return;
+    changed.forEach((i) => {
+      doc.layoutRegions.pages[list[i]].default = false;
+      doc.layoutDataTables.pages[list[i]].default = false;
+    });
+    const after = changed.map((i) => capture(list[i]));
+    // Both directions install fresh clones into the live page wrappers, so page identity survives and the captured states stay pristine across repeated undo and redo cycles.
+    const install = (/** @type {number} */ n, /** @type {ReturnType<typeof capture>} */ state) => {
+      const clone = structuredClone(state);
+      const regionsPage = doc.layoutRegions.pages[n];
+      regionsPage.boxes = clone.regions.boxes;
+      Object.values(regionsPage.boxes).forEach((box) => { box.page = regionsPage; });
+      regionsPage.default = clone.regions.default;
+      const tablesPage = doc.layoutDataTables.pages[n];
+      tablesPage.tables.length = 0;
+      clone.tables.tables.forEach((table) => {
+        table.page = tablesPage;
+        table.boxes.forEach((box) => { box.table = table; });
+        tablesPage.tables.push(table);
+      });
+      tablesPage.default = clone.tables.default;
+    };
+    this.record({
+      surface: 'layout',
+      label,
+      undo: () => { changed.forEach((i) => install(list[i], before[i])); return changed.map((i) => list[i]); },
+      redo: () => { changed.forEach((i, k) => install(list[i], after[k])); return changed.map((i) => list[i]); },
+    });
+  }
+
   clear() {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
@@ -753,12 +819,14 @@ export class ScribeDoc {
    */
   deleteLayoutRegion(region) {
     const n = region.page.n;
+    const snap = this.docHistory.snapshotLayout(this, [n]);
     for (const [key, value] of Object.entries(this.layoutRegions.pages[n].boxes)) {
       if (value.id === region.id) {
         delete this.layoutRegions.pages[n].boxes[key];
         break;
       }
     }
+    this.docHistory.recordLayout(snap, 'Deleted layout region');
   }
 
   /**
@@ -769,7 +837,9 @@ export class ScribeDoc {
     const n = table.page.n;
     const idx = this.layoutDataTables.pages[n].tables.findIndex((t) => t.id === table.id);
     if (idx >= 0) {
+      const snap = this.docHistory.snapshotLayout(this, [n]);
       this.layoutDataTables.pages[n].tables.splice(idx, 1);
+      this.docHistory.recordLayout(snap, 'Deleted table');
     }
   }
 

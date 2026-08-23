@@ -14,6 +14,9 @@ import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
 import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.js';
+import {
+  resolveActiveSheet, copyTablePreviewSelection, selectAllTablePreviewCells, moveTablePreviewSelection,
+} from '../viewerTablePreview.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -2784,6 +2787,170 @@ export function createEditPagesTool(app) {
     setActive(!active);
   });
   return { toolbarElem, isActive: () => active, close: () => setActive(false) };
+}
+
+const EXTRACT_TABLES_MODE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+  + ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="4" y="4.5" width="16" height="15" rx="1.5"/><path d="M4 9.5h16M4 14.5h16M9.5 9.5v10"/></svg>';
+
+/**
+ * The Extract Tables mode tool: the surface for reviewing and exporting the document's tables.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, close: () => void }}
+ */
+export function createExtractTablesTool(app) {
+  const toolbarElem = makeIconButton('Extract Tables', EXTRACT_TABLES_MODE_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Extract Tables';
+  toolbarElem.appendChild(toolbarLabelElem);
+  let active = false;
+  let previewOn = false;
+  /** @type {?string} */
+  let priorDisplayMode = null;
+
+  // The Page and Preview export view toggle, mounted into the mode banner while this mode is active.
+  const viewSeg = document.createElement('span');
+  viewSeg.className = 'scribe-mode-banner-viewseg';
+  Object.assign(viewSeg.style, {
+    display: 'inline-flex', border: '1px solid var(--scribe-line-strong)', borderRadius: '6px', overflow: 'hidden', margin: '0 2px 0 10px', flex: 'none',
+  });
+  const segBtn = (label, view) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.tableView = view;
+    b.textContent = label;
+    Object.assign(b.style, {
+      border: 'none', background: 'var(--scribe-surface)', color: 'var(--scribe-ink-2)', font: '600 11px/1 inherit', fontFamily: 'inherit', padding: '4.5px 10px', cursor: 'pointer',
+    });
+    viewSeg.appendChild(b);
+    return b;
+  };
+  const pageBtn = segBtn('Page', 'page');
+  const previewBtn = segBtn('Preview Export', 'preview');
+  previewBtn.style.borderLeft = '1px solid var(--scribe-line-strong)';
+  const syncSeg = () => {
+    [pageBtn, previewBtn].forEach((b) => {
+      const on = (b === previewBtn) === previewOn;
+      b.style.background = on ? 'var(--scribe-accent)' : 'var(--scribe-surface)';
+      b.style.color = on ? 'var(--scribe-accent-ink)' : 'var(--scribe-ink-2)';
+      b.style.cursor = on ? 'default' : 'pointer';
+    });
+  };
+  const previewKey = (e) => {
+    const t = /** @type {?HTMLElement} */ (e.target);
+    if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+    const nativeSel = window.getSelection && window.getSelection();
+    if (nativeSel && !nativeSel.isCollapsed) return;
+    const arrow = {
+      ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
+    }[e.key];
+    if (arrow && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (moveTablePreviewSelection(app.scribe, arrow[0], arrow[1], e.shiftKey)) e.preventDefault();
+      return;
+    }
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const key = e.key.toLowerCase();
+    if (key !== 'c' && key !== 'a') return;
+    const handled = key === 'c' ? !!copyTablePreviewSelection(app.scribe) : selectAllTablePreviewCells(app.scribe);
+    if (handled) e.preventDefault();
+  };
+
+  const setPreview = (on) => {
+    if (on === previewOn) return;
+    const sv = app.scribe;
+    previewOn = on;
+    sv.state.tablePreview = on;
+    if (on) {
+      priorDisplayMode = sv.state.displayMode;
+      sv.state.displayMode = 'ebook';
+      // A column selection left by the page view would render as a phantom blue fill over the sheet.
+      sv.CanvasSelection.deselectAll();
+      document.addEventListener('keydown', previewKey);
+    } else {
+      document.removeEventListener('keydown', previewKey);
+      sv.state.displayMode = priorDisplayMode || 'invis';
+      priorDisplayMode = null;
+      // The refresh below re-derives only the render window, so sheet elements parked on other pages are swept directly.
+      for (const pc of sv.pageContainerArr) pc?.querySelectorAll('[data-scribe-tp]').forEach((el) => el.remove());
+      for (const g of sv._overlayGroups || []) g?.querySelectorAll('[data-scribe-tp]').forEach((el) => el.remove());
+    }
+    // A display-mode change invalidates every rendered text layer, not just the visible window, as an engine switch does.
+    // Pages built under the old mode would otherwise stay registered, and scrolling to one later skips its rebuild, leaving its tables as empty grids.
+    sv.destroyText(false);
+    // The toggle re-renders in place rather than navigating, so the active sheet heals to a table on the current page instead of the view jumping to whichever table was last active.
+    let sheet = on ? resolveActiveSheet(sv) : null;
+    if (on && sheet && sheet.n !== sv.state.cp.n) {
+      const cur = sv.doc.layoutDataTables.pages[sv.state.cp.n];
+      if (cur && cur.tables.length > 0) {
+        sv.state.activeTableId = cur.tables[0].id;
+        sheet = resolveActiveSheet(sv);
+      }
+    }
+    sv.displayPage(sv.state.cp.n, false, true);
+    // Nothing was edited, but the heal above can move the active table, and this is how the panel's list adopts it.
+    if (sheet) sv.layoutTablesEdited(sheet.n);
+    syncSeg();
+  };
+  pageBtn.addEventListener('click', () => setPreview(false));
+  previewBtn.addEventListener('click', () => setPreview(true));
+  syncSeg();
+
+  const setActive = (next) => {
+    if (active === next) return;
+    const sv = app.scribe;
+    if (next && !sv.doc) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+    if (!active && previewOn) setPreview(false);
+    // One flag gates the layout overlays, the selection fork, and the context-menu table verbs together.
+    sv.state.layoutMode = active;
+    if (active) {
+      sv.clearTextSelection?.();
+      // Re-displayed so that displayPage's layout branch paints the window pages' overlays now that the flag is on.
+      sv.displayPage(sv.state.cp.n, false, false);
+      app._automatePanel?.openTablesWorkspace();
+    } else {
+      sv.destroyControls();
+      sv.destroyOverlay(false);
+      // Re-render the window pages' words to restore the fills the preview's ghosting replaced.
+      if (sv.doc) {
+        for (let n = 0; n < sv.doc.pageMetrics.length; n++) {
+          if (sv.rowDistance(n, sv.state.cp.n) < 2) sv.renderWords(n);
+        }
+      }
+      app._automatePanel?.closeTablesWorkspace();
+    }
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (toolbarElem.classList.contains('disabled')) return;
+    setActive(!active);
+  });
+
+  /* Re-derives this mode's surfaces for a newly opened document, since a tab switch keeps the mode running.
+     The shell has to call this after the new document's first displayPage, or the navigation below is overridden. */
+  const docChanged = () => {
+    if (!active) return;
+    const sv = app.scribe;
+    if (previewOn) {
+      const sheet = resolveActiveSheet(sv);
+      // A still-extracting document may yet detect tables, so only a settled tableless one drops the preview.
+      if (!sheet && !sv.doc._textReadySettle) setPreview(false);
+      else if (sheet && sheet.n !== sv.state.cp.n) sv.displayPage(sheet.n, true, true);
+    }
+    app._automatePanel?.openTablesWorkspace();
+  };
+
+  // The catalog row's entry point, which unlike the toolbar button never toggles the mode off.
+  const open = () => {
+    if (active) app._automatePanel?.openTablesWorkspace();
+    else setActive(true);
+  };
+
+  return {
+    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, docChanged,
+  };
 }
 
 /**

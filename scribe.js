@@ -26,7 +26,7 @@ import {
   calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
 } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
-import { writeXlsx, writeXlsxFromRows } from './js/export/writeTabular.js';
+import { writeXlsx, writeXlsxFromRows, writeXlsxFromSheets } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
 import { ScribeDoc, liveDocs } from './js/containers/scribeDoc.js';
 
@@ -360,6 +360,8 @@ class utils {
   static writeXlsx = writeXlsx;
 
   static writeXlsxFromRows = writeXlsxFromRows;
+
+  static writeXlsxFromSheets = writeXlsxFromSheets;
 
   // Misc utils
   static calcBoxOverlap = calcBoxOverlap;
