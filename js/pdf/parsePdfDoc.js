@@ -3435,15 +3435,38 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     dataTable.title = dt.title || null;
     // Some candidates carry rows for only part of their final bbox, which would fuse everything above into one megarow.
     if (dt.rows && dt.rows.length > 0) {
-      const bottoms = dt.rows
-        .map((row) => Math.max(...row.lineIndices.map((li) => pageObj.lines[li].bbox.bottom)))
-        .filter((b) => Number.isFinite(b))
-        .sort((a, b) => a - b);
-      const tops = dt.rows
-        .map((row) => Math.min(...row.lineIndices.map((li) => pageObj.lines[li].bbox.top)))
-        .filter((t) => Number.isFinite(t));
-      const rowSpan = bottoms.length > 0 && tops.length > 0 ? bottoms[bottoms.length - 1] - Math.min(...tops) : 0;
-      if (bottoms.length > 0 && rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8) dataTable.rowBounds = bottoms;
+      // A band overlapping another band is 2-D header geometry (a rowspan title, stacked colspan cells), not a row boundary.
+      const bands = dt.rowBandRegion ? dt.rowBandRegion.rowYs : null;
+      const bandUsable = bands ? bands.map((b, i) => bands.every((o, j) => j === i || o.bottom <= b.top + 1 || o.top >= b.bottom - 1)) : null;
+      let usedExact = false;
+      /** @type {number[]} */
+      const bottoms = [];
+      /** @type {number[]} */
+      const tops = [];
+      for (const row of dt.rows) {
+        const lineBottoms = row.lineIndices.map((li) => pageObj.lines[li].bbox.bottom).filter(Number.isFinite);
+        const lineTops = row.lineIndices.map((li) => pageObj.lines[li].bbox.top).filter(Number.isFinite);
+        if (lineTops.length > 0) tops.push(Math.min(...lineTops));
+        let bottom = lineBottoms.length > 0 ? Math.max(...lineBottoms) : NaN;
+        if (Number.isFinite(row.bottom)) {
+          bottom = /** @type {number} */ (row.bottom);
+          usedExact = true;
+        } else if (bands && bandUsable && lineTops.length > 0 && lineBottoms.length > 0) {
+          const mid = (Math.min(...lineTops) + Math.max(...lineBottoms)) / 2;
+          const bi = bands.findIndex((b) => mid >= b.top && mid <= b.bottom);
+          // The band bottom must clear the row's own text, or a mis-assigned band would draw a separator through it.
+          if (bi >= 0 && bandUsable[bi] && bands[bi].bottom >= bottom - 1) {
+            bottom = bands[bi].bottom;
+            usedExact = true;
+          }
+        }
+        if (Number.isFinite(bottom)) bottoms.push(bottom);
+      }
+      bottoms.sort((a, b) => a - b);
+      // Two text rows in one band are one visual row (a wrapped cell), so near-equal bottoms collapse.
+      const deduped = bottoms.filter((b, i) => i === 0 || b > bottoms[i - 1] + 1);
+      const rowSpan = deduped.length > 0 && tops.length > 0 ? deduped[deduped.length - 1] - Math.min(...tops) : 0;
+      if (deduped.length > 0 && (usedExact || rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8)) dataTable.rowBounds = deduped;
     }
     dataTablePage.tables.push(dataTable);
   }

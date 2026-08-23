@@ -40,7 +40,7 @@ function isRightClusteredNumeric(words) {
 /**
  * @typedef {{
  *   bbox: {left: number, top: number, right: number, bottom: number},
- *   rows: Array<{lineIndices: number[], y: number}>,
+ *   rows: Array<{lineIndices: number[], y: number, bottom?: number}>,
  *   colSeparators: number[],
  *   hLines: HLine[],
  *   vLines: VLine[],
@@ -2336,7 +2336,7 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     left, top: minY - 5, right, bottom: maxY + 5,
   };
 
-  /** @type {Array<{lineIndices: number[], y: number}>} */
+  /** @type {Array<{lineIndices: number[], y: number, bottom: number}>} */
   const rows = [];
   for (const strip of strips) {
     const idxs = [];
@@ -2350,7 +2350,7 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     }
     if (idxs.length === 0) continue;
     const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
-    rows.push({ lineIndices: idxs, y: yMean });
+    rows.push({ lineIndices: idxs, y: yMean, bottom: strip.bottom });
   }
   if (rows.length < 2) return null;
 
@@ -2373,11 +2373,12 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     }
     if (idxs.length === 0) return;
     const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
+    // A top cut row's bottom is the first drawn rule; a bottom cut row's is the border extent the page break clipped.
     if (atTop) {
-      rows.unshift({ lineIndices: idxs, y: yMean });
+      rows.unshift({ lineIndices: idxs, y: yMean, bottom: regionBottom });
       bbox.top = regionTop - 5;
     } else {
-      rows.push({ lineIndices: idxs, y: yMean });
+      rows.push({ lineIndices: idxs, y: yMean, bottom: regionBottom });
       bbox.bottom = regionBottom + 5;
     }
   };

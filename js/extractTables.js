@@ -141,23 +141,20 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
   const rowBottomArr = [];
 
   if (rowBounds) {
-    const splitPoints = [];
-    for (let r = 0; r < rowBounds.length; r++) {
-      const next = r + 1 < rowBounds.length ? rowBounds[r + 1] : Infinity;
-      splitPoints.push((rowBounds[r] + next) / 2);
-    }
-
     for (let r = 0; r < rowBounds.length; r++) {
       /** @type {Array<Array<OcrWord>>} */
       const colWordArr = [];
       for (let i = 0; i < colArr.length; i++) {
         colWordArr[i] = [];
       }
-      const rowTop = r === 0 ? -Infinity : splitPoints[r - 1];
-      const rowBot = splitPoints[r];
+      // Words are assigned by their vertical center, which holds for both conventions `rowBounds` can carry: true row edges from drawn rules or bands, and text bottoms from vendor imports.
+      // Testing a word's bottom against the bound instead breaks on true edges, pushing a top-aligned word in a tall row up into the row above.
+      const rowTop = r === 0 ? -Infinity : rowBounds[r - 1];
+      const rowBot = r + 1 < rowBounds.length ? rowBounds[r] : Infinity;
       for (let i = 0; i < colArr.length; i++) {
         for (const entry of colArr[i]) {
-          if (entry.box.bottom > rowTop && entry.box.bottom <= rowBot) {
+          const yC = (entry.box.top + entry.box.bottom) / 2;
+          if (yC > rowTop && yC <= rowBot) {
             colWordArr[i].push(entry.word);
           }
         }
