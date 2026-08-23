@@ -2261,10 +2261,10 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
 
   const left = hs.reduce((m, h) => Math.min(m, h.left), Infinity);
   const right = hs.reduce((m, h) => Math.max(m, h.right), -Infinity);
-  if ((right - left) < pageObj.dims.width * 0.3) return null;
 
   const ys = clusterValuesLocal(hs.map((h) => h.y), 5);
   if (ys.length < 3) return null;
+  if ((right - left) < pageObj.dims.width * 0.3 && ys.length - 1 < 6) return null;
 
   const minY = ys[0];
   const maxY = ys[ys.length - 1];
