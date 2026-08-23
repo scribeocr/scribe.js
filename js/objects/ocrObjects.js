@@ -100,6 +100,12 @@ export function OcrPar(page, bbox) {
    * @type {string | null}
    */
   this.footnoteRefId = null;
+  /**
+   * Heading depth inferred from the document's marker ladder (1 = top level).
+   * Only set when type === 'title', and only when the document has a coherent ladder.
+   * @type {number | null}
+   */
+  this.headingLevel = null;
   this.debug = new ParDebugInfo();
 }
 
@@ -1152,6 +1158,10 @@ export const addCircularRefsOcr = (pages) => {
       // Initialize footnoteRefId to null if not present
       if (par.footnoteRefId === undefined) {
         par.footnoteRefId = null;
+      }
+      // Initialize headingLevel to null if not present (files from before the field existed)
+      if (par.headingLevel === undefined) {
+        par.headingLevel = null;
       }
       // Restore lines array from lineIds
       // @ts-ignore

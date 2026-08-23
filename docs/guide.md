@@ -226,12 +226,6 @@ Notes:
   over the image without re-running OCR.
 - `.txt`, `.docx`, and `.md` have no pages of their own, so they are laid out onto US Letter pages
   as they are imported.
-- Markdown import covers ATX (`#`) and setext (`===`/`---`) headings, paragraphs, bold and italic,
-  inline code, fenced code blocks, bullet and numbered lists, block quotes, and links. Markers are
-  removed from the imported text: a heading becomes a `title` paragraph, a list marker becomes the
-  paragraph's `parNum`, a link keeps its text and drops its URL from the flowed text, and an image
-  is dropped along with its alt text. Nested lists are indented but are not otherwise nested.
-  Tables, raw HTML, and footnote syntax are not interpreted and import as plain text.
 
 ### Passing files
 
@@ -393,7 +387,7 @@ await doc.download('pdf', 'output.pdf');         // writes output.pdf
 | `'hocr'` | string | hOCR XML. |
 | `'alto'` | string | ALTO XML (saved with a `.xml` extension by `download`). |
 | `'html'` | string | HTML, optionally with page images (`ScribeDoc.defaults.includeImages`). |
-| `'md'` | string | Markdown, with tables. |
+| `'md'` | string | Markdown, with block structure (headings, lists, quotes, code fences) and tables. |
 | `'docx'` | ArrayBuffer | Word document. |
 | `'xlsx'` | ArrayBuffer | Excel spreadsheet, from detected tables. |
 | `'scribe'` | ArrayBuffer or string | Session file (gzip by default; see `ScribeDoc.defaults.compressScribe`). |
