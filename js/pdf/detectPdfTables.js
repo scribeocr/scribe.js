@@ -50,6 +50,7 @@ function isRightClusteredNumeric(words) {
  *   headers?: HeaderInfo | null,
  *   title?: { text: string, bbox: {left: number, top: number, right: number, bottom: number} } | null,
  *   splitTopLocked?: boolean,
+ *   provisionalTopOpen?: boolean,
  * }} DetectedTable
  */
 
@@ -63,9 +64,10 @@ function isRightClusteredNumeric(words) {
  * @param {number} visualHeightPts - Page height in points (for coordinate conversion)
  * @param {number} [boxOriginX=0] - X origin of the effective page box (CropBox/MediaBox) in points
  * @param {number} [boxOriginY=0] - Y origin of the effective page box in points
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
  * @returns {DetectedTable[]}
  */
-export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
+export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
   const lines = pageObj.lines;
   if (lines.length < 3) return [];
 
@@ -95,9 +97,12 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
   if (sameYPairs === 0 && !hasDotLeaderCluster) {
-    const strictEarly = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    const strictAllEarly = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
       .filter((t) => t.colSeparators.length > 0);
-    const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    // Provisional (open-top continuation) grids skip the candidate competition; the cross-page promotion pass decides them.
+    const provisionalEarly = strictAllEarly.filter((t) => t.provisionalTopOpen);
+    const strictEarly = strictAllEarly.filter((t) => !t.provisionalTopOpen);
+    const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segEarly) {
       let blocked = false;
       for (const v of strictEarly) {
@@ -105,7 +110,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictEarly.push(st);
     }
-    const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleEarly = detectHeaderRuleTables(pathDataEarly.hLines, pageObj);
     for (const ht of headerRuleEarly) {
       let blocked = false;
@@ -114,7 +119,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictEarly.push(ht);
     }
-    return strictEarly;
+    return [...strictEarly, ...provisionalEarly];
   }
 
   // === Phase 1: Row analysis and table-like row identification ===
@@ -205,9 +210,11 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   if (tableLikeRows.length === 0) {
-    const strictFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    const strictAllFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
       .filter((t) => t.colSeparators.length > 0);
-    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
+    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen);
+    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
       for (const v of strictFallback) {
@@ -215,7 +222,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(st);
     }
-    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
     for (const ht of headerRuleFallback) {
       let blocked = false;
@@ -224,15 +231,17 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(ht);
     }
-    return strictFallback;
+    return [...strictFallback, ...provisionalFallback];
   }
 
   // === Phase 2: Group table-like rows into candidate regions ===
   const candidates = groupRowsIntoCandidates(tableLikeRows, lines, pageObj);
   if (candidates.length === 0) {
-    const strictFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    const strictAllFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
       .filter((t) => t.colSeparators.length > 0);
-    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
+    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen);
+    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
       for (const v of strictFallback) {
@@ -240,7 +249,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(st);
     }
-    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
     for (const ht of headerRuleFallback) {
       let blocked = false;
@@ -249,11 +258,11 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(ht);
     }
-    return strictFallback;
+    return [...strictFallback, ...provisionalFallback];
   }
 
   // === Phase 3: Path data classification ===
-  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
 
   for (const candidate of candidates) {
     correlatePathsWithCandidate(candidate, pathData);
@@ -266,9 +275,11 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   const validated = candidates.filter((c) => validateCandidate(c, lines));
 
   // A grid with no interior separator is just a box, and letting it replace an overlapping text table would destroy a valid detection.
-  const strictGrids = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+  const strictAllGrids = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
     .filter((t) => t.colSeparators.length > 0);
-  const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+  const provisionalGrids = strictAllGrids.filter((t) => t.provisionalTopOpen);
+  const strictGrids = strictAllGrids.filter((t) => !t.provisionalTopOpen);
+  const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
   const gridTables = [...strictGrids];
   for (const st of segGrids) {
     let blocked = false;
@@ -674,7 +685,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 6: Stream order validation ===
-  return multiCol.filter((t) => t.detectionMethod === 'grid-strong' || validateStreamOrder(t, lines));
+  return [...multiCol.filter((t) => t.detectionMethod === 'grid-strong' || validateStreamOrder(t, lines)), ...provisionalGrids];
 }
 
 /**
@@ -1025,8 +1036,9 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @param {number} [boxOriginX]
  * @param {number} [boxOriginY]
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
  */
-function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, boxOriginY = 0) {
+function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
   const pageHeight = pageObj.dims.height;
   const pageWidth = pageObj.dims.width;
 
@@ -1288,11 +1300,14 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
 
   reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight);
 
+  // The consumed-underline filter runs before the ruling-row scan below, or several underlines at one header y read as a per-cell ruling row.
+  const hLinesKept = dropConsumedUnderlines(hLines, vLines, textUnderlines);
+
   // A column rule's segments individually look like word underlines, so they are exempted from the underline filter below that would otherwise delete the table's column geometry.
   const rulingRowMembers = new Set();
   {
     const yGroups = [];
-    for (const hl of hLines) {
+    for (const hl of hLinesKept) {
       let group = null;
       for (const g of yGroups) {
         if (Math.abs(g.y - hl.y) <= 3) { group = g; break; }
@@ -1317,7 +1332,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
   }
 
   // An hLine whose x-extent matches a single text line just above it is that line's underline, not a table border.
-  const filteredHLines = hLines.filter((hl) => {
+  const filteredHLines = hLinesKept.filter((hl) => {
     if (rulingRowMembers.has(hl)) return true;
     for (const line of pageObj.lines) {
       const lineBottom = line.bbox.bottom;
@@ -1908,6 +1923,25 @@ function validateCandidate(candidate, lines) {
 }
 
 /**
+ * Drop h-segments that reproduce a text underline the word matcher consumed, unless the segment touches a vertical line's ink.
+ * @param {HLine[]} hLines
+ * @param {VLine[]} vLines
+ * @param {Array<{left: number, right: number, y: number}>} textUnderlines
+ * @returns {HLine[]}
+ */
+function dropConsumedUnderlines(hLines, vLines, textUnderlines) {
+  if (textUnderlines.length === 0) return hLines;
+  return hLines.filter((h) => {
+    const match = textUnderlines.some((u) => Math.abs(h.y - u.y) <= 5
+      && Math.abs(h.left - u.left) <= 5 && Math.abs(h.right - u.right) <= 5);
+    if (!match) return true;
+    // The ink-contact guard keeps a real border segment that a snug cell let the matcher consume.
+    return vLines.some((v) => (v.x1 ?? v.x) >= h.left - 2 && (v.x0 ?? v.x) <= h.right + 2
+      && (h.y1 ?? h.y) >= v.top - 2 && (h.y0 ?? h.y) <= v.bottom + 2);
+  });
+}
+
+/**
  * Extract horizontal and vertical line segments from raw paths for strict-grid detection.
  * Looser than `classifyPaths`, whose tiling filter drops the column separators of tables drawn as per-cell stroked rectangles that do not share an edge.
  *
@@ -1916,50 +1950,91 @@ function validateCandidate(candidate, lines) {
  * @param {number} visualHeightPts
  * @param {number} boxOriginX
  * @param {number} boxOriginY
- * @returns {{hLines: HLine[], vLines: VLine[]}}
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @returns {{hLines: HLine[], vLines: VLine[], bands: Array<{left: number, right: number, top: number, bottom: number}>}}
  */
-function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY) {
-  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} */
+function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines = []) {
+  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKey: number}>} */
   const hPieces = [];
-  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} */
+  /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKey: number}>} */
   const vPieces = [];
+  /** @type {Array<{minX: number, maxX: number, minY: number, maxY: number}>} */
+  const bandRects = [];
 
   // A piece thin in both directions (a junction or corner stub) goes in both pools, since its ink continues whichever run it abuts.
+  // A path whose subpaths are all thin bars at one shared position is one rule drawn in pieces, the shape left by an applied redaction cutting a rule or by a pre-segmented dashed line.
+  // Batched border paths and shape outlines span many positions, so they never qualify and independent structure is never bridged.
   /**
    * @param {number} p1x
    * @param {number} p1y
    * @param {number} p2x
    * @param {number} p2y
    * @param {number} halfThick
+   * @param {number} [barKey]
    */
-  const addPiece = (p1x, p1y, p2x, p2y, halfThick) => {
+  const addPiece = (p1x, p1y, p2x, p2y, halfThick, barKey = -1) => {
     const segW = Math.abs(p2x - p1x);
     const segH = Math.abs(p2y - p1y);
     if (segH < 2 && segW > 0) {
       const pos = (p1y + p2y) / 2;
       hPieces.push({
-        pos, start: Math.min(p1x, p2x), end: Math.max(p1x, p2x), b0: pos - halfThick, b1: pos + halfThick,
+        pos, start: Math.min(p1x, p2x), end: Math.max(p1x, p2x), b0: pos - halfThick, b1: pos + halfThick, barKey,
       });
     }
     if (segW < 2 && segH > 0) {
       const pos = (p1x + p2x) / 2;
       vPieces.push({
-        pos, start: Math.min(p1y, p2y), end: Math.max(p1y, p2y), b0: pos - halfThick, b1: pos + halfThick,
+        pos, start: Math.min(p1y, p2y), end: Math.max(p1y, p2y), b0: pos - halfThick, b1: pos + halfThick, barKey,
       });
     }
   };
 
-  for (const path of paths) {
+  for (let pathIdx = 0; pathIdx < paths.length; pathIdx++) {
+    const path = paths[pathIdx];
     if (!path.fill && !path.stroke) continue;
     const cmds = path.commands;
     const halfStroke = (path.lineWidth || 1) / 2;
+    // Light fills only, unlike isRowBandColor above, which admits black.
+    // An opaque redaction bar must never qualify as drawn row structure.
+    const fc = path.fillColor;
+    const lightFill = !!path.fill && Array.isArray(fc) && fc.length > 0
+      && (fc.length === 1 ? fc[0] >= 0.5
+        : fc.length === 3 ? fc[0] >= 0.5 && fc[1] >= 0.5 && fc[2] >= 0.5
+          : fc.length === 4 && fc[0] < 0.5 && fc[1] < 0.5 && fc[2] < 0.5 && fc[3] < 0.5);
+
+    /** @type {Array<{x0: number, x1: number, y0: number, y1: number, curved: boolean}>} */
+    const subBoxes = [];
+    for (const c of cmds) {
+      if (c.type === 'Z') continue;
+      if (c.type === 'M') {
+        subBoxes.push({
+          x0: c.x, x1: c.x, y0: c.y, y1: c.y, curved: false,
+        });
+        continue;
+      }
+      const b = subBoxes[subBoxes.length - 1];
+      if (!b) continue;
+      if (c.type === 'C') b.curved = true;
+      for (const [px, py] of c.type === 'C' ? [[c.x1, c.y1], [c.x2, c.y2], [c.x, c.y]] : [[c.x, c.y]]) {
+        if (px < b.x0) b.x0 = px;
+        if (px > b.x1) b.x1 = px;
+        if (py < b.y0) b.y0 = py;
+        if (py > b.y1) b.y1 = py;
+      }
+    }
+    const thinH = subBoxes.length >= 2 && subBoxes.every((b) => !b.curved && b.y1 - b.y0 < 2)
+      && Math.max(...subBoxes.map((b) => (b.y0 + b.y1) / 2)) - Math.min(...subBoxes.map((b) => (b.y0 + b.y1) / 2)) <= 1;
+    const thinV = subBoxes.length >= 2 && subBoxes.every((b) => !b.curved && b.x1 - b.x0 < 2)
+      && Math.max(...subBoxes.map((b) => (b.x0 + b.x1) / 2)) - Math.min(...subBoxes.map((b) => (b.x0 + b.x1) / 2)) <= 1;
+    const pathBarKey = thinH || thinV ? pathIdx : -1;
+
     if (path.stroke && cmds.length === 5
         && cmds[0].type === 'M' && cmds[1].type === 'L'
         && cmds[2].type === 'L' && cmds[3].type === 'L' && cmds[4].type === 'Z') {
       // Stroked rectangle: emit all 4 edges.
       const pts = [cmds[0], cmds[1], cmds[2], cmds[3]];
       for (let k = 0; k < 4; k++) {
-        addPiece(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y, halfStroke);
+        addPiece(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y, halfStroke, pathBarKey);
       }
       continue;
     }
@@ -1967,7 +2042,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       // Stroked polyline: emit each M-L segment individually.
       for (let k = 0; k < cmds.length - 1; k++) {
         if ((cmds[k].type === 'M' || cmds[k].type === 'L') && cmds[k + 1].type === 'L') {
-          addPiece(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y, halfStroke);
+          addPiece(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y, halfStroke, pathBarKey);
         }
       }
       continue;
@@ -1986,13 +2061,26 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
         const h = maxY - minY;
         if (h < 5 && w > 0) {
           hPieces.push({
-            pos: (minY + maxY) / 2, start: minX, end: maxX, b0: minY, b1: maxY,
+            pos: (minY + maxY) / 2, start: minX, end: maxX, b0: minY, b1: maxY, barKey: pathBarKey,
           });
         }
         if (w < 5 && h > 0) {
           vPieces.push({
-            pos: (minX + maxX) / 2, start: minY, end: maxY, b0: minX, b1: maxX,
+            pos: (minX + maxX) / 2, start: minY, end: maxY, b0: minX, b1: maxX, barKey: pathBarKey,
           });
+        }
+        if (lightFill && h >= 5 && w >= 5 && pts.length >= 4 && pts.length <= 5) {
+          let rect = true;
+          for (let i = 0; i < pts.length && rect; i++) {
+            const p = pts[i];
+            const q = pts[(i + 1) % pts.length];
+            if (Math.abs(q.x - p.x) >= 2 && Math.abs(q.y - p.y) >= 2) rect = false;
+          }
+          if (rect) {
+            bandRects.push({
+              minX, maxX, minY, maxY,
+            });
+          }
         }
         // A run of connected borders can be drawn as one closed L or U-shaped fill, thin ink inside a bbox that is wide both ways.
         // Mean ink thickness is 2*area/perimeter.
@@ -2024,7 +2112,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
               const dx = Math.abs(q.x - p.x);
               const dy = Math.abs(q.y - p.y);
               if ((dx < 2 || dy < 2) && Math.max(dx, dy) > Math.max(3 * t, 5)) {
-                addPiece(p.x, p.y, q.x, q.y, t / 2);
+                addPiece(p.x, p.y, q.x, q.y, t / 2, -1);
               }
             }
           }
@@ -2043,9 +2131,9 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     }
   }
 
-  // Only genuinely touching ink may fuse here, or dashes and dot leaders would merge into phantom rules instead of falling to the length filter.
+  // Only genuinely touching ink may fuse across paths, or dashes and dot leaders would merge into phantom rules instead of falling to the length filter.
   // Filtering per piece instead would discard the sub-length junction stubs that connect a rule's long pieces, leaving holes in a visually unbroken line.
-  /** @param {Array<{pos: number, start: number, end: number, b0: number, b1: number}>} pieces */
+  /** @param {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKey: number}>} pieces */
   const mergeAbutting = (pieces) => {
     /** @type {Array<{pos: number, segs: typeof pieces}>} */
     const groups = [];
@@ -2057,23 +2145,47 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       if (!group) { group = { pos: piece.pos, segs: [] }; groups.push(group); }
       group.segs.push(piece);
     }
-    /** @type {typeof pieces} */
+    /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKeys: Set<number>}>} */
     const runs = [];
     for (const g of groups) {
       g.segs.sort((a, b) => a.start - b.start);
-      let cur = { ...g.segs[0] };
+      /** @type {typeof runs} */
+      const groupRuns = [];
+      let cur = { ...g.segs[0], barKeys: new Set(g.segs[0].barKey >= 0 ? [g.segs[0].barKey] : []) };
       for (let i = 1; i < g.segs.length; i++) {
         const s = g.segs[i];
         if (s.start <= cur.end + 0.5) {
           if (s.end > cur.end) cur.end = s.end;
           if (s.b0 < cur.b0) cur.b0 = s.b0;
           if (s.b1 > cur.b1) cur.b1 = s.b1;
+          if (s.barKey >= 0) cur.barKeys.add(s.barKey);
         } else {
-          runs.push(cur);
-          cur = { ...s };
+          groupRuns.push(cur);
+          cur = { ...s, barKeys: new Set(s.barKey >= 0 ? [s.barKey] : []) };
         }
       }
-      runs.push(cur);
+      groupRuns.push(cur);
+      // Runs holding pieces of the same position-pure broken-line path are that one line's fragments, so they rejoin.
+      for (let i = 0; i < groupRuns.length; i++) {
+        const r = groupRuns[i];
+        if (r.barKeys.size === 0) continue;
+        for (let j = i + 1; j < groupRuns.length; j++) {
+          const o = groupRuns[j];
+          let sameShape = false;
+          for (const k1 of r.barKeys) {
+            if (o.barKeys.has(k1)) { sameShape = true; break; }
+          }
+          if (!sameShape) continue;
+          if (o.start < r.start) r.start = o.start;
+          if (o.end > r.end) r.end = o.end;
+          if (o.b0 < r.b0) r.b0 = o.b0;
+          if (o.b1 > r.b1) r.b1 = o.b1;
+          for (const k of o.barKeys) r.barKeys.add(k);
+          groupRuns.splice(j, 1);
+          j--;
+        }
+      }
+      runs.push(...groupRuns);
     }
     return runs.filter((r) => r.end - r.start > 5);
   };
@@ -2093,7 +2205,13 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     x1: (r.b1 - boxOriginX) * scale,
   }));
 
-  return { hLines, vLines };
+  const bands = bandRects.map((b) => ({
+    left: (b.minX - boxOriginX) * scale,
+    right: (b.maxX - boxOriginX) * scale,
+    top: (visualHeightPts - (b.maxY - boxOriginY)) * scale,
+    bottom: (visualHeightPts - (b.minY - boxOriginY)) * scale,
+  }));
+  return { hLines: dropConsumedUnderlines(hLines, vLines, textUnderlines), vLines, bands };
 }
 
 /**
@@ -2106,10 +2224,11 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
  * @param {number} visualHeightPts
  * @param {number} [boxOriginX=0]
  * @param {number} [boxOriginY=0]
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
  * @returns {DetectedTable[]}
  */
-function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
-  const raw = extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
+  const raw = extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
   const hLines = mergeCollinearSegments(raw.hLines, 'y', 'left', 'right', 5, 10);
   const vLines = mergeCollinearSegments(raw.vLines, 'x', 'top', 'bottom', 5, 10);
   if (hLines.length < 3 || vLines.length < 2) return [];
@@ -2176,7 +2295,7 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
   const results = [];
   for (const comp of components.values()) {
     if (comp.hs.length < 3 || comp.vs.length < 2) continue;
-    const t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj);
+    const t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj, raw.bands);
     if (t) results.push(t);
   }
 
@@ -2186,6 +2305,8 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
   for (let i = 0; i + 1 < results.length; i++) {
     const cur = results[i];
     const next = results[i + 1];
+    // A provisional grid's membership is decided by the cross-page promotion gate, not by same-page merging.
+    if (cur.provisionalTopOpen || next.provisionalTopOpen) continue;
     const gap = next.bbox.top - cur.bbox.bottom;
     if (gap < 0 || gap >= 40) continue;
     if (Math.abs(cur.bbox.left - next.bbox.left) > 15 || Math.abs(cur.bbox.right - next.bbox.right) > 15) continue;
@@ -2254,9 +2375,10 @@ function unionSpansFully(segs, left, right, tol) {
  * @param {HLine[]} hs h-segments in the component
  * @param {VLine[]} vs v-segments in the component
  * @param {{dims: {width: number, height: number}, lines: any[]}} pageObj
+ * @param {Array<{left: number, right: number, top: number, bottom: number}>} [bands] page shading-band rects, in display coordinates
  * @returns {DetectedTable | null}
  */
-function tryDetectStrictGrid(hs, vs, pageObj) {
+function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
   if (hs.length < 3) return null;
 
   const left = hs.reduce((m, h) => Math.min(m, h.left), Infinity);
@@ -2266,9 +2388,6 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
   if (ys.length < 3) return null;
   if ((right - left) < pageObj.dims.width * 0.3 && ys.length - 1 < 6) return null;
 
-  const minY = ys[0];
-  const maxY = ys[ys.length - 1];
-
   const segsByY = new Map();
   for (const py of ys) {
     const segs = hs
@@ -2277,6 +2396,19 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
       .sort((a, b) => a.left - b.left);
     segsByY.set(py, segs);
   }
+
+  // Excel draws a continuation page's repeated header with a top border over only the columns whose header cells carried one.
+  // A partial topmost rule above a full one therefore drops out and marks the grid provisional, emitted only if the previous page ends in a grid with the same separators.
+  let provisionalTopOpen = false;
+  if (ys.length >= 4
+      && !unionSpansFully(segsByY.get(ys[0]), left, right, 15)
+      && unionSpansFully(segsByY.get(ys[1]), left, right, 15)) {
+    provisionalTopOpen = true;
+    ys.shift();
+  }
+
+  const minY = ys[0];
+  const maxY = ys[ys.length - 1];
 
   /** @type {Array<{top: number, bottom: number, xs: number[]}>} */
   const strips = [];
@@ -2339,7 +2471,7 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
   /** @type {Array<{lineIndices: number[], y: number, bottom: number}>} */
   const rows = [];
   for (const strip of strips) {
-    const idxs = [];
+    let idxs = [];
     for (let i = 0; i < pageObj.lines.length; i++) {
       const ln = pageObj.lines[i];
       const yC = (ln.bbox.top + ln.bbox.bottom) / 2;
@@ -2349,6 +2481,24 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
       }
     }
     if (idxs.length === 0) continue;
+    // Some producers draw no rule under the header, leaving its bottom fill edge as the only boundary between the header and the first data row.
+    if (strip === strips[0]) {
+      for (const band of bands) {
+        const edge = band.bottom;
+        if (Math.abs(band.top - strip.top) > 6 || band.left > left + 15 || band.right < right - 15) continue;
+        if (edge < strip.top + 6 || edge > strip.bottom - 6) continue;
+        const above = idxs.filter((i) => (pageObj.lines[i].bbox.top + pageObj.lines[i].bbox.bottom) / 2 < edge);
+        if (above.length === 0 || above.length === idxs.length) continue;
+        if (idxs.some((i) => pageObj.lines[i].bbox.top < edge - 2 && pageObj.lines[i].bbox.bottom > edge + 2)) continue;
+        rows.push({
+          lineIndices: above,
+          y: above.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / above.length,
+          bottom: edge,
+        });
+        idxs = idxs.filter((i) => !above.includes(i));
+        break;
+      }
+    }
     const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
     rows.push({ lineIndices: idxs, y: yMean, bottom: strip.bottom });
   }
@@ -2395,7 +2545,8 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     absorbCutRow(maxY, Math.max(...cutBotVs.map((v) => v.bottom)), false);
   }
 
-  return {
+  /** @type {DetectedTable} */
+  const table = {
     bbox,
     rows,
     colSeparators,
@@ -2403,6 +2554,8 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     vLines: vs,
     detectionMethod: 'grid-strong',
   };
+  if (provisionalTopOpen) table.provisionalTopOpen = true;
+  return table;
 }
 
 /**
@@ -2414,10 +2567,11 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
  * @param {number} visualHeightPts
  * @param {number} [boxOriginX=0]
  * @param {number} [boxOriginY=0]
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
  * @returns {DetectedTable[]}
  */
-function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
-  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
+  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
   if (pathData.hLines.length < 3) return [];
 
   const hLineClusters = clusterHLinesByXExtent(pathData.hLines);

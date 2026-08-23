@@ -1065,7 +1065,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   const {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, fillGlyphBoxes,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, provisionalTables, fillGlyphBoxes,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
 
   // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
@@ -1242,6 +1242,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     wordSignals,
     nativeText,
     dataTablePage,
+    provisionalTables,
     pageStats,
     annotations,
     fillSquares: fillSquaresDeduped,
@@ -1252,6 +1253,52 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     fillPathsIneligible,
     fillGlyphBoxes,
   };
+}
+
+/**
+ * Promote provisional open-top continuation grids, in place.
+ * A provisional grid becomes a real table when the previous page holds a grid-strong table with the same column separators.
+ * Pages promote in order, so a promoted table anchors the next page's continuation.
+ * @param {Array<{pageObj: OcrPage, dataTablePage?: LayoutDataTablePage, provisionalTables?: Array<import('./detectPdfTables.js').DetectedTable>}|null>} results - parsed pages (index = page index).
+ */
+export function promoteContinuationTables(results) {
+  for (let i = 1; i < results.length; i++) {
+    const r = results[i];
+    if (!r || !r.pageObj || !r.dataTablePage || !r.provisionalTables?.length) continue;
+    const prev = results[i - 1];
+    if (!prev || !prev.dataTablePage) continue;
+    for (const dt of r.provisionalTables) {
+      const xs = [dt.bbox.left, ...dt.colSeparators, dt.bbox.right];
+      const anchored = prev.dataTablePage.tables.some((pt) => {
+        if (pt.detectionMethod !== 'grid-strong' || pt.boxes.length !== xs.length - 1) return false;
+        const prevXs = [...pt.boxes.map((b) => b.coords.left), pt.boxes[pt.boxes.length - 1].coords.right];
+        return prevXs.every((x, xi) => Math.abs(x - xs[xi]) < 10);
+      });
+      if (!anchored) continue;
+      // The promoted grid replaces text-derived tables covering its region; an overlapping real grid means the region is claimed and the provisional stays out.
+      const overlapsEnough = (pt) => {
+        let l = Infinity; let t = Infinity; let rt = -Infinity; let b = -Infinity;
+        for (const col of pt.boxes) {
+          const c = col.coords;
+          if (c.left < l) l = c.left;
+          if (c.top < t) t = c.top;
+          if (c.right > rt) rt = c.right;
+          if (c.bottom > b) b = c.bottom;
+        }
+        const ix = Math.min(rt, dt.bbox.right) - Math.max(l, dt.bbox.left);
+        const iy = Math.min(b, dt.bbox.bottom) - Math.max(t, dt.bbox.top);
+        if (ix <= 0 || iy <= 0) return false;
+        const minArea = Math.min((rt - l) * (b - t), (dt.bbox.right - dt.bbox.left) * (dt.bbox.bottom - dt.bbox.top));
+        return (ix * iy) / minArea > 0.3;
+      };
+      const tables = r.dataTablePage.tables;
+      if (tables.some((pt) => pt.detectionMethod === 'grid-strong' && overlapsEnough(pt))) continue;
+      for (let ti = tables.length - 1; ti >= 0; ti--) {
+        if (overlapsEnough(tables[ti])) tables.splice(ti, 1);
+      }
+      tables.push(convertDetectedTable(dt, r.dataTablePage, r.pageObj));
+    }
+  }
 }
 
 /**
@@ -1374,6 +1421,8 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
       results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings, destInfo));
     }
   }
+
+  promoteContinuationTables(results);
 
   let pdfType = 'text';
   try { pdfType = determinePdfType(results.map((r) => r && r.pageStats).filter(Boolean), results.length).type; } catch { /*  */ }
@@ -2044,6 +2093,63 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     tm[4] += advance * tm[0];
     tm[5] += advance * tm[1];
   }
+}
+
+/**
+ * Convert one detected table into a LayoutDataTable attached to `dataTablePage`.
+ * Row bounds prefer exact drawn-rule bottoms, then disjoint row-band bottoms, then text bottoms.
+ * @param {import("./detectPdfTables.js").DetectedTable} dt
+ * @param {LayoutDataTablePage} dataTablePage
+ * @param {OcrPage} pageObj
+ */
+function convertDetectedTable(dt, dataTablePage, pageObj) {
+  const dataTable = new LayoutDataTable(dataTablePage);
+  // Build column bboxes from colSeparators, spanning the full table height.
+  const separators = [dt.bbox.left, ...dt.colSeparators, dt.bbox.right];
+  for (let i = 0; i < separators.length - 1; i++) {
+    const colBbox = {
+      left: separators[i], top: dt.bbox.top, right: separators[i + 1], bottom: dt.bbox.bottom,
+    };
+    dataTable.boxes.push(new LayoutDataColumn(colBbox, dataTable));
+  }
+  dataTable.detectionMethod = dt.detectionMethod || 'text';
+  dataTable.title = dt.title || null;
+  // Some candidates carry rows for only part of their final bbox, which would fuse everything above into one megarow.
+  if (dt.rows && dt.rows.length > 0) {
+    // A band overlapping another band is 2-D header geometry (a rowspan title, stacked colspan cells), not a row boundary.
+    const bands = dt.rowBandRegion ? dt.rowBandRegion.rowYs : null;
+    const bandUsable = bands ? bands.map((b, i) => bands.every((o, j) => j === i || o.bottom <= b.top + 1 || o.top >= b.bottom - 1)) : null;
+    let usedExact = false;
+    /** @type {number[]} */
+    const bottoms = [];
+    /** @type {number[]} */
+    const tops = [];
+    for (const row of dt.rows) {
+      const lineBottoms = row.lineIndices.map((li) => pageObj.lines[li].bbox.bottom).filter(Number.isFinite);
+      const lineTops = row.lineIndices.map((li) => pageObj.lines[li].bbox.top).filter(Number.isFinite);
+      if (lineTops.length > 0) tops.push(Math.min(...lineTops));
+      let bottom = lineBottoms.length > 0 ? Math.max(...lineBottoms) : NaN;
+      if (Number.isFinite(row.bottom)) {
+        bottom = /** @type {number} */ (row.bottom);
+        usedExact = true;
+      } else if (bands && bandUsable && lineTops.length > 0 && lineBottoms.length > 0) {
+        const mid = (Math.min(...lineTops) + Math.max(...lineBottoms)) / 2;
+        const bi = bands.findIndex((b) => mid >= b.top && mid <= b.bottom);
+        // The band bottom must clear the row's own text, or a mis-assigned band would draw a separator through it.
+        if (bi >= 0 && bandUsable[bi] && bands[bi].bottom >= bottom - 1) {
+          bottom = bands[bi].bottom;
+          usedExact = true;
+        }
+      }
+      if (Number.isFinite(bottom)) bottoms.push(bottom);
+    }
+    bottoms.sort((a, b) => a - b);
+    // Two text rows in one band are one visual row (a wrapped cell), so near-equal bottoms collapse.
+    const deduped = bottoms.filter((b, i) => i === 0 || b > bottoms[i - 1] + 1);
+    const rowSpan = deduped.length > 0 && tops.length > 0 ? deduped[deduped.length - 1] - Math.min(...tops) : 0;
+    if (deduped.length > 0 && (usedExact || rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8)) dataTable.rowBounds = deduped;
+  }
+  return dataTable;
 }
 
 /**
@@ -3419,56 +3525,14 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   pageObj.angle = Math.asin(angleRiseMedian) * (180 / Math.PI);
 
   // Detect tables from text structure and vector paths, and convert to LayoutDataTable format.
-  const detectedTables = detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+  // Provisional open-top grids are carried raw for the cross-page promotion pass instead of converting here.
+  const detectedTables = detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY,
+    underlineRects.filter((r) => r.isUnderline));
+  const provisionalTables = detectedTables.filter((dt) => dt.provisionalTopOpen);
   const dataTablePage = new LayoutDataTablePage(n);
   for (const dt of detectedTables) {
-    const dataTable = new LayoutDataTable(dataTablePage);
-    // Build column bboxes from colSeparators, spanning the full table height.
-    const separators = [dt.bbox.left, ...dt.colSeparators, dt.bbox.right];
-    for (let i = 0; i < separators.length - 1; i++) {
-      const colBbox = {
-        left: separators[i], top: dt.bbox.top, right: separators[i + 1], bottom: dt.bbox.bottom,
-      };
-      dataTable.boxes.push(new LayoutDataColumn(colBbox, dataTable));
-    }
-    dataTable.detectionMethod = dt.detectionMethod || 'text';
-    dataTable.title = dt.title || null;
-    // Some candidates carry rows for only part of their final bbox, which would fuse everything above into one megarow.
-    if (dt.rows && dt.rows.length > 0) {
-      // A band overlapping another band is 2-D header geometry (a rowspan title, stacked colspan cells), not a row boundary.
-      const bands = dt.rowBandRegion ? dt.rowBandRegion.rowYs : null;
-      const bandUsable = bands ? bands.map((b, i) => bands.every((o, j) => j === i || o.bottom <= b.top + 1 || o.top >= b.bottom - 1)) : null;
-      let usedExact = false;
-      /** @type {number[]} */
-      const bottoms = [];
-      /** @type {number[]} */
-      const tops = [];
-      for (const row of dt.rows) {
-        const lineBottoms = row.lineIndices.map((li) => pageObj.lines[li].bbox.bottom).filter(Number.isFinite);
-        const lineTops = row.lineIndices.map((li) => pageObj.lines[li].bbox.top).filter(Number.isFinite);
-        if (lineTops.length > 0) tops.push(Math.min(...lineTops));
-        let bottom = lineBottoms.length > 0 ? Math.max(...lineBottoms) : NaN;
-        if (Number.isFinite(row.bottom)) {
-          bottom = /** @type {number} */ (row.bottom);
-          usedExact = true;
-        } else if (bands && bandUsable && lineTops.length > 0 && lineBottoms.length > 0) {
-          const mid = (Math.min(...lineTops) + Math.max(...lineBottoms)) / 2;
-          const bi = bands.findIndex((b) => mid >= b.top && mid <= b.bottom);
-          // The band bottom must clear the row's own text, or a mis-assigned band would draw a separator through it.
-          if (bi >= 0 && bandUsable[bi] && bands[bi].bottom >= bottom - 1) {
-            bottom = bands[bi].bottom;
-            usedExact = true;
-          }
-        }
-        if (Number.isFinite(bottom)) bottoms.push(bottom);
-      }
-      bottoms.sort((a, b) => a - b);
-      // Two text rows in one band are one visual row (a wrapped cell), so near-equal bottoms collapse.
-      const deduped = bottoms.filter((b, i) => i === 0 || b > bottoms[i - 1] + 1);
-      const rowSpan = deduped.length > 0 && tops.length > 0 ? deduped[deduped.length - 1] - Math.min(...tops) : 0;
-      if (deduped.length > 0 && (usedExact || rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8)) dataTable.rowBounds = deduped;
-    }
-    dataTablePage.tables.push(dataTable);
+    if (dt.provisionalTopOpen) continue;
+    dataTablePage.tables.push(convertDetectedTable(dt, dataTablePage, pageObj));
   }
 
   if (pageObj.lines.length > 0) {
@@ -3476,6 +3540,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
 
   return {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, fillGlyphBoxes,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, provisionalTables, fillGlyphBoxes,
   };
 }

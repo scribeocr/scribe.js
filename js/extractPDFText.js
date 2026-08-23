@@ -2,7 +2,7 @@ import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { setPageFillShapes } from './fillSign.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
-import { determinePdfType, applyDocParagraphLayout } from './pdf/parsePdfDoc.js';
+import { determinePdfType, applyDocParagraphLayout, promoteContinuationTables } from './pdf/parsePdfDoc.js';
 import { computeRequiresOCR } from './pdf/ocrPageSelection.js';
 import { findXrefOffset, parseXref, getPageObjects } from './pdf/parsePdfUtils.js';
 import { ObjectCache } from './pdf/objectCache.js';
@@ -110,6 +110,8 @@ export async function extractInternalPDFText(doc, options = {}) {
       applyDocParagraphLayout(objCache, arr, rawPages, pageResults.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), type);
     } catch { /* */ }
   }
+
+  promoteContinuationTables(pageResults);
 
   const tablePages = pageResults.map((result) => result.dataTablePage);
   addCircularRefsDataTables(tablePages);
