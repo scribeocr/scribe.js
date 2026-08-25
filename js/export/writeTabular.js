@@ -334,9 +334,10 @@ export async function writeXlsxFromSheets(sheets, options = {}) {
   const n = names.length;
   const byPath = new Map(xlsxStrings.map((f) => [f.path, f.content]));
   const patch = (path, anchor, replacement) => {
-    const patched = byPath.get(path).replace(anchor, replacement);
-    if (patched === byPath.get(path)) throw new Error(`xlsx boilerplate anchor not found in ${path}`);
-    byPath.set(path, patched);
+    const current = byPath.get(path);
+    // A one-sheet workbook replaces the boilerplate's single-sheet markup with an identical string, so testing whether the text changed would read that as a missing anchor.
+    if (!current.includes(anchor)) throw new Error(`xlsx boilerplate anchor not found in ${path}`);
+    byPath.set(path, current.replace(anchor, replacement));
   };
   const sheetsXml = names.map((name, i) => `<sheet name="${ocr.escapeXml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('');
   patch('xl/workbook.xml', '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>', `<sheets>${sheetsXml}</sheets>`);

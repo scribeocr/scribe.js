@@ -54,6 +54,21 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(sheet1Xml.includes('tabSelected="1"'), 'the first sheet claims the selected tab').toBe(true);
     expect(sheet2Xml.includes('tabSelected="1"'), 'later sheets do not claim the selected tab').toBe(false);
     await reader.close();
+
+    // A one-sheet workbook patches its boilerplate to byte-identical content, which a changed-the-text check read as a missing anchor.
+    const soloBytes = await scribe.utils.writeXlsxFromSheets([sheets[0]], { columnWidths: 'auto' });
+    const soloReader = new ZipReader(new Uint8ArrayReader(soloBytes));
+    const soloByPath = new Map((await soloReader.getEntries()).map((e) => [e.filename, e]));
+    expect([...soloByPath.keys()].filter((p) => p.startsWith('xl/worksheets/')), 'a single-table export writes exactly one worksheet part')
+      .toEqual(['xl/worksheets/sheet1.xml']);
+    const soloTypesXml = await soloByPath.get('[Content_Types].xml').getData(new TextWriter());
+    expect((soloTypesXml.match(/\/xl\/worksheets\/sheet\d+\.xml/g) || []).length, 'the one-sheet workbook declares exactly one worksheet content type').toBe(1);
+    const soloWorkbookXml = await soloByPath.get('xl/workbook.xml').getData(new TextWriter());
+    expect(soloWorkbookXml.match(/<sheet name="([^"]*)"/g).map((m) => m.slice(13, -1)), 'the lone sheet keeps its table name rather than the boilerplate Sheet1')
+      .toEqual(['Page 1 Table 1']);
+    const soloAppXml = await soloByPath.get('docProps/app.xml').getData(new TextWriter());
+    expect(soloAppXml.includes('<vt:vector size="1" baseType="lpstr"><vt:lpstr>Page 1 Table 1</vt:lpstr></vt:vector>'), 'the one-sheet workbook titles-of-parts names the sheet').toBe(true);
+    await soloReader.close();
   });
 
   test('createTablesFromText creates table with column boxes and rowBounds', async () => {

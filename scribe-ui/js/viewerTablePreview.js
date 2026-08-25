@@ -1,3 +1,5 @@
+import scribe from '../../scribe.js';
+
 const Z = 'var(--scribe-zoom, 1)';
 const ACCENT = '#1c62d4';
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -53,7 +55,12 @@ export function applyTablePreview(viewer, n) {
       if (obj?.uiTable && !uiTables.includes(obj.uiTable)) uiTables.push(obj.uiTable);
     });
   }
-  const sheet = uiTables.find((t) => t.layoutDataTable.id === activeSheet.table.id) || null;
+  // A chain is one sheet, so every page holding one of its fragments draws that fragment as a segment of it.
+  const chains = scribe.tableChains(viewer.doc.layoutDataTables.pages);
+  const activeChain = chains.find((c) => c.some((f) => f.table.id === activeSheet.table.id)) || null;
+  const pageFrag = activeChain && activeChain.length > 1 ? activeChain.find((f) => f.n === n) || null : null;
+  const segTableId = pageFrag ? pageFrag.table.id : activeSheet.table.id;
+  const sheet = uiTables.find((t) => t.layoutDataTable.id === segTableId) || null;
 
   const anyTableIds = new Set();
   uiTables.forEach((t) => t.tableContent?.rowWordArr.flat(2).forEach((w) => anyTableIds.add(w.id)));
@@ -79,6 +86,30 @@ export function applyTablePreview(viewer, n) {
   const content = sheet.tableContent;
   const bandEdges = [tc.top, ...content.rowBottomArr];
   const columns = sheet.layoutBoxesArr;
+
+  // Row numbering and the dropped repeated header mirror what the export writes, so the preview stays an accurate audit of the output.
+  const normRow = (words) => words.flat().map((w) => w.text).join(' ').toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  let rowOffset = 0;
+  let dedupRow0 = false;
+  let chainName = null;
+  const fragIdx = pageFrag && activeChain ? activeChain.indexOf(pageFrag) : 0;
+  if (pageFrag && activeChain) {
+    chainName = scribe.tableChainName(viewer.doc.layoutDataTables.pages, activeChain);
+    const fragRows = (f) => scribe.extractTextFromTables(viewer.doc.ocr.active[f.n], /** @type {any} */ ({ tables: [f.table] }))[0]?.rows || [];
+    const headRows = fragRows(activeChain[0]);
+    const headRow0 = headRows.length ? headRows[0].join(' ').toLowerCase().replace(/\s+/g, ' ').trim() : null;
+    const dedups = (rows) => !!(headRow0 && headRow0.length >= 6 && rows.length && rows[0].join(' ').toLowerCase().replace(/\s+/g, ' ').trim() === headRow0);
+    for (let fi = 0; fi < fragIdx; fi++) {
+      const rows = fi === 0 ? headRows : fragRows(activeChain[fi]);
+      rowOffset += rows.length - (fi > 0 && dedups(rows) ? 1 : 0);
+    }
+    dedupRow0 = fragIdx > 0 && !!headRow0 && headRow0.length >= 6 && content.rowWordArr.length > 0 && normRow(content.rowWordArr[0]) === headRow0;
+  }
+  /** Spreadsheet row number for local row `r` as a string, or a dot for the dropped repeated header. */
+  const rowNum = (r) => (dedupRow0 && r === 0 ? '\u00b7' : String(rowOffset + r + 1 - (dedupRow0 ? 1 : 0)));
+  const stripH = fragIdx > 0 ? 15 : 0;
 
   const mk = (styles, parent = group) => {
     const el = document.createElement('div');
@@ -146,7 +177,7 @@ export function applyTablePreview(viewer, n) {
   // A cell bar pinned to the page top would be scrolled out of view whenever the table sits further down, so this one tracks the table.
   const fx = mk({
     left: '0',
-    top: `max(calc(4px / ${Z}), calc(${tc.top}px - 47px / ${Z}))`,
+    top: `max(calc(4px / ${Z}), calc(${tc.top}px - ${47 + stripH}px / ${Z}))`,
     width: `${dims.width}px`,
     height: `calc(26px / ${Z})`,
     background: '#ffffff',
@@ -177,6 +208,24 @@ export function applyTablePreview(viewer, n) {
     ...font(11, 400, 'ui-monospace, Menlo, Consolas, monospace'),
     color: '#1f2530',
   }, fx);
+
+  if (chainName) {
+    const nameChip = mk({
+      position: 'relative',
+      flex: '0 3 auto',
+      minWidth: '0',
+      overflow: 'hidden',
+      whiteSpace: 'nowrap',
+      textOverflow: 'ellipsis',
+      alignSelf: 'center',
+      padding: `0 calc(8px / ${Z})`,
+      borderLeft: `calc(1px / ${Z}) solid #d7dce4`,
+      ...font(10.5),
+      color: '#586170',
+    }, fx);
+    nameChip.textContent = chainName;
+    nameChip.title = chainName;
+  }
 
   const ghostOn = viewer.state.tablePreviewGhost;
   const chip = mk({
@@ -215,9 +264,29 @@ export function applyTablePreview(viewer, n) {
     applyTablePreview(viewer, n);
   });
 
+  if (stripH > 0) {
+    const strip = mk({
+      left: `${tc.left}px`,
+      top: `calc(${tc.top}px - ${stripH + 1}px / ${Z})`,
+      width: `${tc.right - tc.left}px`,
+      height: `calc(${stripH}px / ${Z})`,
+      background: '#e8f0fd',
+      color: ACCENT,
+      display: 'flex',
+      alignItems: 'center',
+      padding: `0 calc(8px / ${Z})`,
+      ...font(9, 600),
+      letterSpacing: '.03em',
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      zIndex: '3',
+    });
+    strip.textContent = `continued \u00b7 ${chainName}`;
+  }
   const colRail = mk({
     left: '0',
-    top: `max(calc(21px / ${Z}), calc(${tc.top}px - 17px / ${Z}))`,
+    top: `max(calc(21px / ${Z}), calc(${tc.top}px - ${17 + stripH}px / ${Z}))`,
     width: `${dims.width}px`,
     height: `calc(16px / ${Z})`,
     background: '#eef1f6',
@@ -265,7 +334,24 @@ export function applyTablePreview(viewer, n) {
       color: '#586170',
     }, rowRail);
     cell.dataset.scribeTpRow = String(r);
-    cell.textContent = String(r + 1);
+    cell.textContent = rowNum(r);
+    if (dedupRow0 && r === 0) cell.style.textDecoration = 'none';
+  }
+
+  if (dedupRow0) {
+    const row0Ids = new Set(content.rowWordArr[0].flat().map((w) => w.id));
+    for (const obj of viewer._wordObjs?.[n] || []) {
+      if (row0Ids.has(obj.word.id)) obj.fill('#a5a9b0');
+    }
+    mk({
+      left: `${tc.left}px`,
+      top: `${(bandEdges[0] + bandEdges[1]) / 2}px`,
+      width: `${tc.right - tc.left}px`,
+      height: `calc(1.2px / ${Z})`,
+      background: '#a5a9b0',
+      pointerEvents: 'none',
+      zIndex: '1',
+    });
   }
 
   const rowN = content.rowBottomArr.length;
@@ -303,7 +389,7 @@ export function applyTablePreview(viewer, n) {
       width: `${columns[cHi].coords.right - columns[cLo].coords.left}px`,
       height: `${bandEdges[rHi + 1] - bandEdges[rLo]}px`,
     });
-    nameBox.textContent = single ? `${colLetter(c)}${r + 1}` : `${colLetter(cLo)}${rLo + 1}:${colLetter(cHi)}${rHi + 1}`;
+    nameBox.textContent = single ? `${colLetter(c)}${rowNum(r)}` : `${colLetter(cLo)}${rowNum(rLo)}:${colLetter(cHi)}${rowNum(rHi)}`;
     const text = (content.rowWordArr[r]?.[c] || []).map((w) => w.text).join(' ');
     fxVal.textContent = text;
     fxVal.title = text;

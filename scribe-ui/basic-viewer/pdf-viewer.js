@@ -8,7 +8,9 @@ import '../js/selection/customSelectionEngine.js';
 import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
-import { signIntoField } from '../js/viewerFillSign.js';
+import {
+  signIntoField, selectedFillItem, deleteSelectedFillItem, deselectFillItem,
+} from '../js/viewerFillSign.js';
 import {
   destroyContextMenu, graphicsDeleteLabel, CM_COPY_SVG, CM_EDIT_SVG, CM_BOLD_SVG, CM_ITALIC_SVG, CM_TRASH_SVG,
 } from '../js/viewerCanvasInteraction.js';
@@ -561,6 +563,8 @@ class ScribePDFViewer {
     /** @type {?HTMLDivElement} The docked verb bar for the picked line or placement. */
     this._vbarElem = null;
     this._fsBarOn = false;
+    /** @type {?HTMLElement} The Fill & Sign palette's phone undo button. */
+    this._fsUndoBtn = null;
     /** @type {?Object<string, HTMLElement>} */
     this._vbarParts = null;
     this._phoneLineEditing = false;
@@ -1462,7 +1466,7 @@ class ScribePDFViewer {
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
-      if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · drag across columns to select several · right-click for table actions';
+      if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
 
       const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
@@ -2442,7 +2446,8 @@ class ScribePDFViewer {
       ? this._vbarElem.offsetHeight : 0;
     // The companion strip sits above the dock while visible, so the document insets above it too.
     // It stands down entirely during a line edit, where the keyboard owns the bottom of the screen.
-    const fsPal = this._fsBarOn && this._fillSignTool ? this._fillSignTool.paletteElem() : null;
+    // The verb bar takes over the palette's slot while a Fill & Sign item is picked, so only one of the two counts.
+    const fsPal = this._fsBarOn && this._fillSignTool && !vbar ? this._fillSignTool.paletteElem() : null;
     const fsBar = fsPal ? fsPal.offsetHeight || 52 : 0;
     const cs = this._companionStrip;
     const strip = cs && cs.stripElem.classList.contains('on') && !cs.isTucked() && !this._stripDragLayout
@@ -2790,7 +2795,8 @@ class ScribePDFViewer {
     const editing = !!sv._editTextLineEditor?.isOpen();
     const kind = !this._phoneUi ? null
       : (editing || sv._editTextActive) ? 'text'
-        : sv._graphicsEditActive ? 'graphics' : null;
+        : sv._graphicsEditActive ? 'graphics'
+          : this._fillSignTool?.isOpen() && selectedFillItem(sv) ? 'fill' : null;
     const was = bar.classList.contains('on');
     bar.classList.toggle('on', !!kind);
     this.pdfViewerElem.classList.toggle('scribe-vbar-on', !!kind);
@@ -2804,13 +2810,18 @@ class ScribePDFViewer {
       p.italic.style.display = kind === 'text' ? '' : 'none';
       p.copy.style.display = kind === 'text' && !sessionOn ? '' : 'none';
       p.sep.style.display = '';
-      const sepAnchor = sessionOn ? p.hint : kind === 'graphics' ? p.deselect : p.del;
+      const sepAnchor = sessionOn ? p.hint : kind !== 'text' ? p.deselect : p.del;
       if (p.sep.nextSibling !== sepAnchor) bar.insertBefore(p.sep, sepAnchor);
       p.del.style.display = !sessionOn ? '' : 'none';
-      p.deselect.style.display = kind === 'graphics' ? '' : 'none';
+      p.deselect.style.display = kind !== 'text' ? '' : 'none';
       p.hint.style.display = sessionOn ? '' : 'none';
       p.done.style.display = sessionOn ? '' : 'none';
-      if (kind === 'graphics') {
+      if (kind === 'fill') {
+        // The bar only appears for a picked item, so its verbs are always live.
+        p.del.disabled = false;
+        p.deselect.disabled = false;
+        p.del.title = 'Delete';
+      } else if (kind === 'graphics') {
         const counts = sv._graphicsEditSelectedCounts?.() || { count: 0, images: 0, paths: 0 };
         const has = counts.count > 0;
         p.del.disabled = !has;
@@ -2871,6 +2882,7 @@ class ScribePDFViewer {
       this._vbarParts.undo.disabled = !canUndo;
       this._vbarParts.redo.disabled = !canRedo;
     }
+    if (this._fsUndoBtn) this._fsUndoBtn.classList.toggle('disabled', !canUndo);
     const dirty = !!doc && this._modeBaseline >= 0 && doc.docHistory.undoStack.length !== this._modeBaseline;
     if (this._dockModeParts?.save) this._dockModeParts.save.disabled = !dirty;
     if (this._modeBannerParts?.save) this._modeBannerParts.save.disabled = !dirty;
@@ -3868,6 +3880,12 @@ class ScribePDFViewer {
     vCopy.addEventListener('click', () => this.scribe._editTextCopySelection?.());
     // Deleting stays silent because Save and Discard on the mode row already report whether the session changed anything.
     vDel.addEventListener('click', () => {
+      if (this._fillSignTool?.isOpen() && selectedFillItem(this.scribe)) {
+        if (!deleteSelectedFillItem(this.scribe)) return;
+        this._syncUndoState();
+        this._syncPhoneVerbBar();
+        return;
+      }
       if (this.scribe._graphicsEditActive) {
         const counts = this.scribe._graphicsEditSelectedCounts?.() || { count: 0 };
         if (counts.count === 0 || !this.scribe._graphicsEditDeleteSelection?.()) return;
@@ -3878,7 +3896,14 @@ class ScribePDFViewer {
       if (n === 0 || !this.scribe._editTextDeleteSelection?.()) return;
       this._syncUndoState();
     });
-    vDeselect.addEventListener('click', () => this.scribe._graphicsEditClearSelection?.());
+    vDeselect.addEventListener('click', () => {
+      if (this._fillSignTool?.isOpen() && selectedFillItem(this.scribe)) {
+        deselectFillItem(this.scribe);
+        this._syncPhoneVerbBar();
+        return;
+      }
+      this.scribe._graphicsEditClearSelection?.();
+    });
     vDone.addEventListener('click', () => {
       this.scribe._editTextLineEditor?.commit().catch((e) => console.error('Edit Text: commit failed:', e));
     });

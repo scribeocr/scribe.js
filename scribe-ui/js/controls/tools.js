@@ -2443,6 +2443,9 @@ export function createGraphicsEditTool(scribe) {
     graphicsMode = !graphicsMode;
     scribe._graphicsEditActive = graphicsMode;
     toolbarElem.classList.toggle('active', graphicsMode);
+    // A selection carried in from the viewer would stay painted over the placements.
+    if (graphicsMode) scribe.clearTextSelection();
+    if (scribe.textSel) scribe.textSel.cursorOverride = graphicsMode ? 'default' : null;
     if (!graphicsMode) {
       resetSelection();
       hideTouchCallout();
@@ -2464,7 +2467,7 @@ export function createGraphicsEditTool(scribe) {
     };
     const deleteSelected = () => {
       validateSelection();
-      if (selected.size === 0) return;
+      if (selected.size === 0) return false;
       const items = [...selected].map(([entry, sel]) => ({
         n: sel.n,
         rect: {
@@ -2475,7 +2478,9 @@ export function createGraphicsEditTool(scribe) {
       const res = scribe.doc?.deleteGraphics(items);
       resetSelection();
       hideTouchCallout();
-      if (res) refreshPages(res.pages);
+      if (!res) return false;
+      refreshPages(res.pages);
+      return true;
     };
     const selectionAnchor = () => {
       let anchor = null;
@@ -2699,6 +2704,7 @@ export function createGraphicsEditTool(scribe) {
       scribe._graphicsEditDeleteSelection = null;
       scribe._graphicsEditSelectionAnchor = null;
       scribe._graphicsEditClearSelection = null;
+      if (scribe.textSel) scribe.textSel.cursorOverride = null;
       resetSelection();
       hideTouchCallout();
     };

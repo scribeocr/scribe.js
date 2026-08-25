@@ -8,6 +8,7 @@ import {
   addLayoutDataTable,
   checkDataColumnsAdjacent, checkDataTablesAdjacent, UiDataColumn, UiLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
   renderLayoutDataTable, setActiveTable, copyTablePreviewSelection, getTablePreviewMergeColumns, mergeTablePreviewColumns,
+  linkTables, unlinkTable, resolveLinkCandidate, resolveUnlinkCandidate,
 } from './viewerLayout.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
@@ -257,6 +258,9 @@ const CM_BOOKMARK_SVG = menuIcon('<path d="M7 4h10v16l-5-3.6L7 20V4Z"/>');
 export const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
+const CM_LINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
+const CM_UNLINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/>'
+  + '<path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/>');
 const CM_TABLE_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10.5 10v9M15.3 10v9"/>');
 const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
@@ -350,6 +354,8 @@ const createContextMenuHTML = () => {
       item('contextMenuCaptureLinesButton', 'Capture whole lines', CM_TABLE_SVG, captureLinesClick),
       item('contextMenuMergeColumnsButton', 'Merge Columns', CM_MERGE_SVG, mergeDataColumnsClick),
       item('contextMenuMergeTablesButton', 'Merge Tables', CM_MERGE_SVG, mergeDataTablesClick),
+      item('contextMenuLinkTablesButton', 'Link Tables', CM_LINK_SVG, linkTablesClick),
+      item('contextMenuUnlinkTablesButton', 'Unlink at Page Break', CM_UNLINK_SVG, unlinkTablesClick),
       item('contextMenuSplitTableButton', 'New Table from Columns', CM_TABLE_SVG, splitDataTableClick),
       item('contextMenuDeleteLayoutTableButton', 'Delete Table', CM_TRASH_SVG, deleteLayoutDataTableClick),
       item('contextMenuDeleteLayoutRegionButton', 'Delete', CM_TRASH_SVG, deleteLayoutRegionClick),
@@ -480,6 +486,25 @@ const mergeDataTablesClick = () => {
   const viewer = mv();
   const dataTableArr = viewer.CanvasSelection.getDataTables();
   mergeDataTables(dataTableArr);
+  viewer.destroyControls();
+};
+
+/** @type {?LayoutDataTable} */ let linkTargetTable = null;
+/** @type {?LayoutDataTable} */ let unlinkTargetTable = null;
+
+const linkTablesClick = () => {
+  hideContextMenu();
+  const viewer = mv();
+  if (linkTargetTable) linkTables(viewer, linkTargetTable);
+  linkTargetTable = null;
+  viewer.destroyControls();
+};
+
+const unlinkTablesClick = () => {
+  hideContextMenu();
+  const viewer = mv();
+  if (unlinkTargetTable) unlinkTable(viewer, unlinkTargetTable);
+  unlinkTargetTable = null;
   viewer.destroyControls();
 };
 
@@ -774,6 +799,8 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyLayoutTableContentsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuMergeTablesButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuLinkTablesButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuUnlinkTablesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRedactButtonElem;
@@ -843,6 +870,8 @@ function ensureContextMenu() {
   contextMenuDeleteLayoutTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutTableButton'));
   contextMenuCopyLayoutTableContentsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLayoutTableContentsButton'));
   contextMenuMergeTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeTablesButton'));
+  contextMenuLinkTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuLinkTablesButton'));
+  contextMenuUnlinkTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnlinkTablesButton'));
   contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuRedactButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactButton'));
@@ -1041,6 +1070,8 @@ export const hideContextMenu = () => {
   contextMenuDeleteLayoutTableButtonElem.style.display = 'none';
   contextMenuCopyLayoutTableContentsButtonElem.style.display = 'none';
   contextMenuMergeTablesButtonElem.style.display = 'none';
+  contextMenuLinkTablesButtonElem.style.display = 'none';
+  contextMenuUnlinkTablesButtonElem.style.display = 'none';
   contextMenuSplitTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   contextMenuRedactButtonElem.style.display = 'none';
@@ -1695,6 +1726,8 @@ export const contextMenuFunc = (viewer, event) => {
     } else if (selectedRegions.length > 0) {
       enableDeleteRegion = true;
     }
+    linkTargetTable = viewer.state.tablePreview || selectedTables.length === 0 ? null : resolveLinkCandidate(viewer, selectedTables);
+    unlinkTargetTable = viewer.state.tablePreview || selectedTables.length === 0 ? null : resolveUnlinkCandidate(viewer, selectedTables);
 
     // A right-click outside the current cell range moves the selection to that cell first, the spreadsheet convention.
     let enableCopyCells = false;
@@ -1787,6 +1820,11 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableDeleteTable) contextMenuDeleteLayoutTableButtonElem.style.display = 'initial';
     if (enableCopyTableContents) contextMenuCopyLayoutTableContentsButtonElem.style.display = 'initial';
     if (enableMergeTables) contextMenuMergeTablesButtonElem.style.display = 'initial';
+    if (linkTargetTable) {
+      setMenuLabel(contextMenuLinkTablesButtonElem, `Link Tables (pages ${linkTargetTable.page.n}\u2013${linkTargetTable.page.n + 1})`);
+      contextMenuLinkTablesButtonElem.style.display = 'initial';
+    }
+    if (unlinkTargetTable) contextMenuUnlinkTablesButtonElem.style.display = 'initial';
     if (enableSplitTable) contextMenuSplitTableButtonElem.style.display = 'initial';
     if (enableDeleteHighlight) {
       const targetKind = contextMenuMarkupSlot === 'line'

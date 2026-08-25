@@ -4,6 +4,13 @@ import { layoutFieldValue } from '../../js/pdf/formFieldLayout.js';
 
 const PX_PER_PT = 300 / 72;
 
+const MULTI_CLICK_MS = 450;
+
+// A phone double tap and a mouse double click both deliver two clicks, and the second must not act on the field again.
+// A checkbox toggled twice ends where it started, which reads as a tap the app ignored.
+// Held here rather than on the element because committing the first click rebuilds the overlay, handing the second click a fresh element with no memory of it.
+const lastFieldClick = { name: '', t: 0 };
+
 /** @type {WeakMap<object, Set<string>>} */
 const dirtyNamesByDoc = new WeakMap();
 
@@ -149,7 +156,12 @@ export function renderPageFormFields(viewer, n) {
       el.style.width = `${row.bbox.right - row.bbox.left}px`;
       el.style.height = `${row.bbox.bottom - row.bbox.top}px`;
       el.tabIndex = 0;
-      el.addEventListener('click', () => viewer.onSignatureFieldClick?.(n, row));
+      el.addEventListener('click', (e) => {
+        if (lastFieldClick.name === row.name && e.timeStamp - lastFieldClick.t < MULTI_CLICK_MS) return;
+        lastFieldClick.name = row.name;
+        lastFieldClick.t = e.timeStamp;
+        viewer.onSignatureFieldClick?.(n, row);
+      });
       el.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
@@ -317,6 +329,8 @@ export function renderPageFormFields(viewer, n) {
       let caretEl = null;
       /** @type {?() => void} */
       let onSelChange = null;
+      /** @type {?(e: PointerEvent) => void} */
+      let onCombPress = null;
       if (comb) {
         // The input keeps all key/paste/IME/undo semantics but renders nothing.
         // The live cover beneath it draws the same per-cell spans as the committed cover, so typed characters land in their cells immediately and committing cannot move anything.
@@ -354,6 +368,8 @@ export function renderPageFormFields(viewer, n) {
         liveCover?.remove();
         caretEl?.remove();
         if (onSelChange) document.removeEventListener('selectionchange', onSelChange);
+        // An unchanged value leaves `el` in place for the next activation, which would otherwise stack a second press handler on it.
+        if (onCombPress) el.removeEventListener('pointerdown', onCombPress);
         if (commit && commitValue(viewer, row, next)) return; // committing re-renders the overlay, replacing `el`
         el.focus({ preventScroll: true });
       };
@@ -372,15 +388,15 @@ export function renderPageFormFields(viewer, n) {
         onSelChange = () => syncCombDisplay();
         document.addEventListener('selectionchange', onSelChange);
         // The transparent input's own proportional metrics would misplace clicks, so map them to the nearest cell boundary instead.
-        el.addEventListener('pointerdown', (e) => {
-          if (closed) return;
+        onCombPress = (e) => {
           e.preventDefault();
           const r = el.getBoundingClientRect();
           const idx = Math.round(((e.clientX - r.left) / r.width) * (row.maxLen || 1));
           ed.focus({ preventScroll: true });
           ed.setSelectionRange(idx, idx);
           syncCombDisplay();
-        });
+        };
+        el.addEventListener('pointerdown', onCombPress);
         ed.addEventListener('dblclick', () => {
           ed.select();
           syncCombDisplay();
@@ -395,7 +411,10 @@ export function renderPageFormFields(viewer, n) {
       if (comb) syncCombDisplay();
     };
 
-    el.addEventListener('click', () => {
+    el.addEventListener('click', (e) => {
+      if (lastFieldClick.name === row.name && e.timeStamp - lastFieldClick.t < MULTI_CLICK_MS) return;
+      lastFieldClick.name = row.name;
+      lastFieldClick.t = e.timeStamp;
       if (el.querySelector('.scribe-field-input')) return;
       el.focus({ preventScroll: true });
       activate(null);

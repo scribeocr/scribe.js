@@ -200,6 +200,281 @@ export class UiDataColSep extends UiControlLine {
   }
 }
 
+const tableBboxOf = (table) => {
+  const boxes = Object.values(table.boxes);
+  return {
+    left: Math.min(...boxes.map((b) => b.coords.left)),
+    top: Math.min(...boxes.map((b) => b.coords.top)),
+    right: Math.max(...boxes.map((b) => b.coords.right)),
+    bottom: Math.max(...boxes.map((b) => b.coords.bottom)),
+  };
+};
+const bottomMostTable = (page) => (page?.tables?.length ? page.tables.reduce((m, t) => (tableBboxOf(t).bottom > tableBboxOf(m).bottom ? t : m)) : null);
+const topMostTable = (page) => (page?.tables?.length ? page.tables.reduce((m, t) => (tableBboxOf(t).top < tableBboxOf(m).top ? t : m)) : null);
+
+const prevTabledPage = (viewer, n) => {
+  for (let i = n - 1; i >= 0; i--) {
+    const page = viewer.doc.layoutDataTables.pages[i];
+    if (page?.tables?.length) return page;
+  }
+  return null;
+};
+
+/**
+ * Link `table` as a continuation of the preceding table in document order.
+ * Records undo and clears any pending suggestion for the boundary.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {LayoutDataTable} table - The continuation fragment.
+ */
+export function linkTables(viewer, table) {
+  const doc = viewer.doc;
+  const n = table.page.n;
+  const prevPage = prevTabledPage(viewer, n);
+  if (!prevPage || table.continuesPrev) return;
+  const snap = doc.docHistory.snapshotLayout(doc, [prevPage.n, n]);
+  table.continuesPrev = true;
+  doc.docHistory.recordLayout(snap, 'Linked tables');
+  const idx = (doc.tableLinkSuggestions || []).findIndex((s) => s.tableId === table.id);
+  if (idx >= 0) doc.tableLinkSuggestions.splice(idx, 1);
+  refreshChainSurfaces(viewer, prevPage.n, n);
+}
+
+/**
+ * Break the chain at `table`, so it no longer continues the previous table.
+ * Records undo, and returns the boundary to the suggestion queue so re-linking stays one click.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {LayoutDataTable} table - The continuation fragment to detach.
+ */
+export function unlinkTable(viewer, table) {
+  const doc = viewer.doc;
+  const n = table.page.n;
+  const prevPage = prevTabledPage(viewer, n);
+  if (!table.continuesPrev) return;
+  const snap = doc.docHistory.snapshotLayout(doc, prevPage ? [prevPage.n, n] : [n]);
+  table.continuesPrev = false;
+  doc.docHistory.recordLayout(snap, 'Unlinked tables');
+  const prevTable = prevPage ? bottomMostTable(prevPage) : null;
+  if (prevTable && !(doc.tableLinkSuggestions || []).some((s) => s.tableId === table.id)) {
+    doc.tableLinkSuggestions.push({
+      n, prevN: prevPage.n, tableId: table.id, prevTableId: prevTable.id, reason: 'unlinked',
+    });
+  }
+  refreshChainSurfaces(viewer, prevPage ? prevPage.n : n, n);
+}
+
+/**
+ * The continuation fragment a Link Tables verb would flag for this table selection, or null when the selection has no facing pair to link.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Array<LayoutDataTable>} selectedTables
+ * @returns {?LayoutDataTable}
+ */
+export function resolveLinkCandidate(viewer, selectedTables) {
+  const pages = viewer.doc.layoutDataTables.pages;
+  for (const t of selectedTables) {
+    const n = t.page.n;
+    if (!t.continuesPrev && topMostTable(pages[n]) === t && prevTabledPage(viewer, n)) return t;
+    const nextTop = pages[n + 1] ? topMostTable(pages[n + 1]) : null;
+    if (nextTop && !nextTop.continuesPrev && bottomMostTable(pages[n]) === t) return nextTop;
+  }
+  return null;
+}
+
+/**
+ * The linked continuation fragment an Unlink at Page Break verb would detach for this table selection, or null.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Array<LayoutDataTable>} selectedTables
+ * @returns {?LayoutDataTable}
+ */
+export function resolveUnlinkCandidate(viewer, selectedTables) {
+  const pages = viewer.doc.layoutDataTables.pages;
+  for (const t of selectedTables) {
+    if (t.continuesPrev) return t;
+    const nextTop = pages[t.page.n + 1] ? topMostTable(pages[t.page.n + 1]) : null;
+    if (nextTop?.continuesPrev && bottomMostTable(pages[t.page.n]) === t) return nextTop;
+  }
+  return null;
+}
+
+function refreshChainSurfaces(viewer, prevN, n) {
+  // Every rendered page refreshes, not just the boundary pair.
+  // A chain edit shifts the sheet row numbering of every later fragment.
+  for (const pageN of viewer.overlayGroupsRenderIndices) {
+    renderChainChrome(viewer, pageN);
+    applyTablePreview(viewer, pageN);
+  }
+  viewer.layoutTablesEdited(n);
+}
+
+/**
+ * Draw page `n`'s cross-page linking controls: the tabs on a linked boundary, and the confirm or link tab on an unlinked one.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n
+ */
+export function renderChainChrome(viewer, n) {
+  const group = viewer._overlayGroups?.[n];
+  if (!group) return;
+  group.querySelectorAll('[data-scribe-chain]').forEach((el) => el.remove());
+  if (!viewer.state.layoutMode || viewer.state.tablePreview) return;
+  const doc = viewer.doc;
+  const pages = doc.layoutDataTables.pages;
+  const page = pages[n];
+  if (!page?.tables?.length) return;
+
+  const Z = CHROME_Z;
+  // Page rasters range from a few hundred pixels wide to several thousand, so a fixed pixel size renders unusably small on the large ones.
+  // Tab metrics are a fraction of the page instead, scaled against US Letter at 300dpi.
+  const u = (viewer.doc.pageMetrics[n]?.dims?.width || 2550) / 2550;
+  const px = (v) => `${Math.round(v * u * 10) / 10}px`;
+  const mk = (styles, parent = group) => {
+    const el = document.createElement('div');
+    el.dataset.scribeChain = '1';
+    Object.assign(el.style, { position: 'absolute', boxSizing: 'border-box' }, styles);
+    parent.appendChild(el);
+    return el;
+  };
+  const tabBase = (bbox, edge) => ({
+    left: `${(bbox.left + bbox.right) / 2}px`,
+    top: `${edge === 'bottom' ? bbox.bottom : bbox.top}px`,
+    transform: 'translate(-50%, -50%)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: px(12),
+    height: px(45),
+    padding: `0 ${px(22)}`,
+    borderRadius: px(22),
+    whiteSpace: 'nowrap',
+    fontWeight: '600',
+    fontSize: px(25),
+    lineHeight: '1',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+    zIndex: '4',
+    cursor: 'pointer',
+    userSelect: 'none',
+    transition: 'opacity 120ms',
+  });
+  // The tab straddles the frame edge, so it fades under the pointer to keep the row beneath readable.
+  const hoverFade = (el) => {
+    el.addEventListener('pointerenter', () => { el.style.opacity = '0.15'; });
+    el.addEventListener('pointerleave', () => { el.style.opacity = '1'; });
+  };
+  const arrow = (dir) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:${px(25)};height:${px(25)};display:block;">${dir === 'down' ? '<path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/>' : '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/>'}</svg>`;
+  const closePopover = () => group.querySelectorAll('[data-scribe-chain-pop]').forEach((el) => el.remove());
+  const solidTab = (bbox, edge, label, table) => {
+    const tab = mk({
+      ...tabBase(bbox, edge), background: CHROME_ACCENT, color: '#fff', boxShadow: `0 ${px(2)} ${px(7)} rgba(30,26,16,.28)`,
+    });
+    tab.innerHTML = `${arrow(edge === 'bottom' ? 'down' : 'up')}<span>${label}</span>`;
+    hoverFade(tab);
+    tab.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (group.querySelector('[data-scribe-chain-pop]')) { closePopover(); return; }
+      const pop = mk({
+        left: `${(bbox.left + bbox.right) / 2}px`,
+        top: `${(edge === 'bottom' ? bbox.bottom : bbox.top) + (edge === 'bottom' ? -34 : 14)}px`,
+        transform: 'translateX(-50%)',
+        background: '#fff',
+        border: `calc(1px / ${Z}) solid #e4e8ef`,
+        borderRadius: `calc(8px / ${Z})`,
+        boxShadow: '0 4px 14px rgba(20,30,60,.13)',
+        padding: `calc(4px / ${Z})`,
+        zIndex: '5',
+      });
+      pop.dataset.scribeChainPop = '1';
+      const item = document.createElement('div');
+      Object.assign(item.style, {
+        display: 'flex',
+        alignItems: 'center',
+        gap: `calc(8px / ${Z})`,
+        padding: `calc(6px / ${Z}) calc(11px / ${Z})`,
+        borderRadius: `calc(5px / ${Z})`,
+        fontSize: `calc(12px / ${Z})`,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        color: '#1f2530',
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+      });
+      item.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:calc(14px / ${Z});height:calc(14px / ${Z});color:#586170;"><path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/></svg>Unlink tables`;
+      item.addEventListener('pointerenter', () => { item.style.background = 'rgba(28,42,68,.06)'; });
+      item.addEventListener('pointerleave', () => { item.style.background = ''; });
+      item.addEventListener('click', (ev) => { ev.stopPropagation(); closePopover(); unlinkTable(viewer, table); });
+      pop.appendChild(item);
+      const esc = (ev) => { if (ev.key === 'Escape') { closePopover(); document.removeEventListener('keydown', esc); } };
+      document.addEventListener('keydown', esc);
+      document.addEventListener('pointerdown', (ev) => { if (!pop.contains(/** @type {Node} */ (ev.target))) closePopover(); }, { once: true, capture: true });
+    });
+    return tab;
+  };
+  const ghostTab = (bbox, edge, label, onConfirm, onDismiss) => {
+    const tab = mk({
+      ...tabBase(bbox, edge), background: '#fff', color: CHROME_ACCENT, border: `${px(4)} dashed ${CHROME_ACCENT}`, cursor: 'default',
+    });
+    const btn = (svg, title, handler, muted) => {
+      const b = document.createElement('span');
+      b.title = title;
+      b.setAttribute('role', 'button');
+      Object.assign(b.style, {
+        display: 'inline-flex', cursor: 'pointer', color: muted ? '#98a1b0' : CHROME_ACCENT, padding: `${px(2)} ${px(5)}`, borderRadius: px(10),
+      });
+      b.innerHTML = svg;
+      b.addEventListener('click', (e) => { e.stopPropagation(); handler(); });
+      return b;
+    };
+    const ic = (path) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:${px(27)};height:${px(27)};display:block;">${path}</svg>`;
+    const labelEl = document.createElement('span');
+    labelEl.textContent = label;
+    tab.appendChild(labelEl);
+    tab.appendChild(btn(ic('<path d="M4.5 12.5 10 18 19.5 7"/>'), 'Link tables', onConfirm, false));
+    if (onDismiss) tab.appendChild(btn(ic('<path d="M6 6l12 12M18 6 6 18"/>'), 'Dismiss', onDismiss, true));
+    return tab;
+  };
+
+  const prevPage = prevTabledPage(viewer, n);
+  const topTable = topMostTable(page);
+  if (prevPage && topTable) {
+    const bbox = tableBboxOf(topTable);
+    if (topTable.continuesPrev) {
+      solidTab(bbox, 'top', `From page ${prevPage.n + 1}`, topTable);
+    } else {
+      const sug = (doc.tableLinkSuggestions || []).find((s) => s.tableId === topTable.id);
+      if (sug) {
+        ghostTab(bbox, 'top', 'Same table?', () => linkTables(viewer, topTable), () => {
+          const idx = doc.tableLinkSuggestions.indexOf(sug);
+          if (idx >= 0) doc.tableLinkSuggestions.splice(idx, 1);
+          refreshChainSurfaces(viewer, prevPage.n, n);
+        });
+      }
+    }
+  }
+
+  const nextPage = pages[n + 1];
+  const bottomTable = bottomMostTable(page);
+  const nextTop = nextPage ? topMostTable(nextPage) : null;
+  if (bottomTable && nextTop) {
+    const bbox = tableBboxOf(bottomTable);
+    if (nextTop.continuesPrev) {
+      solidTab(bbox, 'bottom', `Continues on page ${nextPage.n + 1}`, nextTop);
+    } else if (!(doc.tableLinkSuggestions || []).some((s) => s.tableId === nextTop.id)) {
+      const zone = mk({
+        left: `${bbox.left}px`,
+        top: `${bbox.bottom - 8}px`,
+        width: `${bbox.right - bbox.left}px`,
+        height: '16px',
+        zIndex: '3',
+      });
+      let ghost = null;
+      zone.addEventListener('pointerenter', () => {
+        if (ghost) return;
+        ghost = ghostTab(bbox, 'bottom', 'Link tables', () => linkTables(viewer, nextTop), null);
+        ghost.addEventListener('pointerleave', () => { ghost?.remove(); ghost = null; });
+      });
+      zone.addEventListener('pointerleave', (e) => {
+        if (ghost && e.relatedTarget instanceof Node && ghost.contains(e.relatedTarget)) return;
+        ghost?.remove(); ghost = null;
+      });
+    }
+  }
+}
+
 /**
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
@@ -210,6 +485,7 @@ export function renderLayoutDataTables(viewer, n) {
   });
   // A page with no tables still needs this pass, because in the sheet view all of its words ghost.
   applyTablePreview(viewer, n);
+  renderChainChrome(viewer, n);
 }
 
 export class UiDataTable {

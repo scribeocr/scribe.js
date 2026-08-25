@@ -1,4 +1,4 @@
-import ocr from '../objects/ocrObjects.js';
+import ocr, { parIsFurniture } from '../objects/ocrObjects.js';
 import {
   calcLang, cleanFamilyName, mean50, round3, round6,
 } from '../utils/miscUtils.js';
@@ -28,7 +28,10 @@ import { buildOutlineHeadingIndex } from './outlineIndex.js';
 
 /** @typedef {import('./parsePdfUtils.js').PDFToken} PDFToken */
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
-import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objects/layoutObjects.js';
+import {
+  LayoutDataTable, LayoutDataColumn, LayoutDataTablePage, calcTableBbox,
+} from '../objects/layoutObjects.js';
+import { extractTextFromTables } from '../extractTables.js';
 
 // Above this size a page skips path parsing, which disables table detection, underline detection, and the path-edit inventory (the page reports path-ineligible).
 // Path rendering is unaffected.
@@ -1256,10 +1259,12 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
 }
 
 /**
- * Promote provisional open-top continuation grids, in place.
+ * Promote provisional open-top continuation grids, in place, then link tables that continue across page breaks.
  * A provisional grid becomes a real table when the previous page holds a grid-strong table with the same column separators.
  * Pages promote in order, so a promoted table anchors the next page's continuation.
+ * A boundary either links silently, becomes a returned suggestion for the user to confirm, or is left alone.
  * @param {Array<{pageObj: OcrPage, dataTablePage?: LayoutDataTablePage, provisionalTables?: Array<import('./detectPdfTables.js').DetectedTable>}|null>} results - parsed pages (index = page index).
+ * @returns {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>} suggested links (the continuation fragment is `tableId` on page `n`).
  */
 export function promoteContinuationTables(results) {
   for (let i = 1; i < results.length; i++) {
@@ -1299,6 +1304,112 @@ export function promoteContinuationTables(results) {
       tables.push(convertDetectedTable(dt, r.dataTablePage, r.pageObj));
     }
   }
+
+  /** @type {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>} */
+  const suggestions = [];
+  const norm = (s) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const CONT_RE = /\bcont(?:inued|'?d)\b|\(\s*cont/i;
+  // Continuation captions repeat the previous title with wording like "(continued)", so titles compare with that wording removed.
+  const stripCont = (s) => norm(s).replace(/[([]\s*cont(?:inued|'?d)?\.?\s*[)\]]/g, '').replace(/\bcontinued\b/g, '').replace(/\s+/g, ' ')
+    .trim();
+  const lineText = (ln) => ln.words.map((w) => w.text).join(' ');
+  const tableXs = (t) => {
+    const xs = t.boxes.map((b) => b.coords.left).sort((a, b) => a - b);
+    xs.push(Math.max(...t.boxes.map((b) => b.coords.right)));
+    return xs;
+  };
+  const row0Text = (pageObj, t) => {
+    const rows = extractTextFromTables(pageObj, /** @type {LayoutDataTablePage} */ ({ tables: [t] }))[0]?.rows;
+    return rows?.length ? norm(rows[0].join(' ')) : null;
+  };
+  /** @type {?{headerRow: ?string, title: ?string}} */
+  let chain = null;
+  /** @type {?LayoutDataTable} */
+  let prevLinked = null;
+  for (let i = 1; i < results.length; i++) {
+    const A = results[i - 1]; const B = results[i];
+    const tablesA = A?.dataTablePage?.tables; const tablesB = B?.dataTablePage?.tables;
+    if (!A?.pageObj || !B?.pageObj || !tablesA?.length || !tablesB?.length) { chain = null; prevLinked = null; continue; }
+    const TA = tablesA.reduce((m, t) => (calcTableBbox(t).bottom > calcTableBbox(m).bottom ? t : m));
+    const TB = tablesB.reduce((m, t) => (calcTableBbox(t).top < calcTableBbox(m).top ? t : m));
+    // Chain state carries only while the same table keeps continuing.
+    // A later table on the previous page taking over as the bottom fragment means the chain ended.
+    if (chain && TA !== prevLinked) chain = null;
+    prevLinked = null;
+    const bbA = calcTableBbox(TA); const bbB = calcTableBbox(TB);
+    const hA = A.pageObj.dims.height; const hB = B.pageObj.dims.height;
+
+    // Books mirror recto and verso margins, so columns are compared after removing the median offset rather than at absolute positions.
+    const xsA = tableXs(TA); const xsB = tableXs(TB);
+    let residual = Infinity;
+    if (xsA.length === xsB.length && xsA.length >= 2) {
+      const deltas = xsA.map((x, k) => xsB[k] - x).sort((a, b) => a - b);
+      const off = deltas[Math.floor(deltas.length / 2)];
+      residual = Math.max(...deltas.map((d) => Math.abs(d - off)));
+    }
+    // Text-detected columns jitter across pages, so bare geometry is held tighter than a boundary backed by a repeated header row.
+    if (residual > 30) { chain = null; continue; }
+
+    // Real content between the fragments breaks the chain.
+    // Page furniture, the extreme margin bands, and "continued" wording do not, the last being evidence for the link rather than content.
+    let tailBlock = false;
+    let contWordingTail = false;
+    for (const ln of A.pageObj.lines) {
+      if (ln.bbox.top <= bbA.bottom + 4) continue;
+      if (parIsFurniture(ln.par) || ln.bbox.top > hA * 0.915) continue;
+      const raw = lineText(ln);
+      if (CONT_RE.test(raw)) { contWordingTail = true; if (!stripCont(raw)) continue; }
+      tailBlock = true; break;
+    }
+    const chainTitle = chain ? chain.title : (TA.title ? stripCont(TA.title.text) : null);
+    // Continuation pages repeat the heading block above the table, so a line above the candidate blocks only when the previous fragment's page lacks the same text above its own.
+    const echoSet = new Set();
+    if (chainTitle) echoSet.add(chainTitle);
+    for (const ln of A.pageObj.lines) {
+      if (ln.bbox.bottom > bbA.top || ln.bbox.bottom < bbA.top - hA * 0.12) continue;
+      const nt = stripCont(lineText(ln));
+      if (nt) echoSet.add(nt);
+    }
+    let contWording = contWordingTail || !!(TB.title && CONT_RE.test(TB.title.text));
+    let headBlock = false;
+    for (const ln of B.pageObj.lines) {
+      if (ln.bbox.bottom >= bbB.top - 4) continue;
+      if (parIsFurniture(ln.par) || ln.bbox.bottom < hB * 0.085) continue;
+      if (TB.title && ln.bbox.top < TB.title.bbox.bottom && ln.bbox.bottom > TB.title.bbox.top) continue;
+      const raw = lineText(ln);
+      if (CONT_RE.test(raw)) { contWording = true; if (!stripCont(raw)) continue; }
+      if (echoSet.has(stripCont(raw))) continue;
+      headBlock = true; break;
+    }
+    if (tailBlock || headBlock) { chain = null; continue; }
+
+    // A fresh independent caption on the continuation candidate means a different table.
+    const tbTitle = TB.title ? stripCont(TB.title.text) : null;
+    const titleDiff = tbTitle !== null && (chainTitle !== null
+      ? tbTitle !== chainTitle
+      : !CONT_RE.test(TB.title.text));
+    if (titleDiff) { chain = null; continue; }
+
+    const headerRow = chain ? chain.headerRow : row0Text(A.pageObj, TA);
+    const rowB0 = row0Text(B.pageObj, TB);
+    const repeatedHeader = !!headerRow && headerRow.length >= 6 && headerRow === rowB0;
+    // Silent linking takes explicit "continued" wording plus tight geometry and a first fragment that actually ran out of page.
+    // A repeated header row must not promote a boundary to a silent link, however tight its geometry.
+    // Sibling tables that repeat one header down a section (per-period statements, per-section spec tables) are the largest source of wrong links, and they clear every other test here.
+    if (contWording && residual <= 8 && bbA.bottom >= hA * 0.72) {
+      TB.continuesPrev = true;
+      chain = { headerRow, title: chainTitle ?? tbTitle };
+      prevLinked = TB;
+    } else if (repeatedHeader || residual <= 15) {
+      suggestions.push({
+        n: i, prevN: i - 1, tableId: TB.id, prevTableId: TA.id, reason: repeatedHeader ? 'repeated header' : 'columns align',
+      });
+      chain = null;
+    } else {
+      chain = null;
+    }
+  }
+  return suggestions;
 }
 
 /**
@@ -1422,7 +1533,7 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
     }
   }
 
-  promoteContinuationTables(results);
+  results.tableLinkSuggestions = promoteContinuationTables(results);
 
   let pdfType = 'text';
   try { pdfType = determinePdfType(results.map((r) => r && r.pageStats).filter(Boolean), results.length).type; } catch { /*  */ }

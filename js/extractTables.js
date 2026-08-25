@@ -1,7 +1,7 @@
 import ocr from './objects/ocrObjects.js';
 import { calcBoxOverlap } from './utils/miscUtils.js';
 import {
-  LayoutDataColumn, LayoutDataTable, LayoutDataTablePage, layoutBoxIncludes,
+  LayoutDataColumn, LayoutDataTable, LayoutDataTablePage, layoutBoxIncludes, calcTableBbox,
 } from './objects/layoutObjects.js';
 
 /**
@@ -301,5 +301,72 @@ export function extractTextFromTables(ocrPage, layoutPage) {
       return col.map((w) => w.text).join(' ');
     }));
     return { id: table.id, rows };
+  });
+}
+
+/**
+ * Group the document's tables into chains of `continuesPrev` fragments, in document order.
+ * An unchained table is a chain of one.
+ * @param {Array<import('./objects/layoutObjects.js').LayoutDataTablePage>} layoutPageArr
+ * @returns {Array<Array<{table: LayoutDataTable, n: number}>>}
+ */
+export function tableChains(layoutPageArr) {
+  /** @type {Array<{table: LayoutDataTable, n: number}>} */
+  const ordered = [];
+  for (const page of layoutPageArr) {
+    if (!page?.tables?.length) continue;
+    const entries = page.tables.map((table) => ({ table, n: page.n }));
+    entries.sort((a, b) => calcTableBbox(a.table).top - calcTableBbox(b.table).top);
+    ordered.push(...entries);
+  }
+  /** @type {Array<Array<{table: LayoutDataTable, n: number}>>} */
+  const chains = [];
+  for (const entry of ordered) {
+    if (entry.table.continuesPrev && chains.length > 0) chains[chains.length - 1].push(entry);
+    else chains.push([entry]);
+  }
+  return chains;
+}
+
+/**
+ * Display name for a chain, used as its export sheet name.
+ * The head fragment's own title when present, else "Page N Table M" or "Pages A-B Table M", numbering the head by its position down its page.
+ * @param {Array<import('./objects/layoutObjects.js').LayoutDataTablePage>} layoutPageArr
+ * @param {Array<{table: LayoutDataTable, n: number}>} chain
+ */
+export function tableChainName(layoutPageArr, chain) {
+  const head = chain[0];
+  if (head.table.title?.text) return head.table.title.text;
+  const pageTables = layoutPageArr[head.n].tables.slice().sort((a, b) => calcTableBbox(a).top - calcTableBbox(b).top);
+  const m = pageTables.indexOf(head.table) + 1;
+  const last = chain[chain.length - 1].n;
+  return chain.length > 1 ? `Pages ${head.n + 1}–${last + 1} Table ${m}` : `Page ${head.n + 1} Table ${m}`;
+}
+
+/**
+ * Extract every logical table of the document, each `continuesPrev` chain stitched into one row list.
+ * A continuation fragment's first row is dropped when its text exactly matches the chain head's first row.
+ * @param {Array<OcrPage>} ocrPageArr
+ * @param {Array<import('./objects/layoutObjects.js').LayoutDataTablePage>} layoutPageArr
+ * @returns {Array<{fragments: Array<{table: LayoutDataTable, n: number, rows: Array<Array<string>>, headerDeduped: boolean}>, rows: Array<Array<string>>}>}
+ */
+export function extractDocTableChains(ocrPageArr, layoutPageArr) {
+  const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  return tableChains(layoutPageArr).map((chain) => {
+    /** @type {?string} */
+    let headerRow = null;
+    const fragments = chain.map(({ table, n }, fi) => {
+      let rows = extractTextFromTables(ocrPageArr[n], /** @type {any} */ ({ tables: [table] }))[0]?.rows || [];
+      if (fi === 0) headerRow = rows.length ? norm(rows[0].join(' ')) : null;
+      let headerDeduped = false;
+      if (fi > 0 && headerRow && headerRow.length >= 6 && rows.length && norm(rows[0].join(' ')) === headerRow) {
+        rows = rows.slice(1);
+        headerDeduped = true;
+      }
+      return {
+        table, n, rows, headerDeduped,
+      };
+    });
+    return { fragments, rows: fragments.flatMap((f) => f.rows) };
   });
 }

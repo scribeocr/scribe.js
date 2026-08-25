@@ -755,6 +755,13 @@ export class ScribeDoc {
     this.nativeText = { pages: [] };
 
     /**
+     * Cross-page table links the automatic pass found plausible but would not make on its own.
+     * In-memory only, recomputed at import and never serialized.
+     * @type {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>}
+     */
+    this.tableLinkSuggestions = [];
+
+    /**
      * Assistant conversations, in creation order.
      * Serialized only into the `.scribe` `session` block, so a default export omits it.
      * @type {{chats: Array<AssistantChatRecord>}}

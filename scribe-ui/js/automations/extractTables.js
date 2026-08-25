@@ -1,10 +1,14 @@
 import scribe from '../../../scribe.js';
-import { pulseTable } from '../viewerLayout.js';
+import { pulseTable, linkTables } from '../viewerLayout.js';
 
 const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const INFO_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
+const LINK_SVG = lineIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
+const CHEV_R_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
+const CHECK_MINI_SVG = lineIcon('<path d="M4.5 12.5 10 18 19.5 7"/>');
+const X_MINI_SVG = lineIcon('<path d="M6 6l12 12M18 6 6 18"/>');
 
 /**
  * One icon-plus-text note block.
@@ -105,7 +109,7 @@ function buildOptions(host, onChange) {
   elem.appendChild(workbookRow);
   const workbookHint = document.createElement('div');
   workbookHint.className = 'scribe-am-boost-hint';
-  workbookHint.textContent = 'Sheets named from table titles when found, else \u201cPage N Table M\u201d.';
+  workbookHint.textContent = 'Sheets named from table titles when found, else \u201cPage N Table M\u201d (\u201cPages A\u2013B Table M\u201d across pages).';
   elem.appendChild(workbookHint);
 
   return {
@@ -115,7 +119,8 @@ function buildOptions(host, onChange) {
       if (currentPage.input.checked) pagesPart = 'Current page';
       else if (rangePages.input.checked) pagesPart = rangeInput.value.trim() ? `Pages ${rangeInput.value.trim()}` : 'Range \u2014 set pages';
       const wbPart = flatSheet.input.checked ? 'single flat sheet' : 'one sheet per table';
-      return `${pagesPart} \u00b7 ${wbPart}`;
+      const sheets = flatSheet.input.checked ? 1 : scribe.tableChains(host.viewer.doc.layoutDataTables.pages).length;
+      return `${pagesPart} \u00b7 ${wbPart}${sheets > 0 ? ` \u00b7 ${sheets} sheet${sheets === 1 ? '' : 's'}` : ''}`;
     },
     getParams: () => {
       /** @type {?Array<number>} null = all pages. */
@@ -143,15 +148,18 @@ export function buildTablesWorkspace(host, container) {
   const doc = viewer.doc;
 
   const noteText = () => {
-    let tables = 0;
-    let pages = 0;
-    for (const page of viewer.doc.layoutDataTables.pages) {
-      if (page.tables.length === 0) continue;
-      tables += page.tables.length;
-      pages += 1;
+    const chains = scribe.tableChains(viewer.doc.layoutDataTables.pages);
+    if (chains.length === 0) return 'No tables detected in this document.';
+    const spanning = chains.filter((c) => c.length > 1);
+    const count = `${chains.length} table${chains.length === 1 ? '' : 's'}`;
+    let spanPart = '';
+    if (spanning.length === 1) {
+      const c = spanning[0];
+      spanPart = ` (one across pages ${c[0].n + 1}\u2013${c[c.length - 1].n + 1})`;
+    } else if (spanning.length > 1) {
+      spanPart = ` (${spanning.length} span multiple pages)`;
     }
-    if (tables === 0) return 'No tables detected in this document.';
-    return `${tables} table${tables === 1 ? '' : 's'} on ${pages} page${pages === 1 ? '' : 's'} \u2014 click a table to review it on the page; drag its lines to fix it.`;
+    return `${count}${spanPart} \u2014 click a table to review it on the page; drag its lines to fix it.`;
   };
   let note;
   if (doc._textReadySettle) {
@@ -174,42 +182,137 @@ export function buildTablesWorkspace(host, container) {
 
   /** @type {?string} */
   let selectedId = null;
+  /** Chain head ids whose per-fragment sub-rows are open. */
+  const expanded = new Set();
 
-  const tableEntries = () => {
-    const out = [];
-    for (const page of viewer.doc.layoutDataTables.pages) {
-      page.tables.forEach((table, idx) => out.push({ table, n: page.n, m: idx + 1 }));
-    }
-    return out;
+  const chainEntries = () => scribe.tableChains(viewer.doc.layoutDataTables.pages).map((chain) => {
+    const head = chain[0];
+    const pageTables = viewer.doc.layoutDataTables.pages[head.n].tables.slice()
+      .sort((a, b) => scribe.layout.calcTableBbox(a).top - scribe.layout.calcTableBbox(b).top);
+    const m = pageTables.indexOf(head.table) + 1;
+    const last = chain[chain.length - 1].n;
+    const pagesPart = chain.length > 1 ? `Pages ${head.n + 1}\u2013${last + 1}` : `Page ${head.n + 1}`;
+    // This fallback has to match the sheet name `run` writes.
+    const name = head.table.title?.text || `${pagesPart} Table ${m}`;
+    const meta = head.table.title?.text ? ` \u00b7 ${pagesPart}` : '';
+    return {
+      chain, head: head.table, n: head.n, name, meta,
+    };
+  });
+
+  const glyphSpan = (svg, visible, cls = '') => {
+    const g = document.createElement('span');
+    g.className = `scribe-am-xtglyph${cls ? ` ${cls}` : ''}`;
+    g.innerHTML = svg;
+    if (!visible) g.style.visibility = 'hidden';
+    return g;
+  };
+  const selectFragment = async (table, n) => {
+    selectedId = table.id;
+    viewer.state.activeTableId = table.id;
+    renderList();
+    // Refreshed, so the overlays restyle for the new active table even when the page is already rendered.
+    await viewer.displayPage(n, true, true);
+    if (!viewer.state.tablePreview) pulseTable(viewer, table);
   };
 
   const renderList = () => {
     listElem.textContent = '';
-    const entries = tableEntries();
+    const entries = chainEntries();
     entries.forEach((e) => {
       const row = document.createElement('div');
-      row.className = `scribe-am-xtrow${e.table.id === selectedId ? ' sel' : ''}`;
+      const holdsSelected = e.chain.some((f) => f.table.id === selectedId);
+      row.className = `scribe-am-xtrow${holdsSelected ? ' sel' : ''}`;
       row.tabIndex = 0;
+      const multi = e.chain.length > 1;
+      const chev = glyphSpan(CHEV_R_SVG, multi, 'chev');
+      if (multi && expanded.has(e.head.id)) chev.classList.add('open');
+      if (multi) {
+        chev.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          if (expanded.has(e.head.id)) expanded.delete(e.head.id); else expanded.add(e.head.id);
+          renderList();
+        });
+      }
+      row.appendChild(chev);
+      row.appendChild(glyphSpan(LINK_SVG, multi, 'link'));
       const tx = document.createElement('span');
       tx.className = 'scribe-am-xtrow-tx';
-      // This fallback has to match the sheet name `run` writes.
-      const name = e.table.title?.text || `Page ${e.n + 1} Table ${e.m}`;
-      const meta = e.table.title?.text ? ` \u00b7 Page ${e.n + 1}` : '';
-      tx.textContent = `${name}${meta} \u00b7 ${e.table.boxes.length} column${e.table.boxes.length === 1 ? '' : 's'}`;
+      const cols = e.head.boxes.length;
+      tx.textContent = `${e.name}${e.meta} \u00b7 ${cols} column${cols === 1 ? '' : 's'}`;
       tx.title = tx.textContent;
       row.appendChild(tx);
-      const select = async () => {
-        selectedId = e.table.id;
-        viewer.state.activeTableId = e.table.id;
-        renderList();
-        // Refreshed, so the overlays restyle for the new active table even when the page is already rendered.
-        await viewer.displayPage(e.n, true, true);
-        if (!viewer.state.tablePreview) pulseTable(viewer, e.table);
-      };
+      const select = () => selectFragment(e.head, e.n);
       row.addEventListener('click', select);
       row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') select(); });
       listElem.appendChild(row);
+      if (multi && expanded.has(e.head.id)) {
+        for (const frag of e.chain) {
+          const sub = document.createElement('div');
+          sub.className = `scribe-am-xtrow sub${frag.table.id === selectedId ? ' sel' : ''}`;
+          sub.tabIndex = 0;
+          const stx = document.createElement('span');
+          stx.className = 'scribe-am-xtrow-tx';
+          stx.textContent = `Page ${frag.n + 1}`;
+          sub.appendChild(stx);
+          const subSelect = () => selectFragment(frag.table, frag.n);
+          sub.addEventListener('click', subSelect);
+          sub.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') subSelect(); });
+          listElem.appendChild(sub);
+        }
+      }
     });
+
+    const sugs = (viewer.doc.tableLinkSuggestions || [])
+      .map((s) => ({ s, table: viewer.doc.layoutDataTables.pages[s.n]?.tables.find((t) => t.id === s.tableId) }))
+      .filter((x) => x.table && !x.table.continuesPrev);
+    if (sugs.length > 0) {
+      const divider = document.createElement('div');
+      divider.className = 'scribe-am-xtsugdiv';
+      const dl = document.createElement('span');
+      dl.textContent = 'Suggested';
+      const all = document.createElement('button');
+      all.type = 'button';
+      all.className = 'scribe-am-xtsugall';
+      all.textContent = 'Confirm all';
+      all.addEventListener('click', () => { for (const x of sugs) linkTables(viewer, x.table); });
+      divider.append(dl, all);
+      listElem.appendChild(divider);
+      for (const { s, table } of sugs) {
+        const row = document.createElement('div');
+        row.className = 'scribe-am-xtrow';
+        row.tabIndex = 0;
+        row.appendChild(glyphSpan(CHEV_R_SVG, false, 'chev'));
+        row.appendChild(glyphSpan(LINK_SVG, true, 'link muted'));
+        const tx = document.createElement('span');
+        tx.className = 'scribe-am-xtrow-tx';
+        tx.innerHTML = `Pages ${s.prevN + 1}\u2013${s.n + 1} <span class="scribe-am-xtwhy">\u00b7 ${s.reason}</span>`;
+        tx.title = `Pages ${s.prevN + 1}\u2013${s.n + 1} \u00b7 ${s.reason}`;
+        row.appendChild(tx);
+        const acts = document.createElement('span');
+        acts.className = 'scribe-am-xtsugacts';
+        const mkAct = (svg, title, handler, muted) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.title = title;
+          b.className = `scribe-am-xtsugact${muted ? ' muted' : ''}`;
+          b.innerHTML = svg;
+          b.addEventListener('click', (ev) => { ev.stopPropagation(); handler(); });
+          return b;
+        };
+        acts.appendChild(mkAct(CHECK_MINI_SVG, 'Link tables', () => linkTables(viewer, table), false));
+        acts.appendChild(mkAct(X_MINI_SVG, 'Dismiss', () => {
+          const idx = viewer.doc.tableLinkSuggestions.indexOf(s);
+          if (idx >= 0) viewer.doc.tableLinkSuggestions.splice(idx, 1);
+          renderList();
+        }, true));
+        row.appendChild(acts);
+        const goTo = () => selectFragment(table, s.n);
+        row.addEventListener('click', goTo);
+        row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') goTo(); });
+        listElem.appendChild(row);
+      }
+    }
   };
 
   const foot = document.createElement('div');
@@ -221,7 +324,6 @@ export function buildTablesWorkspace(host, container) {
   sum.type = 'button';
   sum.className = 'scribe-am-xtsum';
   const sumTx = document.createElement('span');
-  sumTx.textContent = 'All pages \u00b7 one sheet per table';
   const sumChev = document.createElement('span');
   sumChev.innerHTML = CHEV_SVG;
   sumChev.style.cssText = 'width:11px;height:11px;flex:none;margin-left:auto';
@@ -323,18 +425,21 @@ export function buildTablesWorkspace(host, container) {
     renderReceipt();
   });
 
-  selectedId = tableEntries()[0]?.table.id ?? null;
+  selectedId = chainEntries()[0]?.head.id ?? null;
   renderList();
+  sumTx.textContent = options.summarize();
 
   return {
     refresh: () => {
-      const entries = tableEntries();
+      const entries = chainEntries();
+      const allIds = new Set(entries.flatMap((e) => e.chain.map((f) => f.table.id)));
       const activeId = viewer.state.activeTableId;
-      if (activeId && entries.some((e) => e.table.id === activeId)) selectedId = activeId;
+      if (activeId && allIds.has(activeId)) selectedId = activeId;
       else if (activeId) viewer.state.activeTableId = null;
       // Undo and redo install clones, so the selection has to re-resolve by id rather than by identity.
-      if (!selectedId || !entries.some((e) => e.table.id === selectedId)) selectedId = entries[0]?.table.id ?? null;
+      if (!selectedId || !allIds.has(selectedId)) selectedId = entries[0]?.head.id ?? null;
       renderList();
+      sumTx.textContent = options.summarize();
       if (!viewer.doc._textReadySettle && note.isConnected) {
         const settled = noteBlock(INFO_SVG, noteText());
         note.replaceWith(settled);
@@ -364,18 +469,22 @@ export async function run(host, params, progress) {
 
   /** @type {Array<{name: string, rows: Array<Array<string>>}>} */
   const harvested = [];
-  for (let i = 0; i < scope.length; i++) {
-    const n = scope[i];
-    progress((i + 1) / (scope.length + 1), `Extracting page ${n + 1}…`);
-    const layoutPage = doc.layoutDataTables.pages[n];
-    const extracted = scribe.extractTextFromTables(doc.ocr.active[n], layoutPage);
-    extracted.forEach((table, idx) => {
-      harvested.push({
-        name: layoutPage.tables[idx].title?.text || `Page ${n + 1} Table ${idx + 1}`,
-        rows: table.rows,
-      });
+  const scopeSet = new Set(scope);
+  progress(0.2, 'Extracting tables\u2026');
+  const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages);
+  for (const chain of chains) {
+    const frags = chain.fragments.filter((f) => scopeSet.has(f.n));
+    if (frags.length === 0) continue;
+    const head = chain.fragments[0];
+    const pageTables = doc.layoutDataTables.pages[head.n].tables.slice()
+      .sort((a, b) => scribe.layout.calcTableBbox(a).top - scribe.layout.calcTableBbox(b).top);
+    const m = pageTables.indexOf(head.table) + 1;
+    const first = frags[0].n; const last = frags[frags.length - 1].n;
+    const pagesPart = frags.length > 1 ? `Pages ${first + 1}\u2013${last + 1}` : `Page ${first + 1}`;
+    harvested.push({
+      name: head.table.title?.text || `${pagesPart} Table ${m}`,
+      rows: frags.flatMap((f) => f.rows),
     });
-    if (i % 10 === 9) await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
 
   if (harvested.length === 0) {

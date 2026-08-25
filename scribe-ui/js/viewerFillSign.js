@@ -32,6 +32,8 @@ const ICON_SIGN = editIcon('<path d="M3.5 17c3-6.5 5.5-9.5 6.8-8.5 1.4 1-2.7 8.2
 const ICON_PLUS = editIcon('<path d="M12 5v14M5 12h14"/>');
 const ICON_GRIP = editIcon('<circle cx="9" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/><circle cx="9" cy="12" r="1.2"/>'
   + '<circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="17" r="1.2"/><circle cx="15" cy="17" r="1.2"/>', 0);
+// Same geometry as the toolbar's UNDO_SVG, redrawn here because importing toolbar.js would close an import cycle.
+const ICON_UNDO = editIcon('<path d="M8.2 5.8 4.5 9.5l3.7 3.7"/><path d="M4.5 9.5H14a5 5 0 0 1 0 10H9.5"/>');
 
 // Check/cross mark strokes in a unit box, scaled to the placement box.
 const CHECK_STROKES = [[[0.1, 0.55], [0.38, 0.85], [0.9, 0.15]]];
@@ -469,6 +471,9 @@ export function renderPageFillItems(viewer, n) {
       el.style.top = `${row.bbox.top}px`;
       el.style.width = `${row.bbox.right - row.bbox.left}px`;
       el.style.height = `${row.bbox.bottom - row.bbox.top}px`;
+      // The pad and selection frame read these to stop shrinking below their 26 screen px floor.
+      el.style.setProperty('--scribe-item-w', `${row.bbox.right - row.bbox.left}px`);
+      el.style.setProperty('--scribe-item-h', `${row.bbox.bottom - row.bbox.top}px`);
       if (isFillText) {
         el.classList.add('scribe-item-text');
         el.style.fontSize = `${row.fontSize}px`;
@@ -499,14 +504,20 @@ export function renderPageFillItems(viewer, n) {
         img.draggable = false;
         el.appendChild(img);
       }
+      const pad = document.createElement('div');
+      pad.className = 'scribe-item-pad';
+      el.appendChild(pad);
       if (sel && sel.row === row) {
         el.classList.add('scribe-item-sel');
+        const frame = document.createElement('div');
+        frame.className = 'scribe-item-frame';
         for (const corner of ['nw', 'ne', 'sw', 'se']) {
           const dot = document.createElement('div');
           dot.className = `scribe-item-dot scribe-item-dot-${corner}`;
           dot.dataset.corner = corner;
-          el.appendChild(dot);
+          frame.appendChild(dot);
         }
+        el.appendChild(frame);
       }
       wireItemPointer(viewer, n, row, el);
       itemElems.set(el, { n, row });
@@ -782,18 +793,24 @@ export function createFillSignPalette(app) {
   grip.innerHTML = ICON_GRIP;
   pal.appendChild(grip);
 
+  const undoBtn = iconButton('Undo', ICON_UNDO);
+  undoBtn.classList.add('scribe-fs-undo');
+  undoBtn.addEventListener('click', () => {
+    if (!undoBtn.classList.contains('disabled')) app._doUndo?.(false);
+  });
+  app._fsUndoBtn = undoBtn;
   const textBtn = iconButton('Add text', ICON_TEXT);
   const checkBtn = iconButton('Check mark', ICON_CHECK);
   const crossBtn = iconButton('Cross mark', ICON_CROSS);
   const signBtn = iconButton('Signature', ICON_SIGN);
-  // The labels show only in the phone layout, where the palette is a docked tool bar.
+  // The labels show only in the phone UI, where the palette is a docked tool bar.
   for (const [btn, lbl] of [[textBtn, 'Text'], [checkBtn, 'Check'], [crossBtn, 'Cross'], [signBtn, 'Sign']]) {
     const s = document.createElement('span');
     s.className = 'scribe-fs-lbl';
     s.textContent = lbl;
     btn.appendChild(s);
   }
-  pal.append(textBtn, checkBtn, crossBtn, signBtn);
+  pal.append(undoBtn, textBtn, checkBtn, crossBtn, signBtn);
 
   /** @type {null | {kind: 'text'|'check'|'cross'} | {kind: 'sig', asset: SignatureAsset}} */
   let armed = null;
@@ -954,46 +971,56 @@ export function createFillSignPalette(app) {
       color: '#101010',
     });
     refreshItems(viewer, n);
+    // On the phone the mark lands under the finger, so a pulse ring is the visible receipt.
+    // The pulse is appended after the re-render, which replaces the group's children.
+    if (viewer._phoneUi) {
+      const group = viewer.getItemsGroup(n);
+      if (group) {
+        const pulse = document.createElement('div');
+        pulse.className = 'scribe-item-pulse';
+        pulse.style.left = `${left + side / 2}px`;
+        pulse.style.top = `${top + side / 2}px`;
+        group.appendChild(pulse);
+        setTimeout(() => pulse.remove(), 700);
+      }
+    }
+  };
+
+  /**
+   * The nearest detected checkbox within snapping reach of page point (x, y), or null.
+   * @param {number} n
+   * @param {number} x
+   * @param {number} y
+   */
+  const snapTargetNear = (n, x, y) => {
+    let best = null;
+    let bestD = Infinity;
+    for (const t of fdTargets(viewer, n)) {
+      if (t.kind !== 'checkbox' || fdSuppressed(viewer, n, t)) continue;
+      const tw = t.bbox.right - t.bbox.left;
+      const th = t.bbox.bottom - t.bbox.top;
+      const d = Math.hypot(x - (t.bbox.left + tw / 2), y - (t.bbox.top + th / 2));
+      if (d <= 1.5 * Math.max(tw, th) && d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    return best;
   };
 
   // The armed check/cross ghost's current snap onto a detected checkbox, or null when free.
   /** @type {?{n: number, left: number, top: number, side: number, bbox: Object}} */
   let snapState = null;
 
-  // While armed, the press is handled in the capture phase and stopped there, so text selection never sees it.
-  const onScrollPress = (e) => {
-    if (e.button !== 0) return;
-    if (e.target instanceof Element && (pal.contains(e.target))) return;
-    if (!armed) {
-      // An unarmed click directly on a detected spot fills it: a check fitted to the box, or the text editor opened on the blank line.
-      // Clicks anywhere else keep their meaning, and clicks on existing items or live fields stay theirs.
-      if (e.target instanceof Element && e.target.closest('.scribe-item, .scribe-field')) return;
-      const pt = viewer.clientToPage(e.clientX, e.clientY);
-      if (pt == null || pt.n == null || pt.n < 0) return;
-      const hit = fdHitTarget(viewer, pt.n, pt.x, pt.y);
-      if (!hit) return;
-      e.preventDefault();
-      e.stopPropagation();
-      setFdOverlay(viewer, null);
-      if (hit.kind === 'checkbox') {
-        const side = Math.min(hit.bbox.right - hit.bbox.left, hit.bbox.bottom - hit.bbox.top);
-        placeMarkInSquare(pt.n, 'cross', (hit.bbox.left + hit.bbox.right) / 2 - side / 2,
-          (hit.bbox.top + hit.bbox.bottom) / 2 - side / 2, side);
-      } else {
-        const r = pxPerPt(viewer, pt.n);
-        const fontSize = Math.min(FILL_TEXT_PT * r, hit.bbox.bottom - hit.bbox.top);
-        // Anchored so the text baseline sits just above the blank's drawn line, where handwriting would go.
-        const row = viewer.doc.addFillText(pt.n, {
-          x: hit.bbox.left + 0.5 * r, y: hit.bbox.bottom - fontSize * 0.93, contents: '', fontSize,
-        });
-        openFillTextEditor(viewer, pt.n, row);
-      }
-      return;
-    }
-    const pt = viewer.clientToPage(e.clientX, e.clientY);
+  /**
+   * Place the armed item at client point (clientX, clientY).
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  const placeArmed = (clientX, clientY) => {
+    if (!armed) return;
+    const pt = viewer.clientToPage(clientX, clientY);
     if (pt == null || pt.n == null || pt.n < 0) return;
-    e.preventDefault();
-    e.stopPropagation();
     const r = pxPerPt(viewer, pt.n);
     if (armed.kind === 'sig') {
       placeSignatureAsset(viewer, pt.n, armed.asset, {
@@ -1010,15 +1037,80 @@ export function createFillSignPalette(app) {
       });
       disarm();
       openFillTextEditor(viewer, pt.n, row);
-    } else if (snapState && snapState.n === pt.n) {
-      // The snapped ghost places into the detected box exactly.
-      // Check/cross placement stays armed: forms need many of them.
-      placeMarkInSquare(pt.n, armed.kind, snapState.left, snapState.top, snapState.side);
     } else {
-      // Check/cross placement stays armed: forms need many of them.
-      const box = CHECK_BOX_PT * r;
-      placeMarkInSquare(pt.n, armed.kind, pt.x - box / 2, pt.y - box / 2, box);
+      const t = snapTargetNear(pt.n, pt.x, pt.y);
+      if (t) {
+        const side = Math.min(t.bbox.right - t.bbox.left, t.bbox.bottom - t.bbox.top);
+        placeMarkInSquare(pt.n, armed.kind, (t.bbox.left + t.bbox.right) / 2 - side / 2,
+          (t.bbox.top + t.bbox.bottom) / 2 - side / 2, side);
+      } else {
+        const box = CHECK_BOX_PT * r;
+        placeMarkInSquare(pt.n, armed.kind, pt.x - box / 2, pt.y - box / 2, box);
+      }
+      // Desktop keeps the tool armed after a mark, because a form needs many of them.
+      if (viewer._phoneUi) disarm();
     }
+  };
+
+  /**
+   * Fill the detected spot under an unarmed press.
+   * @param {number} n
+   * @param {Object} hit
+   */
+  const fillDetected = (n, hit) => {
+    setFdOverlay(viewer, null);
+    if (hit.kind === 'checkbox') {
+      const side = Math.min(hit.bbox.right - hit.bbox.left, hit.bbox.bottom - hit.bbox.top);
+      placeMarkInSquare(n, 'cross', (hit.bbox.left + hit.bbox.right) / 2 - side / 2,
+        (hit.bbox.top + hit.bbox.bottom) / 2 - side / 2, side);
+    } else {
+      const r = pxPerPt(viewer, n);
+      const fontSize = Math.min(FILL_TEXT_PT * r, hit.bbox.bottom - hit.bbox.top);
+      // Anchored so the text baseline sits just above the blank's drawn line, where handwriting would go.
+      const row = viewer.doc.addFillText(n, {
+        x: hit.bbox.left + 0.5 * r, y: hit.bbox.bottom - fontSize * 0.93, contents: '', fontSize,
+      });
+      openFillTextEditor(viewer, n, row);
+    }
+  };
+
+  // The press is handled in the capture phase and stopped there, so text selection never sees it.
+  const onScrollPress = (e) => {
+    if (e.button !== 0) return;
+    if (e.target instanceof Element && (pal.contains(e.target))) return;
+    if (!armed && e.target instanceof Element && e.target.closest('.scribe-item, .scribe-field')) return;
+    const pt = viewer.clientToPage(e.clientX, e.clientY);
+    if (pt == null || pt.n == null || pt.n < 0) return;
+    const hit = armed ? null : fdHitTarget(viewer, pt.n, pt.x, pt.y);
+    if (!armed && !hit) return;
+    e.preventDefault();
+    e.stopPropagation();
+    // A touch press places on a clean release, not on the press itself.
+    // One finger pans the viewport natively, so a drag from here is a pan and the browser cancels the pointer.
+    if (e.pointerType === 'touch') {
+      const downX = e.clientX;
+      const downY = e.clientY;
+      const wasArmed = !!armed;
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onTapMove);
+        window.removeEventListener('pointerup', onTapUp);
+        window.removeEventListener('pointercancel', cleanup);
+      };
+      const onTapMove = (mv) => {
+        if (Math.hypot(mv.clientX - downX, mv.clientY - downY) > 8) cleanup();
+      };
+      const onTapUp = () => {
+        cleanup();
+        if (wasArmed) placeArmed(downX, downY);
+        else fillDetected(pt.n, hit);
+      };
+      window.addEventListener('pointermove', onTapMove);
+      window.addEventListener('pointerup', onTapUp);
+      window.addEventListener('pointercancel', cleanup);
+      return;
+    }
+    if (armed) placeArmed(e.clientX, e.clientY);
+    else fillDetected(pt.n, hit);
   };
 
   const onScrollMove = (e) => {
@@ -1052,18 +1144,7 @@ export function createFillSignPalette(app) {
     // Within reach of a detected checkbox, the check/cross ghost adopts the box's exact position and size, and the box shows the snap ring.
     snapState = null;
     if (armed.kind === 'check' || armed.kind === 'cross') {
-      let best = null;
-      let bestD = Infinity;
-      for (const t of fdTargets(viewer, pt.n)) {
-        if (t.kind !== 'checkbox' || fdSuppressed(viewer, pt.n, t)) continue;
-        const tw = t.bbox.right - t.bbox.left;
-        const th = t.bbox.bottom - t.bbox.top;
-        const d = Math.hypot(pt.x - (t.bbox.left + tw / 2), pt.y - (t.bbox.top + th / 2));
-        if (d <= 1.5 * Math.max(tw, th) && d < bestD) {
-          bestD = d;
-          best = t;
-        }
-      }
+      const best = snapTargetNear(pt.n, pt.x, pt.y);
       if (best) {
         const side = Math.min(best.bbox.right - best.bbox.left, best.bbox.bottom - best.bbox.top);
         snapState = {
@@ -1106,10 +1187,15 @@ export function createFillSignPalette(app) {
       // A press with nothing left to close falls through to it and exits the mode.
       if (menu) { e.preventDefault(); closeMenu(); return; }
       if (armed) { e.preventDefault(); disarm(); return; }
-      if (selectedFillItem(viewer)) { e.preventDefault(); deselectFillItem(viewer); }
+      if (selectedFillItem(viewer)) {
+        e.preventDefault();
+        deselectFillItem(viewer);
+        app._syncPhoneVerbBar?.();
+      }
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFillItem(viewer)) {
       e.preventDefault();
       deleteSelectedFillItem(viewer);
+      app._syncPhoneVerbBar?.();
     }
   };
 
@@ -1137,6 +1223,7 @@ export function createFillSignPalette(app) {
 
   const show = () => {
     pal.style.display = '';
+    app._syncUndoState?.();
     // Registered in the capture phase because this palette is created after the mode-exit handler, and its Escape ladder must run first.
     document.addEventListener('keydown', onKey, true);
     viewer.scrollContainer?.addEventListener('pointerdown', onScrollPress, true);
@@ -1165,7 +1252,11 @@ export function createFillSignPalette(app) {
     show,
     hide,
     isOpen: () => pal.style.display !== 'none',
-    destroy: () => { hide(); pal.remove(); },
+    destroy: () => {
+      hide();
+      pal.remove();
+      if (app._fsUndoBtn) app._fsUndoBtn = null;
+    },
   };
 }
 

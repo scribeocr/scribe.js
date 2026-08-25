@@ -501,7 +501,7 @@ export class ScribeViewer {
     this._graphicsEditMenuTarget = null;
     /** @type {?() => {count: number, images: number, paths: number}} */
     this._graphicsEditSelectedCounts = null;
-    /** @type {?() => void} */
+    /** @type {?() => boolean} */
     this._graphicsEditDeleteSelection = null;
     /** @type {?() => ?{left: number, top: number, right: number, bottom: number}} Client-rect union of the graphics selection, anchoring the touch callout. */
     this._graphicsEditSelectionAnchor = null;
@@ -2203,17 +2203,23 @@ export class ScribeViewer {
 
     // Double-tap toggles between the width-fit zoom and a reading zoom anchored at the tap point.
     const dblTap = {
-      downX: 0, downY: 0, lastUpT: 0, lastUpX: 0, lastUpY: 0,
+      downX: 0, downY: 0, lastUpT: 0, lastUpX: 0, lastUpY: 0, downOwned: false,
     };
     scrollContainer.addEventListener('pointerdown', (event) => {
       if (event.pointerType !== 'touch') return;
       dblTap.downX = event.clientX;
       dblTap.downY = event.clientY;
+      // While a field editor is open every tap counts as owned, because at phone zoom a field is a few pixels tall and the second tap of a double tap often lands just outside it.
+      // The editor is read at press, because the focus change this press causes tears it down before the lift.
+      dblTap.downOwned = (event.target instanceof Element
+        && !!event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]'))
+        || !!this.elem?.querySelector('.scribe-field-input');
     });
     scrollContainer.addEventListener('pointerup', (event) => {
       if (event.pointerType !== 'touch') return;
       // In the editing modes every tap picks an object, so a second one must not also yank the page under the finger by zooming.
       if (this._editTextActive || this._graphicsEditActive) { dblTap.lastUpT = 0; return; }
+      if (dblTap.downOwned) { dblTap.lastUpT = 0; return; }
       if (this.mode !== 'select' || this.drag.isPinching
         || performance.now() - this._lastPinchEndT < 300
         || (this.useCustomSelection && this.textSel?.isDragging())) { dblTap.lastUpT = 0; return; }

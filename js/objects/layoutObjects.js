@@ -132,6 +132,12 @@ export class LayoutDataTable {
     this.detectionMethod = 'text';
     /** @type {{ text: string, bbox: {left: number, top: number, right: number, bottom: number} } | null} */
     this.title = null;
+    /**
+     * Whether this table continues the immediately preceding table in document order, pages ascending and top to bottom within a page.
+     * The fragments of one logical table split across a page break form a chain of these links.
+     * @type {boolean}
+     */
+    this.continuesPrev = false;
   }
 }
 
@@ -224,6 +230,7 @@ const layout = {
   addCircularRefsDataTables,
   removeCircularRefsRegions,
   addCircularRefsRegions,
+  calcTableBbox,
 };
 
 export default layout;

@@ -144,6 +144,21 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-xtrow:hover { background: var(--scribe-hover); }
     .${r} .scribe-am-xtrow.sel { background: var(--scribe-active); }
     .${r} .scribe-am-xtrow-tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-xtrow.sub { padding-left: 36px; font-size: 12px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-xtglyph { width: 13px; height: 13px; flex: none; color: var(--scribe-ink-3); display: inline-flex; }
+    .${r} .scribe-am-xtglyph.link { color: var(--scribe-accent); }
+    .${r} .scribe-am-xtglyph.link.muted { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-xtglyph.chev { cursor: pointer; transition: transform 140ms; }
+    .${r} .scribe-am-xtglyph.chev.open { transform: rotate(90deg); }
+    .${r} .scribe-am-xtsugdiv { display: flex; align-items: center; gap: 8px; padding: 10px 7px 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-xtsugdiv::after { content: ''; flex: 1; border-top: 1px solid var(--scribe-line); order: 1; }
+    .${r} .scribe-am-xtsugall { order: 2; border: 0; background: none; color: var(--scribe-accent); font: 600 11.5px inherit; font-family: inherit; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
+    .${r} .scribe-am-xtwhy { color: var(--scribe-ink-3); font-size: 11px; }
+    .${r} .scribe-am-xtsugacts { margin-left: auto; display: inline-flex; gap: 2px; flex: none; }
+    .${r} .scribe-am-xtsugact { border: 0; background: none; cursor: pointer; border-radius: 4px; padding: 2px; width: 20px; height: 20px; color: var(--scribe-accent); }
+    .${r} .scribe-am-xtsugact.muted { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-xtsugact:hover { background: var(--scribe-accent-wash); }
+    @media (prefers-reduced-motion: reduce) { .${r} .scribe-am-xtglyph.chev { transition: none; } }
     .${r} .scribe-am-xtfoot { flex: none; border-top: 1px solid var(--scribe-line); margin: 0 -12px -12px; padding: 8px 12px 12px; display: grid; gap: 8px; }
     .${r} .scribe-am-xtsum {
       display: flex; align-items: center; gap: 7px; width: 100%; box-sizing: border-box; border: none; background: none;

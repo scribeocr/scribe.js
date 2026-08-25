@@ -1165,6 +1165,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-fs-grip { width: 18px; height: 24px; color: var(--scribe-ink-3); display: flex; align-items: center; justify-content: center; }
     .${r} .scribe-fs-grip svg { width: 16px; height: 16px; fill: currentColor; }
     .${r} .scribe-fs-lbl { display: none; }
+    /* Undo shows only on the phone, where this mode otherwise has no undo control at all. */
+    .${r} .scribe-fs-undo { display: none; }
+    .${r}.scribe-phone .scribe-fs-pal .scribe-fs-undo { display: inline-flex; }
+    .${r}.scribe-phone.scribe-vbar-on .scribe-fs-pal { display: none; }
     /* On phone the palette restyles into a tool bar, in the same bottom slot the verb bar uses. */
     .${r}.scribe-phone .scribe-fs-pal { left: 0; right: 0; bottom: calc(56px + env(safe-area-inset-bottom, 0px));
       transform: none; height: 52px; box-sizing: border-box; z-index: 24; justify-content: center;

@@ -111,7 +111,7 @@ export async function extractInternalPDFText(doc, options = {}) {
     } catch { /* */ }
   }
 
-  promoteContinuationTables(pageResults);
+  doc.tableLinkSuggestions = promoteContinuationTables(pageResults);
 
   const tablePages = pageResults.map((result) => result.dataTablePage);
   addCircularRefsDataTables(tablePages);

@@ -1105,6 +1105,8 @@ export class TextSelection {
     // Non-primary buttons belong to the pan and the context menu.
     if (event.button !== 0) return;
     if (this.viewer.state.layoutMode || this.viewer.enableCanvasSelection) return;
+    // Nothing in Edit Graphics acts on text, so a press there belongs to that mode's own hit-testing.
+    if (this.viewer._graphicsEditActive) return;
     if (event.target instanceof Element
       && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
 

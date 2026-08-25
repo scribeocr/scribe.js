@@ -7,7 +7,9 @@ import { replaceType3FontsWithCorrected } from './js/export/pdf/replaceType3Font
 import { extractType3DistinctGlyphs } from './js/pdf/fonts/parsePdfFonts.js';
 import { writeHocr } from './js/export/writeHocr.js';
 import { writeText } from './js/export/writeText.js';
-import { createTablesFromText, extractSingleTableContent, extractTextFromTables } from './js/extractTables.js';
+import {
+  createTablesFromText, extractSingleTableContent, extractTextFromTables, tableChains, extractDocTableChains, tableChainName,
+} from './js/extractTables.js';
 import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { GlobalFonts } from './js/containers/fontContainer.js';
 import { gs } from './js/generalWorkerMain.js';
@@ -432,6 +434,9 @@ export default {
   extractTextDir,
   extractTextDirIter,
   extractTextFromTables,
+  tableChains,
+  extractDocTableChains,
+  tableChainName,
   terminate,
   utils,
   importFiles,
