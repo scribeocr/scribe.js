@@ -1108,7 +1108,7 @@ export class TextSelection {
     // Nothing in Edit Graphics acts on text, so a press there belongs to that mode's own hit-testing.
     if (this.viewer._graphicsEditActive) return;
     if (event.target instanceof Element
-      && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
+      && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, .scribe-redact-tab, [contenteditable]')) return;
 
     // A touch that moves is a pan, so a touch selection has to wait to see whether it holds still.
     if (event.pointerType === 'touch') {

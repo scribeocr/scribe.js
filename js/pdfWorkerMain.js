@@ -25,7 +25,7 @@ export class PdfScheduler {
 
   /**
    * Dispatch a single page for rendering via the scheduler.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
    * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args
    * @param {boolean} [forViewer=false] - Viewer renders are served ahead of background work.
    *   A superseded viewer render may be dropped, resolving to SKIPPED.
@@ -97,7 +97,7 @@ export class PdfSchedulerInProcess {
    * Render a single page to image data URL.
    * The viewer lane (`forViewer`) only exists to keep the worker queue bounded.
    * In-process renders always run, so it is accepted and ignored.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number }} args
    * @param {boolean} [forViewer=false]
    */
   // eslint-disable-next-line no-unused-vars

@@ -2057,7 +2057,7 @@ export class ScribeViewer {
       if (event.shiftKey || event.altKey) return;
       if (this.state.layoutMode || this.enableCanvasSelection) return;
       if (event.target instanceof Element
-        && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
+        && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-redact-tab, [contenteditable]')) return;
       if (this.useCustomSelection) {
         if (this._lastPrimaryPointerType !== 'touch') return;
         if (this.textSel && !this.textSel.isEmpty()) return;
@@ -2212,7 +2212,7 @@ export class ScribeViewer {
       // While a field editor is open every tap counts as owned, because at phone zoom a field is a few pixels tall and the second tap of a double tap often lands just outside it.
       // The editor is read at press, because the focus change this press causes tears it down before the lift.
       dblTap.downOwned = (event.target instanceof Element
-        && !!event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]'))
+        && !!event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, .scribe-redact-tab, [contenteditable]'))
         || !!this.elem?.querySelector('.scribe-field-input');
     });
     scrollContainer.addEventListener('pointerup', (event) => {

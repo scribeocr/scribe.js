@@ -323,6 +323,13 @@ async function restoreSessionFromFile(doc, scribeFile) {
     if (sessionEdits) doc.contentEdits.pages = sessionEdits;
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (Array.isArray(scribeRestoreObj.session.assistantChats)) doc.assistantChats.chats = scribeRestoreObj.session.assistantChats;
+    if (Array.isArray(scribeRestoreObj.session.redactions?.terms)) {
+      doc.redactions = {
+        terms: scribeRestoreObj.session.redactions.terms,
+        matchCase: !!scribeRestoreObj.session.redactions.matchCase,
+        scannedAt: scribeRestoreObj.session.redactions.scannedAt ?? null,
+      };
+    }
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
         const nt = scribeRestoreObj.session.nativeText[i];

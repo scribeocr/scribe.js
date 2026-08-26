@@ -19,7 +19,7 @@ const MAX_PAGE_URLS = 400;
  * @param {Blob} blob
  * @returns {Promise<string>}
  */
-const stableUrl = async (blob) => URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: blob.type || 'image/jpeg' }));
+const stableUrl = async (blob) => URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: blob.type }));
 
 class DocSession {
   /** @param {string} hash */
@@ -373,6 +373,30 @@ export class DocSessions {
     const again = s.pageUrls.get(n);
     if (again) return again;
     const url = await stableUrl(blob);
+    this.#rememberUrl(s, n, url);
+    return url;
+  }
+
+  /**
+   * Cache a freshly rendered page image so it serves like a stored raster, without writing it to disk.
+   * For documents measured too fast to keep rasters stored, where a search-hit row still needs its image.
+   * @param {string} hash
+   * @param {number} n
+   * @param {Blob} blob
+   */
+  adoptPageImage(hash, n, blob) {
+    const s = this.session(hash);
+    if (s.pageUrls.has(n)) return;
+    this.#rememberUrl(s, n, URL.createObjectURL(blob));
+  }
+
+  /**
+   * Cache a page-image object URL, revoking the oldest past the cap.
+   * @param {DocSession} s
+   * @param {number} n
+   * @param {string} url
+   */
+  #rememberUrl(s, n, url) {
     s.pageUrls.set(n, url);
     this.urlOrder.push({ session: s, n });
     while (this.urlOrder.length > MAX_PAGE_URLS) {
@@ -383,7 +407,6 @@ export class DocSessions {
         old.session.pageUrls.delete(old.n);
       }
     }
-    return url;
   }
 
   /**

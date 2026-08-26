@@ -237,7 +237,9 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     outline: envelope.outline,
     inputData: envelope.inputData,
     session: envelope.session
-      ? { v: envelope.session.v, fillText: envelope.session.fillText, assistantChats: envelope.session.assistantChats }
+      ? {
+        v: envelope.session.v, fillText: envelope.session.fillText, assistantChats: envelope.session.assistantChats, redactions: envelope.session.redactions,
+      }
       : undefined,
   };
   yield JSON.stringify(header);
@@ -399,8 +401,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
         let b = null;
         if (a.type === 'line') {
           b = {
-            left: Math.min(a.points[0], a.points[2]), top: Math.min(a.points[1], a.points[3]),
-            right: Math.max(a.points[0], a.points[2]), bottom: Math.max(a.points[1], a.points[3]),
+            left: Math.min(a.points[0], a.points[2]),
+            top: Math.min(a.points[1], a.points[3]),
+            right: Math.max(a.points[0], a.points[2]),
+            bottom: Math.max(a.points[1], a.points[3]),
           };
         } else if (a.type === 'polygon' || a.type === 'polyline') {
           const xs = a.vertices.filter((_, k) => k % 2 === 0);
@@ -853,6 +857,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         v: 1, contentEdits: doc.contentEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
       if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
+      if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {

@@ -3,7 +3,9 @@
 // Hit thumbnails come from stored rasters; a background warmer renders the missing ones one bounded import at a time.
 
 import scribeLib from '../../scribe.js';
-import { PAGE_RASTER_WIDTH } from './libraryIngest.js';
+import {
+  RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
+} from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
 import { buildPreviewSplit, getMatchRects, markOverlayHTML } from './libraryPreviewPane.js';
 
@@ -12,17 +14,6 @@ const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
 /** Characters of page text kept either side of a hit in its snippet. */
 const SNIPPET_RADIUS = 70;
-/**
- * Sidecar size past which the warm lane leaves a hit row blank.
- * Restoring a sidecar this large costs more than the thumbnail is worth; a preview or open still fills it.
- */
-const WARM_SIDECAR_LIMIT = 16 * 1024 * 1024;
-/**
- * PDF size past which the warm lane leaves a hit row blank.
- * Larger files fill on preview or open instead.
- * Sized to admit 500+ page books, which run 25-45MB and top the ranking for generic queries.
- */
-const WARM_PDF_LIMIT = 64 * 1024 * 1024;
 
 /**
  * Own the search-results view: one retained build at a time, plus the thumbnail pump and warm lane behind it.
@@ -36,9 +27,10 @@ const WARM_PDF_LIMIT = 64 * 1024 * 1024;
  * @param {() => string} deps.getQuery
  * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object) => Promise<void>} deps.openEntry
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
+ * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
  */
 export function createResultsView({
-  body, sessions, panes, getStore, getManifest, getResults, getQuery, openEntry, onBack,
+  body, sessions, panes, getStore, getManifest, getResults, getQuery, openEntry, onBack, saveManifestSoon,
 }) {
   /**
    * The retained search-results view: the built DOM plus its interaction state.
@@ -101,7 +93,7 @@ export function createResultsView({
     const hits = [];
     let active = -1;
 
-    const selectHit = (i, { immediate = false } = {}) => {
+    const selectHit = (i) => {
       active = i;
       hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
       if (i < 0) {
@@ -119,7 +111,6 @@ export function createResultsView({
         title: titleOf(h.relPath),
         meta: `Page ${h.pageN + 1} of ${h.entry.pageCount || 1}`,
         jump: true,
-        immediate,
       });
     };
 
@@ -263,28 +254,45 @@ export function createResultsView({
         /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
         let doc = null;
         let owned = false;
+        /** @type {?number} Start of a cold open, cleared once the first render completes the first-paint measurement. */
+        let coldStart = null;
         try {
           doc = sessions.peekLive(first.hash);
           if (!doc) {
+            // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive reads and import.
+            // A wait here means the timing below would be contended, so the measurement is skipped rather than recorded inflated.
+            const contended = panes.userLoadActive();
+            await panes.userLoadIdle();
+            if (myGen !== resultsGen) break;
+            const t0 = performance.now();
             const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
             const sidecar = await store.readSidecar(first.hash);
             if (sidecar) files.push(new File([sidecar], `${first.hash}.scribe`));
-            // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive import.
-            await panes.userLoadIdle();
-            if (myGen !== resultsGen) break;
             doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
             owned = true;
+            if (!contended) coldStart = t0;
           }
           // Stored rasters are keyed by the ingested page order, so a document that no longer matches its entry must stay blank.
           if (doc.pageMetrics.length !== first.entry.pageCount) continue;
           for (const t of batch) {
             if (myGen !== resultsGen) break;
+            if (coldStart !== null && panes.userLoadActive()) coldStart = null;
             await panes.userLoadIdle();
             t.warmed = true;
             if (!(await store.readPageRaster(t.hash, t.pageN))) {
-              const raster = await doc.images.renderThumbnail(t.pageN, PAGE_RASTER_WIDTH, 0.75, true);
+              const raster = await renderPageRaster(doc, t.pageN);
+              if (coldStart !== null) {
+                // Only the first render of the batch measures a first paint. The rest run on the open document and are warm.
+                first.entry.firstPaintMs = Math.round(performance.now() - coldStart);
+                coldStart = null;
+                saveManifestSoon();
+              }
               if (!raster) continue;
-              await store.writePageRaster(t.hash, t.pageN, raster);
+              if (first.entry.firstPaintMs !== undefined && first.entry.firstPaintMs < RASTER_STORE_MIN_MS) {
+                sessions.adoptPageImage(t.hash, t.pageN, raster);
+              } else {
+                await store.writePageRaster(t.hash, t.pageN, raster);
+              }
             }
             thumbQueue.push(t);
             pumpThumbs();
@@ -330,7 +338,7 @@ export function createResultsView({
       };
       hits.splice(insertAt, 0, hit);
       row.addEventListener('click', () => {
-        selectHit(hits.indexOf(hit), { immediate: true });
+        selectHit(hits.indexOf(hit));
         listEl.focus();
       });
       thumbQueue.push({

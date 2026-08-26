@@ -50,6 +50,8 @@ export const folderNameProblem = (name) => {
  * @property {boolean} [retried] - Set once the automatic retry for an interrupted failure has been spent.
  * @property {number} [order] - Manual position under the Custom sort; absent until the user first drag-reorders.
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
+ * @property {number} [firstPaintMs] - Measured cost, in ms, of a cold open of this document plus its first-page render.
+ *    Recorded only from an open the app performs anyway, never from one run to measure.
  * @property {number} [pageRasterW] - Pixel width of the stored page rasters.
  *    Read from older manifests, never written.
  */
@@ -526,7 +528,7 @@ export class LibraryStore {
    */
   async writePageRaster(hash, n, blob) {
     const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash, { create: true });
-    await writeFileIn(dir, `${n}.jpg`, blob);
+    await writeFileIn(dir, `${n}.webp`, blob);
     if (this.rasterBytes !== null) this.rasterBytes += blob.size;
   }
 
@@ -534,7 +536,7 @@ export class LibraryStore {
   async readPageRaster(hash, n) {
     try {
       const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash);
-      return await readFileIn(dir, `${n}.jpg`);
+      return await readFileIn(dir, `${n}.webp`);
     } catch {
       return null;
     }
@@ -600,8 +602,14 @@ export class LibraryStore {
       }
       let bytes = 0;
       // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const [, fileHandle] of handle.entries()) {
-        if (fileHandle.kind === 'file') bytes += (await fileHandle.getFile()).size;
+      for await (const [name, fileHandle] of handle.entries()) {
+        if (fileHandle.kind !== 'file') continue;
+        // Page rasters are WebP, so any other image here is stale and would otherwise hold budget forever.
+        if (name.endsWith('.jpg')) {
+          await deleteFileIn(handle, name);
+          continue;
+        }
+        bytes += (await fileHandle.getFile()).size;
       }
       kept.push({ hash, bytes, use: lastUse.get(hash) || 0 });
       total += bytes;

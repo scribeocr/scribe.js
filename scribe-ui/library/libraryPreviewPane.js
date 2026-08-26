@@ -2,9 +2,12 @@
 // with its own find bar, zoom, page nav, and match marks. Search results and the list views both mount one.
 // Seeding rather than importing is what lets a reader flip through documents without paying for a full load each time.
 
+import scribeLib from '../../scribe.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
 import { findText, goToMatch } from '../js/viewerSearch.js';
-import { PAGE_RASTER_WIDTH } from './libraryIngest.js';
+import {
+  PAGE_RASTER_WIDTH, RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
+} from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
 
 // eslint-disable-next-line max-len
@@ -15,9 +18,6 @@ const PANE_FIND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const PANE_ZOOM_OUT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12h12"/></svg>';
 // eslint-disable-next-line max-len
 const PANE_ZOOM_IN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
-
-/** How long a reader lingers on a rasterless page before it loads for real. */
-const DWELL_LOAD_MS = 2500;
 
 /**
  * The split shell shared by the search-results view and the list-view preview: a resizable left column, a drag sash, and room for the caller-appended right pane.
@@ -123,9 +123,10 @@ export const markOverlayHTML = (m) => {
  * @param {() => ?import('./libraryStore.js').LibraryStore} deps.getStore
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => void} deps.onRastersStored - Fires after a raster window lands, so blank rows elsewhere can retry.
+ * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
  */
 export function createPreviewPanes({
-  viewer, sessions, getStore, getManifest, onRastersStored,
+  viewer, sessions, getStore, getManifest, onRastersStored, saveManifestSoon,
 }) {
   /**
    * The pooled live document for a legacy entry that cannot seed (no stored pageDims), loading it on first use.
@@ -133,9 +134,13 @@ export function createPreviewPanes({
    * @param {string} hash
    */
   const sessionDoc = (relPath, hash) => sessions.liveDocOrLoad(
-    hash,
+    // Pending entries all carry an empty hash, and one shared pool key would hand every one of them the first loaded document.
+    hash || relPath,
     () => /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readFile(relPath).then((file) => openDocumentFromFile(file)),
   );
+
+  /** @type {?Promise<void>} Import of the in-flight preview hydration, so upgrades start at most one at a time. */
+  let hydrationBusy = null;
 
   /**
    * Count of imports the user is actively waiting on, such as a pane hydration or an open.
@@ -152,11 +157,13 @@ export function createPreviewPanes({
   const userLoadIdle = () => (userLoadsActive === 0 ? Promise.resolve() : new Promise((resolve) => { userIdleWaiters.push(resolve); }));
 
   /**
-   * Count a provisional document's eventual hydration as a user-facing load.
-   * Wraps `_requestHydration` so every trigger (dwell, click, scroll, promotion, save) pauses background warming for its duration.
+   * Count a provisional document's eventual hydration as a user-facing load, and measure it.
+   * Wraps `_requestHydration` so every trigger (selection, scroll, promotion, save) pauses background warming for its duration.
+   * A hydration request runs a cold open through to the first render, so its duration is recorded as the document's `firstPaintMs`.
    * @param {Object} seedDoc
+   * @param {{relPath: string}} target
    */
-  const countHydration = (seedDoc) => {
+  const countHydration = (seedDoc, target) => {
     const inner = seedDoc._requestHydration;
     if (!inner) return;
     let counted = false;
@@ -165,7 +172,18 @@ export function createPreviewPanes({
       if (!counted) {
         counted = true;
         beginUserLoad();
-        Promise.resolve(p).catch(() => {}).finally(endUserLoad);
+        const t0 = performance.now();
+        const track = Promise.resolve(p).then(() => {
+          const entry = getManifest()?.docs[target.relPath];
+          if (entry) {
+            entry.firstPaintMs = Math.round(performance.now() - t0);
+            saveManifestSoon();
+          }
+        }).catch(() => {}).finally(() => {
+          endUserLoad();
+          if (hydrationBusy === track) hydrationBusy = null;
+        });
+        hydrationBusy = track;
       }
       return p;
     };
@@ -183,6 +201,8 @@ export function createPreviewPanes({
     const store = getStore();
     if (!store || !entry?.hash || !d || d.id < 0) return;
     if (d.pageMetrics.length !== entry.pageCount) return;
+    // These renders run on an already-open document, so timing them here would understate a cold first paint.
+    if (entry.firstPaintMs !== undefined && entry.firstPaintMs < RASTER_STORE_MIN_MS) return;
     if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) return;
     const s = store;
     const { hash, pageCount } = entry;
@@ -190,7 +210,7 @@ export function createPreviewPanes({
       for (let n = Math.max(0, pageN - 2); n <= Math.min(pageCount - 1, pageN + 2); n++) {
         await userLoadIdle();
         if (await s.readPageRaster(hash, n)) continue;
-        const raster = await d.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
+        const raster = await renderPageRaster(d, n);
         if (raster) await s.writePageRaster(hash, n, raster);
       }
       // Freshly persisted pages may belong to blank search-result rows.
@@ -314,7 +334,9 @@ export function createPreviewPanes({
     /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
     let paneViewer = null;
     let token = 0;
-    /** @type {?{relPath: string, hash: string, pageN: number, query: ?string, handle: ?Object, window: ?{from: number, to: number}, live: ?Object}} */
+    /** @type {?string} Selection key (path, page, query) of the show in flight, so identical replays do not restart it. */
+    let showBusyKey = null;
+    /** @type {?{relPath: string, hash: string, pageN: number, query: ?string, handle: ?Object, window: ?{from: number, to: number}, live: ?Object, anchorTop?: ?number}} */
     let current = null;
     /** True when the shown document has session edits that are not yet in its sidecar. */
     let paneDirty = false;
@@ -355,6 +377,40 @@ export function createPreviewPanes({
         ps.state.searchMode = false;
         await ps.displayPage(target.pageN, true, false);
       }
+    };
+
+    /**
+     * Start the shown provisional document's full load, deferring while another preview hydration is still importing.
+     * @param {number} t
+     * @param {{hash: string, pageN: number}} target
+     */
+    const hydrate = (t, target) => {
+      if (!(t === token && paneViewer?.doc && paneViewer.doc.id < 0)) return;
+      if (hydrationBusy) {
+        hydrationBusy.then(() => hydrate(t, target));
+        return;
+      }
+      getStore()?.readPageRaster(target.hash, target.pageN).then((raster) => {
+        if (!raster && t === token && paneViewer?.doc && paneViewer.doc.id < 0) pvLoading.style.display = '';
+      }).catch(() => {});
+      /** @type {any} */ (paneViewer.doc)._requestHydration?.();
+    };
+
+    /**
+     * Start the shown target's upgrade to the real document.
+     * The stored raster keeps painting, and hydration swaps the real render in underneath.
+     * A document past the warm-lane size caps never loads automatically, so its preview waits for an explicit Open.
+     * @param {{hash: string, pageN: number, entry: import('./libraryStore.js').LibraryDocEntry}} target
+     * @param {number} t
+     */
+    const requestUpgrade = async (target, t) => {
+      const store = getStore();
+      if (!store || !paneViewer?.doc || paneViewer.doc.id >= 0) return;
+      if (target.entry.size > WARM_PDF_LIMIT) return;
+      const sidecarBytes = await store.sidecarSize(target.hash);
+      if (sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) return;
+      if (t !== token) return;
+      hydrate(t, target);
     };
 
     /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-in]')).addEventListener('click', () => {
@@ -447,6 +503,7 @@ export function createPreviewPanes({
 
     const showEmpty = () => {
       token++;
+      showBusyKey = null;
       endVeil();
       setLiveLocked(false);
       releaseDoc(current ? current.hash : null);
@@ -457,40 +514,6 @@ export function createPreviewPanes({
       pvLoading.style.display = 'none';
       pvEmpty.textContent = emptyText;
       pvEmpty.style.display = '';
-    };
-
-    /** @type {?number} */
-    let dwellTimer = null;
-
-    /**
-     * Arm the dwell load.
-     * Lingering on a page with no stored raster is what loads the image, so rapid flipping stays free.
-     * @param {{hash: string, pageN: number}} target
-     * @param {number} t
-     * @param {boolean} [immediate] Load now instead of after the dwell, for an explicit click on this hit.
-     */
-    const armDwell = async (target, t, immediate = false) => {
-      if (dwellTimer !== null) {
-        clearTimeout(dwellTimer);
-        dwellTimer = null;
-      }
-      const store = getStore();
-      if (!store || !paneViewer?.doc || paneViewer.doc.id >= 0) return;
-      if (await store.readPageRaster(target.hash, target.pageN)) return;
-      if (t !== token) return;
-      const hydrate = () => {
-        if (!(t === token && paneViewer?.doc && paneViewer.doc.id < 0)) return;
-        pvLoading.style.display = '';
-        /** @type {any} */ (paneViewer.doc)._requestHydration?.();
-      };
-      if (immediate) {
-        hydrate();
-        return;
-      }
-      dwellTimer = window.setTimeout(() => {
-        dwellTimer = null;
-        hydrate();
-      }, DWELL_LOAD_MS);
     };
 
     /** @type {?{elem: HTMLElement, timers: number[]}} */
@@ -558,25 +581,34 @@ export function createPreviewPanes({
      * A `jump` target lands on far pages by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
      * `target.meta` seeds the head's position line, which then tracks the reader's page.
      * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
-     *   pageN: number, query: ?string, title: string, meta: string, jump?: boolean, immediate?: boolean}} target
+     *   pageN: number, query: ?string, title: string, meta: string, jump?: boolean}} target
      */
     const show = async (target) => {
       // A width-fit while the surface is hidden commits zoom 0, which no later resize repairs.
       // Record the target for the reshow that runs when the surface is shown again.
       if (!pane.clientWidth) {
         token++;
+        showBusyKey = null;
         lastTarget = target;
         return;
       }
+      // Host re-renders and ingest churn replay the shown target, so one selection reaches here many times over.
+      // A replay must never restart the show in flight for it, because under load the restarts outpace the paints and the pane stays stuck on the previous document.
+      const selKey = `${target.relPath}|${target.pageN}|${target.query ?? ''}`;
+      if (showBusyKey === selKey) return;
       const t = ++token;
-      if (!current || current.hash !== target.hash) {
+      showBusyKey = selKey;
+      // Pending documents all carry an empty hash, so an empty hash identifies a document only together with its path.
+      const sameDoc = !!(current && current.hash === target.hash && (target.hash || current.relPath === target.relPath));
+      const changed = !sameDoc || !current || current.pageN !== target.pageN || current.query !== target.query;
+      if (!sameDoc) {
         pvFindInput.value = '';
         pvFindLast = '';
       }
       pvHead.style.display = '';
       /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
       // A host re-render of the already-shown document carries a stale initial position once the reader has scrolled, so the live state wins.
-      if (current && current.hash === target.hash && paneViewer?.doc) syncPosMeta();
+      if (sameDoc && paneViewer?.doc) syncPosMeta();
       else pvMeta.textContent = target.meta;
       pvEmpty.style.display = 'none';
       pvLoading.style.display = 'none';
@@ -611,10 +643,10 @@ export function createPreviewPanes({
         const liveDoc = liveTab && liveTab.doc && liveTab.doc.id >= 0 ? liveTab.doc : null;
         // A closed or reopened tab leaves the seed's callbacks bound to a dead document.
         // Zoom 0 means the last show finished while the surface was hidden, so the existing paint cannot be kept.
-        if (current && current.hash === target.hash && paneViewer.doc && !jumpOutsideSeed
+        if (current && sameDoc && paneViewer.doc && !jumpOutsideSeed
           && current.live === liveDoc && paneViewer.scribe.zoomLevel > 0) {
           // A re-render landing on the same page and query must leave the reader's scroll and paint untouched.
-          const samePlace = current.pageN === target.pageN && current.query === target.query;
+          const samePlace = !changed;
           current.pageN = target.pageN;
           current.query = target.query;
           // A folder rename or move can re-path the same document, and the hydration write-back looks its entry up by path.
@@ -628,7 +660,7 @@ export function createPreviewPanes({
           const entry = getManifest()?.docs[target.relPath];
           if (paneViewer.doc && paneViewer.doc.id >= 0 && entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
           else if (current.live && entry) persistRasterWindow(current.live, entry, target.pageN);
-          else if (!current.live) armDwell(target, t, target.immediate);
+          else if (!current.live) requestUpgrade(target, t);
           return;
         }
         // With an open tab, the live-backed seed below is the single source of truth.
@@ -651,13 +683,66 @@ export function createPreviewPanes({
           if (entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
           return;
         }
+        // With no raster for the target page a seed could only paint blank pages, so the real document loads directly instead.
+        const rastered = target.hash
+          ? await /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readPageRaster(target.hash, target.pageN)
+          : null;
+        if (t !== token) return;
+        if (!liveDoc && !rastered) {
+          const cover = beginVeil();
+          pvLoading.style.display = '';
+          releaseDoc(current ? current.hash : null);
+          current = null;
+          // Serialized so that a flip storm can never hold several full imports at once.
+          while (hydrationBusy) {
+            await hydrationBusy;
+            if (t !== token) return;
+          }
+          const t0 = performance.now();
+          const loadP = (async () => {
+            const s = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
+            const files = [await s.readFile(target.relPath)];
+            if (target.hash) {
+              const sidecar = await s.readSidecar(target.hash);
+              if (sidecar) files.push(new File([sidecar], `${target.hash}.scribe`));
+            }
+            return scribeLib.openDocument(files, { deferText: true });
+          })();
+          const track = loadP.then(() => {}, () => {}).finally(() => { if (hydrationBusy === track) hydrationBusy = null; });
+          hydrationBusy = track;
+          const doc = await loadP;
+          if (t !== token) {
+            // Abandoned by a later selection, so the document is pooled to keep a return to it free.
+            // A pending document has no hash to pool it under and closes instead.
+            if (target.hash) sessions.adoptLive(target.hash, doc);
+            else doc.close().catch(() => {});
+            return;
+          }
+          await paneViewer._openDocAsTab(doc, titleOf(target.relPath), { lastPage: target.pageN });
+          if (t !== token) return;
+          setLiveLocked(false);
+          current = {
+            relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle: null, window: null, live: null,
+          };
+          await applyQueryAndPage(target);
+          current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
+          pvLoading.style.display = 'none';
+          endVeil(cover);
+          const entry = getManifest()?.docs[target.relPath];
+          if (entry) {
+            entry.firstPaintMs = Math.round(performance.now() - t0);
+            saveManifestSoon();
+            persistRasterWindow(doc, entry, target.pageN);
+          }
+          return;
+        }
         const seed = await makeSeed(target.relPath, target.entry, target.pageN, liveDoc);
         if (t !== token) return;
         const cover = beginVeil();
         const prevDoc = paneViewer.doc;
         /** @type {?{pages: Array<Array<Object>>, baseline: Set<number>}} */
         let carried = null;
-        if (current && current.hash === target.hash && prevDoc && prevDoc.id < 0 && paneDirty) {
+        if (current && sameDoc && prevDoc && prevDoc.id < 0 && paneDirty) {
           // Re-seeding the same edited document carries its unsaved session annotations into the new seed, and the dirty flag stays for the real save.
           carried = {
             pages: prevDoc.annotations.pages.map((page) => page.map((a) => ({ ...a, bbox: { ...a.bbox } }))),
@@ -702,15 +787,14 @@ export function createPreviewPanes({
             return Promise.resolve();
           };
         } else {
-          countHydration(paneViewer.doc);
+          countHydration(paneViewer.doc, target);
         }
         current = {
           relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window, live: liveDoc,
         };
-        // An explicit click on an unwarmed hit starts its full load here, in parallel with the seed's priming.
-        // Priming can stream megabytes of sidecar for a big document, and the reader is already waiting.
-        // A live-backed seed renders every page from the open tab's document, so the dwell load has nothing to accelerate.
-        if (target.immediate && !liveDoc) armDwell(target, t, true);
+        // Started before priming rather than after, because priming can stream megabytes of sidecar for a big document.
+        // A live-backed seed renders every page from the open tab's document, so there is nothing to upgrade to.
+        if (!liveDoc) requestUpgrade(target, t);
         await handle.primed;
         if (t !== token) return;
         await applyQueryAndPage(target);
@@ -719,7 +803,7 @@ export function createPreviewPanes({
         if (liveDoc) {
           const entry = getManifest()?.docs[target.relPath];
           if (entry) persistRasterWindow(liveDoc, entry, target.pageN);
-        } else if (!target.immediate) armDwell(target, t);
+        }
         handle.hydrated.finally(() => {
           if (t === token) pvLoading.style.display = 'none';
         }).catch(() => {});
@@ -754,6 +838,7 @@ export function createPreviewPanes({
           pvEmpty.style.display = '';
         }
       } finally {
+        if (t === token) showBusyKey = null;
         endUserLoad();
       }
     };
@@ -786,11 +871,8 @@ export function createPreviewPanes({
 
     const destroy = () => {
       token++;
+      showBusyKey = null;
       endVeil();
-      if (dwellTimer !== null) {
-        clearTimeout(dwellTimer);
-        dwellTimer = null;
-      }
       releaseDoc(current ? current.hash : null);
       current = null;
       if (paneViewer) {

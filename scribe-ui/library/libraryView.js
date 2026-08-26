@@ -904,11 +904,23 @@ export function installLibrary(viewer) {
     }
   };
 
-  /** View identity of the last render, so a same-view rebuild can restore its scroll. */
+  /**
+   * View identity of the last render.
+   * A matching pass updates the existing cards and rows in place instead of rebuilding.
+   */
   let lastRenderKey = '';
+  /**
+   * Band and empty-note structure of the last render.
+   * A mismatch forces the rebuild path even when the view identity matches.
+   */
+  let lastRenderSig = '';
+  /** @type {?() => void} */
+  let listColsRefit = null;
 
   /**
-   * Rebuild the library surface for the current mode and state.
+   * Bring the library surface up to date for the current mode and state.
+   * A pass over an unchanged view identity refreshes the existing keyed cards and rows in place.
+   * Anything else tears the surface down and rebuilds it.
    * @param {{revealSelection?: boolean}} [opts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
    */
   const render = (opts) => {
@@ -924,34 +936,131 @@ export function installLibrary(viewer) {
     if (renameEditing) return;
     // A settle pending from the outgoing list would commit its layout onto whatever mode renders next.
     window.clearTimeout(colSettleTimer);
-    closeCardMenu();
+    const revealSelection = !!(opts && opts.revealSelection);
+    const reveal = () => {
+      if (!revealSelection) return;
+      const item = (listPreviewPath && body.querySelector(`[data-rel-path="${CSS.escape(listPreviewPath)}"]`))
+        || body.querySelector('[data-rel-path].selected');
+      item?.scrollIntoView({ block: 'nearest' });
+    };
+
+    const dirSet = new Set(manifest?.dirs ?? []);
+    if (manifest && currentDir && !dirSet.has(currentDir)) {
+      // The browsed folder can vanish when a rescan follows a delete made outside the app.
+      currentDir = '';
+    }
     syncCrumbs();
+    if (manifest) {
+      for (const p of selectedPaths) {
+        if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1)))) selectedPaths.delete(p);
+      }
+    }
+    const entries = manifest ? Object.entries(manifest.docs) : [];
+    const filter = filterText.trim().toLowerCase();
+    const shown = filter
+      ? entries.filter(([relPath]) => relPath.toLowerCase().includes(filter))
+      : entries.filter(([relPath]) => {
+        const cut = relPath.lastIndexOf('/');
+        return (cut < 0 ? '' : relPath.slice(0, cut)) === currentDir;
+      });
+    shown.sort(([pa, a], [pb, b]) => {
+      let d = 0;
+      if (sortMode === 'added') d = a.added - b.added;
+      else if (sortMode === 'opened') d = a.lastOpened - b.lastOpened;
+      else if (sortMode === 'pages') d = (a.pageCount || 0) - (b.pageCount || 0);
+      else if (sortMode === 'custom') {
+        d = (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER);
+      } else d = titleOf(pa).localeCompare(titleOf(pb));
+      if (d) return d * sortDir;
+      return titleOf(pa).localeCompare(titleOf(pb));
+    });
+    const shownDirs = filter ? [] : [...dirSet].filter((dir) => {
+      const cut = dir.lastIndexOf('/');
+      return (cut < 0 ? '' : dir.slice(0, cut)) === currentDir;
+    }).sort((a, b) => a.localeCompare(b) * (sortMode === 'name' ? sortDir : 1));
+    const shownOthers = !showOthers || !manifest ? [] : (manifest.others ?? []).filter((p) => {
+      if (filter) return p.toLowerCase().includes(filter);
+      const cut = p.lastIndexOf('/');
+      return (cut < 0 ? '' : p.slice(0, cut)) === currentDir;
+    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b));
+    const recent = viewMode === 'grid' && currentDir === '' && !filter && sortMode !== 'opened'
+      ? entries.filter(([, e]) => e.lastOpened > 0).sort(([, a], [, b]) => b.lastOpened - a.lastOpened).slice(0, 5)
+      : [];
+    const emptyLib = !!manifest && !entries.length && !dirSet.size && !shownOthers.length;
+    let emptyNote = '';
+    if (!shown.length && !shownOthers.length && filter) emptyNote = 'filter';
+    else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) emptyNote = 'dir';
+
+    let renderKey;
+    if (!store || !manifest) renderKey = `wall|${pendingHandle ? pendingHandle.name : ''}`;
+    else if (fullTextResults) renderKey = 'results';
+    else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
+    const renderSig = emptyLib ? 'empty-lib'
+      : `r${recent.length ? 1 : 0}d${shownDirs.length ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}`;
+
+    // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
+    if (store && manifest && !fullTextResults && !emptyLib
+      && renderKey === lastRenderKey && renderSig === lastRenderSig) {
+      if (viewMode === 'grid') {
+        /** @param {string} name */
+        const band = (name) => /** @type {?HTMLElement} */ (body.querySelector(`[data-band="${name}"]`));
+        const recentGrid = band('recent-grid');
+        if (recentGrid) {
+          syncKeyedChildren(recentGrid, recent, ([p]) => p, ([p, e]) => buildCard(p, e, false), (node, [p, e]) => updateCard(node, p, e));
+        }
+        const dirGrid = band('folders-grid');
+        if (dirGrid) {
+          const dirLabel = band('folders-label');
+          if (dirLabel) dirLabel.textContent = `Folders · ${shownDirs.length}`;
+          syncKeyedChildren(dirGrid, shownDirs, (d) => `${d}/`, (d) => buildFolderCard(d), (node, d) => updateFolderCard(node, d));
+        }
+        const docLabel = band('docs-label');
+        if (docLabel) docLabel.textContent = `Documents · ${shown.length}`;
+        const mainGrid = band('main-grid');
+        if (mainGrid) {
+          syncKeyedChildren(mainGrid, shown, ([p]) => p, ([p, e]) => buildCard(p, e, !filter), (node, [p, e]) => updateCard(node, p, e));
+          drag.setMainGrid(mainGrid, shown.map(([p]) => p));
+        }
+        const otherGrid = band('others-grid');
+        if (otherGrid) syncKeyedChildren(otherGrid, shownOthers, (p) => p, (p) => buildOtherCard(p), null);
+      } else {
+        const rowsElem = /** @type {?HTMLElement} */ (body.querySelector('[data-band="rows"]'));
+        if (rowsElem) {
+          const items = [
+            ...shownDirs.map((d) => ['dir', d]),
+            ...shown.map((pe) => ['doc', pe]),
+            ...shownOthers.map((p) => ['other', p]),
+          ];
+          syncKeyedChildren(rowsElem, items, ([kind, v]) => {
+            if (kind === 'dir') return `${v}/`;
+            return kind === 'doc' ? v[0] : v;
+          }, ([kind, v]) => {
+            if (kind === 'dir') return buildFolderRow(v);
+            return kind === 'doc' ? buildRow(v[0], v[1]) : buildOtherRow(v);
+          }, (node, [kind, v]) => {
+            if (kind === 'dir') updateFolderRow(node, v);
+            else if (kind === 'doc') updateRow(node, v[0], v[1]);
+          });
+          listColsRefit?.();
+        }
+      }
+      // Only a vanished anchor closes its menu, so a menu over a surviving card stays open through the refresh.
+      if (menuTargetElem && !menuTargetElem.isConnected) closeCardMenu();
+      reveal();
+      return;
+    }
+
+    lastRenderKey = renderKey;
+    lastRenderSig = renderSig;
+    listColsRefit = null;
+    // The teardown below destroys any card the open menu is anchored to.
+    closeCardMenu();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
     results.snapshot();
     // The body wipe detaches a kept list pane, and a detached scroll container forgets its offset.
     const keptPane = !fullTextResults && listPreviewOn && viewMode !== 'grid' ? panes.mounted() : null;
     const keptPaneSc = keptPane && keptPane.kind === 'list' ? keptPane.viewerRef()?.scribe.scrollContainer : null;
     const keptPaneSpot = keptPaneSc ? { top: keptPaneSc.scrollTop, left: keptPaneSc.scrollLeft, doc: keptPane.viewerRef().doc } : null;
-    const renderKey = fullTextResults
-      ? 'results'
-      : `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filterText.trim().toLowerCase()}`;
-    const keepScroll = !fullTextResults && renderKey === lastRenderKey;
-    const priorBodyTop = keepScroll ? body.scrollTop : 0;
-    const priorListTop = keepScroll ? (body.querySelector('.scribe-library-rlist')?.scrollTop ?? 0) : 0;
-    lastRenderKey = renderKey;
-    const revealSelection = !!(opts && opts.revealSelection);
-    const restoreScroll = () => {
-      if (keepScroll) {
-        body.scrollTop = priorBodyTop;
-        const rlist = body.querySelector('.scribe-library-rlist');
-        if (rlist) rlist.scrollTop = priorListTop;
-      }
-      if (revealSelection) {
-        const item = (listPreviewPath && body.querySelector(`[data-rel-path="${CSS.escape(listPreviewPath)}"]`))
-          || body.querySelector('[data-rel-path].selected');
-        item?.scrollIntoView({ block: 'nearest' });
-      }
-    };
     body.textContent = '';
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
     listPane = null;
@@ -990,51 +1099,12 @@ export function installLibrary(viewer) {
       return;
     }
 
-    const dirSet = new Set(manifest.dirs ?? []);
-    if (currentDir && !dirSet.has(currentDir)) {
-      // The browsed folder can vanish when a rescan follows a delete made outside the app.
-      currentDir = '';
-      syncCrumbs();
-    }
-    const entries = Object.entries(manifest.docs);
-    for (const p of selectedPaths) {
-      if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1)))) selectedPaths.delete(p);
-    }
-
     if (fullTextResults) {
       results.render();
       return;
     }
 
-    const filter = filterText.trim().toLowerCase();
-    const shown = filter
-      ? entries.filter(([relPath]) => relPath.toLowerCase().includes(filter))
-      : entries.filter(([relPath]) => {
-        const cut = relPath.lastIndexOf('/');
-        return (cut < 0 ? '' : relPath.slice(0, cut)) === currentDir;
-      });
-    shown.sort(([pa, a], [pb, b]) => {
-      let d = 0;
-      if (sortMode === 'added') d = a.added - b.added;
-      else if (sortMode === 'opened') d = a.lastOpened - b.lastOpened;
-      else if (sortMode === 'pages') d = (a.pageCount || 0) - (b.pageCount || 0);
-      else if (sortMode === 'custom') {
-        d = (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER);
-      } else d = titleOf(pa).localeCompare(titleOf(pb));
-      if (d) return d * sortDir;
-      return titleOf(pa).localeCompare(titleOf(pb));
-    });
-    const shownDirs = filter ? [] : [...dirSet].filter((dir) => {
-      const cut = dir.lastIndexOf('/');
-      return (cut < 0 ? '' : dir.slice(0, cut)) === currentDir;
-    }).sort((a, b) => a.localeCompare(b) * (sortMode === 'name' ? sortDir : 1));
-    const shownOthers = !showOthers ? [] : (manifest.others ?? []).filter((p) => {
-      if (filter) return p.toLowerCase().includes(filter);
-      const cut = p.lastIndexOf('/');
-      return (cut < 0 ? '' : p.slice(0, cut)) === currentDir;
-    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b));
-
-    if (!entries.length && !dirSet.size && !shownOthers.length) {
+    if (emptyLib) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
       empty.textContent = 'No PDFs in this folder yet. Drop files here or use “New › Add PDFs”.';
@@ -1051,37 +1121,32 @@ export function installLibrary(viewer) {
         sc.scrollTop = keptPaneSpot.top;
         sc.scrollLeft = keptPaneSpot.left;
       }
-      if (!shown.length && !shownOthers.length && filter) {
+      if (emptyNote) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
-        empty.textContent = 'No names match. Press Enter to search inside the documents.';
-        host.appendChild(empty);
-      } else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) {
-        const empty = document.createElement('div');
-        empty.className = 'scribe-library-empty';
-        empty.textContent = 'This folder is empty.';
+        empty.textContent = emptyNote === 'filter' ? 'No names match. Press Enter to search inside the documents.' : 'This folder is empty.';
         host.appendChild(empty);
       }
-      restoreScroll();
+      reveal();
       return;
     }
 
-    const recent = currentDir === '' && !filter && sortMode !== 'opened'
-      ? entries.filter(([, e]) => e.lastOpened > 0).sort(([, a], [, b]) => b.lastOpened - a.lastOpened).slice(0, 5)
-      : [];
     if (recent.length) {
       const label = document.createElement('div');
       label.className = 'scribe-library-section-label';
+      label.dataset.band = 'recent-label';
       label.textContent = 'Recent';
       body.appendChild(label);
       const grid = document.createElement('div');
       grid.className = 'scribe-library-grid';
+      grid.dataset.band = 'recent-grid';
       for (const [relPath, entry] of recent) grid.appendChild(buildCard(relPath, entry, false));
       body.appendChild(grid);
       // With folders present, the branch below labels the document grid itself.
       if (!shownDirs.length) {
         const allLabel = document.createElement('div');
         allLabel.className = 'scribe-library-section-label';
+        allLabel.dataset.band = 'all-label';
         allLabel.textContent = 'All documents';
         body.appendChild(allLabel);
       }
@@ -1090,47 +1155,48 @@ export function installLibrary(viewer) {
     if (shownDirs.length) {
       const dirLabel = document.createElement('div');
       dirLabel.className = 'scribe-library-section-label';
+      dirLabel.dataset.band = 'folders-label';
       dirLabel.textContent = `Folders · ${shownDirs.length}`;
       body.appendChild(dirLabel);
       const dirGrid = document.createElement('div');
       dirGrid.className = 'scribe-library-grid folders';
+      dirGrid.dataset.band = 'folders-grid';
       for (const dir of shownDirs) dirGrid.appendChild(buildFolderCard(dir));
       body.appendChild(dirGrid);
       if (shown.length) {
         const docLabel = document.createElement('div');
         docLabel.className = 'scribe-library-section-label';
+        docLabel.dataset.band = 'docs-label';
         docLabel.textContent = `Documents · ${shown.length}`;
         body.appendChild(docLabel);
       }
     }
     const grid = document.createElement('div');
     grid.className = 'scribe-library-grid main';
+    grid.dataset.band = 'main-grid';
     for (const [relPath, entry] of shown) grid.appendChild(buildCard(relPath, entry, !filter));
     body.appendChild(grid);
     drag.setMainGrid(grid, shown.map(([p]) => p));
-    if (!shown.length && !shownOthers.length && filter) {
+    if (emptyNote) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
-      empty.textContent = 'No names match. Press Enter to search inside the documents.';
-      body.appendChild(empty);
-    } else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) {
-      const empty = document.createElement('div');
-      empty.className = 'scribe-library-empty';
-      empty.textContent = 'This folder is empty.';
+      empty.textContent = emptyNote === 'filter' ? 'No names match. Press Enter to search inside the documents.' : 'This folder is empty.';
       body.appendChild(empty);
     }
     if (shownOthers.length) {
       // The main grid's drag-reorder math indexes its children against gridPaths, so these cards need a grid of their own.
       const otherLabel = document.createElement('div');
       otherLabel.className = 'scribe-library-section-label';
+      otherLabel.dataset.band = 'others-label';
       otherLabel.textContent = 'Other files';
       body.appendChild(otherLabel);
       const otherGrid = document.createElement('div');
       otherGrid.className = 'scribe-library-grid';
+      otherGrid.dataset.band = 'others-grid';
       for (const relPath of shownOthers) otherGrid.appendChild(buildOtherCard(relPath));
       body.appendChild(otherGrid);
     }
-    restoreScroll();
+    reveal();
   };
 
   /** Restyle every visible card and list row to the selection set. */
@@ -1190,12 +1256,48 @@ export function installLibrary(viewer) {
     if (!entry.hash) return;
     const cachedUrl = sessions.coverUrlNow(entry.hash);
     if (cachedUrl) {
-      img.src = cachedUrl;
+      // Re-assigning the same src reloads from an object URL that may since have been revoked, blanking the cover.
+      if (img.src !== cachedUrl) img.src = cachedUrl;
       return;
     }
     sessions.cover(entry.hash).then((url) => {
-      if (!destroyed && url) img.src = url;
+      if (!destroyed && url && img.src !== url) img.src = url;
     }).catch(() => {});
+  };
+
+  /**
+   * Sync `host`'s children to `items` in display order, reusing any child whose `data-key` matches instead of recreating it.
+   * Reuse keeps a node's identity, so `update` must refresh everything content-derived.
+   * @template T
+   * @param {HTMLElement} host
+   * @param {T[]} items
+   * @param {(item: T) => string} keyOf
+   * @param {(item: T) => HTMLElement} build
+   * @param {?((node: HTMLElement, item: T) => void)} update
+   */
+  const syncKeyedChildren = (host, items, keyOf, build, update) => {
+    const byKey = new Map();
+    const stale = [];
+    for (const el of host.children) {
+      const key = /** @type {HTMLElement} */ (el).dataset.key;
+      if (key === undefined) stale.push(el);
+      else byKey.set(key, el);
+    }
+    let cursor = host.firstElementChild;
+    for (const item of items) {
+      const key = keyOf(item);
+      let node = /** @type {?HTMLElement} */ (byKey.get(key));
+      if (node) {
+        byKey.delete(key);
+        update?.(node, item);
+      } else {
+        node = build(item);
+      }
+      if (node === cursor) cursor = node.nextElementSibling;
+      else host.insertBefore(node, cursor);
+    }
+    for (const el of stale) el.remove();
+    for (const el of byKey.values()) el.remove();
   };
 
   // --- Card context menu --------------------------------------------------
@@ -1333,6 +1435,45 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * Refresh everything a doc card shows from `entry`, leaving the shell and its listeners in place.
+   * @param {HTMLElement} card
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   */
+  const updateCard = (card, relPath, entry) => {
+    card.classList.toggle('selected', selectedPaths.has(relPath));
+    setThumbSrc(/** @type {HTMLImageElement} */ (card.querySelector(':scope > img.thumb')), entry);
+    const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
+    meta.textContent = '';
+    meta.removeAttribute('title');
+    if (entry.pageCount) meta.appendChild(document.createTextNode(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`));
+    if (entry.status === 'missing') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Missing</span>');
+    else if (entry.status === 'changed') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge warn">Changed</span>');
+    else if (entry.status === 'error') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Failed</span>');
+    else if (entry.status === 'pending') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Queued</span>');
+    else if (entry.requiresOCR) meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Scanned</span>');
+    if (entry.status === 'error' && entry.error) meta.title = entry.error;
+    card.querySelector(':scope > .actions')?.remove();
+    if (entry.status === 'pending' || entry.status === 'changed' || entry.status === 'error') {
+      const actions = document.createElement('div');
+      actions.className = 'actions';
+      const indexBtn = document.createElement('button');
+      indexBtn.textContent = 'Index';
+      indexBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const entryNow = manifest?.docs[relPath];
+        if (!ingest || !entryNow) return;
+        if (entryNow.hash) sessions.invalidate(entryNow.hash);
+        await ingest.enqueue(relPath);
+        render();
+        ingest.start();
+      });
+      actions.appendChild(indexBtn);
+      card.appendChild(actions);
+    }
+  };
+
+  /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {boolean} [draggable] - False for derived views (the Recent strip, a filtered grid).
@@ -1342,7 +1483,7 @@ export function installLibrary(viewer) {
     card.className = 'scribe-library-card';
     card.tabIndex = 0;
     card.dataset.relPath = relPath;
-    if (selectedPaths.has(relPath)) card.classList.add('selected');
+    card.dataset.key = relPath;
     if (draggable) card.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, relPath, card));
 
     const img = document.createElement('img');
@@ -1351,7 +1492,6 @@ export function installLibrary(viewer) {
     // Images are natively draggable.
     // Left on, a press-drag starts an HTML5 image drag that cancels the reorder gesture and lands in the file-drop handlers as a bogus import.
     img.draggable = false;
-    setThumbSrc(img, entry);
     card.appendChild(img);
 
     const cardBody = document.createElement('div');
@@ -1363,36 +1503,15 @@ export function installLibrary(viewer) {
     cardBody.appendChild(title);
     const meta = document.createElement('div');
     meta.className = 'meta';
-    if (entry.pageCount) meta.appendChild(document.createTextNode(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`));
-    if (entry.status === 'missing') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Missing</span>');
-    else if (entry.status === 'changed') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge warn">Changed</span>');
-    else if (entry.status === 'error') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Failed</span>');
-    else if (entry.status === 'pending') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Queued</span>');
-    else if (entry.requiresOCR) meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Scanned</span>');
-    if (entry.status === 'error' && entry.error) meta.title = entry.error;
     cardBody.appendChild(meta);
     card.appendChild(cardBody);
-
-    if (entry.status === 'pending' || entry.status === 'changed' || entry.status === 'error') {
-      const actions = document.createElement('div');
-      actions.className = 'actions';
-      const indexBtn = document.createElement('button');
-      indexBtn.textContent = 'Index';
-      indexBtn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        if (!ingest) return;
-        if (entry.hash) sessions.invalidate(entry.hash);
-        await ingest.enqueue(relPath);
-        render();
-        ingest.start();
-      });
-      actions.appendChild(indexBtn);
-      card.appendChild(actions);
-    }
+    updateCard(card, relPath, entry);
 
     const open = () => {
       if (drag.clickSuppressed()) return;
-      openEntry(relPath, entry);
+      // Resolved at click time: reused nodes outlive the entry object they were built with.
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow) openEntry(relPath, entryNow);
     };
     // Touch keeps tap-to-open; select-then-double-click is a pointer-and-keyboard scheme.
     card.addEventListener('click', (e) => {
@@ -1507,21 +1626,16 @@ export function installLibrary(viewer) {
   };
 
   /**
-   * A subdirectory as a grid card.
-   * Folders are keyed in the selection set as `path/`, so the trailing slash keeps them apart from document paths.
+   * Refresh everything a folder card shows, leaving the shell in place.
+   * A folder's covers and tallies come from its children, so this runs whenever any of them change.
+   * @param {HTMLElement} card
    * @param {string} dirPath
    */
-  const buildFolderCard = (dirPath) => {
-    const card = document.createElement('div');
-    card.className = 'scribe-library-card folder';
-    card.tabIndex = 0;
-    card.dataset.relPath = `${dirPath}/`;
-    card.dataset.dirTarget = dirPath;
-    if (selectedPaths.has(`${dirPath}/`)) card.classList.add('selected');
-
+  const updateFolderCard = (card, dirPath) => {
+    card.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
     const stats = dirStatsOf(dirPath);
-    const strip = document.createElement('div');
-    strip.className = 'fstrip';
+    const strip = /** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip'));
+    strip.textContent = '';
     if (stats.covers.length) {
       for (const entry of stats.covers) {
         const img = document.createElement('img');
@@ -1533,6 +1647,27 @@ export function installLibrary(viewer) {
     } else {
       strip.innerHTML = `<span class="empty"><span class="fi">${FOLDER_SVG}</span></span>`;
     }
+    const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
+    meta.textContent = '';
+    meta.classList.remove('hasatt');
+    fillFolderSummary(meta, stats);
+  };
+
+  /**
+   * A subdirectory as a grid card.
+   * Folders are keyed in the selection set as `path/`, so the trailing slash keeps them apart from document paths.
+   * @param {string} dirPath
+   */
+  const buildFolderCard = (dirPath) => {
+    const card = document.createElement('div');
+    card.className = 'scribe-library-card folder';
+    card.tabIndex = 0;
+    card.dataset.relPath = `${dirPath}/`;
+    card.dataset.key = `${dirPath}/`;
+    card.dataset.dirTarget = dirPath;
+
+    const strip = document.createElement('div');
+    strip.className = 'fstrip';
     card.appendChild(strip);
 
     const cardBody = document.createElement('div');
@@ -1545,9 +1680,9 @@ export function installLibrary(viewer) {
     cardBody.appendChild(title);
     const meta = document.createElement('div');
     meta.className = 'meta';
-    fillFolderSummary(meta, stats);
     cardBody.appendChild(meta);
     card.appendChild(cardBody);
+    updateFolderCard(card, dirPath);
 
     const open = () => {
       if (drag.clickSuppressed()) return;
@@ -1590,6 +1725,7 @@ export function installLibrary(viewer) {
     const name = relPath.split('/').pop() || relPath;
     const card = document.createElement('div');
     card.className = 'scribe-library-card other';
+    card.dataset.key = relPath;
     card.title = 'Not a PDF — Scribe can’t open it';
 
     const icon = document.createElement('div');
@@ -1616,6 +1752,58 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * Refresh everything a doc row's cells show from `entry`, leaving the shell and its listeners in place.
+   * @param {HTMLElement} row
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   */
+  const updateRow = (row, relPath, entry) => {
+    const comfortable = viewMode === 'list';
+    row.classList.toggle('selected', selectedPaths.has(relPath));
+    let badge = '';
+    if (entry.status === 'missing') badge = '<span class="scribe-library-badge error">Missing</span>';
+    else if (entry.status === 'changed') badge = '<span class="scribe-library-badge warn">Changed</span>';
+    else if (entry.status === 'error') badge = '<span class="scribe-library-badge error">Failed</span>';
+    else if (entry.status === 'pending') badge = '<span class="scribe-library-badge">Queued</span>';
+    else if (entry.requiresOCR) badge = '<span class="scribe-library-badge">Scanned</span>';
+    if (comfortable) {
+      setThumbSrc(/** @type {HTMLImageElement} */ (row.querySelector('.nm > img')), entry);
+      const stack = /** @type {HTMLElement} */ (row.querySelector('.nm > .tt'));
+      stack.querySelector(':scope > .m2')?.remove();
+      if (badge) {
+        const meta = document.createElement('span');
+        meta.className = 'm2';
+        meta.innerHTML = badge;
+        if (entry.status === 'error' && entry.error) meta.title = entry.error;
+        stack.appendChild(meta);
+      }
+    }
+    /** @param {number} t */
+    const fmtDate = (t) => (t > 0
+      ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—');
+    const cells = /** @type {HTMLElement[]} */ ([...row.children]);
+    cells[1].className = entry.pageCount ? 'num' : 'none';
+    cells[1].textContent = entry.pageCount ? String(entry.pageCount) : '—';
+    cells[2].className = entry.added > 0 ? 'dt' : 'none';
+    cells[2].textContent = fmtDate(entry.added);
+    cells[3].className = entry.lastOpened > 0 ? 'dt' : 'none';
+    cells[3].textContent = fmtDate(entry.lastOpened);
+    if (!comfortable) {
+      const statusCell = cells[4];
+      statusCell.removeAttribute('title');
+      if (badge) {
+        statusCell.className = '';
+        statusCell.innerHTML = badge;
+        if (entry.status === 'error' && entry.error) statusCell.title = entry.error;
+      } else {
+        statusCell.className = 'none';
+        statusCell.textContent = '—';
+      }
+    }
+  };
+
+  /**
    * One list row, in the comfortable (thumbnail) or compact layout per the current view mode.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
@@ -1626,16 +1814,9 @@ export function installLibrary(viewer) {
     row.className = comfortable ? 'scribe-library-row cf' : 'scribe-library-row';
     row.tabIndex = 0;
     row.dataset.relPath = relPath;
-    if (selectedPaths.has(relPath)) row.classList.add('selected');
+    row.dataset.key = relPath;
     // Rows drag for moving into folders only; reordering is a grid-under-Custom affair.
     row.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, relPath, row));
-
-    let badge = '';
-    if (entry.status === 'missing') badge = '<span class="scribe-library-badge error">Missing</span>';
-    else if (entry.status === 'changed') badge = '<span class="scribe-library-badge warn">Changed</span>';
-    else if (entry.status === 'error') badge = '<span class="scribe-library-badge error">Failed</span>';
-    else if (entry.status === 'pending') badge = '<span class="scribe-library-badge">Queued</span>';
-    else if (entry.requiresOCR) badge = '<span class="scribe-library-badge">Scanned</span>';
 
     const nm = document.createElement('span');
     nm.className = 'nm';
@@ -1647,56 +1828,23 @@ export function installLibrary(viewer) {
       const img = document.createElement('img');
       img.alt = '';
       img.draggable = false;
-      setThumbSrc(img, entry);
       nm.appendChild(img);
       const stack = document.createElement('span');
       stack.className = 'tt';
       stack.appendChild(title);
-      if (badge) {
-        const meta = document.createElement('span');
-        meta.className = 'm2';
-        meta.innerHTML = badge;
-        if (entry.status === 'error' && entry.error) meta.title = entry.error;
-        stack.appendChild(meta);
-      }
       nm.appendChild(stack);
     } else {
       nm.appendChild(title);
     }
     row.appendChild(nm);
-
-    const pagesCell = document.createElement('span');
-    pagesCell.className = entry.pageCount ? 'num' : 'none';
-    pagesCell.textContent = entry.pageCount ? String(entry.pageCount) : '—';
-    row.appendChild(pagesCell);
-
-    /** @param {number} t */
-    const fmtDate = (t) => (t > 0
-      ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-      : '—');
-    const addedCell = document.createElement('span');
-    addedCell.className = entry.added > 0 ? 'dt' : 'none';
-    addedCell.textContent = fmtDate(entry.added);
-    row.appendChild(addedCell);
-    const openedCell = document.createElement('span');
-    openedCell.className = entry.lastOpened > 0 ? 'dt' : 'none';
-    openedCell.textContent = fmtDate(entry.lastOpened);
-    row.appendChild(openedCell);
-
-    if (!comfortable) {
-      const statusCell = document.createElement('span');
-      if (badge) statusCell.innerHTML = badge;
-      else {
-        statusCell.className = 'none';
-        statusCell.textContent = '—';
-      }
-      if (entry.status === 'error' && entry.error) statusCell.title = entry.error;
-      row.appendChild(statusCell);
-    }
+    for (let i = 0; i < (comfortable ? 3 : 4); i++) row.appendChild(document.createElement('span'));
+    updateRow(row, relPath, entry);
 
     const open = () => {
       if (drag.clickSuppressed()) return;
-      openEntry(relPath, entry);
+      // Resolved at click time: reused nodes outlive the entry object they were built with.
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow) openEntry(relPath, entryNow);
     };
     row.addEventListener('click', (e) => {
       if (viewer._coarsePointer) {
@@ -1707,7 +1855,8 @@ export function installLibrary(viewer) {
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       // Preview first: syncSelectionUI keeps the previewed document selected, so listPreviewPath must already point at this row.
-      showListPreview(relPath, entry, 0);
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow) showListPreview(relPath, entryNow, 0);
       applyClickSelection(e, relPath, paths);
     });
     row.addEventListener('dblclick', (e) => {
@@ -1726,6 +1875,33 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * Refresh everything a folder row's cells show, leaving the shell in place.
+   * A folder's tallies come from its children, so this runs whenever any of them change.
+   * @param {HTMLElement} row
+   * @param {string} dirPath
+   */
+  const updateFolderRow = (row, dirPath) => {
+    const comfortable = viewMode === 'list';
+    row.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
+    const stats = dirStatsOf(dirPath);
+    const sum = /** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt'));
+    sum.textContent = '';
+    sum.classList.remove('hasatt');
+    fillFolderSummary(sum, stats);
+    /** @param {number} t */
+    const fmtDate = (t) => (t > 0
+      ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—');
+    const cells = /** @type {HTMLElement[]} */ ([...row.children]);
+    cells[1].className = stats.pages ? 'roll pg' : 'none';
+    cells[1].textContent = stats.pages ? String(stats.pages) : '—';
+    cells[2].className = stats.added > 0 ? 'roll' : 'none';
+    cells[2].textContent = fmtDate(stats.added);
+    cells[3].className = stats.lastOpened > 0 ? 'roll' : 'none';
+    cells[3].textContent = fmtDate(stats.lastOpened);
+  };
+
+  /**
    * A subdirectory as a list row.
    * @param {string} dirPath
    */
@@ -1735,9 +1911,8 @@ export function installLibrary(viewer) {
     row.className = comfortable ? 'scribe-library-row cf folder' : 'scribe-library-row folder';
     row.tabIndex = 0;
     row.dataset.relPath = `${dirPath}/`;
+    row.dataset.key = `${dirPath}/`;
     row.dataset.dirTarget = dirPath;
-    if (selectedPaths.has(`${dirPath}/`)) row.classList.add('selected');
-    const stats = dirStatsOf(dirPath);
 
     const nm = document.createElement('span');
     nm.className = 'nm';
@@ -1755,7 +1930,6 @@ export function installLibrary(viewer) {
       stack.appendChild(title);
       const meta = document.createElement('span');
       meta.className = 'm2';
-      fillFolderSummary(meta, stats);
       stack.appendChild(meta);
       nm.appendChild(stack);
     } else {
@@ -1763,33 +1937,17 @@ export function installLibrary(viewer) {
       nm.appendChild(title);
       const cnt = document.createElement('span');
       cnt.className = 'cnt';
-      fillFolderSummary(cnt, stats);
       nm.appendChild(cnt);
     }
     row.appendChild(nm);
-
-    /** @param {number} t */
-    const fmtDate = (t) => (t > 0
-      ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-      : '—');
-    const pagesCell = document.createElement('span');
-    pagesCell.className = stats.pages ? 'roll pg' : 'none';
-    pagesCell.textContent = stats.pages ? String(stats.pages) : '—';
-    row.appendChild(pagesCell);
-    const addedCell = document.createElement('span');
-    addedCell.className = stats.added > 0 ? 'roll' : 'none';
-    addedCell.textContent = fmtDate(stats.added);
-    row.appendChild(addedCell);
-    const openedCell = document.createElement('span');
-    openedCell.className = stats.lastOpened > 0 ? 'roll' : 'none';
-    openedCell.textContent = fmtDate(stats.lastOpened);
-    row.appendChild(openedCell);
+    for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
     if (!comfortable) {
       const statusCell = document.createElement('span');
       statusCell.className = 'none';
       statusCell.textContent = '—';
       row.appendChild(statusCell);
     }
+    updateFolderRow(row, dirPath);
 
     const open = () => {
       if (drag.clickSuppressed()) return;
@@ -1833,6 +1991,7 @@ export function installLibrary(viewer) {
     const name = relPath.split('/').pop() || relPath;
     const row = document.createElement('div');
     row.className = comfortable ? 'scribe-library-row cf other' : 'scribe-library-row other';
+    row.dataset.key = relPath;
     row.title = 'Not a PDF — Scribe can’t open it';
 
     const badge = document.createElement('span');
@@ -1889,8 +2048,9 @@ export function installLibrary(viewer) {
     if (!target) return;
     renameEditing = true;
     // The folder must not take drops mid-edit.
-    // Every exit path below rebuilds, which restores the attribute.
+    // Dropping the reconcile key forces the next render to rebuild this node, which now hosts the editor in place of its title.
     delete hostElem.dataset.dirTarget;
+    delete hostElem.dataset.key;
     const oldName = dirPath.split('/').pop() || dirPath;
     const input = document.createElement('input');
     input.className = 'scribe-library-rename';
@@ -2128,6 +2288,7 @@ export function installLibrary(viewer) {
     const head = document.createElement('div');
     head.className = comfortable ? 'scribe-library-lhead cols-cf' : 'scribe-library-lhead';
     const rows = document.createElement('div');
+    rows.dataset.band = 'rows';
     const cols = LIST_COLUMNS[viewMode];
     // Only a mode the user has resized is written, so the other keeps re-fitting Name to the window on later visits.
     const saveCols = () => {
@@ -2155,7 +2316,6 @@ export function installLibrary(viewer) {
     };
     /**
      * Lay the stored widths out across the visible width.
-     * The result always adds up to it exactly, so nothing can scroll sideways.
      * Any squeeze is display-only, so a width the reader chose returns once there is room.
      * @param {number} avail
      * @param {number} slackIdx - Column that gives and takes the difference first.
@@ -2207,9 +2367,6 @@ export function installLibrary(viewer) {
     };
     /**
      * Fit the stored widths to the visible width outside a drag.
-     * Extra room first restores columns squeezed below their content width, rightmost first, and the rest goes to Name.
-     * A shortfall comes out of the whitespace each column holds above its content, in proportion to how much that is.
-     * When that is not enough, whole columns are dropped rather than the name being cut.
      * @param {number} avail
      * @returns {?number[]} The widths as laid out.
      */
@@ -2436,6 +2593,12 @@ export function installLibrary(viewer) {
     }
     projectCols(avail);
     settleColsIfGrown();
+    listColsRefit = () => {
+      // An in-place row sync can change a column's content under the retained header, so the cached fits go stale.
+      colFits = null;
+      projectCols(availCols());
+      settleColsIfGrown();
+    };
     // The sash and the window resize without a render, so width changes reach the columns through this observer.
     colsObserver?.disconnect();
     colsObserver = new ResizeObserver(() => {
@@ -2469,7 +2632,7 @@ export function installLibrary(viewer) {
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
    */
-  const showListPreview = (relPath, entry, pageN, jump = true) => {
+  const showListPreview = (relPath, entry, pageN) => {
     if (!listPane) return;
     listPreviewPath = relPath;
     listPreviewPage = pageN;
@@ -2482,7 +2645,7 @@ export function installLibrary(viewer) {
       query: null,
       title: titleOf(relPath),
       meta: `Page ${pageN + 1} of ${pages}`,
-      jump,
+      jump: true,
     });
   };
 
@@ -2568,12 +2731,14 @@ export function installLibrary(viewer) {
         } catch { /* Promotion failed; the seeded open below covers it. */ }
       }
       // Stored page dims, rasters, and sidecar pages paint immediately while the real document hydrates behind them.
+      // With no raster for the landing page a seed could only paint blank pages, so the plain open below runs instead.
       // The tab also exists from the first click, so repeats activate it instead of starting another import.
-      if (entry.pageDims) {
+      if (entry.pageDims && await store.readPageRaster(entry.hash, target.pageN ?? 0)) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await panes.makeSeed(relPath, entry, target.pageN ?? 0);
         panes.beginUserLoad();
+        const t0 = performance.now();
         /** @type {{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} */
         let handle;
         try {
@@ -2592,6 +2757,9 @@ export function installLibrary(viewer) {
           viewer._searchBar.searchInputElem.value = target.query;
         }
         handle.hydrated.then(() => {
+          // This hydration ran from a cold open, so open-to-swap is a first paint.
+          entry.firstPaintMs = Math.round(performance.now() - t0);
+          saveManifestSoon();
           panes.persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
           // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here.
           if (target.query && viewer._searchBar) {
@@ -2604,6 +2772,7 @@ export function installLibrary(viewer) {
       }
       /** @type {File} */
       let pdfFile;
+      const t0 = performance.now();
       try {
         pdfFile = await store.readFile(relPath);
       } catch {
@@ -2633,6 +2802,8 @@ export function installLibrary(viewer) {
       saveManifestSoon();
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+      entry.firstPaintMs = Math.round(performance.now() - t0);
+      saveManifestSoon();
       wrapMutators(doc, tab);
       panes.persistRasterWindow(doc, entry, target.pageN ?? 0);
       if (target.query && viewer._searchBar) {
@@ -2654,6 +2825,7 @@ export function installLibrary(viewer) {
     getStore: () => store,
     getManifest: () => manifest,
     onRastersStored: () => results.repump(),
+    saveManifestSoon,
   });
 
   const results = createResultsView({
@@ -2665,6 +2837,7 @@ export function installLibrary(viewer) {
     getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults),
     getQuery: () => fullTextQuery,
     openEntry,
+    saveManifestSoon,
     onBack: () => {
       fullTextResults = null;
       searchInput.value = '';
@@ -2696,7 +2869,6 @@ export function installLibrary(viewer) {
   /** @type {?number} Trailing debounce for grid rebuilds during bulk indexing. */
   let ingestRenderTimer = null;
 
-  // Warm-lane gate inputs: the cushion renders only while the app is visible but idle, never on battery, and under a session cap when no power signal exists.
   const WARM_IDLE_MS = 30 * 1000;
   const WARM_SESSION_PAGES = 150;
   let lastInteraction = Date.now();
@@ -2906,6 +3078,13 @@ export function installLibrary(viewer) {
     fullTextQuery = query;
     fullTextResults = index.query(query);
     render();
+  });
+  // A blurred input scrolls back to the head of its value, so the browser's own caret placement would land there.
+  searchInput.addEventListener('mousedown', (e) => {
+    if (document.activeElement === searchInput) return;
+    e.preventDefault();
+    searchInput.focus();
+    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
   });
   clearBtn.addEventListener('click', () => {
     searchInput.value = '';

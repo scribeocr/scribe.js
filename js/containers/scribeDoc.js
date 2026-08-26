@@ -769,6 +769,14 @@ export class ScribeDoc {
     this.assistantChats = { chats: [] };
 
     /**
+     * The Redactions workspace's term list.
+     * The marks themselves are ordinary `redact` annotations, so this store only maps terms to them.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{terms: Array<RedactionTermRecord>, matchCase: boolean, scannedAt: ?string}}
+     */
+    this.redactions = { terms: [], matchCase: false, scannedAt: null };
+
+    /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
      * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
      * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
@@ -1199,6 +1207,9 @@ export class ScribeDoc {
     this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
     this.assistantChats.chats.length = 0;
+    this.redactions.terms.length = 0;
+    this.redactions.matchCase = false;
+    this.redactions.scannedAt = null;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;

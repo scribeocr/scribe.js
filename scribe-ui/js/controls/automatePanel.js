@@ -131,6 +131,34 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-chip.ai { color: var(--scribe-accent); background: var(--scribe-accent-soft); }
     .${r} .scribe-am-chip.aiopt { color: var(--scribe-ink-2); background: var(--scribe-sunken); }
     .${r} .scribe-am-empty { font-size: 12.5px; color: var(--scribe-ink-3); padding: 12px 11px; }
+    .${r} .scribe-am-rdwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .${r} .scribe-am-rdbody {
+      flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; min-height: 0;
+      display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start;
+    }
+    .${r} .scribe-am-trow {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 7px 9px;
+      border-radius: 7px; align-items: center;
+    }
+    .${r} .scribe-am-trow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-trow-t { font-size: 13px; color: var(--scribe-ink); min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-am-trow-n { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; grid-column: 1; }
+    .${r} .scribe-am-trow-acts { grid-row: 1 / span 2; grid-column: 2; display: inline-flex; gap: 2px; visibility: hidden; }
+    .${r} .scribe-am-trow:hover .scribe-am-trow-acts, .${r} .scribe-am-trow.menuopen .scribe-am-trow-acts { visibility: visible; }
+    .${r} .scribe-am-trow.removed .scribe-am-trow-t, .${r} .scribe-am-trow.removed .scribe-am-trow-n { text-decoration: line-through; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-trow-mode { cursor: pointer; }
+    .${r} .scribe-am-trow-mode:hover { color: var(--scribe-accent); }
+    .${r} .scribe-am-trow-mode:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; border-radius: 3px; }
+    .${r} .scribe-am-trow-edit {
+      border: 1px solid var(--scribe-accent); border-radius: 4px; font: inherit; font-size: 12.5px;
+      color: var(--scribe-ink); background: var(--scribe-surface); padding: 1px 5px; width: 140px; outline: none;
+    }
+    .${r} .scribe-am-rdfoot { flex: none; border-top: 1px solid var(--scribe-line); padding: 9px 12px; display: grid; gap: 7px; }
+    .${r} .scribe-am-rdsum { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-rdsum b { color: var(--scribe-ink); font-weight: 600; }
+    .${r} .scribe-am-rdnote { font-size: 11px; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-rdrescan { color: var(--scribe-accent); cursor: pointer; }
+    .${r} .scribe-am-rdrescan:hover { text-decoration: underline; }
     .${r} .scribe-am-thread {
       flex: 1; overflow-y: auto; overflow-x: hidden; padding: 12px; min-height: 0;
       display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; align-content: start;
@@ -168,9 +196,9 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-xtsum.open svg { transform: rotate(180deg); }
     .${r} .scribe-am-xtreceipt { display: grid; gap: 6px; border: 1px solid var(--scribe-line); border-radius: 7px; background: var(--scribe-canvas); padding: 9px 10px; }
     .${r} .scribe-am-xtexport { display: flex; justify-content: flex-end; }
-    .${r} .scribe-am-catalog::-webkit-scrollbar, .${r} .scribe-am-thread::-webkit-scrollbar { width: 5px; }
-    .${r} .scribe-am-catalog::-webkit-scrollbar-track, .${r} .scribe-am-thread::-webkit-scrollbar-track { background: transparent; }
-    .${r} .scribe-am-catalog::-webkit-scrollbar-thumb, .${r} .scribe-am-thread::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    .${r} .scribe-am-catalog::-webkit-scrollbar, .${r} .scribe-am-thread::-webkit-scrollbar, .${r} .scribe-am-rdbody::-webkit-scrollbar { width: 5px; }
+    .${r} .scribe-am-catalog::-webkit-scrollbar-track, .${r} .scribe-am-thread::-webkit-scrollbar-track, .${r} .scribe-am-rdbody::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-am-catalog::-webkit-scrollbar-thumb, .${r} .scribe-am-thread::-webkit-scrollbar-thumb, .${r} .scribe-am-rdbody::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
     .${r} .scribe-am-desc { font-size: 12.5px; color: var(--scribe-ink-2); line-height: 1.5; margin: 0; }
     .${r} .scribe-am-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .${r} .scribe-am-label { font-size: 12px; font-weight: 600; color: var(--scribe-ink-2); }
@@ -479,6 +507,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
   tablesElem.className = 'scribe-am-tables';
   tablesElem.style.display = 'none';
 
+  // The Redactions workspace, populated by the redact-terms module when its catalog row opens it.
+  const redactElem = document.createElement('div');
+  redactElem.className = 'scribe-am-rdwrap';
+  redactElem.style.display = 'none';
+
   const composer = document.createElement('div');
   composer.className = 'scribe-am-composer';
   const cbox = document.createElement('div');
@@ -510,7 +543,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, redactElem, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -545,6 +578,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     thread.style.display = next === 'thread' ? '' : 'none';
     asstThread.style.display = asst ? '' : 'none';
     tablesElem.style.display = next === 'tables' ? '' : 'none';
+    redactElem.style.display = next === 'redact' ? '' : 'none';
     backBtn.style.display = rest ? 'none' : '';
     hdIcon.style.display = rest ? '' : 'none';
     plusBtn.style.display = asst ? '' : 'none';
@@ -552,8 +586,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
     hdTitle.textContent = rest ? 'Automate'
       : chatsList ? 'Chats'
         : next === 'tables' ? 'Extract tables'
-          : asst ? (st?.activeRec?.title ?? 'Assistant')
-            : (activeRun ? activeRun.title : 'Automate');
+          : next === 'redact' ? 'Redactions'
+            : asst ? (st?.activeRec?.title ?? 'Assistant')
+              : (activeRun ? activeRun.title : 'Automate');
     if (asst && st) {
       const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
       if (live) live.unseen = false;
@@ -2067,6 +2102,23 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (view === 'tables') setView(wsPriorView === 'tables' ? 'rest' : wsPriorView);
   }
 
+  /** @type {?{refresh: () => void, prefill: (term: string) => void}} */
+  let redactHandle = null;
+
+  /**
+   * Open the Redactions workspace, rebuilding it against the active document.
+   * @param {string} [prefillTerm] - Term left in the add box, which never stages marks on its own.
+   */
+  async function openRedactionsWorkspace(prefillTerm) {
+    open();
+    setView('redact');
+    const module = await AUTOMATIONS.find((a) => a.id === 'redact-terms').load();
+    if (view !== 'redact') return;
+    redactElem.textContent = '';
+    redactHandle = module.buildRedactionsWorkspace(host, redactElem);
+    if (prefillTerm) redactHandle.prefill(prefillTerm);
+  }
+
   backBtn.addEventListener('click', () => {
     // Panel navigation only, because the canvas mode keeps running whatever the panel shows.
     // The toolbar button and the banner's Done are that mode's only exits.
@@ -2172,7 +2224,12 @@ export function createAutomatePanel(app, rootClass, hooks) {
   // The catalog's enabled/disabled reasons and the conversation both belong to the active document.
   const onDocChange = () => {
     if (!openState) return;
-    if (view === 'assistant' || view === 'chats') setView('rest');
+    if (view === 'redact') {
+      // The workspace binds to the outgoing document's term store, so a stale view must not survive the switch.
+      redactHandle = null;
+      redactElem.textContent = '';
+      setView('rest');
+    } else if (view === 'assistant' || view === 'chats') setView('rest');
     else if (view === 'rest') paintCatalog();
     paintTray();
     syncComposer();
@@ -2232,7 +2289,15 @@ export function createAutomatePanel(app, rootClass, hooks) {
     launchAutomation: (id, prefill) => {
       open();
       const entry = AUTOMATIONS.find((a) => a.id === id);
-      if (entry) launch(entry, prefill);
+      if (!entry) return;
+      if (entry.openInstead) entry.openInstead(host, prefill);
+      else launch(entry, prefill);
+    },
+    /** Open the Redactions workspace. */
+    openRedactionsWorkspace,
+    /** Re-render the Redactions workspace's counts after a mark mutation, and do nothing when that view is hidden. */
+    refreshRedactions: () => {
+      if (view === 'redact') redactHandle?.refresh();
     },
     /** Called by the Extract Tables mode: show the tables workspace (count note + table list + export block). */
     openTablesWorkspace,

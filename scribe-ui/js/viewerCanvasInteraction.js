@@ -568,7 +568,7 @@ const redactSelectionClick = () => {
   hideContextMenu();
   const words = viewer.getWordsUnderTextSelection();
   if (words.length === 0) return;
-  const added = redactWords(viewer, words.map((kw) => kw.word));
+  const { added } = redactWords(viewer, words.map((kw) => kw.word));
   viewer.clearTextSelection();
   if (added > 0 && viewer._onRedactMark) viewer._onRedactMark(added);
 };

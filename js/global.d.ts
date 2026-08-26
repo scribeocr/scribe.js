@@ -602,6 +602,23 @@ declare global {
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;
         assistantChats?: AssistantChatRecord[];
+        redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
+    };
+
+    /**
+     * One term in the Redactions workspace.
+     * Its last scan staged one `redact` annotation group per occurrence, listed in `groupIds`.
+     */
+    type RedactionTermRecord = {
+        term: string;
+        /**
+         * How the term matches.
+         * `variants` also accepts possessive and plural forms of the final word.
+         */
+        mode: "variants" | "exact" | "contains";
+        groupIds: string[];
+        /** True while the term's marks are removed but the row is kept for restoring. */
+        removed?: boolean;
     };
 
     /**

@@ -51,9 +51,9 @@ export class PdfCore {
   }
 
   /**
-   * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
+   * Render a single page to an image data URL, a JPEG/WebP blob, or a transferable ImageBitmap.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number,
-   * outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
+   * outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
    * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
    * @returns {Promise<{ dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
    *   perf?: { prepMs: number, drawMs: number, decodeMs: number, flushMs: number } }>}

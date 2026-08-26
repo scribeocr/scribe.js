@@ -1061,7 +1061,7 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
   function applyToSelection() {
     const matchedWords = scribe.getWordsUnderTextSelection();
     if (matchedWords.length === 0) return false;
-    const added = redactWords(scribe, matchedWords.map((kw) => kw.word));
+    const { added } = redactWords(scribe, matchedWords.map((kw) => kw.word));
     scribe.clearTextSelection();
     if (added > 0 && onMark) onMark(added);
     return true;
@@ -1126,6 +1126,8 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
     };
     const pointerdownHandler = (event) => {
       if (!redactMode || event.button !== 0) return;
+      // The Preview tab is a control over the page, so a press on it must not also start a box.
+      if (event.target instanceof Element && event.target.closest('.scribe-redact-tab')) return;
       if (drag) cancelDrag();
       let overText = false;
       if (!event.altKey) {
@@ -2078,7 +2080,7 @@ export function createEditTextTool(scribe) {
       if (ev.target instanceof Element && ev.target.closest('.scribe-edit-line-grip')) return;
       if (ev.pointerType === 'touch') { armTouchTap(ev); return; }
       const t = ev.target;
-      if (t instanceof Element && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
+      if (t instanceof Element && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-redact-tab, [contenteditable]')) return;
       // The open editor owns only its text band, not its full-width canvas element.
       if (editor?.isOpen() && editor.containsPoint(ev.clientX, ev.clientY)) return;
       ev.stopPropagation();

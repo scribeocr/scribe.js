@@ -3,6 +3,12 @@
 // In the viewer and `.scribe` saves the mark stays reviewable and deletable.
 import { bboxToPageSpace } from '../../js/addHighlights.js';
 
+// The pin uses heavier strokes than the app's 24-grid 1.6px icon set, which turns to mush at this tab's 11px box.
+const PIN_SVG = (filled) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"'
+  + ' style="display:block;width:100%;height:100%" aria-hidden="true">'
+  + `<path d="M14 3l7 7-3 1a2.6 2.6 0 0 0-1.7 1.7l-1 3-7-7 3-1A2.6 2.6 0 0 0 13 6z"${filled ? ' fill="currentColor"' : ''}/>`
+  + '<path d="M8 16L3.2 20.8" stroke-width="2.6"/></svg>';
+
 /**
  * Return the redaction marks on page n.
  * @param {import('../viewer.js').ScribeViewer} viewer
@@ -45,15 +51,15 @@ function redactionCovers(viewer, n, b) {
  * Words an existing mark already covers are skipped, so re-marking the same text never stacks duplicate rects.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<OcrWord>} words
- * @returns {number} Marks added.
+ * @returns {{added: number, groupId: ?string}} Marks added, and the group they were staged under (null when nothing was added).
  */
 export function redactWords(viewer, words) {
-  if (!words || words.length === 0) return 0;
+  if (!words || words.length === 0) return { added: 0, groupId: null };
   const newWords = words.filter((word) => {
     const page = word.line.page;
     return !redactionCovers(viewer, page.n, bboxToPageSpace(word.bbox, word.line.orientation, page.dims));
   });
-  if (newWords.length === 0) return 0;
+  if (newWords.length === 0) return { added: 0, groupId: null };
   const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [...new Set(newWords.map((word) => word.line.page.n))]);
   const groupId = nextGroupId(viewer);
   const pages = new Set();
@@ -90,9 +96,10 @@ export function redactWords(viewer, words) {
     viewer.renderRedactions(n);
     viewer.annotationsEdited(n);
   }
-  // Surface the new mark in an open comments panel (marks are listed like highlights).
+  // Redaction marks are listed in the comments panel like highlights, so a new one must reach it too.
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
-  return added;
+  viewer._automatePanel?.refreshRedactions?.();
+  return { added, groupId };
 }
 
 /**
@@ -126,6 +133,7 @@ export function redactRegion(viewer, n, box) {
   viewer.renderRedactions(n);
   viewer.annotationsEdited(n);
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+  viewer._automatePanel?.refreshRedactions?.();
   return true;
 }
 
@@ -150,8 +158,8 @@ export function removeRedactionGroup(viewer, groupId) {
     }
   }
   if (removed) viewer.doc.docHistory.recordAnnots(undoSnap, 'Removed redaction mark');
-  // Drop the deleted mark's row from an open comments panel, and the tab if it was anchored here.
   if (removed && viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+  if (removed) viewer._automatePanel?.refreshRedactions?.();
   if (removed && viewer._redactTab && viewer._redactTab.groupId === groupId) hideRedactTabNow(viewer);
 }
 
@@ -189,7 +197,7 @@ export function renderPageRedactions(viewer, n) {
     mark.className = 'scribe-redact-mark';
     mark.dataset.groupId = annot.groupId;
     // A rebuild must not drop an active export preview (e.g. a re-render while the tab is pinned).
-    if (st && st.on && annot.groupId === st.groupId) mark.classList.add('scribe-redact-preview-on');
+    if (st && st.on) mark.classList.add('scribe-redact-preview-on');
     mark.style.left = `${annot.bbox.left}px`;
     mark.style.top = `${annot.bbox.top}px`;
     mark.style.width = `${annot.bbox.right - annot.bbox.left}px`;
@@ -203,13 +211,16 @@ export function renderPageRedactions(viewer, n) {
 const TAB_FORGIVE_PX = 4;
 const TAB_LINGER_MS = 350;
 
-/** Toggle the applied-black preview class on every rendered mark of a group. */
-function setRedactPreview(viewer, groupId, on) {
+/**
+ * Toggle the applied-black export preview on every rendered mark.
+ * Document-wide because it answers "what will the exported page look like", which only means something with every mark applied.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {boolean} on
+ */
+export function setRedactPreview(viewer, on) {
   for (const group of viewer._redactGroups) {
     if (!group) continue;
-    for (const mark of group.children) {
-      if (/** @type {HTMLElement} */ (mark).dataset.groupId === groupId) mark.classList.toggle('scribe-redact-preview-on', on);
-    }
+    for (const mark of group.children) mark.classList.toggle('scribe-redact-preview-on', on);
   }
   if (viewer._redactTab) viewer._redactTab.on = on;
 }
@@ -227,7 +238,7 @@ export function hideRedactTabSoon(viewer) {
   st.hideT = setTimeout(() => {
     const s = viewer._redactTab;
     if (!s || s.pinned) return;
-    if (s.on) setRedactPreview(viewer, s.groupId, false);
+    if (s.on) setRedactPreview(viewer, false);
     s.el.remove();
   }, linger);
 }
@@ -237,7 +248,7 @@ function hideRedactTabNow(viewer) {
   const st = viewer._redactTab;
   if (!st) return;
   clearTimeout(st.hideT);
-  if (st.on) setRedactPreview(viewer, st.groupId, false);
+  if (st.on) setRedactPreview(viewer, false);
   st.pinned = false;
   st.el.classList.remove('pinned');
   st.el.remove();
@@ -257,8 +268,6 @@ export function updateRedactTab(viewer, event) {
     clearTimeout(st.hideT);
     return;
   }
-  // A pinned preview stays put until the tab is clicked again.
-  if (st && st.pinned) return;
   const pt = viewer.clientToPage(event.clientX, event.clientY);
   const pad = TAB_FORGIVE_PX / viewer.zoomLevel;
   let hit = null;
@@ -276,17 +285,22 @@ export function updateRedactTab(viewer, event) {
   if (!state) {
     const el = /** @type {HTMLSpanElement} */ (document.createElement('span'));
     el.className = 'scribe-redact-tab';
-    el.textContent = 'Preview';
+    const label = document.createElement('span');
+    label.textContent = 'Preview';
+    const pinIcon = document.createElement('span');
+    pinIcon.className = 'scribe-redact-tab-pin';
+    pinIcon.innerHTML = PIN_SVG(false);
+    el.append(label, pinIcon);
     el.addEventListener('mouseenter', () => {
       const s = viewer._redactTab;
       if (!s) return;
       clearTimeout(s.hideT);
-      setRedactPreview(viewer, s.groupId, true);
+      setRedactPreview(viewer, true);
     });
     el.addEventListener('mouseleave', () => {
       const s = viewer._redactTab;
       if (!s || s.pinned) return;
-      setRedactPreview(viewer, s.groupId, false);
+      setRedactPreview(viewer, false);
       hideRedactTabSoon(viewer);
     });
     el.addEventListener('click', (e) => {
@@ -295,8 +309,9 @@ export function updateRedactTab(viewer, event) {
       if (!s) return;
       s.pinned = !s.pinned;
       el.classList.toggle('pinned', s.pinned);
+      pinIcon.innerHTML = PIN_SVG(s.pinned);
       // The pointer is on the tab mid-click, so the hover preview stays on either way.
-      setRedactPreview(viewer, s.groupId, true);
+      setRedactPreview(viewer, true);
     });
     state = {
       el, n: -1, groupId: '', left: 0, top: 0, hideT: 0, pinned: false, on: false,
@@ -314,8 +329,6 @@ export function updateRedactTab(viewer, event) {
   const moved = state.n !== pt.n || state.groupId !== anchor.groupId
     || state.left !== anchor.bbox.left || state.top !== anchor.bbox.top;
   if (!moved && state.el.isConnected) return;
-  // Moving to a different group takes any active hover preview along.
-  if (state.on && state.groupId !== anchor.groupId) setRedactPreview(viewer, state.groupId, false);
   state.n = pt.n;
   state.groupId = anchor.groupId;
   state.left = anchor.bbox.left;

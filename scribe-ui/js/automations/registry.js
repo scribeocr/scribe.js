@@ -54,7 +54,8 @@ const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2
  * @property {'read'|'mutate'|'destructive'} effects
  * @property {string} svg
  * @property {(viewer: import('../../viewer.js').ScribeViewer) => ?string} disabledWhy - Reason the tool cannot run right now, or null when it can.
- * @property {(host: AutomationHost) => void} [openInstead] - Clicking the catalog row runs this instead of opening the form pipeline, for a tool whose surface is a viewer mode's workspace.
+ * @property {(host: AutomationHost, prefill?: Object) => void} [openInstead] - Runs instead of the form pipeline, for a tool whose surface is a workspace view.
+ *   Hand-off surfaces pass their prefill straight through to it.
  * @property {() => Promise<AutomationModule>} load
  */
 
@@ -69,6 +70,7 @@ export const AUTOMATIONS = [
     effects: 'mutate',
     svg: REDACT_TERMS_SVG,
     disabledWhy: (viewer) => (viewer.doc && viewer.doc.pageMetrics.length ? null : 'Open a document first'),
+    openInstead: (host, prefill) => host.app._automatePanel?.openRedactionsWorkspace(prefill?.terms?.[0]),
     load: () => import('./redactTerms.js'),
   },
   {

@@ -735,19 +735,21 @@ export class ImageStore {
   };
 
   /**
-   * Render (or return from cache) a small low-resolution JPEG preview of page `n`.
+   * Render (or return from cache) a small low-resolution preview of page `n`.
    *
-   * For PDF input the page is drawn directly at thumbnail resolution and JPEG-encoded in one pass by the renderer,
+   * For PDF input the page is drawn directly at thumbnail resolution and encoded in one pass by the renderer,
    * so it never populates the full-resolution `native[]` cache and the few-KB Blob stays cheap to keep resident across a large document.
    * The render uses the background lane (`forViewer = false`) so it can never delay an on-screen viewer render.
-   * For image input the full-resolution page image is already in memory, so it is drawn onto a small canvas and JPEG-encoded the same way.
+   * For image input the full-resolution page image is already in memory, so it is drawn onto a small canvas and encoded the same way.
    * @param {number} n - Page index.
    * @param {number} [widthPx=150] - Target preview width in CSS px.
-   * @param {number} [quality=0.6] - JPEG quality (0-1).
+   * @param {number} [quality=0.6] - JPEG/WebP quality (0-1). WebP quality 1.0 encodes losslessly in Chromium.
    * @param {boolean} [fresh=false] - Render at exactly `widthPx`, bypassing the thumbnail cache: no cached Blob is returned (first-requested width otherwise wins) and the result is not cached.
-   * @returns {Promise<?Blob>} A JPEG Blob, or `null` if the page cannot be rendered.
+   * @param {'jpeg'|'webp'} [format='jpeg'] - Output encoding. The cache is format-blind, so a non-default format should pass `fresh`.
+   *   JPEG stays the default because Safari cannot encode WebP (an unsupported type falls back to PNG).
+   * @returns {Promise<?Blob>} An encoded image Blob, or `null` if the page cannot be rendered.
    */
-  renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false) => {
+  renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false, format = 'jpeg') => {
     if (!fresh && this.thumbnails[n]) return this.thumbnails[n];
     if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
 
@@ -762,7 +764,7 @@ export class ImageStore {
         // Display slot `n` may have been reordered, so raster its source page, not its position.
         const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality, edits: this.#editsForPage(n),
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits: this.#editsForPage(n),
         }, false);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }
@@ -773,8 +775,9 @@ export class ImageStore {
       const ctx = canvas.getContext('2d');
       ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
       ca.closeDrawable(bitmap);
-      // `type` for browsers, `mime` for the Node canvas fork: both are needed to get a JPEG (not PNG) Blob.
-      const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality });
+      // `type` for browsers, `mime` for the Node canvas fork: both are needed to get the requested (not PNG) encoding.
+      const mime = `image/${format}`;
+      const blob = await canvas.convertToBlob({ type: mime, mime, quality });
       ca.closeDrawable(canvas);
       return blob;
     })();
@@ -814,11 +817,11 @@ export class ImageStore {
    * @param {number} n - Page index.
    * @param {Object} [options]
    * @param {number} [options.dpi=300] - Render resolution in dots per inch (72 renders at the PDF's point size).
-   * @param {'png'|'jpeg'|'bitmap'} [options.format='png'] - Output encoding.
-   * @param {number} [options.quality=0.6] - JPEG quality (0-1); ignored for 'png' and 'bitmap'.
+   * @param {'png'|'jpeg'|'webp'|'bitmap'} [options.format='png'] - Output encoding.
+   * @param {number} [options.quality=0.6] - JPEG/WebP quality (0-1); ignored for 'png' and 'bitmap'.
    * @param {'color'|'gray'} [options.colorMode='color'] - Output color mode.
    * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
-   *   The image in `dataUrl` ('png'), `blob` ('jpeg'), or `bitmap` ('bitmap').
+   *   The image in `dataUrl` ('png'), `blob` ('jpeg'/'webp'), or `bitmap` ('bitmap').
    *   `colorMode` is the mode actually used, which downgrades to 'gray' on a page with no color.
    *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever format was requested.
    */

@@ -5143,13 +5143,13 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {'color'|'gray'} [colorMode='color'] - Output color mode
  * @param {number} [rotate=0] - Page rotation in degrees
  * @param {number} [dpi=300] - Render resolution in dots per inch
- * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding
- * @param {number} [quality=0.6] - JPEG quality 0-1
+ * @param {'png'|'jpeg'|'webp'|'bitmap'} [outputFormat='png'] - Output encoding
+ * @param {number} [quality=0.6] - JPEG/WebP quality 0-1. WebP quality 1.0 encodes losslessly in Chromium.
  * @param {?{records: Array<ContentEdit>, dims: {width: number, height: number}}} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
  *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
  * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
  *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
- *   The rendered image in `dataUrl` ('png'), `blob` ('jpeg'), or `bitmap` ('bitmap').
+ *   The rendered image in `dataUrl` ('png'), `blob` ('jpeg'/'webp'), or `bitmap` ('bitmap').
  *   `colorMode` is the mode actually used, which downgrades to 'gray' on a page with no color.
  *   'bitmap' falls back to a PNG `dataUrl` when the canvas is not a real OffscreenCanvas (Node).
  *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever `outputFormat` requested.
@@ -8984,12 +8984,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     };
   }
 
-  // JPEG output (thumbnails): encode the canvas directly to a JPEG Blob, skipping getImageData and the PNG build.
+  // JPEG/WebP output: encode the canvas directly to a Blob, skipping getImageData and the PNG build.
   // Pass both `type` (the W3C OffscreenCanvas option browsers read) and `mime` (the option the Node @scribe.js/canvas fork reads).
   // Given only `type`, the fork ignores the format and falls back to PNG.
-  if (outputFormat === 'jpeg') {
+  // WebP at quality 1.0 encodes losslessly in Chromium.
+  if (outputFormat === 'jpeg' || outputFormat === 'webp') {
+    const mime = outputFormat === 'webp' ? 'image/webp' : 'image/jpeg';
     const tFlushStart = performance.now();
-    const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality });
+    const blob = await canvas.convertToBlob({ type: mime, mime, quality });
     perf.flushMs = performance.now() - tFlushStart;
     ca.closeDrawable(canvas);
     return {

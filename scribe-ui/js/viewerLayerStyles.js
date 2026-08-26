@@ -56,10 +56,12 @@ export function ensureLayerStyleSheet() {
     + 'user-select:none;background:#d1493d;color:#fff;font-family:system-ui,-apple-system,sans-serif;'
     + 'font-size:calc(7.5px/var(--scribe-zoom,1));font-weight:700;line-height:1;'
     + 'letter-spacing:calc(.6px/var(--scribe-zoom,1));text-transform:uppercase;'
+    + 'display:inline-flex;align-items:center;gap:calc(4px/var(--scribe-zoom,1));'
     + 'padding:calc(3px/var(--scribe-zoom,1)) calc(6px/var(--scribe-zoom,1)) calc(2.5px/var(--scribe-zoom,1));'
     + 'border-radius:calc(3px/var(--scribe-zoom,1)) calc(3px/var(--scribe-zoom,1)) 0 0}'
     + '.scribe-redact-tab:hover{background:#b93a2f}'
     + '.scribe-redact-tab.pinned{background:#7f2015}'
+    + '.scribe-redact-tab-pin{width:calc(11px/var(--scribe-zoom,1));height:calc(11px/var(--scribe-zoom,1));display:inline-flex;flex:none}'
     // The live box shown while drag-drawing a region mark.
     + '.scribe-redact-preview{position:absolute;box-sizing:border-box;'
     + 'background:repeating-linear-gradient(45deg,rgba(209,73,61,.14) 0 calc(4px/var(--scribe-zoom,1)),'

@@ -7,8 +7,49 @@ export const PAGE_RASTER_WIDTH = 900;
 /** How many of the most recently added documents the warm lane cushions, and how many leading pages each gets. */
 export const CUSHION_DOCS = 150;
 export const CUSHION_PAGES = 3;
+/**
+ * First-paint cost (structural open plus first-page render, ms) at or above which a document's page rasters are stored.
+ * A document that paints faster than this gains nothing from a stored stand-in.
+ */
+export const RASTER_STORE_MIN_MS = 500;
+/**
+ * Sidecar and PDF sizes past which no speculative import runs.
+ * The results warmer leaves the hit row blank, and the preview pane waits for an explicit Open.
+ * The PDF cap admits 500+ page books, which run 25-45MB and top the ranking for generic queries.
+ */
+export const WARM_SIDECAR_LIMIT = 16 * 1024 * 1024;
+export const WARM_PDF_LIMIT = 64 * 1024 * 1024;
+/** WebP quality for pages routed lossy. In Chromium, quality 1.0 switches the encoder to lossless, so 0.9 is the top lossy setting. */
+const RASTER_LOSSY_QUALITY = 0.9;
+/**
+ * Byte cap for a lossless page raster. A page past it re-encodes lossy.
+ * Catches gradient-heavy synthetic pages, which the geometry rule cannot see.
+ */
+const RASTER_LOSSLESS_CAP = 250 * 1024;
+/** Page-area fraction covered by a single image at or above which a page's raster encodes lossy. */
+const RASTER_LOSSY_IMAGE_FRAC = 0.2;
 /** Ingest timeout, so one pathological file cannot wedge the queue forever. */
 const DOC_TIMEOUT_MS = 240 * 1000;
+
+/**
+ * Render one page's stored raster, a 900px WebP.
+ * Synthetic pages (text, vector art) encode lossless, photographic ones lossy.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @param {number} n
+ * @returns {Promise<?Blob>} The encoded raster, or null when the page cannot be rendered.
+ */
+export const renderPageRaster = async (doc, n) => {
+  const stats = doc.inputData.pageStats?.[n];
+  // Image-coverage geometry rather than readable-text detection, because what makes lossless win is a synthetic render.
+  // A Type3 or outline-text page has no readable characters yet encodes like a text page.
+  // Unknown geometry routes lossy, whose error costs only status-quo quality, where lossless on a photograph costs several times the bytes.
+  const lossy = !stats || stats.largestImageFrac >= RASTER_LOSSY_IMAGE_FRAC;
+  const blob = await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, lossy ? RASTER_LOSSY_QUALITY : 1.0, true, 'webp');
+  if (blob && !lossy && blob.size > RASTER_LOSSLESS_CAP) {
+    return (await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, RASTER_LOSSY_QUALITY, true, 'webp')) ?? blob;
+  }
+  return blob;
+};
 
 /** @param {ArrayBuffer} buf @returns {Promise<string>} First 16 hex chars of SHA-256. */
 const hashBytes = async (buf) => {
@@ -202,15 +243,20 @@ export class LibraryIngest {
           this.current = null;
           continue;
         }
-        if (manifestPending) {
+        if (manifestPending && Date.now() - manifestWrittenAt > 1000) {
+          manifestWrittenAt = Date.now();
           manifestPending = false;
           await this.store.writeManifest(this.manifest);
         }
-        idle = !(await this._warmNext());
+        // Warm rounds record `firstPaintMs` measurements on entries, so they mark the manifest dirty too.
+        const warmed = await this._warmNext();
+        if (warmed) manifestPending = true;
+        idle = !warmed;
       }
     } finally {
       this.running = false;
       this.current = null;
+      if (manifestPending) await this.store.writeManifest(this.manifest).catch(() => {});
       this.onProgress?.({ done: this.done, total: this.done + this.userLane.length + this.discoveryLane.length, current: '' });
       this.done = 0;
     }
@@ -341,7 +387,8 @@ export class LibraryIngest {
   /**
    * Render the first-open cushion for one recently added document, if the gate and budget allow.
    * One document per call, so the lanes and the gate are re-checked between documents.
-   * @returns {Promise<boolean>} Whether a document was cushioned. False ends the run.
+   * Doubles as the measurement pass, recording `firstPaintMs` and storing the rendered pages only when it clears the store gate.
+   * @returns {Promise<boolean>} Whether a document was processed. False ends the run.
    */
   async _warmNext() {
     if (this.warmCancelled || !this.warmGate || !this.warmGate()) return false;
@@ -356,22 +403,33 @@ export class LibraryIngest {
       const cand = /** @type {{relPath: string, hash: string, pages: number}} */ (this.warmLane.shift());
       const entry = this.manifest.docs[cand.relPath];
       if (!entry || entry.status !== 'indexed' || entry.hash !== cand.hash) continue;
+      // Skipped rather than re-measured, so a fast document does not spend a render on every warm pass.
+      if (entry.firstPaintMs !== undefined && entry.firstPaintMs < RASTER_STORE_MIN_MS) continue;
       if (this.store.rasterBytes !== null && this.store.rasterBytes > this.store.rasterBudget) return false;
       if (await this.store.readPageRaster(cand.hash, 0)) continue;
       /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc = null;
       try {
+        const t0 = performance.now();
         const files = [await this.store.readFile(cand.relPath)];
         const sidecar = await this.store.readSidecar(cand.hash);
         if (sidecar) files.push(new File([sidecar], `${cand.hash}.scribe`));
         // Skipping text extraction is safe here because the sidecar already carries this document's text.
         doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
-        for (let n = 0; n < cand.pages; n++) {
-          const raster = await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
-          if (raster) {
-            await this.store.writePageRaster(cand.hash, n, raster);
-            this.warmPagesDone++;
-          }
+        // This read, open, and render are the same sequence a preview of this document would pay, so they double as the measurement.
+        const raster0 = await renderPageRaster(doc, 0).catch(() => null);
+        this.warmPagesDone++;
+        const firstPaintMs = Math.round(performance.now() - t0);
+        if (raster0) {
+          entry.firstPaintMs = firstPaintMs;
+          if (firstPaintMs < RASTER_STORE_MIN_MS) return true;
+          await this.store.writePageRaster(cand.hash, 0, raster0);
+        }
+        // A failed page-0 render falls through here unmeasured, so the document is treated as slow rather than recorded fast.
+        for (let n = 1; n < cand.pages; n++) {
+          const raster = await renderPageRaster(doc, n);
+          this.warmPagesDone++;
+          if (raster) await this.store.writePageRaster(cand.hash, n, raster);
         }
       } catch { /* Cushions are best-effort, so a failure leaves the document indexed. */
       } finally {
