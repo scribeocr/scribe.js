@@ -103,6 +103,9 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
       }
     } else {
       const charset = fontShell.tables.cff.charset;
+      // Codepoints claimed by a glyph's own name or bare ToUnicode, not by the PDF encoding.
+      // The encoding decides which glyph a char code reaches, so the encoding-driven passes below may overwrite these.
+      const nameDerived = new Set();
       if (charset) {
         for (let gi = 1; gi < charset.length; gi++) {
           const name = charset[gi];
@@ -110,7 +113,10 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
           const uniStr = aglLookup(name);
           if (uniStr) {
             const cp = uniStr.codePointAt(0);
-            if (cp && !unicodeToGID.has(cp)) unicodeToGID.set(cp, gi);
+            if (cp && !unicodeToGID.has(cp)) {
+              unicodeToGID.set(cp, gi);
+              nameDerived.add(cp);
+            }
           }
         }
       }
@@ -118,7 +124,10 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         for (const [cid, unicode] of fontObj.toUnicode) {
           if (cid === 0 || cid >= fontShell.nGlyphs) continue;
           const cp = unicode.codePointAt(0);
-          if (cp && cp > 0 && !unicodeToGID.has(cp)) unicodeToGID.set(cp, cid);
+          if (cp && cp > 0 && !unicodeToGID.has(cp)) {
+            unicodeToGID.set(cp, cid);
+            nameDerived.add(cp);
+          }
         }
       }
       // Add PUA entries so the renderer can draw glyphs via U+E000+charCode.
@@ -143,8 +152,9 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
             const gid = nameToGID.get(glyphName);
             if (gid === undefined) continue;
             const puaCode = 0xE000 + charCode;
-            if (!unicodeToGID.has(puaCode)) {
+            if (!unicodeToGID.has(puaCode) || nameDerived.has(puaCode)) {
               unicodeToGID.set(puaCode, gid);
+              nameDerived.delete(puaCode);
               usesPUA = true;
             }
           }
@@ -194,8 +204,9 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
           // but a malformed subset may store a visible outline under a whitespace name.
           if (hasEnc && !overridden && !encIsWhitespace) continue;
           const puaCode = 0xE000 + code;
-          if (!unicodeToGID.has(puaCode)) {
+          if (!unicodeToGID.has(puaCode) || nameDerived.has(puaCode)) {
             unicodeToGID.set(puaCode, gid);
+            nameDerived.delete(puaCode);
             // For a whitespace code, only flag usesPUA when its glyph actually has an outline.
             if (!encIsWhitespace || (gid > 0 && fontShell.glyphs.get(gid)?.path.commands.some((c) => c.type === 'L' || c.type === 'C' || c.type === 'Q'))) {
               usesPUA = true;
