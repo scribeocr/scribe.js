@@ -245,6 +245,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
   yield JSON.stringify(header);
   const contentEdits = envelope.session?.contentEdits || [];
   const nativeText = envelope.session?.nativeText || [];
+  const fillShapes = envelope.session?.fillShapes || [];
   for (let i = 0; i < ocrPages.length; i++) {
     const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
     /** @type {Record<string, any>} */
@@ -252,6 +253,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     if (envelope.session) {
       rec.contentEdits = contentEdits[i] ?? null;
       rec.nativeText = nativeText[i] ?? null;
+      rec.fillShapes = fillShapes[i] ?? null;
     }
     yield '\n';
     yield JSON.stringify(rec);
@@ -856,6 +858,22 @@ export async function exportData(doc, format = 'txt', options = {}) {
       envelope.session = {
         v: 1, contentEdits: doc.contentEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
+      // Site matching pads by 2px, so rounding coordinates to 0.1px is lossless.
+      const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
+      const box = (/** @type {{left: number, top: number, right: number, bottom: number}} */ b) => [r1(b.left), r1(b.top), r1(b.right), r1(b.bottom)];
+      envelope.session.fillShapes = doc.fillShapes.pages.map((shapes) => {
+        if (!shapes) return null;
+        /** @type {EncodedFillShapes} */
+        const enc = {};
+        if (shapes.images?.length) enc.i = shapes.images.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.objNum ?? -1])]);
+        if (shapes.paths?.length) enc.p = shapes.paths.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.paint, st.commands])]);
+        if (shapes.squares?.length) enc.q = shapes.squares.map((e) => [...box(e), e.stroke ? 1 : 0]);
+        if (shapes.marks?.length) enc.m = shapes.marks.map((e) => box(e));
+        if (shapes.glyphBoxes?.length) enc.g = shapes.glyphBoxes.map((e) => [e.id, ...box(e.bbox)]);
+        if (shapes.pathsIneligible) enc.pi = 1;
+        if (shapes.marksOverflow) enc.mo = 1;
+        return enc;
+      });
       if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
       if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
     }

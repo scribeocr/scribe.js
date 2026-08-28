@@ -1333,6 +1333,81 @@ export async function openDocumentFromFile(file, { deferText = false, skipFontOp
 const EDIT_TEXT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
 
 /**
+ * Whether every word of `line` is visible native PDF text, the precondition for editing or deleting it in place.
+ * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @param {?import('../../../js/objects/ocrObjects.js').OcrLine} line
+ */
+export function nativeLineEligible(doc, line) {
+  if (!line || line.words.length === 0) return false;
+  const nt = nativeTextForPage(doc, line.page);
+  return line.words.every((w) => !!nt[w.id]);
+}
+
+/**
+ * The drawn box for a native-text line, sized to its visible glyphs.
+ * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
+ * @param {{left: number, right: number, top: number, bottom: number}} lbox
+ */
+export function nativeLineDrawBox(doc, line, lbox) {
+  const nt = nativeTextForPage(doc, line.page);
+  const lineBase = line.bbox.bottom + (line.baseline?.[1] || 0);
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const w of line.words) {
+    const base = nt[w.id]?.baselineY ?? lineBase;
+    const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
+    // Declared font metrics overshoot the visible glyphs on many fonts, so a band off the word bboxes can cover neighboring lines.
+    top = Math.min(top, base - 0.75 * size);
+    bottom = Math.max(bottom, base + 0.25 * size);
+  }
+  if (!Number.isFinite(top)) top = lbox.top;
+  if (!Number.isFinite(bottom)) bottom = lbox.bottom;
+  return {
+    left: lbox.left, right: lbox.right, top, bottom,
+  };
+}
+
+/**
+ * The eligible line under a client point, or null when the point is outside its drawn band.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {number} clientX
+ * @param {number} clientY
+ * @param {(line: import('../../../js/objects/ocrObjects.js').OcrLine) => boolean} eligible
+ */
+export function nativeLineHitAt(scribe, clientX, clientY, eligible) {
+  if (!scribe.textSel) return null;
+  const info = scribe.textSel.lineInfoAt(clientX, clientY, eligible);
+  if (!info) return null;
+  const p = scribe.clientToPage(clientX, clientY);
+  if (p.n !== info.n) return null;
+  const local = scribe.pageToLocal(info.n, info.orientation, p.x, p.y);
+  const box = nativeLineDrawBox(scribe.doc, info.line, info.lbox);
+  const pad = 2;
+  if (local.x < box.left - pad || local.x > box.right + pad
+    || local.y < box.top - pad || local.y > box.bottom + pad) return null;
+  return info;
+}
+
+/**
+ * Refresh the pages a native-text edit changed.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {Array<number>} pages
+ */
+export function refreshEditedPages(scribe, pages) {
+  for (const n of new Set(pages)) {
+    scribe.refreshPageRaster(n);
+    scribe.renderWords(n);
+    scribe.renderHighlights?.(n);
+    if (scribe.textSel) {
+      scribe.textSel.invalidatePage(n);
+      scribe.textSel.renderPage(n);
+    }
+  }
+  if (scribe.onEditCallback) scribe.onEditCallback();
+}
+
+/**
  * The "Edit Text" mode tool.
  * While the mode is active, lines of visible native PDF text are selectable objects that can be edited in place or deleted.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -1362,11 +1437,7 @@ export function createEditTextTool(scribe) {
   const hideHover = () => hoverElem.remove();
 
   /** @param {?import('../../../js/objects/ocrObjects.js').OcrLine} line */
-  const lineEligible = (line) => {
-    if (!line || line.words.length === 0) return false;
-    const nt = nativeTextForPage(scribe.doc, line.page);
-    return line.words.every((w) => !!nt[w.id]);
-  };
+  const lineEligible = (line) => nativeLineEligible(scribe.doc, line);
 
   toolbarElem.addEventListener('click', () => {
     editMode = !editMode;
@@ -1391,16 +1462,7 @@ export function createEditTextTool(scribe) {
   function installBehaviors() {
     /** @param {Array<number>} pages */
     const refreshPages = (pages) => {
-      for (const n of new Set(pages)) {
-        scribe.refreshPageRaster(n);
-        scribe.renderWords(n);
-        scribe.renderHighlights?.(n);
-        if (scribe.textSel) {
-          scribe.textSel.invalidatePage(n);
-          scribe.textSel.renderPage(n);
-        }
-      }
-      if (scribe.onEditCallback) scribe.onEditCallback();
+      refreshEditedPages(scribe, pages);
       validateSelection();
       renderFrames();
     };
@@ -1415,43 +1477,14 @@ export function createEditTextTool(scribe) {
      * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
      * @param {{left: number, right: number, top: number, bottom: number}} lbox
      */
-    const lineDrawBox = (line, lbox) => {
-      const nt = nativeTextForPage(scribe.doc, line.page);
-      const lineBase = line.bbox.bottom + (line.baseline?.[1] || 0);
-      let top = Infinity;
-      let bottom = -Infinity;
-      for (const w of line.words) {
-        const base = nt[w.id]?.baselineY ?? lineBase;
-        const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
-        // Declared font metrics overshoot the visible glyphs on many fonts, so a band off the word bboxes can cover neighboring lines.
-        top = Math.min(top, base - 0.75 * size);
-        bottom = Math.max(bottom, base + 0.25 * size);
-      }
-      if (!Number.isFinite(top)) top = lbox.top;
-      if (!Number.isFinite(bottom)) bottom = lbox.bottom;
-      return {
-        left: lbox.left, right: lbox.right, top, bottom,
-      };
-    };
+    const lineDrawBox = (line, lbox) => nativeLineDrawBox(scribe.doc, line, lbox);
 
     /**
      * The eligible line under the pointer, or null when the pointer is outside its drawn band.
      * @param {number} clientX
      * @param {number} clientY
      */
-    const lineHitAt = (clientX, clientY) => {
-      if (!scribe.textSel) return null;
-      const info = scribe.textSel.lineInfoAt(clientX, clientY, lineEligible);
-      if (!info) return null;
-      const p = scribe.clientToPage(clientX, clientY);
-      if (p.n !== info.n) return null;
-      const local = scribe.pageToLocal(info.n, info.orientation, p.x, p.y);
-      const box = lineDrawBox(info.line, info.lbox);
-      const pad = 2;
-      if (local.x < box.left - pad || local.x > box.right + pad
-        || local.y < box.top - pad || local.y > box.bottom + pad) return null;
-      return info;
-    };
+    const lineHitAt = (clientX, clientY) => nativeLineHitAt(scribe, clientX, clientY, lineEligible);
 
     // Faint boxes on every eligible line show which text is native (editable) rather than baked into an image.
     /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
@@ -1922,7 +1955,7 @@ export function createEditTextTool(scribe) {
         padding: '7px 11px',
         fontSize: '12px',
         lineHeight: '1.35',
-        boxShadow: 'var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13))',
+        boxShadow: 'var(--scribe-menu-shadow, 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12))',
         pointerEvents: 'none',
         maxWidth: '300px',
         transition: 'opacity .3s',
@@ -2319,9 +2352,8 @@ export function createGraphicsEditTool(scribe) {
   };
 
   const placementsForPage = (n) => {
-    const page = scribe.doc?.ocr?.pdf?.[n];
-    const dims = page?.dims;
-    if (!page || !dims) return [];
+    const dims = scribe.doc?.pageMetrics?.[n]?.dims;
+    if (!dims) return [];
     const records = scribe.doc.contentEdits.pages[n] || [];
     const pad = 2;
     const areaCap = dims.width * dims.height * 0.95;
@@ -2331,10 +2363,10 @@ export function createGraphicsEditTool(scribe) {
     /** @type {Array<{kind: 'image'|'path', e: {left: number, top: number, right: number, bottom: number}}>} */
     const out = [];
     // A placement covering nearly the whole page is the scan or the page background, so deleting it would blank the page.
-    for (const e of pageImagePlacements(page)) {
+    for (const e of pageImagePlacements(scribe.doc, n)) {
       if ((e.right - e.left) * (e.bottom - e.top) < areaCap && !pending('deleteImage', e)) out.push({ kind: 'image', e });
     }
-    for (const e of pagePathPlacements(page)) {
+    for (const e of pagePathPlacements(scribe.doc, n)) {
       if ((e.right - e.left) * (e.bottom - e.top) < areaCap && !pending('deletePath', e)) out.push({ kind: 'path', e });
     }
     return out;
@@ -2346,7 +2378,7 @@ export function createGraphicsEditTool(scribe) {
     // Hairline rules have near-zero extents, so thin path targets get a minimum hit band of ~4 css px per side.
     let slop = 4;
     const cont = scribe.pageContainerArr?.[pt.n];
-    const dims = scribe.doc?.ocr?.pdf?.[pt.n]?.dims;
+    const dims = scribe.doc?.pageMetrics?.[pt.n]?.dims;
     if (cont && cont.isConnected && dims) {
       const pr = cont.getBoundingClientRect();
       if (pr.width > 0) slop = (4 * dims.width) / pr.width;
@@ -2488,7 +2520,7 @@ export function createGraphicsEditTool(scribe) {
       let anchor = null;
       for (const [entry, sel] of selected) {
         const cont = scribe.pageContainerArr?.[sel.n];
-        const dims = scribe.doc?.ocr?.pdf?.[sel.n]?.dims;
+        const dims = scribe.doc?.pageMetrics?.[sel.n]?.dims;
         if (!cont || !cont.isConnected || !dims) continue;
         const pr = cont.getBoundingClientRect();
         const r = {
@@ -2516,7 +2548,7 @@ export function createGraphicsEditTool(scribe) {
         if (!cont || !cont.isConnected) continue;
         const pr = cont.getBoundingClientRect();
         if (pr.width === 0 || pr.right < r.left || pr.left > r.right || pr.bottom < r.top || pr.top > r.bottom) continue;
-        const dims = scribe.doc?.ocr?.pdf?.[n]?.dims;
+        const dims = scribe.doc?.pageMetrics?.[n]?.dims;
         if (!dims) continue;
         const L = ((r.left - pr.left) * dims.width) / pr.width;
         const R = ((r.right - pr.left) * dims.width) / pr.width;

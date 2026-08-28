@@ -53,7 +53,7 @@ const ITEM_MIN_PT = 2.88;
  * @param {number} n
  * @returns {number}
  */
-function pxPerPt(viewer, n) {
+export function pxPerPt(viewer, n) {
   const pts = viewer.doc?.inputData?.pageStats?.[n]?.pageSize;
   const width = viewer.doc?.pageMetrics?.[n]?.dims?.width;
   if (!pts || !pts[0] || !width) return 300 / 72;

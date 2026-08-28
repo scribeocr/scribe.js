@@ -89,6 +89,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  *   Vector paths, images, and annotations under these rects are untouched, and no box is painted.
  * @param {?{rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} [params.textEditGated]
  *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
+ * @param {?Array<[number, number, number, number]>} [params.textEditWsRects] - User-space bands in which non-marking whitespace glyphs are removed along with a text edit.
  * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
  *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
@@ -108,7 +109,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null, imageDeletes = null, pathDeletes = null,
+  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, textEditInserts = null, imageDeletes = null, pathDeletes = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -206,6 +207,7 @@ export async function rewriteContentsStripAndConvert({
       redactBboxes,
       textEditBboxes,
       textEditGated,
+      textEditWsRects,
       textEditInserts,
       imageDeletes,
       pathDeletes,

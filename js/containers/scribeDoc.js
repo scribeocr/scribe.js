@@ -56,7 +56,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
@@ -191,6 +191,11 @@ function clonePageBundle(doc, i) {
     for (const [id, entry] of Object.entries(nativeTextSrc)) nativeText[wordIdMap.get(id) || id] = entry;
   }
 
+  const fillShapes = cloneAt(doc.fillShapes.pages);
+  if (fillShapes?.glyphBoxes) {
+    for (const g of fillShapes.glyphBoxes) g.id = wordIdMap.get(g.id) || g.id;
+  }
+
   return {
     ocr,
     ocrRaw,
@@ -200,6 +205,7 @@ function clonePageBundle(doc, i) {
     annotations,
     contentEdits,
     nativeText,
+    fillShapes,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     convertPageWarn: cloneAt(doc.convertPageWarn),
@@ -755,6 +761,14 @@ export class ScribeDoc {
     this.nativeText = { pages: [] };
 
     /**
+     * Per-page image/path placements and fill-detection shapes from the PDF parse, in the page-pixel frame.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * A restore beside the PDF runs no parse of its own, so the persisted copy is what keeps Edit Graphics working there.
+     * @type {{pages: Array<?PageFillShapes>}}
+     */
+    this.fillShapes = { pages: [] };
+
+    /**
      * Cross-page table links the automatic pass found plausible but would not make on its own.
      * In-memory only, recomputed at import and never serialized.
      * @type {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>}
@@ -1025,6 +1039,7 @@ export class ScribeDoc {
       }));
       spliceFull(this.contentEdits.pages, bundles.map((b) => b.contentEdits ?? []));
       spliceFull(this.nativeText.pages, bundles.map((b) => b.nativeText ?? {}));
+      spliceFull(this.fillShapes.pages, bundles.map((b) => b.fillShapes ?? null));
       spliceFull(this.vis, bundles.map((b) => b.vis));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
       spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
@@ -1206,6 +1221,7 @@ export class ScribeDoc {
     this.annotations.restored = false;
     this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
+    this.fillShapes.pages.length = 0;
     this.assistantChats.chats.length = 0;
     this.redactions.terms.length = 0;
     this.redactions.matchCase = false;

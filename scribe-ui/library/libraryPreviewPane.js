@@ -124,9 +124,10 @@ export const markOverlayHTML = (m) => {
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => void} deps.onRastersStored - Fires after a raster window lands, so blank rows elsewhere can retry.
  * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
+ * @param {(hash: string, doc: Object) => void} [deps.onSidecarSaved] - Fires after a pane checkpoint writes a sidecar, so the manifest and search index can follow the edited document.
  */
 export function createPreviewPanes({
-  viewer, sessions, getStore, getManifest, onRastersStored, saveManifestSoon,
+  viewer, sessions, getStore, getManifest, onRastersStored, saveManifestSoon, onSidecarSaved,
 }) {
   /**
    * The pooled live document for a legacy entry that cannot seed (no stored pageDims), loading it on first use.
@@ -495,6 +496,7 @@ export function createPreviewPanes({
           await store.writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
           sessions.dropSidecar(hash);
           sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
+          onSidecarSaved?.(hash, /** @type {Object} */ (real));
         } catch {
           await /** @type {any} */ (real || doc).close?.();
         }

@@ -3,6 +3,7 @@
 
 import scribeLib from '../../scribe.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
+import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
@@ -52,7 +53,7 @@ const MUTATOR_METHODS = [
   'clearHighlights', 'clearShapes', 'clearTextAnnots', 'addLinks', 'removeLinks',
   'addBookmark', 'renameBookmark', 'setBookmarkDest', 'moveBookmark', 'removeBookmarks', 'replaceOutline',
   'deletePage', 'deletePages', 'movePage', 'movePages', 'copyPages', 'duplicatePages', 'insertPages', 'rotatePages',
-  'deleteTextLines', 'replaceTextLine', 'setFormValue',
+  'deleteTextLines', 'replaceTextLine', 'deleteGraphics', 'deleteImages', 'setFormValue',
   'addInk', 'addStamp', 'addFillText', 'syncFillText',
   'undo', 'redo', 'recognize',
 ];
@@ -130,12 +131,12 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hicon:disabled { color: var(--scribe-ink-3); opacity: .45; cursor: default; }
 .scribe-pdf-viewer .scribe-library-hicon:disabled:hover { background: none; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-sort { position: relative; display: inline-flex; }
-.scribe-pdf-viewer .scribe-library-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 178px; padding: 5px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px; box-shadow: var(--scribe-menu-shadow); }
-.scribe-pdf-viewer .scribe-library-menu-item { display: flex; align-items: center; gap: 10px; padding: 7px 11px; border-radius: 6px; font-size: 13px; color: var(--scribe-ink); cursor: pointer; white-space: nowrap; user-select: none; }
+.scribe-pdf-viewer .scribe-library-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 178px; ${MENU_PLATE_CSS} }
+.scribe-pdf-viewer .scribe-library-menu-item { display: flex; align-items: center; gap: 9px; cursor: pointer; ${MENU_ROW_CSS} }
 .scribe-pdf-viewer .scribe-library-menu-item:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-menu-item svg { width: 15px; height: 15px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
-.scribe-pdf-viewer .scribe-library-menu-sep { height: 1px; background: var(--scribe-line); margin: 4px 6px; }
+.scribe-pdf-viewer .scribe-library-menu-sep { ${MENU_SEP_CSS} }
 /* Verb and crumb menus show their row icons outright, unlike the sort menu's hidden-until-checked marks. */
 .scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg, .scribe-pdf-viewer .scribe-library-crumb-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-crumb-menu { left: 0; right: auto; }
@@ -357,6 +358,28 @@ const addLibraryStyles = () => {
   .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-seg button { width: 26px; }
   .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-hbtn { padding: 0 7px; }
 }
+.scribe-pdf-viewer .scribe-library-card .meta.fb { opacity: 1; }
+.scribe-pdf-viewer .scribe-library-surface .meta .err, .scribe-pdf-viewer .scribe-library-surface .m2 .err, .scribe-pdf-viewer .scribe-library-row .err { color: var(--scribe-danger); }
+.scribe-pdf-viewer .scribe-library-surface .undo { font: inherit; font-size: 12px; font-weight: 600; line-height: inherit; color: var(--scribe-accent); background: none; border: none; padding: 0 5px; margin: 0; border-radius: 4px; cursor: pointer; vertical-align: baseline; }
+.scribe-pdf-viewer .scribe-library-surface .undo:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-card .ocrhair { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--scribe-accent); pointer-events: none; }
+/* Revert confirmation: the centered dialog grammar of the Fill & Sign signature dialog. */
+.scribe-pdf-viewer .scribe-library-confirm-scrim { position: absolute; inset: 0; z-index: 70; background: rgba(15, 18, 26, .42); display: flex; align-items: center; justify-content: center; }
+.scribe-pdf-viewer .scribe-library-confirm { width: min(430px, calc(100% - 32px)); box-sizing: border-box; padding: 16px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 12px; box-shadow: var(--scribe-menu-shadow); color: var(--scribe-ink); font-size: 13px; line-height: 1.5; }
+.scribe-pdf-viewer .scribe-library-confirm .ttl { font-size: 15px; font-weight: 650; margin-bottom: 10px; }
+.scribe-pdf-viewer .scribe-library-confirm .id { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--scribe-line); border-radius: 8px; margin-bottom: 12px; }
+.scribe-pdf-viewer .scribe-library-confirm .id img { width: 38px; height: 50px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line-strong); background: #fff; flex: none; }
+.scribe-pdf-viewer .scribe-library-confirm .id .n { font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-confirm .id .m { font-size: 12px; color: var(--scribe-ink-2); margin-top: 1px; }
+.scribe-pdf-viewer .scribe-library-confirm ul { margin: 8px 0; padding-left: 18px; }
+.scribe-pdf-viewer .scribe-library-confirm li { margin: 2px 0; }
+.scribe-pdf-viewer .scribe-library-confirm .note { font-size: 12px; color: var(--scribe-ink-2); margin-top: 8px; }
+.scribe-pdf-viewer .scribe-library-confirm .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.scribe-pdf-viewer .scribe-library-confirm .foot button { appearance: none; background: none; border: 1px solid var(--scribe-line-strong); border-radius: 7px; padding: 7px 14px; font: inherit; font-size: 13px; color: var(--scribe-ink); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-confirm .foot button:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-confirm .foot button:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
+.scribe-pdf-viewer .scribe-library-confirm .foot button.danger { background: var(--scribe-danger); border-color: var(--scribe-danger); color: #fff; font-weight: 650; }
+.scribe-pdf-viewer .scribe-library-confirm .foot button.danger:hover { filter: brightness(.94); }
 `;
   document.head.appendChild(style);
 };
@@ -763,9 +786,45 @@ export function installLibrary(viewer) {
     }, 2000);
   };
 
+  /** @type {?string} */
+  let recognizingPath = null;
+  let recognizeFrac = 0;
+  /** Recognition tasks that ended in an error since the queue last drained. */
+  let runRecognizeFailures = 0;
+  /** @type {?{relPath: string, phase: 'reverted'|'restored'}} The card's transient post-revert line. */
+  let revertFeedback = null;
+  /** @type {?number} */
+  let revertFeedbackTimer = null;
+  /** @type {?{relPath: string, hash: string, editedAt?: number, recognizedAt?: number, phase: 'reverting'|'reverted'|'restoring'}} */
+  let revertUndo = null;
+
+  /**
+   * Bring the manifest and the search index up to date after a sidecar checkpoint.
+   * @param {string} hash
+   * @param {Object} doc
+   * @param {boolean} recognized - Whether a recognition run completed since the previous checkpoint.
+   */
+  const afterSidecarSaved = async (hash, doc, recognized) => {
+    if (!store || !manifest) return;
+    const entry = Object.values(manifest.docs).find((e) => e.hash === hash);
+    if (!entry) return;
+    entry.editedAt = Date.now();
+    if (recognized) {
+      entry.recognizedAt = Date.now();
+      delete entry.ocrError;
+    }
+    saveManifestSoon();
+    try {
+      const pagesText = (/** @type {any} */ (doc).ocr?.active || []).map((/** @type {any} */ page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
+      await store.writeTextCache(hash, pagesText.join('\f'));
+      index.addDoc(hash, pagesText);
+      saveIndexSoon();
+    } catch { /* The sidecar is saved; a stale index entry is repaired by the next rebuild. */ }
+  };
+
   /**
    * Checkpoint-save one library tab's sidecar when it has unsaved edits.
-   * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: boolean}} tab
+   * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: boolean, libraryRecognized?: boolean}} tab
    */
   const saveTabIfDirty = async (tab) => {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
@@ -782,6 +841,9 @@ export function installLibrary(viewer) {
       const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, scribeSegments: true, includeCharBoxesScribe: false });
       await store.writeSidecar(tab.libraryHash, data);
       sessions.dropSidecar(tab.libraryHash);
+      const recognized = !!tab.libraryRecognized;
+      tab.libraryRecognized = false;
+      await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
     } catch {
       tab.libraryDirty = true;
     } finally {
@@ -970,19 +1032,19 @@ export function installLibrary(viewer) {
       else if (sortMode === 'pages') d = (a.pageCount || 0) - (b.pageCount || 0);
       else if (sortMode === 'custom') {
         d = (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER);
-      } else d = titleOf(pa).localeCompare(titleOf(pb));
+      } else d = titleOf(pa).localeCompare(titleOf(pb), undefined, { numeric: true });
       if (d) return d * sortDir;
-      return titleOf(pa).localeCompare(titleOf(pb));
+      return titleOf(pa).localeCompare(titleOf(pb), undefined, { numeric: true });
     });
     const shownDirs = filter ? [] : [...dirSet].filter((dir) => {
       const cut = dir.lastIndexOf('/');
       return (cut < 0 ? '' : dir.slice(0, cut)) === currentDir;
-    }).sort((a, b) => a.localeCompare(b) * (sortMode === 'name' ? sortDir : 1));
+    }).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }) * (sortMode === 'name' ? sortDir : 1));
     const shownOthers = !showOthers || !manifest ? [] : (manifest.others ?? []).filter((p) => {
       if (filter) return p.toLowerCase().includes(filter);
       const cut = p.lastIndexOf('/');
       return (cut < 0 ? '' : p.slice(0, cut)) === currentDir;
-    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b));
+    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b, undefined, { numeric: true }));
     const recent = viewMode === 'grid' && currentDir === '' && !filter && sortMode !== 'opened'
       ? entries.filter(([, e]) => e.lastOpened > 0).sort(([, a], [, b]) => b.lastOpened - a.lastOpened).slice(0, 5)
       : [];
@@ -1354,17 +1416,16 @@ export function installLibrary(viewer) {
       menuElem.appendChild(item);
     };
     /**
-     * Add the Index or Re-index item for `docPaths`.
+     * Add the Index item for the stale documents among `docPaths`: queued, changed on disk, or failed.
+     * A healthy document offers nothing here, because rebuilding derived data is a library-level action in the app menu.
      * @param {string[]} docPaths
      */
     const addIndexItem = (docPaths) => {
-      const statusOf = (/** @type {string} */ p) => manifest?.docs[p]?.status;
-      const stale = docPaths.filter((p) => ['pending', 'changed', 'error'].includes(statusOf(p) ?? ''));
-      const targets = stale.length ? stale : docPaths.filter((p) => statusOf(p) === 'indexed');
-      if (!targets.length) return;
-      addItem(stale.length ? 'Index' : 'Re-index', false, async () => {
+      const stale = docPaths.filter((p) => ['pending', 'changed', 'error'].includes(manifest?.docs[p]?.status ?? ''));
+      if (!stale.length) return;
+      addItem('Index', false, async () => {
         if (!ingest) return;
-        for (const p of targets) {
+        for (const p of stale) {
           const hash = manifest?.docs[p]?.hash;
           if (hash) sessions.invalidate(hash);
           await ingest.enqueue(p);
@@ -1373,10 +1434,36 @@ export function installLibrary(viewer) {
         ingest.start();
       });
     };
+    /**
+     * Add the Recognize text item for the documents among `docPaths` that recognition can help.
+     * Eligibility keys on the deep page selection, so a document is offered only when at least one of its pages would reach the engine.
+     * @param {string[]} docPaths
+     */
+    const addRecognizeItem = (docPaths) => {
+      const eligible = docPaths.filter((p) => {
+        const e = manifest?.docs[p];
+        return !!e && e.status === 'indexed' && !!e.hash && !e.ocrQueued
+          && (e.ocrDeep ?? 0) > 0
+          && (!e.recognizedAt || (e.editedAt ?? 0) > e.recognizedAt);
+      });
+      if (!eligible.length) return;
+      const label = docPaths.length === 1 ? 'Recognize text'
+        : eligible.length === docPaths.length ? `Recognize text (${eligible.length} document${eligible.length === 1 ? '' : 's'})`
+          : `Recognize text (${eligible.length} of ${docPaths.length})`;
+      addItem(label, false, async () => {
+        if (!ingest || !store || !manifest) return;
+        for (const p of eligible) await ingest.enqueueRecognize(p, { writeManifest: false });
+        await store.writeManifest(manifest);
+        render();
+        ingest.start();
+      });
+    };
     if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
       addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
-      addIndexItem(Object.keys(manifest.docs).filter((p) => p.startsWith(relPath)));
+      const docsUnder = Object.keys(manifest.docs).filter((p) => p.startsWith(relPath));
+      addIndexItem(docsUnder);
+      addRecognizeItem(docsUnder);
     } else {
       const multi = selectedPaths.has(relPath) && selectedPaths.size >= 2;
       // Folder keys in a mixed selection drop out here: these actions are document verbs.
@@ -1394,7 +1481,12 @@ export function installLibrary(viewer) {
         }
       });
       addIndexItem(paths);
+      addRecognizeItem(paths);
       menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
+      if (paths.length === 1) {
+        const e = manifest.docs[paths[0]];
+        if (e && e.status === 'indexed' && e.hash && e.editedAt) addItem('Revert to original…', true, () => openRevertDialog(paths[0]));
+      }
       addItem('Remove from library', true, async () => {
         if (!store || !manifest) return;
         const msg = paths.length === 1
@@ -1410,8 +1502,8 @@ export function installLibrary(viewer) {
           if (entry.hash && !shared) {
             index.removeDoc(entry.hash);
             await Promise.all([
-              store.deleteSidecar(entry.hash), store.deleteTextCache(entry.hash), store.deleteThumb(entry.hash),
-              store.deletePageRasters(entry.hash),
+              store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
+              store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
             ]).catch(() => {});
             sessions.invalidate(entry.hash);
             saveIndexSoon();
@@ -1435,6 +1527,48 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * The one status badge a document shows, in cards and rows alike.
+   * Index state comes first, then recognition state, then the only text fact the library can state before recognizing.
+   * An `image` verdict means nothing in the document is selectable or searchable yet.
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   * @returns {?{html: string, title?: string}}
+   */
+  const badgeFor = (relPath, entry) => {
+    if (entry.status === 'missing') return { html: '<span class="scribe-library-badge error">Missing</span>' };
+    if (entry.status === 'changed') return { html: '<span class="scribe-library-badge warn">Changed</span>' };
+    if (entry.status === 'error') return { html: '<span class="scribe-library-badge error">Failed</span>', title: entry.error };
+    if (entry.status === 'pending') return { html: '<span class="scribe-library-badge">Queued</span>' };
+    if (recognizingPath === relPath) return { html: '<span class="scribe-library-badge">Recognizing…</span>' };
+    if (entry.ocrQueued) return { html: '<span class="scribe-library-badge">Queued</span>' };
+    if (entry.pdfType === 'image' && !entry.recognizedAt) return { html: '<span class="scribe-library-badge">No text</span>' };
+    return null;
+  };
+
+  /**
+   * Fill a card's meta line (or a row's status slot) with the transient post-revert line.
+   * @param {HTMLElement} host
+   */
+  const fillRevertFeedback = (host) => {
+    if (!revertFeedback) return;
+    if (revertFeedback.phase === 'restored') {
+      host.appendChild(document.createTextNode('Edits restored.'));
+      return;
+    }
+    host.appendChild(document.createTextNode('Reverted'));
+    const undo = document.createElement('button');
+    undo.type = 'button';
+    undo.className = 'undo';
+    undo.textContent = 'Undo';
+    undo.addEventListener('pointerdown', (e) => e.stopPropagation());
+    undo.addEventListener('click', (e) => {
+      e.stopPropagation();
+      undoRevert();
+    });
+    host.appendChild(undo);
+  };
+
+  /**
    * Refresh everything a doc card shows from `entry`, leaving the shell and its listeners in place.
    * @param {HTMLElement} card
    * @param {string} relPath
@@ -1446,14 +1580,32 @@ export function installLibrary(viewer) {
     const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
     meta.textContent = '';
     meta.removeAttribute('title');
-    if (entry.pageCount) meta.appendChild(document.createTextNode(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`));
-    if (entry.status === 'missing') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Missing</span>');
-    else if (entry.status === 'changed') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge warn">Changed</span>');
-    else if (entry.status === 'error') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge error">Failed</span>');
-    else if (entry.status === 'pending') meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Queued</span>');
-    else if (entry.requiresOCR) meta.insertAdjacentHTML('beforeend', '<span class="scribe-library-badge">Scanned</span>');
-    if (entry.status === 'error' && entry.error) meta.title = entry.error;
+    card.querySelector(':scope > .ocrhair')?.remove();
+    if (recognizingPath === relPath) {
+      const hair = document.createElement('div');
+      hair.className = 'ocrhair';
+      hair.style.width = `${Math.round(recognizeFrac * 100)}%`;
+      card.appendChild(hair);
+    }
     card.querySelector(':scope > .actions')?.remove();
+    if (revertFeedback && revertFeedback.relPath === relPath) {
+      meta.classList.add('fb');
+      fillRevertFeedback(meta);
+      return;
+    }
+    meta.classList.remove('fb');
+    if (entry.pageCount) meta.appendChild(document.createTextNode(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`));
+    const badge = badgeFor(relPath, entry);
+    if (badge) meta.insertAdjacentHTML('beforeend', badge.html);
+    if (badge?.title) meta.title = badge.title;
+    // A failed run is a fact about the last attempt, not about the document's text, so it stays out of the badge.
+    if (entry.ocrError && !entry.ocrQueued && recognizingPath !== relPath) {
+      const err = document.createElement('span');
+      err.className = 'err';
+      err.textContent = 'Recognition failed';
+      meta.appendChild(err);
+      meta.title = entry.ocrError;
+    }
     if (entry.status === 'pending' || entry.status === 'changed' || entry.status === 'error') {
       const actions = document.createElement('div');
       actions.className = 'actions';
@@ -1561,7 +1713,7 @@ export function installLibrary(viewer) {
       missing: 0,
       queued: 0,
       changed: 0,
-      scanned: 0,
+      noText: 0,
       /** @type {import('./libraryStore.js').LibraryDocEntry[]} */
       covers: [],
     };
@@ -1576,19 +1728,18 @@ export function installLibrary(viewer) {
       stats.pages += entry.pageCount || 0;
       if (entry.added > stats.added) stats.added = entry.added;
       if (entry.lastOpened > stats.lastOpened) stats.lastOpened = entry.lastOpened;
-      // Same ladder as the card badges, so a queued scan counts as queued rather than scanned.
       if (entry.status === 'missing') stats.missing++;
       else if (entry.status === 'changed') stats.changed++;
       else if (entry.status === 'error') stats.failed++;
       else if (entry.status === 'pending') stats.queued++;
-      else if (entry.requiresOCR) stats.scanned++;
+      else if (entry.pdfType === 'image' && !entry.recognizedAt) stats.noText++;
     }
     for (const dir of manifest.dirs ?? []) {
       const cut = dir.lastIndexOf('/');
       if ((cut < 0 ? '' : dir.slice(0, cut)) === dirPath) stats.subdirs++;
     }
     // Name order keeps the strip from reshuffling whenever the sort mode changes.
-    children.sort(([a], [b]) => titleOf(a).localeCompare(titleOf(b)));
+    children.sort(([a], [b]) => titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }));
     stats.covers = children.slice(0, 3).map(([, entry]) => entry);
     return stats;
   };
@@ -1611,7 +1762,7 @@ export function installLibrary(viewer) {
     const soft = [];
     if (stats.queued) soft.push(`${stats.queued} queued`);
     if (stats.changed) soft.push(`${stats.changed} changed`);
-    if (stats.scanned) soft.push(`${stats.scanned} need${stats.scanned === 1 ? 's' : ''} text recognition`);
+    if (stats.noText) soft.push(`${stats.noText} without text`);
     for (const [text, bad] of [[danger.join(' · '), true], [soft.join(' · '), false]]) {
       if (!text) continue;
       const sep = document.createElement('span');
@@ -1760,21 +1911,23 @@ export function installLibrary(viewer) {
   const updateRow = (row, relPath, entry) => {
     const comfortable = viewMode === 'list';
     row.classList.toggle('selected', selectedPaths.has(relPath));
-    let badge = '';
-    if (entry.status === 'missing') badge = '<span class="scribe-library-badge error">Missing</span>';
-    else if (entry.status === 'changed') badge = '<span class="scribe-library-badge warn">Changed</span>';
-    else if (entry.status === 'error') badge = '<span class="scribe-library-badge error">Failed</span>';
-    else if (entry.status === 'pending') badge = '<span class="scribe-library-badge">Queued</span>';
-    else if (entry.requiresOCR) badge = '<span class="scribe-library-badge">Scanned</span>';
+    const feedback = !!revertFeedback && revertFeedback.relPath === relPath;
+    const badgeInfo = feedback ? null : badgeFor(relPath, entry);
+    const failed = !feedback && !!entry.ocrError && !entry.ocrQueued && recognizingPath !== relPath;
+    const badge = (badgeInfo ? badgeInfo.html : '') + (failed ? '<span class="err">Recognition failed</span>' : '');
+    const badgeTitle = failed ? entry.ocrError : badgeInfo?.title;
     if (comfortable) {
       setThumbSrc(/** @type {HTMLImageElement} */ (row.querySelector('.nm > img')), entry);
       const stack = /** @type {HTMLElement} */ (row.querySelector('.nm > .tt'));
       stack.querySelector(':scope > .m2')?.remove();
-      if (badge) {
+      if (badge || feedback) {
         const meta = document.createElement('span');
         meta.className = 'm2';
-        meta.innerHTML = badge;
-        if (entry.status === 'error' && entry.error) meta.title = entry.error;
+        if (feedback) fillRevertFeedback(meta);
+        else {
+          meta.innerHTML = badge;
+          if (badgeTitle) meta.title = badgeTitle;
+        }
         stack.appendChild(meta);
       }
     }
@@ -1792,10 +1945,14 @@ export function installLibrary(viewer) {
     if (!comfortable) {
       const statusCell = cells[4];
       statusCell.removeAttribute('title');
-      if (badge) {
+      if (feedback) {
+        statusCell.className = '';
+        statusCell.textContent = '';
+        fillRevertFeedback(statusCell);
+      } else if (badge) {
         statusCell.className = '';
         statusCell.innerHTML = badge;
-        if (entry.status === 'error' && entry.error) statusCell.title = entry.error;
+        if (badgeTitle) statusCell.title = badgeTitle;
       } else {
         statusCell.className = 'none';
         statusCell.textContent = '—';
@@ -2662,7 +2819,10 @@ export function installLibrary(viewer) {
       if (typeof orig !== 'function') continue;
       /** @type {any} */ (doc)[name] = function markDirtyWrap(...args) {
         tab.libraryDirty = true;
-        return orig.apply(this, args);
+        const result = orig.apply(this, args);
+        // A completed recognition is what the next checkpoint stamps as the document's recognition state.
+        if (name === 'recognize') Promise.resolve(result).then(() => { tab.libraryRecognized = true; }).catch(() => {});
+        return result;
       };
     }
   };
@@ -2694,7 +2854,8 @@ export function installLibrary(viewer) {
         }
         return;
       }
-      const pooled = entry.hash ? sessions.takeLive(entry.hash) : null;
+      // The copy a recognition run holds counts as the live copy, so opening mid-run shows its text arriving rather than a second copy.
+      const pooled = entry.hash ? (ingest?.adoptRecognizing(entry.hash) ?? sessions.takeLive(entry.hash)) : null;
       if (pooled) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
@@ -2816,6 +2977,207 @@ export function installLibrary(viewer) {
     }
   };
 
+  // --- Revert to original -------------------------------------------------
+
+  /**
+   * Show the card's transient post-revert line for `ms`, then restore the normal meta line.
+   * @param {string} relPath
+   * @param {'reverted'|'restored'} phase
+   * @param {number} ms
+   */
+  const showRevertFeedback = (relPath, phase, ms) => {
+    if (revertFeedbackTimer !== null) window.clearTimeout(revertFeedbackTimer);
+    revertFeedback = { relPath, phase };
+    render();
+    revertFeedbackTimer = window.setTimeout(() => {
+      revertFeedbackTimer = null;
+      revertFeedback = null;
+      render();
+    }, ms);
+  };
+
+  /** Close every viewer tab holding `hash` without a checkpoint, so its edits cannot be written back over the sidecar. */
+  const closeTabsFor = (/** @type {string} */ hash) => {
+    for (let i = viewer._tabs.length - 1; i >= 0; i--) {
+      const tab = viewer._tabs[i];
+      if (tab.libraryHash !== hash) continue;
+      tab.libraryDirty = false;
+      viewer._closeTab(i);
+    }
+    const pane = panes.mounted();
+    if (pane && pane.shownHash() === hash) pane.showEmpty();
+    sessions.invalidate(hash);
+  };
+
+  /**
+   * Put the document back to the file as it was imported.
+   * The old sidecar goes to its one undo slot first, so the feedback line can offer an undo.
+   * @param {string} relPath
+   */
+  const runRevert = async (relPath) => {
+    const entry = manifest?.docs[relPath];
+    if (!store || !ingest || !entry || !entry.hash) return;
+    await store.backupSidecar(entry.hash);
+    closeTabsFor(entry.hash);
+    revertUndo = {
+      relPath, hash: entry.hash, editedAt: entry.editedAt, recognizedAt: entry.recognizedAt, phase: 'reverting',
+    };
+    await ingest.enqueue(relPath, {}, { resetSidecar: true });
+    render();
+    ingest.start();
+  };
+
+  /** Restore the backed-up sidecar and rebuild the derived data from it. */
+  const undoRevert = async () => {
+    if (!store || !ingest || !manifest || !revertUndo || revertUndo.phase !== 'reverted') return;
+    const {
+      relPath, hash, editedAt, recognizedAt,
+    } = revertUndo;
+    const entry = manifest.docs[relPath];
+    if (!entry || entry.hash !== hash) return;
+    if (!(await store.restoreSidecarBackup(hash))) return;
+    closeTabsFor(hash);
+    if (editedAt) entry.editedAt = editedAt;
+    if (recognizedAt) entry.recognizedAt = recognizedAt;
+    revertUndo.phase = 'restoring';
+    if (revertFeedbackTimer !== null) {
+      window.clearTimeout(revertFeedbackTimer);
+      revertFeedbackTimer = null;
+    }
+    revertFeedback = null;
+    await ingest.enqueue(relPath);
+    render();
+    ingest.start();
+  };
+
+  /** @type {?HTMLElement} */
+  let confirmScrim = null;
+  /** @type {?() => void} */
+  let confirmClose = null;
+
+  /**
+   * The revert confirmation: who the document is, what will be discarded, and that the file itself is untouched.
+   * @param {string} relPath
+   */
+  const openRevertDialog = (relPath) => {
+    const entry = manifest?.docs[relPath];
+    if (!store || !entry || !entry.hash) return;
+    confirmClose?.();
+    const scrim = document.createElement('div');
+    scrim.className = 'scribe-library-confirm-scrim';
+    const dlg = document.createElement('div');
+    dlg.className = 'scribe-library-confirm';
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    const ttl = document.createElement('div');
+    ttl.className = 'ttl';
+    ttl.id = 'scribe-library-confirm-title';
+    ttl.textContent = 'Revert to original?';
+    dlg.setAttribute('aria-labelledby', ttl.id);
+    const id = document.createElement('div');
+    id.className = 'id';
+    const img = document.createElement('img');
+    img.alt = '';
+    setThumbSrc(img, entry);
+    const idText = document.createElement('div');
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = titleOf(relPath);
+    const m = document.createElement('div');
+    m.className = 'm';
+    /** @param {number} ts */
+    const fmt = (ts) => new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    const bits = [];
+    if (entry.pageCount) bits.push(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`);
+    if (entry.added) bits.push(`added ${fmt(entry.added)}`);
+    if (entry.editedAt) bits.push(`last edited ${fmt(entry.editedAt)}`);
+    m.textContent = bits.join(' · ');
+    idText.append(n, m);
+    id.append(img, idText);
+    const bodyText = document.createElement('div');
+    bodyText.textContent = 'This puts the document back to the file as it was imported. Everything added since is discarded:';
+    const list = document.createElement('ul');
+    /** @param {string} text */
+    const li = (text) => {
+      const el = document.createElement('li');
+      el.textContent = text;
+      list.appendChild(el);
+      return el;
+    };
+    if (entry.recognizedAt) li(`Recognized text (recognition ran ${fmt(entry.recognizedAt)})`);
+    const countLine = li('Counting annotations…');
+    li('Text edits, page changes, form entries, and bookmarks');
+    const note = document.createElement('div');
+    note.className = 'note';
+    const openTab = viewer._tabs.some((tab) => tab.libraryHash === entry.hash);
+    note.textContent = `The PDF file in your library folder is not changed. You can undo this right afterward.${openTab ? ' Its open tab will close.' : ''}`;
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'danger';
+    confirm.textContent = 'Revert document';
+    foot.append(cancel, confirm);
+    dlg.append(ttl, id, bodyText, list, note, foot);
+    scrim.appendChild(dlg);
+    surface.appendChild(scrim);
+    confirmScrim = scrim;
+    let token = 0;
+    const close = () => {
+      token++;
+      scrim.remove();
+      document.removeEventListener('keydown', onKey, true);
+      if (confirmScrim === scrim) {
+        confirmScrim = null;
+        confirmClose = null;
+      }
+    };
+    confirmClose = close;
+    /** @param {KeyboardEvent} e */
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        (document.activeElement === cancel ? confirm : cancel).focus();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    scrim.addEventListener('pointerdown', (e) => {
+      if (e.target === scrim) close();
+    });
+    cancel.addEventListener('click', close);
+    confirm.addEventListener('click', () => {
+      close();
+      runRevert(relPath);
+    });
+    cancel.focus();
+
+    const myToken = token;
+    const hash = entry.hash;
+    const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash)?.doc;
+    const docPromise = openTabDoc ? Promise.resolve(openTabDoc)
+      : sessions.liveDocOrLoad(hash, async () => {
+        const files = [await store.readFile(relPath)];
+        const sidecar = await store.readSidecar(hash);
+        if (sidecar) files.push(new File([sidecar], `${hash}.scribe`));
+        return scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
+      });
+    docPromise.then((doc) => {
+      if (myToken !== token) return;
+      const count = (/** @type {any} */ (doc).annotations?.pages || []).reduce((/** @type {number} */ s, /** @type {any[]} */ pg) => s + (pg ? pg.length : 0), 0);
+      if (count > 0) countLine.textContent = `${count} annotation${count === 1 ? '' : 's'} (highlights, notes, shapes, redactions)`;
+      else countLine.remove();
+    }).catch(() => {
+      if (myToken === token) countLine.remove();
+    });
+  };
+
   // --- Subsystems ---------------------------------------------------------
 
   // Constructed here rather than beside their first use, because they capture `render`, `openCardMenu`, and `openEntry` by value.
@@ -2825,6 +3187,7 @@ export function installLibrary(viewer) {
     getStore: () => store,
     getManifest: () => manifest,
     onRastersStored: () => results.repump(),
+    onSidecarSaved: (hash, doc) => { afterSidecarSaved(hash, doc, false); },
     saveManifestSoon,
   });
 
@@ -2906,9 +3269,22 @@ export function installLibrary(viewer) {
       if (index.docs.length) saveIndexSoon();
     }
     ingest = new LibraryIngest(store, manifest, index, {
-      onProgress: ({ done, total, current }) => {
+      onProgress: ({
+        done, total, current, kind, pageDone, pageTotal,
+      }) => {
+        const wasRecognizing = recognizingPath;
+        recognizingPath = current && kind === 'recognize' ? current : null;
+        recognizeFrac = pageTotal ? Math.min(1, (pageDone || 0) / pageTotal) : 0;
         if (!current) {
           progressElem.style.display = 'none';
+          // A banner, like the viewer's own Recognize, because a queue is a long job the user may have stepped away from.
+          if (runRecognizeFailures > 0) {
+            const n = runRecognizeFailures;
+            runRecognizeFailures = 0;
+            viewer._showBanner(n === 1
+              ? 'Text recognition didn’t finish for 1 document. It was left unchanged.'
+              : `Text recognition didn’t finish for ${n} documents. They were left unchanged.`);
+          }
           // The queue also drains here after idle ticks and warm-only passes, which change nothing a card or row displays.
           if (done > 0) render();
           // Warmed rasters can fill result rows that were blank at pump time.
@@ -2916,12 +3292,33 @@ export function installLibrary(viewer) {
           return;
         }
         progressElem.style.display = 'grid';
-        progressCount.textContent = `Indexing ${done} of ${total}`;
+        progressCount.textContent = `${kind === 'recognize' ? 'Recognizing' : 'Indexing'} ${done} of ${total}`;
         progressName.textContent = current.split('/').pop() || current;
         progressHair.style.width = `${(done / total) * 100}%`;
+        for (const rp of new Set([recognizingPath, wasRecognizing])) {
+          if (!rp) continue;
+          const entry = manifest?.docs[rp];
+          const el = /** @type {?HTMLElement} */ (body.querySelector(`[data-rel-path="${CSS.escape(rp)}"]`));
+          if (!entry || !el) continue;
+          if (el.classList.contains('scribe-library-card')) updateCard(el, rp, entry);
+          else if (el.classList.contains('scribe-library-row')) updateRow(el, rp, entry);
+        }
       },
-      onDocDone: () => {
+      onDocDone: (relPath) => {
         saveIndexSoon();
+        const doneEntry = manifest?.docs[relPath];
+        // Ingest and recognition write sidecars of their own, so cached sidecar pages must not outlive them.
+        if (doneEntry?.hash) sessions.dropSidecar(doneEntry.hash);
+        if (recognizingPath === relPath && doneEntry?.ocrError) runRecognizeFailures++;
+        if (revertUndo && revertUndo.relPath === relPath) {
+          if (revertUndo.phase === 'reverting') {
+            revertUndo.phase = 'reverted';
+            showRevertFeedback(relPath, 'reverted', 10000);
+          } else if (revertUndo.phase === 'restoring') {
+            revertUndo = null;
+            showRevertFeedback(relPath, 'restored', 3000);
+          }
+        }
         // One rebuild per burst rather than per document, and never while results are shown.
         if (!visible || fullTextResults) return;
         if (ingestRenderTimer === null) {
@@ -2938,6 +3335,33 @@ export function installLibrary(viewer) {
         if (onBattery === null && ingest && ingest.warmPagesDone >= WARM_SESSION_PAGES) return false;
         return true;
       },
+      // A request made this session runs while the user watches; one resumed after a reload waits for an idle machine like warm work.
+      recognizeGate: (explicit) => {
+        if (document.visibilityState !== 'visible') return false;
+        if (onBattery === true) return false;
+        return explicit || Date.now() - lastInteraction >= WARM_IDLE_MS;
+      },
+      langs: () => viewer.scribe.opt.langs || ['eng'],
+      liveDoc: async (hash) => {
+        const tab = viewer._tabs.find((t) => t.libraryHash === hash);
+        if (tab) {
+          // A seeded tab is still hydrating; recognition needs the real document behind it.
+          while (/** @type {any} */ (tab).provisional && viewer._tabs.includes(tab)) await new Promise((r) => { setTimeout(r, 250); });
+          if (viewer._tabs.includes(tab)) {
+            return {
+              doc: tab.doc,
+              checkpoint: async (recognized) => {
+                tab.libraryDirty = true;
+                if (recognized) tab.libraryRecognized = true;
+                await saveTabIfDirty(tab);
+              },
+            };
+          }
+        }
+        const pooled = sessions.takeLive(hash);
+        return pooled ? { doc: pooled } : null;
+      },
+      releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
     render();
     await ingest.scan();
@@ -3063,6 +3487,17 @@ export function installLibrary(viewer) {
     });
     // Sits directly under "Open file".
     viewer._appMenu.menuElem.insertBefore(openFolderItem, viewer._appMenu.menuElem.children[1] ?? null);
+    // Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
+    const rebuildItem = viewer._appMenu.addAction('Rebuild search index', LIBRARY_SVG, async () => {
+      if (!store || !manifest || !ingest) return;
+      for (const [p, e] of Object.entries(manifest.docs)) {
+        if (e.status === 'indexed' && e.hash) await ingest.enqueue(p, {}, { writeManifest: false });
+      }
+      await store.writeManifest(manifest);
+      render();
+      ingest.start();
+    });
+    viewer._appMenu.menuElem.insertBefore(rebuildItem, openFolderItem.nextSibling);
   }
 
   searchInput.addEventListener('input', () => {
@@ -3246,6 +3681,9 @@ export function installLibrary(viewer) {
   stopBtn.addEventListener('click', () => {
     ingest?.cancel();
     progressElem.style.display = 'none';
+    recognizingPath = null;
+    saveManifestSoon();
+    render();
   });
 
   const dropHint = document.createElement('div');

@@ -239,7 +239,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
           pageSourceIndices: header.pageSourceIndices,
           outline: header.outline,
           inputData: header.inputData,
-          session: header.session ? { ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null) } : undefined,
+          session: header.session ? {
+            ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null), fillShapes: new Array(n).fill(null),
+          } : undefined,
         };
       };
       const applyRecord = (line) => {
@@ -256,6 +258,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           const recEdits = rec.contentEdits !== undefined ? rec.contentEdits : rec.textEdits;
           if (recEdits !== undefined) assembled.session.contentEdits[rec.i] = recEdits;
           if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
+          if (rec.fillShapes !== undefined) assembled.session.fillShapes[rec.i] = rec.fillShapes;
         }
       };
 
@@ -320,7 +323,19 @@ async function restoreSessionFromFile(doc, scribeFile) {
   if (scribeRestoreObj.session) {
     // `textEdits` is the pre-rename key, still present in older saved sessions.
     const sessionEdits = scribeRestoreObj.session.contentEdits || scribeRestoreObj.session.textEdits;
-    if (sessionEdits) doc.contentEdits.pages = sessionEdits;
+    if (sessionEdits) {
+      // A single multi-character entry with one origin is a whole-word identity, which strikes almost nothing at render and export.
+      // Dropping those identities leaves the record's rects to strike geometrically, like a legacy record.
+      for (const records of sessionEdits) {
+        for (const rec of records || []) {
+          if (!rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText') || !rec.glyphs) continue;
+          const degraded = rec.glyphs.some((gw) => gw && gw.chars?.length === 1 && gw.x?.length === 1
+            && typeof gw.chars[0] === 'string' && [...gw.chars[0]].length > 1);
+          if (degraded) delete rec.glyphs;
+        }
+      }
+      doc.contentEdits.pages = sessionEdits;
+    }
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (Array.isArray(scribeRestoreObj.session.assistantChats)) doc.assistantChats.chats = scribeRestoreObj.session.assistantChats;
     if (Array.isArray(scribeRestoreObj.session.redactions?.terms)) {
@@ -338,6 +353,25 @@ async function restoreSessionFromFile(doc, scribeFile) {
         // Rebuilding these per-word dictionaries via spread anyway costs seconds on multi-thousand-page documents.
         const existing = doc.nativeText.pages[i];
         doc.nativeText.pages[i] = existing && Object.keys(existing).length ? { ...existing, ...nt } : nt;
+      }
+    }
+    if (scribeRestoreObj.session.fillShapes) {
+      const site = (/** @type {Array<number>} */ t) => ({
+        left: t[0], top: t[1], right: t[2], bottom: t[3],
+      });
+      for (let i = 0; i < scribeRestoreObj.session.fillShapes.length; i++) {
+        const enc = scribeRestoreObj.session.fillShapes[i];
+        if (!enc) continue;
+        /** @type {PageFillShapes} */
+        const shapes = {};
+        if (enc.i) shapes.images = enc.i.map((t) => ({ ...site(t), sites: t[4].map((st) => ({ ...site(st), ...(st[4] !== -1 ? { objNum: st[4] } : {}) })) }));
+        if (enc.p) shapes.paths = enc.p.map((t) => ({ ...site(t), sites: t[4].map((st) => ({ ...site(st), paint: st[4], commands: st[5] })) }));
+        if (enc.q) shapes.squares = enc.q.map((t) => ({ ...site(t), stroke: !!t[4] }));
+        if (enc.m) shapes.marks = enc.m.map(site);
+        if (enc.g) shapes.glyphBoxes = enc.g.map((t) => ({ id: t[0], bbox: site(t.slice(1)) }));
+        if (enc.pi) shapes.pathsIneligible = true;
+        if (enc.mo) shapes.marksOverflow = true;
+        doc.fillShapes.pages[i] = shapes;
       }
     }
   }
@@ -701,6 +735,9 @@ export async function importFiles(doc, files, options = {}) {
     }
     if (!doc.nativeText.pages[i]) {
       doc.nativeText.pages[i] = {};
+    }
+    if (doc.fillShapes.pages[i] === undefined) {
+      doc.fillShapes.pages[i] = null;
     }
   }
 

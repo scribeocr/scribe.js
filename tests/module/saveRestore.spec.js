@@ -10,6 +10,18 @@ let doc;
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
+/** A page-mode recognition model that returns one fixed hOCR word, so a page it touched is unmistakable. */
+class MockHocrModel {
+  static config = { name: 'Mock hOCR', outputFormat: 'hocr' };
+
+  static async recognizeImage() {
+    const rawData = "<div class='ocr_page' id='page_1' title='bbox 0 0 612 792'><div class='ocr_carea' title='bbox 100 100 300 120'>"
+      + "<p class='ocr_par' title='bbox 100 100 300 120'><span class='ocr_line' title='bbox 100 100 300 120; baseline 0 -3; x_size 20'>"
+      + "<span class='ocrx_word' title='bbox 100 100 200 120; x_wconf 95'>MOCKWORD</span></span></p></div></div>";
+    return { success: true, rawData, format: 'hocr' };
+  }
+}
+
 // Using arrow functions breaks references to `this`.
 
 /**
@@ -252,6 +264,12 @@ describe('Check .scribe export function.', () => {
     doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer], pdfFiles: [pdfPath] });
 
     expect(doc.pageMetrics[0].angle).toBe(2.5);
+
+    // The restored text layer is the PDF's own parse, not user-supplied OCR.
+    // Without that distinction every page of a restored session goes to the engine, and the OCR result replaces the native text.
+    await doc.recognize({ model: MockHocrModel, ocrPages: 'autoShallow' });
+    expect(scribe.utils.ocr.getPageText(doc.ocr.active[0]).split('\n')[0], 'native text survives recognizing a restored session whose pages need no OCR').toBe('UNITED STATES DISTRICT COURT');
+    expect(doc.inputData.ocrApplied.filter(Boolean).length, 'the conservative page selection applies to a restored session as to a fresh open').toBe(0);
 
     await doc.clear();
     await scribe.terminate();

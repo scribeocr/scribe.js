@@ -18,6 +18,7 @@ import {
 } from './viewerHighlights.js';
 import { createNote } from './viewerNotes.js';
 import { redactWords, removeRedactionGroup, hitTestRedaction } from './viewerRedactions.js';
+import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from './controls/menuStyles.js';
 import { fillItemFromTarget, selectFillItem, deleteSelectedFillItem } from './viewerFillSign.js';
 
 /**
@@ -264,8 +265,12 @@ const CM_UNLINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 
 const CM_TABLE_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10.5 10v9M15.3 10v9"/>');
 const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
-// The Highlight row leads with a live color swatch (set to `viewer._highlightColor` on open) instead of a glyph.
+// Color swatch for the touch callout's Highlight button.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
+// Local copy of controls/tools.js's HIGHLIGHT_SVG (filled Material glyph), not imported because tools.js imports this module.
+const CM_HIGHLIGHT_SVG = '<svg viewBox="0 -960 960 960" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">'
+  + '<path class="scribe-hl-tip" d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Z"/>'
+  + '<path d="M160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Z"/></svg>';
 const CM_AUTOMATE_SVG = menuIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 
 /* The one treatment for a toggled-on menu row, so a new toggle never invents its own indication. */
@@ -336,7 +341,7 @@ const createContextMenuHTML = () => {
       withHint(item('contextMenuItalicButton', 'Italic', CM_ITALIC_SVG, italicToggleClick), 'Ctrl+I'),
     ],
     [
-      item('contextMenuHighlightButton', 'Highlight', CM_SWATCH_HTML, highlightSelectionClick),
+      item('contextMenuHighlightButton', 'Highlight', CM_HIGHLIGHT_SVG, highlightSelectionClick),
       item('contextMenuCommentButton', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
       item('contextMenuUnderlineButton', 'Underline', CM_UNDERLINE_SVG, underlineSelectionClick),
       item('contextMenuStrikethroughButton', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
@@ -368,7 +373,7 @@ const createContextMenuHTML = () => {
     [
       item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
       item('contextMenuDeleteImageButton', 'Delete Image', CM_TRASH_SVG, deleteGraphicsClick, true),
-      item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
+      item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick),
     ],
     // The automation hand-offs stay last, and the group stays short.
     [
@@ -904,17 +909,8 @@ function ensureContextMenu() {
       z-index: 60;
       width: max-content;
       min-width: 176px;
-      box-sizing: border-box;
-      padding: 5px;
-      background: var(--scribe-surface, #ffffff);
-      border: 1px solid var(--scribe-line, #e4e8ef);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
       font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      font-size: 12.5px;
-      line-height: 1.55;
-      color: var(--scribe-ink, #1f2530);
-      user-select: none;
+      ${MENU_PLATE_CSS}
     }
     /* Flex here blockifies the rows, which are shown inline (style.display = 'initial'), so they stack with no inline baseline gaps. */
     #scribe-context-menu .scribe-cm-group {
@@ -935,9 +931,7 @@ function ensureContextMenu() {
       display: flex;
       align-items: center;
       gap: 9px;
-      padding: 4.5px 9px;
-      border-radius: 6px;
-      white-space: nowrap;
+      ${MENU_ROW_CSS}
     }
     #scribe-context-menu button:hover .scribe-cm-inner {
       background: var(--scribe-hover, rgba(28, 42, 68, .06));
@@ -956,12 +950,6 @@ function ensureContextMenu() {
       background: var(--scribe-accent-wash, rgba(28, 98, 212, .14));
       box-shadow: 0 0 0 3px var(--scribe-accent-wash, rgba(28, 98, 212, .14));
       border-radius: 4px;
-    }
-    #scribe-context-menu .scribe-cm-swatch {
-      width: 15px;
-      height: 15px;
-      border-radius: 3px;
-      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18);
     }
     #scribe-context-menu .scribe-cm-danger .scribe-cm-slot {
       color: var(--scribe-danger, #d1493d);
@@ -997,9 +985,7 @@ function ensureContextMenu() {
       background: none;
     }
     #scribe-context-menu .scribe-cm-sep {
-      height: 1px;
-      background: var(--scribe-line, #e4e8ef);
-      margin: 3px 8px;
+      ${MENU_SEP_CSS}
     }`;
   document.head.appendChild(contextMenuStyleElem);
 }
@@ -1289,7 +1275,7 @@ function ensureTouchCallout() {
       background: var(--scribe-surface, #ffffff);
       border: 1px solid var(--scribe-line, #e4e8ef);
       border-radius: 12px;
-      box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
+      box-shadow: var(--scribe-menu-shadow, 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12));
     }
     /* .flipped (callout below the selection) reverses the rows so the tail row stays on the far side. */
     #scribe-touch-callout.flipped { flex-direction: column-reverse; }
@@ -1773,8 +1759,7 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuCopyHighlightButtonElem.style.display = 'initial';
     }
     if (enableHighlight) {
-      // The row's swatch shows the color this click would apply.
-      /** @type {HTMLElement} */ (contextMenuHighlightButtonElem.querySelector('.scribe-cm-swatch')).style.background = viewer._highlightColor;
+      /** @type {SVGPathElement} */ (contextMenuHighlightButtonElem.querySelector('.scribe-hl-tip')).style.fill = viewer._highlightColor;
       contextMenuHighlightButtonElem.style.display = 'initial';
     }
     if (enableMarkup) {

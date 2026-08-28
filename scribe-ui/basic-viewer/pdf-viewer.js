@@ -18,6 +18,7 @@ import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
   createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG, UNDO_SVG, REDO_SVG,
 } from '../js/controls/toolbar.js';
+import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
@@ -4600,13 +4601,13 @@ class ScribePDFViewer {
     if (graphicsBtn) {
       // The area cut mirrors the tool's own picker, so the button never enables where nothing can be selected.
       let pathsIneligibleSomewhere = false;
-      const hasGraphics = !disabled && !!this.doc?.ocr?.pdf?.some((page) => {
-        const dims = page?.dims;
-        if (!dims) return false;
-        if (pagePathsIneligible(page)) pathsIneligibleSomewhere = true;
+      const hasGraphics = !disabled && !!this.doc?.fillShapes?.pages.some((shapes, n) => {
+        const dims = this.doc?.pageMetrics?.[n]?.dims;
+        if (!shapes || !dims) return false;
+        if (pagePathsIneligible(this.doc, n)) pathsIneligibleSomewhere = true;
         const areaCap = dims.width * dims.height * 0.95;
-        return pageImagePlacements(page).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
-          || pagePathPlacements(page).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
+        return pageImagePlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
+          || pagePathPlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
       });
       if (!disabled && pathsIneligibleSomewhere) {
         graphicsBtn.dataset.modeHint = 'Click or drag to select images and shapes · Some pages have too many shapes to edit';
@@ -5167,13 +5168,12 @@ class ScribePDFViewer {
     style.appendChild(document.createTextNode(`
       /* Language menu under the Recognize Text mode's language button. */
       .scribe-pdf-viewer .scribe-edit-menu {
-        position: absolute; top: calc(100% + 6px); right: 0; min-width: 150px; padding: 4px;
-        background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px;
-        box-shadow: var(--scribe-menu-shadow); z-index: 30;
+        position: absolute; top: calc(100% + 6px); right: 0; min-width: 150px; z-index: 30;
+        ${MENU_PLATE_CSS}
       }
       .scribe-pdf-viewer .scribe-edit-menu-item {
-        position: relative; display: flex; align-items: center; padding: 6px 10px 6px 26px;
-        border-radius: 4px; font-size: 13px; color: var(--scribe-ink); cursor: pointer; white-space: nowrap;
+        position: relative; display: flex; align-items: center; padding: 4px 10px 4px 26px;
+        border-radius: 4px; cursor: pointer; white-space: nowrap;
       }
       .scribe-pdf-viewer .scribe-edit-menu-item:hover { background: var(--scribe-hover); }
       .scribe-pdf-viewer .scribe-edit-menu-item.selected::before {

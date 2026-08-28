@@ -68,10 +68,11 @@ export function ocrAddsNewText(nativePage, ocrPage) {
  * @param {boolean[]} ocrPageMask - Which pages were sent to OCR.
  * @param {boolean} gateApplies - Whether the keep/discard gate runs (the `auto*` ocrPages modes only).
  * @param {boolean} fullOcr - True when every page was OCR'd, in which case `active` already names the engine layer.
+ * @param {?OcrPage[]} native - The document's native (PDF) text layer, if any.
+ * @param {?OcrPage[]} userOcr - User-uploaded OCR, if any.
  */
-function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr) {
-  if (fullOcr || doc.ocr['User Upload'] || !ocrPageMask.some(Boolean)) return;
-  const native = doc.ocr.pdf;
+function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr, native, userOcr) {
+  if (fullOcr || userOcr || !ocrPageMask.some(Boolean)) return;
   // Relocate the pure Legacy+LSTM combine from 'Combined' to 'Tesseract Combined' (unless an existing-OCR
   // run already put it there) so 'Combined' can hold the canonical result.
   if (source === doc.ocr.Combined && !doc.ocr['Tesseract Combined']) doc.ocr['Tesseract Combined'] = source;
@@ -841,7 +842,7 @@ async function convertModelRawPage(doc, rawData, n, model) {
  *   Models with `documentModePageSelection` are sent only the selected pages.
  *   Every other model is sent the whole PDF, and the selection is applied to its results afterwards.
  */
-async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null) {
+async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null, nativeText = doc.ocr.pdf) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -856,7 +857,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
 
   if (ocrPageMask && !ocrPageMask.some(Boolean)) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
     }
     doc.ocr.active = doc.ocr[engineName];
     return doc.ocr.active;
@@ -866,7 +867,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
   // Filling `ocrApplied` here would mark unselected pages OCR-applied, which the searchable-PDF export reads to pick pages to flatten.
   if (pageSelection) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      if (!pageSelection[n]) doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (!pageSelection[n]) doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
     }
   } else {
     if (ocrPageMask && !ocrPageMask.every(Boolean)) {
@@ -990,7 +991,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
  * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
  *   When set, only `true` pages are sent to the model and skipped pages keep their native (PDF) text.
  */
-async function recognizeCustomModel(doc, options, ocrPageMask = null) {
+async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText = doc.ocr.pdf) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -1009,7 +1010,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
   await gs.getGeneralScheduler();
 
   // Document-mode models OCR the whole PDF in a single call, so route them to their own path.
-  if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options, ocrPageMask);
+  if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options, ocrPageMask, nativeText);
 
   // Initialize array for custom model results
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
@@ -1018,7 +1019,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
   // No page selected: skip the model entirely, filling each page from its native (PDF) text.
   if (ocrPageMask && !ocrPageMask.some(Boolean)) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
     }
     doc.ocr.active = doc.ocr[engineName];
     return doc.ocr.active;
@@ -1058,7 +1059,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
   const pages = [...Array(doc.images.pageCount).keys()].filter((n) => !ocrPageMask || ocrPageMask[n]);
   if (ocrPageMask) {
     for (let n = 0; n < doc.images.pageCount; n++) {
-      if (!ocrPageMask[n]) doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (!ocrPageMask[n]) doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
     }
   }
   const executing = new Set();
@@ -1250,15 +1251,23 @@ export async function recognize(doc, options = {}) {
   const pageCount = doc.inputData.pageCount;
   const stats = doc.inputData.pageStats;
 
+  // A `.scribe` session restored beside its PDF carries the PDF's own parsed text under 'User Upload', because that import runs no parse of its own.
+  // Page selection and combining therefore treat the layer as native text rather than as user-supplied OCR.
+  // A page the engine or a user produced carries another `textSource`, which keeps a saved recognition on the user-OCR path.
+  const restoredNative = !doc.ocr.pdf && !!doc.ocr['User Upload'] && doc.inputData.pdfMode
+    && doc.ocr['User Upload'].every((page) => !page || page.lines.length === 0 || page.textSource === 'pdf');
+  const userOcr = restoredNative ? null : doc.ocr['User Upload'];
+  const nativeText = doc.ocr.pdf || (restoredNative ? doc.ocr['User Upload'] : null);
+
   /** @type {boolean[]} */
   let ocrPageMask;
-  if (Array.isArray(ocrPages) && !doc.ocr['User Upload']) {
+  if (Array.isArray(ocrPages) && !userOcr) {
     // An explicit per-page mask is used directly, independent of parse-time stats.
     if (ocrPages.length !== pageCount) {
       throw new Error(`ocrPages array length (${ocrPages.length}) must equal the page count (${pageCount}).`);
     }
     ocrPageMask = ocrPages.map(Boolean);
-  } else if (doc.ocr['User Upload'] || !stats || stats.length !== pageCount) {
+  } else if (userOcr || !stats || stats.length !== pageCount) {
     // Uploaded OCR keeps the existing whole-document combine path (back-compat): OCR every page unless explicitly told `'none'`.
     // The same whole-document fallback applies when per-page stats are unavailable.
     ocrPageMask = Array(pageCount).fill(ocrPages !== 'none');
@@ -1272,14 +1281,14 @@ export async function recognize(doc, options = {}) {
 
   // Custom recognition model path
   if (options.model) {
-    await recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask);
-    buildCombinedLayer(doc, doc.ocr.active, ocrPageMask, gateApplies, fullOcr);
+    await recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask, nativeText);
+    buildCombinedLayer(doc, doc.ocr.active, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
     return doc.ocr.active;
   }
 
   if (!ocrPageMask.some(Boolean)) {
     // No page needs OCR: keep the parsed native/existing text layer as the active layer and skip recognition.
-    if (doc.ocr.pdf) doc.ocr.active = doc.ocr.pdf;
+    if (nativeText) doc.ocr.active = nativeText;
     return doc.ocr.active;
   }
 
@@ -1306,14 +1315,14 @@ export async function recognize(doc, options = {}) {
 
   let forceMainData = false;
   let existingOCR;
-  if (doc.ocr['User Upload']) {
-    existingOCR = doc.ocr['User Upload'];
+  if (userOcr) {
+    existingOCR = userOcr;
   } else if (
-    doc.ocr.pdf
+    nativeText
     && ((doc.inputData.pdfType === 'text' && usePDFText.native.supp)
       || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
   ) {
-    existingOCR = doc.ocr.pdf;
+    existingOCR = nativeText;
     // Not keyed on `doc.ocr.active`, which the editor aliases to `doc.ocr.pdf` for display.
     forceMainData = !((doc.inputData.pdfType === 'text' && usePDFText.native.main)
       || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
@@ -1423,7 +1432,7 @@ export async function recognize(doc, options = {}) {
 
     // Compare the existing text layer against a secondary text layer word-by-word.
     // Runs for a whole-document OCR pass or for User-Upload data.
-    if (existingOCR && (doc.ocr['User Upload'] || fullOcr)) {
+    if (existingOCR && (userOcr || fullOcr)) {
       if (combineMode === 'conf') {
         /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
         const compOptions = {
@@ -1452,7 +1461,7 @@ export async function recognize(doc, options = {}) {
           confThreshHigh: scribeDocDefaults.confThreshHigh,
           confThreshMed: scribeDocDefaults.confThreshMed,
           // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
-          useBboxB: !forceMainData && existingOCR === doc.ocr.pdf && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
+          useBboxB: !forceMainData && existingOCR === nativeText && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
         };
 
         let res;
@@ -1472,6 +1481,6 @@ export async function recognize(doc, options = {}) {
 
   // The engine's OCR layer to route: 'Tesseract Combined' for an existing-OCR run (where `active` points elsewhere), otherwise `active` itself.
   const tessSource = (existingOCR && doc.ocr['Tesseract Combined']) ? doc.ocr['Tesseract Combined'] : doc.ocr.active;
-  buildCombinedLayer(doc, tessSource, ocrPageMask, gateApplies, fullOcr);
+  buildCombinedLayer(doc, tessSource, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
   return (doc.ocr.active);
 }

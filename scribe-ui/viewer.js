@@ -2691,7 +2691,7 @@ export class ScribeViewer {
           height: 34px; padding: 0 12px;
           background: var(--scribe-surface, #ffffff); color: var(--scribe-ink, #1f2530);
           border: 1px solid var(--scribe-line, #e4e8ef); border-radius: 6px;
-          box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
+          box-shadow: var(--scribe-menu-shadow, 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12));
           font: 12.5px -apple-system, system-ui, 'Segoe UI', sans-serif;
           cursor: pointer; appearance: none; text-align: left;
           opacity: 0; transform: translateY(-2px); transition: opacity .1s ease, transform .1s ease;
@@ -2701,7 +2701,7 @@ export class ScribeViewer {
         .scribe-link-confirm:hover { background-image: linear-gradient(var(--scribe-hover, rgba(28, 42, 68, .06)), var(--scribe-hover, rgba(28, 42, 68, .06))); }
         .scribe-link-confirm:focus-visible {
           outline: none;
-          box-shadow: 0 0 0 2px var(--scribe-accent-ring, rgba(28, 98, 212, .30)), var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
+          box-shadow: 0 0 0 2px var(--scribe-accent-ring, rgba(28, 98, 212, .30)), var(--scribe-menu-shadow, 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12));
         }
         .scribe-link-confirm-url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .scribe-link-confirm-url .scribe-link-confirm-dim { color: var(--scribe-ink-3, #98a1b0); }

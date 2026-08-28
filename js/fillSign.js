@@ -248,56 +248,36 @@ export function addStamp(doc, n, item) {
 // Persisting it would freeze detection mistakes into users' files.
 
 /**
- * Drawn shapes from the PDF parse, keyed by the OcrPage they belong to.
- * Keying on page identity keeps this data off the OcrPage itself, so it survives page reorders and can never serialize into `.scribe` files.
- * @type {WeakMap<object, {
- *   squares?: Array<{left: number, top: number, right: number, bottom: number, stroke: boolean}>,
- *   marks?: Array<{left: number, top: number, right: number, bottom: number}>,
- *   marksOverflow?: boolean,
- *   images?: Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>,
- *   paths?: Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, paint: 'f'|'s'|'fs', commands: number}>}>,
- *   pathsIneligible?: boolean,
- *   glyphBoxes?: Array<{id: string, bbox: {left: number, top: number, right: number, bottom: number}}>,
- * }>}
- */
-const fillShapesByPage = new WeakMap();
-
-/** Import hook that attaches a page's drawn shapes from the PDF parse. */
-export function setPageFillShapes(pageObj, shapes) {
-  if (pageObj && (shapes?.squares?.length || shapes?.marks?.length || shapes?.images?.length
-    || shapes?.paths?.length || shapes?.pathsIneligible || shapes?.glyphBoxes?.length)) {
-    fillShapesByPage.set(pageObj, shapes);
-  }
-}
-
-/**
- * The image placements parsed from a page, in the page-pixel frame.
+ * The image placements parsed from page `n`, in the page-pixel frame.
  * One placement is one visual image, holding a site for each draw that contributes to it.
- * @param {?OcrPage} pageObj
+ * @param {?import('./containers/scribeDoc.js').ScribeDoc} doc
+ * @param {number} n - Page number
  * @returns {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>}
  */
-export function pageImagePlacements(pageObj) {
-  return (pageObj && fillShapesByPage.get(pageObj)?.images) || [];
+export function pageImagePlacements(doc, n) {
+  return doc?.fillShapes?.pages?.[n]?.images || [];
 }
 
 /**
- * The painted vector-path placements parsed from a page, in the page-pixel frame.
+ * The painted vector-path placements parsed from page `n`, in the page-pixel frame.
  * One placement is one visual mark, holding a site for each paint op drawn at its extent.
- * @param {?OcrPage} pageObj
+ * @param {?import('./containers/scribeDoc.js').ScribeDoc} doc
+ * @param {number} n - Page number
  * @returns {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, paint: 'f'|'s'|'fs', commands: number}>}>}
  */
-export function pagePathPlacements(pageObj) {
-  return (pageObj && fillShapesByPage.get(pageObj)?.paths) || [];
+export function pagePathPlacements(doc, n) {
+  return doc?.fillShapes?.pages?.[n]?.paths || [];
 }
 
 /**
- * Whether the page's path inventory is unavailable.
+ * Whether page `n`'s path inventory is unavailable.
  * True when a graphics-heavy stream skipped path extraction or the placement count overflowed the cap.
- * @param {?OcrPage} pageObj
+ * @param {?import('./containers/scribeDoc.js').ScribeDoc} doc
+ * @param {number} n - Page number
  * @returns {boolean}
  */
-export function pagePathsIneligible(pageObj) {
-  return !!(pageObj && fillShapesByPage.get(pageObj)?.pathsIneligible);
+export function pagePathsIneligible(doc, n) {
+  return !!doc?.fillShapes?.pages?.[n]?.pathsIneligible;
 }
 
 // Units: pt thresholds convert through the page's px-per-pt scale, em thresholds scale by the candidate's own word height, and frac thresholds are fractions of the named quantity.
@@ -379,7 +359,7 @@ export function detectFillTargets(doc, n, rejects) {
   const contentLines = pageObj.lines.filter((l) => l.words.length > 0 && !/^word_\d+_(txt|f)/.test(l.words[0].id));
   const words = [];
   for (const line of pageObj.lines) for (const w of line.words) words.push(w);
-  const shapes = fillShapesByPage.get(pageObj) || {};
+  const shapes = doc.fillShapes.pages[n] || {};
   const marks = shapes.marks || [];
   const images = shapes.images || [];
   // A box glyph's word bbox is its font's em box, which for symbol fonts can sit a quarter of a box height off the drawn square.

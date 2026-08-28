@@ -1,4 +1,12 @@
 import scribeLib from '../../scribe.js';
+import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
+
+/**
+ * @typedef {Object} LiveDoc
+ * @property {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @property {(recognized: boolean) => Promise<void>} [checkpoint] - Present when a viewer tab owns the copy.
+ *    Persists the sidecar the way that tab's own checkpoint does, stamping the recognition when `recognized` is true.
+ */
 import { openDocumentFromFile } from '../js/controls/tools.js';
 
 const THUMB_WIDTH = 300;
@@ -51,6 +59,19 @@ export const renderPageRaster = async (doc, n) => {
   return blob;
 };
 
+/**
+ * Record the import's text verdict and per-mode OCR page counts on a manifest entry.
+ * @param {import('./libraryStore.js').LibraryDocEntry} entry
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ */
+const recordTextSignals = (entry, doc) => {
+  const stats = doc.inputData.pageStats;
+  const pdfType = doc.inputData.pdfType ?? null;
+  entry.pdfType = pdfType;
+  entry.ocrShallow = stats ? selectOcrPages(stats, pdfType, 'autoShallow').filter(Boolean).length : 0;
+  entry.ocrDeep = stats ? selectOcrPages(stats, pdfType, 'autoDeep').filter(Boolean).length : 0;
+};
+
 /** @param {ArrayBuffer} buf @returns {Promise<string>} First 16 hex chars of SHA-256. */
 const hashBytes = async (buf) => {
   const digest = await crypto.subtle.digest('SHA-256', buf);
@@ -63,22 +84,45 @@ export class LibraryIngest {
    * @param {import('./libraryStore.js').LibraryManifest} manifest - Shared with the caller and mutated in place.
    * @param {import('./librarySearch.js').LibraryIndex} index
    * @param {Object} [callbacks]
-   * @param {(state: {done: number, total: number, current: string}) => void} [callbacks.onProgress]
+   * @param {(state: {done: number, total: number, current: string, kind?: string, pageDone?: number, pageTotal?: number}) => void} [callbacks.onProgress]
+   *    `kind` names the running task; recognition tasks also report page progress.
    * @param {(relPath: string) => void} [callbacks.onDocDone] - Fires after a document reaches a terminal status.
    * @param {() => boolean} [callbacks.warmGate] - Permission check for speculative warm-lane work.
    *    Omitting it disables warm work entirely.
+   * @param {(explicit: boolean) => boolean} [callbacks.recognizeGate] - Permission check before each recognition task.
+   *    `explicit` is true for a request made this session, false for one resumed from the manifest.
+   *    Omitting it disables recognition entirely.
+   * @param {() => string[]} [callbacks.langs] - Recognition languages.
+   * @param {(hash: string) => (LiveDoc | null | Promise<LiveDoc | null>)} [callbacks.liveDoc] - The copy of a document already open, so recognition runs on it rather than a second copy.
+   *    A tab-owned copy comes with `checkpoint`, which persists it through that tab.
+   *    A copy without one is handed over until `releaseLiveDoc`.
+   * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
    */
-  constructor(store, manifest, index, { onProgress, onDocDone, warmGate } = {}) {
+  constructor(store, manifest, index, {
+    onProgress, onDocDone, warmGate, recognizeGate, langs, liveDoc, releaseLiveDoc,
+  } = {}) {
     this.store = store;
     this.manifest = manifest;
     this.index = index;
     this.onProgress = onProgress;
     this.onDocDone = onDocDone;
     this.warmGate = warmGate || null;
-    /** @type {Array<{relPath: string, kind: 'ingest'|'verify'}>} Explicit user requests. Always drained first. */
+    this.recognizeGate = recognizeGate || null;
+    this.langs = langs || null;
+    this.liveDoc = liveDoc || null;
+    this.releaseLiveDoc = releaseLiveDoc || null;
+    /**
+     * The document a recognition task is running on, while one runs.
+     * A viewer tab opening that document mid-run adopts this copy through `adoptRecognizing`, so the run and the tab never hold two copies.
+     * @type {?{hash: string, doc: ?import('../../js/containers/scribeDoc.js').ScribeDoc, inTab: boolean, adopted: boolean}}
+     */
+    this.recognizing = null;
+    /** @type {Array<{relPath: string, kind: 'ingest'|'verify', resetSidecar?: boolean}>} Explicit user requests. Always drained first. */
     this.userLane = [];
     /** @type {Array<{relPath: string, kind: 'ingest'|'verify'|'upgrade'}>} Scan-discovered work. */
     this.discoveryLane = [];
+    /** @type {Array<{relPath: string, kind: 'recognize', explicit: boolean}>} Text recognition, drained after the index lanes and gated separately. */
+    this.recognizeLane = [];
     /**
      * Cushion candidates for the warm lane.
      * Null means the plan is stale and is rebuilt when the other lanes drain.
@@ -94,7 +138,7 @@ export class LibraryIngest {
     this.warmCancelled = false;
     /** When set, start() stops draining after the in-flight task, so a folder operation can run against a quiet queue. */
     this.paused = false;
-    /** @type {?{relPath: string, kind: 'ingest'|'verify'|'upgrade'}} */
+    /** @type {?{relPath: string, kind: 'ingest'|'verify'|'upgrade'|'recognize'}} */
     this.current = null;
   }
 
@@ -126,7 +170,6 @@ export class LibraryIngest {
           added: Date.now(),
           lastOpened: 0,
           status: 'pending',
-          requiresOCR: false,
         };
         this.discoveryLane.push({ relPath: f.relPath, kind: 'ingest' });
       } else if (entry.status === 'pending') {
@@ -143,8 +186,12 @@ export class LibraryIngest {
         this.discoveryLane.push({ relPath: f.relPath, kind: 'ingest' });
       } else if (entry.size !== f.size || entry.mtime !== f.mtime) {
         this.discoveryLane.push({ relPath: f.relPath, kind: 'verify' });
-      } else if (entry.status === 'indexed' && !entry.pageDims) {
+      } else if (entry.status === 'indexed' && (!entry.pageDims || entry.pdfType === undefined)) {
         this.discoveryLane.push({ relPath: f.relPath, kind: 'upgrade' });
+      }
+      // A recognition request survives a reload, so it resumes here as non-explicit work that waits for an idle machine.
+      if (entry?.ocrQueued && !this.recognizeLane.some((r) => r.relPath === f.relPath)) {
+        this.recognizeLane.push({ relPath: f.relPath, kind: 'recognize', explicit: false });
       }
     }
     for (const [relPath, entry] of Object.entries(this.manifest.docs)) {
@@ -161,12 +208,16 @@ export class LibraryIngest {
   /**
    * Queue one document for (re-)ingest, creating or resetting its manifest entry.
    * Goes to the user lane, ahead of any scan-discovered backlog.
+   * A plain ingest rebuilds the derived data and leaves any existing sidecar, which holds the user's edits, in place.
+   * `resetSidecar` is the revert path, rewriting the sidecar from the source file.
    * @param {string} relPath
    * @param {{size?: number, mtime?: number}} [info]
+   * @param {{resetSidecar?: boolean, writeManifest?: boolean}} [opts]
    */
-  async enqueue(relPath, info = {}) {
+  async enqueue(relPath, info = {}, { resetSidecar = false, writeManifest = true } = {}) {
     const existing = this.manifest.docs[relPath];
-    this.manifest.docs[relPath] = {
+    /** @type {import('./libraryStore.js').LibraryDocEntry} */
+    const entry = {
       hash: existing?.hash || '',
       size: info.size ?? existing?.size ?? 0,
       mtime: info.mtime ?? existing?.mtime ?? 0,
@@ -174,11 +225,31 @@ export class LibraryIngest {
       added: existing?.added ?? Date.now(),
       lastOpened: existing?.lastOpened ?? 0,
       status: 'pending',
-      requiresOCR: existing?.requiresOCR ?? false,
     };
-    await this.store.writeManifest(this.manifest);
-    this.userLane.push({ relPath, kind: 'ingest' });
+    if (existing?.order !== undefined) entry.order = existing.order;
+    if (existing?.firstPaintMs !== undefined) entry.firstPaintMs = existing.firstPaintMs;
+    if (!resetSidecar) {
+      if (existing?.editedAt) entry.editedAt = existing.editedAt;
+      if (existing?.recognizedAt) entry.recognizedAt = existing.recognizedAt;
+    }
+    this.manifest.docs[relPath] = entry;
+    if (writeManifest) await this.store.writeManifest(this.manifest);
+    this.userLane.push({ relPath, kind: 'ingest', resetSidecar });
     this.warmLane = null;
+  }
+
+  /**
+   * Queue a document for text recognition. Its manifest flag makes the request survive a reload.
+   * @param {string} relPath
+   * @param {{writeManifest?: boolean}} [opts]
+   */
+  async enqueueRecognize(relPath, { writeManifest = true } = {}) {
+    const entry = this.manifest.docs[relPath];
+    if (!entry || !entry.hash) return;
+    entry.ocrQueued = true;
+    delete entry.ocrError;
+    if (writeManifest) await this.store.writeManifest(this.manifest);
+    if (!this.recognizeLane.some((r) => r.relPath === relPath)) this.recognizeLane.push({ relPath, kind: 'recognize', explicit: true });
   }
 
   /**
@@ -188,6 +259,11 @@ export class LibraryIngest {
   cancel() {
     this.userLane.length = 0;
     this.discoveryLane.length = 0;
+    for (const r of this.recognizeLane) {
+      const entry = this.manifest.docs[r.relPath];
+      if (entry) delete entry.ocrQueued;
+    }
+    this.recognizeLane.length = 0;
     this.warmLane = [];
     this.warmCancelled = true;
     this.done = 0;
@@ -205,6 +281,7 @@ export class LibraryIngest {
     const rekey = (p) => (p.startsWith(oldPrefix) ? newDir + p.slice(oldDir.length) : p);
     for (const t of this.userLane) t.relPath = rekey(t.relPath);
     for (const t of this.discoveryLane) t.relPath = rekey(t.relPath);
+    for (const t of this.recognizeLane) t.relPath = rekey(t.relPath);
     this.warmLane = null;
     if (this.current && rekey(this.current.relPath) !== this.current.relPath) {
       this.discoveryLane.unshift({ relPath: rekey(this.current.relPath), kind: this.current.kind });
@@ -212,7 +289,7 @@ export class LibraryIngest {
   }
 
   /**
-   * Process the lanes serially: user, then discovery, then warm.
+   * Process the lanes serially: user, then discovery, then recognition (when its gate allows), then warm.
    * Safe to call when already running.
    */
   async start() {
@@ -224,14 +301,23 @@ export class LibraryIngest {
       let idle = false;
       while (!idle) {
         if (this.paused) break;
-        const task = this.userLane.shift() || this.discoveryLane.shift();
+        let task = this.userLane.shift() || this.discoveryLane.shift();
+        if (!task && this.recognizeLane.length && this.recognizeGate?.(this.recognizeLane[0].explicit)) task = this.recognizeLane.shift();
         if (task) {
           this.current = task;
           this.done++;
-          this.onProgress?.({ done: this.done, total: this.done + this.userLane.length + this.discoveryLane.length, current: task.relPath });
-          if (task.kind === 'verify') await this._verify(task.relPath);
-          else if (task.kind === 'upgrade') await this._upgrade(task.relPath);
-          else await this._ingest(task.relPath);
+          this.onProgress?.({
+            done: this.done, total: this.done + this.pendingCount(), current: task.relPath, kind: task.kind,
+          });
+          try {
+            if (task.kind === 'verify') await this._verify(task.relPath);
+            else if (task.kind === 'upgrade') await this._upgrade(task.relPath);
+            else if (task.kind === 'recognize') await this._recognize(task.relPath);
+            else await this._ingest(task.relPath, !!task.resetSidecar);
+          } catch (err) {
+            // Each task records its own outcome on the entry; a throw past that point is a close that failed after the fact.
+            console.error(err);
+          }
           // The manifest is rewritten whole, so writing it per document would cost O(n^2) over a large folder.
           manifestPending = true;
           if (Date.now() - manifestWrittenAt > 1000) {
@@ -257,9 +343,14 @@ export class LibraryIngest {
       this.running = false;
       this.current = null;
       if (manifestPending) await this.store.writeManifest(this.manifest).catch(() => {});
-      this.onProgress?.({ done: this.done, total: this.done + this.userLane.length + this.discoveryLane.length, current: '' });
+      this.onProgress?.({ done: this.done, total: this.done + this.pendingCount(), current: '' });
       this.done = 0;
     }
+  }
+
+  /** Tasks still waiting in the lanes the progress display counts. */
+  pendingCount() {
+    return this.userLane.length + this.discoveryLane.length + this.recognizeLane.length;
   }
 
   /**
@@ -282,13 +373,13 @@ export class LibraryIngest {
   }
 
   /**
-   * Backfill the per-page dims for a legacy entry that predates them, so it can open provisionally.
+   * Backfill the per-page dims and the text signals for a legacy entry that predates them.
    * The sidecar, text cache, and search index may hold later user edits, so they are never touched here.
    * @param {string} relPath
    */
   async _upgrade(relPath) {
     const entry = this.manifest.docs[relPath];
-    if (!entry || !entry.hash || entry.pageDims) return;
+    if (!entry || !entry.hash || (entry.pageDims && entry.pdfType !== undefined)) return;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
     let doc = null;
     try {
@@ -299,14 +390,20 @@ export class LibraryIngest {
       entry.pageDims = doc.pageMetrics.map((pm) => [
         Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
       ]);
+      recordTextSignals(entry, doc);
     } catch { /* The next scan retries. */
     } finally {
       await doc?.close();
     }
   }
 
-  /** @param {string} relPath */
-  async _ingest(relPath) {
+  /**
+   * Import a document and rebuild everything derived from it.
+   * An existing sidecar for the same bytes holds the user's edits, so it is opened alongside the source and left in place.
+   * @param {string} relPath
+   * @param {boolean} [resetSidecar] - Rewrite the sidecar from the source file, discarding the user's edits.
+   */
+  async _ingest(relPath, resetSidecar = false) {
     const entry = this.manifest.docs[relPath];
     if (!entry) return;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
@@ -333,14 +430,21 @@ export class LibraryIngest {
             }
           }
 
+          const sidecar = resetSidecar ? null : await this.store.readSidecar(hash);
           // The hashed buffer doubles as the import input, so the file's bytes are read and held once.
-          doc = await openDocumentFromFile(buf, { skipFontOpt: true });
+          doc = sidecar
+            ? await scribeLib.openDocument([new File([buf], relPath.split('/').pop() || relPath), new File([sidecar], `${hash}.scribe`)], { skipFontOpt: true })
+            : await openDocumentFromFile(buf, { skipFontOpt: true });
           entry.hash = hash;
           entry.pageCount = doc.inputData.pageCount;
-          entry.requiresOCR = !!doc.inputData.requiresOCR;
           entry.pageDims = doc.pageMetrics.map((pm) => [
             Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
           ]);
+          recordTextSignals(entry, doc);
+          if (resetSidecar) {
+            delete entry.editedAt;
+            delete entry.recognizedAt;
+          }
 
           const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
           await this.store.writeTextCache(hash, pagesText.join('\f'));
@@ -351,12 +455,14 @@ export class LibraryIngest {
           // Sidecars are this application's own session store, so app-side state such as pending text edits belongs in them.
           // Per-character boxes are half a sidecar's bytes, so they are dropped here.
           // A document reopened from its sidecar has word boxes only.
-          try {
-            await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
-            delete entry.sidecarError;
-          } catch (err) {
-            // A document without a sidecar still indexes and reopens from its source file, losing only saved session state.
-            entry.sidecarError = err instanceof Error ? err.message : String(err);
+          if (!sidecar) {
+            try {
+              await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
+              delete entry.sidecarError;
+            } catch (err) {
+              // A document without a sidecar still indexes and reopens from its source file, losing only saved session state.
+              entry.sidecarError = err instanceof Error ? err.message : String(err);
+            }
           }
           return { hash, pagesText };
         })(),
@@ -382,6 +488,87 @@ export class LibraryIngest {
       if (timer !== null) clearTimeout(timer);
       await doc?.close();
     }
+  }
+
+  /**
+   * Recognize text for one queued document and persist the result the way a viewer edit is persisted.
+   * Page selection is the deep one the viewer's own Recognize uses, so plausible image-borne text is sent to the engine too.
+   * A copy owned by a viewer tab is persisted through that tab's checkpoint instead.
+   * @param {string} relPath
+   */
+  async _recognize(relPath) {
+    const entry = this.manifest.docs[relPath];
+    if (!entry) return;
+    delete entry.ocrQueued;
+    if (!entry.hash || entry.status !== 'indexed') return;
+    const hash = entry.hash;
+    // Whatever copy is already open is the one recognized, so a tab's next checkpoint cannot overwrite the result with a copy that lacks it.
+    // A copy opened here is adoptable by a tab for the same reason.
+    const live = (await this.liveDoc?.(hash)) ?? null;
+    /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
+    let doc = live?.doc ?? null;
+    this.recognizing = {
+      hash, doc, inTab: !!live?.checkpoint, adopted: false,
+    };
+    try {
+      if (!doc) {
+        const files = [await this.store.readFile(relPath)];
+        const sidecar = await this.store.readSidecar(hash);
+        if (sidecar) files.push(new File([sidecar], `${hash}.scribe`));
+        // One PDF worker, like the other background copies, because recognition is bound by the OCR engine rather than by page rendering.
+        doc = await scribeLib.openDocument(files, { skipFontOpt: true, pdfWorkerN: 1 });
+        this.recognizing.doc = doc;
+      }
+      const stats = doc.inputData.pageStats;
+      const pageTotal = stats ? selectOcrPages(stats, doc.inputData.pdfType, 'autoDeep').filter(Boolean).length : 0;
+      const seen = new Set();
+      const prevProgress = doc.progressHandler;
+      doc.progressHandler = (msg) => {
+        prevProgress?.(msg);
+        if (msg && msg.type === 'convert' && typeof msg.n === 'number') seen.add(msg.n);
+        this.onProgress?.({
+          done: this.done, total: this.done + this.pendingCount(), current: relPath, kind: 'recognize', pageDone: seen.size, pageTotal,
+        });
+      };
+      try {
+        await doc.recognize({ langs: this.langs?.() ?? ['eng'], ocrPages: 'autoDeep' });
+      } finally {
+        doc.progressHandler = prevProgress;
+      }
+      if (live?.checkpoint) {
+        await live.checkpoint(true);
+      } else {
+        await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
+        const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
+        await this.store.writeTextCache(hash, pagesText.join('\f'));
+        this.index.addDoc(hash, pagesText);
+        entry.recognizedAt = Date.now();
+      }
+      delete entry.ocrError;
+    } catch (err) {
+      entry.ocrError = err instanceof Error ? err.message : String(err);
+    } finally {
+      const { adopted } = this.recognizing;
+      this.recognizing = null;
+      if (doc && !live?.checkpoint && !adopted) {
+        if (live) this.releaseLiveDoc?.(hash, doc);
+        // A crashed worker can make close() itself throw; the entry already carries the outcome.
+        else await doc.close().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Hand the copy being recognized to a viewer tab that is opening the same document mid-run.
+   * The tab owns the copy from here, so recognition finishes on it and this lane does not close it.
+   * @param {string} hash
+   * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc}
+   */
+  adoptRecognizing(hash) {
+    const r = this.recognizing;
+    if (!r || r.hash !== hash || !r.doc || r.inTab || r.adopted) return null;
+    r.adopted = true;
+    return r.doc;
   }
 
   /**

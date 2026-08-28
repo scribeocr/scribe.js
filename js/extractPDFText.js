@@ -1,5 +1,4 @@
 import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
-import { setPageFillShapes } from './fillSign.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType, applyDocParagraphLayout, promoteContinuationTables } from './pdf/parsePdfDoc.js';
@@ -88,7 +87,8 @@ export async function extractInternalPDFText(doc, options = {}) {
   // An edited session carries updated entries a fresh parse cannot know about, so the restored ones win.
   for (let i = 0; i < pageCount; i++) {
     doc.nativeText.pages[i] = { ...(pageResults[i].nativeText || {}), ...(doc.nativeText.pages[i] || {}) };
-    setPageFillShapes(doc.ocr.pdf[i], {
+    /** @type {PageFillShapes} */
+    const shapes = {
       squares: pageResults[i].fillSquares,
       marks: pageResults[i].fillMarks,
       marksOverflow: pageResults[i].fillMarksOverflow,
@@ -96,7 +96,9 @@ export async function extractInternalPDFText(doc, options = {}) {
       paths: pageResults[i].fillPaths,
       pathsIneligible: pageResults[i].fillPathsIneligible,
       glyphBoxes: pageResults[i].fillGlyphBoxes,
-    });
+    };
+    doc.fillShapes.pages[i] = (shapes.squares?.length || shapes.marks?.length || shapes.images?.length
+      || shapes.paths?.length || shapes.pathsIneligible || shapes.glyphBoxes?.length) ? shapes : null;
   }
 
   // Overwrites the per-page assignParagraphs result the workers assigned: no worker sees the whole document.

@@ -10,6 +10,7 @@ const REDACT_TERMS_SVG = lineIcon('<rect x="4.5" y="4.5" width="15" height="15" 
 const EXTRACT_HIGHLIGHTS_SVG = lineIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M4 14.5h16M10 10v9M15 10v9"/>');
 const EXTRACT_TABLES_SVG = lineIcon('<rect x="4" y="4.5" width="16" height="15" rx="1.5"/><path d="M4 9.5h16M4 14.5h16M9.5 9.5v10"/>');
 const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2.3z"/><path d="M14.8 7.5h4.7M14.8 12h4.7M14.8 16.5h3.2"/>');
+const BULK_EDIT_SVG = lineIcon('<rect x="4" y="5.5" width="16" height="13" rx="1.5" stroke-dasharray="2.6 2.6"/><path d="M7 9.5h10M7 12.5h10M7 15.5h6"/>');
 
 /**
  * @typedef {Object} AutomationOutcomeRow
@@ -106,6 +107,24 @@ export const AUTOMATIONS = [
     load: () => import('./extractHighlights.js'),
   },
   {
+    id: 'bulk-edit',
+    title: 'Bulk Edit',
+    description: 'Select lines by their properties, then edit or delete them together.',
+    category: 'Edit',
+    engine: 'mechanical',
+    effects: 'destructive',
+    svg: BULK_EDIT_SVG,
+    disabledWhy: (viewer) => {
+      const doc = viewer.doc;
+      if (!doc || !doc.pageMetrics.length) return 'Open a document first';
+      // While deferred extraction is still running that is unknowable, so the row stays enabled until it settles.
+      if (!doc._textReadySettle && !doc.nativeText.pages.some((p) => p && Object.keys(p).length > 0)) return 'Needs a PDF with original digital text';
+      return null;
+    },
+    openInstead: (host) => host.app._automatePanel?.openBulkEditWorkspace(),
+    load: () => import('./bulkEdit.js'),
+  },
+  {
     id: 'generate-bookmarks',
     title: 'Generate bookmarks',
     description: 'Build bookmarks from the headings detected in the document.',
@@ -126,7 +145,7 @@ export const AUTOMATIONS = [
 ];
 
 /** Catalog group order. */
-export const CATEGORY_ORDER = ['Extract', 'Privacy', 'Assemble', 'File'];
+export const CATEGORY_ORDER = ['Extract', 'Edit', 'Privacy', 'Assemble', 'File'];
 
 /**
  * Tools surfaced in a "For <mode>" group atop the catalog while that tool mode is active.

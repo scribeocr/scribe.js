@@ -556,8 +556,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const editBboxes = opts.textEditBboxes || null;
   // Identity-gated edit rects remove only the glyphs matching the deleted text's recorded identities.
   const editGated = opts.textEditGated && opts.textEditGated.rects.length > 0 ? opts.textEditGated : null;
+  // A deleted line's space glyphs sit between its words, so neither the word bands nor the glyph identities can strike them.
+  // Without this band they survive as text a PDF viewer still selects and extracts.
+  const editWsRects = opts.textEditWsRects && opts.textEditWsRects.length > 0 ? opts.textEditWsRects : null;
   const glyphUnicode = opts.glyphUnicode || null;
-  const editActive = !!(editBboxes && editBboxes.length > 0) || !!editGated;
+  const editActive = !!(editBboxes && editBboxes.length > 0) || !!editGated || !!editWsRects;
   // Replacement operator bodies (one per replaceText record), spliced in at each record's first dropped glyph.
   // Entries are mutated (`placed`) so the page driver can append the leftovers.
   const editInserts = opts.textEditInserts || null;
@@ -1561,14 +1564,24 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           ? (binding.charCodeToCID.get(code) ?? code)
           : code;
         const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
-        const dropHit = (redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes)))
+        let dropHit = (redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes)))
           || (editBboxes && editBboxes.length > 0 && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editBboxes, TEXT_EDIT_GLYPH_SIZE_CAP))
           // The gated rects take no size cap because the identity match is the precision guard.
           // A cap here spares any font whose em box dwarfs the word band, so deletion silently does nothing on those documents.
           || (editGated && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editGated.rects)
             && glyphIdentityMatches(editGated, glyphUnicode ? glyphUnicode(binding.fontObjNum, code) : null, binding.fontObjNum, trm[4], trm[5]));
+        if (!dropHit && editWsRects && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editWsRects, TEXT_EDIT_GLYPH_SIZE_CAP)) {
+          const u = glyphUnicode ? glyphUnicode(binding.fontObjNum, code) : null;
+          if (u != null && u.trim().length === 0) {
+            // A broken font can map an inked glyph to U+0020, so the resolver gate keeps any glyph that actually paints.
+            // The renderer never strikes whitespace bands, so such a hole would ship without ever appearing on screen.
+            // Code 32 in a simple font is the spec-defined word space, trusted when no outline is resolvable.
+            const res = resolver({ fontObjNum: binding.fontObjNum, charCode: code });
+            dropHit = 'error' in res ? (res.error === 'empty-path' || (!binding.isType0 && code === 32)) : false;
+          }
+        }
         if (dropHit) {
-          // Dropping never consults the resolver, so glyphs in unembedded/broken fonts still drop.
+          // The rect and identity strikes never consult the resolver, so glyphs in unembedded or broken fonts still drop.
           didConvert = true;
           outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
           anyConvert = true;
@@ -2678,10 +2691,11 @@ async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, glyphUnicode = null, imageDeletes = null, pathDeletes = null,
+  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, glyphUnicode = null, imageDeletes = null, pathDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
-  const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0);
+  const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
+    || !!(textEditWsRects && textEditWsRects.length > 0);
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   if (state.inProgress.has(formObjNum)) {
@@ -2761,6 +2775,7 @@ async function rewriteFormContentForRegions({
       redactBboxes,
       textEditBboxes,
       textEditGated,
+      textEditWsRects,
       glyphUnicode,
       imageDeletes,
       pathDeletes,
@@ -2806,6 +2821,7 @@ async function rewriteFormContentForRegions({
           redactBboxes,
           textEditBboxes,
           textEditGated,
+          textEditWsRects,
           glyphUnicode,
           imageDeletes,
           pathDeletes,
@@ -2937,6 +2953,8 @@ async function rewriteFormContentForRegions({
  * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
  * @param {?{rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} [params.textEditGated]
  *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities (unicode + origin + font).
+ * @param {?Array<[number, number, number, number]>} [params.textEditWsRects]
+ *   User-space bands in which non-marking whitespace glyphs are removed along with a text edit.
  * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
  *   Replacement blocks (one per replaceText record) holding absolute user-space operator bodies.
  *   Each is spliced in at its record's first dropped glyph, or appended at the end of the page stream when unplaced.
@@ -2951,13 +2969,13 @@ async function rewriteFormContentForRegions({
  */
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
-  convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null,
+  convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, textEditInserts = null,
   imageDeletes = null, pathDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Inserts alone activate the edit pass: a pure append erases nothing but must still be spliced or appended.
   const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
-    || !!(textEditInserts && textEditInserts.length > 0);
+    || !!(textEditWsRects && textEditWsRects.length > 0) || !!(textEditInserts && textEditInserts.length > 0);
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   // Bbox-driven conversion needs at least one region.
@@ -3041,6 +3059,7 @@ export async function convertSinglePageForRegions({
     redactBboxes,
     textEditBboxes,
     textEditGated,
+    textEditWsRects,
     glyphUnicode,
     textEditInserts,
     imageDeletes,
@@ -3086,6 +3105,7 @@ export async function convertSinglePageForRegions({
         redactBboxes,
         textEditBboxes,
         textEditGated,
+        textEditWsRects,
         glyphUnicode,
         imageDeletes,
         pathDeletes,

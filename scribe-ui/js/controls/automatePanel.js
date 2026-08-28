@@ -409,6 +409,61 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-as-key input:focus { outline: none; border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
     .${r} .scribe-as-key-note { font-size: 11.5px; color: var(--scribe-ink-3); }
     .${r} .scribe-as-key-error { font-size: 11.5px; color: var(--scribe-danger); }
+    .${r} .scribe-am-be-count { display: flex; align-items: baseline; gap: 8px; }
+    .${r} .scribe-am-be-count b { font-size: 16px; font-weight: 650; color: var(--scribe-ink); font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-be-count span { font-size: 12px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-be-rules { display: grid; gap: 6px; }
+    .${r} .scribe-am-be-rule { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .${r} .scribe-am-be-sel {
+      display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border: 1px solid var(--scribe-line-strong);
+      border-radius: 6px; background: var(--scribe-canvas); font: inherit; font-size: 12px; color: var(--scribe-ink);
+      white-space: nowrap; cursor: pointer; flex: none; max-width: 100%;
+    }
+    .${r} .scribe-am-be-sel:hover { border-color: var(--scribe-ink-3); }
+    .${r} .scribe-am-be-sel:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
+    .${r} .scribe-am-be-sel.grow { flex: 1; min-width: 0; }
+    .${r} .scribe-am-be-sel .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-be-caret { color: var(--scribe-ink-3); font-size: 9px; flex: none; margin-left: auto; }
+    .${r} .scribe-am-be-val {
+      flex: 1; min-width: 0; height: 26px; padding: 0 8px; border: 1px solid var(--scribe-line-strong); border-radius: 6px;
+      background: var(--scribe-canvas); font: inherit; font-size: 12px; color: var(--scribe-ink); outline: none;
+    }
+    .${r} .scribe-am-be-val:focus { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-am-be-rx { width: 22px; height: 22px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; color: var(--scribe-ink-3); cursor: pointer; flex: none; }
+    .${r} .scribe-am-be-rx:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-am-be-rx svg { width: 14px; height: 14px; }
+    .${r} .scribe-am-be-add { border: none; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-accent); cursor: pointer; padding: 4px 6px; border-radius: 5px; justify-self: start; }
+    .${r} .scribe-am-be-add:hover { background: var(--scribe-active); }
+    .${r} .scribe-am-be-swatch {
+      display: inline-block; width: 11px; height: 11px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .22);
+      flex: none; margin-right: 7px; vertical-align: -1px;
+    }
+    .${r}[data-theme="dark"] .scribe-am-be-swatch { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .3); }
+    .${r} .scribe-am-be-hex { font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+    .${r} .scribe-am-be-snips { display: grid; gap: 8px; }
+    .${r} .scribe-am-be-snip { border: 1px solid var(--scribe-line); border-radius: 7px; overflow: hidden; cursor: pointer; background: var(--scribe-canvas); text-align: left; padding: 0; font: inherit; color: inherit; }
+    .${r} .scribe-am-be-snip:hover { border-color: var(--scribe-line-strong); }
+    .${r} .scribe-am-be-snip:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-am-be-simg { position: relative; height: 44px; background: #fff; overflow: hidden; }
+    .${r} .scribe-am-be-sline { position: absolute; white-space: nowrap; line-height: 1; }
+    .${r} .scribe-am-be-sline.hit { background: var(--scribe-active); outline: 1.5px solid var(--scribe-accent); outline-offset: 1px; border-radius: 2px; }
+    .${r} .scribe-am-be-sbar { display: flex; align-items: center; gap: 7px; padding: 3px 8px; font-size: 11px; color: var(--scribe-ink-2); min-width: 0; }
+    .${r} .scribe-am-be-sbar b { font-weight: 600; color: var(--scribe-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .${r} .scribe-am-be-sbar .pg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .${r} .scribe-am-be-skeep { margin-left: auto; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; color: #2e7d4f; flex: none; }
+    .${r}[data-theme="dark"] .scribe-am-be-skeep { color: #5abd85; }
+    .${r} .scribe-am-be-sx { font-size: 11px; padding: 1px 8px; flex: none; }
+    .${r} .scribe-am-be-snip.excl .scribe-am-be-skeep { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-be-snip.excl .scribe-am-be-simg { opacity: .45; }
+    .${r} .scribe-am-be-snip.excl .scribe-am-be-simg::after { content: ''; position: absolute; left: 8px; right: 8px; top: 50%; border-top: 2px solid var(--scribe-ink-3); }
+    .${r} .scribe-am-be-seg { display: flex; background: var(--scribe-sunken); border-radius: 8px; padding: 3px; gap: 2px; }
+    .${r} .scribe-am-be-seg button { flex: 1; height: 26px; border: none; border-radius: 6px; background: none; font: inherit; font-size: 12.5px; color: var(--scribe-ink-2); cursor: pointer; }
+    .${r} .scribe-am-be-seg button.on { background: var(--scribe-surface); box-shadow: 0 1px 2px rgba(20, 30, 60, .10); color: var(--scribe-ink); font-weight: 600; }
+    .${r} .scribe-am-be-seg button:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-am-run.danger { border-color: var(--scribe-danger); color: var(--scribe-danger); }
+    .${r} .scribe-am-run.danger:hover { background: var(--scribe-danger-soft); }
+    .${r} .scribe-am-run:disabled { border-color: var(--scribe-line-strong); color: var(--scribe-ink-3); cursor: default; background: none; }
+    .${r} .scribe-am-quiet:disabled { color: var(--scribe-ink-3); cursor: default; background: none; }
   `;
   document.head.appendChild(style);
 }
@@ -512,6 +567,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
   redactElem.className = 'scribe-am-rdwrap';
   redactElem.style.display = 'none';
 
+  // The Bulk Edit workspace, populated by the bulk-edit module when its catalog row opens it.
+  const bulkElem = document.createElement('div');
+  bulkElem.className = 'scribe-am-rdwrap';
+  bulkElem.style.display = 'none';
+
   const composer = document.createElement('div');
   composer.className = 'scribe-am-composer';
   const cbox = document.createElement('div');
@@ -543,7 +603,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, redactElem, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, redactElem, bulkElem, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -567,6 +627,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
   let stripMode = 'auto';
 
   const setView = (next) => {
+    // The workspace's canvas marks and pick mode belong to its view, so leaving the view ends them.
+    if (view === 'bulk' && next !== 'bulk') closeBulkWorkspace();
     view = next;
     closeModelMenu(false);
     const rest = next === 'rest';
@@ -579,6 +641,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     asstThread.style.display = asst ? '' : 'none';
     tablesElem.style.display = next === 'tables' ? '' : 'none';
     redactElem.style.display = next === 'redact' ? '' : 'none';
+    bulkElem.style.display = next === 'bulk' ? '' : 'none';
     backBtn.style.display = rest ? 'none' : '';
     hdIcon.style.display = rest ? '' : 'none';
     plusBtn.style.display = asst ? '' : 'none';
@@ -587,8 +650,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
       : chatsList ? 'Chats'
         : next === 'tables' ? 'Extract tables'
           : next === 'redact' ? 'Redactions'
-            : asst ? (st?.activeRec?.title ?? 'Assistant')
-              : (activeRun ? activeRun.title : 'Automate');
+            : next === 'bulk' ? 'Bulk Edit'
+              : asst ? (st?.activeRec?.title ?? 'Assistant')
+                : (activeRun ? activeRun.title : 'Automate');
     if (asst && st) {
       const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
       if (live) live.unseen = false;
@@ -2119,6 +2183,25 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (prefillTerm) redactHandle.prefill(prefillTerm);
   }
 
+  /** @type {?{refresh: () => void, teardown: () => void}} */
+  let bulkHandle = null;
+
+  function closeBulkWorkspace() {
+    bulkHandle?.teardown();
+    bulkHandle = null;
+    bulkElem.textContent = '';
+  }
+
+  /** Open the Bulk Edit workspace, rebuilding it against the active document. */
+  async function openBulkEditWorkspace() {
+    open();
+    setView('bulk');
+    const module = await AUTOMATIONS.find((a) => a.id === 'bulk-edit').load();
+    if (view !== 'bulk') return;
+    closeBulkWorkspace();
+    bulkHandle = module.buildBulkEditWorkspace(host, bulkElem);
+  }
+
   backBtn.addEventListener('click', () => {
     // Panel navigation only, because the canvas mode keeps running whatever the panel shows.
     // The toolbar button and the banner's Done are that mode's only exits.
@@ -2213,6 +2296,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   const close = () => {
     if (!openState) return;
     openState = false;
+    if (view === 'bulk') setView('rest');
     closeModelMenu(false);
     panelElem.style.display = 'none';
     toggleElem.classList.remove('active');
@@ -2229,7 +2313,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       redactHandle = null;
       redactElem.textContent = '';
       setView('rest');
-    } else if (view === 'assistant' || view === 'chats') setView('rest');
+    } else if (view === 'bulk' || view === 'assistant' || view === 'chats') setView('rest');
     else if (view === 'rest') paintCatalog();
     paintTray();
     syncComposer();
@@ -2295,6 +2379,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
     },
     /** Open the Redactions workspace. */
     openRedactionsWorkspace,
+    /** Open the Bulk Edit workspace. */
+    openBulkEditWorkspace,
     /** Re-render the Redactions workspace's counts after a mark mutation, and do nothing when that view is hidden. */
     refreshRedactions: () => {
       if (view === 'redact') redactHandle?.refresh();
@@ -2304,6 +2390,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     /** Called when the Extract Tables mode exits: tear the workspace down and restore the prior view. */
     closeTablesWorkspace,
     destroy: () => {
+      closeBulkWorkspace();
       for (const abort of activeAborts) abort.abort();
       activeAborts.clear();
       closeModelMenu(false);

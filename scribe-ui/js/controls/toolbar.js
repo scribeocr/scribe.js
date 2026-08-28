@@ -5,6 +5,9 @@ import { ScribeViewer } from '../../viewer.js';
 import {
   findText, nextMatch, prevMatch, goToMatch,
 } from '../viewerSearch.js';
+import {
+  MENU_PLATE_CSS, MENU_ROW_CSS, MENU_ROW_NOICON_CSS, MENU_SEP_CSS,
+} from './menuStyles.js';
 
 /**
  * Build a round icon button matching the control stylesheet's `.cr-icon-button`.
@@ -1014,7 +1017,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-danger-soft: #fbe9e7;
       --scribe-scrollbar: rgba(28, 42, 68, .26);
       --scribe-shadow-pop: 0 8px 28px rgba(20, 30, 60, .17);
-      --scribe-menu-shadow: 0 4px 14px rgba(20, 30, 60, .13);
+      --scribe-menu-shadow: 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12);
       --scribe-page-shadow: 0 1px 3px rgba(30, 26, 16, .18);
       --scribe-lift-shadow: 0 10px 24px rgba(20, 30, 60, .30);
       --scribe-plate: rgba(28, 42, 68, .09);
@@ -1041,7 +1044,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-danger-soft: #33201d;
       --scribe-scrollbar: rgba(255, 255, 255, .26);
       --scribe-shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
-      --scribe-menu-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+      --scribe-menu-shadow: 0 1px 2px rgba(0, 0, 0, .40), 0 6px 16px rgba(0, 0, 0, .48);
       --scribe-page-shadow: 0 1px 3px rgba(0, 0, 0, .5);
       --scribe-lift-shadow: 0 12px 28px rgba(0, 0, 0, .7);
       --scribe-plate: rgba(255, 255, 255, .09);
@@ -1131,23 +1134,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       left: 0;
       z-index: 30;
       min-width: 214px;
-      padding: 5px;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 10px;
-      box-shadow: var(--scribe-menu-shadow);
+      ${MENU_PLATE_CSS}
     }
     .${r} .scribe-app-menu-item {
       display: flex;
       align-items: center;
-      gap: 11px;
-      padding: 8px 11px;
-      border-radius: 6px;
-      font-size: 13px;
-      color: var(--scribe-ink);
+      gap: 9px;
       cursor: pointer;
-      white-space: nowrap;
-      user-select: none;
+      ${MENU_ROW_CSS}
     }
     .${r} .scribe-app-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
@@ -1932,7 +1926,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* Size the container, not the svg: the Open/Print lineIcons carry inline width:100% that would override a width set on the svg. */
     .${r} .scribe-app-menu-ic { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; color: var(--scribe-ink-2); }
     .${r} .scribe-app-menu-ic svg { width: 100%; height: 100%; display: block; }
-    .${r} .scribe-app-menu-sep { height: 1px; background: var(--scribe-line); margin: 5px 8px; }
+    .${r} .scribe-app-menu-sep {
+      ${MENU_SEP_CSS}
+    }
     /* Dark-mode toggle: a pill switch pushed to the row's right edge. */
     .${r} .scribe-app-menu-switch {
       margin-left: auto;
@@ -2102,17 +2098,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-menu {
       position: absolute;
       min-width: 150px;
-      padding: 4px;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
-      font-size: 13px;
-      color: var(--scribe-ink);
-      user-select: none;
+      ${MENU_PLATE_CSS}
     }
-    .${r} .scribe-tab-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-tab-menu-item {
+      cursor: pointer;
+      ${MENU_ROW_NOICON_CSS}
+    }
     .${r} .scribe-tab-menu-item:hover { background: var(--scribe-hover); }
 
     .${r} .highlight-color-btn {
@@ -2875,22 +2867,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-menu {
       position: absolute;
       min-width: 150px;
-      padding: 4px;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
-      font-size: 13px;
-      color: var(--scribe-ink);
-      user-select: none;
+      ${MENU_PLATE_CSS}
     }
 
     .${r} .scribe-thumb-menu-item {
-      padding: 7px 12px;
-      border-radius: 5px;
       cursor: pointer;
-      white-space: nowrap;
+      ${MENU_ROW_NOICON_CSS}
     }
 
     .${r} .scribe-thumb-menu-item:hover {
@@ -2918,10 +2901,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-menu-divider {
-      height: 0;
-      margin: 4px 6px;
-      border: none;
-      border-top: 1px solid var(--scribe-line);
+      ${MENU_SEP_CSS}
     }
 
     /* Mirrors the thumbnail panel's dock geometry, chrome, and slide: the two form one sidebar. */
@@ -3163,23 +3143,21 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-menu {
       position: absolute;
       min-width: 170px;
-      padding: 4px;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
-      font-size: 13px;
-      color: var(--scribe-ink);
-      user-select: none;
+      ${MENU_PLATE_CSS}
     }
 
-    .${r} .scribe-bm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-bm-menu-item {
+      cursor: pointer;
+      ${MENU_ROW_NOICON_CSS}
+    }
     .${r} .scribe-bm-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-bm-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
     .${r} .scribe-bm-menu-item.danger { color: var(--scribe-danger); }
-    .${r} .scribe-bm-menu-sep { height: 1px; background: var(--scribe-line); margin: 4px 6px; }
+    .${r} .scribe-bm-menu-sep {
+      ${MENU_SEP_CSS}
+    }
     .${r} .scribe-bm-menu-item.scribe-bm-menu-hand { display: flex; align-items: center; gap: 10px; }
     .${r} .scribe-bm-menu-item.scribe-bm-menu-hand .scribe-bm-autoglyph { margin-left: auto; }
     /* Sized explicitly because the glyph markup carries inline width and height of 100%, which would otherwise inflate it. */
@@ -3597,17 +3575,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cm-menu {
       position: absolute;
       min-width: 150px;
-      padding: 4px;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
-      font-size: 13px;
-      color: var(--scribe-ink);
-      user-select: none;
+      ${MENU_PLATE_CSS}
     }
-    .${r} .scribe-cm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-cm-menu-item {
+      cursor: pointer;
+      ${MENU_ROW_NOICON_CSS}
+    }
     .${r} .scribe-cm-menu-item:hover { background: var(--scribe-hover); }
 
     /* Compact (phone) comments.

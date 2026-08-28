@@ -310,6 +310,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  *    Paths, images, and annotations under the rects are untouched, and no box is painted.
  * @param {?Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} [params.textEditGatedByPage=null]
  *    Per-page identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
+ * @param {?Map<number, Array<[number, number, number, number]>>} [params.textEditWsByPage=null]
+ *    Per-page user-space bands in which non-marking whitespace glyphs are removed along with a text edit.
  * @param {?Map<number, Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>>} [params.textEditInsertsByPage=null]
  *    Per-page replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page `/EDFn` font resource entries the inserts draw with.
@@ -339,6 +341,7 @@ export async function rebuildPdfSubset({
   redactRegionsByPage = null,
   textEditRegionsByPage = null,
   textEditGatedByPage = null,
+  textEditWsByPage = null,
   textEditInsertsByPage = null,
   imageDeleteByPage = null,
   pathDeleteByPage = null,
@@ -353,6 +356,7 @@ export async function rebuildPdfSubset({
   const redactByPage = redactRegionsByPage || new Map();
   const textEditByPage = textEditRegionsByPage || new Map();
   const textEditGated = textEditGatedByPage || new Map();
+  const textEditWs = textEditWsByPage || new Map();
   const imageDeletes = imageDeleteByPage || new Map();
   const pathDeletes = pathDeleteByPage || new Map();
   // The redaction and content-edit machinery lives in the overlay page loop below, so without overlay data the marked content would pass through verbatim.
@@ -647,6 +651,7 @@ export async function rebuildPdfSubset({
           imageDeletes: imageDeletes.get(i) || null,
           pathDeletes: pathDeletes.get(i) || null,
           textEditGated: textEditGated.get(i) || null,
+          textEditWsRects: textEditWs.get(i) || null,
           textEditInserts: textEditInsertsByPage?.get(i) || null,
         });
 

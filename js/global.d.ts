@@ -437,8 +437,11 @@ declare global {
      * The arrays are index-aligned per glyph, with positions in the page-pixel frame.
      */
     type TextEditGlyphWord = {
-        /** Per-glyph unicode strings (a ligature glyph is one entry). */
-        chars: string[];
+        /**
+         * Per-glyph unicode strings, where a ligature glyph is one entry.
+         * A null entry has no recoverable unicode and matches on origin and font alone.
+         */
+        chars: (string | null)[];
         /** Per-glyph pen-origin x. */
         x: number[];
         /** Per-glyph pen-origin (baseline) y. */
@@ -460,6 +463,11 @@ declare global {
          * Records without identities (legacy sessions) remove every glyph under their rects.
          */
         glyphs?: TextEditGlyphWord[];
+        /**
+         * Bands over the deleted lines in which non-marking whitespace glyphs are struck too, page coordinates.
+         * A line's space glyphs sit between its words rather than inside them, so without these bands they survive as selectable remnants.
+         */
+        wsRects?: bbox[];
         /** Ties together the records of one user action. */
         groupId?: string;
     };
@@ -512,6 +520,11 @@ declare global {
         runs: TextEditRun[];
         /** The replaced originals' glyph identities, gated at the strike exactly as on a deleteText record. */
         glyphs?: TextEditGlyphWord[];
+        /**
+         * Bands over the replaced word range in which non-marking whitespace glyphs are struck too, page coordinates.
+         * The range's space glyphs sit between its words rather than inside them, so without these bands they survive under the replacement text.
+         */
+        wsRects?: bbox[];
         /** Ids of the live OCR words this record draws, so a later edit of those words folds this record. */
         wordIds?: string[];
         groupId?: string;
@@ -601,8 +614,37 @@ declare global {
         nativeText?: Array<Record<string, NativeTextWord>>;
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;
+        fillShapes?: Array<EncodedFillShapes | null>;
         assistantChats?: AssistantChatRecord[];
         redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
+    };
+
+    /**
+     * One page's parse-derived shapes, in the page-pixel frame.
+     * Images and paths are the placements Edit Graphics selects and deletes, while squares, marks, and glyph boxes feed fill-target detection.
+     */
+    type PageFillShapes = {
+        squares?: Array<{ left: number; top: number; right: number; bottom: number; stroke: boolean }>;
+        marks?: Array<{ left: number; top: number; right: number; bottom: number }>;
+        marksOverflow?: boolean;
+        images?: Array<{ left: number; top: number; right: number; bottom: number; sites: Array<{ left: number; top: number; right: number; bottom: number; objNum?: number }> }>;
+        paths?: Array<{ left: number; top: number; right: number; bottom: number; sites: Array<{ left: number; top: number; right: number; bottom: number; paint: "f" | "s" | "fs"; commands: number }> }>;
+        pathsIneligible?: boolean;
+        glyphBoxes?: Array<{ id: string; bbox: { left: number; top: number; right: number; bottom: number } }>;
+    };
+
+    /**
+     * `PageFillShapes` as serialized in the `.scribe` session block.
+     * Rounded flat arrays keyed `i` (images), `p` (paths), `q` (squares), `m` (marks), `g` (glyph boxes), with the `pi` and `mo` flags.
+     */
+    type EncodedFillShapes = {
+        i?: Array<[number, number, number, number, Array<[number, number, number, number, number]>]>;
+        p?: Array<[number, number, number, number, Array<[number, number, number, number, string, number]>]>;
+        q?: Array<[number, number, number, number, number]>;
+        m?: Array<[number, number, number, number]>;
+        g?: Array<[string, number, number, number, number]>;
+        pi?: 1;
+        mo?: 1;
     };
 
     /**

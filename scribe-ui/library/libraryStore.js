@@ -43,7 +43,15 @@ export const folderNameProblem = (name) => {
  * @property {number} added - Epoch ms when the document entered the library.
  * @property {number} lastOpened - Epoch ms; 0 when never opened.
  * @property {'pending'|'indexed'|'error'|'missing'|'changed'} status
- * @property {boolean} requiresOCR
+ * @property {?('text'|'ocr'|'image')} [pdfType] - The import's document verdict.
+ *    Absent on entries that predate it, until the upgrade lane backfills them.
+ * @property {number} [ocrShallow] - Pages the conservative automatic OCR selection would recognize. Informational only.
+ * @property {number} [ocrDeep] - Pages the deep automatic OCR selection would recognize, which drives Recognize eligibility and the queued run's scope.
+ *    Never a user-facing claim about the document.
+ * @property {number} [editedAt] - Epoch ms of the last checkpoint save that followed edits, absent while the sidecar is as imported.
+ * @property {number} [recognizedAt] - Epoch ms when text recognition last completed for this document.
+ * @property {boolean} [ocrQueued] - Waiting in the recognition queue, and stored so the queue resumes after a reload.
+ * @property {string} [ocrError] - Why the last recognition attempt did not finish, cleared by the next request or completed run.
  * @property {string} [error] - Failure message when status is 'error'.
  * @property {'interrupted'|'parse'} [errorKind] - Failure class when status is 'error'.
  *    Interrupted failures get one automatic retry at the next scan.
@@ -482,6 +490,36 @@ export class LibraryStore {
   }
 
   /**
+   * Copy the sidecar into its one backup slot before a revert overwrites it.
+   * @param {string} hash
+   * @returns {Promise<boolean>} Whether there was a sidecar to back up.
+   */
+  async backupSidecar(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    if (!file) return false;
+    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`, file);
+    return true;
+  }
+
+  /**
+   * Put the backed-up sidecar back in place and drop the backup.
+   * @param {string} hash
+   * @returns {Promise<boolean>} Whether a backup existed.
+   */
+  async restoreSidecarBackup(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
+    if (!file) return false;
+    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`, file);
+    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
+    return true;
+  }
+
+  /** @param {string} hash */
+  async deleteSidecarBackup(hash) {
+    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
+  }
+
+  /**
    * @param {string} hash
    * @param {string} text - Full document text, pages separated by form-feed characters.
    */
@@ -579,7 +617,7 @@ export class LibraryStore {
       if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
     }
     const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
-      [this.docsDir, '.scribe'], [this.textDir, '.txt.gz'], [this.thumbsDir, '.jpg'],
+      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.textDir, '.txt.gz'], [this.thumbsDir, '.jpg'],
     ]);
     for (const [dir, ext] of flatDirs) {
       if (!dir) continue;

@@ -172,6 +172,8 @@ export async function overlayPdfText({
   const textEditRegionsByPage = new Map();
   /** @type {Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} */
   const textEditGatedByPage = new Map();
+  /** @type {Map<number, Array<[number, number, number, number]>>} */
+  const textEditWsByPage = new Map();
   /** @type {Map<number, Array<TextEditReplace>>} */
   const replaceRecordsByPage = new Map();
   for (const i of effectivePageArr) {
@@ -184,6 +186,8 @@ export async function overlayPdfText({
     const rects = [];
     /** @type {Array<[number, number, number, number]>} */
     const gatedRects = [];
+    /** @type {Array<[number, number, number, number]>} */
+    const wsRects = [];
     /** @type {Array<TextEditGlyphWord>} */
     const gatedGlyphWords = [];
     for (const rec of records) {
@@ -191,6 +195,10 @@ export async function overlayPdfText({
       for (const r of rec.rects || []) {
         const mapped = pageRectToContentRect(r, dims, box, pages[i].rotate || 0);
         if (mapped) target.push(mapped);
+      }
+      for (const r of rec.wsRects || []) {
+        const mapped = pageRectToContentRect(r, dims, box, pages[i].rotate || 0);
+        if (mapped) wsRects.push(mapped);
       }
       if (rec.glyphs) gatedGlyphWords.push(...rec.glyphs);
       if (rec.type === 'replaceText' && rec.runs?.length) {
@@ -203,6 +211,7 @@ export async function overlayPdfText({
       const { pts, tol } = mapTextEditGlyphs(gatedGlyphWords, dims, box, pages[i].rotate || 0);
       textEditGatedByPage.set(i, { rects: gatedRects, pts, tol });
     }
+    if (wsRects.length > 0) textEditWsByPage.set(i, wsRects);
   }
 
   /** @type {Map<number, Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>>} */
@@ -518,6 +527,7 @@ export async function overlayPdfText({
       redactRegionsByPage,
       textEditRegionsByPage,
       textEditGatedByPage,
+      textEditWsByPage,
       textEditInsertsByPage,
       imageDeleteByPage,
       pathDeleteByPage,
@@ -661,6 +671,7 @@ export async function overlayPdfText({
         convertBrokenType3ToPaths,
         textEditBboxes: textEditRegionsByPage.get(i) || null,
         textEditGated: textEditGatedByPage.get(i) || null,
+        textEditWsRects: textEditWsByPage.get(i) || null,
         textEditInserts: textEditInsertsByPage.get(i) || null,
         imageDeletes: imageDeleteByPage.get(i) || null,
         pathDeletes: pathDeleteByPage.get(i) || null,

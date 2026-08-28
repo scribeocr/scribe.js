@@ -1428,6 +1428,12 @@ describe('Check native text line deletion and replacement survive .scribe persis
   let restoredDoc;
   /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
   let reDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let noCharsDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let noCharsReDoc;
+  /** @type {ArrayBuffer} */
+  let noCharsPdf;
   let strays;
   let standardObj;
   let sessionObj;
@@ -1438,14 +1444,14 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const target = srcDoc.ocr.active[0].lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
     await srcDoc.replaceTextLine(target, 'Several Iris varieties are used in the Iris flower data set');
     srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
-    const photoA = pageImagePlacements(srcDoc.ocr.pdf[1])[0];
+    const photoA = pageImagePlacements(srcDoc, 1)[0];
     srcDoc.deleteImages([{
       n: 1,
       rect: {
         left: photoA.left, top: photoA.top, right: photoA.right, bottom: photoA.bottom,
       },
     }]);
-    const topRule = pagePathPlacements(srcDoc.ocr.pdf[0])
+    const topRule = pagePathPlacements(srcDoc, 0)
       .find((e) => Math.abs(e.left - 150) <= 1 && Math.abs(e.top - 437.5) <= 1);
     srcDoc.deleteGraphics([{
       n: 0,
@@ -1482,6 +1488,15 @@ describe('Check native text line deletion and replacement survive .scribe persis
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
+    // Library-mode sidecars strip char boxes, so their restored words carry no `chars`.
+    // Line A's record is then hand-collapsed to the whole-word identity shape a corrupt saved session holds, which the restore must repair.
+    const lineA = srcDoc.ocr.active[0].lines.find((line) => lineText(line).includes('junos'));
+    srcDoc.deleteTextLines([lineA]);
+    const recA = srcDoc.contentEdits.pages[0][srcDoc.contentEdits.pages[0].length - 1];
+    recA.glyphs = recA.glyphs.map((gw) => ({
+      chars: [gw.chars.join('')], x: [gw.x[0]], y: [gw.y[0]], fontObjNum: gw.fontObjNum,
+    }));
+    const noCharsScribeData = await srcDoc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false });
     await srcDoc.close();
     restoredDoc = await scribe.openDocument({ scribeFiles: [scribeData] });
     const pdfData = await restoredDoc.exportData('pdf');
@@ -1489,6 +1504,20 @@ describe('Check native text line deletion and replacement survive .scribe persis
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
+    // The library opens a PDF beside its sidecar, so this leg models that pairing rather than the sidecar-only restore above.
+    noCharsDoc = await scribe.openDocument({ pdfFiles: [`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`], scribeFiles: [noCharsScribeData] });
+    const lineB = noCharsDoc.ocr.active[0].lines.find((line) => lineText(line).includes('horticulture'));
+    noCharsDoc.deleteTextLines([lineB]);
+    // The sidecar restore skips the PDF parse, so this deletion can only work off placements restored from the session block.
+    noCharsDoc.deleteGraphics([{
+      n: 1,
+      rect: {
+        left: 1609.4, top: 2268.7, right: 2390.6, bottom: 2856.2,
+      },
+      kind: 'image',
+    }]);
+    noCharsPdf = /** @type {ArrayBuffer} */ (await noCharsDoc.exportData('pdf'));
+    noCharsReDoc = await scribe.openDocument({ pdfFiles: [noCharsPdf] });
   });
 
   test('Edited pages leave no undeclared fields on OCR words or chars', () => {
@@ -1534,8 +1563,10 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(restoredDoc.contentEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('replaceText');
     expect(restoredDoc.contentEdits.pages[0][0].runs.length, 'the restored replacement record lost its draw-spec runs').toBe(11);
     expect(restoredDoc.contentEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
+    expect(restoredDoc.contentEdits.pages[0][0].wsRects?.length, 'the restored replacement record lost its whitespace band, so residual space glyphs would survive under the replacement').toBe(1);
     expect(restoredDoc.contentEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
     expect(restoredDoc.contentEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
+    expect(restoredDoc.contentEdits.pages[0][1].wsRects?.length, 'the restored deletion record lost its whitespace band, so residual space glyphs would survive the strike').toBe(1);
     expect(restoredDoc.contentEdits.pages[0][1].glyphs.length, 'the restored deletion record lost its glyph identities, so its rects would strike overlapping layers geometrically').toBe(12);
     expect(restoredDoc.contentEdits.pages[0][2].type, 'the restored path-delete record changed type').toBe('deletePath');
     expect(restoredDoc.contentEdits.pages[0][2].sites.length, 'the restored path-delete record lost its placement site').toBe(1);
@@ -1561,6 +1592,24 @@ describe('Check native text line deletion and replacement survive .scribe persis
       .toBe('Hermodactyloides');
   });
 
+  test('Deleted lines leave no residual space glyphs at their positions in the exported PDF', async () => {
+    // Struck words leave the line's inter-word space glyphs behind, and other PDF viewers select and extract them.
+    // Scribe's own parser never turns a space glyph into a word, so this must assert on the exported page stream rather than on a re-import.
+    const {
+      findXrefOffset, parseXref, getPageObjects, getPageContentStream,
+    } = await import('../../js/pdf/parsePdfUtils.js');
+    const { ObjectCache } = await import('../../js/pdf/objectCache.js');
+    const bytes = new Uint8Array(noCharsPdf);
+    const objCache = new ObjectCache(bytes, parseXref(bytes, findXrefOffset(bytes)));
+    const stream = getPageContentStream(getPageObjects(objCache)[0].objText, objCache) || '';
+    const tmAt = (/** @type {number} */ x0, /** @type {number} */ x1, /** @type {number} */ y0, /** @type {number} */ y1) => [...stream.matchAll(/(-?[\d.]+)\s+(-?[\d.]+)\s+Tm/g)]
+      .filter((m) => Number(m[1]) >= x0 && Number(m[1]) <= x1 && Number(m[2]) >= y0 && Number(m[2]) <= y1).length;
+    expect(tmAt(5, 50, 224, 230), 'the stream scan no longer sees the kept neighbor line\'s text object').toBe(1);
+    expect(tmAt(5, 370, 160, 166), 'the line deleted with restored glyph identities left text objects (residual space glyphs) at its position').toBe(0);
+    expect(tmAt(5, 440, 245, 251), 'the line deleted with a degraded (geometric) record left text objects (residual space glyphs) at its position').toBe(0);
+    expect(tmAt(5, 320, 267, 273), 'the line deleted after the chars-less restore left text objects (residual space glyphs) at its position').toBe(0);
+  });
+
   test('Replaced line exports its corrected text in place with intact neighbors', () => {
     const page = reDoc.ocr.active[0];
     expect(lineText(page.lines[30]), 'the replacement text does not extract in place from the exported PDF')
@@ -1571,6 +1620,44 @@ describe('Check native text line deletion and replacement survive .scribe persis
       .toBe('dichotoma) are currently included in Iris.');
     expect(lineText(page.lines[31]), 'the line below the replacement was damaged by the export')
       .toBe('outlined by Ronald Fisher in his 1936 paper The use of');
+  });
+
+  test('A line deleted after a chars-less .scribe restore is struck from the exported PDF', () => {
+    const recB = noCharsDoc.contentEdits.pages[0][noCharsDoc.contentEdits.pages[0].length - 1];
+    expect(recB.glyphs[0].chars.length, 'a chars-less word must rebuild per-glyph identities from its pen origins, not collapse to one whole-word entry').toBe(13);
+    const page = noCharsReDoc.ocr.active[0];
+    expect(page.lines.some((line) => lineText(line).includes('popular garden flower')),
+      'the line deleted after a chars-less .scribe restore is still in the exported PDF').toBe(false);
+    const neighbor = page.lines.find((line) => lineText(line).startsWith('name for some species'));
+    expect(neighbor && lineText(neighbor), 'a neighbor of the chars-less deletions was damaged by the export')
+      .toBe('name for some species is flags, while the plants of the');
+  });
+
+  test('Graphics placements survive the .scribe session round-trip beside the PDF', () => {
+    expect(pageImagePlacements(noCharsDoc, 0).length, 'image placements were lost restoring the sidecar alongside the PDF').toBe(3);
+    expect(pagePathPlacements(noCharsDoc, 0).length, 'path placements were lost restoring the sidecar alongside the PDF').toBe(60);
+    expect(pageImagePlacements(noCharsDoc, 1).length, 'second-page image placements were lost on the sidecar restore').toBe(2);
+    expect(pageImagePlacements(noCharsDoc, 1)[1].sites[0].objNum,
+      'a placement lost its site identity on the sidecar restore, so deletion would strike overlapping images geometrically').toBe(70);
+  });
+
+  test('An image deleted through restored placements is struck from the exported PDF', () => {
+    const recs = noCharsDoc.contentEdits.pages[1];
+    expect(recs.length, 'the graphics deletion on the restored document failed to record').toBe(2);
+    expect(recs[1].type, 'the graphics deletion on the restored document recorded the wrong edit type').toBe('deleteImage');
+    expect(recs[1].sites[0].objNum, 'the deletion record lost the placement\'s site identity').toBe(70);
+    // Both of the page's images carry pending deletes (one from the saved session, one made after the restore).
+    expect(pageImagePlacements(noCharsReDoc, 1).length, 'an image deleted on the restored document still draws in the exported PDF').toBe(0);
+  });
+
+  test('A saved delete record with collapsed whole-word identities is repaired to strike on restore', () => {
+    // Record order on the restored page: the replaceText, deleteText, and deletePath records above, then line A's.
+    const recA = noCharsDoc.contentEdits.pages[0][3];
+    expect(recA.type, 'the degraded record was lost from the restored session').toBe('deleteText');
+    expect(recA.glyphs, 'a restored record with collapsed whole-word identities must drop them and strike geometrically').toBeUndefined();
+    const page = noCharsReDoc.ocr.active[0];
+    expect(page.lines.some((line) => lineText(line).includes('known as junos')),
+      'the degraded record\'s line is still in the exported PDF').toBe(false);
   });
 
   afterAll(async () => {
@@ -1606,7 +1693,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     // The sentence carries six white halo copies of its bold phrase, all of which must fold.
     editDoc.deleteTextLines([find(8, 'Justice made public this month')]);
     // The page-3 masthead is the one placement that genuinely overlaps others, so deleting it exercises the site-identity gate rather than plain geometry.
-    const masthead = pageImagePlacements(editDoc.ocr.pdf[3])
+    const masthead = pageImagePlacements(editDoc, 3)
       .find((e) => Math.round(e.left) === 167 && Math.round(e.top) === 192);
     editDoc.deleteImages([{
       n: 3,
@@ -1615,7 +1702,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
       },
     }]);
     // The page-3 header rule sits flush against fills sharing its edges, so deleting it exercises per-site extent agreement on paths.
-    const headerRule = pagePathPlacements(editDoc.ocr.pdf[3])
+    const headerRule = pagePathPlacements(editDoc, 3)
       .find((e) => Math.abs(e.left - 75) <= 1 && Math.abs(e.top - 482.7) <= 1);
     editDoc.deleteGraphics([{
       n: 3,
@@ -1666,7 +1753,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('Deleted image is gone from the exported PDF while the two images it overlapped survive', () => {
-    const p3 = pageImagePlacements(reDoc.ocr.pdf[3]);
+    const p3 = pageImagePlacements(reDoc, 3);
     expect(p3.length, 'the image-delete page has the wrong placement count in the exported PDF').toBe(17);
     expect(p3.some((e) => Math.abs(e.left - 166.7) <= 2 && Math.abs(e.top - 191.7) <= 2
       && Math.abs(e.right - 2408.3) <= 2 && Math.abs(e.bottom - 466.7) <= 2),
@@ -1678,7 +1765,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('Deleted path is gone from the exported PDF while fills sharing its edges survive', () => {
-    const p3 = pagePathPlacements(reDoc.ocr.pdf[3]);
+    const p3 = pagePathPlacements(reDoc, 3);
     expect(p3.length, 'the path-delete page has the wrong path placement count in the exported PDF').toBe(100);
     expect(p3.some((e) => Math.abs(e.left - 75) <= 2 && Math.abs(e.top - 482.7) <= 2
       && Math.abs(e.right - 2475) <= 2 && Math.abs(e.bottom - 485.8) <= 2),
