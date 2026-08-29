@@ -4,6 +4,19 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/**
+ * @param {Uint8Array} bytes - xlsx workbook.
+ * @param {string} path - zip part to read.
+ */
+async function readXlsxPart(bytes, path) {
+  const { ZipReader, Uint8ArrayReader, TextWriter } = await import('../../lib/zip.js/index.js');
+  const reader = new ZipReader(new Uint8ArrayReader(bytes));
+  const entries = await reader.getEntries();
+  const content = await entries.find((e) => e.filename === path).getData(new TextWriter());
+  await reader.close();
+  return content;
+}
+
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
 
@@ -69,6 +82,67 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     const soloAppXml = await soloByPath.get('docProps/app.xml').getData(new TextWriter());
     expect(soloAppXml.includes('<vt:vector size="1" baseType="lpstr"><vt:lpstr>Page 1 Table 1</vt:lpstr></vt:vector>'), 'the one-sheet workbook titles-of-parts names the sheet').toBe(true);
     await soloReader.close();
+  });
+
+  // Runs before the createTablesFromText test below, which overwrites page 0's detected tables.
+  test('formatted export carries source styling; plain export keeps bold underlined headers only', async () => {
+    const rich = scribe.extractTextFromTables(doc.ocr.active[0], doc.layoutDataTables.pages[0], { cellFormats: true });
+    const headerCell = rich[0].rows[0][0];
+    expect(headerCell.text, 'rich extraction keeps the plain cell text alongside runs').toBe('SECTOR');
+    expect(headerCell.runs.length, 'a uniformly-styled header cell extracts as a single run').toBe(1);
+    expect(headerCell.runs[0].style.bold, 'the SECTOR header keeps its source bold').toBe(true);
+    expect(headerCell.runs[0].style.font, 'the SECTOR header keeps its source font family').toBe('Arial');
+    expect(headerCell.runs[0].style.size, 'the SECTOR header keeps its source size (px at 300dpi)').toBe(57);
+    const mixedCell = rich[0].rows[0][4];
+    expect(mixedCell.runs.map((r) => r.text), 'a mixed-size header cell splits into one run per style').toEqual(['Marijuana ', '(pounds)']);
+    expect(mixedCell.runs.map((r) => r.style.size), 'the (pounds) qualifier keeps its smaller source size').toEqual([41, 32.5]);
+
+    expect(doc.layoutDataTables.pages[0].tables[0].headerRows, 'the all-text first row inside the grid classifies as one header row').toBe(1);
+    const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: true });
+    expect(chains.map((c) => c.headerRows), 'each chain resolves one header row for styling').toEqual([1, 1, 1, 1]);
+
+    const richRows = chains[0].rows;
+    const richBytes = await scribe.utils.writeXlsxFromSheets([{
+      name: 'Rich',
+      rows: richRows,
+      tableRanges: [{
+        start: 0, rowCount: richRows.length, headerRows: chains[0].headerRows, grid: true, alignNumeric: true,
+      }],
+      columnWidths: [30, 10, 14, 19, 12, 10, 12, 8, 8, 8],
+    }], { columnWidths: 'auto' });
+    const richSheet1 = await readXlsxPart(richBytes, 'xl/worksheets/sheet1.xml');
+    expect(richSheet1.includes('<c r="A1" s="2" t="inlineStr"><is><r><rPr><b/><sz val="13.5"/><rFont val="Arial"/></rPr><t xml:space="preserve">SECTOR</t></r></is></c>'),
+      'the header cell writes a bold 13.5pt Arial rich run with the grid header style').toBe(true);
+    expect(richSheet1.includes('<c r="B2" s="4" t="inlineStr">'), 'a numeric data column right-aligns inside the grid').toBe(true);
+    expect(richSheet1.includes('<col min="1" max="1" width="30" customWidth="1"/>'), 'per-sheet column widths override the auto widths').toBe(true);
+    const richStyles = await readXlsxPart(richBytes, 'xl/styles.xml');
+    const gridBorderXml = '<border><left style="thin"><color indexed="64"/></left><right style="thin"><color indexed="64"/></right>'
+      + '<top style="thin"><color indexed="64"/></top><bottom style="thin"><color indexed="64"/></bottom><diagonal/></border>';
+    expect(richStyles.includes(gridBorderXml), 'the stylesheet grows a full thin-grid border for grid-detected tables').toBe(true);
+    expect(richStyles.match(/<cellXfs count="(\d+)"/)[1], 'the grid workbook interns exactly three new cell formats').toBe('5');
+
+    const plainRows = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages)[0].rows;
+    const plainBytes = await scribe.utils.writeXlsxFromSheets([{
+      name: 'Plain',
+      rows: plainRows,
+      tableRanges: [{ start: 0, rowCount: plainRows.length, headerRows: 1 }],
+    }], { columnWidths: 'auto' });
+    const noRangeBytes = await scribe.utils.writeXlsxFromSheets([{ name: 'Plain', rows: plainRows }], { columnWidths: 'auto' });
+    const plainSheet1 = await readXlsxPart(plainBytes, 'xl/worksheets/sheet1.xml');
+    expect(plainSheet1.includes('<c r="A1" s="1" t="inlineStr">'), 'plain-mode headers carry the bold+underline style').toBe(true);
+    expect(plainSheet1.includes('<c r="A2" t="inlineStr">'), 'plain-mode data cells stay unstyled').toBe(true);
+    expect(await readXlsxPart(plainBytes, 'xl/styles.xml'), 'header-only ranges leave the stylesheet byte-identical to an unstyled workbook')
+      .toBe(await readXlsxPart(noRangeBytes, 'xl/styles.xml'));
+  });
+
+  test('exportData xlsx merges same-style runs and emits no invalid smallCaps element', async () => {
+    const legacy = await doc.exportData('xlsx');
+    const legacyBytes = legacy instanceof Uint8Array ? legacy : new Uint8Array(legacy);
+    const sheet1 = await readXlsxPart(legacyBytes, 'xl/worksheets/sheet1.xml');
+    // Without run coalescing each word opens a run of its own, splitting a multi-word bold header into one run per word.
+    expect(sheet1.includes('<r><rPr><b/></rPr><t xml:space="preserve">Other Apprehensions Than Mexican</t></r>'),
+      'adjacent bold header words coalesce into one rich run').toBe(true);
+    expect(sheet1.includes('<smallCaps/>'), 'the WordprocessingML smallCaps element never reaches xlsx output').toBe(false);
   });
 
   test('createTablesFromText creates table with column boxes and rowBounds', async () => {

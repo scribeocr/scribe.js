@@ -62,12 +62,14 @@ export function applyTablePreview(viewer, n) {
   const segTableId = pageFrag ? pageFrag.table.id : activeSheet.table.id;
   const sheet = uiTables.find((t) => t.layoutDataTable.id === segTableId) || null;
 
+  const fmtOn = viewer.state.tablePreviewFormatting !== false;
   const anyTableIds = new Set();
   uiTables.forEach((t) => t.tableContent?.rowWordArr.flat(2).forEach((w) => anyTableIds.add(w.id)));
   let leftOut = 0;
   for (const obj of viewer._wordObjs?.[n] || []) {
     if (anyTableIds.has(obj.word.id)) {
-      obj.fill('black');
+      // The plain export flattens text to black, so the plain preview does too.
+      obj.fill(fmtOn ? obj.word.style.color || 'black' : 'black');
       obj.opacity(1);
     } else if (viewer.state.tablePreviewGhost) {
       leftOut++;
@@ -172,6 +174,37 @@ export function applyTablePreview(viewer, n) {
         }, bgrid);
       }
     }
+  }
+
+  // Stripe parity counts from the start of the whole chain rather than this page, so a continuation page stripes in phase with the sheet.
+  // Only the head fragment carries header rows, for the same reason.
+  const headTable = activeChain ? activeChain[0].table : sheet.layoutDataTable;
+  const chainHeaderRows = Math.max(0, headTable.headerRows ?? 1);
+  const localHeaderRows = fragIdx === 0 ? Math.min(chainHeaderRows, content.rowBottomArr.length) : 0;
+  // The plain export forces header rows bold, so the plain preview does too.
+  // This needs no matching reset. Flipping the option rebuilds the text layer, and a blanket reset here would instead wipe the weights the renderer set from the document's own fonts.
+  if (!fmtOn && localHeaderRows > 0) {
+    const headerIds = new Set(content.rowWordArr.slice(0, localHeaderRows).flat(2).map((w) => w.id));
+    for (const obj of viewer._wordObjs?.[n] || []) {
+      if (headerIds.has(obj.word.id) && obj.el) obj.el.style.fontWeight = 'bold';
+    }
+  }
+  if (pc && fmtOn && headTable.detectionMethod === 'row-band') {
+    for (let r = 0; r < content.rowBottomArr.length; r++) {
+      if (dedupRow0 && r === 0) continue;
+      const g = rowOffset + r - (dedupRow0 ? 1 : 0);
+      if (g < chainHeaderRows || (g - chainHeaderRows) % 2 !== 1) continue;
+      const fill = mk({
+        left: `${tc.left}px`, top: `${bandEdges[r]}px`, width: `${tc.right - tc.left}px`, height: `${bandEdges[r + 1] - bandEdges[r]}px`, background: '#f2f2f2', pointerEvents: 'none', zIndex: '0',
+      }, pc);
+      fill.dataset.scribeTpZebra = '1';
+    }
+  }
+  if (pc && localHeaderRows > 0 && localHeaderRows < bandEdges.length) {
+    const rule = mk({
+      left: `${tc.left}px`, top: `${bandEdges[localHeaderRows]}px`, width: `${tc.right - tc.left}px`, height: `calc(${fmtOn && headTable.detectionMethod === 'grid-strong' ? 2 : 1.2}px / ${Z})`, background: '#2f3540', pointerEvents: 'none', zIndex: '0',
+    }, pc);
+    rule.dataset.scribeTpHdrule = '1';
   }
 
   // A cell bar pinned to the page top would be scrolled out of view whenever the table sits further down, so this one tracks the table.
@@ -286,7 +319,8 @@ export function applyTablePreview(viewer, n) {
   }
   const colRail = mk({
     left: '0',
-    top: `max(calc(21px / ${Z}), calc(${tc.top}px - ${17 + stripH}px / ${Z}))`,
+    // The floor is the clamped cell bar's own bottom edge, or a table near the page top slides the rail under that bar, whose higher z-index then swallows clicks on the column letters.
+    top: `max(calc(30px / ${Z}), calc(${tc.top}px - ${17 + stripH}px / ${Z}))`,
     width: `${dims.width}px`,
     height: `calc(16px / ${Z})`,
     background: '#eef1f6',

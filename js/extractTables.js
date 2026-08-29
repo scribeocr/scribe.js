@@ -284,21 +284,55 @@ export function createTablesFromText(pageNum, tables, ocrPage) {
 }
 
 /**
+ * A table cell carrying per-run formatting alongside its plain text.
+ * The runs concatenate exactly to `text`, with each inter-word space appended to the preceding run.
+ * @typedef {{text: string, runs: Array<{text: string, style: Style}>}} TableCellRich
+ */
+
+/**
  * Extract text content from tables on a page as rows of cell strings.
  *
  * @param {OcrPage} ocrPage
  * @param {import('./objects/layoutObjects.js').LayoutDataTablePage} layoutPage
+ * @param {Object} [opts]
+ * @param {boolean} [opts.cellFormats=false] - Return rich `TableCellRich` cells carrying word formatting instead of plain strings.
  */
-export function extractTextFromTables(ocrPage, layoutPage) {
+export function extractTextFromTables(ocrPage, layoutPage, opts = {}) {
   if (!layoutPage?.tables?.length) return [];
   if (!ocrPage) return [];
 
   return layoutPage.tables.map((table) => {
     const result = extractSingleTableContent(ocrPage, Object.values(table.boxes), table.rowBounds);
     const rows = result.rowWordArr.map((row) => row.map((col) => {
-      if (!col || col.length === 0) return '';
+      if (!col || col.length === 0) return opts.cellFormats ? { text: '', runs: [] } : '';
       col.sort((a, b) => a.bbox.left - b.bbox.left);
-      return col.map((w) => w.text).join(' ');
+      const text = col.map((w) => w.text).join(' ');
+      if (!opts.cellFormats) return text;
+      /** @type {Array<{text: string, style: Style}>} */
+      const runs = [];
+      for (let wi = 0; wi < col.length; wi++) {
+        const word = col[wi];
+        const segments = ocr.getWordStyleSegments(word) || [{ start: 0, end: word.text.length, style: word.style }];
+        for (let si = 0; si < segments.length; si++) {
+          const seg = segments[si];
+          const segText = word.text.slice(seg.start, seg.end);
+          const sep = wi > 0 && si === 0 ? ' ' : '';
+          const prev = runs[runs.length - 1];
+          // smallCaps is left out of this list because no export consumes it, and words often carry a style run that differs on it alone.
+          const same = prev
+            && prev.style.bold === seg.style.bold && prev.style.italic === seg.style.italic
+            && prev.style.underline === seg.style.underline && prev.style.sup === seg.style.sup
+            && prev.style.font === seg.style.font && prev.style.size === seg.style.size
+            && prev.style.color === seg.style.color;
+          if (same) {
+            prev.text += sep + segText;
+          } else {
+            if (prev && sep) prev.text += sep;
+            runs.push({ text: segText, style: seg.style });
+          }
+        }
+      }
+      return { text, runs };
     }));
     return { id: table.id, rows };
   });
@@ -346,20 +380,24 @@ export function tableChainName(layoutPageArr, chain) {
 /**
  * Extract every logical table of the document, each `continuesPrev` chain stitched into one row list.
  * A continuation fragment's first row is dropped when its text exactly matches the chain head's first row.
+ * `headerRows` is the head table's detected header-row count (`null` falls back to 1), clamped to the head fragment's rows.
  * @param {Array<OcrPage>} ocrPageArr
  * @param {Array<import('./objects/layoutObjects.js').LayoutDataTablePage>} layoutPageArr
- * @returns {Array<{fragments: Array<{table: LayoutDataTable, n: number, rows: Array<Array<string>>, headerDeduped: boolean}>, rows: Array<Array<string>>}>}
+ * @param {Object} [opts] - Passed through to `extractTextFromTables` (e.g. `cellFormats`).
+ * @returns {Array<{fragments: Array<{table: LayoutDataTable, n: number, rows: Array<Array<string|TableCellRich>>, headerDeduped: boolean}>,
+ *   rows: Array<Array<string|TableCellRich>>, headerRows: number}>}
  */
-export function extractDocTableChains(ocrPageArr, layoutPageArr) {
+export function extractDocTableChains(ocrPageArr, layoutPageArr, opts = {}) {
   const norm = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const rowText = (row) => row.map((c) => (typeof c === 'string' ? c : c.text)).join(' ');
   return tableChains(layoutPageArr).map((chain) => {
     /** @type {?string} */
     let headerRow = null;
     const fragments = chain.map(({ table, n }, fi) => {
-      let rows = extractTextFromTables(ocrPageArr[n], /** @type {any} */ ({ tables: [table] }))[0]?.rows || [];
-      if (fi === 0) headerRow = rows.length ? norm(rows[0].join(' ')) : null;
+      let rows = extractTextFromTables(ocrPageArr[n], /** @type {any} */ ({ tables: [table] }), opts)[0]?.rows || [];
+      if (fi === 0) headerRow = rows.length ? norm(rowText(rows[0])) : null;
       let headerDeduped = false;
-      if (fi > 0 && headerRow && headerRow.length >= 6 && rows.length && norm(rows[0].join(' ')) === headerRow) {
+      if (fi > 0 && headerRow && headerRow.length >= 6 && rows.length && norm(rowText(rows[0])) === headerRow) {
         rows = rows.slice(1);
         headerDeduped = true;
       }
@@ -367,6 +405,7 @@ export function extractDocTableChains(ocrPageArr, layoutPageArr) {
         table, n, rows, headerDeduped,
       };
     });
-    return { fragments, rows: fragments.flatMap((f) => f.rows) };
+    const headerRows = Math.max(0, Math.min(chain[0].table.headerRows ?? 1, fragments[0].rows.length));
+    return { fragments, rows: fragments.flatMap((f) => f.rows), headerRows };
   });
 }

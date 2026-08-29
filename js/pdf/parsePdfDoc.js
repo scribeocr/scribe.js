@@ -2260,6 +2260,44 @@ function convertDetectedTable(dt, dataTablePage, pageObj) {
     const rowSpan = deduped.length > 0 && tops.length > 0 ? deduped[deduped.length - 1] - Math.min(...tops) : 0;
     if (deduped.length > 0 && (usedExact || rowSpan >= (dt.bbox.bottom - dt.bbox.top) * 0.8)) dataTable.rowBounds = deduped;
   }
+  // A weak band frequently lands on a title line above the real header row, so deriving from one would wrongly zero the header.
+  // The band's own lines are usually absent from dt.rows, which is why they are counted off pageObj.lines here.
+  if (dt.headers && dt.headers.confidence === 'strong'
+      && Number.isFinite(dt.headers.bandTop) && Number.isFinite(dt.headers.bandBottom)) {
+    /** @type {number[]} */
+    const bandLineTops = [];
+    for (const line of pageObj.lines) {
+      const yC = (line.bbox.top + line.bbox.bottom) / 2;
+      if (yC <= dt.bbox.top || yC < dt.headers.bandTop - 2 || yC >= dt.headers.bandBottom - 2) continue;
+      if (line.bbox.right < dt.bbox.left || line.bbox.left > dt.bbox.right) continue;
+      if (!bandLineTops.some((t) => Math.abs(t - line.bbox.top) < 5)) bandLineTops.push(line.bbox.top);
+    }
+    if (bandLineTops.length > 0) {
+      if (dataTable.rowBounds) {
+        // A malformed candidate can carry row bounds above its own top, which would count phantom header rows.
+        const boundsInBand = dataTable.rowBounds.filter((b) => b > dt.bbox.top && b <= dt.headers.bandBottom + 2).length;
+        dataTable.headerRows = boundsInBand > 0 ? boundsInBand : 1;
+      } else {
+        dataTable.headerRows = Math.min(bandLineTops.length, 5);
+      }
+    } else if ((dt.detectionMethod || 'text') === 'text' && !dt.splitTopLocked) {
+      // An empty strong band means the header-like cells sit above the refined top, leaving row 0 as data.
+      dataTable.headerRows = 0;
+    }
+  }
+  // The band scan only looks above the rows, so it never classifies row 0 itself, and its content has to decide.
+  // A first row carrying data values is the shape of a table continuing from a prior page, which has no header row at all.
+  if (dataTable.headerRows === null && dt.rows && dt.rows.length >= 2) {
+    const sortedRows = [...dt.rows].sort((a, b) => a.y - b.y);
+    const rowTokens = (row) => row.lineIndices.flatMap((li) => pageObj.lines[li].words.map((w) => w.text));
+    const isDataTok = (t) => /^[\d,$%.()+-]+$/.test(t) && /\d/.test(t) && !/^(?:19|20)\d\d$/.test(t);
+    const firstToks = rowTokens(sortedRows[0]);
+    const firstData = firstToks.filter(isDataTok).length;
+    const bodyRows = sortedRows.slice(1);
+    const bodyData = bodyRows.reduce((s, r) => s + rowTokens(r).filter(isDataTok).length, 0) / bodyRows.length;
+    if (firstData >= 2 || (firstData >= 1 && bodyData >= 1)) dataTable.headerRows = 0;
+    else if (firstData === 0 && firstToks.some((t) => /[A-Za-z]/.test(t))) dataTable.headerRows = 1;
+  }
   return dataTable;
 }
 

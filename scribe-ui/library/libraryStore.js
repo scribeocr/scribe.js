@@ -13,7 +13,7 @@ export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 // Display names are always the file name, never PDF metadata.
 // Info Titles in the wild are word-processor template paths, "untitled", and similar junk.
 /** @param {string} relPath */
-export const titleOf = (relPath) => (relPath.split('/').pop() || relPath).replace(/\.pdf$/i, '');
+export const titleOf = (relPath) => relPath.split('/').pop() || relPath;
 
 /**
  * Why `name` can't be used as a folder name, or null when it can.

@@ -2149,7 +2149,7 @@ class ScribePDFViewer {
       const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr });
       const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
       const baseName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || 'Document';
-      const name = `${baseName.replace(/\.pdf$/i, '')} (extract)`;
+      const name = `${baseName.replace(/\.pdf$/i, '')} (extract).pdf`;
       this._tabs.push(this._newTab(doc, name));
       await this._activateTab(this._tabs.length - 1);
     } catch (err) {

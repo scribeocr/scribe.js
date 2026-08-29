@@ -17,6 +17,8 @@ export class ScribeViewerState {
     this.tablePreview = false;
     /** Whether the preview view renders non-exported words as grey ghosts (off = only exported text shows). */
     this.tablePreviewGhost = false;
+    /** Mirror of the Extract Tables "Preserve source formatting" option, so the preview shows what the export will write. */
+    this.tablePreviewFormatting = true;
     this.searchMode = false;
     /** @type {'color'|'gray'|'binary'} */
     this.colorMode = 'color';

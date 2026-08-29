@@ -138,6 +138,13 @@ export class LayoutDataTable {
      * @type {boolean}
      */
     this.continuesPrev = false;
+    /**
+     * Number of leading rows that are column headers, when detection identified them.
+     * `null` means unknown, and consumers typically assume 1.
+     * `0` means detection ruled a header row out, as on a page continuing a table that began on an earlier page.
+     * @type {?number}
+     */
+    this.headerRows = null;
   }
 }
 

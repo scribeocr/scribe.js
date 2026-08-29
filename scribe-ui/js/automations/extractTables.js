@@ -1,6 +1,9 @@
 import scribe from '../../../scribe.js';
 import { pulseTable, linkTables } from '../viewerLayout.js';
 
+/** @typedef {import('../../../js/extractTables.js').TableCellRich} TableCellRich */
+/** @typedef {import('../../../js/export/writeTabular.js').XlsxTableRange} XlsxTableRange */
+
 const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const INFO_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
@@ -112,6 +115,31 @@ function buildOptions(host, onChange) {
   workbookHint.textContent = 'Sheets named from table titles when found, else \u201cPage N Table M\u201d (\u201cPages A\u2013B Table M\u201d across pages).';
   elem.appendChild(workbookHint);
 
+  elem.appendChild(groupLabel('Formatting'));
+  const formattingRow = document.createElement('div');
+  formattingRow.className = 'scribe-am-opts';
+  const formattingLab = document.createElement('label');
+  formattingLab.className = 'scribe-am-check';
+  const formattingInput = document.createElement('input');
+  formattingInput.type = 'checkbox';
+  // This reads and writes viewer state rather than local state so the Preview Export view always shows what the export will write.
+  formattingInput.checked = host.viewer.state.tablePreviewFormatting !== false;
+  formattingInput.addEventListener('change', () => {
+    host.viewer.state.tablePreviewFormatting = formattingInput.checked;
+    if (host.viewer.state.tablePreview) {
+      host.viewer.destroyText(false);
+      host.viewer.displayPage(host.viewer.state.cp.n, false, true);
+    }
+  });
+  formattingInput.addEventListener('change', onChange);
+  formattingLab.append(formattingInput, document.createTextNode('Preserve source formatting'));
+  formattingRow.appendChild(formattingLab);
+  elem.appendChild(formattingRow);
+  const formattingHint = document.createElement('div');
+  formattingHint.className = 'scribe-am-boost-hint';
+  formattingHint.textContent = 'Carries bold/italic, fonts, sizes, colors, and cell borders into the workbook. Off = plain cells with bold, underlined headers.';
+  elem.appendChild(formattingHint);
+
   return {
     elem,
     summarize: () => {
@@ -120,7 +148,8 @@ function buildOptions(host, onChange) {
       else if (rangePages.input.checked) pagesPart = rangeInput.value.trim() ? `Pages ${rangeInput.value.trim()}` : 'Range \u2014 set pages';
       const wbPart = flatSheet.input.checked ? 'single flat sheet' : 'one sheet per table';
       const sheets = flatSheet.input.checked ? 1 : scribe.tableChains(host.viewer.doc.layoutDataTables.pages).length;
-      return `${pagesPart} \u00b7 ${wbPart}${sheets > 0 ? ` \u00b7 ${sheets} sheet${sheets === 1 ? '' : 's'}` : ''}`;
+      const fmtPart = formattingInput.checked ? '' : ' \u00b7 plain';
+      return `${pagesPart} \u00b7 ${wbPart}${sheets > 0 ? ` \u00b7 ${sheets} sheet${sheets === 1 ? '' : 's'}` : ''}${fmtPart}`;
     },
     getParams: () => {
       /** @type {?Array<number>} null = all pages. */
@@ -131,7 +160,7 @@ function buildOptions(host, onChange) {
         pageIndices = parsePageRange(rangeInput.value, host.viewer.doc.pageMetrics.length);
         if (!pageIndices) { rangeInput.focus(); return null; }
       }
-      return { pageIndices, flat: flatSheet.input.checked };
+      return { pageIndices, flat: flatSheet.input.checked, formatting: formattingInput.checked };
     },
   };
 }
@@ -451,7 +480,7 @@ export function buildTablesWorkspace(host, container) {
 
 /**
  * @param {import('./registry.js').AutomationHost} host
- * @param {{pageIndices: ?Array<number>, flat: boolean}} params - null `pageIndices` = all pages.
+ * @param {{pageIndices: ?Array<number>, flat: boolean, formatting: boolean}} params - null `pageIndices` = all pages.
  * @param {(frac: number, caption: string) => void} progress
  * @returns {Promise<import('./registry.js').AutomationOutcome>}
  */
@@ -467,11 +496,11 @@ export async function run(host, params, progress) {
   const scope = (params?.pageIndices ?? doc.layoutDataTables.pages.map((_, i) => i))
     .filter((n) => n >= 0 && n < doc.layoutDataTables.pages.length);
 
-  /** @type {Array<{name: string, rows: Array<Array<string>>}>} */
+  /** @type {Array<{name: string, rows: Array<Array<string|TableCellRich>>, range: XlsxTableRange, columnWidths?: Array<number>}>} */
   const harvested = [];
   const scopeSet = new Set(scope);
   progress(0.2, 'Extracting tables\u2026');
-  const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages);
+  const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: params?.formatting });
   for (const chain of chains) {
     const frags = chain.fragments.filter((f) => scopeSet.has(f.n));
     if (frags.length === 0) continue;
@@ -481,9 +510,27 @@ export async function run(host, params, progress) {
     const m = pageTables.indexOf(head.table) + 1;
     const first = frags[0].n; const last = frags[frags.length - 1].n;
     const pagesPart = frags.length > 1 ? `Pages ${first + 1}\u2013${last + 1}` : `Page ${first + 1}`;
+    const chainRows = frags.flatMap((f) => f.rows);
+    // Header styling applies only when the chain head made it into scope.
+    // A scoped-out head leaves continuation rows alone, which are all data.
+    /** @type {XlsxTableRange} */
+    const range = { start: 0, rowCount: chainRows.length, headerRows: frags[0] === head ? chain.headerRows : 0 };
+    /** @type {Array<number>|undefined} */
+    let columnWidths;
+    if (params?.formatting) {
+      if (head.table.detectionMethod === 'grid-strong') range.grid = true;
+      if (head.table.detectionMethod === 'row-band') range.zebra = true;
+      range.alignNumeric = true;
+      // A chain whose fragments disagree on column count has no single source geometry to copy, so it keeps the auto widths.
+      if (!params?.flat && chain.fragments.every((f) => f.table.boxes.length === head.table.boxes.length)) {
+        columnWidths = head.table.boxes.map((b) => Math.round(Math.min(Math.max(((b.coords.right - b.coords.left) * (96 / 300) - 5) / 7, 8), 60) * 100) / 100);
+      }
+    }
     harvested.push({
       name: head.table.title?.text || `${pagesPart} Table ${m}`,
-      rows: frags.flatMap((f) => f.rows),
+      rows: chainRows,
+      range,
+      columnWidths,
     });
   }
 
@@ -492,9 +539,23 @@ export async function run(host, params, progress) {
   }
 
   progress(1, 'Writing spreadsheet…');
-  const sheets = params?.flat
-    ? [{ name: 'Tables', rows: harvested.flatMap((t) => t.rows) }]
-    : harvested.map((t) => ({ name: t.name, rows: t.rows }));
+  /** @type {Array<{name: string, rows: Array<Array<string|TableCellRich>>, tableRanges: Array<XlsxTableRange>, columnWidths?: Array<number>}>} */
+  let sheets;
+  if (params?.flat) {
+    /** @type {Array<Array<string|TableCellRich>>} */
+    const flatRows = [];
+    /** @type {Array<XlsxTableRange>} */
+    const flatRanges = [];
+    for (const t of harvested) {
+      flatRanges.push({ ...t.range, start: flatRows.length });
+      flatRows.push(...t.rows);
+    }
+    sheets = [{ name: 'Tables', rows: flatRows, tableRanges: flatRanges }];
+  } else {
+    sheets = harvested.map((t) => ({
+      name: t.name, rows: t.rows, tableRanges: [t.range], columnWidths: t.columnWidths,
+    }));
+  }
   const bytes = await scribe.utils.writeXlsxFromSheets(sheets, { columnWidths: 'auto' });
   const fileName = `${host.app._baseName().replace(/\.\w{1,6}$/, '')}-tables.xlsx`;
   await scribe.utils.saveAs(bytes, fileName);

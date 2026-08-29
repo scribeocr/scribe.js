@@ -1,0 +1,8 @@
+{
+  "name": "scribe-viewer",
+  "compatibility_date": "2024-11-01",
+  // .assetsignore trims the upload down from the whole repo root to the handful of paths the app loads at runtime.
+  "assets": {
+    "directory": "."
+  }
+}
