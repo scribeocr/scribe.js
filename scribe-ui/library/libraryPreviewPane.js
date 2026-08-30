@@ -586,7 +586,7 @@ export function createPreviewPanes({
      *   pageN: number, query: ?string, title: string, meta: string, jump?: boolean}} target
      */
     const show = async (target) => {
-      // A width-fit while the surface is hidden commits zoom 0, which no later resize repairs.
+      // A fit run while the surface is hidden commits a nonpositive zoom, which no later resize repairs.
       // Record the target for the reshow that runs when the surface is shown again.
       if (!pane.clientWidth) {
         token++;
@@ -617,7 +617,7 @@ export function createPreviewPanes({
       pvHost.style.display = '';
       if (!paneViewer) {
         paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
-          edit: false, showToolbar: false, showDropZone: false, showSidebar: false, fit: 'width',
+          edit: false, showToolbar: false, showDropZone: false, showSidebar: false,
         });
         // The pane must never compete with the main viewer for canvas memory.
         /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.imageCache.canvasCacheBytes = 64 * 1024 * 1024;
@@ -644,7 +644,7 @@ export function createPreviewPanes({
           : null;
         const liveDoc = liveTab && liveTab.doc && liveTab.doc.id >= 0 ? liveTab.doc : null;
         // A closed or reopened tab leaves the seed's callbacks bound to a dead document.
-        // Zoom 0 means the last show finished while the surface was hidden, so the existing paint cannot be kept.
+        // A nonpositive zoom means the last show finished while the surface was hidden, so the existing paint cannot be kept.
         if (current && sameDoc && paneViewer.doc && !jumpOutsideSeed
           && current.live === liveDoc && paneViewer.scribe.zoomLevel > 0) {
           // A re-render landing on the same page and query must leave the reader's scroll and paint untouched.
