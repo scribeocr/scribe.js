@@ -795,6 +795,9 @@ export function buildBulkEditWorkspace(host, container) {
     if (!countEl || !matchBlock) return;
     const pages = new Set(matches.map((m) => m.n)).size;
     countEl.innerHTML = `<b>${matches.length}</b><span>${matches.length === 1 ? 'line' : 'lines'} on ${pages} ${pages === 1 ? 'page' : 'pages'} ${matches.length === 1 ? 'matches' : 'match'}</span>`;
+    // Read before the clear, not at its use site below.
+    // A layout read while the block is empty shrinks the scrollable area, and the browser clamps the panel's scroll position to fit.
+    const cardW = Math.max(120, body.clientWidth - 26);
     matchBlock.textContent = '';
     if (!groups.length) {
       renderFoot();
@@ -804,7 +807,6 @@ export function buildBulkEditWorkspace(host, container) {
     matchBlock.appendChild(label(`${matches.length} ${matches.length === 1 ? 'match' : 'matches'} · ${looks} distinct ${looks === 1 ? 'look' : 'looks'} · click a card to jump`));
     const snips = document.createElement('div');
     snips.className = 'scribe-am-be-snips';
-    const cardW = Math.max(120, body.clientWidth - 26);
     for (const g of groups) {
       const card = document.createElement('button');
       card.type = 'button';
@@ -844,7 +846,6 @@ export function buildBulkEditWorkspace(host, container) {
       snips.appendChild(card);
     }
     matchBlock.appendChild(snips);
-    fitSnippetLines(snips);
     matchBlock.appendChild(smallNote('Click a card to jump the document to that match; Exclude/Restore decides without navigating.'));
 
     const confirm = document.createElement('div');
@@ -858,11 +859,13 @@ export function buildBulkEditWorkspace(host, container) {
       b.type = 'button';
       b.className = name.toLowerCase() === view ? 'on' : '';
       b.textContent = name;
+      // Only the document marks depend on the view, so there is nothing here to re-render.
+      // Calling renderMatches would rebuild the match list and scroll the panel back to the top.
       b.addEventListener('click', () => {
         view = /** @type {'before'|'after'} */ (name.toLowerCase());
         if (view === 'after') showPill();
         else hidePill();
-        renderMatches();
+        for (const other of seg.children) other.className = other === b ? 'on' : '';
         paintMarks();
       });
       seg.appendChild(b);
@@ -873,6 +876,9 @@ export function buildBulkEditWorkspace(host, container) {
     desc.textContent = `After shows the document as the delete would leave it — the ${keptCount()} matched ${keptCount() === 1 ? 'line' : 'lines'} hidden, nothing committed.`;
     confirm.appendChild(desc);
     matchBlock.appendChild(confirm);
+    // Runs after every block is appended, not next to the snippets it measures.
+    // Measuring forces a layout, and the browser clamps the panel's scroll position if the block is still short.
+    fitSnippetLines(snips);
     renderFoot();
   }
 
