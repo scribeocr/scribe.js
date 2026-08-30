@@ -510,7 +510,7 @@ const unlinkTablesClick = () => {
   const viewer = mv();
   if (unlinkTargetTable) unlinkTable(viewer, unlinkTargetTable);
   unlinkTargetTable = null;
-  viewer.destroyControls();
+  if (!viewer.state.tablePreview) viewer.destroyControls();
 };
 
 const splitDataColumnClick = () => {
@@ -1734,6 +1734,17 @@ export const contextMenuFunc = (viewer, event) => {
         targetObj.el.dispatchEvent(new MouseEvent('click', { button: 0, clientX: event.clientX, clientY: event.clientY }));
         enableCopyCells = viewer._tpSel?.id === targetObj.layoutBox.table.id;
       }
+
+      let fragTable = null;
+      if (targetObj instanceof UiDataColumn) {
+        fragTable = targetObj.layoutBox.table;
+      } else if (event.target.closest('[data-scribe-tp-cell], [data-scribe-tp-col]')) {
+        const gi = (viewer._overlayGroups || []).findIndex((g) => g && g.contains(/** @type {Node} */ (event.target)));
+        const chain = scribe.tableChains(viewer.doc.layoutDataTables.pages)
+          .find((c) => c.some((f) => f.table.id === viewer.state.activeTableId));
+        fragTable = (gi >= 0 && chain ? chain.find((f) => f.n === gi) : null)?.table || null;
+      }
+      unlinkTargetTable = fragTable?.continuesPrev ? fragTable : null;
     }
 
     // The copy-cells flag doubles as the test that this right-click landed on the sheet's own surfaces rather than blank page.
@@ -1809,7 +1820,10 @@ export const contextMenuFunc = (viewer, event) => {
       setMenuLabel(contextMenuLinkTablesButtonElem, `Link Tables (pages ${linkTargetTable.page.n}\u2013${linkTargetTable.page.n + 1})`);
       contextMenuLinkTablesButtonElem.style.display = 'initial';
     }
-    if (unlinkTargetTable) contextMenuUnlinkTablesButtonElem.style.display = 'initial';
+    if (unlinkTargetTable) {
+      setMenuLabel(contextMenuUnlinkTablesButtonElem, `Unlink at Page Break (pages ${unlinkTargetTable.page.n}–${unlinkTargetTable.page.n + 1})`);
+      contextMenuUnlinkTablesButtonElem.style.display = 'initial';
+    }
     if (enableSplitTable) contextMenuSplitTableButtonElem.style.display = 'initial';
     if (enableDeleteHighlight) {
       const targetKind = contextMenuMarkupSlot === 'line'

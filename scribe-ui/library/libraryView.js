@@ -62,6 +62,8 @@ const PREVIEW_STORAGE_KEY = 'scribe-library-preview';
 const VIEW_STORAGE_KEY = 'scribe-library-view';
 const OTHERS_STORAGE_KEY = 'scribe-library-others';
 const COLS_STORAGE_KEY = 'scribe-library-cols';
+/** sessionStorage rather than localStorage, so each browser tab restores only the documents it had open. */
+const RESUME_STORAGE_KEY = 'scribe-library-resume';
 
 /**
  * List-view columns, left to right, per view mode.
@@ -458,6 +460,26 @@ export function installLibrary(viewer) {
   let indexTimer = null;
   let destroyed = false;
   /**
+   * The open-tab record the previous page load left in sessionStorage.
+   * The first `openLibrary` consumes it, so a later folder switch cannot replay it.
+   * @type {?{v: number, dir: string, tabs: Array<{hash: string, relPath: string, page: number}>, active: number,
+   *   view: ?{zoom: number, sx: number, sy: number}, lib: number}}
+   */
+  let resumeRecord = null;
+  try {
+    const rawResume = window.sessionStorage.getItem(RESUME_STORAGE_KEY);
+    const parsedResume = rawResume ? JSON.parse(rawResume) : null;
+    if (parsedResume?.v === 1 && Array.isArray(parsedResume.tabs)) resumeRecord = parsedResume;
+  } catch { /* sessionStorage unavailable, or the record is not JSON. */ }
+  /** Set while `openLibrary` is reopening recorded tabs, so interim writes cannot clobber the record mid-restore. */
+  let restoringTabs = false;
+  /**
+   * Whether the record reopens into a document view rather than the library.
+   * The drop zone is hidden here rather than in the boot below, so the placeholder never flashes before the restored document paints.
+   */
+  const viewerRestorePending = !!(resumeRecord && resumeRecord.tabs.length && !resumeRecord.lib);
+  if (viewerRestorePending && viewer.dropZone) viewer.dropZone.style.display = 'none';
+  /**
    * A folder create or rename in flight.
    * Refresh scans, new drags, and further folder operations wait for it.
    */
@@ -784,6 +806,40 @@ export function installLibrary(viewer) {
       indexTimer = null;
       if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
     }, 2000);
+  };
+
+  /**
+   * Write the sessionStorage record a refresh restores from.
+   * The `pagehide` call is the authoritative one, since sessionStorage is synchronous and so completes as the page unloads.
+   */
+  const writeResumeRecord = () => {
+    if (restoringTabs) return;
+    try {
+      const activeT = viewer._tabs[viewer._activeTab];
+      const libTabs = viewer._tabs.filter((t) => t.libraryHash || t.libraryRelPath);
+      if (!libTabs.length) {
+        window.sessionStorage.removeItem(RESUME_STORAGE_KEY);
+        return;
+      }
+      const record = {
+        v: 1,
+        // The folder name pins the record to its library, so it cannot replay into a different one.
+        dir: store?.root?.name ?? '',
+        tabs: libTabs.map((t) => ({
+          hash: t.libraryHash || '',
+          relPath: t.libraryRelPath || '',
+          page: t === activeT ? viewer.scribe.state.cp.n : (t.lastPage ?? 0),
+        })),
+        active: activeT ? libTabs.indexOf(activeT) : -1,
+        view: activeT && libTabs.includes(activeT) ? {
+          zoom: viewer.scribe.zoomLevel,
+          sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
+          sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
+        } : null,
+        lib: visible ? 1 : 0,
+      };
+      window.sessionStorage.setItem(RESUME_STORAGE_KEY, JSON.stringify(record));
+    } catch { /* sessionStorage unavailable. */ }
   };
 
   /** @type {?string} */
@@ -2833,7 +2889,7 @@ export function installLibrary(viewer) {
   /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {{pageN?: number, query?: string}} [target]
+   * @param {{pageN?: number, query?: string, background?: boolean}} [target] - `background` opens the tab without activating it.
    */
   const openEntry = async (relPath, entry, target = {}) => {
     if (!store || !manifest) return;
@@ -2859,7 +2915,9 @@ export function installLibrary(viewer) {
       if (pooled) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+        const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), {
+          libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+        });
         wrapMutators(pooled, tab);
         panes.persistRasterWindow(pooled, entry, target.pageN ?? 0);
         if (target.query && viewer._searchBar) {
@@ -2878,7 +2936,9 @@ export function installLibrary(viewer) {
           if (handoffDoc) {
             entry.lastOpened = Date.now();
             saveManifestSoon();
-            const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+            const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), {
+              libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+            });
             if (pane.takeDirty()) tab.libraryDirty = true;
             wrapMutators(handoffDoc, tab);
             panes.persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
@@ -2894,7 +2954,7 @@ export function installLibrary(viewer) {
       // Stored page dims, rasters, and sidecar pages paint immediately while the real document hydrates behind them.
       // With no raster for the landing page a seed could only paint blank pages, so the plain open below runs instead.
       // The tab also exists from the first click, so repeats activate it instead of starting another import.
-      if (entry.pageDims && await store.readPageRaster(entry.hash, target.pageN ?? 0)) {
+      if (!target.background && entry.pageDims && await store.readPageRaster(entry.hash, target.pageN ?? 0)) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await panes.makeSeed(relPath, entry, target.pageN ?? 0);
@@ -2911,6 +2971,7 @@ export function installLibrary(viewer) {
         handle.hydrated.catch(() => {}).finally(panes.endUserLoad);
         const tab = viewer._tabs[viewer._activeTab];
         tab.libraryHash = entry.hash;
+        tab.libraryRelPath = relPath;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
         tab.onDocHydrated = (d) => wrapMutators(d, tab);
         if (target.query && viewer._searchBar) {
@@ -2962,7 +3023,9 @@ export function installLibrary(viewer) {
       entry.lastOpened = Date.now();
       saveManifestSoon();
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
-      const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+      const tab = await viewer._openDocAsTab(doc, titleOf(relPath), {
+        libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+      });
       entry.firstPaintMs = Math.round(performance.now() - t0);
       saveManifestSoon();
       wrapMutators(doc, tab);
@@ -3364,6 +3427,57 @@ export function installLibrary(viewer) {
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
     render();
+    // Restore before the folder scan, so restore latency does not scale with library size.
+    const record = resumeRecord;
+    resumeRecord = null;
+    if (record && record.tabs.length && (!record.dir || record.dir === store.root?.name)) {
+      restoringTabs = true;
+      try {
+        // The recorded active tab opens first, so the document being read paints before its neighbors load.
+        const toLibrary = !!record.lib;
+        const activeRec = !toLibrary && record.active >= 0 ? record.tabs[record.active] : null;
+        const ordered = activeRec ? [activeRec, ...record.tabs.filter((t) => t !== activeRec)] : record.tabs;
+        const view = record.view && Number.isFinite(record.view.zoom)
+          && record.view.zoom > 0.01 && record.view.zoom < 100 ? record.view : null;
+        let activeRestored = false;
+        for (const rec of ordered) {
+          if (destroyed || !manifest) break;
+          // The hash finds a document even after a move or rename.
+          // The path covers one recorded before ingest hashed it.
+          let entryPath = null;
+          let entry = null;
+          if (rec.hash) {
+            for (const [rp, e] of Object.entries(manifest.docs)) {
+              if (e.hash === rec.hash) { entryPath = rp; entry = e; break; }
+            }
+          }
+          if (!entry && rec.relPath && manifest.docs[rec.relPath]) { entryPath = rec.relPath; entry = manifest.docs[rec.relPath]; }
+          if (!entry || !entryPath) continue;
+          if (entry.hash && viewer._tabs.some((t) => t.libraryHash === entry.hash)) continue;
+          // Never take the foreground from a document that reached it first (e.g. a shell-opened file).
+          const background = toLibrary || viewer._activeTab >= 0;
+          // Set before the open, so the attach paints at this zoom rather than at a fit.
+          if (!background && rec === activeRec && view) viewer._restoreView = { zoom: view.zoom, sx: view.sx, sy: view.sy };
+          const tabsBefore = viewer._tabs.length;
+          await openEntry(entryPath, entry, { pageN: rec.page || 0, background });
+          // An open that failed before attaching must not leak the view onto whatever attaches next.
+          viewer._restoreView = null;
+          if (!background && rec === activeRec && viewer._tabs.length > tabsBefore) activeRestored = true;
+        }
+        if (activeRestored) {
+          // The background opens bumped the use counter past the active tab, so re-bump it to keep its worker pools warm.
+          const activeTab = viewer._tabs[viewer._activeTab];
+          if (activeTab) {
+            activeTab.lastUse = ++viewer._tabUseCounter;
+            viewer._applyTabResourcePolicy();
+          }
+        }
+        if (toLibrary && !visible && !destroyed) showSurface();
+      } finally {
+        restoringTabs = false;
+      }
+      writeResumeRecord();
+    }
     await ingest.scan();
     render();
     ingest.start();
@@ -3784,9 +3898,11 @@ export function installLibrary(viewer) {
   };
   const autosaveTimer = window.setInterval(() => {
     saveTabIfDirty(viewer._tabs[viewer._activeTab]);
+    writeResumeRecord();
   }, AUTOSAVE_INTERVAL_MS);
 
   const onPageHide = () => {
+    writeResumeRecord();
     for (const tab of viewer._tabs) saveTabIfDirty(tab);
   };
   window.addEventListener('pagehide', onPageHide);
@@ -3819,12 +3935,14 @@ export function installLibrary(viewer) {
   viewer._libraryHooks = {
     docOpened: () => {
       if (visible) hideSurface();
+      writeResumeRecord();
     },
     emptied: () => {
       if (!visible) {
         showSurface();
         render({ revealSelection: true });
       }
+      writeResumeRecord();
     },
     saveTabIfDirty,
     saveAllDirty: async () => {
@@ -3840,16 +3958,26 @@ export function installLibrary(viewer) {
     if (handle) {
       const s = new LibraryStore(handle);
       if ((await s.permissionState()) === 'granted') {
-        if (viewer._tabs.length === 0) {
+        if (viewer._tabs.length === 0 && !viewerRestorePending) {
           showSurface();
           render();
         }
         await openLibrary(s);
+        // A restore that reopened nothing leaves the surface hidden, so fall back to the library rather than a bare drop zone.
+        if (viewerRestorePending && !destroyed && viewer._tabs.length === 0) {
+          if (viewer.dropZone) viewer.dropZone.style.display = '';
+          if (!visible) {
+            showSurface();
+            render();
+          }
+        }
         return;
       }
       pendingHandle = handle;
     }
     if (viewer._tabs.length === 0) {
+      // No library opens on this path, so the restore never runs and the drop-zone hold is released here.
+      if (viewerRestorePending && viewer.dropZone) viewer.dropZone.style.display = '';
       showSurface();
       render();
     }

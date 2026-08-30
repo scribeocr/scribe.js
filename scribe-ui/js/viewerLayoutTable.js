@@ -221,22 +221,39 @@ const prevTabledPage = (viewer, n) => {
 };
 
 /**
+ * Link each table in `tabs` as a continuation of the preceding table in document order, in one undo step.
+ * Clears any pending suggestion for each linked boundary.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Array<LayoutDataTable>} tabs - The continuation fragments.
+ */
+export function linkTableSet(viewer, tabs) {
+  const doc = viewer.doc;
+  const targets = tabs.filter((t) => !t.continuesPrev && prevTabledPage(viewer, t.page.n));
+  if (targets.length === 0) return;
+  const pages = new Set();
+  for (const t of targets) {
+    pages.add(t.page.n);
+    pages.add(prevTabledPage(viewer, t.page.n).n);
+  }
+  const ns = [...pages].sort((a, b) => a - b);
+  const snap = doc.docHistory.snapshotLayout(doc, ns);
+  for (const t of targets) {
+    t.continuesPrev = true;
+    const idx = (doc.tableLinkSuggestions || []).findIndex((s) => s.tableId === t.id);
+    if (idx >= 0) doc.tableLinkSuggestions.splice(idx, 1);
+  }
+  doc.docHistory.recordLayout(snap, 'Linked tables');
+  refreshChainSurfaces(viewer, ns[0], ns[ns.length - 1]);
+}
+
+/**
  * Link `table` as a continuation of the preceding table in document order.
  * Records undo and clears any pending suggestion for the boundary.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {LayoutDataTable} table - The continuation fragment.
  */
 export function linkTables(viewer, table) {
-  const doc = viewer.doc;
-  const n = table.page.n;
-  const prevPage = prevTabledPage(viewer, n);
-  if (!prevPage || table.continuesPrev) return;
-  const snap = doc.docHistory.snapshotLayout(doc, [prevPage.n, n]);
-  table.continuesPrev = true;
-  doc.docHistory.recordLayout(snap, 'Linked tables');
-  const idx = (doc.tableLinkSuggestions || []).findIndex((s) => s.tableId === table.id);
-  if (idx >= 0) doc.tableLinkSuggestions.splice(idx, 1);
-  refreshChainSurfaces(viewer, prevPage.n, n);
+  linkTableSet(viewer, [table]);
 }
 
 /**
@@ -260,6 +277,54 @@ export function unlinkTable(viewer, table) {
     });
   }
   refreshChainSurfaces(viewer, prevPage ? prevPage.n : n, n);
+}
+
+/**
+ * Detach each continuation fragment in `tabs` from its chain, in one undo step.
+ * Returns every broken boundary to the suggestion queue so re-linking stays one click.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Array<LayoutDataTable>} tabs - The continuation fragments to detach.
+ */
+export function unlinkTableSet(viewer, tabs) {
+  const doc = viewer.doc;
+  const chains = scribe.tableChains(doc.layoutDataTables.pages);
+  /** @type {Array<[{n: number, table: LayoutDataTable}, {n: number, table: LayoutDataTable}]>} */
+  const pairs = [];
+  const pages = new Set();
+  for (const t of tabs) {
+    if (!t.continuesPrev) continue;
+    const chain = chains.find((c) => c.some((f) => f.table.id === t.id));
+    const i = chain ? chain.findIndex((f) => f.table.id === t.id) : -1;
+    if (i <= 0) continue;
+    pairs.push([chain[i - 1], chain[i]]);
+    pages.add(chain[i - 1].n);
+    pages.add(chain[i].n);
+  }
+  if (pairs.length === 0) return;
+  const ns = [...pages].sort((a, b) => a - b);
+  const snap = doc.docHistory.snapshotLayout(doc, ns);
+  for (const [prev, frag] of pairs) {
+    frag.table.continuesPrev = false;
+    if (!(doc.tableLinkSuggestions || []).some((s) => s.tableId === frag.table.id)) {
+      doc.tableLinkSuggestions.push({
+        n: frag.n, prevN: prev.n, tableId: frag.table.id, prevTableId: prev.table.id, reason: 'unlinked',
+      });
+    }
+  }
+  doc.docHistory.recordLayout(snap, 'Unlinked tables');
+  refreshChainSurfaces(viewer, ns[0], ns[ns.length - 1]);
+}
+
+/**
+ * Detach every continuation fragment of the chain containing `table`, dissolving it into per-page tables.
+ * Records one undo step for the whole chain, and returns each broken boundary to the suggestion queue.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {LayoutDataTable} table - Any fragment of the chain.
+ */
+export function unlinkChain(viewer, table) {
+  const chain = scribe.tableChains(viewer.doc.layoutDataTables.pages).find((c) => c.some((f) => f.table.id === table.id));
+  if (!chain || chain.length < 2) return;
+  unlinkTableSet(viewer, chain.slice(1).map((f) => f.table));
 }
 
 /**
@@ -320,7 +385,6 @@ export function renderChainChrome(viewer, n) {
   const page = pages[n];
   if (!page?.tables?.length) return;
 
-  const Z = CHROME_Z;
   // Page rasters range from a few hundred pixels wide to several thousand, so a fixed pixel size renders unusably small on the large ones.
   // Tab metrics are a fraction of the page instead, scaled against US Letter at 300dpi.
   const u = (viewer.doc.pageMetrics[n]?.dims?.width || 2550) / 2550;
@@ -352,56 +416,29 @@ export function renderChainChrome(viewer, n) {
     userSelect: 'none',
     transition: 'opacity 120ms',
   });
-  // The tab straddles the frame edge, so it fades under the pointer to keep the row beneath readable.
-  const hoverFade = (el) => {
-    el.addEventListener('pointerenter', () => { el.style.opacity = '0.15'; });
-    el.addEventListener('pointerleave', () => { el.style.opacity = '1'; });
-  };
   const arrow = (dir) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:${px(25)};height:${px(25)};display:block;">${dir === 'down' ? '<path d="M12 5v13M6.5 12.5 12 18l5.5-5.5"/>' : '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/>'}</svg>`;
-  const closePopover = () => group.querySelectorAll('[data-scribe-chain-pop]').forEach((el) => el.remove());
-  const solidTab = (bbox, edge, label, table) => {
+  const solidTab = (bbox, edge, label, table, navN, navTable) => {
     const tab = mk({
       ...tabBase(bbox, edge), background: CHROME_ACCENT, color: '#fff', boxShadow: `0 ${px(2)} ${px(7)} rgba(30,26,16,.28)`,
     });
     tab.innerHTML = `${arrow(edge === 'bottom' ? 'down' : 'up')}<span>${label}</span>`;
-    hoverFade(tab);
+    tab.title = `Go to page ${navN + 1}`;
     tab.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (group.querySelector('[data-scribe-chain-pop]')) { closePopover(); return; }
-      const pop = mk({
-        left: `${(bbox.left + bbox.right) / 2}px`,
-        top: `${(edge === 'bottom' ? bbox.bottom : bbox.top) + (edge === 'bottom' ? -34 : 14)}px`,
-        transform: 'translateX(-50%)',
-        background: '#fff',
-        border: `calc(1px / ${Z}) solid #e4e8ef`,
-        borderRadius: `calc(8px / ${Z})`,
-        boxShadow: '0 4px 14px rgba(20,30,60,.13)',
-        padding: `calc(4px / ${Z})`,
-        zIndex: '5',
-      });
-      pop.dataset.scribeChainPop = '1';
-      const item = document.createElement('div');
-      Object.assign(item.style, {
-        display: 'flex',
-        alignItems: 'center',
-        gap: `calc(8px / ${Z})`,
-        padding: `calc(6px / ${Z}) calc(11px / ${Z})`,
-        borderRadius: `calc(5px / ${Z})`,
-        fontSize: `calc(12px / ${Z})`,
-        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-        color: '#1f2530',
-        cursor: 'pointer',
-        whiteSpace: 'nowrap',
-      });
-      item.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:calc(14px / ${Z});height:calc(14px / ${Z});color:#586170;"><path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/></svg>Unlink tables`;
-      item.addEventListener('pointerenter', () => { item.style.background = 'rgba(28,42,68,.06)'; });
-      item.addEventListener('pointerleave', () => { item.style.background = ''; });
-      item.addEventListener('click', (ev) => { ev.stopPropagation(); closePopover(); unlinkTable(viewer, table); });
-      pop.appendChild(item);
-      const esc = (ev) => { if (ev.key === 'Escape') { closePopover(); document.removeEventListener('keydown', esc); } };
-      document.addEventListener('keydown', esc);
-      document.addEventListener('pointerdown', (ev) => { if (!pop.contains(/** @type {Node} */ (ev.target))) closePopover(); }, { once: true, capture: true });
+      viewer.displayPage(navN, true, true).then(() => pulseTable(viewer, navTable)).catch(() => {});
     });
+    const seg = document.createElement('span');
+    seg.title = 'Unlink tables';
+    seg.setAttribute('role', 'button');
+    Object.assign(seg.style, {
+      display: 'inline-flex', alignItems: 'center', alignSelf: 'stretch', paddingLeft: px(12), borderLeft: `${px(2)} solid rgba(255, 255, 255, .45)`, cursor: 'pointer',
+    });
+    seg.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:${px(25)};height:${px(25)};display:block;"><path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/></svg>`;
+    const glyph = /** @type {HTMLElement} */ (seg.firstElementChild);
+    seg.addEventListener('pointerenter', () => { glyph.style.transform = 'scale(1.15)'; });
+    seg.addEventListener('pointerleave', () => { glyph.style.transform = ''; });
+    seg.addEventListener('click', (ev) => { ev.stopPropagation(); unlinkTable(viewer, table); });
+    tab.appendChild(seg);
     return tab;
   };
   const ghostTab = (bbox, edge, label, onConfirm, onDismiss) => {
@@ -433,7 +470,7 @@ export function renderChainChrome(viewer, n) {
   if (prevPage && topTable) {
     const bbox = tableBboxOf(topTable);
     if (topTable.continuesPrev) {
-      solidTab(bbox, 'top', `From page ${prevPage.n + 1}`, topTable);
+      solidTab(bbox, 'top', `From page ${prevPage.n + 1}`, topTable, prevPage.n, bottomMostTable(prevPage));
     } else {
       const sug = (doc.tableLinkSuggestions || []).find((s) => s.tableId === topTable.id);
       if (sug) {
@@ -452,7 +489,7 @@ export function renderChainChrome(viewer, n) {
   if (bottomTable && nextTop) {
     const bbox = tableBboxOf(bottomTable);
     if (nextTop.continuesPrev) {
-      solidTab(bbox, 'bottom', `Continues on page ${nextPage.n + 1}`, nextTop);
+      solidTab(bbox, 'bottom', `Continues on page ${nextPage.n + 1}`, nextTop, nextPage.n, nextTop);
     } else if (!(doc.tableLinkSuggestions || []).some((s) => s.tableId === nextTop.id)) {
       const zone = mk({
         left: `${bbox.left}px`,

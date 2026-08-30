@@ -1,4 +1,6 @@
 import scribe from '../../scribe.js';
+// eslint-disable-next-line import/no-cycle
+import { unlinkTable } from './viewerLayoutTable.js';
 
 const Z = 'var(--scribe-zoom, 1)';
 const ACCENT = '#1c62d4';
@@ -116,7 +118,9 @@ export function applyTablePreview(viewer, n) {
   const mk = (styles, parent = group) => {
     const el = document.createElement('div');
     el.dataset.scribeTp = '1';
-    Object.assign(el.style, { position: 'absolute', boxSizing: 'border-box' }, styles);
+    Object.assign(el.style, {
+      position: 'absolute', boxSizing: 'border-box', userSelect: 'none', webkitUserSelect: 'none',
+    }, styles);
     parent.appendChild(el);
     return el;
   };
@@ -229,11 +233,15 @@ export function applyTablePreview(viewer, n) {
     color: '#1f2530',
     borderRight: `calc(1px / ${Z}) solid #d7dce4`,
   }, fx);
+  // mk sets user-select: none on everything it makes, so the value readout opts back in to stay selectable.
   const fxVal = mk({
     position: 'relative',
     flex: `1 0 calc(110px / ${Z})`,
     minWidth: '0',
     alignSelf: 'center',
+    userSelect: 'text',
+    webkitUserSelect: 'text',
+    cursor: 'text',
     padding: `0 calc(8px / ${Z})`,
     whiteSpace: 'nowrap',
     overflow: 'hidden',
@@ -307,15 +315,41 @@ export function applyTablePreview(viewer, n) {
       color: ACCENT,
       display: 'flex',
       alignItems: 'center',
-      padding: `0 calc(8px / ${Z})`,
+      gap: `calc(8px / ${Z})`,
+      padding: `0 calc(4px / ${Z}) 0 calc(8px / ${Z})`,
       ...font(9, 600),
       letterSpacing: '.03em',
       whiteSpace: 'nowrap',
       overflow: 'hidden',
-      textOverflow: 'ellipsis',
       zIndex: '3',
     });
-    strip.textContent = `continued \u00b7 ${chainName}`;
+    const nameSpan = document.createElement('span');
+    nameSpan.style.flex = 'none';
+    nameSpan.textContent = `continued \u00b7 ${chainName}`;
+    strip.appendChild(nameSpan);
+    const act = document.createElement('span');
+    act.title = 'Unlink tables';
+    act.setAttribute('role', 'button');
+    Object.assign(act.style, {
+      marginLeft: 'auto',
+      minWidth: '0',
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: `calc(4px / ${Z})`,
+      padding: `calc(1px / ${Z}) calc(6px / ${Z})`,
+      borderRadius: `calc(4px / ${Z})`,
+      fontWeight: '650',
+      cursor: 'pointer',
+      overflow: 'hidden',
+    });
+    act.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="width:calc(10px / ${Z});height:calc(10px / ${Z});flex:none;display:block;"><path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/></svg><span style="overflow:hidden;text-overflow:ellipsis;">Unlink from page ${activeChain[fragIdx - 1].n + 1}</span>`;
+    act.addEventListener('pointerenter', () => { act.style.background = 'rgba(28, 98, 212, .12)'; });
+    act.addEventListener('pointerleave', () => { act.style.background = ''; });
+    act.addEventListener('click', (e) => {
+      e.stopPropagation();
+      unlinkTable(viewer, pageFrag.table);
+    });
+    strip.appendChild(act);
   }
   const colRail = mk({
     left: '0',
@@ -455,7 +489,6 @@ export function applyTablePreview(viewer, n) {
         height: `${bandEdges[r + 1] - bandEdges[r]}px`,
         zIndex: '2',
         cursor: 'cell',
-        userSelect: 'none',
       });
       hit.dataset.scribeTpCell = `${r},${c}`;
       hit.addEventListener('pointerenter', () => {

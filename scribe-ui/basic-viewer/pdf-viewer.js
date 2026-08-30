@@ -496,6 +496,12 @@ class ScribePDFViewer {
      *   `docW` is the widest page, not the first.
      */
     this._autoFit = null;
+    /**
+     * View the next document attach opens at, in place of computing a fit.
+     * That attach consumes and clears it.
+     * @type {?{zoom: number, sx: number, sy: number}}
+     */
+    this._restoreView = null;
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
@@ -1888,7 +1894,8 @@ class ScribePDFViewer {
     if (terminatePrev && displaced) displaced.close().catch(() => {});
 
     this.scribe.runSetInitial = true;
-    await this.scribe.displayPage(initialPage, initialPage > 0);
+    // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
+    await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
 
     this._extractTablesTool?.docChanged?.();
 
@@ -2078,12 +2085,19 @@ class ScribePDFViewer {
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {string} name
    * @param {Object} [extra] - Additional fields carried on the tab (e.g. the library's `libraryHash`).
+   *   `activate: false` adds the tab without switching to it.
    * @returns {Promise<Object>} The created tab.
    */
   async _openDocAsTab(doc, name, extra = {}) {
-    const tab = { ...this._newTab(doc, name), ...extra };
+    const { activate = true, ...fields } = extra;
+    const tab = { ...this._newTab(doc, name), ...fields };
     this._tabs.push(tab);
-    await this._activateTab(this._tabs.length - 1);
+    if (activate) {
+      await this._activateTab(this._tabs.length - 1);
+    } else {
+      this._renderTabs();
+      this._applyTabResourcePolicy();
+    }
     return tab;
   }
 
@@ -4691,6 +4705,18 @@ class ScribePDFViewer {
     this.scribe.setInitialPositionZoom = (imgDims) => {
       this.scribe.runSetInitial = false;
       const sc = this.scribe.scrollContainer;
+      // The restored view is the user's own zoom rather than a fit, so `_autoFit` stays null.
+      const restoreView = this._restoreView;
+      if (restoreView) {
+        this._restoreView = null;
+        this.scribe.calcPageLayout();
+        this.scribe.zoomLevel = restoreView.zoom;
+        this.scribe._applyZoomTransform(restoreView.zoom);
+        this.scribe._updateContentSize();
+        sc.scrollTop = restoreView.sy;
+        sc.scrollLeft = restoreView.sx;
+        return;
+      }
       const stageW = sc.clientWidth;
       const stageH = sc.clientHeight;
 

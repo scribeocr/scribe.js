@@ -1,5 +1,7 @@
 import scribe from '../../../scribe.js';
-import { pulseTable, linkTables } from '../viewerLayout.js';
+import {
+  pulseTable, linkTables, linkTableSet, unlinkTable, unlinkTableSet, unlinkChain,
+} from '../viewerLayout.js';
 
 /** @typedef {import('../../../js/extractTables.js').TableCellRich} TableCellRich */
 /** @typedef {import('../../../js/export/writeTabular.js').XlsxTableRange} XlsxTableRange */
@@ -8,7 +10,11 @@ const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="curren
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const INFO_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
-const LINK_SVG = lineIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
+// The conventional interlocked-diagonal chain glyph smudges at the 12-16px these render at.
+const LINK_SVG = lineIcon('<path d="M14.5 7.5H17a4.5 4.5 0 0 1 0 9h-2.5" stroke-width="2"/>'
+  + '<path d="M9.5 16.5H7a4.5 4.5 0 0 1 0-9h2.5" stroke-width="2"/><path d="M8.5 12h7" stroke-width="2"/>');
+const UNLINK_SVG = lineIcon('<path d="M14.5 7.5H17a4.5 4.5 0 0 1 0 9h-2.5" stroke-width="2"/>'
+  + '<path d="M9.5 16.5H7a4.5 4.5 0 0 1 0-9h2.5" stroke-width="2"/><path d="M5 5l14 14" stroke-width="2"/>');
 const CHEV_R_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 const CHECK_MINI_SVG = lineIcon('<path d="M4.5 12.5 10 18 19.5 7"/>');
 const X_MINI_SVG = lineIcon('<path d="M6 6l12 12M18 6 6 18"/>');
@@ -214,6 +220,171 @@ export function buildTablesWorkspace(host, container) {
   /** Chain head ids whose per-fragment sub-rows are open. */
   const expanded = new Set();
 
+  /** The user's row selection, keyed `c:<id>` for a whole chain, `p:<id>` for one page fragment, `s:<id>` for a suggestion. */
+  const multiSel = new Set();
+  let rowKeys = [];
+  /** @type {?string} */
+  let multiAnchor = null;
+
+  /**
+   * The single action the current selection resolves to, or null when it resolves to none.
+   * The selection combines while any page break inside it is unlinked, and separates only once it is fully linked.
+   * A selected suggestion contributes its own page break, so it joins the combine side even when the selection skips pages.
+   * @returns {?{kind: ('combine'|'separate'), targets: Array<LayoutDataTable>, label: string, ids: Array<string>}}
+   */
+  const resolveSelection = () => {
+    const chains = scribe.tableChains(viewer.doc.layoutDataTables.pages);
+    const docFrags = chains.flat();
+    const pos = new Map(docFrags.map((f, i) => [f.table.id, i]));
+    const chainOf = new Map();
+    chains.forEach((c) => c.forEach((f) => chainOf.set(f.table.id, c)));
+    const selIds = new Set();
+    const sugIds = new Set();
+    for (const k of multiSel) {
+      const id = k.slice(2);
+      if (k[0] === 'c') (chainOf.get(id) || []).forEach((f) => selIds.add(f.table.id));
+      else if (k[0] === 's') sugIds.add(id);
+      else if (pos.has(id)) selIds.add(id);
+    }
+    const sugTargets = (viewer.doc.tableLinkSuggestions || [])
+      .filter((s) => sugIds.has(s.tableId))
+      .map((s) => docFrags[pos.get(s.tableId) ?? -1])
+      .filter((f) => f && !f.table.continuesPrev && pos.get(f.table.id) > 0);
+    const S = docFrags.filter((f) => selIds.has(f.table.id));
+    if (S.length < 2 && sugTargets.length === 0) return null;
+    let skipped = false;
+    const linkTargets = [];
+    const unlinkTargets = [];
+    for (let i = 1; i < S.length; i++) {
+      if (pos.get(S[i].table.id) !== pos.get(S[i - 1].table.id) + 1) { skipped = true; continue; }
+      if (chainOf.get(S[i].table.id) === chainOf.get(S[i - 1].table.id)) unlinkTargets.push(S[i]);
+      else linkTargets.push(S[i]);
+    }
+    const combine = [...(skipped ? [] : linkTargets), ...sugTargets.filter((f) => !linkTargets.includes(f))];
+    if (combine.length > 0) {
+      const parent = new Map();
+      const find = (c) => { let x = c; while (parent.get(x) !== x) x = parent.get(x); return x; };
+      for (const f of combine) {
+        const a = chainOf.get(f.table.id);
+        const b = chainOf.get(docFrags[pos.get(f.table.id) - 1].table.id);
+        if (!parent.has(a)) parent.set(a, a);
+        if (!parent.has(b)) parent.set(b, b);
+        parent.set(find(a), find(b));
+      }
+      const groups = new Set([...parent.keys()].map(find)).size;
+      const ids = [...new Set([...selIds, ...combine.flatMap((f) => [f.table.id, docFrags[pos.get(f.table.id) - 1].table.id])])];
+      const label = groups === 1 ? `Make one table (${parent.size} → 1)` : `Link tables (${parent.size} → ${groups})`;
+      return {
+        kind: 'combine', targets: combine.map((f) => f.table), label, ids,
+      };
+    }
+    if (unlinkTargets.length > 0) {
+      const touched = new Set(S.map((f) => chainOf.get(f.table.id))).size;
+      return {
+        kind: 'separate', targets: unlinkTargets.map((f) => f.table), label: `Separate into ${touched + unlinkTargets.length} tables`, ids: [...selIds],
+      };
+    }
+    return null;
+  };
+
+  const applySelection = () => {
+    const r = resolveSelection();
+    if (!r) return;
+    if (r.kind === 'combine') linkTableSet(viewer, r.targets);
+    else unlinkTableSet(viewer, r.targets);
+    // The result stays selected, so the same control offers the inverse on the next press.
+    multiSel.clear();
+    for (const chain of scribe.tableChains(viewer.doc.layoutDataTables.pages)) {
+      if (chain.some((f) => r.ids.includes(f.table.id))) multiSel.add(`c:${chain[0].table.id}`);
+    }
+    renderList();
+  };
+
+  /**
+   * Extend the selection to the contiguous run between the anchor row and `key`, replacing it.
+   * Selections are always contiguous runs, since a table only ever links to the previous tabled page.
+   */
+  const extendRange = (key) => {
+    const anchor = multiAnchor && rowKeys.includes(multiAnchor) ? multiAnchor : key;
+    const i1 = rowKeys.indexOf(anchor);
+    const i2 = rowKeys.indexOf(key);
+    multiSel.clear();
+    for (let i = Math.min(i1, i2); i <= Math.max(i1, i2); i++) multiSel.add(rowKeys[i]);
+    multiAnchor = anchor;
+    renderList();
+  };
+
+  let sweep = null;
+  let sweepConsumeClick = false;
+  const endSweep = () => {
+    if (!sweep) return;
+    document.removeEventListener('pointerup', endSweep, true);
+    document.removeEventListener('pointercancel', endSweep, true);
+    if (sweep.moved) {
+      // Without this the click fired on release would collapse the swept range to the row under the pointer.
+      sweepConsumeClick = true;
+      // A release outside any row fires no click, so the flag must not outlive this tick.
+      setTimeout(() => { sweepConsumeClick = false; }, 0);
+    }
+    sweep = null;
+  };
+  listElem.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 || ev.pointerType === 'touch') return;
+    if (ev.target.closest('button, .scribe-am-xtglyph.chev')) return;
+    const rowEl = ev.target.closest('[data-row-key]');
+    if (!rowEl) return;
+    sweep = { startKey: rowEl.dataset.rowKey, lastKey: rowEl.dataset.rowKey, moved: false };
+    document.addEventListener('pointerup', endSweep, true);
+    document.addEventListener('pointercancel', endSweep, true);
+  });
+  listElem.addEventListener('pointerover', (ev) => {
+    if (!sweep) return;
+    const rowEl = ev.target.closest('[data-row-key]');
+    if (!rowEl || rowEl.dataset.rowKey === sweep.lastKey) return;
+    const i1 = rowKeys.indexOf(sweep.startKey);
+    const i2 = rowKeys.indexOf(rowEl.dataset.rowKey);
+    if (i1 < 0 || i2 < 0) return;
+    sweep.moved = true;
+    sweep.lastKey = rowEl.dataset.rowKey;
+    multiSel.clear();
+    for (let i = Math.min(i1, i2); i <= Math.max(i1, i2); i++) multiSel.add(rowKeys[i]);
+    multiAnchor = sweep.startKey;
+    renderList();
+  });
+  listElem.addEventListener('click', (ev) => {
+    if (!sweepConsumeClick) return;
+    sweepConsumeClick = false;
+    ev.stopPropagation();
+    ev.preventDefault();
+  }, true);
+
+  /** The one-verb action slot a selected table row carries in place of its per-row verbs. */
+  const verbAct = (res) => {
+    const acts = document.createElement('span');
+    acts.className = 'scribe-am-xtsubacts';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'scribe-am-xtsugact';
+    b.title = res.label;
+    b.innerHTML = res.kind === 'combine' ? LINK_SVG : UNLINK_SVG;
+    b.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      applySelection();
+    });
+    acts.appendChild(b);
+    return acts;
+  };
+
+  listElem.addEventListener('keydown', (ev) => {
+    if (ev.key !== 'Escape' || multiSel.size === 0) return;
+    // The mode-exit Escape handler skips a press whose default was prevented, so this keeps Esc from also leaving the mode.
+    ev.preventDefault();
+    ev.stopPropagation();
+    multiSel.clear();
+    multiAnchor = null;
+    renderList();
+  });
+
   const chainEntries = () => scribe.tableChains(viewer.doc.layoutDataTables.pages).map((chain) => {
     const head = chain[0];
     const pageTables = viewer.doc.layoutDataTables.pages[head.n].tables.slice()
@@ -247,11 +418,17 @@ export function buildTablesWorkspace(host, container) {
 
   const renderList = () => {
     listElem.textContent = '';
+    rowKeys = [];
+    const res = resolveSelection();
     const entries = chainEntries();
     entries.forEach((e) => {
       const row = document.createElement('div');
       const holdsSelected = e.chain.some((f) => f.table.id === selectedId);
-      row.className = `scribe-am-xtrow${holdsSelected ? ' sel' : ''}`;
+      const rowKey = `c:${e.head.id}`;
+      rowKeys.push(rowKey);
+      const inSel = multiSel.has(rowKey);
+      row.className = `scribe-am-xtrow${holdsSelected ? ' sel' : ''}${inSel ? ' msel' : ''}`;
+      row.dataset.rowKey = rowKey;
       row.tabIndex = 0;
       const multi = e.chain.length > 1;
       const chev = glyphSpan(CHEV_R_SVG, multi, 'chev');
@@ -271,30 +448,93 @@ export function buildTablesWorkspace(host, container) {
       tx.textContent = `${e.name}${e.meta} \u00b7 ${cols} column${cols === 1 ? '' : 's'}`;
       tx.title = tx.textContent;
       row.appendChild(tx);
+      // A selected row whose selection resolves to no action keeps its own verb, so clicking a row never costs it its unlink.
+      if (inSel && res) {
+        row.appendChild(verbAct(res));
+      } else if (multi) {
+        const acts = document.createElement('span');
+        acts.className = 'scribe-am-xtsubacts';
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'scribe-am-xtsugact muted';
+        b.title = `Unlink pages ${e.n + 1}\u2013${e.chain[e.chain.length - 1].n + 1}`;
+        b.innerHTML = UNLINK_SVG;
+        b.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          unlinkChain(viewer, e.head);
+        });
+        acts.appendChild(b);
+        row.appendChild(acts);
+      }
       const select = () => selectFragment(e.head, e.n);
-      row.addEventListener('click', select);
-      row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') select(); });
+      const onAct = (ev) => {
+        if (ev.shiftKey) {
+          extendRange(rowKey);
+          return;
+        }
+        multiSel.clear();
+        multiSel.add(rowKey);
+        multiAnchor = rowKey;
+        select();
+      };
+      row.addEventListener('click', onAct);
+      row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') onAct(ev); });
       listElem.appendChild(row);
       if (multi && expanded.has(e.head.id)) {
-        for (const frag of e.chain) {
+        e.chain.forEach((frag) => {
           const sub = document.createElement('div');
-          sub.className = `scribe-am-xtrow sub${frag.table.id === selectedId ? ' sel' : ''}`;
+          const subKey = `p:${frag.table.id}`;
+          rowKeys.push(subKey);
+          const subSel = multiSel.has(subKey);
+          sub.className = `scribe-am-xtrow sub${frag.table.id === selectedId ? ' sel' : ''}${subSel ? ' msel' : ''}`;
+          sub.dataset.rowKey = subKey;
           sub.tabIndex = 0;
           const stx = document.createElement('span');
           stx.className = 'scribe-am-xtrow-tx';
           stx.textContent = `Page ${frag.n + 1}`;
           sub.appendChild(stx);
+          if (subSel && res) {
+            sub.appendChild(verbAct(res));
+          } else if (frag !== e.chain[0]) {
+            const acts = document.createElement('span');
+            acts.className = 'scribe-am-xtsubacts';
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'scribe-am-xtsugact muted';
+            b.title = `Unlink from ${e.name} before page ${frag.n + 1}`;
+            b.innerHTML = UNLINK_SVG;
+            b.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              // After the split this fragment heads a new chain, and pre-expanding it keeps both halves open.
+              expanded.add(frag.table.id);
+              unlinkTable(viewer, frag.table);
+            });
+            acts.appendChild(b);
+            sub.appendChild(acts);
+          }
           const subSelect = () => selectFragment(frag.table, frag.n);
-          sub.addEventListener('click', subSelect);
-          sub.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') subSelect(); });
+          const onSubAct = (ev) => {
+            if (ev.shiftKey) {
+              extendRange(subKey);
+              return;
+            }
+            multiSel.clear();
+            multiSel.add(subKey);
+            multiAnchor = subKey;
+            subSelect();
+          };
+          sub.addEventListener('click', onSubAct);
+          sub.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') onSubAct(ev); });
           listElem.appendChild(sub);
-        }
+        });
       }
     });
 
+    // Unlinking appends to the queue, so page order has to be restored here or a range over these rows spans the wrong boundaries.
     const sugs = (viewer.doc.tableLinkSuggestions || [])
       .map((s) => ({ s, table: viewer.doc.layoutDataTables.pages[s.n]?.tables.find((t) => t.id === s.tableId) }))
-      .filter((x) => x.table && !x.table.continuesPrev);
+      .filter((x) => x.table && !x.table.continuesPrev)
+      .sort((a, b) => a.s.prevN - b.s.prevN);
     if (sugs.length > 0) {
       const divider = document.createElement('div');
       divider.className = 'scribe-am-xtsugdiv';
@@ -307,9 +547,13 @@ export function buildTablesWorkspace(host, container) {
       all.addEventListener('click', () => { for (const x of sugs) linkTables(viewer, x.table); });
       divider.append(dl, all);
       listElem.appendChild(divider);
-      for (const { s, table } of sugs) {
+      sugs.forEach(({ s, table }) => {
         const row = document.createElement('div');
-        row.className = 'scribe-am-xtrow';
+        const sugKey = `s:${table.id}`;
+        rowKeys.push(sugKey);
+        const sugSel = multiSel.has(sugKey);
+        row.className = `scribe-am-xtrow${sugSel ? ' msel' : ''}`;
+        row.dataset.rowKey = sugKey;
         row.tabIndex = 0;
         row.appendChild(glyphSpan(CHEV_R_SVG, false, 'chev'));
         row.appendChild(glyphSpan(LINK_SVG, true, 'link muted'));
@@ -329,19 +573,51 @@ export function buildTablesWorkspace(host, container) {
           b.addEventListener('click', (ev) => { ev.stopPropagation(); handler(); });
           return b;
         };
-        acts.appendChild(mkAct(CHECK_MINI_SVG, 'Link tables', () => linkTables(viewer, table), false));
-        acts.appendChild(mkAct(X_MINI_SVG, 'Dismiss', () => {
-          const idx = viewer.doc.tableLinkSuggestions.indexOf(s);
-          if (idx >= 0) viewer.doc.tableLinkSuggestions.splice(idx, 1);
-          renderList();
-        }, true));
+        if (sugSel && res) {
+          const selSugs = sugs.filter((x) => multiSel.has(`s:${x.table.id}`));
+          acts.appendChild(mkAct(CHECK_MINI_SVG, res.label, () => applySelection(), false));
+          acts.appendChild(mkAct(X_MINI_SVG, selSugs.length > 1 ? `Dismiss ${selSugs.length} suggestions` : 'Dismiss', () => {
+            for (const x of selSugs) {
+              const idx = viewer.doc.tableLinkSuggestions.indexOf(x.s);
+              if (idx >= 0) viewer.doc.tableLinkSuggestions.splice(idx, 1);
+              multiSel.delete(`s:${x.table.id}`);
+            }
+            renderList();
+          }, true));
+        } else {
+          acts.appendChild(mkAct(CHECK_MINI_SVG, 'Link tables', () => linkTables(viewer, table), false));
+          acts.appendChild(mkAct(X_MINI_SVG, 'Dismiss', () => {
+            const idx = viewer.doc.tableLinkSuggestions.indexOf(s);
+            if (idx >= 0) viewer.doc.tableLinkSuggestions.splice(idx, 1);
+            multiSel.delete(sugKey);
+            renderList();
+          }, true));
+        }
         row.appendChild(acts);
         const goTo = () => selectFragment(table, s.n);
-        row.addEventListener('click', goTo);
-        row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') goTo(); });
+        const onSugAct = (ev) => {
+          if (ev.shiftKey) {
+            extendRange(sugKey);
+            return;
+          }
+          multiSel.clear();
+          multiSel.add(sugKey);
+          multiAnchor = sugKey;
+          goTo();
+        };
+        row.addEventListener('click', onSugAct);
+        row.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') onSugAct(ev); });
         listElem.appendChild(row);
-      }
+      });
     }
+
+    listElem.querySelectorAll('.scribe-am-xtrow.msel').forEach((el) => {
+      const prevSel = el.previousElementSibling?.classList.contains('msel');
+      const nextSel = el.nextElementSibling?.classList.contains('msel');
+      if (!prevSel && !nextSel) el.classList.add('cap-solo');
+      else if (!prevSel) el.classList.add('cap-top');
+      else if (!nextSel) el.classList.add('cap-bot');
+    });
   };
 
   const foot = document.createElement('div');
@@ -462,6 +738,10 @@ export function buildTablesWorkspace(host, container) {
     refresh: () => {
       const entries = chainEntries();
       const allIds = new Set(entries.flatMap((e) => e.chain.map((f) => f.table.id)));
+      const liveSugIds = new Set((viewer.doc.tableLinkSuggestions || []).map((s) => s.tableId));
+      for (const k of [...multiSel]) {
+        if (k[0] === 's' ? !liveSugIds.has(k.slice(2)) : !allIds.has(k.slice(2))) multiSel.delete(k);
+      }
       const activeId = viewer.state.activeTableId;
       if (activeId && allIds.has(activeId)) selectedId = activeId;
       else if (activeId) viewer.state.activeTableId = null;

@@ -164,7 +164,9 @@ function addAutomateStyles(rootClass) {
       display: grid; grid-template-columns: minmax(0, 1fr); gap: 11px; align-content: start;
     }
     .${r} .scribe-am-tables { flex: 1; min-height: 0; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
-    .${r} .scribe-am-xtlist { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; align-content: start; }
+    /* Without user-select none, shift-click in this list runs the browser's text selection. */
+    /* Rows sit flush because a row gap would break a selected run's capsule into segments. */
+    .${r} .scribe-am-xtlist { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; user-select: none; }
     .${r} .scribe-am-xtrow {
       display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--scribe-ink);
       padding: 4px 7px; border-radius: 6px; cursor: pointer; min-width: 0;
@@ -183,6 +185,25 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-xtsugall { order: 2; border: 0; background: none; color: var(--scribe-accent); font: 600 11.5px inherit; font-family: inherit; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
     .${r} .scribe-am-xtwhy { color: var(--scribe-ink-3); font-size: 11px; }
     .${r} .scribe-am-xtsugacts { margin-left: auto; display: inline-flex; gap: 2px; flex: none; }
+    /* Revealed by visibility, not display, and capped to the text height, so hovering a row shifts nothing. */
+    .${r} .scribe-am-xtsubacts { margin-left: auto; display: inline-flex; visibility: hidden; flex: none; }
+    .${r} .scribe-am-xtsubacts .scribe-am-xtsugact { height: 14px; padding: 1px 2px; }
+    .${r} .scribe-am-xtrow:hover .scribe-am-xtsubacts, .${r} .scribe-am-xtrow:focus-within .scribe-am-xtsubacts { visibility: visible; }
+    /* Inset shadows, not borders, so selecting a row never shifts the list. */
+    .${r} .scribe-am-xtrow.msel {
+      background: var(--scribe-active); border-radius: 0;
+      box-shadow: inset 1px 0 0 var(--scribe-accent-ring), inset -1px 0 0 var(--scribe-accent-ring);
+    }
+    .${r} .scribe-am-xtrow.msel.cap-top {
+      border-radius: 6px 6px 0 0;
+      box-shadow: inset 1px 0 0 var(--scribe-accent-ring), inset -1px 0 0 var(--scribe-accent-ring), inset 0 1px 0 var(--scribe-accent-ring);
+    }
+    .${r} .scribe-am-xtrow.msel.cap-bot {
+      border-radius: 0 0 6px 6px;
+      box-shadow: inset 1px 0 0 var(--scribe-accent-ring), inset -1px 0 0 var(--scribe-accent-ring), inset 0 -1px 0 var(--scribe-accent-ring);
+    }
+    .${r} .scribe-am-xtrow.msel.cap-solo { border-radius: 6px; box-shadow: inset 0 0 0 1px var(--scribe-accent-ring); }
+    .${r} .scribe-am-xtrow.msel .scribe-am-xtsubacts { visibility: visible; }
     .${r} .scribe-am-xtsugact { border: 0; background: none; cursor: pointer; border-radius: 4px; padding: 2px; width: 20px; height: 20px; color: var(--scribe-accent); }
     .${r} .scribe-am-xtsugact.muted { color: var(--scribe-ink-3); }
     .${r} .scribe-am-xtsugact:hover { background: var(--scribe-accent-wash); }
