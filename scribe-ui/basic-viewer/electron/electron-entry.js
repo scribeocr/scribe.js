@@ -106,16 +106,14 @@ if (platform !== 'darwin') {
   });
 }
 
-const readFileElectron = async (filePath) => {
-  const { buffer, name } = await window.electronAPI.readFile(filePath);
-  return { buffer, name };
-};
-
 // Use a queue to ensure events are processed sequentially and fully awaited.
 let eventQueue = Promise.resolve();
 const enqueue = (fn) => { eventQueue = eventQueue.then(fn); };
 
-window.electronAPI.onLoadFile(({ file, page }) => enqueue(() => handleLoadFile(file, page, readFileElectron)));
+// The bytes arrive with the message, so the reader handleLoadFile expects is a pass-through.
+window.electronAPI.onLoadFile(({
+  file, name, bytes, page,
+}) => enqueue(() => handleLoadFile(file, page, async () => ({ buffer: bytes, name }))));
 window.electronAPI.onNavigate(({ page }) => enqueue(() => ScribeViewer.displayPage(page, true, false)));
 window.electronAPI.onHighlight(({ highlights }) => enqueue(() => handleHighlights(highlights)));
 
@@ -131,7 +129,7 @@ pushMenuState();
 // The shell owns the recent-files list, since the web build cannot reopen paths.
 // Reopening routes through the main process so the list re-orders and the OS recents stay in step.
 window.electronAPI.onRecentFiles((files) => pdfViewer.setRecentFiles(
-  files.map((f) => ({ label: f.label, open: () => window.electronAPI.openRecent(f.path) })),
+  files.map((f, i) => ({ label: f.label, open: () => window.electronAPI.openRecent(i) })),
   () => window.electronAPI.clearRecent(),
 ));
 

@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, ipcMain, powerMonitor, nativeTheme, Menu, shell, protocol, net, screen,
+  app, BrowserWindow, ipcMain, powerMonitor, nativeTheme, Menu, shell, protocol, net, screen, session,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -41,7 +41,7 @@ const overlayColors = (dark) => (dark
 
 function pushRecentFiles() {
   if (!mainWindow) return;
-  mainWindow.webContents.send('recent-files', shellState.recentFiles.map((f) => ({ path: f, label: path.basename(f) })));
+  mainWindow.webContents.send('recent-files', shellState.recentFiles.map((f) => ({ label: path.basename(f) })));
 }
 
 // Feeds the macOS Open Recent menu, the Windows jump list, and the in-window menu's Open recent submenu.
@@ -97,7 +97,13 @@ function createWindow() {
       : process.platform === 'win32' ? {
         titleBarStyle: 'hidden',
         titleBarOverlay: { height: 40, ...overlayColors(nativeTheme.shouldUseDarkColors) },
-      } : { frame: false, transparent: true }),
+      } : {
+        frame: false,
+        transparent: true,
+        // The renderer draws the corners, since native rounding does not reach every desktop.
+        // Leaving it on would clip those corners where it does engage.
+        roundedCorners: false,
+      }),
     title: '21 Viewer',
     // Match the app's canvas token so the first paint does not flash a mismatched color.
     // Linux stays fully transparent, since any opaque fill would square off the renderer's rounded corners.
@@ -110,7 +116,9 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      sandbox: false,
+      // The renderer parses untrusted documents, so the OS sandbox stays on.
+      // The preload only uses ipcRenderer and contextBridge, which sandboxed preloads keep.
+      sandbox: true,
       // Lets the preload tell the renderer whether it runs from a packaged app, which carries its own OCR language data.
       additionalArguments: app.isPackaged ? ['--scribe-packaged'] : [],
     },
@@ -163,7 +171,7 @@ function createWindow() {
     ipcMain.once('app-teardown-done', finish);
   });
 
-  // A remote page navigated into this window would inherit the preload bridge and its read-any-path IPC.
+  // A remote page navigated into this window would inherit the preload bridge.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -237,11 +245,18 @@ function sendArgsToRenderer(args) {
   // Default: load file
   if (!args.file) return;
   const file = path.resolve(args.file);
-  recordRecentFile(file);
-  mainWindow.webContents.send('load-file', {
-    file,
-    page: parseInt(args.page || '0', 10),
-  });
+  // Main reads the bytes itself, so no IPC channel accepts a filesystem path from the renderer.
+  // The path still rides along because the renderer uses it as the identity key for same-file navigation.
+  fs.promises.readFile(file).then((bytes) => {
+    if (!mainWindow) return;
+    recordRecentFile(file);
+    mainWindow.webContents.send('load-file', {
+      file,
+      name: path.basename(file),
+      bytes,
+      page: parseInt(args.page || '0', 10),
+    });
+  }).catch((err) => console.error(`Could not read ${file}: ${err.message}`));
 }
 
 // The renderer pushes menu state whenever it changes, so the macOS menu items grey and check to match the app.
@@ -266,11 +281,6 @@ ipcMain.on('menu-state', (_event, state) => {
   set('dark-mode', { checked: state.darkChecked });
 });
 
-// Handle file reads from the renderer process.
-ipcMain.handle('read-file', async (_event, filePath) => {
-  return fs.readFileSync(filePath);
-});
-
 // Power state feeds the library's warm-lane gate, so speculative rendering never runs on battery.
 ipcMain.handle('power-state', () => ({ onBattery: powerMonitor.isOnBatteryPower() }));
 
@@ -282,8 +292,11 @@ ipcMain.on('window-maximize-toggle', () => {
 });
 ipcMain.on('window-fullscreen-toggle', () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()));
 
-ipcMain.on('open-recent', (_event, file) => {
-  if (typeof file === 'string' && fs.existsSync(file)) sendArgsToRenderer({ file });
+// The renderer names recents by index into the main-owned list, never by path.
+ipcMain.on('open-recent', (_event, index) => {
+  if (!Number.isInteger(index)) return;
+  const file = shellState.recentFiles[index];
+  if (file) sendArgsToRenderer({ file });
 });
 ipcMain.on('clear-recent', () => {
   shellState.recentFiles = [];
@@ -385,6 +398,11 @@ if (!gotTheLock) {
       // Ctrl+W quits, Ctrl+R reloads and loses the session, and Ctrl+0 and Ctrl+plus/minus drive Chromium page zoom over the app's own.
       Menu.setApplicationMenu(null);
     }
+    // Electron grants renderer permission requests by default when no handler is installed.
+    // The app's only permission-gated API is clipboard writes, so everything else is denied.
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      callback(permission === 'clipboard-sanitized-write');
+    });
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
     // The isolation headers must be set only here: adding a webRequest hook as well stacks duplicate values ("require-corp, require-corp"), which silently voids the policies.
     // A webRequest hook cannot replace this either, since it never decorates worker-script responses, which must carry COEP themselves to spawn.

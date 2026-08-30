@@ -1,0 +1,114 @@
+name: Desktop Release
+
+# The builds pass --publish never, and the final job creates the draft release with gh.
+# electron-builder's own GitHub publisher derives a v<version> tag, which would collide with the library's tag namespace on this shared repo.
+
+on:
+  push:
+    tags: ['desktop-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the app version
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          tag_version="${GITHUB_REF_NAME#desktop-v}"
+          app_version="$(node -p "require('./scribe-ui/basic-viewer/electron/package.json').version")"
+          if [ "$tag_version" != "$app_version" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match app version $app_version in scribe-ui/basic-viewer/electron/package.json" >&2
+            exit 1
+          fi
+
+  build:
+    needs: check-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            args: --linux
+          - os: windows-latest
+            args: --win
+          # macos-latest runners are arm64, so an unflagged build would ship arm64-only.
+          - os: macos-latest
+            args: --mac --x64 --arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      # build.sh falls back to tests/test-lang-data when the CDN download fails its checksum.
+      - name: Check out the language-data submodule
+        run: git submodule update --init tests/test-lang-data
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - run: npm ci
+      - run: npm ci
+        working-directory: scribe-ui/basic-viewer/electron
+      - name: Build
+        working-directory: scribe-ui/basic-viewer/electron
+        run: bash build.sh ${{ matrix.args }} --publish never
+      # A bundle that packages but cannot boot is the failure mode the test suites never see.
+      - name: Boot-smoke the packaged build
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq xvfb
+          xvfb-run --auto-servernum "scribe-ui/basic-viewer/electron/dist/linux-unpacked/viewer-21" --no-sandbox --disable-gpu &
+          pid=$!
+          sleep 20
+          kill -0 "$pid"
+          kill "$pid" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: |
+            scribe-ui/basic-viewer/electron/dist/*.exe
+            scribe-ui/basic-viewer/electron/dist/*.exe.blockmap
+            scribe-ui/basic-viewer/electron/dist/*.AppImage
+            scribe-ui/basic-viewer/electron/dist/*.dmg
+            scribe-ui/basic-viewer/electron/dist/*.dmg.blockmap
+            scribe-ui/basic-viewer/electron/dist/*.zip
+            scribe-ui/basic-viewer/electron/dist/*.zip.blockmap
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#desktop-v}"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # A re-run after a partial failure replaces the existing assets rather than failing on the existing release.
+            gh release upload "$GITHUB_REF_NAME" assets/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" assets/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --draft \
+              --title "21 Viewer $version" \
+              --notes "Draft desktop release for 21 Viewer $version. Review the attached installers, then publish."
+          fi
