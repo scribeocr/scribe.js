@@ -23,4 +23,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRecentFiles: (callback) => ipcRenderer.on('recent-files', (_event, files) => callback(files)),
   openRecent: (filePath) => ipcRenderer.send('open-recent', filePath),
   clearRecent: () => ipcRenderer.send('clear-recent'),
+  onAppTeardown: (callback) => ipcRenderer.on('app-teardown', () => callback()),
+  appTeardownDone: () => ipcRenderer.send('app-teardown-done'),
 });

@@ -134,3 +134,12 @@ window.electronAPI.onRecentFiles((files) => pdfViewer.setRecentFiles(
   files.map((f) => ({ label: f.label, open: () => window.electronAPI.openRecent(f.path) })),
   () => window.electronAPI.clearRecent(),
 ));
+
+// destroy flushes dirty library sidecars, which needs the documents and their worker pools still alive, so it must run before terminate.
+window.electronAPI.onAppTeardown(async () => {
+  try {
+    await pdfViewer.destroy();
+    await scribe.terminate();
+  } catch { /* Best effort: the shell proceeds regardless. */ }
+  window.electronAPI.appTeardownDone();
+});

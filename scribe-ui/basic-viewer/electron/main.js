@@ -18,6 +18,7 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 
 let mainWindow;
+let shuttingDown = false;
 
 // The Linux window is transparent so the renderer can round its corners the way GNOME rounds every window.
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -132,13 +133,34 @@ function createWindow() {
   mainWindow.on('unmaximize', () => { noteBounds(); mainWindow?.webContents.send('window-maximized', false); });
   mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window-fullscreen', true));
   mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window-fullscreen', false));
-  mainWindow.on('close', () => {
+  mainWindow.on('close', (event) => {
     clearTimeout(saveTimer);
     if (mainWindow) {
       shellState.bounds = mainWindow.getNormalBounds();
       shellState.isMaximized = mainWindow.isMaximized();
     }
     saveShellState();
+    // A quit re-closes the window while teardown is already under way.
+    // Restarting the pass would re-send the IPC and re-arm the failsafe, so let the scheduled destroy finish the job.
+    if (shuttingDown) {
+      event.preventDefault();
+      return;
+    }
+    // The renderer flushes dirty library sidecars while their documents are still alive, then winds down its worker pools.
+    // Hiding first keeps the close feeling instant.
+    // The failsafe destroys the window regardless, so a stuck renderer cannot turn the close into a hang.
+    shuttingDown = true;
+    event.preventDefault();
+    mainWindow.hide();
+    mainWindow.webContents.send('app-teardown');
+    let failsafe = null;
+    const finish = () => {
+      if (failsafe) clearTimeout(failsafe);
+      ipcMain.removeListener('app-teardown-done', finish);
+      mainWindow?.destroy();
+    };
+    failsafe = setTimeout(finish, 3000);
+    ipcMain.once('app-teardown-done', finish);
   });
 
   // A remote page navigated into this window would inherit the preload bridge and its read-any-path IPC.
@@ -270,6 +292,12 @@ ipcMain.on('clear-recent', () => {
   pushRecentFiles();
 });
 
+// A main process that stalls on the way out is invisible yet still owns the single-instance lock, so every relaunch bounces off it and dies silently.
+// Shell state reached disk in the window's close handler, so forcing the exit loses nothing.
+app.on('will-quit', () => {
+  setTimeout(() => app.exit(0), 4000).unref();
+});
+
 // Single-instance lock: if another instance is launched, forward its args
 // to the existing window instead of opening a second window.
 const gotTheLock = app.requestSingleInstanceLock();
@@ -277,13 +305,29 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
+  let relaunchScheduled = false;
   app.on('second-instance', (_event, argv) => {
     const args = parseArgs(argv);
-    sendArgsToRenderer(args);
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
+    if (shuttingDown || !mainWindow) {
+      if (!shuttingDown) {
+        // A second launch can arrive before the window exists, so hold the file for did-finish-load to deliver.
+        if (args.file) pendingOpenFile = args.file;
+        return;
+      }
+      // The window is gone but this process still holds the lock, so the launch that just bounced off it would otherwise vanish with no window and no error.
+      // app.relaunch hands it to a fresh instance, which Electron spawns once this process exits.
+      if (!relaunchScheduled) {
+        relaunchScheduled = true;
+        app.relaunch({ args: argv.slice(1) });
+      }
+      // Exiting while teardown is still running would cut off in-flight sidecar writes, so only the already-torn-down case exits early.
+      // The other case exits through the teardown-done or failsafe path instead.
+      if (!mainWindow) app.exit(0);
+      return;
     }
+    sendArgsToRenderer(args);
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
   });
 
   app.whenReady().then(() => {
@@ -348,7 +392,8 @@ if (!gotTheLock) {
       const { pathname } = new URL(request.url);
       const target = path.normalize(path.join(APP_ROOT, decodeURIComponent(pathname)));
       if (!target.startsWith(APP_ROOT + path.sep)) return new Response('Not found', { status: 404 });
-      const res = await net.fetch(pathToFileURL(target).toString());
+      // Without this the inner fetch outlives an abandoned request (window closed mid-load) and its stream holds the main process open on exit.
+      const res = await net.fetch(pathToFileURL(target).toString(), { signal: request.signal });
       const headers = new Headers(res.headers);
       headers.set('Cross-Origin-Opener-Policy', 'same-origin');
       headers.set('Cross-Origin-Embedder-Policy', 'require-corp');

@@ -35,7 +35,9 @@ if ! { [ -f "$LANG_CACHE" ] && sha256_matches "$LANG_CACHE"; }; then
 fi
 cp "$LANG_CACHE" "$STAGING/lang/eng.traineddata.gz"
 
-VERSION="$(node -p "require('$SCRIPT_DIR/package.json').version")"
+# Git Bash rewrites path-shaped arguments to native binaries into Windows form, but leaves string contents alone.
+# Interpolating "$SCRIPT_DIR" into the script string would reach Node as /c/... and fail to resolve, so the path travels as an argument.
+VERSION="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$SCRIPT_DIR/package.json")"
 cat > "$STAGING/package.json" <<JSON
 {
   "name": "viewer-21",
