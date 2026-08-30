@@ -817,26 +817,22 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     decodeInvert, colorKeyMask,
   } = imageInfo;
 
-  // If imageData is null (corrupted/truncated stream), skip this image
   if (imageData == null) return null;
 
   if (sMask && sMaskWidth && sMaskHeight) {
     sMask = await decodeSmaskJpeg(sMask);
-    // A /Decode [1 0] on a DCTDecode/JPXDecode SMask is applied here, after decode,
-    // because inverting the compressed codestream at parse time would corrupt it.
+    // A /Decode [1 0] on a DCTDecode/JPXDecode SMask is inverted here rather than at parse time, where inverting the compressed codestream would corrupt it.
     if (imageInfo.sMaskDecodeInvert) {
       for (let i = 0; i < sMask.length; i++) sMask[i] = 255 - sMask[i];
     }
   }
 
-  // DCTDecode (JPEG) — imageData is the raw JPEG file, create bitmap directly
   if (filter === 'DCTDecode') {
-    // DeviceCMYK JPEG: Chrome's createImageBitmap produces wrong colors for 4-component CMYK/YCCK JPEGs.
-    // Use our JS decoder to get correct RGB output.
+    // Chrome's createImageBitmap produces wrong colors for 4-component CMYK/YCCK JPEGs, so decode those in JS.
     if (colorSpace === 'DeviceCMYK') {
       const jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
       // A soft mask rewrites alpha across the whole image below, which would reveal undecoded pixels, so only honour the region of interest when there is no soft mask.
-      // Scaled decode is soft-mask-safe (it decodes the whole image, just smaller — applySoftMaskAlpha resamples the mask to match), so it is always honoured.
+      // Scaled decode stays safe because it decodes the whole image, just smaller.
       const cmykRoi = (sMask && sMaskWidth && sMaskHeight) ? null : roi;
       const cmykResult = decodeCMYKJpegToRGB(jpegBytes, decodeInvert, cmykRoi, decodeScale);
       if (cmykResult) {
@@ -850,11 +846,9 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         ctx.putImageData(imgData, 0, 0);
         return ca.createImageBitmapFromCanvas(canvas);
       }
-      // Fallback to browser decoder if JS decoder fails
     }
 
-    // Photoshop-encoded Lab JPEGs carry an Adobe APP14 marker with
-    // transform=YCbCr, so the browser decoder applies YCbCr→RGB.
+    // Photoshop-encoded Lab JPEGs carry an Adobe APP14 marker with transform=YCbCr, so the browser decoder applies YCbCr->RGB.
     // Its RGB output is the L*a*b* sample data.
     if (colorSpace === 'Lab') {
       let jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
@@ -890,8 +884,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       } catch { /* fall through */ }
     }
 
-    // Some PDFs contain JPEGs missing the EOI (End-Of-Image) marker (FF D9).
-    // Chrome's createImageBitmap rejects these, so append EOI if missing.
+    // Chrome's createImageBitmap rejects a JPEG with no EOI marker, which some PDFs contain.
     let jpegData = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
     if (jpegData.length >= 2 && !(jpegData[jpegData.length - 2] === 0xFF && jpegData[jpegData.length - 1] === 0xD9)) {
       const fixed = new Uint8Array(jpegData.length + 2);
@@ -900,28 +893,22 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       fixed[jpegData.length + 1] = 0xD9;
       jpegData = fixed;
     }
-    // Strip EXIF APP1 marker to prevent browser from applying EXIF orientation.
-    // The PDF CTM already handles correct image placement; EXIF rotation would be applied twice.
     jpegData = stripJpegExif(jpegData);
     let jpegBitmap;
     try {
       jpegBitmap = await ca.createImageBitmapFromData(jpegData);
     } catch {
-      // Corrupted JPEG (e.g., bogus Huffman tables in encrypted PDFs) — fill with black
-      // (matching mupdf's behavior of zero-filling undecodable image data) so rendering
-      // can continue without crashing.
+      // Fill undecodable image data with black, matching mupdf's behavior.
       const w = width || 1;
       const h = height || 1;
       const blackPixels = new Uint8ClampedArray(w * h * 4);
       for (let i = 0; i < w * h; i++) {
-        blackPixels[i * 4 + 3] = 255; // alpha = opaque, RGB = 0 (black)
+        blackPixels[i * 4 + 3] = 255;
       }
       return ca.createImageBitmapFromImageData(new ImageData(blackPixels, w, h));
     }
 
-    // Separation color space (including single-colorant DeviceN): pixel values represent ink amounts
-    // (0=no ink, 255=full ink), but the browser decodes them as luminance (0=black, 255=white).
-    // Apply tint transform samples if available, otherwise invert via compositing.
+    // Separation pixel values are ink amounts (0=no ink, 255=full ink), but the browser decodes them as luminance (0=black, 255=white).
     if (colorSpace === 'Separation') {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
@@ -937,8 +924,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         const imgData = ctx.getImageData(0, 0, w, h);
         const px = imgData.data;
         for (let i = 0; i < px.length; i += 4) {
-          // Raw tint value: 0=no ink, 255=full ink.
-          // /Decode [1 0] inverts the mapping (byte 0 = full ink), so invert before lookup.
           const o = (decodeInvert ? (255 - px[i]) : px[i]) * 3;
           px[i] = lut[o];
           px[i + 1] = lut[o + 1];
@@ -946,14 +931,12 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         }
         ctx.putImageData(imgData, 0, 0);
 
-      // No tint transform available — simple inversion.
-      // With decodeInvert, the /Decode [1 0] and ink conventions cancel out, so skip inversion.
+      // With decodeInvert the /Decode [1 0] and ink conventions cancel out, so skip the inversion.
       } else if (!decodeInvert) {
         ctx.globalCompositeOperation = 'difference';
         ctx.fillStyle = 'white';
         ctx.fillRect(0, 0, w, h);
       }
-      // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const imgData2 = ctx.getImageData(0, 0, w, h);
         applySoftMaskAlpha(imgData2.data, w, h, sMask, sMaskWidth, sMaskHeight);
@@ -962,11 +945,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       return ca.createImageBitmapFromCanvas(canvas);
     }
 
-    // Indexed color space JPEG: a single-component DCTDecode whose decoded samples are palette indices.
-    // The base is /DeviceCMYK, /DeviceRGB, or /DeviceGray.
-    // The browser decodes the grayscale JPEG to raw index values (R=G=B=index),
-    // so map each index through the palette, like the uncompressed Indexed path
-    // later in this function (the one reached when there is no image codec).
+    // The samples of an Indexed DCTDecode are palette indices, and the browser decodes them into all three channels (R=G=B=index).
     if (colorSpace === 'Indexed' && imageInfo.palette) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
@@ -978,7 +957,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       const palette = imageInfo.palette;
       const base = imageInfo.paletteBase || 'DeviceRGB';
       const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
-      // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
       const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
       const imgData = ctx.getImageData(0, 0, w, h);
       const px = imgData.data;
@@ -1002,7 +980,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       }
       ctx.putImageData(imgData, 0, 0);
 
-      // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const imgData2 = ctx.getImageData(0, 0, w, h);
         applySoftMaskAlpha(imgData2.data, w, h, sMask, sMaskWidth, sMaskHeight);
@@ -1011,7 +988,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       return ca.createImageBitmapFromCanvas(canvas);
     }
 
-    // /Decode [1 0 ...] inversion for JPEG: invert decoded pixel values via compositing
     if (decodeInvert) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
@@ -1024,7 +1000,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       ctx.fillRect(0, 0, w, h);
       const invertedBitmap = await ca.createImageBitmapFromCanvas(canvas);
 
-      // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const canvas2 = ca.makeCanvas(w, h);
         const ctx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas2.getContext('2d', { willReadFrequently: true }));
@@ -1038,12 +1013,12 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       return invertedBitmap;
     }
 
-    // Apply soft mask (SMask) or stencil mask alpha channel if present
     if (sMask && sMaskWidth && sMaskHeight) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
       if (sMaskWidth > w || sMaskHeight > h) {
-        // Mask is higher resolution: upsample the image to the mask dimensions, but never beyond the device area this image occupies (maxW/maxH).
+        // Upsample the image to the mask dimensions to keep the mask's fine detail.
+        // Never build larger than the device area this image occupies (maxW/maxH).
         let outW = sMaskWidth;
         let outH = sMaskHeight;
         if (maxW && maxH && (outW > maxW || outH > maxH)) {
@@ -1061,7 +1036,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         const upsampled = upsampleImageWithMask(px, w, h, maskA, outW, outH);
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
       }
-      // Mask matches or is lower resolution, so write the (nearest-neighbor) mask into the JPEG's alpha channel.
       const canvas = ca.makeCanvas(w, h);
       const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
       ctx.drawImage(jpegBitmap, 0, 0);
@@ -1072,15 +1046,12 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       return ca.createImageBitmapFromCanvas(canvas);
     }
 
-    // If the JPEG's actual dimensions match the PDF's declared dimensions, use as-is.
-    // Otherwise, the PDF declares a larger image than the JPEG contains;
-    // create a canvas at the declared size (filled with black) and draw the JPEG at origin.
     if (jpegBitmap.width === width && jpegBitmap.height === height) {
       return jpegBitmap;
     }
     const canvas = ca.makeCanvas(width, height);
     const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
-    // Canvas defaults to transparent black; fill explicitly to match mupdf behavior
+    // Canvas defaults to transparent black, so fill explicitly to match mupdf.
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(jpegBitmap, 0, 0);
@@ -1088,11 +1059,9 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     return ca.createImageBitmapFromCanvas(canvas);
   }
 
-  // JPXDecode (JPEG 2000) — decode via pure JS decoder
   if (filter === 'JPXDecode') {
     const { decodeJPX } = await import('./codecs/decodeJPX.js');
-    // Each reduce level halves the decoded dimensions and skips that level's share of the decode work.
-    // Keep the decode >= sqrt2 x the draw size: wavelet reduction to at-or-below the draw size renders scanned text visibly softer than area-downscaling a larger decode.
+    // Keep the decode at >= sqrt2 x the draw size, because wavelet reduction to at-or-below the draw size renders scanned text visibly softer than area-downscaling a larger decode.
     let reduceLevels = 0;
     if (maxW && maxH) {
       let rw = imageInfo.width;
@@ -1103,8 +1072,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         reduceLevels++;
       }
     }
-    // A PDF /Indexed colour space (imageInfo.palette) overrides any internal JP2 palette
-    // and needs the raw index samples, so skip the internal palette expansion in that case.
+    // A PDF /Indexed colour space overrides any internal JP2 palette and needs the raw index samples, so skip the internal expansion.
     const decoded = decodeJPX(imageData, reduceLevels, !imageInfo.palette);
     if (!decoded) return null;
     const w = decoded.width;
@@ -1112,9 +1080,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     const components = decoded.components;
     const pixels = decoded.pixelData;
 
-    // JPX may have more components than the PDF color space expects (e.g. gray+alpha=2 for DeviceGray).
-    // Determine the expected color component count from the PDF color space, and use the JPX's extra
-    // component as built-in alpha when present.
+    // A JPX codestream may carry one component more than the PDF color space expects, and that extra component is alpha.
     const expectedComponents = (colorSpace === 'DeviceGray' || colorSpace === 'CalGray') ? 1
       : (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB') ? 3
         : (colorSpace === 'DeviceCMYK') ? 4 : 0;
@@ -1139,7 +1105,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       // decodeJPX MSB-aligns sub-8-bit samples to 8 bits, so the palette index is the sample shifted back down.
       const jpxPrecision = decoded.precision ? decoded.precision[0] : 8;
       const idxShift = jpxPrecision < 8 ? (8 - jpxPrecision) : 0;
-      // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
       const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
       for (let i = 0; i < w * h; i++) {
         const idx = pixels[i] >> idxShift;
@@ -1163,8 +1128,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         rgbaData[pi + 3] = 255;
       }
     } else if (components === 1 && colorSpace === 'Separation') {
-      // Separation: pixel values are tint amounts (0=no ink, 255=full ink).
-      // Apply tint transform if available, otherwise invert.
+      // Separation pixel values are tint amounts (0=no ink, 255=full ink).
       const tintSamples = imageInfo.separationTintSamples;
       if (tintSamples && tintSamples.length >= 3) {
         const nSamples = Math.floor(tintSamples.length / 3);
@@ -1185,7 +1149,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         }
       }
     } else if (components === 1 || (hasJpxAlpha && expectedComponents === 1)) {
-      // DeviceGray (or gray+alpha from JPX)
       for (let i = 0; i < w * h; i++) {
         // eslint-disable-next-line no-multi-assign
         rgbaData[i * 4] = rgbaData[i * 4 + 1] = rgbaData[i * 4 + 2] = pixels[i * components];
@@ -1197,7 +1160,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       const range = imageInfo.labRange || [-100, 100, -100, 100];
       rgbaData.set(labBytesToRGBA(pixels, w, h, wp, range));
     } else if (components === 3 || (hasJpxAlpha && expectedComponents === 3)) {
-      // DeviceRGB (or RGB+alpha from JPX)
       for (let i = 0; i < w * h; i++) {
         rgbaData[i * 4] = pixels[i * components];
         rgbaData[i * 4 + 1] = pixels[i * components + 1];
@@ -1226,7 +1188,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
           rgbaData[i * 4 + 3] = 255;
         }
       } else {
-        // Assume RGBA
         for (let i = 0; i < w * h; i++) {
           rgbaData[i * 4] = pixels[i * 4];
           rgbaData[i * 4 + 1] = pixels[i * 4 + 1];
@@ -1238,9 +1199,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
 
     if (sMask && sMaskWidth && sMaskHeight) {
       if (sMaskWidth > w || sMaskHeight > h) {
-        // Mask is higher resolution than image: upsample the image to the mask dimensions to preserve fine mask detail (e.g. text stencil edges).
-        // But never build the composite larger than the device area this image occupies (maxW/maxH):
-        // an /SMask can be many times the image's pixel count, so producing a mask-resolution bitmap only to down-scale it at draw time is wasted work.
+        // Upsample the image to the mask dimensions to keep the mask's fine detail.
+        // Never build larger than the device area this image occupies (maxW/maxH).
         let outW = sMaskWidth;
         let outH = sMaskHeight;
         if (maxW && maxH && (outW > maxW || outH > maxH)) {
@@ -1258,12 +1218,10 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     return ca.createImageBitmapFromImageData(new ImageData(rgbaData, w, h));
   }
 
-  // For all other cases (FlateDecode, CCITTFaxDecode, no filter),
-  // imageData is raw decoded pixel bytes. Build RGBA ImageData.
+  // Past the codec branches, imageData is raw decoded pixel bytes.
   let rgbaData;
 
-  // 16-bit per component: downscale to 8-bit by taking the high byte of each sample.
-  // PDF stores 16-bit values as big-endian, so bytes [0]=high, [1]=low for each sample.
+  // PDF stores 16-bit samples big-endian, so byte [0] of each pair is the high byte.
   if (bitsPerComponent === 16) {
     const sampleCount = imageData.length / 2;
     const data8 = new Uint8Array(sampleCount);
@@ -1306,7 +1264,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
               cnt++;
             }
           }
-          // 1-bit DeviceGray: bit 1 = white (255), bit 0 = black; /Decode [1 0] inverts.
           let v = (((sum / cnt) * 255) + 0.5) | 0;
           if (decodeInvert) v = 255 - v;
           const di = (oy * outW + ox) * 4;
@@ -1320,8 +1277,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     }
   }
 
-  // Like the 1-bit fast path above, for very large 8-bit RGB/gray rasters:
-  // box-average the source straight to draw size instead of materializing the full-resolution RGBA buffer and its ImageBitmap.
+  // The 8-bit twin of the 1-bit fast path above, for very large RGB/gray rasters.
   // The gate mirrors the 1-bit path's so no per-pixel post-processing (masks, ICC, /Decode) is bypassed.
   if (bitsPerComponent === 8
     && (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB' || colorSpace === 'DeviceGray' || colorSpace === 'CalGray')
@@ -1388,7 +1344,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     // Out-of-range reads yield an undefined index that paints solid black, so cap iteration to leave the tail transparent.
     const maxBytes = imageData ? imageData.length : 0;
     const validRows = rowBytes > 0 ? Math.min(height, Math.floor(maxBytes / rowBytes)) : height;
-    // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
     const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
 
     for (let y = 0; y < validRows; y++) {
@@ -1406,7 +1361,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
           const bytePos = y * rowBytes + Math.floor(x / 8);
           idx = (imageData[bytePos] >> (7 - (x % 8))) & 1;
         }
-        // /Decode [max 0] inverts the index mapping for Indexed color spaces
         if (decodeInvert) idx = hival - idx;
 
         const pi = (y * width + x) * 4;
@@ -1430,9 +1384,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       }
     }
   } else if (bitsPerComponent === 1) {
-    // 1-bit monochrome — each byte contains 8 pixels, MSB first
-    // For DeviceGray: 0=black, 1=white (unless BlackIs1 was set during decoding, which inverts)
-    // For Separation: 0=no ink (white), 1=full ink (black) — opposite of DeviceGray
+    // A 1-bit DeviceGray sample is 0=black, 1=white, already flipped by the decoder when /BlackIs1 was set.
+    // A 1-bit Separation sample is the opposite: 0=no ink (white), 1=full ink (black).
     const isSeparation = colorSpace === 'Separation';
     const tintSamples = isSeparation ? imageInfo.separationTintSamples : null;
     rgbaData = new Uint8ClampedArray(width * height * 4);
@@ -1442,12 +1395,9 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         const byteIndex = y * rowByteWidth + Math.floor(x / 8);
         const bitIndex = 7 - (x % 8);
         const rawBit = (imageData[byteIndex] >> bitIndex) & 1;
-        // In standard PDF: 0 = black, 1 = white for DeviceGray with 1bpc
-        // /Decode [1 0] inverts: 0 = white, 1 = black
         const bit = decodeInvert ? (1 - rawBit) : rawBit;
         const pi = (y * width + x) * 4;
         if (isSeparation && tintSamples && tintSamples.length >= 3) {
-          // Use tint transform: bit 0=no ink (tint index 0), bit 1=full ink (last tint index)
           const nSamples = Math.floor(tintSamples.length / 3);
           const si = (bit === 0 ? 0 : nSamples - 1) * 3;
           rgbaData[pi] = tintSamples[si];
@@ -1455,7 +1405,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
           rgbaData[pi + 2] = tintSamples[si + 2];
           rgbaData[pi + 3] = 255;
         } else if (isSeparation) {
-          // Separation without tint samples: 0=no ink (white), 1=full ink (black)
           const val = (1 - bit) * 255;
           rgbaData[pi] = val;
           rgbaData[pi + 1] = val;
@@ -1466,14 +1415,12 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
           rgbaData[pi] = val;
           rgbaData[pi + 1] = val;
           rgbaData[pi + 2] = val;
-          // Inline images inside a tiling pattern paint white as transparent
-          // so the pattern shows through. transparentWhite carries that intent from the caller.
+          // Inline images inside a tiling pattern paint white as transparent so the pattern shows through.
           rgbaData[pi + 3] = (imageInfo.transparentWhite && val === 255) ? 0 : 255;
         }
       }
     }
   } else if (colorSpace === 'DeviceGray' || colorSpace === 'CalGray') {
-    // Grayscale
     rgbaData = new Uint8ClampedArray(width * height * 4);
     if (bitsPerComponent === 4) {
       const rowBytes = Math.ceil(width / 2);
@@ -1481,7 +1428,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         for (let x = 0; x < width; x++) {
           const bytePos = y * rowBytes + (x >> 1);
           const nibble = (x & 1) === 0 ? (imageData[bytePos] >> 4) & 0xF : imageData[bytePos] & 0xF;
-          const raw = nibble * 17; // scale 0-15 to 0-255
+          const raw = nibble * 17;
           const val = decodeInvert ? (255 - raw) : raw;
           const pi = (y * width + x) * 4;
           rgbaData[pi] = val;
@@ -1496,7 +1443,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         for (let x = 0; x < width; x++) {
           const bytePos = y * rowBytes + (x >> 2);
           const sample = (imageData[bytePos] >> (6 - (x & 3) * 2)) & 0x3;
-          const raw = sample * 85; // scale 0-3 to 0-255
+          const raw = sample * 85;
           const val = decodeInvert ? (255 - raw) : raw;
           const pi = (y * width + x) * 4;
           rgbaData[pi] = val;
@@ -1569,8 +1516,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       }
     }
   } else if (colorSpace === 'Separation') {
-    // Separation color space (including single-colorant DeviceN): pixel values are tint amounts
-    // (0=no ink/white, 255=full ink). Apply tint transform if available, otherwise invert.
+    // Separation pixel values are tint amounts (0=no ink/white, 255=full ink).
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const tintSamples = imageInfo.separationTintSamples;
     const readTint = (i) => {
@@ -1612,7 +1558,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         rgbaData[i * 4 + 3] = 255;
       }
     } else {
-      // No sampled tint transform — invert (0=white, 255=black) for typical ink separation.
       // With decodeInvert, /Decode [1 0] and ink conventions cancel out.
       for (let i = 0; i < width * height; i++) {
         const raw = readTint(i);
@@ -1624,8 +1569,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       }
     }
   } else if ((colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB') && (bitsPerComponent === 4 || bitsPerComponent === 2)) {
-    // DeviceRGB with sub-byte components: each component is `bitsPerComponent` bits,
-    // packed MSB-first across the row, with each row padded to a byte boundary.
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const rowBytes = Math.ceil(width * 3 * bitsPerComponent / 8);
     const compMax = (1 << bitsPerComponent) - 1;
@@ -1655,9 +1598,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     const { labBytesToRGBA } = await import('./codecs/decodeJPEG.js');
     rgbaData = new Uint8ClampedArray(labBytesToRGBA(imageData, width, height, wp, range).buffer);
   } else if (colorSpace === 'DeviceN' && imageInfo.deviceNTintCS) {
-    // Multi-colorant DeviceN raster: map each pixel's colorant tuple to RGB through the tint transform.
-    // Done here rather than at parse time so a shared Resources dict listing many DeviceN images
-    // only pays the conversion for the ones a page actually draws.
     const nComp = imageInfo.deviceNTintCS.nInputs;
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const rgb = tintSamplesToRgb(imageInfo.deviceNTintCS, imageData, nComp, width * height);
@@ -1705,7 +1645,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
 
   if (imageInfo.iccTransform && rgbaData) {
     const { gamma, matrix: m } = imageInfo.iccTransform;
-    // Precompute linearization LUTs (gamma curves) for each channel
     const lut = gamma.map((g) => {
       const t = new Float32Array(256);
       for (let v = 0; v < 256; v++) t[v] = (v / 255) ** g;
@@ -1762,8 +1701,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
 
   if (sMask && sMaskWidth && sMaskHeight) {
     if (sMaskWidth > width || sMaskHeight > height) {
-      // Mask is higher resolution than the image, so upsample the image to the mask's dimensions.
-      // sMask is already at the output resolution, so it is the alpha source directly.
       const outW = sMaskWidth;
       const outH = sMaskHeight;
       const upsampled = upsampleImageWithMask(rgbaData, width, height, sMask, outW, outH);
@@ -1772,10 +1709,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     applySoftMaskAlpha(rgbaData, width, height, sMask, sMaskWidth, sMaskHeight);
   }
 
-  // Apply color key mask: pixels whose component values all fall within the
-  // specified [min, max] ranges become fully transparent (PDF spec §8.9.6.4).
   // The compared values are the source samples before palette lookup (the index for Indexed), read at the image's bit depth.
-  // Sub-byte depths pack samples MSB-first with each row padded to a byte.
   if (colorKeyMask && rgbaData) {
     const nComp = colorKeyMask.length / 2;
     const rowBytes = Math.ceil(width * nComp * bitsPerComponent / 8);
@@ -1802,11 +1736,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     }
   }
 
-  // General net for any other >=40 MP raster (RGB/CMYK/Indexed, or a non-1:1-masked bilevel) that missed the fast path above:
-  // when the decoded image dwarfs the device draw box, box-average it down to draw size before creating the ImageBitmap.
-  // This still has to build the full-resolution RGBA, but it removes the expensive createImageBitmap of a huge bitmap and the large-source drawImage downscale.
-  // The extra box pass is paid back by those, a net win in both Node and Chrome.
-  // Gated only on absolute source size (>=40 MP) to reduce overhead + complexity on images that would not benefit.
+  // This still builds the full-resolution RGBA, but it removes the expensive createImageBitmap of a huge bitmap and the large-source drawImage downscale.
+  // Those pay back the extra box pass in both Node and Chrome.
   if (maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
     const k = Math.min(maxW / width, maxH / height);
     const outW = Math.max(1, Math.round(width * k));
@@ -1823,8 +1754,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
 
 /**
  * Convert an ImageMask image to an ImageBitmap using the current fill color.
- * ImageMask images are stencil masks: where mask bits are set, the fill color
- * is painted; where not set, pixels are transparent.
  *
  * @param {import('./parsePdfImages.js').ImageInfo} imageInfo
  * @param {string} fillColor - CSS color string (e.g. 'rgb(20,20,20)')
@@ -1837,7 +1766,6 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
   }
   const { width, height, imageData } = imageInfo;
 
-  // imageData is null when its stream could not be decoded.
   if (imageData == null) return null;
 
   const colorMatch = /rgb\((\d+),(\d+),(\d+)\)/.exec(fillColor);
@@ -1847,8 +1775,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
 
   const rgbaData = new Uint8ClampedArray(width * height * 4);
   const rowBytes = Math.ceil(width / 8);
-  // Determine which bit value means "painted" based on Decode array.
-  // Default Decode [0 1]: sample 0 → painted. Decode [1 0]: sample 1 → painted.
+  // For an ImageMask the default /Decode [0 1] paints sample 0, and /Decode [1 0] paints sample 1.
   const paintBit = imageInfo.decodeInvert ? 1 : 0;
 
   for (let y = 0; y < height; y++) {
@@ -1863,7 +1790,6 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
         rgbaData[pi + 2] = b;
         rgbaData[pi + 3] = 255;
       }
-      // else: leave as transparent (0,0,0,0)
     }
   }
 
@@ -1871,10 +1797,10 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
 }
 
 /**
- * Compose `smask`'s snapshotted `parentCtm` with `composedBase`, returning a new wrapper without mutating the shared smask object.
- * The parentCtm was snapshotted when `/gs` set the soft mask, in the coordinate space active then.
- * When the op is later composed with parent form transforms,
- * parentCtm must be composed the same way so the SMask form ends up in the correct page-space location.
+ * Compose `smask`'s snapshotted `parentCtm` with `composedBase`.
+ * The smask object is shared, so a new wrapper is returned rather than mutating it.
+ * `parentCtm` was snapshotted in the coordinate space active when `/gs` set the soft mask.
+ * Any later parent form transform must be composed into it too, or the SMask form lands in the wrong page-space location.
  * @param {SmaskRef} smask
  * @param {number[]} composedBase
  * @returns {SmaskRef}
@@ -1887,7 +1813,6 @@ function transformSmaskCtm(smask, composedBase) {
 
 /**
  * Apply a Form XObject's composed transform to a draw op.
- * Images get their CTM composed; text/type3/path ops get their coordinates transformed.
  * @param {DrawOp} op
  * @param {number[]} composedBase - The form's composed transform matrix
  * @returns {DrawOp}
@@ -1895,8 +1820,6 @@ function transformSmaskCtm(smask, composedBase) {
 function applyFormTransform(op, composedBase) {
   /**
    * Apply the form transform `composedBase` to the op's secondary coordinate references.
-   * These are its smask parent CTMs and its fill/stroke tiling- and shading-pattern matrices.
-   * They are defined in form-local space, so each is composed with `composedBase` to bring it into the surrounding coordinate space.
    * Mutates `result` in place.
    * @param {DrawOp} result
    */
@@ -1905,7 +1828,6 @@ function applyFormTransform(op, composedBase) {
     if (op.outerSmask) result.outerSmask = transformSmaskCtm(op.outerSmask, composedBase);
     if (op.tilingPattern) result.tilingPattern = { ...op.tilingPattern, matrix: matMul(op.tilingPattern.matrix, composedBase) };
     if (op.patternShading?.matrix) result.patternShading = { ...op.patternShading, matrix: matMul(op.patternShading.matrix, composedBase) };
-    // strokeTilingPattern and strokePatternShading are declared only on path ops.
     if (op.type === 'path' && result.type === 'path') {
       if (op.strokeTilingPattern) result.strokeTilingPattern = { ...op.strokeTilingPattern, matrix: matMul(op.strokeTilingPattern.matrix, composedBase) };
       if (op.strokePatternShading?.matrix) result.strokePatternShading = { ...op.strokePatternShading, matrix: matMul(op.strokePatternShading.matrix, composedBase) };
@@ -1964,8 +1886,7 @@ function applyFormTransform(op, composedBase) {
 }
 
 /**
- * Flatten image draw operations by expanding Form XObject references into their
- * constituent image draw operations with composed CTMs.
+ * Flatten image draw operations by expanding Form XObject references into their constituent image draw operations with composed CTMs.
  *
  * @param {Array<ImageDrawOp>} imageOps - Image-type draw ops only
  * @param {Map<string, import('./parsePdfImages.js').ImageInfo>} images
@@ -2003,11 +1924,7 @@ async function flattenDrawOps(
   /** @type {Array<DrawOp>} */
   const flattened = [];
   if (depth > 200) return flattened;
-  // Backstop against pathological/malicious form nesting.
-  // depth > 200 guard above bounds recursion depth.
-  // callCount guard bounds total breadth.
-  // Legitimate documents with ~11k objects at this path have been encountered,
-  // so this is currently set to a high number.
+  // The callCount limit is high because legitimate documents reach ~11k objects at this path.
   const callCount = (formResourceCache.get('_callCount') || 0) + 1;
   formResourceCache.set('_callCount', callCount);
   if (callCount > 100000) return flattened;
@@ -2037,31 +1954,23 @@ async function flattenDrawOps(
       continue;
     }
 
-    // Check if this is a Form XObject that we can recurse into
     const formInfo = forms.get(fullName);
     if (!formInfo) continue;
 
     const formObjText = objCache.getObjectText(formInfo.objNum);
     if (!formObjText) continue;
 
-    // Skip forms hidden by Optional Content
     if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache)) continue;
 
-    // Get the Form's own /Matrix (defaults to identity).
     const formMatrix = parseFormMatrix(formObjText, objCache);
 
-    // Compose: outerCTM * formMatrix
     const composedBase = matMul(formMatrix, op.ctm);
 
-    // Build a clip entry from the Form XObject's BBox so content outside
-    // the bounding box is clipped.  The BBox is in the form's local
-    // coordinate space, so its CTM is the composed form transform.
     /** @type {{path: any[], ctm: number[], evenOdd: boolean, fromFormObjNum?: number}|null} */
     let bboxClip = null;
     if (formInfo.bbox && formInfo.bbox.length === 4) {
-      // PDF spec §8.10.2: BBox is in form-local space and clips the form's content.
-      // BBox may be specified in any corner order — normalize to min/max so the clip
-      // is a positive rectangle regardless of how the producer wrote it.
+      // Per PDF spec section 8.10.2 the BBox is in form-local space, so its clip CTM is the composed form transform.
+      // Producers write BBox corners in any order, so normalize to min/max to get a positive rectangle.
       const bx0 = Math.min(formInfo.bbox[0], formInfo.bbox[2]);
       const by0 = Math.min(formInfo.bbox[1], formInfo.bbox[3]);
       const bx1 = Math.max(formInfo.bbox[0], formInfo.bbox[2]);
@@ -2080,19 +1989,15 @@ async function flattenDrawOps(
       };
     }
 
-    // Check if we've already parsed this Form XObject's resources and content.
-    // Same objNum always produces the same fonts, images, patterns, draw ops, etc.
-    // Only the prefix (for name lookups) and transform (for positioning) vary per call.
-    // Inherited text state (PDF spec §8.10.1) affects how the form's `T*`/`Tj`
-    // operators resolve to glyph positions, so include it in the cache key.
+    // The same objNum always yields the same fonts, images, patterns, and draw ops, so only the prefix and transform vary per call.
+    // Inherited text state (PDF spec section 8.10.1) changes how the form's `T*`/`Tj` operators resolve to glyph positions, so it belongs in the key too.
     const ts = op.textState || {
       tc: 0, tw: 0, tl: 0, tz: 100, trise: 0,
     };
     const cacheKey = `${formInfo.objNum}_${ts.tc}_${ts.tw}_${ts.tl}_${ts.tz}_${ts.trise}`;
     let cached = formResourceCache.get(cacheKey);
     if (!cached) {
-      // Parse the Form's own fonts — use a cache keyed by the font reference set
-      // to avoid re-parsing when many Form XObjects share the same fonts.
+      // Many Form XObjects share the same fonts, so cache the parse by the font reference set.
       const fontRefMatches = [...formObjText.matchAll(/\/Fo\w+\s+(\d+)\s+\d+\s+R/g)];
       const fontRefKey = fontRefMatches.map((m) => m[1]).sort().join(',');
       const cachedFontParse = fontRefKey ? formResourceCache.get(`_fonts_${fontRefKey}`) : null;
@@ -2105,14 +2010,12 @@ async function flattenDrawOps(
       }
       let effectiveFonts2 = fonts;
       let effectiveRegistered2 = registeredFontNames;
-      // Scope the symbol/PUA/rawCharCode tag-sets per form.
       // These classifications are keyed by the local font tag, whose meaning is scope-dependent.
-      // Without this, a symbol-encoded page /TT0 could mark a same-tagged non-symbol form /TT0 as symbol.
+      // Without scoping, a symbol-encoded page /TT0 could mark a same-tagged non-symbol form /TT0 as symbol.
       let effectiveSymbol2 = symbolFontTags;
       let effectiveCidPUA2 = cidPUATags;
       let effectiveRaw2 = rawCharCodeTags;
-      // Clone per form like the tag-sets: convertAndRegisterFont records collisions keyed by font tag,
-      // so a form-local tag would otherwise overwrite the parent's entry for the same tag.
+      // convertAndRegisterFont records collisions keyed by font tag, so without a per-form clone a form-local tag overwrites the parent's entry.
       let effectiveCidCollisionMap2 = cidCollisionMap;
       if (formFonts.size > 0) {
         effectiveFonts2 = new Map([...fonts, ...formFonts]);
@@ -2123,12 +2026,9 @@ async function flattenDrawOps(
         effectiveCidCollisionMap2 = new Map(cidCollisionMap);
         for (const [fontTag, fontObj] of formFonts) {
           // A Form XObject's local /Resources must shadow the parent scope.
-          // Even if the tag already exists (e.g. /C0_0 on the page and inside
-          // the form), re-register against the form font object so parseDrawOps
-          // resolves to the form-local family alias.
+          // Re-register even when the tag already exists (e.g. /C0_0 on both the page and the form), or parseDrawOps resolves to the parent's family alias.
           const formId = fullName.replace(/\//g, '_');
           const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, `${formId}_${fontTag}`);
-          // Clear the parent scope's classification for this tag.
           // convertAndRegisterFont only adds, so without this a non-symbol form font keeps a parent symbol tag.
           effectiveSymbol2.delete(fontTag);
           effectiveCidPUA2.delete(fontTag);
@@ -2141,8 +2041,7 @@ async function flattenDrawOps(
         appendGenericFallbacks(effectiveRegistered2, effectiveFonts2);
       }
 
-      // Cache all resource parsing by the full set of resource object refs.
-      // Many Form XObjects share identical Resources, so this avoids redundant parsing.
+      // Many Form XObjects share identical Resources, so this parse is cached by the resource object refs.
       const resRefMatches = [...formObjText.matchAll(/\/\w+\s+(\d+)\s+\d+\s+R/g)];
       const resKey = resRefMatches.map((m) => m[1]).join(',');
       const cachedRes = resKey ? formResourceCache.get(`_res_${resKey}`) : null;
@@ -2208,19 +2107,16 @@ async function flattenDrawOps(
       formResourceCache.set(cacheKey, cached);
     }
 
-    // Resolve the form's effective inherited fill/stroke color.
     // Per PDF spec section 8.10.1, a form inherits its caller's graphics state at the time of `Do`.
     // The Do op was emitted by the caller's parser with the caller's then-current colors.
-    // If the caller never explicitly set a color before invoking the form (so the Do op was tagged as inherited),
-    // fall back to this function's inherited param so the chain propagates through nested forms.
+    // When the caller never set a color explicitly, the Do op is tagged inherited and this function's inherited param takes over, so the chain propagates through nested forms.
     const formInheritedFill = op.fillColorInherited ? inheritedFillColor : op.fillColor;
     const formInheritedStroke = op.strokeColorInherited ? inheritedStrokeColor : (op.strokeColor || inheritedStrokeColor);
     const formInheritedFillAlpha = op.fillAlphaInherited ? inheritedFillAlpha : (op.fillAlpha != null ? op.fillAlpha : 1);
     const formInheritedStrokeAlpha = op.strokeAlphaInherited ? inheritedStrokeAlpha : (op.strokeAlpha != null ? op.strokeAlpha : 1);
 
-    // Per-call expansion (no expandedOps cache): the cached `rawFormDrawOps` carry inheritance markers
-    // so the same parsed form can be reused across callers, but each invocation resolves the markers against its own parent context.
-    // Register images/forms with current prefix for the recursive flattening
+    // The cached `rawFormDrawOps` carry inheritance markers, so the same parsed form can be reused across callers.
+    // The expansion itself is not cached, because each invocation must resolve those markers against its own parent context.
     for (const [name, info] of cached.formImagesResult.images) {
       images.set(`${fullName}/${name}`, info);
     }
@@ -2253,21 +2149,14 @@ async function flattenDrawOps(
     const effectiveRaw = cached.effectiveRaw || rawCharCodeTags;
     const effectiveCidCollisionMap = cached.effectiveCidCollisionMap || cidCollisionMap;
     const innerPrefix = `${fullName}/`;
-    // If this Form is a transparency group AND we have a group context,
-    // allocate a groupId and capture the outer GS attributes that apply at composite time.
-    // Inner ops will be tagged with this groupId and will NOT carry these attributes.
     let formGroupId = null;
-    // Only isolate when the composite step is non-trivial: a non-Normal blend mode, sub-1 alpha, or an SMask.
-    // With Normal/1.0/no-mask, isolating to a transparent canvas and source-over'ing back
-    // is functionally identical to drawing directly, but breaks blend modes inside the group that depend on
-    // the backdrop (Multiply, Darken, etc.).
-    // Both outermost and nested groups register here. The renderer maintains a stack of group canvases.
+    // Isolating a trivial composite (Normal, alpha 1, no mask) to a transparent canvas and source-over'ing back draws identically.
+    // It also breaks child blends that depend on the backdrop (Multiply, Darken), so isolation is gated on a non-trivial composite.
     const compositeIsTrivial = (!op.blendMode || op.blendMode === 'Normal')
       && (op.fillAlpha == null || op.fillAlpha >= 1)
       && (op.strokeAlpha == null || op.strokeAlpha >= 1)
       && !op.smask;
-    // A group whose only non-triviality is its group alpha needs no isolation buffer.
-    // The alpha folds directly into its single op.
+    // When a group's only non-triviality is its alpha and it holds a single op, the alpha folds into that op and no isolation buffer is needed.
     const singleOpAlphaGroup = !compositeIsTrivial
       && (!op.blendMode || op.blendMode === 'Normal')
       && !op.smask
@@ -2275,12 +2164,9 @@ async function flattenDrawOps(
       && cached.rawFormDrawOps.length === 1
       && cached.rawFormDrawOps[0].type !== 'image'
       && !(cached.rawFormDrawOps[0].fill && cached.rawFormDrawOps[0].stroke);
-    // An isolated group composites against a fully transparent backdrop.
-    // A child blend that depends on the backdrop (Screen, Multiply, Darken...) needs that:
-    // when the group's own composite is trivial, the isolation above is skipped,
-    // the child blends against the parent (e.g. the white page), and Screen-over-white erases it.
-    // So force a buffer when an isolated group has a direct op with a non-Normal blend
-    // (a blend nested deeper inside a child form is not inspected here).
+    // An isolated group composites against a fully transparent backdrop, which is what a backdrop-dependent child blend needs.
+    // Skipping isolation leaves the child blending against the parent instead, so Screen over a white page erases it.
+    // Only direct ops are inspected, so a blend nested deeper inside a child form still misses this.
     const isolatedNeedsBuffer = formInfo.transparencyGroup && formInfo.transparencyGroup.isolated
       && cached.rawFormDrawOps.some((fop) => fop.blendMode && fop.blendMode !== 'Normal');
     if (groupContext && formInfo.transparencyGroup && (!compositeIsTrivial || isolatedNeedsBuffer) && !singleOpAlphaGroup) {
@@ -2310,9 +2196,7 @@ async function flattenDrawOps(
           formInheritedFillAlpha, formInheritedStrokeAlpha,
           groupContext, innerGroupId,
         );
-        // Compose this form's transform onto the SMask of every transparency group registered while flattening this child op.
-        // applyFormTransform below re-composes each returned content op with composedBase,
-        // but a group's SMask lives in the registry rather than on an op, so applyFormTransform never reaches it.
+        // applyFormTransform below re-composes each returned content op with composedBase, but a group's SMask lives in the registry rather than on an op, so it never reaches one.
         if (groupContext) {
           for (let gid = nestedGroupIdStart; gid < groupContext.nextId; gid++) {
             const ga = groupContext.registry.get(gid);
@@ -2325,8 +2209,6 @@ async function flattenDrawOps(
       }
     }
 
-    // Apply the parent's transform, clipping, SMask, alpha to each op.
-    // Resolve any inheritance markers against this form's effective parent colors.
     const hasFormSiblingSmasks = op.smask && expandedFormOps.some((fop) => fop.smask);
     for (const innerOp of expandedFormOps) {
       const transformed = applyFormTransform(innerOp, composedBase);
@@ -2342,9 +2224,7 @@ async function flattenDrawOps(
       const strokeAlphaInherited = innerOp.strokeAlphaInherited;
       delete transformed.fillAlphaInherited;
       delete transformed.strokeAlphaInherited;
-      // Propagate parent clip paths (from W/W* before Do) to inner ops.
-      // Clone each clip so the rotation transform (which mutates ctm in-place)
-      // doesn't corrupt shared references across sibling ops.
+      // Clone each clip because the rotation transform mutates ctm in place, which would corrupt references shared across sibling ops.
       if (op.clips && op.clips.length > 0) {
         if (!transformed.clips) transformed.clips = [];
         for (const c of op.clips) transformed.clips.push({ ...c, ctm: c.ctm.slice() });
@@ -2353,9 +2233,7 @@ async function flattenDrawOps(
         if (!transformed.clips) transformed.clips = [];
         transformed.clips.push({ ...bboxClip, ctm: bboxClip.ctm.slice() });
       }
-      // When the outer form is a transparency group, the GS attributes
-      // (blendMode, alpha, smask) apply at group composite time, not per-op,
-      // so we must NOT propagate them down to inner ops.
+      // When the outer form is a transparency group its GS attributes (blendMode, alpha, smask) apply at group composite time, so they must not propagate to inner ops.
       if (formGroupId === null) {
         if (op.smask) {
           if (hasFormSiblingSmasks) {
@@ -2365,8 +2243,6 @@ async function flattenDrawOps(
           }
         }
         if (singleOpAlphaGroup) {
-          // No isolation buffer: fold the group alpha into the single op so it
-          // composites as content x groupAlpha, matching the isolated result.
           const ownFill = fillAlphaInherited ? 1 : (transformed.fillAlpha != null ? transformed.fillAlpha : 1);
           const ownStroke = strokeAlphaInherited ? 1 : (transformed.strokeAlpha != null ? transformed.strokeAlpha : 1);
           if (op.fillAlpha != null) transformed.fillAlpha = ownFill * op.fillAlpha;
@@ -2378,7 +2254,6 @@ async function flattenDrawOps(
         if (op.blendMode && !transformed.blendMode) transformed.blendMode = op.blendMode;
       }
       if (op.overprint && !transformed.overprint) transformed.overprint = true;
-      // Tag with innermost active groupId if not already tagged by deeper recursion.
       if (innerGroupId !== null && transformed.groupId === undefined) {
         transformed.groupId = innerGroupId;
       }
@@ -2398,7 +2273,6 @@ async function flattenDrawOps(
 
 /**
  * Parse the /BM blend mode from an ExtGState dict.
- * Returns null when /BM is absent.
  *
  * @param {string} gsObjText - Raw text of the ExtGState dict
  * @returns {string|null}
@@ -2417,9 +2291,8 @@ function parseBlendMode(gsObjText) {
 }
 
 /**
- * Parse the /TR transfer function from a soft mask dict. /TR maps mask
- * luminosity (or alpha) to the final mask alpha; /Identity (or absent)
- * means no transform. Returns a parsed function or null.
+ * Parse the /TR transfer function from a soft mask dict.
+ * /Identity, or an absent /TR, means no transform.
  *
  * @param {string} smaskDict
  * @param {ObjectCache} objCache
@@ -2441,8 +2314,8 @@ function parseSmaskTR(smaskDict, objCache) {
 }
 
 /**
- * Parse a soft mask's /BC backdrop colour array (components in the mask group's
- * colour space). Returns null when absent (the spec default is black).
+ * Parse a soft mask's /BC backdrop colour array, in the mask group's colour space.
+ * Null means absent, for which the spec default is black.
  * @param {string} smaskDict
  * @param {ObjectCache} objCache
  * @returns {number[]|null}
@@ -2467,7 +2340,7 @@ function parseSmaskBC(smaskDict, objCache) {
  * Parse extended graphics states from a page's Resources dictionary.
  * @param {string} pageObjText Page object text.
  * @param {ObjectCache} objCache Object cache for resolving references.
- * @returns {Map<string, object>} Map of graphics state names to state properties (fillAlpha, strokeAlpha, blendMode, smask, overprint).
+ * @returns {Map<string, object>} Map of graphics state names to their parsed properties.
  */
 function parseExtGStates(pageObjText, objCache) {
   const states = new Map();
@@ -2501,7 +2374,7 @@ function parseExtGStates(pageObjText, objCache) {
   }
   if (!gsDictText) return states;
 
-  // Extract each GState entry: /GS1 N 0 R or /GS1 << ... >>
+  // Each GState entry given as an indirect reference: /GS1 N 0 R
   const gsEntryRegex = /\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g;
   for (const match of gsDictText.matchAll(gsEntryRegex)) {
     const gsName = match[1];
@@ -2511,23 +2384,20 @@ function parseExtGStates(pageObjText, objCache) {
 
     /** @type {ExtGStateEntry} */
     const entry = {};
-    // /ca = fill alpha (non-stroking), /CA = stroke alpha (stroking)
     const fillA = resolveNumValue(gsObj, 'ca', objCache, Number.NaN);
     const strokeA = resolveNumValue(gsObj, 'CA', objCache, Number.NaN);
     if (!Number.isNaN(fillA)) entry.fillAlpha = fillA;
     if (!Number.isNaN(strokeA)) entry.strokeAlpha = strokeA;
 
-    // /op = overprint for non-stroking, /OP = overprint for stroking
     const opMatch = /\/op\s+(true|false)/.exec(gsObj);
     const OPMatch = /\/OP\s+(true|false)/.exec(gsObj);
-    // /op takes precedence for non-stroking; if absent, /OP applies to both
+    // /op takes precedence for non-stroking, and /OP applies to both when /op is absent.
     if (opMatch) {
       entry.overprint = opMatch[1] === 'true';
     } else if (OPMatch) {
       entry.overprint = OPMatch[1] === 'true';
     }
 
-    // /SMask — soft mask (luminosity or alpha)
     if (/\/SMask\s*\/None/.test(gsObj)) {
       entry.smask = null; // explicitly clear
     } else {
@@ -2536,7 +2406,6 @@ function parseExtGStates(pageObjText, objCache) {
       if (smaskRef) {
         smaskDict = objCache.getObjectText(Number(smaskRef[1]));
       } else {
-        // Try inline SMask dictionary: /SMask << /G ... >>
         const smaskIdx = gsObj.indexOf('/SMask');
         if (smaskIdx !== -1) {
           const afterSmask = gsObj.substring(smaskIdx + 6).trim();
@@ -2559,15 +2428,12 @@ function parseExtGStates(pageObjText, objCache) {
       }
     }
 
-    // /BM = blend mode (name, or array of names per PDF spec 11.3.5)
     const bm = parseBlendMode(gsObj);
     if (bm) entry.blendMode = bm;
 
-    // /LW = line width
     const lw = resolveNumValue(gsObj, 'LW', objCache, Number.NaN);
     if (!Number.isNaN(lw)) entry.lineWidth = lw;
 
-    // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
     const lc = resolveIntValue(gsObj, 'LC', objCache, -1);
     if (lc !== -1) entry.lineCap = lc;
     const lj = resolveIntValue(gsObj, 'LJ', objCache, -1);
@@ -2593,7 +2459,7 @@ function parseExtGStates(pageObjText, objCache) {
   let inlineMatch;
   while ((inlineMatch = inlineGsRegex.exec(gsDictText)) !== null) {
     const gsName = inlineMatch[1];
-    if (states.has(gsName)) continue; // Already parsed from indirect ref
+    if (states.has(gsName)) continue;
     const dictText = extractDict(gsDictText, inlineMatch.index + inlineMatch[0].length - 2);
     if (!dictText) continue;
 
@@ -2612,7 +2478,6 @@ function parseExtGStates(pageObjText, objCache) {
       entry.overprint = OPMatch2[1] === 'true';
     }
 
-    // /SMask — soft mask (luminosity or alpha)
     if (/\/SMask\s*\/None/.test(dictText)) {
       entry.smask = null;
     } else {
@@ -2621,7 +2486,6 @@ function parseExtGStates(pageObjText, objCache) {
       if (smaskRef) {
         smaskDict = objCache.getObjectText(Number(smaskRef[1]));
       } else {
-        // Try inline SMask dictionary: /SMask << /G ... >>
         const smaskIdx = dictText.indexOf('/SMask');
         if (smaskIdx !== -1) {
           const afterSmask = dictText.substring(smaskIdx + 6).trim();
@@ -2644,15 +2508,12 @@ function parseExtGStates(pageObjText, objCache) {
       }
     }
 
-    // /BM = blend mode (name, or array of names per PDF spec 11.3.5)
     const bm2 = parseBlendMode(dictText);
     if (bm2) entry.blendMode = bm2;
 
-    // /LW = line width
     const lw2 = resolveNumValue(dictText, 'LW', objCache, Number.NaN);
     if (!Number.isNaN(lw2)) entry.lineWidth = lw2;
 
-    // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
     const lc2 = resolveIntValue(dictText, 'LC', objCache, -1);
     if (lc2 !== -1) entry.lineCap = lc2;
     const lj2 = resolveIntValue(dictText, 'LJ', objCache, -1);
@@ -2677,12 +2538,11 @@ function parseExtGStates(pageObjText, objCache) {
 }
 
 /**
- * Find a top-level key inside a PDF dict string. The dict must start with `<<`
- * at some position in `dictText`. Returns the index where `key` occurs at
- * depth 1 (directly inside the outer dict), or -1.
+ * Find a top-level key inside a PDF dict string.
+ * Returns the index where `key` occurs at depth 1, directly inside the outer `<<`, or -1.
  *
  * @param {string} dictText
- * @param {string} key - e.g. "/ColorSpace" — includes the leading slash
+ * @param {string} key - includes the leading slash, e.g. "/ColorSpace"
  */
 function findTopLevelKey(dictText, key) {
   let depth = 0;
@@ -2713,8 +2573,7 @@ function findTopLevelKey(dictText, key) {
 }
 
 /**
- * Parse ColorSpace entries from page resources to identify Separation color spaces.
- * Returns a map of resource names to objects with type string and optional tint samples.
+ * Parse the /ColorSpace entries of a page's Resources dict.
  *
  * @param {string} pageObjText - Raw text of the Page object
  * @param {ObjectCache} objCache - PDF object cache
@@ -2723,10 +2582,7 @@ function parsePageColorSpaces(pageObjText, objCache) {
   /** @type {Map<string, {type: string, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid?: object|null, indexedInfo?: object|null, labWhitePoint?: number[]|null}>} */
   const colorSpaces = new Map();
 
-  // Extract the Resources dict text. The Resources may be an indirect reference
-  // or an inline dict. We must narrow to the Resources dict before searching for
-  // /ColorSpace, because nested dicts (e.g. /Shading << /Sh10 << /ColorSpace /DeviceCMYK ... >>)
-  // contain their own /ColorSpace keys that would otherwise be picked up first.
+  // Narrow to the Resources dict first, because nested dicts (e.g. /Shading << /Sh10 << /ColorSpace /DeviceCMYK >>) carry their own /ColorSpace keys.
   let resourcesText = null;
   const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
   if (resRefMatch) {
@@ -2740,8 +2596,6 @@ function parsePageColorSpaces(pageObjText, objCache) {
   }
   if (!resourcesText) return colorSpaces;
 
-  // Find /ColorSpace at the top level of the Resources dict (depth 1 inside the outer <<>>).
-  // A naïve indexOf would match /ColorSpace keys inside nested Shading or Pattern dicts.
   const csStart = findTopLevelKey(resourcesText, '/ColorSpace');
   if (csStart === -1) return colorSpaces;
 
@@ -2758,7 +2612,7 @@ function parsePageColorSpaces(pageObjText, objCache) {
   }
   if (!csDictText) return colorSpaces;
 
-  // Extract each color space entry: /Cs6 N 0 R or /Cs6 [/ICCBased ...]
+  // Each color space entry given as an indirect reference: /Cs6 N 0 R
   const csEntryRegex = /\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g;
   for (const match of csDictText.matchAll(csEntryRegex)) {
     const csName = match[1];
@@ -2770,9 +2624,7 @@ function parsePageColorSpaces(pageObjText, objCache) {
       let nComponents = 3;
       let csType = typeMatch[1];
       let deviceNGrid = null;
-      // Single-colorant DeviceN (e.g. [/DeviceN [/Black] /DeviceCMYK ...]) is functionally
-      // equivalent to Separation — needs ink inversion for scn color handling.
-      // Multi-colorant DeviceN uses a sampled tint transform grid for color conversion.
+      // Single-colorant DeviceN (e.g. [/DeviceN [/Black] /DeviceCMYK ...]) is functionally equivalent to Separation, and needs the same ink inversion in scn handling.
       if (csType === 'DeviceN') {
         const namesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csObjText);
         if (namesMatch) {
@@ -2780,14 +2632,10 @@ function parsePageColorSpaces(pageObjText, objCache) {
           if (colorants.length === 1) {
             csType = 'Separation';
           } else if (colorants.length >= 2) {
-            // Multi-colorant DeviceN: parse the tint transform and pre-compute an RGB grid.
             const tintInfo = parseSeparationTint(csObjText, objCache);
             if (tintInfo.tintSamples) {
-              // tintSamples are pre-computed RGB values from the sampled function.
-              // For a 2-input function with Size [S0, S1], there are S0*S1 samples.
-              // parseSeparationTint treats them as a flat 1D array — we need the grid dimensions.
+              // parseSeparationTint returns the RGB samples as a flat array, so the grid dimensions have to be recovered from /Size.
               const sizeMatch = /\/Size\s*\[\s*([\d\s]+)\]/.exec(csObjText);
-              // Also check the tint function object for Size
               const allRefs = [...csObjText.matchAll(/(\d+)\s+\d+\s+R/g)];
               let funcObjText = null;
               if (allRefs.length > 0) {
@@ -2863,7 +2711,6 @@ function parsePageColorSpaces(pageObjText, objCache) {
         }
       }
       const arrText = arrEnd > 0 ? csDictText.substring(arrStart, arrEnd) : '';
-      // Single-colorant DeviceN → treat as Separation
       if (csType === 'DeviceN' && arrText) {
         const namesMatch = /\/DeviceN\s*\[\s*((?:\/\w+\s*)+)\]/.exec(arrText);
         if (namesMatch) {
@@ -2905,9 +2752,6 @@ function parsePageColorSpaces(pageObjText, objCache) {
 
 /**
  * Convert a parsed function's output components to an `rgb(r,g,b)` string for a gradient stop.
- * The component meaning depends on the shading's color space:
- * DeviceN/Separation tints route through the tint transform, CMYK through `cmykToRgb`,
- * otherwise the first one (gray) or three (RGB) outputs are used.
  *
  * @param {number[]} values
  * @param {ShadingColorInfo} colorInfo
@@ -2939,9 +2783,8 @@ function shadingValuesToColor(values, colorInfo) {
 
 /**
  * Sample a parsed PDF function into axial/radial gradient color stops.
- * Accepts either a single function whose outputs are the color components,
- * or an array of functions (the shading's `/Function [F0 F1 ...]` form)
- * where each function supplies one component from its first output.
+ * A single function's outputs are the color components.
+ * An array of functions is the shading's `/Function [F0 F1 ...]` form, where each supplies one component from its first output.
  *
  * @param {import('./pdfColorFunctions.js').ParsedFunction
  *   | Array<import('./pdfColorFunctions.js').ParsedFunction|null>} fn
@@ -2972,7 +2815,7 @@ function functionToShadingStops(fn, colorInfo) {
 }
 
 /**
- * Approximate ShadingType 1 shading, where color is defined by function, with an axial gradient.
+ * Approximate a ShadingType 1 (function-based) shading with an axial gradient.
  * Returns null when the shading's function cannot be parsed.
  *
  * @param {string} shadingDict - the Shading dictionary text
@@ -3034,9 +2877,7 @@ function type1ShadingToAxial(shadingDict, objCache, colorInfo) {
 }
 
 /**
- * Compute a Coons patch interior control point from 12 boundary control points
- * (PDF spec §8.7.4.5.7).
- * (-4*corner + 6*(adj1+adj2) - 2*(far1+far2) + 3*(diag1+diag2) - opp) / 9
+ * Compute a Coons patch interior control point from 12 boundary control points (PDF spec section 8.7.4.5.7).
  *
  * @param {number[]} corner
  * @param {number[]} adj1
@@ -3056,8 +2897,7 @@ function coonsInteriorPt(corner, adj1, adj2, far1, far2, diag1, diag2, opp) {
 
 /**
  * Parse a Type 6 (Coons) or Type 7 (tensor-product) mesh patch shading.
- * Reads the binary stream data and returns an array of patches, each with a 4×4 grid
- * of control points and 4 corner colors in RGB.
+ * Returns an array of patches, each with a 4x4 grid of control points and 4 corner colors in RGB.
  *
  * @param {string} shObjText - Raw text of the Shading object
  * @param {number} shObjNum - Object number of the Shading stream
@@ -3072,7 +2912,7 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
   if (!bpc || !bpco || !bpf || !decodeStr) return null;
 
   const decode = decodeStr.split(/\s+/).map(Number);
-  // Derive nComps from Decode array: [xmin xmax ymin ymax c1min c1max ... cnmin cnmax]
+  // Decode is [xmin xmax ymin ymax c1min c1max ... cnmin cnmax].
   const nComps = (decode.length - 4) / 2;
 
   const streamBytes = objCache.getStreamBytes(shObjNum);
@@ -3080,7 +2920,6 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
 
   const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
-  // Bit reader
   let bitPos = 0;
   const totalBits = streamBytes.length * 8;
 
@@ -3121,12 +2960,10 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
   }
 
   /**
-   * Map 12 stream-order points to the non-inherited positions in the 4×4 grid.
+   * Map 12 stream-order points to the non-inherited positions in the 4x4 grid.
    * Stream order: p13, p23, p33, p32, p31, p30, p20, p10, p11, p12, p22, p21
-   * (same for both flag=0's last 12 and flag!=0's 12 points in Type 7)
    */
   function mapStreamPoints12(p) {
-    // Stream order: p13, p23, p33, p32, p31, p30, p20, p10, p11, p12, p22, p21
     return [
       [p[7], p[8], p[9], p[0]], // i=1: p10, p11, p12, p13
       [p[6], p[11], p[10], p[1]], // i=2: p20, p21, p22, p23
@@ -3134,7 +2971,6 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
     ];
   }
 
-  // Bits needed to check before reading a patch
   const bitsNewT7 = bpf + 32 * bpco + 4 * nComps * bpc;
   const bitsContT7 = bpf + 24 * bpco + 2 * nComps * bpc;
   const bitsNewT6 = bpf + 24 * bpco + 4 * nComps * bpc;
@@ -3156,7 +2992,6 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
     let colors; // [c00, c03, c33, c30] as RGB [r,g,b]
 
     if (shadingType === 7) {
-      // --- Type 7: tensor-product patch mesh (16 control points) ---
       if (flag === 0) {
         const p = [];
         for (let k = 0; k < 16; k++) p.push(readCoord());
@@ -3189,7 +3024,6 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
         colors = [ic00, ic03, nc33, nc30];
       }
     } else {
-      // --- Type 6: Coons patch mesh (12 boundary control points) ---
       let bp00;
       let bp10;
       let bp20;
@@ -3216,7 +3050,7 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
         bp31 = p[4]; bp32 = p[5]; bp33 = p[6];
         bp23 = p[7]; bp13 = p[8]; bp03 = p[9];
         bp02 = p[10]; bp01 = p[11];
-        cc00 = c[0]; cc30 = c[1]; cc33 = c[2]; cc03 = c[3]; // c1=c00, c2=c30, c3=c33, c4=c03
+        cc00 = c[0]; cc30 = c[1]; cc33 = c[2]; cc03 = c[3];
       } else {
         // Inherit 4 boundary points (bottom edge of new = one edge of previous) + 2 colors
         if (flag === 1) {
@@ -3240,7 +3074,6 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
         bp02 = p[6]; bp01 = p[7];
       }
 
-      // Compute 4 interior points from boundary using Coons patch formulas
       const bp11 = coonsInteriorPt(bp00, bp01, bp10, bp03, bp30, bp13, bp31, bp33);
       const bp12 = coonsInteriorPt(bp03, bp02, bp13, bp00, bp33, bp10, bp32, bp30);
       const bp21 = coonsInteriorPt(bp30, bp31, bp20, bp33, bp00, bp23, bp01, bp03);
@@ -3265,14 +3098,11 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
 
 /**
  * Render mesh patch shading (Types 6/7) onto a canvas context.
- * Rasterizes patches to an ImageData pixel buffer for performance (avoids millions of
- * Canvas 2D path API calls), then composites via drawImage which respects the active clip.
  *
  * @param {CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D} ctx
  * @param {Array<{points: number[][][], colors: number[][]}>} patches
  */
 function renderMeshPatches(ctx, patches) {
-  // Read the current canvas transform to map shading coords → canvas pixels
   const xform = ctx.getTransform();
   const ta = xform.a;
   const tb = xform.b;
@@ -3281,7 +3111,6 @@ function renderMeshPatches(ctx, patches) {
   const te = xform.e;
   const tf = xform.f;
 
-  // Compute canvas-pixel bounding box of all patches
   let minPx = Infinity;
   let minPy = Infinity;
   let maxPx = -Infinity;
@@ -3307,14 +3136,14 @@ function renderMeshPatches(ctx, patches) {
   const h = Math.ceil(maxPy) - oy + 1;
   if (w <= 0 || h <= 0 || w > 8000 || h > 8000) return;
 
-  // Rasterize all patches into a pixel buffer
+  // Rasterizing into one pixel buffer avoids the millions of Canvas 2D path calls a per-patch fill would cost.
   const tmpCanvas = ca.makeCanvas(w, h);
   const tmpCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmpCanvas.getContext('2d', { willReadFrequently: true }));
   const imgData = tmpCtx.createImageData(w, h);
   const pix = imgData.data;
 
   // With thousands of patches only a few pixels wide, a fixed 32x32 grid per patch is far finer than the pixels show, so scaling subdivisions to patch size is much cheaper and looks the same.
-  // This is gated to small-scale (thumbnail) output, leaving full-resolution renders on the fixed grid, since at full resolution the gain did not justify altering the shared mesh render.
+  // It is gated to small-scale (thumbnail) output because at full resolution the saving is small.
   const MAX_N = 32;
   const outScale = Math.sqrt(Math.abs(ta * td - tb * tc)) || 1;
   const adaptTess = outScale < 1.5;
@@ -3357,7 +3186,6 @@ function renderMeshPatches(ctx, patches) {
     }
     const basis = basisFor(N);
 
-    // Evaluate surface on (N+1)×(N+1) grid in canvas-pixel coords
     const gx = new Float64Array((N + 1) * (N + 1));
     const gy = new Float64Array((N + 1) * (N + 1));
     for (let jv = 0; jv <= N; jv++) {
@@ -3380,7 +3208,6 @@ function renderMeshPatches(ctx, patches) {
       }
     }
 
-    // For each cell, fill its bounding-box pixels in the ImageData
     for (let jv = 0; jv < N; jv++) {
       for (let iu = 0; iu < N; iu++) {
         const i00 = jv * (N + 1) + iu;
@@ -3388,13 +3215,11 @@ function renderMeshPatches(ctx, patches) {
         const i01 = i00 + (N + 1);
         const i11 = i01 + 1;
 
-        // Cell bounding box
         const x0 = Math.max(0, Math.floor(Math.min(gx[i00], gx[i10], gx[i01], gx[i11])));
         const y0 = Math.max(0, Math.floor(Math.min(gy[i00], gy[i10], gy[i01], gy[i11])));
         const x1 = Math.min(w - 1, Math.ceil(Math.max(gx[i00], gx[i10], gx[i01], gx[i11])));
         const y1 = Math.min(h - 1, Math.ceil(Math.max(gy[i00], gy[i10], gy[i01], gy[i11])));
 
-        // Cell center color (bilinear interpolation)
         const u = (iu + 0.5) / N;
         const v = (jv + 0.5) / N;
         const u1 = 1 - u;
@@ -3420,7 +3245,7 @@ function renderMeshPatches(ctx, patches) {
     }
   }
 
-  // Composite onto the main canvas — drawImage respects the active clip path
+  // putImageData would ignore the active clip, so composite through drawImage instead.
   tmpCtx.putImageData(imgData, 0, 0);
   ctx.save();
   ctx.resetTransform();
@@ -3431,8 +3256,6 @@ function renderMeshPatches(ctx, patches) {
 
 /**
  * Render Gouraud-shaded triangles (ShadingType 4) into the current canvas context.
- * Each triangle has 3 vertices with coordinates and RGB colors; interior pixels are
- * barycentric-interpolated.
  * @param {OffscreenCanvasRenderingContext2D} ctx
  * @param {Array<{vertices: number[][], colors: number[][]}>} triangles
  * @param {number[]|null} [clipBounds] - Optional [xMin, yMin, xMax, yMax] in device
@@ -3440,7 +3263,6 @@ function renderMeshPatches(ctx, patches) {
  * @param {number[]} [canvasDims] - [width, height] of the canvas, used as fallback when clipBounds is null
  */
 function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
-  // Full pixel-level Gouraud interpolation
   const xform = ctx.getTransform();
   const ta = xform.a;
   const tb = xform.b;
@@ -3464,10 +3286,8 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
     }
   }
 
-  // Clamp bounding box to clip bounds (if provided) or canvas dimensions.
-  // Pattern-fill triangles can have extreme vertices (Decode range [-16384,16384])
-  // spanning far beyond the visible area. Clamping to clip bounds is critical
-  // for performance when called thousands of times.
+  // Pattern-fill triangles can have extreme vertices (Decode range [-16384,16384]) spanning far beyond the visible area.
+  // Clamping matters for performance because this is called thousands of times.
   const bxMin = clipBounds ? clipBounds[0] : 0;
   const byMin = clipBounds ? clipBounds[1] : 0;
   const bxMax = clipBounds ? clipBounds[2] : (canvasDims ? canvasDims[0] : 8000);
@@ -3524,10 +3344,8 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
     }
   }
 
-  // Composite via a temp canvas + drawImage so the active clip path is respected.
-  // putImageData ignores clips; drawImage after resetTransform loses clip context.
-  // Instead, put pixels into a temp canvas, then drawImage in identity space —
-  // the clip was set before any transform changes, so it persists correctly.
+  // putImageData would ignore the active clip, so the pixels go through a temp canvas and drawImage instead.
+  // The clip was set before any transform changes, so it survives the resetTransform here.
   tmpCtx.putImageData(imgData, 0, 0);
   ctx.save();
   ctx.resetTransform();
@@ -3539,12 +3357,9 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
 /**
  * Build a per-vertex/per-corner color evaluator for a mesh shading (types 4-7).
  *
- * The returned function takes the color components decoded from the shading
- * stream for one vertex/corner. When the shading has a /Function those are the
- * function's parametric input(s), which it maps to colorant values in /ColorSpace.
- * Otherwise they are colorant values directly. Either way the colorant values are
- * converted to sRGB through /ColorSpace (DeviceN/Separation tint transform,
- * DeviceCMYK, DeviceGray, etc.).
+ * The returned function takes the color components decoded from the shading stream for one vertex or corner.
+ * With a /Function those components are its parametric inputs, which it maps to colorant values; without one they are colorant values already.
+ * Either way the colorant values are converted to sRGB through /ColorSpace.
  *
  * @param {string} shObjText - Raw text of the Shading object
  * @param {ObjectCache} objCache
@@ -3659,7 +3474,6 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
 
   const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
-  // Bit reader
   let bitPos = 0;
   const totalBits = streamBytes.length * 8;
 
@@ -3700,8 +3514,7 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
   while (bitPos + bpf <= totalBits) {
     const flag = readBits(bpf) & 3;
     if (flag === 0) {
-      // New triangle: read 3 vertices (each preceded by its own flag byte;
-      // the 2nd and 3rd flags are ignored per spec but still present in the stream)
+      // The 2nd and 3rd vertex flags are ignored per spec but still present in the stream.
       const vertexBits = 2 * bpco + nComps * bpc;
       if (bitPos + 3 * vertexBits + 2 * bpf > totalBits) break;
       const v0 = readVertex();
@@ -3713,7 +3526,6 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
       triangles.push(tri);
       prev = tri;
     } else if (flag === 1 && prev) {
-      // Continue from edge v1-v2 of previous triangle
       if (bitPos + 2 * bpco + nComps * bpc > totalBits) break;
       const vNew = readVertex();
       const tri = {
@@ -3723,7 +3535,6 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
       triangles.push(tri);
       prev = tri;
     } else if (flag === 2 && prev) {
-      // Continue from edge v0-v2 of previous triangle
       if (bitPos + 2 * bpco + nComps * bpc > totalBits) break;
       const vNew = readVertex();
       const tri = {
@@ -3762,7 +3573,6 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
 
   const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
-  // Bit reader
   let bitPos = 0;
   const totalBits = streamBytes.length * 8;
   function readBits(n) {
@@ -3784,7 +3594,6 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
   const coordMax = 2 ** bpco - 1;
   const compMax = 2 ** bpc - 1;
 
-  // Read all vertices
   const bitsPerVertex = bpco * 2 + bpc * nComps;
   const vertices = [];
   while (bitPos + bitsPerVertex <= totalBits) {
@@ -3836,14 +3645,12 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
 
 /**
  * Parse Shading entries from page resources.
- * Returns a map of shading names to their parsed shading data.
  * @param {string} pageObjText - Raw text of the Page object
  * @param {ObjectCache} objCache - PDF object cache
  */
 function parseShadings(pageObjText, objCache) {
   const shadings = new Map();
 
-  // Extract the Resources dict, mirroring parsePageColorSpaces' depth-aware lookup.
   let resourcesText = null;
   const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
   if (resRefMatch) {
@@ -3873,10 +3680,7 @@ function parseShadings(pageObjText, objCache) {
   }
   if (!shDictText) return shadings;
 
-  // Walk the Shading dict at depth 1 to collect top-level entries. Each entry can be
-  // either `/ShName N 0 R` (indirect) or `/ShName << ... >>` (inline). A naive regex
-  // would miss all inline forms AND would wrongly match `/Function N 0 R` inside
-  // nested inline shading dicts, creating bogus entries.
+  // A regex would miss the inline `/ShName << ... >>` form and would wrongly match `/Function N 0 R` inside nested shading dicts, creating bogus entries.
   /** @type {Array<{name: string, objNum: number, inline: string|null}>} */
   const entries = [];
   {
@@ -3947,17 +3751,15 @@ function parseShadings(pageObjText, objCache) {
       coords = coordsStr.split(/\s+/).map(Number);
     }
 
-    // Parse /Extend array (defaults to [false, false] per spec)
     const extendStr = resolveArrayValue(shObjText, 'Extend', objCache);
     const extendParts = extendStr ? extendStr.split(/\s+/) : [];
     const extend = [extendParts[0] === 'true', extendParts[1] === 'true'];
 
-    // Parse /BBox (optional clipping rectangle for the shading)
     const bboxStr = resolveArrayValue(shObjText, 'BBox', objCache);
     const bbox = bboxStr ? bboxStr.split(/\s+/).map(Number) : null;
 
-    // Extract the shading's /ColorSpace defining text once so downstream detection can treat its three encodings uniformly:
-    // a scalar name (`/DeviceGray`), an inline array (`[/Separation /Black /DeviceCMYK 118 0 R]`), or an indirect reference (`N 0 R`).
+    // Extract the shading's /ColorSpace defining text once so the tests below treat its three encodings uniformly.
+    // Those are a scalar name (`/DeviceGray`), an inline array (`[/Separation /Black /DeviceCMYK N 0 R]`), or an indirect reference (`N 0 R`).
     let csText = null;
     const csArrStart = /\/ColorSpace\s*\[/.exec(shObjText);
     if (csArrStart) {
@@ -3991,9 +3793,7 @@ function parseShadings(pageObjText, objCache) {
     if (csText) {
       if (/\/Separation|\/DeviceN/.test(csText)) {
         isSeparationShading = true;
-        // For multi-colorant DeviceN, the 1D tint LUT is wrong (the function
-        // emits multiple values that must each pass through the tint transform).
-        // Store the parsed tint CS for direct per-stop evaluation below.
+        // For multi-colorant DeviceN the 1D tint LUT is wrong, because the function's outputs form one N-tuple input to the tint transform rather than independent lookups.
         const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csText);
         const dnNumColorants = dnNamesMatch ? (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length : 0;
         if (dnNumColorants >= 2) {
@@ -4032,9 +3832,7 @@ function parseShadings(pageObjText, objCache) {
       continue;
     }
 
-    // Parse function reference — handle both indirect ref and inline array of refs.
-    // /Function may be: (a) a single indirect ref `N 0 R`, (b) an array of refs
-    // `[N 0 R M 0 R ...]` where each function produces one output component.
+    // /Function is either a single indirect ref `N 0 R` or an array `[N 0 R M 0 R ...]` where each function produces one output component.
     const funcArrAllMatch = /\/Function\s*\[\s*((?:\d+\s+\d+\s+R\s*)+)\]/.exec(shObjText);
     const funcArrRefs = funcArrAllMatch
       ? [...funcArrAllMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]))
@@ -4051,7 +3849,6 @@ function parseShadings(pageObjText, objCache) {
       continue;
     }
 
-    // Single function ref — either direct `N 0 R` or single-element array `[N 0 R]`
     let funcObjNum;
     if (funcArrRefs && funcArrRefs.length === 1) {
       funcObjNum = funcArrRefs[0];
@@ -4075,9 +3872,7 @@ function parseShadings(pageObjText, objCache) {
 }
 
 /**
- * Parse Pattern entries from page resources. For PatternType 2 (shading patterns),
- * extract full shading info (gradient type, coords, color stops) so patterns can
- * be rendered as actual Canvas gradients instead of solid midpoint colors.
+ * Parse Pattern entries from page resources.
  *
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
@@ -4094,7 +3889,6 @@ function parsePatterns(pageObjText, objCache) {
   }
 
   // Search for /Pattern as a Resources dictionary key (not a color space value like /CS0/Pattern).
-  // Skip occurrences where the text after '/Pattern' doesn't start with '<<' or a reference.
   let patDictText;
   let searchFrom = 0;
   while (!patDictText) {
@@ -4165,9 +3959,8 @@ function parsePatterns(pageObjText, objCache) {
     }
     if (!shadingDict) continue;
 
-    // /ColorSpace may be a scalar name `/DeviceRGB`,
-    // an inline array `[/ICCBased N 0 R]` or `[/Separation ...]`, or an indirect reference `N 0 R`.
-    // Extract the defining text once so the family tests below treat all forms alike.
+    // Extract the /ColorSpace defining text once so the family tests below treat all forms alike.
+    // It may be a scalar name (`/DeviceRGB`), an inline array (`[/ICCBased N 0 R]`, `[/Separation ...]`), or an indirect reference (`N 0 R`).
     let patCsText = null;
     const patCsArrStart = /\/ColorSpace\s*\[/.exec(shadingDict);
     if (patCsArrStart) {
@@ -4199,9 +3992,7 @@ function parsePatterns(pageObjText, objCache) {
     if (patCsText) {
       if (/\/Separation|\/DeviceN/.test(patCsText)) {
         // For multi-colorant DeviceN (e.g. 5-channel PANTONE+CMYK), the 1D diagonal tint LUT is wrong.
-        // Each function output must go through the multi-input tint transform as a full N-tuple,
-        // so parse the tint CS directly and route every Type 2/3 stop through it
-        // with all C0->C1 components jointly. Single-colorant DeviceN uses the 1D LUT.
+        // The function's outputs form one N-tuple input to the tint transform, not independent per-channel lookups.
         const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(patCsText);
         const dnNumColorants = dnNamesMatch
           ? (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length
@@ -4234,7 +4025,6 @@ function parsePatterns(pageObjText, objCache) {
 
     const shadingType = resolveIntValue(shadingDict, 'ShadingType', objCache, 0);
 
-    // Handle Gouraud triangle mesh in patterns (type 4)
     if (shadingType === 4) {
       const shObjNum = shadingRefMatch ? Number(shadingRefMatch[1]) : null;
       if (shObjNum) {
@@ -4249,7 +4039,6 @@ function parsePatterns(pageObjText, objCache) {
       continue;
     }
 
-    // Handle mesh-type shadings in patterns (types 5, 6, 7)
     if (shadingType === 5 || shadingType === 6 || shadingType === 7) {
       const shObjNum = shadingRefMatch ? Number(shadingRefMatch[1]) : null;
       let meshResult;
@@ -4287,16 +4076,13 @@ function parsePatterns(pageObjText, objCache) {
     if (!coordsStr) continue;
     const coords = coordsStr.split(/\s+/).map(Number);
 
-    // Parse /Extend array (defaults to [false, false] per spec)
     const extendStr = resolveArrayValue(shadingDict, 'Extend', objCache);
     const extendParts = extendStr ? extendStr.split(/\s+/) : [];
     const extend = [extendParts[0] === 'true', extendParts[1] === 'true'];
 
-    // Parse /BBox (optional clipping rectangle for the shading)
     const bboxStr = resolveArrayValue(shadingDict, 'BBox', objCache);
     const bbox = bboxStr ? bboxStr.split(/\s+/).map(Number) : null;
 
-    // Parse /Matrix (pattern space to user space transform, default identity)
     const matrixStr = resolveArrayValue(patObjText, 'Matrix', objCache);
     const matrix = matrixStr ? matrixStr.split(/\s+/).map(Number) : null;
 
@@ -4307,7 +4093,6 @@ function parsePatterns(pageObjText, objCache) {
       funcObjNum = Number(funcRefMatch[1]);
       funcDictText = objCache.getObjectText(funcObjNum);
     } else {
-      // Try inline function dict
       const funcDictStart = shadingDict.indexOf('/Function');
       if (funcDictStart !== -1) {
         const funcDictOpen = shadingDict.indexOf('<<', funcDictStart + 9);
@@ -4333,9 +4118,8 @@ function parsePatterns(pageObjText, objCache) {
 }
 
 /**
- * Tile-canvas pixel size for a tiling pattern at a given device scale, clamped
- * so neither axis exceeds the canvas dimension limit. Producer and consumers
- * must compute this identically or the pattern-space transform will be wrong.
+ * Tile-canvas pixel size for a tiling pattern at a given device scale, clamped so neither axis exceeds the canvas dimension limit.
+ * Producer and consumers must compute this identically or the pattern-space transform will be wrong.
  *
  * @param {number} bboxW
  * @param {number} bboxH
@@ -4358,7 +4142,6 @@ function tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale) {
 
 /**
  * Render the contents of a tiling pattern to a tile-sized canvas.
- * Used by `renderSMaskToCanvas` when the mask form fills with a tiling pattern.
  *
  * @param {{ objNum: number, bbox: number[], matrix: number[] }} tp
  * @param {ObjectCache} objCache
@@ -4572,9 +4355,7 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
   let data = new Uint8Array(imageData.length);
   for (let j = 0; j < imageData.length; j++) data[j] = imageData.charCodeAt(j);
 
-  // Decode the filter chain to raw sample bytes.
-  // DCTDecode/JPXDecode are image codecs handled downstream by imageInfoToBitmap,
-  // so stop at the first one and pass its compressed bytes through unchanged.
+  // DCTDecode/JPXDecode are image codecs handled downstream by imageInfoToBitmap, so stop at the first one and pass its compressed bytes through unchanged.
   let imageCodec = null;
   for (const filter of filters) {
     if (filter === 'DCTDecode' || filter === 'JPXDecode') { imageCodec = filter; break; }
@@ -4654,9 +4435,6 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
 
   const invert = !!(decode && decode[0] === 1);
 
-  // Hand the decoded samples to the shared XObject decoders
-  // so inline images go through the same colour-space conversion
-  // (sub-byte depths, /Decode, Lab, ICC, CMYK JPEG, ...) instead of a parallel subset.
   /** @type {import('./parsePdfImages.js').ImageInfo} */
   const imageInfo = {
     width,
@@ -4696,9 +4474,8 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
       imageInfo.paletteBase = resolvedCS.indexedInfo.base;
       imageInfo.paletteHival = resolvedCS.indexedInfo.hival;
       // CCITTFaxDecode emits 0=black, 1=white, used directly as the index into the 2-entry fax palette.
-      // Invert (idx = hival - idx) only when entry 0 is the lighter color, so the fax's black runs land on the darker entry.
-      // A black-at-index-0 palette (e.g. <00ff>) already maps correctly.
-      // Inverting it would paint the ink in the background color, rendering the image invisible.
+      // Invert only when entry 0 is the lighter color, so the fax's black runs land on the darker entry.
+      // Inverting a palette that is already black-at-index-0 (e.g. <00ff>) paints the ink in the background color and the image vanishes.
       if (bpc === 1 && imageCodec == null && filters.includes('CCITTFaxDecode')
           && !decode && resolvedCS.indexedInfo.hival === 1) {
         const pal = resolvedCS.indexedInfo.palette;
@@ -4791,16 +4568,12 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     formDrawOps = rawFormDrawOps;
   }
 
-  // Apply the form's own /Matrix to each op's CTM (maps form space -> user space).
   const formMatrix = parseFormMatrix(formObjText, objCache);
   for (const op of formDrawOps) {
     if (op.ctm) op.ctm = matMul(op.ctm, formMatrix);
   }
 
-  // PDF spec §11.6.5.1: SMask is positioned by the parent CTM at the time
-  // /gs set the soft mask. Apply that parent CTM to every op so the mask form
-  // ends up in the correct page coordinates (e.g., aligned with each annotation
-  // column when the same SMask shape is referenced from multiple annotations).
+  // Per PDF spec 11.6.5.1 an SMask is positioned by the parent CTM in effect when /gs set it, not by the CTM at draw time.
   if (smaskInfo.parentCtm && smaskInfo.parentCtm.length === 6) {
     for (const op of formDrawOps) {
       const opAny = /** @type {any} */ (op);
@@ -4813,10 +4586,8 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     }
   }
 
-  // Render the mask content to a canvas. When `bbox` is provided, allocate a tight
-  // canvas sized to the bbox and shift coordinates so the bbox origin lands at (0,0).
-  // This is a ~50x speedup for pages with many per-image soft masks where each mask
-  // only covers a small portion of the page.
+  // With a `bbox`, the canvas is sized to it and coordinates shift so the bbox origin lands at (0,0).
+  // That is a ~50x speedup on pages with many per-image soft masks, each covering a small portion of the page.
   const maskW = bbox ? bbox.width : canvasWidth;
   const maskH = bbox ? bbox.height : canvasHeight;
   const shiftX = bbox ? bbox.x : 0;
@@ -4824,10 +4595,8 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskCanvas = ca.makeCanvas(maskW, maskH);
   const maskCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d', { willReadFrequently: true }));
 
-  // For /S/Luminosity, composite the mask group over an opaque backdrop of colour /BC
-  // (PDF spec 11.6.5.2, default black), so areas the group leaves unpainted take the
-  // backdrop's luminosity rather than alpha 0.
-  // For /S/Alpha, leave the canvas fully transparent. The alpha channel itself is the mask.
+  // For /S/Luminosity the mask group composites over an opaque /BC backdrop (PDF spec 11.6.5.2, default black), so unpainted areas take the backdrop's luminosity rather than alpha 0.
+  // For /S/Alpha the canvas stays transparent, because the alpha channel itself is the mask.
   const isAlphaMask = smaskInfo.type === 'Alpha';
   if (!isAlphaMask) {
     const bc = smaskInfo.bc;
@@ -4856,7 +4625,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
 
       maskCtx.save();
       if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
-      // Apply clip paths (e.g., circular clips that define the mask shape)
       if (op.clips) {
         for (const clip of op.clips) {
           if (!clip.path) continue;
@@ -4890,7 +4658,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
       const sh = op.shading;
       maskCtx.save();
       if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
-      // Apply clip paths for shading ops too
       if (op.clips) {
         for (const clip of op.clips) {
           if (!clip.path) continue;
@@ -4941,7 +4708,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
       }
       maskCtx.restore();
     } else if (op.type === 'path' && op.fill) {
-      // Render filled paths on the mask canvas (some masks use path fills)
       maskCtx.save();
       if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
       if (op.clips) {
@@ -5100,7 +4866,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   }
 
   const trFn = smaskInfo.tr || null;
-  // Precompute the transfer function across its 256 possible byte inputs.
   let trLut = null;
   if (trFn) {
     trLut = new Float64Array(256);
@@ -5137,13 +4902,13 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * Render a single PDF page to an image.
  *
  * @param {string} pageObjText - Raw text of the Page object
- * @param {ObjectCache} objCache - PDF object cache
+ * @param {ObjectCache} objCache
  * @param {number[]} mediaBox - Page media box [x0, y0, x1, y1]
- * @param {number} pageIndex - Page index
- * @param {'color'|'gray'} [colorMode='color'] - Output color mode
+ * @param {number} pageIndex
+ * @param {'color'|'gray'} [colorMode='color']
  * @param {number} [rotate=0] - Page rotation in degrees
  * @param {number} [dpi=300] - Render resolution in dots per inch
- * @param {'png'|'jpeg'|'webp'|'bitmap'} [outputFormat='png'] - Output encoding
+ * @param {'png'|'jpeg'|'webp'|'bitmap'} [outputFormat='png']
  * @param {number} [quality=0.6] - JPEG/WebP quality 0-1. WebP quality 1.0 encodes losslessly in Chromium.
  * @param {?{records: Array<ContentEdit>, dims: {width: number, height: number}}} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
  *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
@@ -5164,15 +4929,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const offOCGs = objCache.getOffOCGs();
   const contentWidthPts = Math.abs(mediaBox[2] - mediaBox[0]);
   const contentHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
-  // CropBox or other non-zero-origin boxes require coordinate offset.
   // Box corners may be stored in either order, so the origin is the lower-left corner.
   const boxOriginX = Math.min(mediaBox[0], mediaBox[2]);
   const boxOriginY = Math.min(mediaBox[1], mediaBox[3]);
 
   // Per the PDF spec /Rotate is clockwise, which fixes the sign of each matrix below.
-  // Their translations carry boxOrigin to pair with the offsets the per-op canvas transform applies,
-  // so a box with a non-zero origin still lands on the canvas edges.
-  let rotCtm = null; // null = identity (no rotation)
+  // Their translations carry boxOrigin to pair with the offsets the per-op canvas transform applies, so a box with a non-zero origin still lands on the canvas edges.
+  let rotCtm = null;
   let pageWidthPts = contentWidthPts;
   let pageHeightPts = contentHeightPts;
   if (rotate === 90) {
@@ -5204,14 +4967,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     return out;
   }
 
-  // Parse immediate page-level image/Form XObjects.
   // Nested resources are discovered lazily while flattening only the forms that are actually drawn.
   const { images, forms } = parsePageImages(pageObjText, objCache, { recurseForms: false });
 
-  // Parse all fonts from the page (needed for Type3 glyph rendering and Type0 text)
   const fonts = parsePageFonts(pageObjText, objCache);
 
-  // Register fonts for canvas text rendering (Type0 and Type1/TrueType)
   const registeredFontNames = new Map();
   /** @type {Set<string>} Font tags with Symbol-only cmap (need PUA codepoints for canvas rendering) */
   const symbolFontTags = new Set();
@@ -5219,9 +4979,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const rawCharCodeTags = new Set();
   /** @type {Set<string>} Font tags with PUA-based cmap (CID CFF fonts use U+E000+CID for glyph lookup) */
   const cidPUATags = new Set();
-  /** @type {Map<string, Set<number>>} Font tags → CIDs forced to PUA due to Unicode collision */
+  /** @type {Map<string, Set<number>>} Font tags to the CIDs forced into the PUA by a Unicode collision */
   const cidCollisionMap = new Map();
-  /** @type {string[]} Font tags with no embedded data — deferred to second pass */
+  /** @type {string[]} Font tags with no embedded data, deferred to a second pass */
   const deferredFontTags = [];
   for (const [fontTag, fontObj] of fonts) {
     const fontData = fontObj.type0 || fontObj.type1;
@@ -5236,7 +4996,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     );
   }
 
-  // Second pass: register non-embedded fonts using CSS fallback
   for (const fontTag of deferredFontTags) {
     const fontObj = fonts.get(fontTag);
     if (!fontObj) continue;
@@ -5268,11 +5027,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     break;
   }
 
-  // Keep the array rather than pre-joining it, because parseDrawOps needs the /Contents boundaries
-  // to stop one corrupt entry from suppressing the rest of the page.
+  // Keep the array rather than pre-joining it, because parseDrawOps needs the /Contents boundaries to stop one corrupt entry from suppressing the rest of the page.
   const contentStreams = getPageContentStreams(pageObjText, objCache);
 
-  // Parse content stream for all draw operations (images, Type3 glyphs, Type0 text, paths)
   const rawDrawOps = contentStreams && contentStreams.length > 0
     ? parseDrawOps(contentStreams, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags,
       cidPUATags, rawCharCodeTags, pageShadings, pagePatterns, cidCollisionMap, null,
@@ -5284,8 +5041,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   if (totalContentLen > 500000) {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
-
-  // Flatten Form XObjects while preserving paint order.
 
   /** @type {Array<DrawOp>} */
   const drawOps = [];
@@ -5449,7 +5204,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     ...annotsParsed.highlights.map((h) => h.objNum),
     ...annotsParsed.passthroughRefs,
   ];
-  // Render form-field Widget annotations after (on top of) non-Widget markup annotations.
+  // Widget annotations paint on top of non-Widget markup annotations.
   const annotIsWidget = (ref) => {
     const t = objCache.getObjectText(ref);
     return t ? /\/Subtype\s*\/Widget\b/.test(t) : false;
@@ -5463,16 +5218,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       let annotText = objCache.getObjectText(annotRef);
       if (!annotText) continue;
 
-      // Apple Preview / iOS stamp+ink annotations stash a stale private copy of the whole annotation (its own /AP, /Rect, /Subtype from before the user moved/resized it) inside /AAPL:AKExtras.
-      // Standard viewers ignore that private key and use the live top-level keys.
-      // Our key regexes below take the first match, which would otherwise land inside that copy and render the stamp at its pre-edit position.
-      // Drop the /AAPL:AKExtras value (a balanced << >>, skipping () strings) so only the live keys remain.
+      // Apple Preview / iOS stamp+ink annotations stash a stale copy of the annotation (its own /AP, /Rect, /Subtype from before the user's last edit) inside /AAPL:AKExtras.
+      // The key regexes below take the first match, which would land inside that stale copy and render the stamp at its pre-edit position.
       const akIdx = annotText.indexOf('/AAPL:AKExtras');
       if (akIdx !== -1) {
         const open = annotText.indexOf('<<', akIdx);
         if (open !== -1) {
-          // extractDict runs to the end of the string when the value never closes, leaving `end` at
-          // annotText.length; the guard then leaves a malformed annotation untouched.
+          // extractDict runs to the end of the string when the value never closes, so the guard leaves a malformed annotation untouched.
           const akDict = extractDict(annotText, open);
           const end = open + akDict.length;
           if (end < annotText.length) annotText = annotText.slice(0, akIdx) + annotText.slice(end);
@@ -5514,13 +5266,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const isInkAnnot = /\/Subtype\s*\/Ink\b/.test(annotText);
       if ((rectW <= 0 || rectH <= 0) && !isLineAnnot && !isInkAnnot) continue;
 
-      // Check annotation flags. Skip if hidden (bit 2), invisible (bit 1), or NoView (bit 6).
       const flags = resolveIntValue(annotText, 'F', objCache, 0);
-      if (flags & 1 || flags & 2 || flags & 32) continue; // Invisible, Hidden, or NoView
+      if (flags & 1 || flags & 2 || flags & 32) continue; // Invisible (bit 1), Hidden (bit 2), NoView (bit 6)
 
-      // Get normal appearance stream reference (/AP<</N objNum 0 R>>)
-      // Also handle sub-state dictionaries (/AP<</N<</State1 obj1 0 R /State2 obj2 0 R>>>>)
-      // used by checkboxes/radio buttons where /AS selects the current state.
       let apObjNum = null;
       let apDictText = annotText;
       const apIndirectMatch = /\/AP\s+(\d+)\s+\d+\s+R/.exec(annotText);
@@ -5533,7 +5281,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (apDirectMatch) {
         apObjNum = Number(apDirectMatch[1]);
         // /N may be an indirect ref to a sub-state dict (checkbox/radio) rather than the appearance stream.
-        // That dict has no /BBox, so follow /AS to the state's stream. A real appearance stream keeps apObjNum unchanged.
+        // That dict has no /BBox, so follow /AS to the state's stream.
         const nObjText = objCache.getObjectText(apObjNum);
         if (nObjText && !/\/BBox/.test(nObjText)) {
           const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
@@ -5553,7 +5301,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
       }
 
-      // Resolve the field type from this widget or its /Parent (radio kids put /FT on /Parent).
+      // Radio kids put /FT on their /Parent, so fall back to it.
       let resolvedFieldType = '';
       const ftSelfMatch = /\/FT\s*\/(\w+)/.exec(annotText);
       if (ftSelfMatch) {
@@ -5571,11 +5319,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
       }
 
-      // Under /NeedAppearances the embedded /AP is stale, so drop it (apObjNum = null) to force the field to be synthesized instead,
-      // but only where the synth can faithfully reproduce the value.
-      // /Tx fields drop their /AP only for single-line, Latin-1-representable values.
-      // Multiline or non-Latin-1 values stay on their embedded /AP, which the synth cannot reproduce.
-      // Radio and checkbox buttons drop their /AP.
+      // Under /NeedAppearances the embedded /AP is stale, so drop it to force synthesis, but only where the synth can faithfully reproduce the value.
       // Pushbuttons (Ff bit 17) keep theirs, having no value to regenerate.
       if (needAppearances && apObjNum !== null) {
         if (resolvedFieldType === 'Tx') {
@@ -5587,13 +5331,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
       }
 
-      // No usable /AP: synthesize the field appearance and route it through the /AP path below,
-      // which handles font parsing and the BBox->Rect transform.
-      // Text/choice fields draw their /V.
-      // Selected radio/checkbox buttons draw a filled dot.
+      // No usable /AP: synthesize one and route it through the /AP path below, which handles font parsing and the BBox->Rect transform.
       if (apObjNum === null) {
         if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
-          // The value was decoded once above (handles both literal and hex UTF-16BE); reuse it.
           if (fieldValue && fieldValue.length > 0) {
             const da = resolveStringValue(annotText, 'DA', objCache) ?? '/Helvetica 10 Tf 0 g';
             const tfMatch = /\/[\w+-]+\s+([\d.]+)\s+Tf/.exec(da);
@@ -5610,15 +5350,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const combMaxLen = resolvedFieldType === 'Tx' && !multiline && (synthFf & 0x1000000)
               ? resolveIntValue(annotText, 'MaxLen', objCache, 0) : 0;
             const pad = 2;
-            // Escape the value for re-emission inside a content-stream literal string.
             const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
-            // Helvetica's average advance is ~0.5em, enough to place/justify single lines
-            // and to wrap a multiline note approximately (no per-glyph metrics needed here).
+            // Helvetica's average advance is ~0.5em, enough to place/justify single lines and to wrap a multiline note approximately (no per-glyph metrics needed here).
             const avgCharW = fontSize * 0.5;
             let textCommands = '';
             if (multiline) {
               const maxChars = Math.max(1, Math.floor((rectW - 2 * pad) / avgCharW));
-              // Honor the value's own line breaks, then width-wrap each paragraph independently.
               const lines = [];
               for (const para of fieldValue.split(/\r\n|\r|\n/)) {
                 const words = para.split(/\s+/).filter((w) => w.length > 0);
@@ -5640,7 +5377,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
                 ty -= leading;
               }
             } else if (combMaxLen > 0) {
-              // One glyph per comb cell, advance-centered like the exported appearance.
+              // Glyphs are advance-centered in their cell, matching the exported appearance.
               // Comb layout is left-packed by character index, so quadding does not apply.
               const cellW = rectW / combMaxLen;
               const ty = Math.max(pad, (rectH - fontSize) / 2 + fontSize * 0.2);
@@ -5668,10 +5405,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             apObjNum = synthObjNum;
           }
         } else if (resolvedFieldType === 'Btn') {
-          // Selected radio/checkbox (/AS other than /Off): draw a filled dot centered in the field,
-          // matching the conventional "on" indicator. The /MK /CA caption names a ZapfDingbats glyph,
-          // but its substitute rendering is unreliable, so a circle path reproduces the baseline dot
-          // exactly without a font. /AS /Off draws nothing.
+          // The /MK /CA caption names a ZapfDingbats glyph whose substitute rendering is unreliable, so a circle path draws the dot without a font.
           const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
           if (asMatch && asMatch[1] !== 'Off') {
             const da = resolveStringValue(annotText, 'DA', objCache) ?? '0 g';
@@ -5705,9 +5439,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const bboxArr = resolveNumArray(apObjText, 'BBox', objCache, null);
         const bbox = bboxArr && bboxArr.length === 4 ? bboxArr : [0, 0, rectW, rectH];
 
-        // Parse the appearance form's Matrix (defaults to identity).
-        // flattenDrawOps will apply this Matrix to content coordinates, so we must
-        // compute annotTransform relative to the post-Matrix BBox, not the original.
+        // flattenDrawOps applies this Matrix to content coordinates, so annotTransform must be computed against the post-Matrix BBox, not the original.
         const apMatrix = parseFormMatrix(apObjText, objCache);
         const corners = [[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]]];
         const txArr = corners.map(([x, y]) => x * apMatrix[0] + y * apMatrix[2] + apMatrix[4]);
@@ -5716,13 +5448,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const effW = effBBox[2] - effBBox[0];
         const effH = effBBox[3] - effBBox[1];
 
-        // Compute transform: map effective (post-Matrix) BBox to annotation Rect
         const sx = effW > 0 ? rectW / effW : 1;
         const sy = effH > 0 ? rectH / effH : 1;
         const annotTransform = [sx, 0, 0, sy, rectX0 - effBBox[0] * sx, rectY0 - effBBox[1] * sy];
 
-        // Create a synthetic form entry and image op so flattenDrawOps can process it
-        // Include bbox so flattenDrawOps applies BBox clipping to the annotation form.
+        // The annotation is registered as a form and drawn as an image op so flattenDrawOps can process it.
+        // Its bbox rides along so flattenDrawOps clips the annotation form to it.
         const annotFormKey = `_annot_${annotRef}`;
         forms.set(annotFormKey, { tag: annotFormKey, objNum: apObjNum, bbox: bbox.slice() });
         const syntheticOp = {
@@ -5738,8 +5469,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           '', pageIndex, symbolFontTags, cidPUATags, extGStates, rawCharCodeTags,
           new Map(), 0, new Set(), cidCollisionMap,
         );
-        // /CA is the annotation's constant opacity, parsed from the annotation dict
-        // (not the appearance stream), and applies to every visible element of the annotation.
         const annotCA = resolveNumValue(annotText, 'CA', objCache, 1);
         for (const aOp of annotFlattened) {
           if (annotCA < 1) {
@@ -5749,9 +5478,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           drawOps.push(aOp);
         }
       } else {
-        // Synthesize appearance for text-markup annotations (Highlight/Underline/StrikeOut) without /AP.
-        // Pre-parsed in extractPdfAnnotations — look up by annotRef to skip the
-        // QuadPoints/color/opacity regex here.
+        // Text-markup annotations (Highlight/Underline/StrikeOut) with no /AP get a synthesized appearance from the pre-parsed quad points.
         const highlight = highlightByRef.get(annotRef);
         if (highlight) {
           const coords = highlight.quadPoints;
@@ -5822,7 +5549,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           continue;
         }
 
-        // Synthesize appearance for Ink annotations without /AP
         if (/\/Subtype\s*\/Ink\b/.test(annotText)) {
           const inkListContent = resolveArrayValue(annotText, 'InkList', objCache);
           if (inkListContent != null) {
@@ -5874,9 +5600,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           continue;
         }
 
-        // Synthesize appearance for Widget form-field annotations without a usable /AP.
-        // Some PDFs ship a broken /AP (e.g. /N maps the appearance state to a name,
-        // not a stream); viewers then draw the field box from its /MK characteristics.
+        // Some PDFs ship a broken /AP (e.g. /N maps the appearance state to a name, not a stream), so viewers draw the field box from its /MK characteristics instead.
         if (/\/Subtype\s*\/Widget\b/.test(annotText)) {
           const mkMatch = /\/MK\s*<<([\s\S]*?)>>/.exec(annotText);
           if (!mkMatch) continue;
@@ -5916,7 +5640,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           /** @type {PathCommand[]} */
           let widgetCommands;
           if (ft === 'Btn' && (ff & 0x8000)) {
-            // Radio button — circle inscribed in the (inset) Rect, 4 cubic Beziers
+            // A radio button draws a circle inscribed in the inset Rect.
             const cx = (wx0 + wx1) / 2;
             const cy = (wy0 + wy1) / 2;
             const rx = (wx1 - wx0) / 2;
@@ -5941,7 +5665,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               { type: 'Z' },
             ];
           } else {
-            // Checkbox, text field, or choice field — rectangular box
+            // Checkbox, text field, and choice field all draw a rectangular box.
             widgetCommands = [
               { type: 'M', x: wx0, y: wy0 },
               { type: 'L', x: wx1, y: wy0 },
@@ -5971,7 +5695,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           continue;
         }
 
-        // Synthesize appearance for Square, Circle, Polygon, PolyLine, and Line annotations without /AP
         const subtypeMatch = /\/Subtype\s*\/(Square|Circle|Polygon|PolyLine|Line)/.exec(annotText);
         if (!subtypeMatch) continue;
         const annotSubtype = subtypeMatch[1];
@@ -5992,7 +5715,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const bsWidthMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotText);
         let borderWidth = bsWidthMatch ? Number(bsWidthMatch[1]) : (borderMatch ? Number(borderMatch[1]) : 1);
         if (!bsWidthMatch && !borderMatch) {
-          // Handle indirect /BS reference: /BS N 0 R
           const bsIndirectMatch = /\/BS\s+(\d+)\s+\d+\s+R/.exec(annotText);
           if (bsIndirectMatch) {
             const bsText = objCache.getObjectText(Number(bsIndirectMatch[1]));
@@ -6013,7 +5735,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         /** @type {PathCommand[]} */
         let commands;
         if (annotSubtype === 'Line') {
-          // Parse /L [x1 y1 x2 y2]
+          // /L is [x1 y1 x2 y2].
           const lArr = resolveNumArray(annotText, 'L', objCache, null);
           if (!lArr || lArr.length < 4) continue;
           commands = [
@@ -6021,7 +5743,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             { type: 'L', x: lArr[2], y: lArr[3] },
           ];
         } else if (annotSubtype === 'Polygon' || annotSubtype === 'PolyLine') {
-          // Parse /Vertices [x1 y1 x2 y2 ...]
+          // /Vertices is [x1 y1 x2 y2 ...].
           const vertContent = resolveNumArray(annotText, 'Vertices', objCache, null);
           if (!vertContent) continue;
           const coords = vertContent;
@@ -6040,7 +5762,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             { type: 'Z' },
           ];
         } else {
-          // Circle — approximate ellipse with 4 cubic Bezier curves
+          // Circle, approximated as an ellipse with 4 cubic Beziers.
           const cx = (x0 + x1) / 2;
           const cy = (y0 + y1) / 2;
           const rx = (x1 - x0) / 2;
@@ -6089,7 +5811,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
   }
 
-  // Check path and text ops for color content
   const isGrayColor = (color) => {
     const m = /rgb\((\d+),(\d+),(\d+)\)/.exec(color);
     return m && m[1] === m[2] && m[2] === m[3];
@@ -6100,8 +5821,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (op.type === 'image') {
         const imgInfo = images.get(op.name);
         if (!imgInfo) continue;
-        // An image mask painted with a shading pattern carries its color in the pattern stops,
-        // not in the (1-bit) image, so it must be checked before the skip.
+        // An image mask painted with a shading pattern carries its color in the pattern stops, not in the (1-bit) image, so it must be checked before the skip.
         if (op.patternShading && op.patternShading.stops
           && op.patternShading.stops.some((stop) => !isGrayColor(stop.color))) {
           pageHasColor = true;
@@ -6120,7 +5840,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           pageHasColor = true;
           break;
         }
-        // Check pattern shading on path ops (mesh/gouraud/gradient fills via scn)
         if (op.patternShading) {
           const sh = op.patternShading;
           if (sh.type === 'mesh') {
@@ -6192,13 +5911,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
   }
-  // Also check tiling pattern images, shading patterns, and text colors for color
   if (!pageHasColor) {
     for (const op of drawOps) {
       if (op.tilingPattern && op.tilingPattern.objNum) {
         const patObjText = objCache.getObjectText(op.tilingPattern.objNum);
         if (patObjText) {
-          // Check images inside tiling patterns
           const patImgResult = parsePageImages(patObjText, objCache, { recurseForms: false });
           for (const [, imgInfo] of patImgResult.images) {
             if (imgInfo.bitsPerComponent === 1) continue;
@@ -6210,7 +5927,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               }
             }
           }
-          // Check shading patterns inside tiling patterns for color
           if (!pageHasColor) {
             const patPats = parsePatterns(patObjText, objCache);
             for (const [, patInfo] of patPats) {
@@ -6222,17 +5938,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               if (pageHasColor) break;
             }
           }
-          // Check text/path color operators inside tiling pattern content streams
           if (!pageHasColor) {
             const patStreamBytes = objCache.getStreamBytes(op.tilingPattern.objNum);
             if (patStreamBytes) {
               const patStreamText = bytesToLatin1(patStreamBytes);
-              // Scan for non-gray rg/RG operators: "r g b rg" where r≠g or g≠b
               const rgMatches = patStreamText.matchAll(/([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(?:rg|RG)\b/g);
               for (const m of rgMatches) {
                 if (m[1] !== m[2] || m[2] !== m[3]) { pageHasColor = true; break; }
               }
-              // Scan for k/K (CMYK) with non-pure-black values: "c m y k k" where c≠0 or m≠0 or y≠0
               if (!pageHasColor) {
                 const kMatches = patStreamText.matchAll(/([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+[kK]\b/g);
                 for (const m of kMatches) {
@@ -6246,8 +5959,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
   }
-  // Also check inline images for color (BI/ID/EI ops produce 'inlineImage' draw ops
-  // that bypass the XObject image scan above).
+  // Inline images bypass the XObject scan above and are not decoded here, so treat any of them as color.
   if (!pageHasColor) {
     for (const op of drawOps) {
       if (op.type === 'inlineImage') {
@@ -6258,18 +5970,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   }
   const effectiveColorMode = (pageHasColor && colorMode === 'color') ? 'color' : 'gray';
 
-  // Render at the requested DPI (default 300), but cap the canvas width at
-  // 3500px to match the dimension cap applied by imageContainer.js
-  // (pageMetricsAll) and extractPDFText.js. Without this, wide pages (e.g.,
-  // landscape presentations) produce images larger than the dimensions the
-  // viewer uses for layout.
+  // The 3500px width cap must match the one in imageContainer.js and extractPDFText.js.
+  // Without it a wide page renders larger than the dimensions the viewer lays out against.
   const maxCanvasWidth = 3500;
   const scaleReq = dpi / 72;
   const fullWidth = Math.ceil(pageWidthPts * scaleReq);
   const scale = fullWidth > maxCanvasWidth ? maxCanvasWidth / pageWidthPts : scaleReq;
 
-  // Match mupdf's fz_round_rect: ceil with small epsilon tolerance for FP precision.
-  // This produces the same pixel dimensions as the mupdf baseline renderer.
+  // Match mupdf's fz_round_rect: ceil with a small epsilon tolerance for FP precision.
   const canvasWidth = Math.ceil(pageWidthPts * scale - 0.001);
   const canvasHeight = Math.ceil(pageHeightPts * scale - 0.001);
 
@@ -6294,22 +6002,19 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Declare caches before try so they're accessible in the finally cleanup block.
   /** @type {Map<string, CanvasPattern>} */
   const tilingPatternCache = new Map();
-  // Cache key for a built pattern tile. Pattern names are scoped to their Resources dict,
-  // so a page and a nested Form XObject can legally reuse a name (P0, P1) for different pattern objects.
-  // The object number is included to disambiguate those scopes.
+  // Pattern names are scoped to their Resources dict, so a page and a nested Form XObject can legally reuse a name (P0, P1) for different pattern objects.
   const tileKeyOf = (ref) => {
     const base = ref.objNum != null ? `${ref.patName}#${ref.objNum}` : ref.patName;
     return ref.paintColor ? `${base}|${ref.paintColor}` : base;
   };
-  // Keep this above the page-level tiling-pattern pre-pass below.
-  // `renderTilingPatternTile` calls it for inline-image pattern cells, and that pre-pass runs first.
-  // Declaring it lower would make the pre-pass hit a temporal-dead-zone ReferenceError.
+  // `renderTilingPatternTile` calls this for inline-image pattern cells, and the tiling-pattern pre-pass below runs first.
+  // Declaring it any lower would make that pre-pass hit a temporal-dead-zone ReferenceError.
   const decodeInlineImage = (op) => decodeInlineImageBitmap(op, objCache, colorSpaces);
   /** @type {Map<string, ImageBitmap>} */
   const bitmapCache = new Map();
   const smaskCanvasCache = new Map();
-  // `createPattern(canvas, …)` clones the source surface on every call on
-  // Node; tracked here and disposed in the page-end `finally` block.
+  // `createPattern(canvas, ...)` clones the source surface on every call on Node.
+  // The clones are tracked here and disposed in the page-end `finally` block.
   /** @type {CanvasPattern[]} */
   const transientPatterns = [];
   let textMeasureCanvas = null;
@@ -6366,9 +6071,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           ];
         }
       }
-      // Shading matrices are in pre-rotation user space, so compose rotCtm to
-      // match the rotated op.ctm and op.clips above. Dedup via Set since a
-      // single shading can be referenced by many ops.
+      // Shading matrices are in pre-rotation user space, so compose rotCtm to match the rotated op.ctm and op.clips above.
+      // The matrix is mutated in place, so the Set stops a shading referenced by many ops from being rotated twice.
       const rotatedShadings = new Set();
       for (const op of drawOps) {
         const sh = op.patternShading;
@@ -6385,22 +6089,19 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
     /**
      * Apply all clip paths from an op's clip stack to the canvas context.
-     * Each clip intersects with the previous, matching PDF semantics for nested W/W* operators.
-     * Text clips (from Tr modes 4-7) are skipped here — they are handled via compositing.
-     * @param {*} [skipClip] - Clip entry excluded here; the caller renders it as an anti-aliased pattern fill because Chrome's clip() is not anti-aliased.
+     * Text clips (from Tr modes 4-7) are skipped here, and handled via compositing instead.
+     * @param {*} [skipClip] - Clip entry excluded here.
+     *   The caller renders it as an anti-aliased pattern fill, because Chrome's clip() is not anti-aliased.
      */
     function applyClips(renderCtx, op, skipClip) {
       if (!op.clips || op.clips.length === 0) return;
       // Clip intersection is commutative, so apply the cheapest (fewest-point) clips first.
-      // A simple rectangle clip applied before a complex many-bezier
-      // clip bounds the region Skia must rasterize and avoids re-rasterizing the
-      // complex clip mask when a simpler clip follows it.
       const clips = op.clips.length > 1
         ? [...op.clips].sort((a, b) => (a.path ? a.path.length : 0) - (b.path ? b.path.length : 0))
         : op.clips;
       for (const clip of clips) {
         if (clip === skipClip) continue;
-        if (clip.textClip) continue; // handled separately via compositing
+        if (clip.textClip) continue;
         if (!clip.path) continue;
         renderCtx.setTransform(
           clip.ctm[0] * scale,
@@ -6431,13 +6132,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const [x0, y0, x1, y1] = coords;
       const dx = x1 - x0;
       const dy = y1 - y0;
-      // Perpendicular vector (rotated 90 degrees)
       const px = -dy;
       const py = dx;
       // The clip strip is built in the current user space, so its half-extent must be sized in that space, not in page points.
-      // When the shading's /Coords live in a space the CTM scales far from page space (coords in the millions under a ~1e-4 cm),
-      // a page-point extent collapses the strip to a sliver and the gradient fill vanishes.
-      // Map the canvas corners back into user space and size the extent to span them.
+      // When the CTM scales /Coords far from page space (coords in the millions under a ~1e-4 cm), a page-point extent collapses the strip to a sliver and the gradient vanishes.
       const perpMag = Math.sqrt(px * px + py * py) || 1;
       let extentUser = Math.max(1e4, pageWidthPts * 10, pageHeightPts * 10);
       const inv = renderCtx.getTransform().inverse();
@@ -6455,9 +6153,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // That keeps the clip polygon's device coordinates near canvas scale, well under the ~1e9 some backends reject.
       const BIG = extentUser / perpMag;
 
-      // When extend[0] is false, clip out the half-plane beyond the start point.
-      // When extend[1] is false, clip out the half-plane beyond the end point.
-      // We build a polygon covering only the valid region.
       if (!extend[0] && !extend[1]) {
       // Clip to the strip between start and end perpendicular lines
         renderCtx.beginPath();
@@ -6742,11 +6437,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       };
     }
 
-    // Pre-render tiling patterns (PatternType 1) to CanvasPattern objects.
-    // Each pattern's content stream is rendered once to a small canvas, then reused via createPattern().
-
     /**
-     * Render a single tiling pattern tile and cache the resulting CanvasPattern.
+     * Render a single tiling pattern tile and cache the resulting bitmap.
      * @param {string} patName - Pattern name for cache key
      * @param {{ objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number, paintColor?: string }} tp - Tiling pattern metadata
      */
@@ -6760,7 +6452,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const patObjText = objCache.getObjectText(tp.objNum);
       if (!patObjText) return;
 
-      // Parse images from the pattern's resources
       let patResText = patObjText;
       const patResRef = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(patObjText);
       if (patResRef) {
@@ -6771,16 +6462,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const patImages = patImagesResult.images;
       const patForms = patImagesResult.forms;
 
-      // Parse fonts from the pattern's resources and register them for canvas text rendering
       const patFonts = parsePageFonts(patObjText, objCache);
       const patRegistered = new Map();
       const patSymbolTags = new Set();
       const patCidPUATags = new Set();
       const patRawCharCodeTags = new Set();
       for (const [fontTag, fontObj] of patFonts) {
-        // Pattern fonts share the same (docId, fontObjNum) identity as the
-        // page-level fonts they (usually) reference, so the same alias is
-        // reused across the page's pattern cells and the page body.
         const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, `pat_${patName}_${fontTag}`);
         await convertAndRegisterFont(
           fontTag, fontObj, patRegistered, patSymbolTags, patCidPUATags,
@@ -6790,10 +6477,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       appendGenericFallbacks(patRegistered, patFonts);
 
       // The repeat cell is XStep/YStep, not the BBox.
-      // `createPattern('repeat')` tiles at the canvas size, so when the BBox
-      // exceeds the step the canvas is mostly empty and tiles with gaps.
-      // Shrink the cell to the step, clamping downward only.
-      // A step at or above the BBox keeps the old sizing (gapped or oversized tiles).
+      // `createPattern('repeat')` tiles at the canvas size, so a BBox larger than the step leaves the canvas mostly empty and the tiles gapped.
       // Cell content stays positioned relative to the BBox origin (tp.bbox[0/1]).
       const fullBboxW = tp.bbox[2] - tp.bbox[0];
       const fullBboxH = tp.bbox[3] - tp.bbox[1];
@@ -6806,7 +6490,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const tileCanvas = ca.makeCanvas(tileW, tileH);
       const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d', { willReadFrequently: true }));
 
-      // Parse ExtGState, shadings, patterns, and color spaces from the pattern's resources
       const patExtGStates = parseExtGStates(patObjText, objCache);
       const patShadings = parseShadings(patObjText, objCache);
       const patPatterns = parsePatterns(patObjText, objCache);
@@ -6816,7 +6499,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         patColorSpaces.size > 0 ? patColorSpaces : undefined, patSymbolTags, patCidPUATags,
         patRawCharCodeTags, patShadings, patPatterns, cidCollisionMap);
 
-      // Expand Form XObjects in pattern draw ops.
       let patDrawOps;
       if (patForms.size > 0) {
         patDrawOps = [];
@@ -6857,7 +6539,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           tileCtx.restore();
           ca.closeDrawable(bitmap);
         } else if (pop.type === 'inlineImage') {
-        // Handle inline images inside tiling pattern streams
           try {
             const bitmap = await decodeInlineImage(pop);
             if (bitmap) {
@@ -6876,7 +6557,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           } catch { /* skip */ }
         } else if (pop.type === 'path' && (pop.fill || pop.stroke)) {
           if (pop.fill) {
-            // Determine the target context — if the op has an SMask, draw to a temp canvas first
             let drawCtx = tileCtx;
             let tempCanvas = null;
             if (pop.smask) {
@@ -6903,7 +6583,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               }
             }
             if (pop.tilingPattern) {
-            // Nested tiling pattern fill: recursively render inner pattern, then tile it
               const innerPatName = pop.tilingPattern.patName;
               const innerKey = tileKeyOf(pop.tilingPattern);
               if (pop.tilingPattern.objNum && !tilingPatternCache.has(innerKey)) {
@@ -6977,7 +6656,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             }
             drawCtx.restore();
 
-            // Apply SMask: render mask form, convert to luminosity alpha, composite
             if (pop.smask && tempCanvas) {
               const maskCanvas = await renderSMaskToCanvas(pop.smask, objCache, tileW, tileH, bboxH, tp.bbox[0], tp.bbox[1], tileScaleX);
               if (maskCanvas) {
@@ -6990,7 +6668,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               tileCtx.drawImage(tempCanvas, 0, 0);
               ca.closeDrawable(tempCanvas);
             }
-          } // end if (pop.fill)
+          }
           if (pop.stroke) {
             tileCtx.save();
             if (pop.strokeAlpha < 1) tileCtx.globalAlpha = pop.strokeAlpha;
@@ -7059,7 +6737,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           tileCtx.restore();
         } else if (pop.type === 'shading' && pop.shading) {
           // Cells can paint standalone `sh` shadings (e.g. a logo built from quadrant Gouraud meshes).
-          // Map cell space to the tile canvas and apply the cell's clip so a shading clipped to a sub-region stays there.
           const sh = pop.shading;
           tileCtx.save();
           if (pop.fillAlpha < 1) tileCtx.globalAlpha = pop.fillAlpha;
@@ -7108,7 +6785,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       tilingPatternCache.set(cacheKey, tileBitmap);
     }
 
-    // Render page-level tiling patterns
     for (const [patName, patInfo] of pagePatterns) {
       if (!patInfo.tiling) continue;
       try { await renderTilingPatternTile(patName, patInfo.tiling); } catch { /* skip */ }
@@ -7126,7 +6802,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (op.type === 'image') imageDrawCounts.set(op.name, (imageDrawCounts.get(op.name) || 0) + 1);
     }
 
-    // Cache parsed Type3 glyph paths to avoid re-parsing the same CharProc
     const glyphPathCache = new Map();
 
     /**
@@ -7187,17 +6862,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             rCtx.fillStyle = canvasPat;
             rCtx.fillRect(0, 0, canvasWidth, canvasHeight);
             rCtx.restore();
-            // Disposal is deferred to the render-level `finally` via
-            // `transientPatterns`.
           } else {
             rCtx.fillStyle = op.fillColor;
             rCtx.fill(op.evenOdd ? 'evenodd' : 'nonzero');
           }
         } else if (op.patternShading) {
           const sh = op.patternShading;
-          // Pattern matrix maps shading coords to the content stream's default user space.
-          // For Form XObject content, patternBaseCTM maps that space to page space.
-          // For page-level content, patternBaseCTM is absent (default user space IS page space).
+          // The pattern matrix maps shading coords to the content stream's default user space, which patternBaseCTM then maps to page space for Form XObject content.
+          // It is absent for page-level content, where the default user space already is page space.
           const bctm = op.patternBaseCTM;
           if (sh.type === 'mesh') {
             rCtx.save();
@@ -7208,7 +6880,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             renderMeshPatches(rCtx, sh.patches);
             rCtx.restore();
           } else if (sh.type === 'gouraud') {
-            // Render the Gouraud triangle mesh with per-pixel barycentric color interpolation.
             rCtx.save();
             rCtx.clip(op.evenOdd ? 'evenodd' : 'nonzero');
             rCtx.setTransform(scale, 0, 0, -scale, -boxOriginX * scale, (pageHeightPts + boxOriginY) * scale);
@@ -7281,7 +6952,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const imageInfo = images.get(op.name);
         if (!imageInfo) return;
 
-        // For image masks with tiling pattern fill, composite the pattern through the mask
         if (imageInfo.imageMask && op.tilingPattern) {
           const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
           const canvasPat = tileCvs ? rCtx.createPattern(tileCvs, 'repeat') : null; if (canvasPat) transientPatterns.push(canvasPat);
