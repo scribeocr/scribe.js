@@ -25,13 +25,14 @@ results
 settings.json
 tmp
 /build/
+/dist/
 mcp/mcp.log
 user-docs
 
 # scribe-ui
-scribe-ui/basic-viewer/tauri/target/
-scribe-ui/basic-viewer/tauri/dist/
-scribe-ui/basic-viewer/tauri/gen/
+# Leftover local build output of the removed Tauri shell. Delete the directory at will.
+scribe-ui/basic-viewer/tauri/
+scribe-ui/basic-viewer/electron/cache/
 scribe-ui/basic-viewer/electron/staging/
 scribe-ui/basic-viewer/electron/dist/
 

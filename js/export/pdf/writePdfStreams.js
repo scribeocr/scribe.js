@@ -3,8 +3,10 @@
  */
 
 // Browsers resolve to null and use the CompressionStream path in `deflateBytes` instead.
+// A top-level `await` here would make every importing module initialize asynchronously.
+// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
 const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? (await import('node:zlib')).deflateSync
+  ? process.getBuiltinModule('node:zlib').deflateSync
   : null;
 
 /**

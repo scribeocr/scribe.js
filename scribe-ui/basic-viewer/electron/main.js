@@ -110,6 +110,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       sandbox: false,
+      // Lets the preload tell the renderer whether it runs from a packaged app, which carries its own OCR language data.
+      additionalArguments: app.isPackaged ? ['--scribe-packaged'] : [],
     },
   });
   if (shellState.isMaximized) mainWindow.maximize();

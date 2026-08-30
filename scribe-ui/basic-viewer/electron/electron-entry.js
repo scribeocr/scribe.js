@@ -6,6 +6,10 @@ import { scribe } from '../pdf-viewer.js';
 // The shell serves COOP/COEP headers, so PDF bytes can be shared across workers instead of cloned per worker.
 scribe.opt.usePdfSharedBuffer = true;
 
+// The packaged app ships English OCR data (see build.sh), so recognition works offline.
+// A repo checkout run with `npm start` has no such directory, and keeps the CDN default.
+if (window.electronAPI.isPackaged) scribe.opt.langPath = 'app://bundle/lang';
+
 // Controls move in and out of the start and end zones at runtime, so the exemption covers whatever is in a zone rather than a fixed list of the controls present today.
 // It reaches every descendant because the mode drop-down and its rows sit inside wrapper spans that a children-only selector would not pass through.
 pdfViewer.toolbarElem.style.webkitAppRegion = 'drag';

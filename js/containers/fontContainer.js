@@ -3,21 +3,9 @@
 // To make sure what the user sees on the canvas matches the final pdf output,
 // all fonts should have an identical OpenType.js and FontFace version.
 
-// Node.js case
 import opentype from '../font-parser/src/index.js';
 import { determineSansSerif, getStyleLookup, clearObjectProperties } from '../utils/miscUtils.js';
 import { ca } from '../canvasAdapter.js';
-
-if (typeof process === 'object') {
-  // @ts-ignore
-  globalThis.self = globalThis;
-  // @ts-ignore
-  const { createRequire } = await import('node:module');
-  globalThis.require = createRequire(import.meta.url);
-  const { fileURLToPath } = await import('node:url');
-  const { dirname } = await import('node:path');
-  globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
-}
 
 /**
  * Checks whether `multiFontMode` should be enabled or disabled.

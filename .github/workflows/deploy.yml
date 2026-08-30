@@ -1,0 +1,152 @@
+name: Deploy
+
+# The jobs are chained with `needs`, so a failure anywhere stops the chain before the live site changes.
+# Promotion runs only while the repository variable SCRIBE_PROMOTE is "true". Until then a run stops at the preview URL.
+# CLOUDFLARE_API_TOKEN needs the Workers Scripts: Edit permission.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test-node:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: [20.x, 22.x, 24.x]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run test:cli
+      - run: npm run test:module:node
+
+  test-browser:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - name: Install Firefox
+        if: matrix.browser == 'firefox'
+        id: setup-firefox
+        uses: browser-actions/setup-firefox@v1
+      - name: Install geckodriver
+        if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-geckodriver@latest
+      - run: npm ci
+      - name: Run vitest browser tests
+        env:
+          CHROMIUM_BINARY: /usr/bin/google-chrome
+          FIREFOX_BINARY: ${{ steps.setup-firefox.outputs.firefox-path }}
+        run: npx vitest run --project=${{ matrix.browser }}
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The smoke test opens a fixture from tests/test-assets and loads OCR language data from tests/test-lang-data.
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      - name: Install Firefox
+        id: setup-firefox
+        uses: browser-actions/setup-firefox@v1
+      - name: Install geckodriver
+        uses: browser-actions/setup-geckodriver@latest
+      - run: npm ci
+      - run: npm run build
+      - name: Smoke-test the built output in Chrome
+        env:
+          CHROMIUM_BINARY: /usr/bin/google-chrome
+        run: npm run smoke:dist -- --browser chrome
+      - name: Smoke-test the built output in Firefox
+        env:
+          FIREFOX_BINARY: ${{ steps.setup-firefox.outputs.firefox-path }}
+        run: npm run smoke:dist -- --browser firefox
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  upload:
+    needs: [test-node, test-browser, build]
+    runs-on: ubuntu-latest
+    outputs:
+      version-id: ${{ steps.parse.outputs.version-id }}
+      preview-url: ${{ steps.parse.outputs.preview-url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - id: meta
+        run: echo "short-sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Upload as a non-live version
+        id: upload
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          command: versions upload --preview-alias master --tag ${{ steps.meta.outputs.short-sha }} --message "master ${{ steps.meta.outputs.short-sha }}"
+      - name: Record the version ID and preview URL
+        id: parse
+        env:
+          WRANGLER_OUTPUT: ${{ steps.upload.outputs.command-output }}
+        run: |
+          version_id=$(printf '%s\n' "$WRANGLER_OUTPUT" | sed -nE 's/.*Worker Version ID: *([0-9a-f-]+).*/\1/p' | head -n1)
+          preview_url=$(printf '%s\n' "$WRANGLER_OUTPUT" | grep -oE 'https://[^ ]*workers\.dev' | head -n1)
+          test -n "$version_id" || { echo "Could not find the version ID in wrangler's output:"; printf '%s\n' "$WRANGLER_OUTPUT"; exit 1; }
+          echo "version-id=$version_id" >> "$GITHUB_OUTPUT"
+          echo "preview-url=$preview_url" >> "$GITHUB_OUTPUT"
+          { echo "Uploaded version \`$version_id\` (not live)."; echo; echo "Preview: $preview_url"; } >> "$GITHUB_STEP_SUMMARY"
+
+  promote:
+    needs: upload
+    if: vars.SCRIBE_PROMOTE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # This command uploads nothing, but wrangler still wants the assets directory named in wrangler.jsonc to exist.
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Promote the version to production
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          command: versions deploy ${{ needs.upload.outputs.version-id }}@100% -y
+      - run: echo "Version ${{ needs.upload.outputs.version-id }} is now live." >> "$GITHUB_STEP_SUMMARY"

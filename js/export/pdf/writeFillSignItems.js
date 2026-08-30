@@ -4,8 +4,10 @@ import { base64ToBytes, getPngIHDRInfo } from '../../utils/imageUtils.js';
 import { createImageXObjectJpeg, createImageXObjectPng } from './writePdfImages.js';
 import { hex } from './writePdfFonts.js';
 
+// A top-level `await` here would make every importing module initialize asynchronously.
+// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
 const zlibInflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? (await import('node:zlib')).inflateSync
+  ? process.getBuiltinModule('node:zlib').inflateSync
   : null;
 
 /**

@@ -1,5 +1,5 @@
 // Standalone basic-viewer application bootstrap.
-// Loaded directly by `index.html` and built on by `tauri-entry.js` and `electron-entry.js`.
+// Loaded directly by `index.html` and built on by `electron-entry.js`.
 //
 // This is not the file to import when embedding a viewer in your own page, since importing it builds a full-screen viewer and writes `globalThis.df`.
 // Import `ScribePDFViewer` from `./pdf-viewer.js` and construct it yourself.
@@ -10,8 +10,8 @@ import { DOCUMENT_LIBRARY, AUTOMATE } from '../devFlags.js';
 
 const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElementById('pdfViewerCont'));
 
-// The library is desktop-only for now, and the shells inject their bridge globals before any page script runs, so this reads true by the time the viewer is built.
-const inDesktopShell = !!(/** @type {any} */ (window).electronAPI || /** @type {any} */ (window).__TAURI__);
+// The library is desktop-only for now, and the shell injects its bridge global before any page script runs, so this reads true by the time the viewer is built.
+const inDesktopShell = !!(/** @type {any} */ (window).electronAPI);
 
 const buildBootstrapViewer = () => {
   if (!pdfViewerContElem) return null;
@@ -41,6 +41,15 @@ const pdfViewer = buildBootstrapViewer();
 pdfViewerContElem?.addEventListener('scribe-active-doc-change', (e) => {
   const name = /** @type {CustomEvent} */ (e).detail?.name;
   document.title = name ? `${name} — 21 Viewer` : '21 Viewer';
+});
+
+// A deploy renames every chunk, so a page opened before it can no longer load the pieces it has not used yet.
+// Vite's preload helper reports that failure through this event, which the unbundled dev app never fires.
+let outdatedToastAt = 0;
+window.addEventListener('vite:preloadError', () => {
+  if (!pdfViewer || Date.now() - outdatedToastAt < 8000) return;
+  outdatedToastAt = Date.now();
+  pdfViewer._showToast('This page is out of date — reload to keep using it.', { actionLabel: 'Reload', onAction: () => window.location.reload() });
 });
 
 let currentFile = null;

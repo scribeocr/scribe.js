@@ -1,4 +1,4 @@
-// Generates every viewer.21.ai brand asset: the web favicon set and the desktop shells' app icons.
+// Generates every viewer.21.ai brand asset: the web favicon set and the desktop app's icons.
 // The mark path is optically centered in its 96-unit box by ink centroid, which does not put its bounding box in the center.
 // Run: node dev/genBrandIcons.mjs
 import { createCanvas, Path2D } from '@scribe.js/canvas';
@@ -8,11 +8,9 @@ import path from 'path';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEB_OUT = path.join(ROOT, 'scribe-ui/basic-viewer/icons');
-const TAURI_OUT = path.join(ROOT, 'scribe-ui/basic-viewer/tauri/icons');
 // electron-builder's buildResources directory.
 const ELECTRON_OUT = path.join(ROOT, 'scribe-ui/basic-viewer/electron/build');
 mkdirSync(WEB_OUT, { recursive: true });
-mkdirSync(TAURI_OUT, { recursive: true });
 mkdirSync(ELECTRON_OUT, { recursive: true });
 
 const MARK_D = 'M 23.5 33.5 C 23.5 16.5 50.5 16.5 50.5 33.5 C 50.5 44.5 39 56.5 24 70 L 62 70 A 8 8 0 0 0 70 62 L 70 20.5 L 61 29.5';
@@ -79,13 +77,6 @@ for (const [file, size] of webPngs) {
   writeFileSync(path.join(WEB_OUT, file), renderTile(size));
 }
 
-// These file names must match the bundle.icon list in tauri.conf.json.
-/** @type {Array<[string, number]>} */
-const tauriPngs = [['32x32.png', 32], ['128x128.png', 128], ['128x128@2x.png', 256], ['icon.png', 512]];
-for (const [file, size] of tauriPngs) {
-  writeFileSync(path.join(TAURI_OUT, file), renderTile(size));
-}
-
 // Windows .ico: a directory of PNG-compressed entries (Vista and later).
 const icoSizes = [16, 32, 48, 64, 256];
 const icoPngs = icoSizes.map((size) => renderTile(size));
@@ -106,7 +97,6 @@ icoSizes.forEach((size, i) => {
   icoOffset += icoPngs[i].length;
 });
 const icoData = Buffer.concat([icoDir, ...icoPngs]);
-writeFileSync(path.join(TAURI_OUT, 'icon.ico'), icoData);
 writeFileSync(path.join(ELECTRON_OUT, 'icon.ico'), icoData);
 
 // macOS .icns: 'icns' magic, then one typed chunk per size.
@@ -125,8 +115,7 @@ const icnsHeader = Buffer.alloc(8);
 icnsHeader.write('icns', 0, 'ascii');
 icnsHeader.writeUInt32BE(8 + icnsChunks.reduce((sum, c) => sum + c.length, 0), 4);
 const icnsData = Buffer.concat([icnsHeader, ...icnsChunks]);
-writeFileSync(path.join(TAURI_OUT, 'icon.icns'), icnsData);
 writeFileSync(path.join(ELECTRON_OUT, 'icon.icns'), icnsData);
 
 console.log(`web icons  -> ${WEB_OUT}`);
-console.log(`app icons  -> ${TAURI_OUT}`);
+console.log(`app icons  -> ${ELECTRON_OUT}`);

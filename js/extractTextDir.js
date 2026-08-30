@@ -62,7 +62,8 @@ async function* walkFiles(fs, path, inputDir, recursive) {
 export async function* extractTextDirIter(inputDir, options = {}) {
   const fs = (await import('node:fs')).default;
   const path = (await import('node:path')).default;
-  const { Worker } = await import('node:worker_threads');
+  // Not `Worker`: a bundler treats any `new Worker(new URL(...))` as a browser worker to bundle, and this one is Node-only.
+  const { Worker: WorkerNode } = await import('node:worker_threads');
 
   const workerCount = Math.max(1, Number(options.workers) || 4);
   const workerData = {
@@ -78,7 +79,7 @@ export async function* extractTextDirIter(inputDir, options = {}) {
   const ext = workerData.format === 'text' ? 'txt' : workerData.format;
 
   const spawnWorker = () => new Promise((resolve) => {
-    const worker = new Worker(new URL('./worker/extractTextDirWorker.js', import.meta.url), { workerData });
+    const worker = new WorkerNode(new URL('./worker/extractTextDirWorker.js', import.meta.url), { workerData });
     const state = { worker, dead: false, inflight: null };
     const settle = (msg) => {
       const cb = state.inflight;

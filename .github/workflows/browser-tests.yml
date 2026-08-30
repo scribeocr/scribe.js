@@ -1,6 +1,10 @@
 name: Browser CI
 
-on: [push, pull_request]
+# deploy.yml tests master before it builds and deploys, so this covers every other branch and pull request.
+on:
+  push:
+    branches-ignore: [master]
+  pull_request:
 
 jobs:
   test:

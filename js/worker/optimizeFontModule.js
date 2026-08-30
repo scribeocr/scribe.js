@@ -2,21 +2,6 @@ import { quantile } from '../utils/miscUtils.js';
 
 import opentype from '../font-parser/src/index.js';
 
-// Defining "window" is needed due to bad browser/node detection in Opentype.js
-// Can hopefully remove in future version
-if (typeof process === 'object') {
-  // @ts-ignore
-  globalThis.self = globalThis;
-  // @ts-ignore
-  const { createRequire } = await import('node:module');
-  globalThis.require = createRequire(import.meta.url);
-  const { fileURLToPath } = await import('node:url');
-  const { dirname } = await import('node:path');
-  globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
-} else if (globalThis.window === undefined) {
-  globalThis.window = {};
-}
-
 /**
  * Rounds a number to six decimal places.
  * @param {number} x - The number to be rounded.

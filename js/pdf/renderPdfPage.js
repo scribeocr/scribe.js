@@ -9022,8 +9022,10 @@ for (let n = 0; n < 256; n++) {
 }
 
 // Native CRC-32 is what keeps the fast PNG path net-faster than the compressed path, because its IDAT chunk runs to tens of megabytes per page.
+// A top-level `await` here would make every importing module initialize asynchronously.
+// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
 const zlibCrc32 = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? (await import('node:zlib')).crc32
+  ? process.getBuiltinModule('node:zlib').crc32
   : null;
 
 /**
@@ -9054,9 +9056,10 @@ function makePngChunk(type, data) {
   return chunk;
 }
 
-// Resolved once at module load so the hot path does not pay a dynamic import per call.
+// A top-level `await` here would make every importing module initialize asynchronously.
+// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
 const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? (await import('node:zlib')).deflateSync
+  ? process.getBuiltinModule('node:zlib').deflateSync
   : null;
 
 /**

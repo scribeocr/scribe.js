@@ -19,11 +19,16 @@
     "eslint-plugin-import": "^2.29.1",
     "eslint-plugin-jsdoc": "^50.6.2",
     "express": "^4.21.2",
+    "vite": "^8.0.16",
     "vitest": "^4.1.7",
     "webdriverio": "^9.27.0"
   },
   "scripts": {
     "start": "node tests/scripts/server.js",
+    "build": "vite build",
+    "build:electron": "vite build --mode electron",
+    "preview": "vite preview",
+    "smoke:dist": "node tests/smoke/distSmoke.mjs",
     "stop": "curl http://localhost:3031/shutdown",
     "test": "npm run test:module",
     "test:module": "npm run test:module:node && npm run test:module:browser",

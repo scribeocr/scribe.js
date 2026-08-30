@@ -24,6 +24,9 @@ venv
 robots.txt
 settings.json
 vitest.config.js
+vite.config.js
+public
+dist
 jsconfig.json
 .eslintrc.json
 .gitmodules
@@ -33,9 +36,6 @@ js/font-parser/test
 js/font-parser/.mocharc.json
 js/font-parser/package-lock.json
 scribe-ui/basic-viewer/electron
-scribe-ui/basic-viewer/tauri
-scribe-ui/basic-viewer/tauri-entry.js
-scribe-ui/basic-viewer/tauri.html
 scribe-ui/package.json
 scribe-ui/package-lock.json
 scribe-ui/.npmignore

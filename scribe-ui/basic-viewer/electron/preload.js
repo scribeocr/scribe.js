@@ -3,6 +3,7 @@ const path = require('path');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
+  isPackaged: process.argv.includes('--scribe-packaged'),
   readFile: async (filePath) => {
     const data = await ipcRenderer.invoke('read-file', filePath);
     return { buffer: data, name: path.basename(filePath) };
