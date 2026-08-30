@@ -7,6 +7,7 @@ import { calcBboxUnion } from '../../../js/utils/miscUtils.js';
 import { isScanPage } from '../../../js/pdf/ocrPageSelection.js';
 import { detectHeadingBookmarks, nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
+import { refreshEditedPages } from '../controls/tools.js';
 
 /** @typedef {import('../automations/registry.js').AutomationHost} AssistantHost */
 
@@ -194,25 +195,6 @@ export async function navigateToReceipt(viewer, receipt) {
     }
   }
   await viewer.displayPage(receipt.page, true, false);
-}
-
-/**
- * Refresh pages whose native text changed.
- * @param {import('../../viewer.js').ScribeViewer} viewer
- * @param {Array<number>} pages
- */
-function refreshEditedPages(viewer, pages) {
-  // These are the refreshes the Edit Text tool runs after its own commit, so a surface added there belongs here too.
-  for (const n of new Set(pages)) {
-    viewer.refreshPageRaster(n);
-    viewer.renderWords(n);
-    viewer.renderHighlights?.(n);
-    if (viewer.textSel) {
-      viewer.textSel.invalidatePage(n);
-      viewer.textSel.renderPage(n);
-    }
-  }
-  if (viewer.onEditCallback) viewer.onEditCallback();
 }
 
 /** @type {Array<VerbEntry>} */
@@ -505,7 +487,7 @@ export const VERBS = [
       const check = verifyLineRange(got.pageObj, params.startLine, Number.isInteger(params.endLine) ? params.endLine : params.startLine, params.quote);
       if (check.error) return { isError: true, result: { error: check.error } };
       await showWords(host.viewer, params.page, check.words, false);
-      const out = doc.deleteTextLines(check.lines);
+      const out = await doc.deleteTextLines(check.lines);
       refreshEditedPages(host.viewer, out.pages);
       return {
         result: { page: params.page, deletedLines: check.lines.length },

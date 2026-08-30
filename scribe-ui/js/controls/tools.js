@@ -1391,11 +1391,20 @@ export function nativeLineHitAt(scribe, clientX, clientY, eligible) {
 
 /**
  * Refresh the pages a native-text edit changed.
+ * Pages without built text are invalidated rather than re-rendered.
+ * They rebuild through the normal lazy path when scrolled to.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {Array<number>} pages
  */
 export function refreshEditedPages(scribe, pages) {
   for (const n of new Set(pages)) {
+    // A document-wide edit would otherwise raster and rebuild word DOM for hundreds of pages the user never viewed.
+    if (!scribe.textGroupsRenderIndices.includes(n)) {
+      scribe.doc?.images?.invalidatePageRender(n);
+      scribe.imageCache.invalidatePage(n);
+      scribe.textSel?.invalidatePage(n);
+      continue;
+    }
     scribe.refreshPageRaster(n);
     scribe.renderWords(n);
     scribe.renderHighlights?.(n);
@@ -1780,10 +1789,10 @@ export function createEditTextTool(scribe) {
       for (const kw of scribe.getWordsUnderTextSelection()) lines.add(kw.word.line);
       return [...lines].filter(lineEligible);
     };
-    const deleteSelectedLines = () => {
+    const deleteSelectedLines = async () => {
       const eligible = eligibleSelectedLines();
       if (eligible.length === 0) return false;
-      const res = scribe.doc.deleteTextLines(eligible);
+      const res = await scribe.doc.deleteTextLines(eligible);
       clearSelection();
       scribe.clearTextSelection();
       hideHover();

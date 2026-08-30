@@ -30,6 +30,9 @@ const REGIONS = [
 const STRIP = 0.1;
 const SNIP_PX_PER_PT = 0.8;
 const SNIP_HEIGHT = 44;
+/** Same-look tolerance on relTop, doubling as the grouping bucket width so near pairs land in the same or an adjacent bucket. */
+const RELTOP_TOL = 0.015;
+const CARD_BATCH = 60;
 
 /**
  * Build the Bulk Edit workspace into `container`.
@@ -55,10 +58,12 @@ export function buildBulkEditWorkspace(host, container) {
   let rules = [];
   /** @type {?{line: import('../../../js/objects/ocrObjects.js').OcrLine, n: number}} */
   let example = null;
-  /** @type {Array<{n: number, line: import('../../../js/objects/ocrObjects.js').OcrLine, p: Object}>} */
+  /** @type {Array<{n: number, line: import('../../../js/objects/ocrObjects.js').OcrLine, p: Object, lookGroup?: Object}>} */
   let matches = [];
   /** @type {Array<{key: string, items: Array<Object>, excluded: boolean, cursor: number}>} */
   let groups = [];
+  /** @type {Map<number, Array<Object>>} */
+  let matchesByPage = new Map();
   /** Kept across rescans, so editing a rule never silently restores an exclusion the user made. */
   const excludedKeys = new Set();
   /** @type {Map<string, number>} */
@@ -69,13 +74,20 @@ export function buildBulkEditWorkspace(host, container) {
   let stylesSeen = new Map();
   /** @type {'before'|'after'} */
   let view = 'before';
+  let cardLimit = CARD_BATCH;
   /** @type {?Object} The match ringed in the document after a card jump. */
   let current = null;
   /** @type {?{entry: Object, count: number, pages: number, excluded: number}} */
   let lastDelete = null;
+  let deleting = false;
+  /** @type {?HTMLButtonElement} */
+  let deleteBtn = null;
   let destroyed = false;
 
   const eligible = (line) => nativeLineEligible(doc, line);
+
+  /** @type {WeakMap<import('../../../js/objects/ocrObjects.js').OcrLine, {words: Array<Object>, n: number, props: Object}>} */
+  const propsCache = new WeakMap();
 
   /**
    * The properties a rule can test.
@@ -84,6 +96,9 @@ export function buildBulkEditWorkspace(host, container) {
    * @param {number} n
    */
   const propsOf = (line, n) => {
+    const hit = propsCache.get(line);
+    // Edits replace the line object (delete/undo) or its `words` array (`replaceTextLine`), so both are the validity check.
+    if (hit && hit.words === line.words && hit.n === n) return hit.props;
     const w = line.words.find((x) => /[\p{L}\p{N}]/u.test(x.text)) || line.words[0];
     const raw = (w.style.font || '').replace(/^[A-Z]{6}\+/, '');
     const dims = doc.pageMetrics[n].dims;
@@ -102,7 +117,7 @@ export function buildBulkEditWorkspace(host, container) {
       byCombo.set(combo, (byCombo.get(combo) || 0) + chars);
       total += chars;
     }
-    return {
+    const props = {
       font: raw ? cleanFamilyName(raw) : 'Unknown',
       size: w.style.size ? Math.round((w.style.size / pxPerPt(viewer, n)) * 2) / 2 : 0,
       color: (w.style.color || '#000000').toLowerCase(),
@@ -110,6 +125,8 @@ export function buildBulkEditWorkspace(host, container) {
       position: mid < dims.height * STRIP ? 'top' : (mid > dims.height * (1 - STRIP) ? 'bottom' : 'body'),
       text: getLineText(line),
     };
+    propsCache.set(line, { words: line.words, n, props });
+    return props;
   };
 
   const ruleOk = (rule, p) => {
@@ -151,7 +168,7 @@ export function buildBulkEditWorkspace(host, container) {
   // Numbers are blanked so stamps that differ only in a page number or date still group together.
   const lookKey = (m) => [m.p.text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(), m.p.font, m.p.color].join('|');
   const relTop = (m) => ((m.line.bbox.top + m.line.bbox.bottom) / 2) / doc.pageMetrics[m.n].dims.height;
-  const sameLook = (g, m) => g.look === lookKey(m) && Math.abs(g.size - m.p.size) <= 0.5 && Math.abs(g.relTop - relTop(m)) <= 0.015;
+  const sameLook = (g, m) => g.look === lookKey(m) && Math.abs(g.size - m.p.size) <= 0.5 && Math.abs(g.relTop - relTop(m)) <= RELTOP_TOL;
 
   function scan() {
     matches = [];
@@ -171,19 +188,35 @@ export function buildBulkEditWorkspace(host, container) {
       }
     }
     groups = [];
+    matchesByPage = new Map();
+    // A linear scan over the group list goes quadratic here, because body text makes nearly every match its own group.
+    /** @type {Map<string, Object>} */
+    const groupAt = new Map();
     for (const m of matches) {
-      let g = groups.find((x) => sameLook(x, m));
+      const look = lookKey(m);
+      const rt = relTop(m);
+      const bucket = Math.round(rt / RELTOP_TOL);
+      const base = `${look}|${m.p.size}|`;
+      let g = null;
+      // A pair within tolerance can straddle a bucket edge, so the neighbor buckets are probed too.
+      for (let b = bucket - 1; b <= bucket + 1 && !g; b++) {
+        const cand = groupAt.get(base + b);
+        if (cand && Math.abs(cand.relTop - rt) <= RELTOP_TOL) g = cand;
+      }
       if (!g) {
-        const look = lookKey(m);
         g = {
-          key: `${look}|${m.p.size}|${relTop(m).toFixed(2)}`, look, size: m.p.size, relTop: relTop(m), items: [], excluded: false, cursor: 0,
+          key: base + bucket, look, size: m.p.size, relTop: rt, items: [], excluded: excludedKeys.has(base + bucket), cursor: 0,
         };
-        g.excluded = excludedKeys.has(g.key);
+        groupAt.set(base + bucket, g);
         groups.push(g);
       }
       g.items.push(m);
+      m.lookGroup = g;
+      const onPage = matchesByPage.get(m.n);
+      if (onPage) onPage.push(m); else matchesByPage.set(m.n, [m]);
     }
     groups.sort((a, b) => b.items.length - a.items.length || a.items[0].n - b.items[0].n);
+    cardLimit = CARD_BATCH;
     if (current && !matches.some((m) => m.line === current.line)) current = null;
   }
 
@@ -243,7 +276,11 @@ export function buildBulkEditWorkspace(host, container) {
     if (destroyed) return;
     const wanted = new Map();
     if (stage === 'select') {
-      for (const g of groups) for (const m of g.items) wanted.set(m.line, { m, excluded: g.excluded });
+      // Iterating every match would materialize marks, page containers, and text indexes for hundreds of unseen pages, so only pages with built text are painted.
+      // Pages scrolled into view are repainted by the `displayPageCallback` hook.
+      for (const n of viewer.textGroupsRenderIndices) {
+        for (const m of matchesByPage.get(n) || []) wanted.set(m.line, { m, excluded: m.lookGroup.excluded });
+      }
     }
     for (const [line, el] of marks) {
       if (!wanted.has(line)) {
@@ -762,11 +799,13 @@ export function buildBulkEditWorkspace(host, container) {
 
   /** Squeeze each snippet line to the width its glyphs have on the page, since the substitute font rarely shares the PDF font's metrics. */
   function fitSnippetLines(within) {
-    for (const el of within.querySelectorAll('.scribe-am-be-sline[data-tw]')) {
+    const els = [...within.querySelectorAll('.scribe-am-be-sline[data-tw]')];
+    // A transform write between reads would force a style pass per line, so every read happens before any write.
+    const widths = els.map((el) => el.getBoundingClientRect().width);
+    els.forEach((el, i) => {
       const target = Number(el.dataset.tw);
-      const measured = el.getBoundingClientRect().width;
-      if (target > 0 && measured > target * 1.02) el.style.transform = `scaleX(${(target / measured).toFixed(3)})`;
-    }
+      if (target > 0 && widths[i] > target * 1.02) el.style.transform = `scaleX(${(target / widths[i]).toFixed(3)})`;
+    });
   }
 
   async function jumpTo(m) {
@@ -807,7 +846,8 @@ export function buildBulkEditWorkspace(host, container) {
     matchBlock.appendChild(label(`${matches.length} ${matches.length === 1 ? 'match' : 'matches'} · ${looks} distinct ${looks === 1 ? 'look' : 'looks'} · click a card to jump`));
     const snips = document.createElement('div');
     snips.className = 'scribe-am-be-snips';
-    for (const g of groups) {
+    // An uncapped list, one card per look, reached six figures of DOM nodes on document-wide matches.
+    for (const g of groups.slice(0, cardLimit)) {
       const card = document.createElement('button');
       card.type = 'button';
       card.className = `scribe-am-be-snip${g.excluded ? ' excl' : ''}`;
@@ -846,6 +886,18 @@ export function buildBulkEditWorkspace(host, container) {
       snips.appendChild(card);
     }
     matchBlock.appendChild(snips);
+    if (groups.length > cardLimit) {
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'scribe-am-quiet';
+      more.style.justifySelf = 'start';
+      more.textContent = `Show ${Math.min(CARD_BATCH, groups.length - cardLimit)} more · ${cardLimit} of ${groups.length} looks shown`;
+      more.addEventListener('click', () => {
+        cardLimit += CARD_BATCH;
+        renderMatches();
+      });
+      matchBlock.appendChild(more);
+    }
     matchBlock.appendChild(smallNote('Click a card to jump the document to that match; Exclude/Restore decides without navigating.'));
 
     const confirm = document.createElement('div');
@@ -896,15 +948,17 @@ export function buildBulkEditWorkspace(host, container) {
     sum.innerHTML = `<span><b>${kept}</b> to delete · ${ex} excluded</span>`;
     const grow = document.createElement('span');
     grow.style.flex = '1';
-    const del = runButton(`Delete ${kept} ${kept === 1 ? 'line' : 'lines'}`, true);
-    del.disabled = kept === 0;
+    const del = runButton(deleting ? 'Deleting…' : `Delete ${kept} ${kept === 1 ? 'line' : 'lines'}`, true);
+    del.disabled = kept === 0 || deleting;
     del.addEventListener('click', doDelete);
+    deleteBtn = del;
     sum.append(grow, del);
     foot.appendChild(sum);
     foot.appendChild(smallNote(ex > 0 ? 'Excluded lines stay untouched in the document. Deletes are recorded edits — undo restores them.' : 'Deletes are recorded edits — undo restores them.'));
   }
 
-  function doDelete() {
+  async function doDelete() {
+    if (deleting) return;
     const lines = [];
     for (const g of groups) {
       if (g.excluded) continue;
@@ -913,14 +967,24 @@ export function buildBulkEditWorkspace(host, container) {
     if (!lines.length) return;
     const excluded = excludedCount();
     const pages = new Set(lines.map((l) => l.page.n));
+    deleting = true;
+    if (deleteBtn) {
+      deleteBtn.disabled = true;
+      deleteBtn.textContent = 'Deleting…';
+    }
     let res;
     try {
-      res = doc.docHistory.group(`Deleted ${lines.length} lines (Bulk Edit)`, () => doc.deleteTextLines(lines));
+      res = await doc.deleteTextLines(lines, `Deleted ${lines.length} lines (Bulk Edit)`);
     } catch (err) {
       console.error('Bulk Edit: delete failed:', err);
+      deleting = false;
+      if (destroyed) return;
+      renderFoot();
       body.prepend(note(FLAG_SVG, 'The delete failed; nothing was changed.'));
       return;
     }
+    deleting = false;
+    if (destroyed) return;
     view = 'before';
     hidePill();
     current = null;

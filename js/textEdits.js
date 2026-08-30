@@ -298,11 +298,13 @@ export function nativeTextForPage(doc, page) {
  * Deletes whole lines of visible native PDF text.
  * The words are also removed from the live OCR data, so search and text exports reflect the deletion immediately.
  * Records one undoable step in `doc.contentEditHistory`.
+ * The delete yields to the event loop between page batches, so the document is observable mid-delete.
  * @param {ScribeDoc} doc
  * @param {Array<OcrLine>} lines - Live lines from `doc.ocr.active` pages.
- * @returns {{pages: Array<number>, groupId: string}} Affected page indices (for viewer refresh) and the action's group id.
+ * @param {string} [label] - Description of the edit for the undo timeline.
+ * @returns {Promise<{pages: Array<number>, groupId: string}>} Affected page indices (for viewer refresh) and the action's group id.
  */
-export function deleteTextLines(doc, lines) {
+export async function deleteTextLines(doc, lines, label = 'Deleted text') {
   /** @type {Map<number, Array<OcrLine>>} */
   const byPage = new Map();
   for (const line of lines) {
@@ -320,7 +322,13 @@ export function deleteTextLines(doc, lines) {
   const groupId = getRandomAlphanum(10);
   /** @type {Array<object>} */
   const entryPages = [];
+  let sliceLeft = 20;
   for (const [n, pageLines] of byPage) {
+    if (sliceLeft === 0) {
+      sliceLeft = 20;
+      await new Promise((r) => { setTimeout(r, 0); });
+    }
+    sliceLeft -= 1;
     const page = pageLines[0].page;
     const ntBefore = structuredClone(doc.nativeText.pages[n] || {});
     /** @type {Array<bbox>} */
@@ -399,7 +407,7 @@ export function deleteTextLines(doc, lines) {
       n, record, wordIds, lineSnaps, annots, replacedRecords, ntBefore, ntAfter,
     });
   }
-  doc.contentEditHistory.record({ groupId, pages: entryPages }, 'Deleted text');
+  doc.contentEditHistory.record({ groupId, pages: entryPages }, label);
   return { pages: entryPages.map((p) => p.n), groupId };
 }
 

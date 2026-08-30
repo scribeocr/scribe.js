@@ -1444,11 +1444,13 @@ export class ScribeDoc {
   /**
    * Delete whole lines of visible native PDF text.
    * Records one undoable step in `contentEditHistory`.
+   * A large delete mutates pages progressively, so await the result before reading them.
    * @param {Parameters<typeof deleteTextLinesImpl>[1]} lines
+   * @param {Parameters<typeof deleteTextLinesImpl>[2]} [label]
    * @returns {ReturnType<typeof deleteTextLinesImpl>}
    */
-  deleteTextLines(lines) {
-    return deleteTextLinesImpl(this, lines);
+  deleteTextLines(lines, label) {
+    return deleteTextLinesImpl(this, lines, label);
   }
 
   /**
