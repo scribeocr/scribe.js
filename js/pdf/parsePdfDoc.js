@@ -2224,6 +2224,7 @@ function convertDetectedTable(dt, dataTablePage, pageObj) {
     dataTable.boxes.push(new LayoutDataColumn(colBbox, dataTable));
   }
   dataTable.detectionMethod = dt.detectionMethod || 'text';
+  dataTable.bandColor = dt.rowBandRegion?.bandColor ?? null;
   dataTable.title = dt.title || null;
   // Some candidates carry rows for only part of their final bbox, which would fuse everything above into one megarow.
   if (dt.rows && dt.rows.length > 0) {
@@ -2280,7 +2281,7 @@ function convertDetectedTable(dt, dataTablePage, pageObj) {
       } else {
         dataTable.headerRows = Math.min(bandLineTops.length, 5);
       }
-    } else if ((dt.detectionMethod || 'text') === 'text' && !dt.splitTopLocked) {
+    } else if (['text', 'row-band'].includes(dt.detectionMethod || 'text') && !dt.splitTopLocked) {
       // An empty strong band means the header-like cells sit above the refined top, leaving row 0 as data.
       dataTable.headerRows = 0;
     }

@@ -1,4 +1,5 @@
 import { calcColumnBounds } from '../utils/detectTables.js';
+import { cmykToRgb } from './pdfColorFunctions.js';
 
 // Graphics-heavy pages (figures, maps, charts) can carry hundreds of thousands of vector paths.
 // Skip these pages to avoid severe performance issues.
@@ -101,7 +102,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       .filter((t) => t.colSeparators.length > 0);
     // Provisional (open-top continuation) grids skip the candidate competition; the cross-page promotion pass decides them.
     const provisionalEarly = strictAllEarly.filter((t) => t.provisionalTopOpen);
-    const strictEarly = strictAllEarly.filter((t) => !t.provisionalTopOpen);
+    const strictEarly = strictAllEarly.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
+    const columnRuleEarly = strictAllEarly.filter((t) => t.detectionMethod === 'column-rule');
     const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segEarly) {
       let blocked = false;
@@ -109,6 +111,13 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
         if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
       }
       if (!blocked) strictEarly.push(st);
+    }
+    for (const ct of columnRuleEarly) {
+      let blocked = false;
+      for (const v of strictEarly) {
+        if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictEarly.push(ct);
     }
     const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleEarly = detectHeaderRuleTables(pathDataEarly.hLines, pageObj);
@@ -213,7 +222,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     const strictAllFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
       .filter((t) => t.colSeparators.length > 0);
     const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
-    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen);
+    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
+    const columnRuleFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-rule');
     const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
@@ -221,6 +231,13 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
         if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
       }
       if (!blocked) strictFallback.push(st);
+    }
+    for (const ct of columnRuleFallback) {
+      let blocked = false;
+      for (const v of strictFallback) {
+        if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictFallback.push(ct);
     }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
@@ -240,7 +257,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     const strictAllFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
       .filter((t) => t.colSeparators.length > 0);
     const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
-    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen);
+    const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
+    const columnRuleFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-rule');
     const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
@@ -248,6 +266,13 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
         if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
       }
       if (!blocked) strictFallback.push(st);
+    }
+    for (const ct of columnRuleFallback) {
+      let blocked = false;
+      for (const v of strictFallback) {
+        if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictFallback.push(ct);
     }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
@@ -278,7 +303,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   const strictAllGrids = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines)
     .filter((t) => t.colSeparators.length > 0);
   const provisionalGrids = strictAllGrids.filter((t) => t.provisionalTopOpen);
-  const strictGrids = strictAllGrids.filter((t) => !t.provisionalTopOpen);
+  const strictGrids = strictAllGrids.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
+  const columnRuleTables = strictAllGrids.filter((t) => t.detectionMethod === 'column-rule');
   const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
   const gridTables = [...strictGrids];
   for (const st of segGrids) {
@@ -342,7 +368,33 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     const prevBottom = cand.bbox.bottom;
     const prevLeft = cand.bbox.left;
     const prevRight = cand.bbox.right;
-    cand.bbox.top = Math.min(cand.bbox.top, rbr.top);
+    // When the ladder's own top band holds the header row, the ladder top is the table top, which keeps a title above the ladder out of the table.
+    // Anything weaker fuses the header block of a table whose headers sit above an unshaded ladder into its first data row.
+    const topBand = rbr.rowYs[0];
+    let topBandHasNumeric = false;
+    const topBandWords = [];
+    for (const line of lines) {
+      const yC = (line.bbox.top + line.bbox.bottom) / 2;
+      if (yC < topBand.top || yC > topBand.bottom) continue;
+      if (line.bbox.right < rbr.left || line.bbox.left > rbr.right) continue;
+      for (const w of line.words) {
+        topBandWords.push(w);
+        if (/^[\d,$%.()+-]+$/.test(w.text) && /\d/.test(w.text)) topBandHasNumeric = true;
+      }
+    }
+    let topBandClusters = 0;
+    if (topBandWords.length > 0) {
+      topBandWords.sort((a, b) => a.bbox.left - b.bbox.left);
+      let hSum = 0;
+      for (const w of topBandWords) hSum += w.bbox.bottom - w.bbox.top;
+      const bandGap = (hSum / topBandWords.length) * 0.6;
+      topBandClusters = 1;
+      for (let wi = 1; wi < topBandWords.length; wi++) {
+        if (topBandWords[wi].bbox.left - topBandWords[wi - 1].bbox.right > bandGap) topBandClusters++;
+      }
+    }
+    const headerInBand = topBandClusters >= 3 && !topBandHasNumeric;
+    cand.bbox.top = headerInBand ? rbr.top : Math.min(cand.bbox.top, rbr.top);
     cand.bbox.bottom = Math.max(cand.bbox.bottom, rbr.bottom);
     cand.bbox.left = Math.min(cand.bbox.left, rbr.left);
     cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
@@ -355,7 +407,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       seps.sort((a, b) => a - b);
       cand.colSeparators = seps;
     }
-    if (cand.bbox.top < prevTop || cand.bbox.bottom > prevBottom
+    if (cand.bbox.top !== prevTop || cand.bbox.bottom > prevBottom
         || cand.bbox.left < prevLeft - 5 || cand.bbox.right > prevRight + 5) {
       cand.rows = collectRowsInBbox(cand.bbox, lines);
     }
@@ -482,6 +534,78 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     validated.push(ht);
   }
 
+  for (const ct of columnRuleTables) {
+    let blocked = false;
+    /** @type {DetectedTable[]} */
+    const overlappingText = [];
+    for (const v of validated) {
+      if (v.detectionMethod === 'grid-strong' || v.detectionMethod === 'segmented-hline') {
+        if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
+      } else if (bboxOverlap(v.bbox, ct.bbox) > 0.3) {
+        overlappingText.push(v);
+      }
+    }
+    // A claim with no separators or a sub-30px column is discarded by the multiCol filter downstream.
+    // Deferring to one surrenders the region to nothing, so only claims that will survive it can block.
+    const viableClaims = overlappingText.filter((v) => {
+      if (v.colSeparators.length === 0) return false;
+      if (v.detectionMethod !== 'text') return true;
+      const seps = [v.bbox.left, ...v.colSeparators, v.bbox.right];
+      for (let i = 1; i < seps.length; i++) {
+        if (seps[i] - seps[i - 1] < 30) return false;
+      }
+      return true;
+    });
+    // This path derives its rows from text, so shading that covers the table and tiles its rows is the better row evidence.
+    for (const rbr of viableClaims.some((v) => v.colSeparators.length >= 2) ? rowBandRegions : []) {
+      if (rbr.rowYs.length < 3) continue;
+      const covered = Math.min(rbr.bottom, ct.bbox.bottom) - Math.max(rbr.top, ct.bbox.top);
+      if (covered < (ct.bbox.bottom - ct.bbox.top) * 0.8) continue;
+      /** @type {number[]} */
+      const tops = [];
+      for (const l of lines) {
+        const yC = (l.bbox.top + l.bbox.bottom) / 2;
+        if (yC < rbr.top || yC > rbr.bottom) continue;
+        if (l.bbox.right < rbr.left || l.bbox.left > rbr.right) continue;
+        tops.push(l.bbox.top);
+      }
+      tops.sort((a, b) => a - b);
+      let textRows = 0;
+      let prevTop = -Infinity;
+      for (const t of tops) {
+        if (t - prevTop > 5) { textRows++; prevTop = t; }
+      }
+      if (rbr.rowYs.length >= textRows * 0.5) { blocked = true; break; }
+    }
+    if (blocked) continue;
+    if (overlappingText.length > 0) {
+      const ctCols = ct.colSeparators.length + 1;
+      const maxTextCols = Math.max(...overlappingText.map((t) => t.colSeparators.length + 1));
+      const anyNarrow = overlappingText.some(hasNarrowTextColumn);
+      // Text clustering can resolve sub-columns inside drawn columns (a group-ruled table), so a genuinely richer text structure survives.
+      if (maxTextCols > ctCols && !anyNarrow) continue;
+      // Vlines interrupted by section fills cover only part of a claimed region, so a fragment may not replace a claim at the cost of the claim's rows.
+      let losesRows = false;
+      for (const v of viableClaims) {
+        if (!v.rows || v.rows.length === 0) continue;
+        let lost = 0;
+        for (const r of v.rows) {
+          if (r.y < ct.bbox.top - 5 || r.y > ct.bbox.bottom + 5) lost++;
+        }
+        if (lost > v.rows.length * 0.25) { losesRows = true; break; }
+      }
+      if (losesRows) continue;
+    }
+    for (let i = validated.length - 1; i >= 0; i--) {
+      const v = validated[i];
+      if (v.detectionMethod === 'grid-strong' || v.detectionMethod === 'segmented-hline') continue;
+      if (bboxOverlap(v.bbox, ct.bbox) > 0.3) {
+        validated.splice(i, 1);
+      }
+    }
+    validated.push(ct);
+  }
+
   // === Phase 5.4: Re-attach row-band regions to header-rule tables ===
   for (const cand of validated) {
     if (cand.rowBandRegion) continue;
@@ -496,7 +620,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     if (matches.length !== 1) continue;
     const rbr = matches[0];
-    if (cand.detectionMethod === 'grid-strong') continue;
+    if (cand.detectionMethod === 'grid-strong' || cand.detectionMethod === 'column-rule') continue;
     cand.rowBandRegion = rbr;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
@@ -608,6 +732,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     const hasBand = !!table.rowBandRegion;
     if (table.splitTopLocked) continue;
     if (table.detectionMethod === 'grid-strong') continue;
+    if (table.detectionMethod === 'column-rule') continue;
     if (!hasBand && table.detectionMethod === 'segmented-hline') continue;
     if (!hasBand && table.detectionMethod === 'header-rule') continue;
     // A stacked sibling whose data rows resemble headers would otherwise chain the upward scan through the entire neighbor, stopping only at its intro prose.
@@ -650,6 +775,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     if (table.detectionMethod === 'grid-strong') continue;
     if (table.detectionMethod === 'segmented-hline') continue;
     if (table.detectionMethod === 'header-rule') continue;
+    if (table.detectionMethod === 'column-rule') continue;
     extendTableToAdjacentContent(table, lines, multiCol);
   }
 
@@ -684,8 +810,14 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     table.colSeparators = newSeps;
   }
 
+  // 'text' is the fallback label for candidates no detector claimed, so one carrying band structure is classified row-band.
+  // This runs last because the phases above read 'text' to mean the candidate's columns came from word clustering.
+  for (const table of multiCol) {
+    if (table.detectionMethod === 'text' && table.rowBandRegion) table.detectionMethod = 'row-band';
+  }
+
   // === Phase 6: Stream order validation ===
-  return [...multiCol.filter((t) => t.detectionMethod === 'grid-strong' || validateStreamOrder(t, lines)), ...provisionalGrids];
+  return [...multiCol.filter((t) => t.detectionMethod === 'grid-strong' || t.detectionMethod === 'column-rule' || validateStreamOrder(t, lines)), ...provisionalGrids];
 }
 
 /**
@@ -1070,6 +1202,10 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     if (isAchromaticColor(color)) return true;
     if (!color) return false;
     if (color.length === 3) return color[0] >= 0.5 && color[1] >= 0.5 && color[2] >= 0.5;
+    if (color.length === 4) {
+      const [r, g, b] = cmykToRgb(color[0], color[1], color[2], color[3]);
+      return r >= 128 && g >= 128 && b >= 128;
+    }
     return false;
   };
 
@@ -1373,11 +1509,13 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
  *   right: number,
  *   colXs: number[],
  *   rowYs: Array<{top: number, bottom: number}>,
+ *   bandColor: ?string,
  * }} RowBandRegion
  *
  * A set of filled rectangles that together form a table-like row-banding pattern.
  * `rowYs` holds one y-interval per row.
  * `colXs` holds the column boundary positions inferred from the dominant disjoint-x pattern across the bands.
+ * `bandColor` is the stripe fill as `#rrggbb`, or null when no usable fill color was found.
  */
 
 /**
@@ -1421,13 +1559,15 @@ function extractRowBandStructure(filledRects, pageLines) {
   // Step 2: disjoint x-ranges and raw per-cell extents
   // The merged ranges give the row bbox and the raw per-cell extents give the columns.
   // A boundary between two touching cells is still a real column separator even though the two merge into one contiguous range.
-  /** @type {Array<{top: number, bottom: number, ranges: Array<{left: number, right: number}>, cells: Array<{left: number, right: number}>}>} */
+  /** @type {Array<{top: number, bottom: number, ranges: Array<{left: number, right: number}>, cells: Array<{left: number, right: number}>, color?: number[]}>} */
   const rowCandidates = [];
   for (const g of yGroups) {
     g.items.sort((a, b) => a.left - b.left);
     const ranges = [];
     const cells = [];
+    let widest = g.items[0];
     for (const f of g.items) {
+      if (f.right - f.left > widest.right - widest.left) widest = f;
       cells.push({ left: f.left, right: f.right });
       const last = ranges[ranges.length - 1];
       if (last && f.left <= last.right + 0.5) {
@@ -1437,7 +1577,7 @@ function extractRowBandStructure(filledRects, pageLines) {
       }
     }
     rowCandidates.push({
-      top: g.top, bottom: g.bottom, ranges, cells,
+      top: g.top, bottom: g.bottom, ranges, cells, color: widest.color,
     });
   }
 
@@ -1594,8 +1734,31 @@ function extractRowBandStructure(filledRects, pageLines) {
 
     const rowYs = region.map((b) => ({ top: b.top, bottom: b.bottom }));
 
+    // Some tables paint every row, alternating the stripe color with white, so near-white fills count as background rather than as the stripe.
+    // A dark fill cannot sit behind readable text, so it never becomes the stripe color either.
+    const colorVotes = new Map();
+    for (const b of region) {
+      if (b.cells.length === 0 || !b.color || b.color.length === 0) continue;
+      const key = b.color.join(',');
+      colorVotes.set(key, (colorVotes.get(key) || 0) + 1);
+    }
+    let bandColor = null;
+    let bandColorVotes = 0;
+    for (const [key, votes] of colorVotes) {
+      if (votes <= bandColorVotes) continue;
+      const c = key.split(',').map(Number);
+      let rgb;
+      if (c.length === 1) rgb = [c[0] * 255, c[0] * 255, c[0] * 255];
+      else if (c.length === 3) rgb = [c[0] * 255, c[1] * 255, c[2] * 255];
+      else rgb = cmykToRgb(c[0], c[1], c[2], c[3]);
+      rgb = rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))));
+      if (rgb.every((v) => v >= 250) || Math.min(...rgb) < 128) continue;
+      bandColor = `#${rgb.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+      bandColorVotes = votes;
+    }
+
     results.push({
-      top, bottom, left, right, colXs, rowYs,
+      top, bottom, left, right, colXs, rowYs, bandColor,
     });
   }
 
@@ -1972,19 +2135,19 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
    * @param {number} halfThick
    * @param {number} [barKey]
    */
-  const addPiece = (p1x, p1y, p2x, p2y, halfThick, barKey = -1) => {
+  const addPiece = (p1x, p1y, p2x, p2y, halfThick, barKey = -1, chroma = false) => {
     const segW = Math.abs(p2x - p1x);
     const segH = Math.abs(p2y - p1y);
     if (segH < 2 && segW > 0) {
       const pos = (p1y + p2y) / 2;
       hPieces.push({
-        pos, start: Math.min(p1x, p2x), end: Math.max(p1x, p2x), b0: pos - halfThick, b1: pos + halfThick, barKey,
+        pos, start: Math.min(p1x, p2x), end: Math.max(p1x, p2x), b0: pos - halfThick, b1: pos + halfThick, barKey, chroma,
       });
     }
     if (segW < 2 && segH > 0) {
       const pos = (p1x + p2x) / 2;
       vPieces.push({
-        pos, start: Math.min(p1y, p2y), end: Math.max(p1y, p2y), b0: pos - halfThick, b1: pos + halfThick, barKey,
+        pos, start: Math.min(p1y, p2y), end: Math.max(p1y, p2y), b0: pos - halfThick, b1: pos + halfThick, barKey, chroma,
       });
     }
   };
@@ -1994,6 +2157,13 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     if (!path.fill && !path.stroke) continue;
     const cmds = path.commands;
     const halfStroke = (path.lineWidth || 1) / 2;
+    // Tagged per piece because the column-rule interpretation requires achromatic boundaries.
+    const pcolor = path.stroke ? path.strokeColor : path.fillColor;
+    let pathChroma = false;
+    if (Array.isArray(pcolor)) {
+      if (pcolor.length === 3) pathChroma = (Math.max(pcolor[0], pcolor[1], pcolor[2]) - Math.min(pcolor[0], pcolor[1], pcolor[2])) >= 0.15;
+      else if (pcolor.length === 4) pathChroma = !(pcolor[0] < 0.15 && pcolor[1] < 0.15 && pcolor[2] < 0.15);
+    }
     // Light fills only, unlike isRowBandColor above, which admits black.
     // An opaque redaction bar must never qualify as drawn row structure.
     const fc = path.fillColor;
@@ -2034,7 +2204,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       // Stroked rectangle: emit all 4 edges.
       const pts = [cmds[0], cmds[1], cmds[2], cmds[3]];
       for (let k = 0; k < 4; k++) {
-        addPiece(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y, halfStroke, pathBarKey);
+        addPiece(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y, halfStroke, pathBarKey, pathChroma);
       }
       continue;
     }
@@ -2042,7 +2212,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       // Stroked polyline: emit each M-L segment individually.
       for (let k = 0; k < cmds.length - 1; k++) {
         if ((cmds[k].type === 'M' || cmds[k].type === 'L') && cmds[k + 1].type === 'L') {
-          addPiece(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y, halfStroke, pathBarKey);
+          addPiece(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y, halfStroke, pathBarKey, pathChroma);
         }
       }
       continue;
@@ -2061,12 +2231,12 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
         const h = maxY - minY;
         if (h < 5 && w > 0) {
           hPieces.push({
-            pos: (minY + maxY) / 2, start: minX, end: maxX, b0: minY, b1: maxY, barKey: pathBarKey,
+            pos: (minY + maxY) / 2, start: minX, end: maxX, b0: minY, b1: maxY, barKey: pathBarKey, chroma: pathChroma,
           });
         }
         if (w < 5 && h > 0) {
           vPieces.push({
-            pos: (minX + maxX) / 2, start: minY, end: maxY, b0: minX, b1: maxX, barKey: pathBarKey,
+            pos: (minX + maxX) / 2, start: minY, end: maxY, b0: minX, b1: maxX, barKey: pathBarKey, chroma: pathChroma,
           });
         }
         if (lightFill && h >= 5 && w >= 5 && pts.length >= 4 && pts.length <= 5) {
@@ -2112,7 +2282,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
               const dx = Math.abs(q.x - p.x);
               const dy = Math.abs(q.y - p.y);
               if ((dx < 2 || dy < 2) && Math.max(dx, dy) > Math.max(3 * t, 5)) {
-                addPiece(p.x, p.y, q.x, q.y, t / 2, -1);
+                addPiece(p.x, p.y, q.x, q.y, t / 2, -1, pathChroma);
               }
             }
           }
@@ -2158,6 +2328,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
           if (s.end > cur.end) cur.end = s.end;
           if (s.b0 < cur.b0) cur.b0 = s.b0;
           if (s.b1 > cur.b1) cur.b1 = s.b1;
+          if (!s.chroma) cur.chroma = false;
           if (s.barKey >= 0) cur.barKeys.add(s.barKey);
         } else {
           groupRuns.push(cur);
@@ -2196,6 +2367,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     y: (visualHeightPts - (r.pos - boxOriginY)) * scale,
     y0: (visualHeightPts - (r.b1 - boxOriginY)) * scale,
     y1: (visualHeightPts - (r.b0 - boxOriginY)) * scale,
+    chroma: r.chroma === true,
   }));
   const vLines = mergeAbutting(vPieces).map((r) => ({
     x: (r.pos - boxOriginX) * scale,
@@ -2203,6 +2375,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     bottom: (visualHeightPts - (r.start - boxOriginY)) * scale,
     x0: (r.b0 - boxOriginX) * scale,
     x1: (r.b1 - boxOriginX) * scale,
+    chroma: r.chroma === true,
   }));
 
   const bands = bandRects.map((b) => ({
@@ -2294,8 +2467,13 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
   /** @type {DetectedTable[]} */
   const results = [];
   for (const comp of components.values()) {
-    if (comp.hs.length < 3 || comp.vs.length < 2) continue;
-    const t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj, raw.bands);
+    let t = null;
+    if (comp.hs.length >= 3 && comp.vs.length >= 2) {
+      t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj, raw.bands);
+    }
+    if (!t && comp.hs.length >= 1 && comp.vs.length >= 2) {
+      t = tryDetectColumnRuleTable(comp.hs, comp.vs, pageObj);
+    }
     if (t) results.push(t);
   }
 
@@ -2307,6 +2485,7 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
     const next = results[i + 1];
     // A provisional grid's membership is decided by the cross-page promotion gate, not by same-page merging.
     if (cur.provisionalTopOpen || next.provisionalTopOpen) continue;
+    if (cur.detectionMethod !== next.detectionMethod) continue;
     const gap = next.bbox.top - cur.bbox.bottom;
     if (gap < 0 || gap >= 40) continue;
     if (Math.abs(cur.bbox.left - next.bbox.left) > 15 || Math.abs(cur.bbox.right - next.bbox.right) > 15) continue;
@@ -2545,6 +2724,39 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
     absorbCutRow(maxY, Math.max(...cutBotVs.map((v) => v.bottom)), false);
   }
 
+  // A sparse-ruled grid draws one rule per section, so its rules assert the strip partition rather than the rows inside a strip.
+  const gridColBounds = [bbox.left, ...colSeparators, bbox.right];
+  let stripInHeader = true;
+  for (let ri = 0; ri < rows.length; ri++) {
+    const strip = rows[ri];
+    if (strip.lineIndices.length < 2) continue;
+    let logical = null;
+    if (stripInHeader) {
+      const hRows = deriveLogicalRows(strip.lineIndices, pageObj.lines, gridColBounds, 'header');
+      const hts = strip.lineIndices
+        .map((li) => pageObj.lines[li].bbox.bottom - pageObj.lines[li].bbox.top)
+        .filter((h) => h > 0).sort((a, b) => a - b);
+      const stripMedH = hts[Math.floor(hts.length / 2)] || 20;
+      const solidCompletePair = hRows.some((r, i) => i > 0
+        && r.top - hRows[i - 1].bottom <= stripMedH * 0.8
+        && r.colsHit >= 2 && hRows[i - 1].colsHit >= 2);
+      if (hRows.length >= 4 || solidCompletePair) {
+        stripInHeader = false;
+      } else {
+        logical = hRows;
+      }
+    }
+    if (!logical) logical = deriveLogicalRows(strip.lineIndices, pageObj.lines, gridColBounds);
+    if (logical.length < 2) continue;
+    const replacement = logical.map((r, li) => ({
+      lineIndices: r.lineIndices,
+      y: r.top,
+      bottom: li + 1 < logical.length ? (r.bottom + logical[li + 1].top) / 2 : strip.bottom,
+    }));
+    rows.splice(ri, 1, ...replacement);
+    ri += replacement.length - 1;
+  }
+
   /** @type {DetectedTable} */
   const table = {
     bbox,
@@ -2555,6 +2767,394 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
     detectionMethod: 'grid-strong',
   };
   if (provisionalTopOpen) table.provisionalTopOpen = true;
+  return table;
+}
+
+/**
+ * Group a region's lines into the logical rows a reader sees.
+ *
+ * @param {number[]} lineIdxArr - indices into `lines` for the region's lines
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
+ * @param {number[]} colBounds - column boundary x positions, outer edges included
+ * @param {'data' | 'header'} [mode='data'] - 'header' reads the region as a drawn header band, where stacked lines are one header row
+ * @returns {Array<{lineIndices: number[], top: number, bottom: number, colsHit: number}>}
+ */
+function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
+  if (lineIdxArr.length === 0) return [];
+  const heights = lineIdxArr.map((i) => lines[i].bbox.bottom - lines[i].bbox.top)
+    .filter((h) => h > 0).sort((a, b) => a - b);
+  const medH = heights[Math.floor(heights.length / 2)] || 20;
+
+  // Clustering on bottoms rather than tops keeps a raised superscript fragment in its base row.
+  const entries = lineIdxArr.map((i) => ({ i, top: lines[i].bbox.top, bottom: lines[i].bbox.bottom }))
+    .sort((a, b) => a.bottom - b.bottom);
+  /** @type {Array<{lineIndices: number[], top: number, bottom: number, cols: Map<number, OcrWord[]>}>} */
+  const rows = [];
+  for (const e of entries) {
+    const cur = rows[rows.length - 1];
+    if (cur && e.bottom - cur.bottom <= medH * 0.45) {
+      cur.lineIndices.push(e.i);
+      if (e.top < cur.top) cur.top = e.top;
+      if (e.bottom > cur.bottom) cur.bottom = e.bottom;
+    } else {
+      rows.push({
+        lineIndices: [e.i], top: e.top, bottom: e.bottom, cols: new Map(),
+      });
+    }
+  }
+
+  const colOf = (x) => {
+    for (let c = 1; c < colBounds.length - 1; c++) {
+      if (x < colBounds[c]) return c - 1;
+    }
+    return colBounds.length - 2;
+  };
+  const fillCols = (row) => {
+    row.cols.clear();
+    for (const li of row.lineIndices) {
+      for (const w of lines[li].words) {
+        const c = colOf((w.bbox.left + w.bbox.right) / 2);
+        let arr = row.cols.get(c);
+        if (!arr) { arr = []; row.cols.set(c, arr); }
+        arr.push(w);
+      }
+    }
+    for (const arr of row.cols.values()) arr.sort((a, b) => a.bbox.left - b.bbox.left);
+  };
+  for (const row of rows) fillCols(row);
+  rows.sort((a, b) => a.top - b.top);
+
+  const isValueRowPair = (a, b) => {
+    let aligned = 0;
+    for (const [c, aWords] of a.cols) {
+      const bWords = b.cols.get(c);
+      if (!bWords) continue;
+      const aR = aWords[aWords.length - 1].bbox.right;
+      const bR = bWords[bWords.length - 1].bbox.right;
+      if (Math.abs(aR - bR) <= 4) aligned++;
+      if (aligned >= 2) return true;
+    }
+    return false;
+  };
+
+  const canMerge = (a, b) => {
+    if (mode === 'header') {
+      if (b.top - a.bottom > medH * 0.8) return false;
+      // Right edges aligned across columns is the signature of parallel value rows, which no header stacks.
+      return !(a.cols.size >= 2 && b.cols.size >= 2 && isValueRowPair(a, b));
+    }
+    // A wrap is set solid, while the sibling rows of a grouped section sit at row pitch.
+    // Tight pitch still runs about a third of a line height, so the cut sits well below it.
+    if (b.top - a.bottom > medH * 0.25) return false;
+    /** @type {number[]} */
+    const shared = [];
+    for (const c of a.cols.keys()) if (b.cols.has(c)) shared.push(c);
+    if (shared.length === 0) return false;
+    for (const c of shared) {
+      const bFirst = /** @type {OcrWord[]} */ (b.cols.get(c))[0];
+      const colLeft = colBounds[c];
+      if (bFirst.bbox.left >= colLeft + (colBounds[c + 1] - colLeft) * 0.55) return false;
+      // Labels are set in sentence case, so a continuation resumes mid-phrase while a new row's label starts capitalized.
+      // Digits stay out of the class so stacked values never read as wraps.
+      if (!/^[\p{Ll}([{]/u.test(bFirst.text)) return false;
+    }
+    return true;
+  };
+
+  let mergedAny = rows.length > 1;
+  while (mergedAny) {
+    mergedAny = false;
+    /** @type {Array<{i: number, gap: number}>} */
+    const pairs = [];
+    for (let i = 0; i + 1 < rows.length; i++) {
+      pairs.push({ i, gap: rows[i + 1].top - rows[i].bottom });
+    }
+    pairs.sort((a, b) => a.gap - b.gap);
+    for (const { i } of pairs) {
+      const a = rows[i];
+      const b = rows[i + 1];
+      if (!a || !b) continue;
+      if (!canMerge(a, b)) continue;
+      a.lineIndices.push(...b.lineIndices);
+      if (b.top < a.top) a.top = b.top;
+      if (b.bottom > a.bottom) a.bottom = b.bottom;
+      fillCols(a);
+      rows.splice(i + 1, 1);
+      mergedAny = true;
+      break;
+    }
+  }
+
+  return rows.map((r) => ({
+    lineIndices: r.lineIndices, top: r.top, bottom: r.bottom, colsHit: r.cols.size,
+  }));
+}
+
+/**
+ * Interpret one connected rule component as a table whose columns are drawn as vertical rules while its rows are mostly undrawn.
+ *
+ * @param {HLine[]} hs - the component's horizontal rules
+ * @param {VLine[]} vs - the component's vertical rules
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ * @returns {DetectedTable | null}
+ */
+function tryDetectColumnRuleTable(hs, vs, pageObj) {
+  const lines = pageObj.lines;
+  if (lines.length === 0) return null;
+  // Saturated rules are chart and diagram decoration, never table rules.
+  hs = hs.filter((h) => !h.chroma);
+  vs = vs.filter((v) => !v.chroma);
+  if (hs.length < 1 || vs.length < 2) return null;
+  const pageHeights = lines.map((l) => l.bbox.bottom - l.bbox.top).filter((h) => h > 2).sort((a, b) => a - b);
+  const pageMedH = pageHeights[Math.floor(pageHeights.length / 2)] || 20;
+
+  const xs = clusterValuesLocal(vs.map((v) => v.x), 10);
+  let boundaries = xs.map((bx) => {
+    const members = vs.filter((v) => Math.abs(v.x - bx) < 10);
+    return {
+      x: bx,
+      top: Math.min(...members.map((v) => v.top)),
+      bottom: Math.max(...members.map((v) => v.bottom)),
+    };
+  });
+  let spanTop = Math.min(...boundaries.map((b) => b.top));
+  let spanBottom = Math.max(...boundaries.map((b) => b.bottom));
+  // A short vline partitions only the slice it spans, which is a header cell box rather than a column.
+  boundaries = boundaries.filter((b) => (b.bottom - b.top) >= (spanBottom - spanTop) * 0.4
+    && (b.bottom - b.top) >= pageMedH * 3);
+  if (boundaries.length < 2) return null;
+  spanTop = Math.min(...boundaries.map((b) => b.top));
+  spanBottom = Math.max(...boundaries.map((b) => b.bottom));
+
+  const minBx = Math.min(...boundaries.map((b) => b.x));
+  const maxBx = Math.max(...boundaries.map((b) => b.x));
+  let extentLeft = minBx;
+  let extentRight = maxBx;
+  for (const h of hs) {
+    if (h.left <= minBx + 10 && h.right >= maxBx - 10) {
+      if (h.left < extentLeft) extentLeft = h.left;
+      if (h.right > extentRight) extentRight = h.right;
+    }
+  }
+  const separators = boundaries.filter((b) => b.x > extentLeft + 10 && b.x < extentRight - 10).map((b) => b.x);
+  if (separators.length < 2) return null;
+  // Full-bleed figure art draws rules past the page box.
+  if (extentLeft < -20 || extentRight > pageObj.dims.width + 20
+      || spanTop < -20 || spanBottom > pageObj.dims.height + 20) return null;
+
+  // A rule truncated by a rowspanned cell still ends on a boundary and covers only the separators past it, so partial coverage is admitted when the uncovered separators are one run at one end.
+  const landsOnBoundary = (x) => x <= extentLeft + 10 || x >= extentRight - 10
+    || boundaries.some((b) => Math.abs(b.x - x) <= 10);
+  /** @type {number[]} */
+  const bandYs = [];
+  for (const h of hs) {
+    if (h.y < spanTop - 6 || h.y > spanBottom + 6) continue;
+    if (!landsOnBoundary(h.left) || !landsOnBoundary(h.right)) continue;
+    const covered = separators.filter((x) => x >= h.left - 10 && x <= h.right + 10);
+    if (covered.length < separators.length) {
+      if (covered.length < separators.length / 2) continue;
+      const uncoveredLeading = separators.filter((x) => x < h.left - 10).length;
+      const uncoveredTrailing = separators.filter((x) => x > h.right + 10).length;
+      if (uncoveredLeading > 0 && uncoveredTrailing > 0) continue;
+    }
+    if (!bandYs.some((y) => Math.abs(y - h.y) <= 6)) bandYs.push(h.y);
+  }
+  bandYs.sort((a, b) => a - b);
+  const interiorBandYs = bandYs.filter((y) => y > spanTop + 4 && y < spanBottom - 4);
+
+  const colBounds = [extentLeft, ...separators, extentRight];
+  /** @type {number[]} */
+  const regionLineIdxs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    const yC = (l.bbox.top + l.bbox.bottom) / 2;
+    if (yC < spanTop || yC > spanBottom) continue;
+    if (l.bbox.left < extentLeft - 15 || l.bbox.right > extentRight + 15) continue;
+    regionLineIdxs.push(i);
+  }
+  if (regionLineIdxs.length < 3) return null;
+  // Rotated column headings are common, so only a majority of rotated lines means the region is a sideways figure rather than a table.
+  const rotated = regionLineIdxs.filter((i) => (lines[i].orientation || 0) !== 0).length;
+  if (rotated > regionLineIdxs.length / 2) return null;
+
+  // A solid-adjacent pair of multi-column rows survives header-mode merging only when the rows are parallel values, which means the band is data.
+  // Lines bind to bands by baseline because a row sitting on a rule laps its bbox across it.
+  const bandEdges = [spanTop, ...interiorBandYs, spanBottom];
+  /** @type {Array<{lineIndices: number[], y: number, bottom: number, colsHit: number}>} */
+  const rows = [];
+  let headerBandBottom = spanTop;
+  let inHeader = true;
+  for (let bi = 0; bi + 1 < bandEdges.length; bi++) {
+    const bandIdxs = regionLineIdxs.filter((i) => {
+      const l = lines[i];
+      const baseline = l.bbox.bottom - (l.bbox.bottom - l.bbox.top) * 0.2;
+      return baseline >= bandEdges[bi] && baseline < bandEdges[bi + 1];
+    });
+    if (bandIdxs.length === 0) continue;
+    let logical = null;
+    if (inHeader) {
+      const hRows = deriveLogicalRows(bandIdxs, lines, colBounds, 'header');
+      const hts = bandIdxs.map((i) => lines[i].bbox.bottom - lines[i].bbox.top)
+        .filter((h) => h > 0).sort((a, b) => a - b);
+      const bandMedH = hts[Math.floor(hts.length / 2)] || 20;
+      const solidCompletePair = hRows.some((r, ri) => ri > 0
+        && r.top - hRows[ri - 1].bottom <= bandMedH * 0.8
+        && r.colsHit >= 2 && hRows[ri - 1].colsHit >= 2);
+      if (hRows.length >= 4 || solidCompletePair) {
+        inHeader = false;
+      } else {
+        logical = hRows;
+        headerBandBottom = bandEdges[bi + 1];
+      }
+    }
+    if (!logical) logical = deriveLogicalRows(bandIdxs, lines, colBounds);
+    for (let ri = 0; ri < logical.length; ri++) {
+      const r = logical[ri];
+      const bottom = ri + 1 < logical.length
+        ? (r.bottom + logical[ri + 1].top) / 2
+        : bandEdges[bi + 1];
+      rows.push({
+        lineIndices: r.lineIndices, y: r.top, bottom, colsHit: r.colsHit,
+      });
+    }
+  }
+  if (rows.length < 3) return null;
+  if (rows.filter((r) => r.colsHit >= 2).length < 2) return null;
+  // A partition sparsely annotated with text is a figure rather than a populated table.
+  // A column with no text at all is a chart frame, a bar edge, or a box side, so a few are tolerable and a pattern of them is not.
+  const colFillCount = new Array(colBounds.length - 1).fill(0);
+  for (const r of rows) {
+    const seen = new Set();
+    for (const li of r.lineIndices) {
+      for (const w of lines[li].words) {
+        const cx = (w.bbox.left + w.bbox.right) / 2;
+        for (let c = 0; c < colBounds.length - 1; c++) {
+          if (cx >= colBounds[c] && cx < colBounds[c + 1]) { seen.add(c); break; }
+        }
+      }
+    }
+    for (const c of seen) colFillCount[c]++;
+  }
+  const sortedFill = [...colFillCount].sort((a, b) => a - b);
+  if (sortedFill[Math.floor(sortedFill.length / 2)] < rows.length * 0.5) return null;
+  if (colFillCount.filter((c) => c === 0).length > (colBounds.length - 1) * 0.1) return null;
+  // A rule crossed by text row after row is a diagram connector running through box labels, not a column boundary.
+  // Spanner and title rows legitimately cross one, which is what the tolerance allows for.
+  for (const sx of separators) {
+    let crossingRows = 0;
+    for (const r of rows) {
+      let crosses = false;
+      for (const li of r.lineIndices) {
+        for (const w of lines[li].words) {
+          if (w.bbox.left < sx - 2 && w.bbox.right > sx + 2) { crosses = true; break; }
+        }
+        if (crosses) break;
+      }
+      if (crosses) crossingRows++;
+    }
+    if (crossingRows > rows.length * 0.25) return null;
+  }
+
+  /** @type {{columnAnchors: number[], bandTop: number, bandBottom: number, confidence: 'strong'} | null} */
+  let headers = null;
+  let bboxTop = spanTop;
+  if (headerBandBottom > spanTop) {
+    headers = {
+      columnAnchors: [],
+      bandTop: spanTop,
+      bandBottom: headerBandBottom,
+      confidence: 'strong',
+    };
+  } else {
+    // Prose above the structure stays out because only a header row distributes labels across the columns.
+    const aboveIdxs = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.bbox.bottom > spanTop || l.bbox.bottom < spanTop - pageMedH * 8) continue;
+      if (l.bbox.left < extentLeft - 15 || l.bbox.right > extentRight + 15) continue;
+      aboveIdxs.push(i);
+    }
+    const aboveRows = deriveLogicalRows(aboveIdxs, lines, colBounds);
+    const absorbed = [];
+    let prevTop = spanTop;
+    for (let ri = aboveRows.length - 1; ri >= 0; ri--) {
+      const r = aboveRows[ri];
+      if (prevTop - r.bottom > pageMedH * 1.6) break;
+      if (r.colsHit < 2) break;
+      absorbed.unshift(r);
+      prevTop = r.top;
+    }
+    if (absorbed.length > 0) {
+      for (let ri = 0; ri < absorbed.length; ri++) {
+        const r = absorbed[ri];
+        const bottom = ri + 1 < absorbed.length ? (r.bottom + absorbed[ri + 1].top) / 2 : spanTop;
+        rows.splice(ri, 0, {
+          lineIndices: r.lineIndices, y: r.top, bottom, colsHit: r.colsHit,
+        });
+      }
+      bboxTop = absorbed[0].top - 2;
+      headers = {
+        columnAnchors: [],
+        bandTop: bboxTop,
+        bandBottom: spanTop,
+        confidence: 'strong',
+      };
+    }
+  }
+
+  // A vline with no bottom rule dangles past the last row.
+  const lastRowBottom = Math.max(...rows.map((r) => r.bottom));
+  let bboxBottom = Math.min(spanBottom + 2, lastRowBottom + 4);
+
+  // A thick border bar is too heavy to classify as a rule, so a totals row closed by one sits just below the span.
+  const belowIdxs = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (l.bbox.top < spanBottom || l.bbox.top > spanBottom + pageMedH * 3) continue;
+    if (l.bbox.left < extentLeft - 15 || l.bbox.right > extentRight + 15) continue;
+    belowIdxs.push(i);
+  }
+  const belowRows = deriveLogicalRows(belowIdxs, lines, colBounds);
+  let prevBottom = spanBottom;
+  for (const r of belowRows) {
+    if (r.top - prevBottom > pageMedH * 1.5) break;
+    if (r.colsHit < 2) break;
+    // A summary note hanging under an inner column is annotation, so an absorbed row has to fill from the leading column.
+    let inLead = false;
+    for (const li of r.lineIndices) {
+      for (const w of lines[li].words) {
+        if ((w.bbox.left + w.bbox.right) / 2 < colBounds[1]) { inLead = true; break; }
+      }
+      if (inLead) break;
+    }
+    if (!inLead) break;
+    let straddles = false;
+    for (const li of r.lineIndices) {
+      for (const w of lines[li].words) {
+        if (separators.some((sx) => w.bbox.left < sx - 2 && w.bbox.right > sx + 2)) { straddles = true; break; }
+      }
+      if (straddles) break;
+    }
+    if (straddles) break;
+    rows.push({
+      lineIndices: r.lineIndices, y: r.top, bottom: r.bottom + 4, colsHit: r.colsHit,
+    });
+    prevBottom = r.bottom;
+    if (r.bottom + 4 > bboxBottom) bboxBottom = r.bottom + 4;
+  }
+
+  /** @type {DetectedTable} */
+  const table = {
+    bbox: {
+      left: extentLeft, top: bboxTop, right: extentRight, bottom: bboxBottom,
+    },
+    rows: rows.map((r) => ({ lineIndices: r.lineIndices, y: r.y, bottom: r.bottom })),
+    colSeparators: separators,
+    hLines: hs,
+    vLines: vs,
+    detectionMethod: 'column-rule',
+  };
+  if (headers) table.headers = headers;
   return table;
 }
 
@@ -3008,6 +3608,14 @@ function extractStructure(table, lines) {
         const hasDigit = (s) => /\d/.test(s);
         const isLeaderFiller = (s) => s.length >= 3 && /^[*.]+$/.test(s);
         const currentHasDigit = hasDigit(rowWords[w].text);
+        // The digit rule below ends a phrase at any gap, which would split a timestamp into separate date and time columns.
+        if (j < rowWords.length
+            && /^\d{1,4}[/.-]\d{1,2}[/.-]\d{1,4}$/.test(rowWords[w].text)
+            && /^\d{1,2}:\d{2}(?::\d{2})?$/.test(rowWords[j].text)
+            && rowWords[j].bbox.left - current.right <= gapThreshold) {
+          current = expand(current, rowWords[j].bbox);
+          j++;
+        }
         while (j < rowWords.length && !isCurrencySymbol(rowWords[j].text)) {
           if (isLeaderFiller(rowWords[j].text)) {
             current = expand(current, rowWords[j].bbox);
@@ -3028,6 +3636,9 @@ function extractStructure(table, lines) {
   if (allWordBboxes.length >= 2) {
     const wordColumnBounds = calcColumnBounds(allWordBboxes);
 
+    /** @type {Array<{y: number, bboxes: any[]}>} */
+    const headerYRows = [];
+
     // A low-coverage column is usually an artifact of outlier label text reaching into the gap between the label and data columns.
     if (wordColumnBounds.length > 2) {
       const yTol = 10;
@@ -3044,8 +3655,6 @@ function extractStructure(table, lines) {
         if (!matched) yRows.push({ y: bbox.top, bboxes: [bbox] });
       }
       const dataRowCount = yRows.length;
-      /** @type {Array<{y: number, bboxes: any[]}>} */
-      const headerYRows = [];
       const addHeaderWord = (/** @type {{bbox: any}} */ w) => {
         let matched = false;
         for (const row of headerYRows) {
@@ -3108,7 +3717,28 @@ function extractStructure(table, lines) {
 
     const seps = [];
     for (let i = 0; i < wordColumnBounds.length - 1; i++) {
-      seps.push((wordColumnBounds[i].right + wordColumnBounds[i + 1].left) / 2);
+      let sep = (wordColumnBounds[i].right + wordColumnBounds[i + 1].left) / 2;
+      // A header word wider than its column's data gets cut by a data-only boundary, so a cut boundary recenters between the header-extended word extents of the two columns.
+      // The column bounds abut, so the true extents come from the member word bboxes rather than the shared partition edge.
+      // An empty adjusted gap means one header word spans both data columns, and the original boundary stands since a spanner has to be cut somewhere.
+      if (headerYRows.some((row) => row.bboxes.some((b) => b.left < sep && b.right > sep))) {
+        let leftEdge = wordColumnBounds[i].left;
+        let rightEdge = wordColumnBounds[i + 1].right;
+        for (const b of allWordBboxes) {
+          const c = (b.left + b.right) / 2;
+          if (c >= wordColumnBounds[i].left && c < sep) leftEdge = Math.max(leftEdge, b.right);
+          else if (c >= sep && c <= wordColumnBounds[i + 1].right) rightEdge = Math.min(rightEdge, b.left);
+        }
+        for (const row of headerYRows) {
+          for (const b of row.bboxes) {
+            if (b.right <= leftEdge || b.left >= rightEdge) continue;
+            if ((b.left + b.right) / 2 <= sep) leftEdge = Math.max(leftEdge, b.right);
+            else rightEdge = Math.min(rightEdge, b.left);
+          }
+        }
+        if (leftEdge < rightEdge) sep = (leftEdge + rightEdge) / 2;
+      }
+      seps.push(sep);
     }
     table.colSeparators = seps;
   }

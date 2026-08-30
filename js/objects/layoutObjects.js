@@ -145,6 +145,12 @@ export class LayoutDataTable {
      * @type {?number}
      */
     this.headerRows = null;
+    /**
+     * Fill color of the alternating row shading this table was drawn with, as `#rrggbb`.
+     * `null` when the table has no detected shading or its color is unknown.
+     * @type {?string}
+     */
+    this.bandColor = null;
   }
 }
 

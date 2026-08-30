@@ -799,7 +799,10 @@ export async function run(host, params, progress) {
     let columnWidths;
     if (params?.formatting) {
       if (head.table.detectionMethod === 'grid-strong') range.grid = true;
-      if (head.table.detectionMethod === 'row-band') range.zebra = true;
+      if (head.table.detectionMethod === 'row-band') {
+        range.zebra = true;
+        if (head.table.bandColor) range.zebraColor = head.table.bandColor;
+      }
       range.alignNumeric = true;
       // A chain whose fragments disagree on column count has no single source geometry to copy, so it keeps the auto widths.
       if (!params?.flat && chain.fragments.every((f) => f.table.boxes.length === head.table.boxes.length)) {

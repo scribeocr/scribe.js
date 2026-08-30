@@ -121,6 +121,17 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(richStyles.includes(gridBorderXml), 'the stylesheet grows a full thin-grid border for grid-detected tables').toBe(true);
     expect(richStyles.match(/<cellXfs count="(\d+)"/)[1], 'the grid workbook interns exactly three new cell formats').toBe('5');
 
+    const zebraBytes = await scribe.utils.writeXlsxFromSheets([{
+      name: 'Zebra',
+      rows: richRows,
+      tableRanges: [{
+        start: 0, rowCount: richRows.length, headerRows: 1, zebra: true, zebraColor: '#bfedf8',
+      }],
+    }], { columnWidths: 'auto' });
+    const zebraStyles = await readXlsxPart(zebraBytes, 'xl/styles.xml');
+    expect(zebraStyles.includes('<fgColor rgb="FFBFEDF8"/>'), 'a range zebraColor writes the source band color as the stripe fill').toBe(true);
+    expect(zebraStyles.includes('FFF2F2F2'), 'the neutral-gray fallback fill is not interned when the range carries its own color').toBe(false);
+
     const plainRows = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages)[0].rows;
     const plainBytes = await scribe.utils.writeXlsxFromSheets([{
       name: 'Plain',

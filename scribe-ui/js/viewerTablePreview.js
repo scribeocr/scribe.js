@@ -199,7 +199,7 @@ export function applyTablePreview(viewer, n) {
       const g = rowOffset + r - (dedupRow0 ? 1 : 0);
       if (g < chainHeaderRows || (g - chainHeaderRows) % 2 !== 1) continue;
       const fill = mk({
-        left: `${tc.left}px`, top: `${bandEdges[r]}px`, width: `${tc.right - tc.left}px`, height: `${bandEdges[r + 1] - bandEdges[r]}px`, background: '#f2f2f2', pointerEvents: 'none', zIndex: '0',
+        left: `${tc.left}px`, top: `${bandEdges[r]}px`, width: `${tc.right - tc.left}px`, height: `${bandEdges[r + 1] - bandEdges[r]}px`, background: headTable.bandColor || '#f2f2f2', pointerEvents: 'none', zIndex: '0',
       }, pc);
       fill.dataset.scribeTpZebra = '1';
     }

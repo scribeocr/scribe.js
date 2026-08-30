@@ -232,8 +232,9 @@ export async function writeXlsx({
 /**
  * One styled table region within a sheet's rows, addressed by row offsets.
  * The `headerRows` leading rows are bolded and underlined, except that a rich cell keeps the weight its own runs carry.
- * `grid` draws a thin border around every cell, `zebra` fills alternating data rows light gray, and `alignNumeric` right-aligns columns whose data cells are at least 70 percent numeric.
- * @typedef {{start: number, rowCount: number, headerRows: number, grid?: boolean, zebra?: boolean, alignNumeric?: boolean}} XlsxTableRange
+ * `grid` draws a thin border around every cell, `zebra` fills alternating data rows, and `alignNumeric` right-aligns columns whose data cells are at least 70 percent numeric.
+ * `zebraColor` sets the zebra fill as `#rrggbb`, defaulting to light gray.
+ * @typedef {{start: number, rowCount: number, headerRows: number, grid?: boolean, zebra?: boolean, zebraColor?: string, alignNumeric?: boolean}} XlsxTableRange
  */
 
 /**
@@ -375,7 +376,6 @@ function buildSheetXml(rows, options, sheetIndex, resources, styleState) {
   const thinEdge = (side) => `<${side} style="thin"><color indexed="64"/></${side}>`;
   const gridBorder = `<border>${thinEdge('left')}${thinEdge('right')}${thinEdge('top')}${thinEdge('bottom')}<diagonal/></border>`;
   const gridHeaderBorder = `<border>${thinEdge('left')}${thinEdge('right')}${thinEdge('top')}<bottom style="medium"><color indexed="64"/></bottom><diagonal/></border>`;
-  const zebraFill = '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/><bgColor indexed="64"/></patternFill></fill>';
 
   // Column counts are per range, not per sheet, so that grid borders never extend into a wider sibling table's columns on a shared flat sheet.
   /** @type {Map<XlsxTableRange, number>} */
@@ -433,7 +433,11 @@ function buildSheetXml(rows, options, sheetIndex, resources, styleState) {
         let borderId = 0;
         if (range.grid) borderId = internListEntry(styleState.borders, isHeader ? gridHeaderBorder : gridBorder);
         else if (isHeader) borderId = 1;
-        const fillId = zebraRow ? internListEntry(styleState.fills, zebraFill) : 0;
+        let fillId = 0;
+        if (zebraRow) {
+          const argb = range.zebraColor && /^#[0-9a-fA-F]{6}$/.test(range.zebraColor) ? `FF${range.zebraColor.slice(1).toUpperCase()}` : 'FFF2F2F2';
+          fillId = internListEntry(styleState.fills, `<fill><patternFill patternType="solid"><fgColor rgb="${argb}"/><bgColor indexed="64"/></patternFill></fill>`);
+        }
         const align = !isHeader && rangeRightCols.get(range)?.has(j) ? 'right' : '';
         const xfId = fontId || borderId || fillId || align ? internXf(fontId, fillId, borderId, align) : 0;
         if (xfId > 0) styleAttr = ` s="${xfId}"`;
