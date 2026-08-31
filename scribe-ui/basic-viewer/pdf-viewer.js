@@ -436,6 +436,12 @@ class ScribePDFViewer {
     this._activeTab = -1;
     /** Last active-document name announced via the `scribe-active-doc-change` event, or null when none was open. */
     this._announcedDocName = null;
+    /**
+     * Name of the document the library's preview pane is showing.
+     * While the library surface is up, it stands in as the active document.
+     * @type {?string}
+     */
+    this._previewDocName = null;
     /** Whether the tab strip currently occupies layout space. */
     this._tabStripVisible = false;
     /**
@@ -2368,11 +2374,17 @@ class ScribePDFViewer {
       this._updateSplitButton();
     }
     // Every tab mutation passes through here, so this is where the embedding page learns which document is active.
-    const activeName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
-    if (activeName !== this._announcedDocName) {
-      this._announcedDocName = activeName;
-      this.container.dispatchEvent(new CustomEvent('scribe-active-doc-change', { detail: { name: activeName }, bubbles: true }));
-    }
+    this._announceActiveDoc();
+  }
+
+  /** Tell the embedding page which document is active. */
+  _announceActiveDoc() {
+    const activeName = this._previewDocName || (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
+    if (activeName === this._announcedDocName) return;
+    this._announcedDocName = activeName;
+    // The event must not bubble.
+    // The library's preview pane runs a nested viewer of this class, and its announcements would otherwise reach the embedding page as the active document.
+    this.container.dispatchEvent(new CustomEvent('scribe-active-doc-change', { detail: { name: activeName } }));
   }
 
   /**

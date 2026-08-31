@@ -511,6 +511,8 @@ export function createPreviewPanes({
       releaseDoc(current ? current.hash : null);
       current = null;
       lastTarget = null;
+      viewer._previewDocName = null;
+      viewer._announceActiveDoc();
       pvHead.style.display = 'none';
       pvHost.style.display = 'none';
       pvLoading.style.display = 'none';
@@ -609,6 +611,9 @@ export function createPreviewPanes({
       }
       pvHead.style.display = '';
       /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
+      // Announced before the swap, so the embedding page never sees the document-less gap between releasing the old preview and opening the new one.
+      viewer._previewDocName = target.title;
+      viewer._announceActiveDoc();
       // A host re-render of the already-shown document carries a stale initial position once the reader has scrolled, so the live state wins.
       if (sameDoc && paneViewer?.doc) syncPosMeta();
       else pvMeta.textContent = target.meta;
@@ -855,6 +860,8 @@ export function createPreviewPanes({
     const takeHydratedDoc = () => {
       if (!paneViewer || !current || !paneViewer.doc || paneViewer.doc.id < 0) return null;
       const doc = paneViewer.doc;
+      // The tab this document lands in announces it from here on.
+      viewer._previewDocName = null;
       paneViewer._tabs.length = 0;
       paneViewer._activeTab = -1;
       paneViewer._renderTabs();
@@ -877,6 +884,8 @@ export function createPreviewPanes({
       endVeil();
       releaseDoc(current ? current.hash : null);
       current = null;
+      viewer._previewDocName = null;
+      viewer._announceActiveDoc();
       if (paneViewer) {
         paneViewer.destroy();
         paneViewer = null;

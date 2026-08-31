@@ -788,6 +788,9 @@ export function installLibrary(viewer) {
     swapBarOut();
     viewer._tabStrip?.setPinnedActive(false);
     surface.style.display = 'none';
+    // Leaving the library puts an open tab back in front of the reader, so the pane's document stops standing in for the active one.
+    viewer._previewDocName = null;
+    viewer._announceActiveDoc();
   };
 
   // --- Persistence helpers ------------------------------------------------
