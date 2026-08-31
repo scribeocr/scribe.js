@@ -25,6 +25,7 @@ robots.txt
 settings.json
 vitest.config.js
 vite.config.js
+wrangler.jsonc
 public
 dist
 jsconfig.json
