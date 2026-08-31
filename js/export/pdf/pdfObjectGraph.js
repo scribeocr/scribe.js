@@ -218,7 +218,9 @@ export function buildInfoDictBody(sourceInfoBody, docInfo) {
 }
 
 /**
- * Build an incremental xref table, trailer, startxref, and %%EOF.
+ * Build an incremental xref section, trailer, startxref, and %%EOF.
+ * In `streamForm` the section is one cross-reference stream object claiming object number `totalSize`, which callers must guarantee is unused.
+ * The returned string holds one byte per char, so callers can write it out byte-wise and `patchFileId` can treat string indexes as byte offsets.
  * @param {Array<{objNum: number, offset: number}>} entries
  * @param {number} totalSize - Total object count (must be >= highest objNum + 1)
  * @param {number} prevXrefOffset - Offset of the previous xref section
@@ -226,8 +228,9 @@ export function buildInfoDictBody(sourceInfoBody, docInfo) {
  * @param {number} newXrefOffset - Byte offset where this xref section starts
  * @param {number[]} [freedObjNums=[]] - Object numbers to mark deleted (free entries).
  * @param {TrailerExtras} [extras] - Document-level entries the added trailer carries forward.
+ * @param {boolean} [streamForm=false] - Emit a cross-reference stream instead of a classic table.
  */
-export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset, freedObjNums = [], extras = {}) {
+export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset, freedObjNums = [], extras = {}, streamForm = false) {
   const liveSorted = entries.slice().sort((a, b) => a.objNum - b.objNum);
 
   /** @type {Array<{objNum: number, status: 'n' | 'f', offset: number}>} */
@@ -238,6 +241,54 @@ export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffse
     merged.push({ objNum: n, status: /** @type {'f'} */ ('f'), offset: 0 });
   }
   merged.sort((a, b) => a.objNum - b.objNum);
+
+  if (streamForm) {
+    // Acrobat treats a classic table whose /Prev lands on a cross-reference stream as damage, silently repairing it or, on Acrobat 2020, refusing the file.
+    // A cross-reference stream must describe itself, so its own entry joins /Index.
+    const streamObjNum = totalSize;
+    merged.push({ objNum: streamObjNum, status: /** @type {'n'} */ ('n'), offset: newXrefOffset });
+
+    // Every entry offset in this section falls below the section's own start, so that bounds the field width.
+    // Offsets past 4 GiB overflow 32-bit bitwise ops, so the byte split uses division.
+    let offsetWidth = 1;
+    for (let v = newXrefOffset; v > 0xFF; v = Math.floor(v / 256)) offsetWidth++;
+
+    let rows = '';
+    const indexParts = [];
+    let i = 0;
+    while (i < merged.length) {
+      const rangeStart = i;
+      let rangeEnd = i;
+      while (rangeEnd + 1 < merged.length && merged[rangeEnd + 1].objNum === merged[rangeEnd].objNum + 1) {
+        rangeEnd++;
+      }
+      indexParts.push(`${merged[rangeStart].objNum} ${rangeEnd - rangeStart + 1}`);
+      for (let j = rangeStart; j <= rangeEnd; j++) {
+        const entry = merged[j];
+        rows += String.fromCharCode(entry.status === 'f' ? 0 : 1);
+        let v = entry.status === 'f' ? 0 : entry.offset;
+        const fieldBytes = new Array(offsetWidth);
+        for (let k = offsetWidth - 1; k >= 0; k--) {
+          fieldBytes[k] = v % 256;
+          v = Math.floor(v / 256);
+        }
+        for (const b of fieldBytes) rows += String.fromCharCode(b);
+        // Field 3 is the 2-byte generation, 0 for an in-use object and 1 for the next use of a freed number.
+        rows += entry.status === 'f' ? '\u0000\u0001' : '\u0000\u0000';
+      }
+      i = rangeEnd + 1;
+    }
+
+    let out = `${streamObjNum} 0 obj\n`;
+    out += `<</Type/XRef/Size ${totalSize + 1}/Root ${rootRef}/Prev ${prevXrefOffset}${trailerExtraEntries(extras)}`;
+    out += `/W [1 ${offsetWidth} 2]/Index [${indexParts.join(' ')}]/Length ${rows.length}>>\n`;
+    // ASCIIHex is not permitted for a cross-reference stream, so these rows stay binary even in human-readable output.
+    out += `stream\n${rows}\nendstream\nendobj\n`;
+    out += 'startxref\n';
+    out += `${newXrefOffset}\n`;
+    out += '%%EOF\n';
+    return out;
+  }
 
   let xrefStr = 'xref\n';
 

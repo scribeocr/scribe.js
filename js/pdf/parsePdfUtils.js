@@ -111,6 +111,19 @@ export function sourceXrefIsWellFormed(pdfBytes) {
 }
 
 /**
+ * True when the cross-reference section at `xrefOffset` is a cross-reference stream rather than a classic `xref` table.
+ * A hybrid-reference file reports false, since its final section is a classic table.
+ * Extending it to catch those is a known dead end, because Acrobat refuses the resulting files.
+ * @param {Uint8Array} pdfBytes
+ * @param {number} xrefOffset - Resolved offset of the final cross-reference section, not the raw `startxref` value.
+ */
+export function xrefSectionIsStream(pdfBytes, xrefOffset) {
+  let p = xrefOffset;
+  while (p < pdfBytes.length && isPdfWhitespace(pdfBytes[p])) p++;
+  return matchesObjHeader(pdfBytes, p);
+}
+
+/**
  * Parse xref table/stream to get object positions.
  * @param {Uint8Array} pdfBytes
  * @param {number} xrefOffset
@@ -323,9 +336,11 @@ function parseXrefStream(pdfBytes, offset, entries) {
           entries[objNum] = {
             type: 2, objStmNum: field2, indexInStm: field3, gen: 0,
           };
+        } else if (type === 0) {
+          // A free entry is stored, not skipped, so a deletion in a newer section shadows the object's older in-use entry.
+          entries[objNum] = { type: 0, gen: field3 };
         }
       }
-      // type 0 = free entry, skip
     }
   }
 

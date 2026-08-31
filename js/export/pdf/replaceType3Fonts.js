@@ -1,5 +1,5 @@
 import {
-  findXrefOffset, getPageContentStreams, getPageObjects, parseXref,
+  findXrefOffset, getPageContentStreams, getPageObjects, parseXref, xrefSectionIsStream,
 } from '../../pdf/parsePdfUtils.js';
 import {
   formatPdfNumber, tokenizeContentStream,
@@ -539,7 +539,7 @@ export async function replaceType3FontsWithCorrected({
   }
 
   const trailerStr = buildIncrementalXrefAndTrailer(
-    newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset, [...freedObjNums],
+    newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset, [...freedObjNums], {}, xrefSectionIsStream(pdfBytes, xrefOffset),
   );
   appendParts.push(trailerStr);
   appendByteLen += trailerStr.length;

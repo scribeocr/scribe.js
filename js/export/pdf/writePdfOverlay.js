@@ -1,5 +1,5 @@
 import {
-  findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects, findRootObjNum,
+  findXrefOffset, parseXref, sourceXrefIsWellFormed, xrefSectionIsStream, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import {
@@ -895,7 +895,7 @@ export async function overlayPdfText({
   // A source with no identifier gains none, because a permanent element invented at revision time would not identify the original document.
   const idHexPair = sourceId0Hex ? /** @type {[string, string]} */ ([sourceId0Hex, FILE_ID_PLACEHOLDER]) : null;
   const trailerStr = buildIncrementalXrefAndTrailer(newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset,
-    [], { infoRef: outInfoRef, idHexPair });
+    [], { infoRef: outInfoRef, idHexPair }, xrefSectionIsStream(pdfBytes, xrefOffset));
   const trailerStart = pdfBytes.length + appendByteLen;
   appendParts.push(trailerStr);
   appendByteLen += trailerStr.length;
