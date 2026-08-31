@@ -1,6 +1,6 @@
 import {
   resolveArrayValue, parsePdfDate, resolveBoolValue, resolveNameValue, resolveNumValue, resolveIntValue,
-  resolveStringValue, parsePdfLiteralString, resolveDictValue, decodePdfString,
+  resolveStringValue, parsePdfLiteralString, resolveDictValue, decodePdfString, scopeDictKeys,
 } from './pdfPrimitives.js';
 import { resolveItemDest } from './parseOutline.js';
 
@@ -31,7 +31,7 @@ export const TEXT_ANNOT_ICON_PX = 24;
  * @property {[number, number, number]|null} color - /C stroke color normalized 0..1, or null if absent.
  * @property {[number, number, number]|null} interiorColor - /IC fill color normalized 0..1, or null if absent.
  * @property {number} opacity - /CA, defaults to 1 when absent.
- * @property {number} borderWidth - /BS /W in pts, defaults to 1 when absent.
+ * @property {number} borderWidth - Border width in pts from /BS /W, or the legacy /Border array, defaulting to 1 when absent.
  * @property {number[]|null} points - /L endpoints in pts for a Line, null otherwise.
  * @property {number[]|null} vertices - /Vertices in pts for a Polygon or PolyLine, null otherwise.
  * @property {string} comment - /Contents text (UTF-16BE or PDFDocEncoding decoded), '' when absent.
@@ -41,15 +41,15 @@ export const TEXT_ANNOT_ICON_PX = 24;
  */
 
 /**
- * Read the decoded PDF string value for `key` from an annotation object's text.
+ * Read the decoded PDF string value for `key` from an annotation's scoped key reader.
  * Returns '' when the key is absent.
- * @param {string} annotText
+ * @param {{ keyText: (key: string) => string }} annotKeys
  * @param {string} key - The dict key without the leading slash, e.g. 'Contents' or 'T'.
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {string}
  */
-function parseAnnotPdfString(annotText, key, objCache) {
-  return resolveStringValue(annotText, key, objCache) ?? '';
+function parseAnnotPdfString(annotKeys, key, objCache) {
+  return resolveStringValue(annotKeys.keyText(key), key, objCache) ?? '';
 }
 
 /**
@@ -84,18 +84,19 @@ const SHAPE_SUBTYPE_RE = /\/Subtype\s*\/(Square|Circle|Line|Polygon|PolyLine)\b/
  * True when a shape annotation carries only properties the writer reproduces.
  * Those are stroke and interior color, opacity, border width, and geometry.
  * A shape that fails this keeps its source object, because re-emitting it would redraw it from that subset alone.
- * @param {string} annotText
+ * @param {{ keyText: (key: string) => string, has: (key: string) => boolean }} annotKeys
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {boolean}
  */
-function shapeIsReproducible(annotText) {
-  // Cloudy borders (/BE), rect insets (/RD), line endings (/LE), rich-text bodies (/RC), and blend modes (/BM) have no representation in the model.
-  if (/\/(?:BE|RD|LE|RC|BM)(?![A-Za-z0-9])/.test(annotText)) return false;
+function shapeIsReproducible(annotKeys, objCache) {
+  // Cloudy borders (/BE), rect insets (/RD), line endings (/LE), rich-text bodies (/RC), and blend modes (/BM) have no representation in the lifted copy.
+  if (['BE', 'RD', 'LE', 'RC', 'BM'].some((key) => annotKeys.has(key))) return false;
   // The writer emits a solid border of one width, so a dashed or non-solid /BS is out of reach.
-  const bs = /\/BS\s*<<([^>]*)>>/.exec(annotText);
-  if (bs && (/\/D(?![A-Za-z0-9])/.test(bs[1]) || /\/S\s*\/(?!S\b)/.test(bs[1]))) return false;
+  const bs = resolveDictValue(annotKeys.keyText('BS'), 'BS', objCache);
+  if (bs && (/\/D(?![A-Za-z0-9])/.test(bs) || /\/S\s*\/(?!S\b)/.test(bs))) return false;
   // A legacy /Border array carries its dash pattern in a fourth element.
-  const border = /\/Border\s*\[([^\]]*)\]/.exec(annotText);
-  if (border && border[1].trim() && border[1].trim().split(/\s+/).length > 3) return false;
+  const border = resolveArrayValue(annotKeys.keyText('Border'), 'Border', objCache);
+  if (border && border.trim() && border.trim().split(/\s+/).length > 3) return false;
   return true;
 }
 
@@ -107,16 +108,18 @@ function shapeIsReproducible(annotText) {
  * @returns {boolean}
  */
 export function annotIsModelManaged(annotText, objCache) {
+  const annotKeys = scopeDictKeys(annotText);
+  const subtypeText = annotKeys.keyText('Subtype');
   // A pending /Redact counts even when the visibility flags below would hide it: a hidden redaction must still remove its content at export.
-  if (/\/Subtype\s*\/Redact\b/.test(annotText)) return true;
+  if (/\/Subtype\s*\/Redact\b/.test(subtypeText)) return true;
   // Invisible (bit 1), Hidden (bit 2), or NoView (bit 6).
-  const flags = resolveIntValue(annotText, 'F', objCache, 0);
+  const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
   if (flags & 1 || flags & 2 || flags & 32) return false;
   // /Squiggly is deliberately absent: it stays a passthrough annotation.
-  if (/\/Subtype\s*\/(?:Highlight|Underline|StrikeOut)\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
-  if (SHAPE_SUBTYPE_RE.test(annotText)) return shapeIsReproducible(annotText);
+  if (/\/Subtype\s*\/(?:Highlight|Underline|StrikeOut)\b/.test(subtypeText) || /\/Subtype\s*\/FreeText\b/.test(subtypeText)) return true;
+  if (SHAPE_SUBTYPE_RE.test(subtypeText)) return shapeIsReproducible(annotKeys, objCache);
   // Replies (/IRT) are excluded here because they are lifted into their root's thread instead.
-  return /\/Subtype\s*\/Text\b/.test(annotText) && !/\/IRT\b/.test(annotText);
+  return /\/Subtype\s*\/Text\b/.test(subtypeText) && !annotKeys.has('IRT');
 }
 
 const IRT_RE = /\/IRT\s+(\d+)\s+\d+\s+R/;
@@ -129,19 +132,20 @@ const IRT_RE = /\/IRT\s+(\d+)\s+\d+\s+R/;
  * @returns {?{rootRef: number, rootText: string}}
  */
 function resolveReplyRoot(annotText, objCache) {
-  if (!/\/Subtype\s*\/Text\b/.test(annotText)) return null;
+  const annotKeys = scopeDictKeys(annotText);
+  if (!/\/Subtype\s*\/Text\b/.test(annotKeys.keyText('Subtype'))) return null;
   // /RT /Group marks grouped markup, not a comment thread.
-  if (/\/RT\s*\/Group\b/.test(annotText)) return null;
+  if (/\/RT\s*\/Group\b/.test(annotKeys.keyText('RT'))) return null;
   // A /State annotation has empty /Contents, so lifting it would create a blank reply.
-  if (/\/State(?:Model)?\s*\/\w/.test(annotText)) return null;
-  let irt = IRT_RE.exec(annotText);
+  if (/\/State\s*\/\w/.test(annotKeys.keyText('State')) || /\/StateModel\s*\/\w/.test(annotKeys.keyText('StateModel'))) return null;
+  let irt = IRT_RE.exec(annotKeys.keyText('IRT'));
   if (!irt) return null;
   // The depth cap guards malformed cyclic chains.
   for (let depth = 0; depth < 8; depth++) {
     const ref = Number(irt[1]);
     const text = objCache.getObjectText(ref);
     if (!text) return null;
-    const parentIrt = IRT_RE.exec(text);
+    const parentIrt = IRT_RE.exec(scopeDictKeys(text).keyText('IRT'));
     if (!parentIrt) return { rootRef: ref, rootText: text };
     irt = parentIrt;
   }
@@ -170,10 +174,11 @@ export function annotIsLiftedReply(annotText, objCache) {
  * @returns {boolean}
  */
 export function linkAnnotIsLifted(annotText, objCache, linkDestInfo) {
-  if (!/\/Subtype\s*\/Link\b/.test(annotText)) return false;
-  const flags = resolveIntValue(annotText, 'F', objCache, 0);
+  const annotKeys = scopeDictKeys(annotText);
+  if (!/\/Subtype\s*\/Link\b/.test(annotKeys.keyText('Subtype'))) return false;
+  const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
   if (flags & 1 || flags & 2 || flags & 32) return false;
-  const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
+  const rectStr = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
   const rect = rectStr ? rectStr.split(/\s+/).map(Number) : [];
   if (rect.length < 4 || rect.slice(0, 4).some(Number.isNaN)) return false;
   if (resolveLinkUri(annotText, objCache)) return true;
@@ -203,8 +208,9 @@ export function linkAnnotIsLifted(annotText, objCache, linkDestInfo) {
  * @returns {?string}
  */
 function resolveLinkUri(annotText, objCache) {
-  const refMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
-  let actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : annotText;
+  const aText = scopeDictKeys(annotText).keyText('A');
+  const refMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(aText);
+  let actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : aText;
   if (!actionText) return null;
   // buildLinkAnnotObjects emits /URI as a hex string, so this branch is what makes this library's own exports re-lift.
   const hexMatch = /\/URI\s*<(?!<)([0-9a-fA-F\s]*)>/.exec(actionText);
@@ -305,32 +311,33 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   for (const annotRef of annotRefs) {
     const annotText = objCache.getObjectText(annotRef);
     if (!annotText) continue;
+    const annotKeys = scopeDictKeys(annotText);
 
     if (!annotIsModelManaged(annotText, objCache)) {
       // Flags are ignored here: a reply is thread content, not a page icon.
       const root = resolveReplyRoot(annotText, objCache);
       if (root && annotIsModelManaged(root.rootText, objCache)) {
-        const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
+        const creationDateStr = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
         if (!repliesByRoot.has(root.rootRef)) repliesByRoot.set(root.rootRef, []);
         /** @type {Array<{objNum: number, text: string, author: string, createdAt: ?string}>} */ (repliesByRoot.get(root.rootRef)).push({
           objNum: annotRef,
-          text: parseAnnotPdfString(annotText, 'Contents', objCache),
-          author: parseAnnotPdfString(annotText, 'T', objCache),
+          text: parseAnnotPdfString(annotKeys, 'Contents', objCache),
+          author: parseAnnotPdfString(annotKeys, 'T', objCache),
           createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
         });
         continue;
       }
-      const flags = resolveIntValue(annotText, 'F', objCache, 0);
+      const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
 
-      if (/\/Subtype\s*\/Widget\b/.test(annotText)) {
+      if (/\/Subtype\s*\/Widget\b/.test(annotKeys.keyText('Subtype'))) {
         try {
-          const chainTexts = [annotText];
+          const chainDicts = [annotKeys];
           const chainRefs = [annotRef];
-          let cur = annotText;
+          let curKeys = annotKeys;
           let rootRef = annotRef;
           const visitedParents = new Set([annotRef]);
           for (let depth = 0; depth < 16; depth++) {
-            const pm = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(cur);
+            const pm = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(curKeys.keyText('Parent'));
             if (!pm) break;
             const parentNum = Number(pm[1]);
             if (visitedParents.has(parentNum)) break;
@@ -338,38 +345,39 @@ export function extractPdfAnnotations(objCache, pageObjText) {
             const parentText = objCache.getObjectText(parentNum);
             if (!parentText) break;
             rootRef = parentNum;
-            chainTexts.push(parentText);
+            curKeys = scopeDictKeys(parentText);
+            chainDicts.push(curKeys);
             chainRefs.push(parentNum);
-            cur = parentText;
           }
 
           let ft = null;
-          for (const t of chainTexts) { if (/\/FT(?![A-Za-z0-9])/.test(t)) { ft = resolveNameValue(t, 'FT', objCache); break; } }
+          for (const k of chainDicts) { if (k.has('FT')) { ft = resolveNameValue(k.keyText('FT'), 'FT', objCache); break; } }
           let ff = 0;
-          for (const t of chainTexts) { if (/\/Ff(?![A-Za-z0-9])/.test(t)) { ff = resolveIntValue(t, 'Ff', objCache, 0); break; } }
+          for (const k of chainDicts) { if (k.has('Ff')) { ff = resolveIntValue(k.keyText('Ff'), 'Ff', objCache, 0); break; } }
           let maxLen = null;
-          for (const t of chainTexts) { if (/\/MaxLen(?![A-Za-z0-9])/.test(t)) { maxLen = resolveIntValue(t, 'MaxLen', objCache, 0) || null; break; } }
+          for (const k of chainDicts) { if (k.has('MaxLen')) { maxLen = resolveIntValue(k.keyText('MaxLen'), 'MaxLen', objCache, 0) || null; break; } }
           let quadding = 0;
-          for (const t of chainTexts) { if (/\/Q(?![A-Za-z0-9])/.test(t)) { quadding = resolveIntValue(t, 'Q', objCache, 0); break; } }
+          for (const k of chainDicts) { if (k.has('Q')) { quadding = resolveIntValue(k.keyText('Q'), 'Q', objCache, 0); break; } }
           let da = null;
-          for (const t of chainTexts) { if (/\/DA(?![A-Za-z0-9])/.test(t)) { da = resolveStringValue(t, 'DA', objCache); break; } }
+          for (const k of chainDicts) { if (k.has('DA')) { da = resolveStringValue(k.keyText('DA'), 'DA', objCache); break; } }
           const nameParts = [];
           // The fully-qualified field name is every level's own /T, root-to-leaf.
-          for (const t of chainTexts) { if (/\/T(?![A-Za-z0-9])/.test(t)) nameParts.push(resolveStringValue(t, 'T', objCache) || ''); }
+          for (const k of chainDicts) { if (k.has('T')) nameParts.push(resolveStringValue(k.keyText('T'), 'T', objCache) || ''); }
           const name = nameParts.length ? nameParts.reverse().join('.') : '(unnamed)';
 
-          const vLevelText = chainTexts.find((t) => /\/V(?![A-Za-z0-9])/.test(t)) || null;
+          const vLevelKeys = chainDicts.find((k) => k.has('V')) || null;
           let value = null;
           let signed = false;
-          if (vLevelText) {
+          if (vLevelKeys) {
+            const vText = vLevelKeys.keyText('V');
             if (ft === 'Btn') {
-              value = resolveNameValue(vLevelText, 'V', objCache);
+              value = resolveNameValue(vText, 'V', objCache);
             } else if (ft === 'Sig') {
-              signed = resolveDictValue(vLevelText, 'V', objCache) !== null;
+              signed = resolveDictValue(vText, 'V', objCache) !== null;
             } else {
-              value = resolveStringValue(vLevelText, 'V', objCache);
+              value = resolveStringValue(vText, 'V', objCache);
               if (value == null && ft === 'Ch') {
-                const arr = resolveArrayValue(vLevelText, 'V', objCache);
+                const arr = resolveArrayValue(vText, 'V', objCache);
                 if (arr != null) {
                   const parts = [...arr.matchAll(/\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>/g)].map((m) => decodePdfString(m[0]));
                   if (parts.length > 0) value = parts.join('; ');
@@ -382,17 +390,17 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
           // A /V written to the widget rather than the leaf /T node leaves the field itself unfilled.
           let valueRef = annotRef;
-          const vIdx = chainTexts.findIndex((t) => /\/V(?![A-Za-z0-9])/.test(t));
+          const vIdx = chainDicts.findIndex((k) => k.has('V'));
           if (vIdx >= 0) {
             valueRef = chainRefs[vIdx];
           } else {
-            const tIdx = chainTexts.findIndex((t) => /\/T(?![A-Za-z0-9])/.test(t));
+            const tIdx = chainDicts.findIndex((k) => k.has('T'));
             if (tIdx >= 0) valueRef = chainRefs[tIdx];
           }
 
           let onState = null;
           if (ft === 'Btn' && !(ff & 0x10000)) {
-            const apText = resolveDictValue(annotText, 'AP', objCache);
+            const apText = resolveDictValue(annotKeys.keyText('AP'), 'AP', objCache);
             const nText = apText ? resolveDictValue(apText, 'N', objCache) : null;
             // A /N carrying /BBox is a single appearance stream, so scanning it for state names would pick up its own dict keys.
             if (nText && !/\/BBox(?![A-Za-z0-9])/.test(nText)) {
@@ -406,8 +414,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
           let options = null;
           if (ft === 'Ch') {
-            const optLevel = chainTexts.find((t) => /\/Opt(?![A-Za-z0-9])/.test(t));
-            const optArr = optLevel ? resolveArrayValue(optLevel, 'Opt', objCache) : null;
+            const optLevel = chainDicts.find((k) => k.has('Opt'));
+            const optArr = optLevel ? resolveArrayValue(optLevel.keyText('Opt'), 'Opt', objCache) : null;
             if (optArr != null) {
               options = [];
               // The last string of an [export, display] pair is the user-visible text.
@@ -427,7 +435,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
           let apRef = null;
           let apStates = null;
-          const apDictText = resolveDictValue(annotText, 'AP', objCache);
+          const apDictText = resolveDictValue(annotKeys.keyText('AP'), 'AP', objCache);
           if (apDictText) {
             const nText = resolveDictValue(apDictText, 'N', objCache);
             // A /N carrying /BBox is the appearance stream itself; otherwise it is a per-state dict.
@@ -440,13 +448,13 @@ export function extractPdfAnnotations(objCache, pageObjText) {
                 const state = m[1].replace(/#([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
                 apStates[state] = Number(m[2]);
               }
-              const as = resolveNameValue(annotText, 'AS', objCache);
+              const as = resolveNameValue(annotKeys.keyText('AS'), 'AS', objCache);
               const current = as ?? (ft === 'Btn' ? (value != null && onState != null ? onState : 'Off') : null);
               if (current != null && apStates[current] != null) apRef = apStates[current];
             }
           }
 
-          const wRectStr = resolveArrayValue(annotText, 'Rect', objCache);
+          const wRectStr = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
           const wRectNums = wRectStr ? wRectStr.split(/\s+/).map(Number) : [];
           if (wRectNums.length >= 4 && !wRectNums.slice(0, 4).some(Number.isNaN)) {
             widgets.push({
@@ -477,9 +485,9 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       if (!(flags & 1 || flags & 2 || flags & 32)) {
         passthroughRefs.push(annotRef);
         // Links stay in passthroughRefs as well, so the renderer still paints their source appearance streams.
-        if (/\/Subtype\s*\/Link\b/.test(annotText)) {
+        if (/\/Subtype\s*\/Link\b/.test(annotKeys.keyText('Subtype'))) {
           const linkUri = resolveLinkUri(annotText, objCache);
-          const linkRectStr = resolveArrayValue(annotText, 'Rect', objCache);
+          const linkRectStr = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
           const linkRect = linkRectStr ? linkRectStr.split(/\s+/).map(Number) : [];
           if (linkRect.length >= 4 && !linkRect.slice(0, 4).some(Number.isNaN)) {
             /** @type {[number, number, number, number]} */
@@ -492,11 +500,12 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       continue;
     }
 
-    const isFreeText = /\/Subtype\s*\/FreeText\b/.test(annotText);
-    const isTextAnnot = /\/Subtype\s*\/Text\b/.test(annotText);
-    const isRedact = /\/Subtype\s*\/Redact\b/.test(annotText);
+    const subtypeText = annotKeys.keyText('Subtype');
+    const isFreeText = /\/Subtype\s*\/FreeText\b/.test(subtypeText);
+    const isTextAnnot = /\/Subtype\s*\/Text\b/.test(subtypeText);
+    const isRedact = /\/Subtype\s*\/Redact\b/.test(subtypeText);
 
-    const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
+    const rectStr = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
     const rectNums = rectStr ? rectStr.split(/\s+/).map(Number) : [];
     const rectValid = rectNums.length >= 4 && !rectNums.slice(0, 4).some(Number.isNaN);
     // A /Text annotation tolerates a missing/invalid rect (defaulted below) so a model-managed one is never silently lost.
@@ -506,27 +515,29 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
     if (isRedact) {
       // Appearance entries (/IC, /RO, /OverlayText) are ignored because the applied redaction always paints an opaque black box.
-      const rQpStr = resolveArrayValue(annotText, 'QuadPoints', objCache);
+      const rQpStr = resolveArrayValue(annotKeys.keyText('QuadPoints'), 'QuadPoints', objCache);
       redacts.push({ objNum: annotRef, rect, quadPoints: rQpStr ? rQpStr.split(/\s+/).map(Number) : null });
       continue;
     }
 
-    const cStr = resolveArrayValue(annotText, 'C', objCache);
+    const cStr = resolveArrayValue(annotKeys.keyText('C'), 'C', objCache);
     const cNums = cStr ? cStr.split(/\s+/).map(Number) : null;
     /** @type {[number, number, number]|null} */
     const color = cNums && cNums.length >= 3 && !cNums.some(Number.isNaN)
       ? [cNums[0], cNums[1], cNums[2]] : null;
 
-    const opacity = resolveNumValue(annotText, 'CA', objCache, 1);
+    const opacity = resolveNumValue(annotKeys.keyText('CA'), 'CA', objCache, 1);
 
-    const shapeMatch = SHAPE_SUBTYPE_RE.exec(annotText);
+    const shapeMatch = SHAPE_SUBTYPE_RE.exec(subtypeText);
     if (shapeMatch) {
-      const icStr = resolveArrayValue(annotText, 'IC', objCache);
+      const icStr = resolveArrayValue(annotKeys.keyText('IC'), 'IC', objCache);
       const icNums = icStr ? icStr.split(/\s+/).map(Number) : null;
-      const lStr = resolveArrayValue(annotText, 'L', objCache);
-      const vStr = resolveArrayValue(annotText, 'Vertices', objCache);
-      const bsWidth = /\/BS\s*<<([^>]*)>>/.exec(annotText);
-      const shapeCreatedAt = parseAnnotPdfString(annotText, 'CreationDate', objCache);
+      const lStr = resolveArrayValue(annotKeys.keyText('L'), 'L', objCache);
+      const vStr = resolveArrayValue(annotKeys.keyText('Vertices'), 'Vertices', objCache);
+      const bsDict = resolveDictValue(annotKeys.keyText('BS'), 'BS', objCache);
+      const borderStr = bsDict ? null : resolveArrayValue(annotKeys.keyText('Border'), 'Border', objCache);
+      const borderNums = borderStr ? borderStr.trim().split(/\s+/).map(Number) : null;
+      const shapeCreatedAt = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
       shapes.push({
         objNum: annotRef,
         subtype: /** @type {'Square'|'Circle'|'Line'|'Polygon'|'PolyLine'} */ (shapeMatch[1]),
@@ -535,24 +546,25 @@ export function extractPdfAnnotations(objCache, pageObjText) {
         interiorColor: icNums && icNums.length >= 3 && !icNums.some(Number.isNaN)
           ? [icNums[0], icNums[1], icNums[2]] : null,
         opacity,
-        borderWidth: bsWidth ? (resolveNumValue(bsWidth[1], 'W', objCache, 1) ?? 1) : 1,
+        borderWidth: bsDict ? (resolveNumValue(bsDict, 'W', objCache, 1) ?? 1)
+          : (borderNums && borderNums.length >= 3 && !Number.isNaN(borderNums[2]) ? borderNums[2] : 1),
         points: lStr ? lStr.split(/\s+/).map(Number) : null,
         vertices: vStr ? vStr.split(/\s+/).map(Number) : null,
-        comment: parseAnnotPdfString(annotText, 'Contents', objCache),
-        author: parseAnnotPdfString(annotText, 'T', objCache),
+        comment: parseAnnotPdfString(annotKeys, 'Contents', objCache),
+        author: parseAnnotPdfString(annotKeys, 'T', objCache),
         createdAt: shapeCreatedAt ? parsePdfDate(shapeCreatedAt) : null,
       });
       continue;
     }
 
     if (isFreeText) {
-      const da = resolveStringValue(annotText, 'DA', objCache) ?? '';
+      const da = resolveStringValue(annotKeys.keyText('DA'), 'DA', objCache) ?? '';
       const tfMatch = /([\d.]+)\s+Tf/.exec(da);
       const rgMatch = /([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg/.exec(da);
       freeTexts.push({
         objNum: annotRef,
         rect,
-        contents: parseAnnotPdfString(annotText, 'Contents', objCache),
+        contents: parseAnnotPdfString(annotKeys, 'Contents', objCache),
         fontSize: tfMatch ? Number(tfMatch[1]) : 10,
         textColor: rgMatch ? [Number(rgMatch[1]), Number(rgMatch[2]), Number(rgMatch[3])] : null,
         fillColor: color,
@@ -562,26 +574,26 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     }
 
     if (isTextAnnot) {
-      const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
+      const creationDateStr = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
       textAnnots.push({
         objNum: annotRef,
         rect,
         color,
         opacity,
-        contents: parseAnnotPdfString(annotText, 'Contents', objCache),
-        open: resolveBoolValue(annotText, 'Open', objCache, false),
-        iconName: resolveNameValue(annotText, 'Name', objCache) || 'Comment',
-        author: parseAnnotPdfString(annotText, 'T', objCache),
+        contents: parseAnnotPdfString(annotKeys, 'Contents', objCache),
+        open: resolveBoolValue(annotKeys.keyText('Open'), 'Open', objCache, false),
+        iconName: resolveNameValue(annotKeys.keyText('Name'), 'Name', objCache) || 'Comment',
+        author: parseAnnotPdfString(annotKeys, 'T', objCache),
         createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
       });
       continue;
     }
 
-    const qpStr = resolveArrayValue(annotText, 'QuadPoints', objCache);
+    const qpStr = resolveArrayValue(annotKeys.keyText('QuadPoints'), 'QuadPoints', objCache);
     const quadPoints = qpStr ? qpStr.split(/\s+/).map(Number) : null;
 
-    const subtypeMatch = /\/Subtype\s*\/(Underline|StrikeOut)\b/.exec(annotText);
-    const createdAtStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
+    const subtypeMatch = /\/Subtype\s*\/(Underline|StrikeOut)\b/.exec(subtypeText);
+    const createdAtStr = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
     highlights.push({
       objNum: annotRef,
       subtype: subtypeMatch ? /** @type {'Underline'|'StrikeOut'} */ (subtypeMatch[1]) : 'Highlight',
@@ -589,8 +601,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       quadPoints,
       color,
       opacity,
-      comment: parseAnnotPdfString(annotText, 'Contents', objCache),
-      author: parseAnnotPdfString(annotText, 'T', objCache),
+      comment: parseAnnotPdfString(annotKeys, 'Contents', objCache),
+      author: parseAnnotPdfString(annotKeys, 'T', objCache),
       createdAt: createdAtStr ? parsePdfDate(createdAtStr) : null,
     });
   }

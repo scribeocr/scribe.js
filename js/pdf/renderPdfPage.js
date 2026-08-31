@@ -9,7 +9,7 @@ import {
 } from './parsePdfUtils.js';
 import {
   extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveNumArray, resolveStringValue,
-  matMul, bytesToLatin1,
+  matMul, bytesToLatin1, scopeDictKeys,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 import {
@@ -5207,7 +5207,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Widget annotations paint on top of non-Widget markup annotations.
   const annotIsWidget = (ref) => {
     const t = objCache.getObjectText(ref);
-    return t ? /\/Subtype\s*\/Widget\b/.test(t) : false;
+    return t ? /\/Subtype\s*\/Widget\b/.test(scopeDictKeys(t).keyText('Subtype')) : false;
   };
   const annotRefs = [
     ...annotRefsRaw.filter((r) => !annotIsWidget(r)),
@@ -5215,28 +5215,17 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   ];
   if (annotRefs.length > 0) {
     for (const annotRef of annotRefs) {
-      let annotText = objCache.getObjectText(annotRef);
+      const annotText = objCache.getObjectText(annotRef);
       if (!annotText) continue;
-
-      // Apple Preview / iOS stamp+ink annotations stash a stale copy of the annotation (its own /AP, /Rect, /Subtype from before the user's last edit) inside /AAPL:AKExtras.
-      // The key regexes below take the first match, which would land inside that stale copy and render the stamp at its pre-edit position.
-      const akIdx = annotText.indexOf('/AAPL:AKExtras');
-      if (akIdx !== -1) {
-        const open = annotText.indexOf('<<', akIdx);
-        if (open !== -1) {
-          // extractDict runs to the end of the string when the value never closes, so the guard leaves a malformed annotation untouched.
-          const akDict = extractDict(annotText, open);
-          const end = open + akDict.length;
-          if (end < annotText.length) annotText = annotText.slice(0, akIdx) + annotText.slice(end);
-        }
-      }
+      const annotKeys = scopeDictKeys(annotText);
+      const subtypeText = annotKeys.keyText('Subtype');
 
       let rectArrText = null;
-      const rectInlineMatch = /\/Rect\s*(\[[^\]]*\])/.exec(annotText);
+      const rectInlineMatch = /\/Rect\s*(\[[^\]]*\])/.exec(annotKeys.keyText('Rect'));
       if (rectInlineMatch) {
         rectArrText = rectInlineMatch[1];
       } else {
-        const rectRefMatch = /\/Rect\s+(\d+)\s+\d+\s+R/.exec(annotText);
+        const rectRefMatch = /\/Rect\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Rect'));
         const rectObjText = rectRefMatch ? objCache.getObjectText(Number(rectRefMatch[1])) : null;
         const rectObjArr = rectObjText ? /(\[[^\]]*\])/.exec(rectObjText) : null;
         if (rectObjArr) rectArrText = rectObjArr[1];
@@ -5262,16 +5251,16 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const rectH = Math.abs(rect[3] - rect[1]);
       // Line annotations may have an empty Rect with endpoints defined by /L
       // Ink annotations may have inverted Rects (coords are in InkList, not Rect)
-      const isLineAnnot = /\/Subtype\s*\/Line\b/.test(annotText);
-      const isInkAnnot = /\/Subtype\s*\/Ink\b/.test(annotText);
+      const isLineAnnot = /\/Subtype\s*\/Line\b/.test(subtypeText);
+      const isInkAnnot = /\/Subtype\s*\/Ink\b/.test(subtypeText);
       if ((rectW <= 0 || rectH <= 0) && !isLineAnnot && !isInkAnnot) continue;
 
-      const flags = resolveIntValue(annotText, 'F', objCache, 0);
+      const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
       if (flags & 1 || flags & 2 || flags & 32) continue; // Invisible (bit 1), Hidden (bit 2), NoView (bit 6)
 
       let apObjNum = null;
-      let apDictText = annotText;
-      const apIndirectMatch = /\/AP\s+(\d+)\s+\d+\s+R/.exec(annotText);
+      let apDictText = annotKeys.keyText('AP');
+      const apIndirectMatch = /\/AP\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('AP'));
       if (apIndirectMatch) {
         const refText = objCache.getObjectText(Number(apIndirectMatch[1]));
         if (refText) apDictText = refText;
@@ -5284,7 +5273,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         // That dict has no /BBox, so follow /AS to the state's stream.
         const nObjText = objCache.getObjectText(apObjNum);
         if (nObjText && !/\/BBox/.test(nObjText)) {
-          const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
+          const asMatch = /\/AS\s*\/(\w+)/.exec(annotKeys.keyText('AS'));
           const currentState = asMatch ? asMatch[1] : 'Off';
           const stateRefMatch = new RegExp(`\\/${currentState}\\s+(\\d+)\\s+\\d+\\s+R`).exec(nObjText);
           if (stateRefMatch) apObjNum = Number(stateRefMatch[1]);
@@ -5294,7 +5283,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const apDictMatch = /\/AP\s*<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText)
           || /^<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText);
         if (apDictMatch) {
-          const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
+          const asMatch = /\/AS\s*\/(\w+)/.exec(annotKeys.keyText('AS'));
           const currentState = asMatch ? asMatch[1] : 'Off';
           const stateRefMatch = new RegExp(`\\/${currentState}\\s+(\\d+)\\s+\\d+\\s+R`).exec(apDictMatch[1]);
           if (stateRefMatch) apObjNum = Number(stateRefMatch[1]);
@@ -5303,19 +5292,19 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
       // Radio kids put /FT on their /Parent, so fall back to it.
       let resolvedFieldType = '';
-      const ftSelfMatch = /\/FT\s*\/(\w+)/.exec(annotText);
+      const ftSelfMatch = /\/FT\s*\/(\w+)/.exec(annotKeys.keyText('FT'));
       if (ftSelfMatch) {
         resolvedFieldType = ftSelfMatch[1];
       } else {
-        const parentRefMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(annotText);
+        const parentRefMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Parent'));
         const parentText = parentRefMatch ? objCache.getObjectText(Number(parentRefMatch[1])) : null;
-        const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(parentText) : null;
+        const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(scopeDictKeys(parentText).keyText('FT')) : null;
         if (ftParentMatch) resolvedFieldType = ftParentMatch[1];
       }
       // Decode /V up front: both the regenerate decision and the synthesis below consume it.
       let fieldValue = null;
       if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
-        fieldValue = resolveStringValue(annotText, 'V', objCache);
+        fieldValue = resolveStringValue(annotKeys.keyText('V'), 'V', objCache);
         if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
       }
 
@@ -5323,11 +5312,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Pushbuttons (Ff bit 17) keep theirs, having no value to regenerate.
       if (needAppearances && apObjNum !== null) {
         if (resolvedFieldType === 'Tx') {
-          const txMultiline = (resolveIntValue(annotText, 'Ff', objCache, 0) & 0x1000) !== 0;
+          const txMultiline = (resolveIntValue(annotKeys.keyText('Ff'), 'Ff', objCache, 0) & 0x1000) !== 0;
           const synthCanRender = fieldValue === null || !/[^\x00-\xff]/.test(fieldValue);
           if (!txMultiline && synthCanRender) apObjNum = null;
         } else if (resolvedFieldType === 'Btn') {
-          if (!(resolveIntValue(annotText, 'Ff', objCache, 0) & 0x10000)) apObjNum = null;
+          if (!(resolveIntValue(annotKeys.keyText('Ff'), 'Ff', objCache, 0) & 0x10000)) apObjNum = null;
         }
       }
 
@@ -5335,20 +5324,20 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (apObjNum === null) {
         if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
           if (fieldValue && fieldValue.length > 0) {
-            const da = resolveStringValue(annotText, 'DA', objCache) ?? '/Helvetica 10 Tf 0 g';
+            const da = resolveStringValue(annotKeys.keyText('DA'), 'DA', objCache) ?? '/Helvetica 10 Tf 0 g';
             const tfMatch = /\/[\w+-]+\s+([\d.]+)\s+Tf/.exec(da);
             let fontSize = tfMatch ? Number(tfMatch[1]) : 10;
             // /DA font size 0 means auto-size: pick a size that fits the field height.
             if (!fontSize) fontSize = Math.min(12, Math.max(6, rectH - 4));
             const tfEnd = da.lastIndexOf('Tf');
             const colorOps = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
-            const quadding = resolveIntValue(annotText, 'Q', objCache, 0);
-            const synthFf = resolveIntValue(annotText, 'Ff', objCache, 0);
+            const quadding = resolveIntValue(annotKeys.keyText('Q'), 'Q', objCache, 0);
+            const synthFf = resolveIntValue(annotKeys.keyText('Ff'), 'Ff', objCache, 0);
             const multiline = (synthFf & 0x1000) !== 0;
             // Comb (Ff bit 25) with /MaxLen draws one character per cell.
             // Read like the importer's gate: Tx only, no /Parent walk, matching the Ff read above.
             const combMaxLen = resolvedFieldType === 'Tx' && !multiline && (synthFf & 0x1000000)
-              ? resolveIntValue(annotText, 'MaxLen', objCache, 0) : 0;
+              ? resolveIntValue(annotKeys.keyText('MaxLen'), 'MaxLen', objCache, 0) : 0;
             const pad = 2;
             const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
             // Helvetica's average advance is ~0.5em, enough to place/justify single lines and to wrap a multiline note approximately (no per-glyph metrics needed here).
@@ -5406,9 +5395,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         } else if (resolvedFieldType === 'Btn') {
           // The /MK /CA caption names a ZapfDingbats glyph whose substitute rendering is unreliable, so a circle path draws the dot without a font.
-          const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
+          const asMatch = /\/AS\s*\/(\w+)/.exec(annotKeys.keyText('AS'));
           if (asMatch && asMatch[1] !== 'Off') {
-            const da = resolveStringValue(annotText, 'DA', objCache) ?? '0 g';
+            const da = resolveStringValue(annotKeys.keyText('DA'), 'DA', objCache) ?? '0 g';
             const tfEnd = da.lastIndexOf('Tf');
             const dotColor = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
             const cx = rectW / 2;
@@ -5469,7 +5458,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           '', pageIndex, symbolFontTags, cidPUATags, extGStates, rawCharCodeTags,
           new Map(), 0, new Set(), cidCollisionMap,
         );
-        const annotCA = resolveNumValue(annotText, 'CA', objCache, 1);
+        const annotCA = resolveNumValue(annotKeys.keyText('CA'), 'CA', objCache, 1);
         for (const aOp of annotFlattened) {
           if (annotCA < 1) {
             aOp.fillAlpha = (aOp.fillAlpha ?? 1) * annotCA;
@@ -5549,15 +5538,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           continue;
         }
 
-        if (/\/Subtype\s*\/Ink\b/.test(annotText)) {
-          const inkListContent = resolveArrayValue(annotText, 'InkList', objCache);
+        if (/\/Subtype\s*\/Ink\b/.test(subtypeText)) {
+          const inkListContent = resolveArrayValue(annotKeys.keyText('InkList'), 'InkList', objCache);
           if (inkListContent != null) {
-            const cMatchInk = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotText);
+            const cMatchInk = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotKeys.keyText('C'));
             const inkColor = cMatchInk
               ? `rgb(${Math.round(Number(cMatchInk[1]) * 255)},${Math.round(Number(cMatchInk[2]) * 255)},${Math.round(Number(cMatchInk[3]) * 255)})`
               : 'rgb(0,0,0)';
 
-            const bsInkMatch = /\/BS\s*<<([^>]*)>>/.exec(annotText);
+            const bsInkMatch = /\/BS\s*<<([^>]*)>>/.exec(annotKeys.keyText('BS'));
             let inkWidth = 1;
             let inkDash = [];
             if (bsInkMatch) {
@@ -5601,8 +5590,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
 
         // Some PDFs ship a broken /AP (e.g. /N maps the appearance state to a name, not a stream), so viewers draw the field box from its /MK characteristics instead.
-        if (/\/Subtype\s*\/Widget\b/.test(annotText)) {
-          const mkMatch = /\/MK\s*<<([\s\S]*?)>>/.exec(annotText);
+        if (/\/Subtype\s*\/Widget\b/.test(subtypeText)) {
+          const mkMatch = /\/MK\s*<<([\s\S]*?)>>/.exec(annotKeys.keyText('MK'));
           if (!mkMatch) continue;
           const mk = mkMatch[1];
           const parseMKColor = (key) => {
@@ -5621,13 +5610,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
           let widgetBorderWidth = widgetBorderColor ? 1 : 0;
           if (widgetBorderColor) {
-            const bsWMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotText);
+            const bsWMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotKeys.keyText('BS'));
             if (bsWMatch) widgetBorderWidth = Number(bsWMatch[1]);
           }
 
-          const ftMatch = /\/FT\s*\/(\w+)/.exec(annotText);
+          const ftMatch = /\/FT\s*\/(\w+)/.exec(annotKeys.keyText('FT'));
           const ft = ftMatch ? ftMatch[1] : '';
-          const ffMatch = /\/Ff\s+(\d+)/.exec(annotText);
+          const ffMatch = /\/Ff\s+(\d+)/.exec(annotKeys.keyText('Ff'));
           const ff = ffMatch ? Number(ffMatch[1]) : 0;
           // Signature fields and push buttons have no synthesizable box appearance.
           if (ft === 'Sig' || (ft === 'Btn' && (ff & 0x10000))) continue;
@@ -5695,27 +5684,27 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           continue;
         }
 
-        const subtypeMatch = /\/Subtype\s*\/(Square|Circle|Polygon|PolyLine|Line)/.exec(annotText);
+        const subtypeMatch = /\/Subtype\s*\/(Square|Circle|Polygon|PolyLine|Line)/.exec(subtypeText);
         if (!subtypeMatch) continue;
         const annotSubtype = subtypeMatch[1];
 
-        const cMatch = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotText);
+        const cMatch = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotKeys.keyText('C'));
         const borderColor = cMatch
           ? `rgb(${Math.round(Number(cMatch[1]) * 255)},${Math.round(Number(cMatch[2]) * 255)},${Math.round(Number(cMatch[3]) * 255)})`
           : 'rgb(0,0,0)';
 
-        const icMatch = /\/IC\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotText);
+        const icMatch = /\/IC\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotKeys.keyText('IC'));
         const hasFill = !!icMatch;
         const fillColor = icMatch
           ? `rgb(${Math.round(Number(icMatch[1]) * 255)},${Math.round(Number(icMatch[2]) * 255)},${Math.round(Number(icMatch[3]) * 255)})`
           : 'rgb(0,0,0)';
 
         // /Border format: [hCornerRadius vCornerRadius width]; /BS overrides if present.
-        const borderMatch = /\/Border\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s*\]/.exec(annotText);
-        const bsWidthMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotText);
+        const borderMatch = /\/Border\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s*\]/.exec(annotKeys.keyText('Border'));
+        const bsWidthMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotKeys.keyText('BS'));
         let borderWidth = bsWidthMatch ? Number(bsWidthMatch[1]) : (borderMatch ? Number(borderMatch[1]) : 1);
         if (!bsWidthMatch && !borderMatch) {
-          const bsIndirectMatch = /\/BS\s+(\d+)\s+\d+\s+R/.exec(annotText);
+          const bsIndirectMatch = /\/BS\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('BS'));
           if (bsIndirectMatch) {
             const bsText = objCache.getObjectText(Number(bsIndirectMatch[1]));
             if (bsText) {
@@ -5736,7 +5725,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         let commands;
         if (annotSubtype === 'Line') {
           // /L is [x1 y1 x2 y2].
-          const lArr = resolveNumArray(annotText, 'L', objCache, null);
+          const lArr = resolveNumArray(annotKeys.keyText('L'), 'L', objCache, null);
           if (!lArr || lArr.length < 4) continue;
           commands = [
             { type: 'M', x: lArr[0], y: lArr[1] },
@@ -5744,7 +5733,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           ];
         } else if (annotSubtype === 'Polygon' || annotSubtype === 'PolyLine') {
           // /Vertices is [x1 y1 x2 y2 ...].
-          const vertContent = resolveNumArray(annotText, 'Vertices', objCache, null);
+          const vertContent = resolveNumArray(annotKeys.keyText('Vertices'), 'Vertices', objCache, null);
           if (!vertContent) continue;
           const coords = vertContent;
           if (coords.length < 4) continue;

@@ -389,7 +389,9 @@ export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, war
 
       let ap = `q\n${br} ${bg} ${bb} RG\n`;
       if (hasFill) ap += `${fr} ${fg} ${fb} rg\n`;
-      ap += `${width} w\n${pathOps}${hasFill ? 'B' : 'S'}\nQ`;
+      // A /BS /W of 0 means no border, but the `0 w` operator still strokes the thinnest line the device can render.
+      const paintOp = width === 0 ? (hasFill ? 'f' : 'n') : (hasFill ? 'B' : 'S');
+      ap += `${width} w\n${pathOps}${paintOp}\nQ`;
       const apObj = `${apObjNum} 0 obj\n<</Type /XObject /Subtype /Form /FormType 1 /BBox [${rect}] /Resources <<>> /Length ${ap.length}>>\nstream\n${ap}\nendstream\nendobj\n\n`;
 
       const parentObjNum = objNum;

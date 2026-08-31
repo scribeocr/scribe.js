@@ -1038,3 +1038,106 @@ export function formatPdfDate(iso) {
   return `D:${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}`
     + `${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}+00'00'`;
 }
+
+/**
+ * Tokenize a dict's text into its own top-level key/value pairs.
+ * Strings, hex strings, comments, nested dicts, and arrays are skipped whole, so nested content cannot be mistaken for a top-level pair.
+ * Returns null when the text does not parse as a dict.
+ * @param {string} text
+ * @returns {?{ pairs: Array<{ key: string, keyPos: number, valStart: number, valEnd: number }>, end: number }}
+ */
+export function parseTopLevelPairs(text) {
+  const open = text.indexOf('<<');
+  if (open === -1) return null;
+  let i = open + 2;
+  const pairs = [];
+  const skipWs = () => { while (i < text.length && /[\s\0]/.test(text[i])) i++; };
+  const skipString = () => {
+    i++; let depth = 1;
+    while (i < text.length && depth > 0) {
+      const c = text[i];
+      if (c === '\\') { i += 2; continue; }
+      if (c === '(') depth++;
+      else if (c === ')') depth--;
+      i++;
+    }
+  };
+  const skipHexOrDict = () => {
+    if (text[i + 1] === '<') { skipStructure('dict'); return; }
+    while (i < text.length && text[i] !== '>') i++;
+    i++;
+  };
+  /** Skip one balanced dict or array. @param {'dict'|'array'} kind */
+  const skipStructure = (kind) => {
+    let dictDepth = 0; let arrDepth = 0;
+    do {
+      const c = text[i];
+      if (c === '(') { skipString(); continue; }
+      if (c === '%') { while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++; continue; }
+      if (c === '<' && text[i + 1] === '<') { dictDepth++; i += 2; continue; }
+      if (c === '>' && text[i + 1] === '>') { dictDepth--; i += 2; continue; }
+      if (c === '<') { skipHexOrDict(); continue; }
+      if (c === '[') { arrDepth++; i++; continue; }
+      if (c === ']') { arrDepth--; i++; continue; }
+      i++;
+    } while (i < text.length && (dictDepth > 0 || arrDepth > 0));
+    if (kind === 'dict' && dictDepth !== 0) throw new Error('unbalanced');
+  };
+  const skipValue = () => {
+    skipWs();
+    const c = text[i];
+    if (c === '(') { skipString(); } else if (c === '<' || c === '[') { skipStructure(c === '[' ? 'array' : 'dict'); } else if (c === '/') { i++; while (i < text.length && !/[\s()<>[\]{}/%]/.test(text[i])) i++; } else {
+      // A ref is three tokens, so stopping after the first would abort the whole parse at the "0".
+      const ref = /^(\d+)\s+(\d+)\s+R(?![A-Za-z0-9])/.exec(text.slice(i, i + 32));
+      if (ref) { i += ref[0].length; } else { while (i < text.length && !/[\s()<>[\]{}/%]/.test(text[i])) i++; }
+    }
+  };
+  try {
+    while (i < text.length) {
+      skipWs();
+      if (text[i] === '%') { while (i < text.length && text[i] !== '\n' && text[i] !== '\r') i++; continue; }
+      if (text[i] === '>' && text[i + 1] === '>') return { pairs, end: i + 2 };
+      if (text[i] !== '/') return null;
+      const keyPos = i;
+      i++;
+      let key = '';
+      while (i < text.length && !/[\s()<>[\]{}/%]/.test(text[i])) { key += text[i]; i++; }
+      skipWs();
+      const valStart = i;
+      skipValue();
+      pairs.push({
+        key, keyPos, valStart, valEnd: i,
+      });
+    }
+  } catch { return null; }
+  return null;
+}
+
+/**
+ * A structure-aware reader over one dict's text.
+ * A key read served from this reader cannot be captured by a nested dict's key, or by a name value that spells the key.
+ * `keyText(key)` returns a minimal dict holding only that key's own top-level pair, or `'<< >>'` when the key is absent.
+ * `has(key)` reports top-level presence.
+ * Both fall back to the whole text when the dict cannot be tokenized, which reproduces an unscoped read.
+ * When a key occurs twice at top level the first pair wins, matching a first-match read of a well-formed dict.
+ * @param {string} text
+ * @returns {{ keyText: (key: string) => string, has: (key: string) => boolean }}
+ */
+export function scopeDictKeys(text) {
+  const parsed = parseTopLevelPairs(text);
+  if (!parsed) {
+    return {
+      keyText: () => text,
+      has: (key) => new RegExp(`\\/${key}(?![A-Za-z0-9])`).test(text),
+    };
+  }
+  const byKey = new Map();
+  for (const p of parsed.pairs) if (!byKey.has(p.key)) byKey.set(p.key, p);
+  return {
+    keyText: (key) => {
+      const p = byKey.get(key);
+      return p ? `<< /${key} ${text.slice(p.valStart, p.valEnd)} >>` : '<< >>';
+    },
+    has: (key) => byKey.has(key),
+  };
+}
