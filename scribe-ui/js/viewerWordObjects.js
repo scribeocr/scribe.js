@@ -14,12 +14,39 @@ function getViewer(itext) {
 }
 
 /**
- * Measured line metrics, in em, for each native face by CSS family name.
+ * The ascent and descent, in px, this browser lays each face out with at each size, keyed by CSS font shorthand.
  * @type {Map<string, {asc: number, desc: number}>}
  */
-const nativeFaceMetrics = new Map();
+const faceMetricsCache = new Map();
 /** @type {?CanvasRenderingContext2D} */
-let nativeFaceMeasureCtx = null;
+let faceMeasureCtx = null;
+
+/**
+ * The ascent and descent, in px, this browser lays a face out with at `sizePx`.
+ * Which table those come from varies by platform (hhea on Linux and macOS, OS/2 win on Windows, OS/2 typo when `USE_TYPO_METRICS` is set), so a font program's own tables are not a substitute.
+ * @param {string} faceName - CSS family name the face is registered under.
+ * @param {string} style - CSS font-style.
+ * @param {string} weight - CSS font-weight.
+ * @param {number} sizePx - Font size, in px.
+ * @returns {?{asc: number, desc: number}}
+ */
+function measureFace(faceName, style, weight, sizePx) {
+  if (typeof document === 'undefined') return null;
+  // Chromium rounds the ascent and descent to whole pixels per size and floors the half-leading, so metrics scaled from a single em measurement miss the baseline by up to a pixel.
+  const spec = `${style} ${weight} ${sizePx}px "${faceName}"`;
+  const cached = faceMetricsCache.get(spec);
+  if (cached) return cached;
+  // An unloaded face measures as the fallback font, so its metrics must not be taken or cached.
+  if (document.fonts && !document.fonts.check(spec)) return null;
+  if (!faceMeasureCtx) faceMeasureCtx = document.createElement('canvas').getContext('2d');
+  const ctx = /** @type {CanvasRenderingContext2D} */ (faceMeasureCtx);
+  ctx.font = spec;
+  const m = ctx.measureText('Hg');
+  if (!(m.fontBoundingBoxAscent > 0)) return null;
+  const fm = { asc: m.fontBoundingBoxAscent, desc: m.fontBoundingBoxDescent || 0 };
+  faceMetricsCache.set(spec, fm);
+  return fm;
+}
 
 let wordStyleSheetInjected = false;
 
@@ -111,8 +138,6 @@ export class UiText {
     // Style runs, small caps, and stroked words keep the substitute path, whose mechanics they need.
     /** @type {?FontContainerFont} */
     let fontNative = null;
-    /** @type {?{asc: number, desc: number}} */
-    let fontNativeMetrics = null;
     if (_viewer.state.tablePreview && !word.styleRuns && !word.style.smallCaps && word.line) {
       const ntw = nativeTextForPage(_viewer.doc, word.line.page)[word.id];
       const f = ntw?.fontObjNum;
@@ -122,19 +147,8 @@ export class UiText {
         // A subset face has only the glyphs this document drew with it, so a word it cannot fully cover falls back.
         if (ef?.faceName && ef.program?.font
           && [...word.text].every((ch) => resolveReplacementChar(ch, ef.program, word.style).kind === 'orig')) {
-          // Browsers weigh a font's hhea against its OS/2 metrics differently per platform, and embedded programs routinely carry tables that disagree.
-          // Measuring the face is the only way to get the ascent this browser will lay out, so reading the tables misplaces the baseline on some platforms.
-          let fm = nativeFaceMetrics.get(ef.faceName);
-          if (!fm) {
-            if (!nativeFaceMeasureCtx) nativeFaceMeasureCtx = document.createElement('canvas').getContext('2d');
-            const mctx = /** @type {CanvasRenderingContext2D} */ (nativeFaceMeasureCtx);
-            mctx.font = `1000px "${ef.faceName}"`;
-            const m = mctx.measureText('Hg');
-            fm = { asc: (m.fontBoundingBoxAscent || 0) / 1000, desc: (m.fontBoundingBoxDescent || 0) / 1000 };
-            nativeFaceMetrics.set(ef.faceName, fm);
-          }
-          if (fm.asc > 0) {
-            fontNativeMetrics = fm;
+          // An unmeasurable face has no reliable baseline, so the word keeps the substitute font instead.
+          if (measureFace(ef.faceName, 'normal', 'normal', 1000)) {
             // The style keywords stay 'normal' because an embedded face carries its style in its glyphs.
             fontNative = /** @type {FontContainerFont} */ ({
               opentype: ef.program.font,
@@ -153,6 +167,8 @@ export class UiText {
     const {
       charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
     } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts, 0, fontNative ? { font: fontNative } : undefined);
+
+    const fm = measureFace(font.fontFaceName, font.fontFaceStyle, font.fontFaceWeight, fontSize);
 
     const charSpacingFinal = !dynamicWidth ? charSpacing : 0;
 
@@ -179,8 +195,7 @@ export class UiText {
 
     let y = yActual - fontSize * 0.6;
     if (!word.visualCoords && (word.style.sup || word.style.dropcap)) {
-      const fontDesc = fontNativeMetrics ? -fontNativeMetrics.desc * fontSize
-        : font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+      const fontDesc = fm ? -fm.desc : font.opentype.descender / font.opentype.unitsPerEm * fontSize;
       y = yActual - fontSize * 0.6 + fontDesc;
     }
 
@@ -193,13 +208,9 @@ export class UiText {
     this.leftSideBearing = leftSideBearing;
     this.fontSize = fontSize;
     this.smallCapsMult = font.smallCapsMult;
-    // Vertical font metrics (ascent/descent) in px, derived from the opentype font rather than a per-word canvas `measureText`.
-    // The equivalent `fontBoundingBoxAscent`/`Descent` are per-(font, size) and text-independent, so per-word measurement would add nothing.
-    // Native faces use the measured metrics instead, since their tables can disagree with what the browser lays out.
-    this.fontAscentPx = fontNativeMetrics ? fontNativeMetrics.asc * fontSize
-      : font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
-    this.fontDescentPx = fontNativeMetrics ? fontNativeMetrics.desc * fontSize
-      : -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+    // The span's top and line-height are set from these, so they must be the metrics the browser builds the line box from or the glyph baseline misses `yActual`.
+    this.fontAscentPx = fm ? fm.asc : font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
+    this.fontDescentPx = fm ? fm.desc : -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
     // `yActual` is the y value we want to draw the text at, which is usually the baseline.
     this.yActual = yActual;
     // Baseline used to re-derive `yActual` on edit; `UiOcrWord` overrides it with its measured line baseline.
@@ -629,6 +640,8 @@ export class UiText {
       advanceArr, fontSize, kerningArr, charSpacing, charArr, leftSideBearing, rightSideBearing, font,
     } = scribe.utils.calcWordMetrics(wordI.word, getViewer(wordI).doc.fonts);
 
+    const fm = measureFace(font.fontFaceName, font.fontFaceStyle, font.fontFaceWeight, fontSize);
+
     wordI.charArr = charArr;
 
     const charSpacingFinal = !wordI.dynamicWidth ? charSpacing : 0;
@@ -660,8 +673,8 @@ export class UiText {
     wordI.fontSize = fontSize;
     wordI.height(fontSize * 0.6);
     // Font size may have changed, so refresh the cached vertical metrics (see the constructor).
-    wordI.fontAscentPx = font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
-    wordI.fontDescentPx = -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+    wordI.fontAscentPx = fm ? fm.asc : font.opentype.ascender / font.opentype.unitsPerEm * fontSize;
+    wordI.fontDescentPx = fm ? fm.desc : -font.opentype.descender / font.opentype.unitsPerEm * fontSize;
 
     if (wordI.word.style.sup || wordI.word.style.dropcap) {
       const lineObj = wordI.word.line;
@@ -672,7 +685,7 @@ export class UiText {
 
     let y = wordI.yActual - fontSize * 0.6;
     if (!wordI.word.visualCoords && (wordI.word.style.sup || wordI.word.style.dropcap)) {
-      const fontDesc = font.opentype.descender / font.opentype.unitsPerEm * fontSize;
+      const fontDesc = fm ? -fm.desc : font.opentype.descender / font.opentype.unitsPerEm * fontSize;
       y = wordI.yActual - fontSize * 0.6 + fontDesc;
     }
     wordI._y = y;
