@@ -3018,6 +3018,259 @@ export function createExtractTablesTool(app) {
   };
 }
 
+// eslint-disable-next-line max-len
+const INSPECT_MODE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/></svg>';
+const INSPECT_PICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" '
+  + 'style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/></svg>';
+const INSPECT_ARMED_HINT = 'Click a word on the page to identify its font · Esc cancels';
+
+/**
+ * The Inspect Document mode tool.
+ * The document's facts, size and fonts show in the right panel, or the bottom sheet on the phone.
+ * A font is identified by a deliberate pick: "Identify font" arms one click on the page, which pins the font that drew the word and rings the word.
+ * The context menu and the touch callout offer the same verb without arming.
+ * A click on the ringed word or on blank paper drops the pin.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, open: () => void, close: () => void, docChanged: () => void,
+ *   bannerElem: () => HTMLButtonElement, setArmed: (on: boolean) => void, isArmed: () => boolean, hintText: () => ?string, identify: (kw: any) => boolean }}
+ */
+export function createInspectDocumentTool(app) {
+  const toolbarElem = makeIconButton('Inspect Document', INSPECT_MODE_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Inspect Document';
+  toolbarElem.appendChild(toolbarLabelElem);
+  // The banner's arming control: one pick per press.
+  const pickBtn = document.createElement('button');
+  pickBtn.type = 'button';
+  pickBtn.className = 'scribe-mode-banner-pick';
+  pickBtn.title = 'Identify a font by clicking a word on the page';
+  pickBtn.setAttribute('aria-pressed', 'false');
+  pickBtn.innerHTML = `<span class="scribe-mode-banner-pick-ic">${INSPECT_PICK_SVG}</span><span>Identify font</span>`;
+  let active = false;
+  let armed = false;
+  /** @type {?{n: number, word: import('../../../js/objects/ocrObjects.js').OcrWord}} The word whose font is pinned. */
+  let pinned = null;
+  // The Edit Text hover box, at word size: the same 1.5px band 2px out from the glyphs.
+  const hoverElem = document.createElement('div');
+  hoverElem.className = 'scribe-inspect-hover';
+  Object.assign(hoverElem.style, {
+    position: 'absolute',
+    border: 'calc(1.5px / var(--scribe-zoom, 1)) solid rgba(26, 115, 232, 0.75)',
+    borderRadius: '2px',
+    pointerEvents: 'none',
+    boxSizing: 'border-box',
+  });
+  // An outline, not a border, so the ring never covers the glyphs it marks.
+  const ringElem = document.createElement('div');
+  ringElem.className = 'scribe-inspect-ring';
+  Object.assign(ringElem.style, {
+    position: 'absolute',
+    outline: 'calc(2px / var(--scribe-zoom, 1)) solid var(--scribe-accent, #1c62d4)',
+    outlineOffset: 'calc(1px / var(--scribe-zoom, 1))',
+    borderRadius: 'calc(1px / var(--scribe-zoom, 1))',
+    pointerEvents: 'none',
+    boxSizing: 'border-box',
+  });
+  const hideHover = () => hoverElem.remove();
+  /** The live workspace, wherever it is mounted. */
+  const workspace = () => (app._phoneUi ? app._inspectSheetHandle : app._automatePanel?.inspectWorkspace()) || null;
+  // The panel module loads lazily, so an early entry waits for it; the phone's sheet needs no panel.
+  const showWorkspace = () => {
+    if (app._phoneUi) { app._openInspectSheet?.(); return; }
+    Promise.resolve(app._automateReady).then(() => { if (active && !app._phoneUi) app._automatePanel?.openInspectWorkspace(); });
+  };
+
+  /** Whether the inventory can name the font that drew a UI word: native text whose font object is known. */
+  const identifiable = (kw) => {
+    const doc = app.scribe.doc;
+    const page = kw?.word?.line?.page;
+    if (!doc || !page || page.textSource !== 'pdf') return false;
+    return doc.nativeText.pages[page.n]?.[kw.word.id]?.fontObjNum != null;
+  };
+  /**
+   * A word's drawn box in page space: its glyph band off the native baseline, as the Edit Text line box is sized.
+   * @param {import('../../../js/objects/ocrObjects.js').OcrWord} word
+   */
+  const wordDrawBox = (word) => {
+    const nt = nativeTextForPage(app.scribe.doc, word.line.page);
+    const base = nt[word.id]?.baselineY ?? (word.line.bbox.bottom + (word.line.baseline?.[1] || 0));
+    const size = word.style.size || Math.abs(word.bbox.bottom - word.bbox.top) / 0.75;
+    return {
+      left: word.bbox.left, right: word.bbox.right, top: base - 0.75 * size, bottom: base + 0.25 * size,
+    };
+  };
+  /** Mount `el` over `word` in its page's text group, `pad` px out from the drawn box; off-window pages get nothing. */
+  const placeBox = (el, word, pad) => {
+    const sv = app.scribe;
+    const n = word.line.page.n;
+    if (!sv.doc || !sv.windowPages(sv.state.cp.n).includes(n)) { el.remove(); return; }
+    const group = sv.getTextGroup(n, word.line.orientation || 0);
+    if (!group) { el.remove(); return; }
+    const box = wordDrawBox(word);
+    el.style.left = `${box.left - pad}px`;
+    el.style.top = `${box.top - pad}px`;
+    el.style.width = `${box.right - box.left + 2 * pad}px`;
+    el.style.height = `${box.bottom - box.top + 2 * pad}px`;
+    if (el.parentElement !== group) group.appendChild(el);
+  };
+  const drawRing = () => { if (pinned) placeBox(ringElem, pinned.word, 0); else ringElem.remove(); };
+
+  const setArmed = (on) => {
+    if ((on && !active) || armed === on) return;
+    armed = on;
+    pickBtn.classList.toggle('active', on);
+    pickBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const sv = app.scribe;
+    // The Edit Text convention: the arrow while a pick is armed, since the hover box marks what a click takes.
+    if (sv.textSel) sv.textSel.cursorOverride = on ? 'default' : null;
+    if (!on) hideHover();
+    app._setInspectHint?.();
+    sv._modeStatus?.(on ? 'Tap a word on the page' : '');
+    workspace()?.armedChanged?.(on);
+  };
+  /** Drop the pinned font, its wash and the ring; returns whether there was one. */
+  const clearPin = () => {
+    const had = !!pinned || !!workspace()?.hasPin?.();
+    pinned = null;
+    ringElem.remove();
+    workspace()?.clearPin?.();
+    return had;
+  };
+  /**
+   * Pin the font that drew `kw`.
+   * The panel opens its row and washes its words, the word keeps a ring, and an armed pick disarms.
+   * @returns {boolean} Whether the word maps to a font in the inventory.
+   */
+  const pickWord = (kw) => {
+    if (!active || !identifiable(kw)) return false;
+    const n = kw.word.line.page.n;
+    if (!workspace()?.selectWord(n, kw.word.id)) return false;
+    pinned = { n, word: kw.word };
+    drawRing();
+    hideHover();
+    if (armed) setArmed(false);
+    return true;
+  };
+
+  const hoverHandler = (ev) => {
+    // The phone has no hover; a compat mouse event after a tap would leave a stray box.
+    if (!armed || app._phoneUi || ev.buttons !== 0) { hideHover(); return; }
+    const kw = app.scribe.textSel?.wordAt?.(ev.clientX, ev.clientY);
+    if (!kw || !identifiable(kw)) { hideHover(); return; }
+    placeBox(hoverElem, kw.word, 2);
+  };
+  // A click (no drag) on the page.
+  // Capture phase, ahead of the selection engine, and without stopping propagation, so a drag still selects text as in View.
+  /** @type {?{x: number, y: number}} */
+  let down = null;
+  const onPointerDown = (ev) => {
+    down = null;
+    if (ev.button !== 0) return;
+    const t = /** @type {?HTMLElement} */ (ev.target);
+    if (t && t.closest && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
+    down = { x: ev.clientX, y: ev.clientY };
+  };
+  const onPointerUp = (ev) => {
+    const d = down;
+    down = null;
+    if (!d || Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 6) return;
+    const kw = app.scribe.textSel?.wordAt?.(ev.clientX, ev.clientY) || null;
+    // Armed: a click on text with no known font, a picture or blank paper leaves the pick armed.
+    if (armed) { if (kw) pickWord(kw); return; }
+    // Pinned: the ringed word toggles and blank paper clears; any other word is View's.
+    if (pinned && (!kw || kw.word === pinned.word)) clearPin();
+  };
+  // Escape cancels an armed pick, then drops a pinned font; with neither it falls through to the mode exit.
+  const pageEscKey = (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    const t = /** @type {?HTMLElement} */ (e.target);
+    if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+    if (armed) { setArmed(false); e.preventDefault(); return; }
+    if (clearPin()) e.preventDefault();
+  };
+  pickBtn.addEventListener('click', () => setArmed(!armed));
+  /** @type {?() => void} */
+  let prevDisplayCb = null;
+  /** @type {?() => void} */
+  let ourDisplayCb = null;
+
+  const setActive = (next) => {
+    if (active === next) return;
+    const sv = app.scribe;
+    if (next && !sv.doc) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+    if (active) {
+      sv.clearTextSelection?.();
+      // The context menu's and touch callout's "Identify font" verb, offered only while the mode is on.
+      sv._inspectIdentify = (kw) => pickWord(kw);
+      document.addEventListener('keydown', pageEscKey, true);
+      sv.scrollContainer?.addEventListener('pointerdown', onPointerDown, true);
+      sv.scrollContainer?.addEventListener('pointerup', onPointerUp, true);
+      sv.scrollContainer?.addEventListener('pointermove', hoverHandler);
+      // The workspace follows the navigation cursor, so it chains the single page hook the way Bulk Edit does.
+      prevDisplayCb = sv.displayPageCallback;
+      ourDisplayCb = () => {
+        if (prevDisplayCb) prevDisplayCb();
+        workspace()?.pageChanged();
+        drawRing();
+      };
+      sv.displayPageCallback = ourDisplayCb;
+      showWorkspace();
+    } else {
+      setArmed(false);
+      pinned = null;
+      ringElem.remove();
+      hideHover();
+      sv._inspectIdentify = null;
+      document.removeEventListener('keydown', pageEscKey, true);
+      sv.scrollContainer?.removeEventListener('pointerdown', onPointerDown, true);
+      sv.scrollContainer?.removeEventListener('pointerup', onPointerUp, true);
+      sv.scrollContainer?.removeEventListener('pointermove', hoverHandler);
+      if (sv.displayPageCallback === ourDisplayCb) sv.displayPageCallback = prevDisplayCb;
+      ourDisplayCb = null;
+      app._automatePanel?.closeInspectWorkspace();
+      app._closeInspectSheet?.();
+    }
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (toolbarElem.classList.contains('disabled')) return;
+    setActive(!active);
+  });
+
+  // Re-derives the workspace for a newly opened document, since a tab switch keeps the mode running; the pick and pin belong to the old one.
+  const docChanged = () => {
+    if (!active) return;
+    setArmed(false);
+    pinned = null;
+    ringElem.remove();
+    showWorkspace();
+  };
+
+  // The app-menu row's entry point, driving the button with a programmatic click so mode exclusivity and the banner sync keep their one implementation.
+  // Entering an already-active mode never toggles it off.
+  const open = () => {
+    if (active) docChanged();
+    else if (!toolbarElem.classList.contains('disabled')) toolbarElem.click();
+  };
+
+  return {
+    toolbarElem,
+    isActive: () => active,
+    open,
+    close: () => setActive(false),
+    docChanged,
+    bannerElem: () => pickBtn,
+    setArmed,
+    isArmed: () => armed,
+    /** The banner hint while a pick is armed; null leaves the mode's own hint in place. */
+    hintText: () => (armed ? INSPECT_ARMED_HINT : null),
+    identify: (kw) => pickWord(kw),
+  };
+}
+
 /**
  * The "Recognize Text" mode tool.
  * The mode's banner carries its working surface — the recognition language and the Start control — so this tool is only the row button and its active state.

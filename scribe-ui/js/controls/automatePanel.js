@@ -11,6 +11,8 @@ const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 
 /** The Automate identity glyph, drawn on the toolbar opener and the panel header. */
 const AUTOMATE_SVG = lineIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
+// Drawn in the header when the panel opens straight into the Inspect Document workspace, with no catalog behind it.
+const INSPECT_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
 const BACK_SVG = lineIcon('<path d="M14 6l-6 6 6 6"/>');
 const SEND_SVG = lineIcon('<path d="M4.5 11.4L19.5 4.5 15.6 19.5l-3.9-5.2z"/><path d="M11.7 14.3l7.8-9.8"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
@@ -290,6 +292,60 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-bar { height: 5px; border-radius: 3px; background: var(--scribe-sunken); overflow: hidden; }
     .${r} .scribe-am-bar > i { display: block; height: 100%; width: 0%; background: var(--scribe-accent); border-radius: 3px; transition: width .2s ease; }
     .${r} .scribe-am-caption { font-size: 11.5px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-inswrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .${r} .scribe-am-ins { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 2px 12px 12px; }
+    .${r} .scribe-am-ins::-webkit-scrollbar { width: 5px; }
+    .${r} .scribe-am-ins::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-am-ins::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    .${r} .scribe-am-ins .scribe-am-cat { padding: 10px 0 3px; }
+    .${r} .scribe-am-ins-kv { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 0 10px; padding: 3px 0; font-size: 12.5px; line-height: 1.35; }
+    .${r} .scribe-am-ins-k { color: var(--scribe-ink-2); }
+    .${r} .scribe-am-ins-v { color: var(--scribe-ink); overflow-wrap: anywhere; }
+    .${r} .scribe-am-ins-notset { color: var(--scribe-ink-3); font-style: italic; }
+    .${r} .scribe-am-ins-empty { padding: 6px 0 4px; }
+    .${r} .scribe-am-ins-scope { margin: 10px 0 0; gap: 14px; }
+    .${r} .scribe-am-ins-size { display: grid; gap: 2px 0; margin: 2px 0 4px; }
+    .${r} .scribe-am-ins-cat { display: grid; grid-template-columns: minmax(0, 1fr) auto 34px; gap: 0 8px; font-size: 12px; line-height: 1.3; padding-top: 3px; align-items: baseline; }
+    .${r} .scribe-am-ins-cat-l { color: var(--scribe-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-ins-cat-n { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-cat-b { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .${r} .scribe-am-ins-cat-p { color: var(--scribe-ink-3); text-align: right; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-bar { margin: 3px 0 2px; }
+    .${r} .scribe-am-ins-bar > i { transition: none; }
+    .${r} .scribe-am-ins-note { font-size: 11px; color: var(--scribe-ink-3); padding: 2px 0 0; }
+    .${r} .scribe-am-ins-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
+    .${r} .scribe-am-ins-tbl th { text-align: left; font-weight: 600; color: var(--scribe-ink-2); padding: 4px 4px; border-bottom: 1px solid var(--scribe-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-am-ins-tbl td { padding: 4px 4px; border-bottom: 1px solid var(--scribe-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
+    .${r} .scribe-am-ins-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-tbl tr.x { cursor: pointer; }
+    .${r} .scribe-am-ins-tbl tr.x:hover td { background: var(--scribe-hover); }
+    .${r} .scribe-am-ins-tbl tr.sel td { background: var(--scribe-active); color: var(--scribe-accent); }
+    .${r} .scribe-am-ins-emb.no { color: #b45309; font-weight: 600; }
+    .${r}[data-theme="dark"] .scribe-am-ins-emb.no { color: #f0b35a; }
+    .${r} .scribe-am-ins-tw { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; color: var(--scribe-ink-3); transition: transform .12s; }
+    .${r} .scribe-am-ins-tbl tr.open .scribe-am-ins-tw { transform: rotate(90deg); }
+    .${r} .scribe-am-ins-det td { white-space: normal; padding: 4px 5px 8px 20px; background: var(--scribe-canvas); }
+    .${r} .scribe-am-ins-det .scribe-am-ins-kv { font-size: 11.5px; grid-template-columns: 100px minmax(0, 1fr); }
+    .${r} .scribe-am-ins-sample { font-size: 18px; line-height: 1.25; color: var(--scribe-ink); margin: 2px 0 6px; overflow-wrap: anywhere; }
+    .${r} .scribe-am-ins-more { font-size: 11.5px; color: var(--scribe-ink-3); padding: 4px 4px 0; }
+    .${r} .scribe-am-ins-more-link { color: var(--scribe-accent); text-decoration: none; }
+    .${r} .scribe-am-ins-more-link:hover { text-decoration: underline; }
+    .${r} .scribe-am-ins-list { position: relative; }
+    .${r} .scribe-am-ins-fewer { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--scribe-ink-3); padding: 5px 4px 4px; background: var(--scribe-surface); border-top: 1px solid var(--scribe-line); }
+    .${r} .scribe-am-ins-cathd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0 2px; }
+    .${r} .scribe-am-ins-cathd .scribe-am-cat { padding: 0; }
+    .${r} .scribe-am-ins-pick { display: inline-flex; align-items: center; gap: 5px; border: none; background: none; font: inherit; font-size: 11.5px; font-weight: 600; color: var(--scribe-ink-2); padding: 3px 7px 3px 5px; margin-right: -7px; border-radius: 5px; cursor: pointer; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+    .${r} .scribe-am-ins-pick:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-pick.on { color: var(--scribe-accent); background: var(--scribe-active); }
+    .${r} .scribe-am-ins-pick-ic { width: 13px; height: 13px; display: inline-flex; flex: none; }
+    .${r}.scribe-phone .scribe-am-ins { padding: 2px 14px 14px; }
+    .${r}.scribe-phone .scribe-am-ins-kv { font-size: 14px; grid-template-columns: 120px minmax(0, 1fr); padding: 5px 0; }
+    .${r}.scribe-phone .scribe-am-ins-tbl { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-pick { font-size: 13px; padding: 6px 10px 6px 8px; margin-right: -10px; }
+    .${r}.scribe-phone .scribe-am-ins-pick-ic { width: 15px; height: 15px; }
+    .${r}.scribe-phone .scribe-am-ins-more, .${r}.scribe-phone .scribe-am-ins-fewer { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-cat { font-size: 13.5px; }
+    .${r}.scribe-phone .scribe-am-ins-scope .scribe-am-check { font-size: 14px; }
     .${r} .scribe-am-result { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--scribe-ink); min-width: 0; }
     .${r} .scribe-am-result-ic { width: 14px; height: 14px; flex: none; color: var(--scribe-ink-3); }
     .${r} .scribe-am-result.ok .scribe-am-result-ic { color: #2e7d4f; }
@@ -500,6 +556,9 @@ function addAutomateStyles(rootClass) {
 export function createAutomatePanel(app, rootClass, hooks) {
   addAutomateStyles(rootClass);
   const host = { app, viewer: app.scribe };
+  // Without the automation content the panel hosts the mode workspaces only: no catalog, composer or tray.
+  // Nothing is left to go back to, so closing a workspace closes the panel.
+  const automations = hooks.automations !== false;
 
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-am-panel';
@@ -583,6 +642,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
   tablesElem.className = 'scribe-am-tables';
   tablesElem.style.display = 'none';
 
+  // The Inspect Document workspace, populated by the inspect-document module while its mode is active.
+  const inspectElem = document.createElement('div');
+  inspectElem.className = 'scribe-am-inswrap';
+  inspectElem.style.display = 'none';
+
   // The Redactions workspace, populated by the redact-terms module when its catalog row opens it.
   const redactElem = document.createElement('div');
   redactElem.className = 'scribe-am-rdwrap';
@@ -624,7 +688,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, redactElem, bulkElem, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, inspectElem, redactElem, bulkElem, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -653,6 +717,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
     view = next;
     closeModelMenu(false);
     const rest = next === 'rest';
+    // No catalog: "rest" is the closed panel.
+    if (rest && !automations) { if (openState) close(); return; }
     const asst = next === 'assistant';
     const chatsList = next === 'chats';
     catalog.style.display = rest ? '' : 'none';
@@ -661,23 +727,27 @@ export function createAutomatePanel(app, rootClass, hooks) {
     thread.style.display = next === 'thread' ? '' : 'none';
     asstThread.style.display = asst ? '' : 'none';
     tablesElem.style.display = next === 'tables' ? '' : 'none';
+    inspectElem.style.display = next === 'inspect' ? '' : 'none';
     redactElem.style.display = next === 'redact' ? '' : 'none';
     bulkElem.style.display = next === 'bulk' ? '' : 'none';
-    backBtn.style.display = rest ? 'none' : '';
-    hdIcon.style.display = rest ? '' : 'none';
+    backBtn.style.display = rest || !automations ? 'none' : '';
+    hdIcon.style.display = rest || !automations ? '' : 'none';
+    if (!automations) hdIcon.innerHTML = next === 'inspect' ? INSPECT_SVG : (AUTOMATIONS.find((a) => a.id === 'extract-tables')?.svg || AUTOMATE_SVG);
     plusBtn.style.display = asst ? '' : 'none';
     const st = app.doc ? docStates.get(app.doc) : null;
     hdTitle.textContent = rest ? 'Automate'
       : chatsList ? 'Chats'
         : next === 'tables' ? 'Extract tables'
-          : next === 'redact' ? 'Redactions'
-            : next === 'bulk' ? 'Bulk Edit'
-              : asst ? (st?.activeRec?.title ?? 'Assistant')
-                : (activeRun ? activeRun.title : 'Automate');
+          : next === 'inspect' ? 'Inspect Document'
+            : next === 'redact' ? 'Redactions'
+              : next === 'bulk' ? 'Bulk Edit'
+                : asst ? (st?.activeRec?.title ?? 'Assistant')
+                  : (activeRun ? activeRun.title : 'Automate');
     if (asst && st) {
       const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
       if (live) live.unseen = false;
     }
+    if (!automations) return;
     syncStrip();
     paintTray();
     if (rest) paintCatalog();
@@ -2187,6 +2257,38 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (view === 'tables') setView(wsPriorView === 'tables' ? 'rest' : wsPriorView);
   }
 
+  /** @type {?ReturnType<import('../automations/inspectDocument.js').buildInspectWorkspace>} */
+  let inspectHandle = null;
+  let inspectPriorView = 'rest';
+  /** Whether the mode opened a closed panel, so leaving the mode closes it again. */
+  let inspectOpenedPanel = false;
+
+  /** Called by the Inspect Document mode: show its workspace, building it on first use and refreshing it after. */
+  async function openInspectWorkspace() {
+    if (view !== 'inspect') inspectOpenedPanel = !openState;
+    open();
+    if (view !== 'inspect') inspectPriorView = view;
+    setView('inspect');
+    if (inspectHandle) { inspectHandle.refresh(); return; }
+    const module = await import('../automations/inspectDocument.js');
+    // The mode may have exited (or the view moved on) during the await.
+    if (view !== 'inspect' || inspectHandle) return;
+    inspectElem.textContent = '';
+    inspectHandle = module.buildInspectWorkspace(host, inspectElem);
+  }
+
+  /** Called when the Inspect Document mode exits: tear the workspace down and restore the prior view. */
+  function closeInspectWorkspace() {
+    if (!inspectHandle && view !== 'inspect') return;
+    inspectHandle?.teardown();
+    inspectHandle = null;
+    inspectElem.textContent = '';
+    if (view === 'inspect') setView(inspectPriorView === 'inspect' ? 'rest' : inspectPriorView);
+    // Done, Esc and View close both the mode and the panel it opened; a panel that was already open stays.
+    if (inspectOpenedPanel) close();
+    inspectOpenedPanel = false;
+  }
+
   /** @type {?{refresh: () => void, prefill: (term: string) => void}} */
   let redactHandle = null;
 
@@ -2309,9 +2411,11 @@ export function createAutomatePanel(app, rootClass, hooks) {
     openState = true;
     panelElem.style.display = 'flex';
     toggleElem.classList.add('active');
-    if (view === 'rest') paintCatalog();
-    paintTray();
-    syncModelChip();
+    if (automations) {
+      if (view === 'rest') paintCatalog();
+      paintTray();
+      syncModelChip();
+    }
     hooks.onLayoutChange();
   };
   const close = () => {
@@ -2360,12 +2464,14 @@ export function createAutomatePanel(app, rootClass, hooks) {
     syncMode: (name) => {
       if (name === modeName) return;
       modeName = name;
-      if (openState && view === 'rest') paintCatalog();
+      if (automations && openState && view === 'rest') paintCatalog();
     },
     /** Called when the sidebar view changes so the catalog can surface that view's automations. */
     syncSidebar: () => {
-      if (openState && view === 'rest') paintCatalog();
+      if (automations && openState && view === 'rest') paintCatalog();
     },
+    /** Whether the automation content (catalog, composer, hand-offs) is on; the workspaces are hosted either way. */
+    automations,
     /**
      * The document's conversation trace as a versioned envelope, for the dev-only log export.
      * Null when tracing is off or the document has no conversation.
@@ -2410,8 +2516,13 @@ export function createAutomatePanel(app, rootClass, hooks) {
     openTablesWorkspace,
     /** Called when the Extract Tables mode exits: tear the workspace down and restore the prior view. */
     closeTablesWorkspace,
+    openInspectWorkspace,
+    closeInspectWorkspace,
+    /** The live Inspect Document workspace, for the mode's page interactions; null while it is closed. */
+    inspectWorkspace: () => inspectHandle,
     destroy: () => {
       closeBulkWorkspace();
+      closeInspectWorkspace();
       for (const abort of activeAborts) abort.abort();
       activeAborts.clear();
       closeModelMenu(false);

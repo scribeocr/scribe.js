@@ -1526,6 +1526,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     @media (prefers-reduced-motion: reduce) {
       .${r} .scribe-sheet, .${r} .scribe-sheet-scrim { transition: none; }
     }
+    /* Replaces the panel tabs in the sheet header while the inspector's view is up. */
+    .${r} .scribe-sheet-title { flex: 1; min-width: 0; font-size: 15px; font-weight: 600; color: var(--scribe-ink); padding-left: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     /* One-row sheet header: pill cap on the top edge, tabs left, the active panel's actions right. */
     .${r} .scribe-sheet-hd {
       position: relative;
@@ -3899,6 +3901,15 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-line-strong); border-radius: 4px; padding: 0 4px; line-height: 1.5;
     }
     .${r} .scribe-mode-banner-exit { margin-left: auto; display: inline-flex; align-items: center; flex: none; }
+    .${r} .scribe-mode-banner-pick {
+      flex: none; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; margin-right: 8px;
+      border: 1px solid var(--scribe-line-strong); border-radius: 6px; background: var(--scribe-surface);
+      font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-ink); cursor: pointer; white-space: nowrap;
+    }
+    .${r} .scribe-mode-banner-pick:hover { background: var(--scribe-hover); }
+    .${r} .scribe-mode-banner-pick.active { border-color: var(--scribe-accent); color: var(--scribe-accent); background: var(--scribe-active); }
+    .${r} .scribe-mode-banner-pick-ic { width: 15px; height: 15px; display: inline-flex; flex: none; }
+    .${r} .scribe-mode-banner-hint-armed { color: var(--scribe-accent); font-weight: 600; }
     .${r} .scribe-mode-banner-exit .scribe-mode-banner-done { margin-left: 0; }
     .${r} .scribe-mode-banner-discard { font-weight: 600; }
     .${r} .scribe-mode-banner-save:disabled { color: var(--scribe-ink-3); cursor: default; }
@@ -3962,6 +3973,18 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; }
     .${r} .scribe-mode-track-el .cr-btn-label { font-size: 13px; }
     .${r} .scribe-mode-track-chev { padding: 0 6px; }
+    /* Played when a mode is entered from the app menu rather than from the control itself. */
+    .${r} .scribe-mode-track-el .cr-icon-button.scribe-mode-track-flash { animation: scribe-mode-flash 1.1s ease-out 1; }
+    @keyframes scribe-mode-flash {
+      0%, 100% { box-shadow: 0 1px 2px rgba(20, 30, 60, .14); }
+      15%, 55% { box-shadow: 0 0 0 3px var(--scribe-accent-ring), 0 1px 2px rgba(20, 30, 60, .14); }
+      35%, 75% { box-shadow: 0 0 0 0 var(--scribe-accent-ring), 0 1px 2px rgba(20, 30, 60, .14); }
+    }
+    .${r} .scribe-dock-mode-nm.scribe-dock-mode-flash { animation: scribe-dock-mode-flash 1.1s ease-out 1; }
+    @keyframes scribe-dock-mode-flash { 0%, 100% { color: var(--scribe-ink); } 25%, 65% { color: var(--scribe-accent); } }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-mode-track-flash, .${r} .scribe-dock-mode-flash { animation: none; }
+    }
   `;
 
   style.appendChild(document.createTextNode(css));

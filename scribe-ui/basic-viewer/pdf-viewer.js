@@ -26,7 +26,7 @@ import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPane
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
-  createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool,
+  createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
@@ -144,6 +144,7 @@ const ICON_COVER_ALONE = editIcon('<rect x="3.5" y="5" width="7.6" height="14" r
 const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
 // The Automate glyph, duplicated here (like the other app-menu icons) so the menu row needs no import from the flag-gated panel module.
 const ICON_AUTOMATE = editIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
+const ICON_INSPECT = editIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
 
 /**
  * @typedef {object} FitResult
@@ -596,6 +597,12 @@ class ScribePDFViewer {
     this._sheetOpen = false;
     /** @type {'bookmarks'|'comments'} The sheet view last shown (restored on reopen). */
     this._sheetView = 'bookmarks';
+    /** @type {?HTMLElement} The Inspect Document workspace's home in the bottom sheet, built on the phone on first use. */
+    this._inspectSheetElem = null;
+    /** @type {?ReturnType<import('../js/automations/inspectDocument.js').buildInspectWorkspace>} */
+    this._inspectSheetHandle = null;
+    /** @type {?HTMLElement} The app-menu row that enters the Inspect Document mode. */
+    this._inspectMenuRow = null;
     /** @type {?HTMLButtonElement} The sheet header's action button (+): add bookmark / new note, following the active view. */
     this._sheetActBtn = null;
     /** @type {?(() => void)} Detaches the visual-viewport listeners of an active composer keyboard lift. */
@@ -743,7 +750,10 @@ class ScribePDFViewer {
     this._sidebarTabElems = {};
     /** @type {?ReturnType<typeof import('../js/controls/automatePanel.js').createAutomatePanel>} The Automate panel (right dock), or null until its module loads. */
     this._automatePanel = null;
-    /** Whether the Automate surface is on: its toolbar opener, app-menu row, and selection-menu hand-offs. */
+    /**
+     * Whether the automation content is on: the catalog and composer, their toolbar opener, the "Automate…" app-menu row, and the selection-menu hand-offs.
+     * The right panel itself ships with every editor, since the mode workspaces live in it.
+     */
     this._automateEnabled = edit && automate;
     /** @type {?import('../js/assistant/assistant.js').AssistantAdapter} The injected or key-constructed LLM connection. */
     this._assistantAdapter = assistantAdapter;
@@ -820,6 +830,8 @@ class ScribePDFViewer {
       // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
       this._recentFilesSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
       appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, `${accelMod}P`);
+      this._menuCommands.inspect = () => this._enterInspectFromMenu();
+      this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
       appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, this._menuCommands['rotate-left'])
         .classList.add('scribe-touch-row');
@@ -1339,8 +1351,9 @@ class ScribePDFViewer {
         this._teardownCallbacks.push(this._redactTool.installBehaviors());
       }
 
-      // Dynamically imported so viewers with the surface off never fetch its code or styles.
-      if (this._automateEnabled) {
+      // The right panel hosts the mode workspaces, so every editor gets it and only the automation content mounts behind the flag.
+      // Dynamically imported so read-only viewers never fetch its code or styles.
+      if (this._editEnabled) {
         this._automateReady = import('../js/controls/automatePanel.js')
           .then(({ createAutomatePanel }) => {
             if (this._destroyed) return;
@@ -1348,11 +1361,12 @@ class ScribePDFViewer {
               onLayoutChange: () => this._relayout(),
               onResize: (w, phase) => this._resizeAutomate(w, phase),
               assistantTrace: DEBUG_MENU,
+              automations: this._automateEnabled,
             });
             // The context menu reads the panel off the viewer, like the other editor-installed hooks.
             this.scribe._automatePanel = this._automatePanel;
             this.pdfViewerElem.appendChild(this._automatePanel.panelElem);
-            if (this.toolbarElemStart) {
+            if (this.toolbarElemStart && this._automateEnabled) {
               const automateSep = makeSeparator();
               // Marker class so the library home's swapped bar hides the separator along with the opener.
               automateSep.classList.add('scribe-automate-sep');
@@ -1468,11 +1482,20 @@ class ScribePDFViewer {
 
       /** @type {?ReturnType<typeof createExtractTablesTool>} */
       this._extractTablesTool = null;
-      // The mode's workspace lives in the Automate panel, so the button ships only when that panel does.
-      if (this._modeTrackRow1 && this._automateEnabled) {
+      // The mode's workspace lives in the right panel, which every editor has.
+      if (this._modeTrackRow1) {
         this._extractTablesTool = createExtractTablesTool(this);
         this._modeTrackRow1.insertBefore(this._extractTablesTool.toolbarElem, this._modeTrackChev);
       }
+
+      /** @type {?ReturnType<typeof createInspectDocumentTool>} */
+      this._inspectTool = null;
+      // Its workspace lives in the right panel, or the bottom sheet on the phone.
+      if (this._modeTrackRow1) {
+        this._inspectTool = createInspectDocumentTool(this);
+        this._modeTrackRow1.insertBefore(this._inspectTool.toolbarElem, this._modeTrackChev);
+      }
+      if (this._inspectMenuRow && !this._inspectTool) this._inspectMenuRow.style.display = 'none';
 
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
@@ -1480,10 +1503,11 @@ class ScribePDFViewer {
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
       if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
+      if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
 
       const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
-        this._extractTablesTool?.toolbarElem].filter((b) => !!b);
+        this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
         btn.addEventListener('click', () => {
@@ -1904,6 +1928,7 @@ class ScribePDFViewer {
     await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
 
     this._extractTablesTool?.docChanged?.();
+    this._inspectTool?.docChanged?.();
 
     // Deferred import painted the page raster-only, so rebuild the text-dependent surfaces once extraction lands.
     // Text that imported synchronously has no deferred phase and skips this.
@@ -1913,6 +1938,7 @@ class ScribePDFViewer {
         this.scribe.displayPage(this.scribe.state.cp.n, false, true);
         // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
         this._extractTablesTool?.docChanged?.();
+        this._inspectTool?.docChanged?.();
         // The Recognize verdict depends on the page stats a deferred import produces, so re-evaluate once they land.
         if (this._editEnabled) this._updateRecognizeButton();
         if (this._commentsPanel && this._thumbnailPanel) {
@@ -2611,6 +2637,7 @@ class ScribePDFViewer {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
       if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
       if (this._recognizeExtras) this._recognizeExtras.remove();
+      this._inspectTool?.bannerElem().remove();
       // The palette returns to its floating home so the closed bar holds nothing.
       const idlePal = this._fillSignTool?.paletteElem();
       if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
@@ -2706,6 +2733,18 @@ class ScribePDFViewer {
     this._modeBannerParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
     this._modeBannerParts.name.textContent = activeBtn.title;
     this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
+    this._modeBannerParts.hint.classList.remove('scribe-mode-banner-hint-armed');
+
+    // Inspect Document's "Identify font" sits before Done while its mode is active; an armed pick rewrites the hint.
+    const insPick = this._inspectTool ? this._inspectTool.bannerElem() : null;
+    if (insPick) {
+      if (activeBtn === this._inspectTool.toolbarElem) {
+        if (insPick.parentElement !== this._modeBanner) this._modeBanner.insertBefore(insPick, this._modeBannerParts.exit);
+        this._setInspectHint();
+      } else {
+        insPick.remove();
+      }
+    }
 
     // Fill & Sign's placement palette belongs to the bar: it mounts before Done while its mode is active.
     // The phone layout has no bar, so there the palette keeps its floating pill above the dock.
@@ -3739,7 +3778,7 @@ class ScribePDFViewer {
    */
   _buildPhoneModeUi() {
     if (this._dockEditBtn || !this._dockElem) return;
-    if (![this._editTextTool, this._graphicsEditTool, this._fillSignTool, this._editPagesTool, this._recognizeTool].some((t) => !!t)) return;
+    if (![this._editTextTool, this._graphicsEditTool, this._fillSignTool, this._editPagesTool, this._recognizeTool, this._inspectTool].some((t) => !!t)) return;
     const dock = this._dockElem;
     // Each row mirrors its toolbar button and drives it with a programmatic click, so mode exclusivity, Escape, and the doc gating keep their one implementation.
     const editBtn = makeIconButton('Edit', DOCK_EDIT_SVG, 'Editing tools');
@@ -3776,6 +3815,7 @@ class ScribePDFViewer {
           this._setRoomEditing(true);
         }],
         [this._recognizeTool?.toolbarElem, this._recognizeAlreadyRan() ? 'Recognized' : 'Make scanned pages selectable', null],
+        [this._inspectTool?.toolbarElem, 'Metadata, fonts, images and size', null],
       ];
       for (const [btn, sub, act] of rows) {
         if (!btn) continue;
@@ -4256,7 +4296,7 @@ class ScribePDFViewer {
       btn.style.display = panel && panel.toggleElem.style.display === 'none' ? 'none' : '';
     }
     const viewBtn = this._sheetSegBtns[this._sheetView];
-    if (!viewBtn || viewBtn.style.display === 'none') {
+    if (this._sheetView !== 'inspect' && (!viewBtn || viewBtn.style.display === 'none')) {
       const bm = this._sheetSegBtns.bookmarks;
       this._sheetView = (bm && bm.style.display !== 'none') ? 'bookmarks' : 'comments';
     }
@@ -4307,7 +4347,82 @@ class ScribePDFViewer {
       panel.panelElem.style.display = on ? '' : 'none';
       panel.setVisible(on);
     }
+    // The inspector borrows the sheet from the two panels: their tabs and + give way to its title while it is up.
+    const inspect = key === 'inspect';
+    if (this._inspectSheetElem) this._inspectSheetElem.style.display = inspect ? '' : 'none';
+    const hd = this._sheetElem?.querySelector('.scribe-sheet-hd');
+    if (hd) {
+      const seg = hd.querySelector('.scribe-sheet-seg');
+      if (seg) seg.style.display = inspect ? 'none' : '';
+      let title = hd.querySelector('.scribe-sheet-title');
+      if (inspect && !title) {
+        title = document.createElement('span');
+        title.className = 'scribe-sheet-title';
+        title.textContent = 'Inspect Document';
+        hd.insertBefore(title, seg || hd.querySelector('.scribe-sheet-acts'));
+      }
+      if (title) title.style.display = inspect ? '' : 'none';
+    }
     this._syncSheetHeader();
+  }
+
+  /** Open the bottom sheet on the Inspect Document workspace, building it on first use and refreshing it after. */
+  async _openInspectSheet() {
+    if (!this._sheetElem || !this._sheetContentElem) return;
+    if (!this._inspectSheetElem) {
+      const elem = document.createElement('div');
+      elem.className = 'scribe-am-inswrap';
+      elem.style.display = 'none';
+      this._sheetContentElem.appendChild(elem);
+      this._inspectSheetElem = elem;
+    }
+    this._sheetView = 'inspect';
+    if (this._sheetOpen) this._showSheetView('inspect');
+    else this._openSheet();
+    if (this._inspectSheetHandle) { this._inspectSheetHandle.refresh(); return; }
+    const { buildInspectWorkspace } = await import('../js/automations/inspectDocument.js');
+    // The mode may have exited during the await.
+    if (!this._inspectTool?.isActive() || this._inspectSheetHandle) return;
+    this._inspectSheetHandle = buildInspectWorkspace({ app: this, viewer: this.scribe }, this._inspectSheetElem);
+  }
+
+  /** Tear the inspector's sheet view down and give the sheet back to the panels. */
+  _closeInspectSheet() {
+    if (this._inspectSheetHandle) { this._inspectSheetHandle.teardown(); this._inspectSheetHandle = null; }
+    if (this._inspectSheetElem) this._inspectSheetElem.textContent = '';
+    if (this._sheetView !== 'inspect') return;
+    if (this._sheetOpen) this._closeSheet();
+    const bm = this._sheetSegBtns.bookmarks;
+    this._showSheetView((bm && bm.style.display !== 'none') ? 'bookmarks' : 'comments');
+  }
+
+  /** The Inspect banner's hint: the arming instruction while a pick is armed, the mode's own hint otherwise. */
+  _setInspectHint() {
+    const tool = this._inspectTool;
+    if (!tool || !this._modeBannerParts || this._modeBannerBtn !== tool.toolbarElem) return;
+    const armed = tool.hintText();
+    this._modeBannerParts.hint.textContent = armed ?? tool.toolbarElem.dataset.modeHint ?? '';
+    this._modeBannerParts.hint.classList.toggle('scribe-mode-banner-hint-armed', !!armed);
+  }
+
+  /** The app-menu row's act: enter the mode as the drop-down would, then flash the control that took the change. */
+  _enterInspectFromMenu() {
+    const tool = this._inspectTool;
+    if (!tool || tool.toolbarElem.classList.contains('disabled')) return;
+    tool.open();
+    this._flashModeTrack();
+  }
+
+  /** Pulse the mode control's ring, or the dock's mode name on the phone, after a mode is entered from somewhere else. */
+  _flashModeTrack() {
+    const target = this._phoneUi ? this._dockModeParts?.nm : this._inspectTool?.toolbarElem;
+    const cls = this._phoneUi ? 'scribe-dock-mode-flash' : 'scribe-mode-track-flash';
+    if (!target) return;
+    target.classList.remove(cls);
+    // Restart the animation when the row is used twice in a row.
+    target.getBoundingClientRect();
+    target.classList.add(cls);
+    target.addEventListener('animationend', () => target.classList.remove(cls), { once: true });
   }
 
   /**
@@ -4352,8 +4467,8 @@ class ScribePDFViewer {
   /** Refresh the sheet header's action slot: the +'s target and visibility. */
   _syncSheetHeader() {
     if (this._sheetActBtn) {
-      // Creation is an editing act, so the + hides in a read-only viewer.
-      this._sheetActBtn.style.display = this.scribe.opt.enablePageEditing ? '' : 'none';
+      // Creation is an editing act, so the + hides in a read-only viewer; the inspector's view has nothing to add.
+      this._sheetActBtn.style.display = this.scribe.opt.enablePageEditing && this._sheetView !== 'inspect' ? '' : 'none';
       const label = this._sheetView === 'bookmarks' ? 'Add bookmark at current page' : 'New note on this page';
       this._sheetActBtn.title = label;
       this._sheetActBtn.setAttribute('aria-label', label);
@@ -4581,6 +4696,7 @@ class ScribePDFViewer {
     if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
     if (disabled && this._extractTablesTool?.isActive()) this._extractTablesTool.close();
+    if (disabled && this._inspectTool?.isActive()) this._inspectTool.close();
     for (const el of [
       this._searchBar?.searchElem,
       this._twoPageBtn,
@@ -4594,6 +4710,8 @@ class ScribePDFViewer {
       this._editPagesTool?.toolbarElem,
       this._recognizeTool?.toolbarElem,
       this._extractTablesTool?.toolbarElem,
+      this._inspectTool?.toolbarElem,
+      this._inspectMenuRow,
       this._modeTrackViewBtn,
       this._modeTrackChev,
     ]) {

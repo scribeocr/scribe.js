@@ -265,20 +265,7 @@ export function parseImageObject(objText, objNum, objCache) {
   const colorSpace = imageMask ? 'DeviceGray' : parseColorSpace(objText, objCache);
   const iccProfileObjNum = imageMask ? null : findICCProfileObjNum(objText, objCache);
   const iccTransform = iccProfileObjNum ? parseICCProfile(iccProfileObjNum, objCache) : null;
-  let filter = parseFilter(objText);
-  // Handle indirect filter reference: /Filter N 0 R
-  if (!filter) {
-    const indirectFilterMatch = /\/Filter\s+(\d+)\s+\d+\s+R/.exec(objText);
-    if (indirectFilterMatch) {
-      const filterObjText = objCache.getObjectText(Number(indirectFilterMatch[1]));
-      if (filterObjText) {
-        // getObjectText returns the bare /Filter value (a name or array) with no /Filter key.
-        // Re-prefix one so parseFilter picks the image codec (DCTDecode/JPXDecode) from a chain,
-        // not its leading transport filter.
-        filter = parseFilter(`/Filter ${filterObjText}`);
-      }
-    }
-  }
+  const filter = parseFilter(objText, objCache);
 
   // Check for inverted /Decode array: /Decode [1 0] means invert sample values
   const imgDecode = resolveNumArray(objText, 'Decode', objCache, null);
@@ -472,7 +459,7 @@ export function parseImageObject(objText, objNum, objCache) {
  * @param {string} objText
  * @param {ObjectCache} [objCache]
  */
-function parseColorSpace(objText, objCache) {
+export function parseColorSpace(objText, objCache) {
   const nameMatch = /\/ColorSpace\s*\/(\w+)/.exec(objText);
   if (nameMatch) return nameMatch[1];
 
@@ -1036,13 +1023,11 @@ function classifyDeviceN(csText) {
 
 /**
  * Read the /Filter value from an image object.
- * Handles both single name (/Filter /DCTDecode) and array (/Filter [/FlateDecode]).
- * For array filter chains, returns the image-format filter (DCTDecode/JPXDecode)
- * if present, since extractStream decodes transport filters (ASCIIHexDecode,
- * FlateDecode, etc.) but leaves image-format filters for imageInfoToBitmap.
+ * For an array filter chain, returns the image codec (DCTDecode/JPXDecode) if present.
  * @param {string} objText
+ * @param {ObjectCache} [objCache] - Needed for an indirect value.
  */
-function parseFilter(objText) {
+export function parseFilter(objText, objCache) {
   const filterAlias = {
     AHx: 'ASCIIHexDecode',
     A85: 'ASCII85Decode',
@@ -1055,16 +1040,23 @@ function parseFilter(objText) {
   const arrayMatch = /\/Filter\s*\[([\s\S]*?)\]/.exec(objText);
   if (arrayMatch) {
     const filters = [...arrayMatch[1].matchAll(/\/([^\s/<>[\]]+)/g)].map((m) => filterAlias[m[1]] || m[1]);
+    // extractStream decodes a chain's transport filters and passes DCTDecode and JPXDecode through raw, leaving the image codec for imageInfoToBitmap to decode.
     for (const f of filters) {
       if (f === 'DCTDecode' || f === 'JPXDecode') return f;
     }
     return filters[0] || null;
   }
 
-  // Single name
   const nameMatch = /\/Filter\s*\/(\w+)/.exec(objText);
   if (nameMatch) return filterAlias[nameMatch[1]] || nameMatch[1];
 
+  // getObjectText returns the bare /Filter value (a name or array) with no /Filter key.
+  // Re-prefix one so the chain rule above picks the image codec, not its leading transport filter.
+  const indirectMatch = objCache ? /\/Filter\s+(\d+)\s+\d+\s+R/.exec(objText) : null;
+  if (indirectMatch) {
+    const filterObjText = objCache.getObjectText(Number(indirectMatch[1]));
+    if (filterObjText) return parseFilter(`/Filter ${filterObjText}`);
+  }
   return null;
 }
 

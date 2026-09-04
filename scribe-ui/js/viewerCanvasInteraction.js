@@ -256,6 +256,7 @@ const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0
 const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
 const CM_REDACT_SVG = menuIcon('<path d="M4 6.6h16"/><path d="M4 17.4h9"/><rect x="4" y="10.3" width="16" height="3.4" rx="0.5" fill="currentColor" stroke="none"/>');
 const CM_BOOKMARK_SVG = menuIcon('<path d="M7 4h10v16l-5-3.6L7 20V4Z"/>');
+const CM_IDENTIFY_SVG = menuIcon('<circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/>');
 export const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
@@ -348,6 +349,9 @@ const createContextMenuHTML = () => {
       item('contextMenuBookmarkButton', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
       item('contextMenuRotatePageLeftButton', 'Rotate page left', CM_ROTATE_L_SVG, rotatePageLeftClick),
       item('contextMenuRotatePageRightButton', 'Rotate page right', CM_ROTATE_R_SVG, rotatePageRightClick),
+    ],
+    [
+      item('contextMenuIdentifyFontButton', 'Identify font', CM_IDENTIFY_SVG, identifyFontClick),
     ],
     [
       item('contextMenuSplitWordButton', 'Split Word', CM_SPLIT_SVG, splitWordClick),
@@ -585,7 +589,7 @@ const redactSelectionClick = () => {
 const redactEverywhereClick = () => {
   const viewer = mv();
   hideContextMenu();
-  if (!viewer._automatePanel || !redactEverywhereTerm) return;
+  if (!viewer._automatePanel?.automations || !redactEverywhereTerm) return;
   viewer._automatePanel.launchAutomation('redact-terms', { terms: [redactEverywhereTerm] });
   viewer.clearTextSelection();
 };
@@ -831,6 +835,7 @@ let redactTarget = null;
 /** @type {HTMLButtonElement} */ let contextMenuStrikethroughButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuIdentifyFontButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRotatePageLeftButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRotatePageRightButtonElem;
@@ -890,6 +895,7 @@ function ensureContextMenu() {
   contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
+  contextMenuIdentifyFontButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuIdentifyFontButton'));
   contextMenuRotatePageLeftButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRotatePageLeftButton'));
   contextMenuRotatePageRightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRotatePageRightButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
@@ -1064,6 +1070,7 @@ export const hideContextMenu = () => {
   contextMenuDeleteRedactionButtonElem.style.display = 'none';
   contextMenuDeleteFillItemButtonElem.style.display = 'none';
   contextMenuDeleteTextLinesButtonElem.style.display = 'none';
+  contextMenuIdentifyFontButtonElem.style.display = 'none';
   contextMenuDeleteImageButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
   contextMenuUnderlineButtonElem.style.display = 'none';
@@ -1216,6 +1223,7 @@ function ensureTouchCallout() {
     btn('bookmark', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
     btn('redact', 'Redact', CM_REDACT_SVG, redactSelectionClick),
     btn('strike', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
+    btn('identify', 'Identify font', CM_IDENTIFY_SVG, identifyFontClick),
     btn('edit', 'Edit text', CALLOUT_EDIT_SVG, calloutEditTextClick),
   );
 
@@ -1351,6 +1359,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     bookmark: false,
     redact: false,
     strike: false,
+    identify: false,
     edit: false,
   };
 
@@ -1385,6 +1394,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     show.deletelines = !!viewer._editTextActive && !viewer._phoneUi && !!viewer._editTextSelectedLines
       && viewer._editTextSelectedLines().length > 0;
     show.bookmark = bookmarkTargetPage >= 0;
+    show.identify = !!viewer._inspectIdentify;
     // Resolving the words is O(selection), so gate on a small single-page range first.
     if (UiText.enableEditing && viewer.textSel.range?.kind === 'linear') {
       const r = viewer.textSel.range;
@@ -1437,7 +1447,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     if (key === 'more') continue;
     el.style.display = show[key] ? '' : 'none';
   }
-  const tailCount = ['bookmark', 'redact', 'strike', 'edit'].filter((k) => show[k]).length;
+  const tailCount = ['bookmark', 'redact', 'strike', 'identify', 'edit'].filter((k) => show[k]).length;
   calloutBtns.more.style.display = tailCount > 0 ? '' : 'none';
   calloutBtns.more.setAttribute('aria-expanded', 'false');
   calloutBtns.more.classList.remove('open');
@@ -1492,6 +1502,14 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     window.addEventListener('resize', onCalloutDismiss);
     window.addEventListener('blur', onCalloutDismiss);
   }
+};
+
+/** Pin the font that drew the word under the cursor, or the selection's first word, through the mode's installed hook. */
+const identifyFontClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const kw = viewer.contextMenuWord || viewer.getWordsUnderTextSelection?.()[0] || null;
+  if (kw && viewer._inspectIdentify) viewer._inspectIdentify(kw);
 };
 
 export const contextMenuFunc = (viewer, event) => {
@@ -1598,7 +1616,7 @@ export const contextMenuFunc = (viewer, event) => {
     // Only a short selection reads as a term worth redacting everywhere.
     // The label carries no match count, since nothing has scanned yet and a number would promise work not done.
     redactEverywhereTerm = '';
-    if (enableRedact && viewer._automatePanel) {
+    if (enableRedact && viewer._automatePanel?.automations) {
       const raw = viewer.useCustomSelection ? viewer.textSel.getText() : (window.getSelection()?.toString() ?? '');
       const term = raw.replace(/\s+/g, ' ').trim();
       if (term && term.length <= 40 && term.split(' ').length <= 3) redactEverywhereTerm = term;
@@ -1672,6 +1690,12 @@ export const contextMenuFunc = (viewer, event) => {
         commentNoteTarget = pagePoint;
       }
     }
+
+    // The custom selection engine draws no word spans, so a word off a highlight or markup comes from its hit test.
+    const inspectTarget = viewer._inspectIdentify && !viewer.state.layoutMode
+      ? (targetObj instanceof UiOcrWord ? targetObj : (viewer.textSel?.wordAt?.(event.clientX, event.clientY) || null)) : null;
+    const enableIdentifyFont = !!inspectTarget;
+    if (enableIdentifyFont) viewer.contextMenuWord = inspectTarget;
 
     // Add bookmark: point a new outline entry at the page under the cursor.
     // Available only in the editor, where the host installs `_addBookmark`.
@@ -1758,12 +1782,13 @@ export const contextMenuFunc = (viewer, event) => {
 
     if (!(enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
-      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere)) return;
+      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere || enableIdentifyFont)) return;
 
     // Not btn.textContent, which would wipe the icon slot.
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
+    if (enableIdentifyFont) contextMenuIdentifyFontButtonElem.style.display = 'initial';
     if (enableCopyCells) contextMenuCopyCellsButtonElem.style.display = 'initial';
     if (enableCopyHighlight) {
       setMenuLabel(contextMenuCopyHighlightButtonElem, contextMenuMarkupSlot === 'line' ? 'Copy Marked Text' : 'Copy Highlighted Text');

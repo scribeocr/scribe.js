@@ -976,6 +976,9 @@ export function setupEncryption(objCache) {
   }
   if (!encEntry || encEntry.type !== 1) return;
   const encOffset = encEntry.offset;
+  // Recorded before the version checks, so the dictionary stays reachable for a reader of /P when decryption itself is not set up.
+  // Every decryption path also requires `encryptionKey`, which only a successful setup assigns.
+  objCache.encryptObjNum = encObjNum;
 
   // Find the dict boundaries in raw bytes
   const encRegion = pdfBytes.subarray(encOffset, Math.min(encOffset + 2000, pdfBytes.length));
@@ -1010,7 +1013,6 @@ export function setupEncryption(objCache) {
       return;
     }
     objCache.encryptionKey = fileKey;
-    objCache.encryptObjNum = encObjNum;
     objCache.cipherMode = 'AESV3';
     return;
   }
@@ -1075,7 +1077,6 @@ export function setupEncryption(objCache) {
 
   // Store encryption state in objCache
   objCache.encryptionKey = encKey;
-  objCache.encryptObjNum = encObjNum;
   objCache.cipherMode = cipherMode;
 }
 

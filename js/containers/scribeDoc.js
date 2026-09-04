@@ -23,6 +23,7 @@ import { exportData as exportDataImpl, download as downloadImpl } from '../expor
 import { subsetPdf, stripMetadataPdf } from '../export/pdf/subsetPdf.js';
 import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
 import { getMetadataImpl } from '../pdf/metadata/metadataInspect.js';
+import { getResourceInventoryImpl } from '../pdf/resourceInventory.js';
 import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
 import {
   recognize as recognizeImpl,
@@ -1637,6 +1638,16 @@ export class ScribeDoc {
    */
   getMetadata() {
     return getMetadataImpl(this);
+  }
+
+  /**
+   * The byte inventory of this document's PDF source.
+   * Lists every image, embedded font program, Form XObject and content stream with its on-disk size and the pages that use it, plus the file's remainder.
+   * Returns null for an image-only document (no PDF source).
+   * @returns {ReturnType<typeof getResourceInventoryImpl>}
+   */
+  getResourceInventory() {
+    return getResourceInventoryImpl(this);
   }
 
   /**

@@ -474,6 +474,8 @@ export class ScribeViewer {
 
     // Edit Text mode state, mirrored here by the tool for the context menu, touch callout, and link gating.
     this._editTextActive = false;
+    /** @type {?(kw: any) => boolean} The context menu's "Identify font" verb, installed by the Inspect Document mode while it is on. */
+    this._inspectIdentify = null;
     // True while the tool's line-range drag owns a touch, so the touchmove pan and the long-press context menu stand aside.
     this._editTextLineDrag = false;
     /** @type {?() => Array<OcrLine>} */

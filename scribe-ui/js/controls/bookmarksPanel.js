@@ -567,7 +567,7 @@ export function createBookmarksPanel(scribe, {
    * Phone layouts keep the direct path because the Automate panel is desktop-only.
    */
   function automateHandOffAvailable() {
-    return !phoneMode && !!scribe._automatePanel;
+    return !phoneMode && !!scribe._automatePanel?.automations;
   }
 
   // Text extraction is deferred on load, so the headings may not exist yet the first time the empty state renders.
