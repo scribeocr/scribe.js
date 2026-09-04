@@ -941,6 +941,16 @@ describe('Check export for .pdf files.', () => {
     expect(doc.inputData.pageCount).toBe(22);
     expect(doc.inputData.pdfType).toBe('text');
 
+    // The source is RC4-encrypted with an empty user password.
+    // Its page text already decrypted while these Info strings came back as ciphertext.
+    const sourceMeta = doc.getMetadata();
+    expect(sourceMeta.encrypted, 'the source PDF is reported as encrypted').toBe(true);
+    expect(sourceMeta.info.Title, 'an encrypted source’s Info Title reads decrypted').toBe('Intel Corporation Annual Report 1996');
+    expect(sourceMeta.info.Author, 'an encrypted source’s Info Author reads decrypted').toBe('Intel Corporation');
+    expect(sourceMeta.info.Producer, 'an encrypted source’s Info Producer reads decrypted').toBe('Acrobat Distiller 3.0 for Power Macintosh; modified using iText® 5.1.0_SNAPSHOT ©2000-2011 1T3XT BVBA');
+    expect(sourceMeta.info.CreationDate, 'an encrypted source’s Info CreationDate reads decrypted').toBe('D:19970408174938Z');
+    expect(sourceMeta.info.ModDate, 'an encrypted source’s Info ModDate reads decrypted').toBe('D:20120222150555Z');
+
     scribe.ScribeDoc.defaults.displayMode = 'proof';
     scribe.ScribeDoc.defaults.addOverlay = true;
     const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
@@ -1016,6 +1026,12 @@ describe('Check export for .pdf files.', () => {
     expect(doc.inputData.pageCount).toBe(22);
     const page7Words = doc.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
     expect(page7Words.slice(0, 5)).toEqual(['12', 'Intel', 'Corporation', '1996', 'www.intel.com']);
+    // The second half of the same bug: the export copied the source's Info dict verbatim, ciphertext and all, into an output with no encryption.
+    const exportedMeta = doc.getMetadata();
+    expect(exportedMeta.encrypted, 'the export of an encrypted source is not itself encrypted').toBe(false);
+    expect(exportedMeta.info.Title, 'the Info Title survives the decrypting export').toBe('Intel Corporation Annual Report 1996');
+    expect(exportedMeta.info.Author, 'the Info Author survives the decrypting export').toBe('Intel Corporation');
+    expect(exportedMeta.info.ModDate, 'the Info ModDate survives the decrypting export').toBe('D:20120222150555Z');
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;

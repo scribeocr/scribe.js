@@ -10,7 +10,7 @@ import {
 import { ObjectCache } from '../objectCache.js';
 import {
   extractDict, extractDictFromBytes, parseDictEntries, findTopLevelKeyIndex, bytesToLatin1, byteLastIndexOf, byteIndexOf,
-  derefStringToken, resolveArrayValue, resolveNameValue,
+  derefStringToken, resolveArrayValue, resolveNameValue, decodeTextStringBytes,
 } from '../pdfPrimitives.js';
 import { extractImages } from '../parsePdfImages.js';
 import { inspectJpegMetadata, inspectJpxMetadata } from './imageMetadata.js';
@@ -30,6 +30,23 @@ function topValue(dictBody, key) {
   if (idx === -1) return null;
   for (const e of parseDictEntries(dictBody)) if (`/${e.name}` === key) return e.valueText.trim();
   return null;
+}
+
+/**
+ * The text of a string-valued key in a dict-carrying object.
+ * @param {ObjectCache} objCache
+ * @param {number} objNum - The object the dict was read from.
+ * @param {string} key - Without the leading slash.
+ * @param {string} valueText - The key's value token, for the unencrypted case and for values that are not strings.
+ * @returns {string}
+ */
+function readString(objCache, objNum, key, valueText) {
+  // An encrypted file's object text still holds every string as ciphertext: the cache decrypts streams on the way out, not strings.
+  if (objCache.encryptionKey && objCache.xrefEntries[objNum]?.type === 1) {
+    const raw = objCache.decryptDictString(objNum, key);
+    if (raw != null) return decodeTextStringBytes(raw);
+  }
+  return derefStringToken(valueText, objCache);
 }
 
 /**
@@ -122,7 +139,7 @@ export function getMetadata(pdfBytes) {
     const body = dictBodyOf(objCache.getObjectText(Number(infoM[1])));
     if (body) {
       const info = {};
-      for (const e of parseDictEntries(body)) info[e.name] = derefStringToken(e.valueText, objCache);
+      for (const e of parseDictEntries(body)) info[e.name] = readString(objCache, infoObjNum, e.name, e.valueText);
       if (Object.keys(info).length) report.info = info;
     }
   }
@@ -139,7 +156,7 @@ export function getMetadata(pdfBytes) {
     report.pageLabels = findTopLevelKeyIndex(catBody, '/PageLabels') !== -1;
     report.viewerPreferences = findTopLevelKeyIndex(catBody, '/ViewerPreferences') !== -1;
     const langV = topValue(catBody, '/Lang');
-    if (langV) report.lang = derefStringToken(langV, objCache);
+    if (langV) report.lang = readString(objCache, rootNum, 'Lang', langV);
     const namesV = topValue(catBody, '/Names');
     if (namesV) {
       const namesBody = /^\d+\s+\d+\s+R/.test(namesV) ? dictBodyOf(objCache.getObjectText(Number(namesV))) : (namesV.startsWith('<<') ? namesV.slice(2, -2) : '');
@@ -166,11 +183,12 @@ export function getMetadata(pdfBytes) {
       if (findTopLevelKeyIndex(body, '/PieceInfo') !== -1) report.pieceInfo.push({ objNum });
       if (/\/Type\s*\/OCG\b/.test(text)) {
         const nameV = topValue(body, '/Name');
-        if (nameV) report.ocgs.push({ objNum, name: derefStringToken(nameV, objCache) });
+        if (nameV) report.ocgs.push({ objNum, name: readString(objCache, objNum, 'Name', nameV) });
       }
       if (/\/Type\s*\/Filespec\b/.test(text)) {
-        const fn = topValue(body, '/UF') || topValue(body, '/F');
-        report.embeddedFiles.push({ objNum, name: fn ? derefStringToken(fn, objCache) : '(unnamed)' });
+        const ufV = topValue(body, '/UF');
+        const fn = ufV || topValue(body, '/F');
+        report.embeddedFiles.push({ objNum, name: fn ? readString(objCache, objNum, ufV ? 'UF' : 'F', fn) : '(unnamed)' });
       }
       if (/\/Type\s*\/Sig\b/.test(text) || (findTopLevelKeyIndex(body, '/ByteRange') !== -1 && findTopLevelKeyIndex(body, '/Contents') !== -1 && /\/(Sig|DocTimeStamp)\b/.test(text))) {
         let subFilter = topValue(body, '/SubFilter');
@@ -192,7 +210,7 @@ export function getMetadata(pdfBytes) {
       // /T holds the reviewer's name on a markup annotation but the field name on a Widget.
       if (/\/Type\s*\/Annot\b/.test(text) && !/\/Subtype\s*\/Widget\b/.test(text)) {
         const authorV = topValue(body, '/T');
-        if (authorV) report.annotationAuthors.push({ objNum, author: derefStringToken(authorV, objCache) });
+        if (authorV) report.annotationAuthors.push({ objNum, author: readString(objCache, objNum, 'T', authorV) });
       }
     }
   }

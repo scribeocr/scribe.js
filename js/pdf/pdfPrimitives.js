@@ -967,7 +967,7 @@ const PDF_DOC_ENCODING_DELTA = new Map([
  * @param {string} bytes
  * @returns {string}
  */
-function decodeTextStringBytes(bytes) {
+export function decodeTextStringBytes(bytes) {
   let out;
   if (bytes.length >= 2 && bytes.charCodeAt(0) === 0xFE && bytes.charCodeAt(1) === 0xFF) {
     out = '';

@@ -1,7 +1,7 @@
 import { extractRawStreamBytes, findInfoObjNum } from '../../pdf/parsePdfUtils.js';
 import {
   extractDict, extractDictFromBytes, byteIndexOf, bytesToLatin1,
-  parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate,
+  parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate, decodeTextStringBytes,
 } from '../../pdf/pdfPrimitives.js';
 import { md5 } from '../../pdf/pdfCrypto.js';
 
@@ -178,7 +178,14 @@ export function readSourceInfoBody(pdfBytes, objCache) {
   const start = objText ? objText.indexOf('<<') : -1;
   if (start === -1) return null;
   const dict = extractDict(objText, start);
-  return dict ? dict.slice(2, -2) : null;
+  const body = dict ? dict.slice(2, -2) : null;
+  if (!body || !objCache.encryptionKey || objCache.xrefEntries[objNum]?.type !== 1) return body;
+  // A directly stored object's strings are ciphertext under the source's key, and the output is written without one.
+  return parseDictEntries(body).map((e) => {
+    const v = e.valueText.trim();
+    const raw = /^(\(|<(?!<)|\d+\s+\d+\s+R$)/.test(v) ? objCache.decryptDictString(objNum, e.name) : null;
+    return raw == null ? `/${e.name} ${v}` : `/${e.name} <${toUtf16BeHex(decodeTextStringBytes(raw))}>`;
+  }).join(' ');
 }
 
 // PDF 2.0 names are UTF-8 byte sequences, so a key is encoded before escaping.
