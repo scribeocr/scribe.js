@@ -106,7 +106,7 @@ export function getMetadata(pdfBytes) {
   const report = {
     info: null,
     docId: null,
-    xmp: { catalog: null, perObject: [] },
+    xmp: { catalog: null, catalogBytes: 0, perObject: [] },
     pieceInfo: [],
     ocgs: [],
     embeddedFiles: [],
@@ -149,7 +149,15 @@ export function getMetadata(pdfBytes) {
   const catBody = rootNum != null ? dictBodyOf(objCache.getObjectText(rootNum)) : '';
   if (catBody) {
     const catMeta = /\/Metadata\s+(\d+)\s+\d+\s+R/.exec(catBody);
-    if (catMeta) { try { report.xmp.catalog = bytesToLatin1(objCache.getStreamBytes(Number(catMeta[1]))); } catch { report.xmp.catalog = '(unreadable)'; } }
+    if (catMeta) {
+      try {
+        const bytes = objCache.getStreamBytes(Number(catMeta[1]));
+        report.xmp.catalogBytes = bytes.length;
+        // XMP is UTF-8 unless a byte-order mark says UTF-16.
+        const encoding = bytes[0] === 0xFE && bytes[1] === 0xFF ? 'utf-16be' : bytes[0] === 0xFF && bytes[1] === 0xFE ? 'utf-16le' : 'utf-8';
+        report.xmp.catalog = new TextDecoder(encoding).decode(bytes);
+      } catch { report.xmp.catalog = '(unreadable)'; }
+    }
     report.actions.openAction = findTopLevelKeyIndex(catBody, '/OpenAction') !== -1;
     report.actions.aa = findTopLevelKeyIndex(catBody, '/AA') !== -1;
     report.structTree = findTopLevelKeyIndex(catBody, '/StructTreeRoot') !== -1;
@@ -174,8 +182,8 @@ export function getMetadata(pdfBytes) {
     // per-object XMP (image/page/form) — excludes the catalog one (handled above)
     if (/\/Type\s*\/Metadata\b/.test(text) && objNum !== (catBody && /\/Metadata\s+(\d+)/.exec(catBody) ? Number(/\/Metadata\s+(\d+)/.exec(catBody)[1]) : -1)) {
       if (report.xmp.perObject.length < 200) {
-        let xmp = null; try { xmp = bytesToLatin1(objCache.getStreamBytes(objNum)); } catch { /* skip */ }
-        report.xmp.perObject.push({ objNum, bytes: xmp ? xmp.length : 0 });
+        let bytes = 0; try { bytes = objCache.getStreamBytes(objNum).length; } catch { /* skip */ }
+        report.xmp.perObject.push({ objNum, bytes });
       }
     }
     const body = dictBodyOf(text);

@@ -297,7 +297,7 @@ export const metadataCLI = async (pdfFile, options) => {
       for (const [k, v] of Object.entries(report.info)) lines.push(`    ${k}: ${v}`);
     }
     if (report.docId) lines.push(`\n  Document ID: ${report.docId}`);
-    if (report.xmp.catalog) lines.push(`\n  XMP packet (document): ${report.xmp.catalog.length} bytes (use --json to see it in full)`);
+    if (report.xmp.catalog) lines.push(`\n  XMP packet (document): ${report.xmp.catalogBytes} bytes (use --json to see it in full)`);
     if (report.xmp.perObject.length) lines.push(`  XMP packets (per-object): ${report.xmp.perObject.length}`);
     if (report.customInfo && report.customInfo.length) {
       const fields = [...new Set(report.customInfo.flatMap((c) => c.keys))];

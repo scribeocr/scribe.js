@@ -338,12 +338,37 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-pick:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-am-ins-pick.on { color: var(--scribe-accent); background: var(--scribe-active); }
     .${r} .scribe-am-ins-pick-ic { width: 13px; height: 13px; display: inline-flex; flex: none; }
+    .${r} .scribe-am-ins-xrow { cursor: pointer; border-radius: 4px; margin: 0 -4px; padding-left: 4px; padding-right: 4px; }
+    .${r} .scribe-am-ins-xrow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-ins-xrow:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-am-ins-xrow .scribe-am-ins-v { display: flex; align-items: center; gap: 4px; }
+    .${r} .scribe-am-ins-xrow .scribe-am-ins-tw { margin: 0; }
+    .${r} .scribe-am-ins-xrow.open .scribe-am-ins-tw { transform: rotate(90deg); }
+    .${r} .scribe-am-ins-xmp { background: var(--scribe-canvas); border-radius: 6px; padding: 3px 8px 6px; margin: 2px 0 4px; }
+    .${r} .scribe-am-ins-xmp .scribe-am-ins-kv { font-size: 11.5px; grid-template-columns: 118px minmax(0, 1fr); }
+    .${r} .scribe-am-ins-schema { font-size: 11px; font-weight: 600; color: var(--scribe-ink-3); padding: 7px 0 1px; }
+    .${r} .scribe-am-ins-schema:first-child { padding-top: 2px; }
+    .${r} .scribe-am-ins-schema span { font-weight: 400; overflow-wrap: anywhere; }
+    .${r} .scribe-am-ins-tech .scribe-am-ins-k { overflow-wrap: anywhere; }
+    .${r} .scribe-am-ins-lang { color: var(--scribe-ink-3); font-size: 11px; }
+    .${r} .scribe-am-ins-nest { margin: 1px 0 3px 10px; padding-left: 8px; border-left: 2px solid var(--scribe-line); }
+    .${r} .scribe-am-ins-nest .scribe-am-ins-kv { padding: 2px 0; }
+    .${r} .scribe-am-ins-nest-hd { font-size: 11px; color: var(--scribe-ink-3); padding: 3px 0 0; }
+    .${r} .scribe-am-ins-xmlline { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--scribe-ink-3); padding: 5px 0 0; }
+    .${r} .scribe-am-ins-xml { font: 10.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--scribe-ink-2); background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 6px; padding: 7px 9px; margin: 5px 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    .${r} .scribe-am-ins-xml .t, .${r} .scribe-am-ins-xml .a { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-xml .n { color: var(--scribe-ink-2); }
+    .${r} .scribe-am-ins-xml .v { color: var(--scribe-ink); }
     .${r}.scribe-phone .scribe-am-ins { padding: 2px 14px 14px; }
     .${r}.scribe-phone .scribe-am-ins-kv { font-size: 14px; grid-template-columns: 120px minmax(0, 1fr); padding: 5px 0; }
     .${r}.scribe-phone .scribe-am-ins-tbl { font-size: 13px; }
     .${r}.scribe-phone .scribe-am-ins-pick { font-size: 13px; padding: 6px 10px 6px 8px; margin-right: -10px; }
     .${r}.scribe-phone .scribe-am-ins-pick-ic { width: 15px; height: 15px; }
     .${r}.scribe-phone .scribe-am-ins-more, .${r}.scribe-phone .scribe-am-ins-fewer { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-xmp .scribe-am-ins-kv { font-size: 13px; grid-template-columns: 136px minmax(0, 1fr); }
+    .${r}.scribe-phone .scribe-am-ins-schema, .${r}.scribe-phone .scribe-am-ins-lang, .${r}.scribe-phone .scribe-am-ins-nest-hd { font-size: 12px; }
+    .${r}.scribe-phone .scribe-am-ins-xmlline { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-xml { font-size: 12px; }
     .${r}.scribe-phone .scribe-am-ins-cat { font-size: 13.5px; }
     .${r}.scribe-phone .scribe-am-ins-scope .scribe-am-check { font-size: 14px; }
     .${r} .scribe-am-result { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--scribe-ink); min-width: 0; }

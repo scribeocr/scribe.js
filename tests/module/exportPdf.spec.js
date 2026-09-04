@@ -947,9 +947,13 @@ describe('Check export for .pdf files.', () => {
     expect(sourceMeta.encrypted, 'the source PDF is reported as encrypted').toBe(true);
     expect(sourceMeta.info.Title, 'an encrypted source’s Info Title reads decrypted').toBe('Intel Corporation Annual Report 1996');
     expect(sourceMeta.info.Author, 'an encrypted source’s Info Author reads decrypted').toBe('Intel Corporation');
-    expect(sourceMeta.info.Producer, 'an encrypted source’s Info Producer reads decrypted').toBe('Acrobat Distiller 3.0 for Power Macintosh; modified using iText® 5.1.0_SNAPSHOT ©2000-2011 1T3XT BVBA');
+    expect(sourceMeta.info.Producer, 'an encrypted source’s Info Producer reads decrypted')
+      .toBe('Acrobat Distiller 3.0 for Power Macintosh; modified using iText® 5.1.0_SNAPSHOT ©2000-2011 1T3XT BVBA');
     expect(sourceMeta.info.CreationDate, 'an encrypted source’s Info CreationDate reads decrypted').toBe('D:19970408174938Z');
     expect(sourceMeta.info.ModDate, 'an encrypted source’s Info ModDate reads decrypted').toBe('D:20120222150555Z');
+    // Before the fix a byte-per-character read of the packet turned its "®" into "Â®".
+    expect(/<pdf:Producer>([^<]*)</.exec(sourceMeta.xmp.catalog)?.[1], 'the XMP packet reads as text').toBe('Acrobat Distiller 3.0 for Power Macintosh; modified using iText® 5.1.0_SNAPSHOT ©2000-2011 1T3XT BVBA');
+    expect(sourceMeta.xmp.catalogBytes, 'the packet’s size on disk is reported in bytes').toBe(3570);
 
     scribe.ScribeDoc.defaults.displayMode = 'proof';
     scribe.ScribeDoc.defaults.addOverlay = true;

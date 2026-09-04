@@ -120,6 +120,202 @@ function kvRows(rows, hideEmpty = false) {
   return grid;
 }
 
+const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+const XML_NS = 'http://www.w3.org/XML/1998/namespace';
+const XMLNS_NS = 'http://www.w3.org/2000/xmlns/';
+const XMPMETA_NS = 'adobe:ns:meta/';
+
+/**
+ * @typedef {Object} XmpProp
+ * @property {string} prefix - The namespace prefix as the packet wrote it.
+ * @property {string} local
+ * @property {string} uri - The schema's namespace URI.
+ * @property {'text'|'seq'|'bag'|'alt'|'struct'} kind
+ * @property {string} [value]
+ * @property {Array<{kind: 'text'|'struct', lang: ?string, value?: string, fields?: XmpProp[]}>} [items]
+ * @property {XmpProp[]} [fields]
+ */
+
+/**
+ * The properties of an XMP packet, in packet order, with the toolkit that wrote it and its root element.
+ * @param {string} text
+ * @returns {?{props: XmpProp[], blocks: number, tk: ?string, root: Element}} null when the packet is not well-formed XML.
+ */
+function readXmp(text) {
+  const dom = new DOMParser().parseFromString(text, 'application/xml');
+  if (dom.getElementsByTagName('parsererror').length) return null;
+  const props = [];
+  let blocks = 0;
+  for (const rdf of dom.getElementsByTagNameNS(RDF_NS, 'RDF')) {
+    for (const d of rdf.children) {
+      if (d.namespaceURI !== RDF_NS || d.localName !== 'Description') continue;
+      blocks += 1;
+      props.push(...xmpFields(d));
+    }
+  }
+  const root = dom.getElementsByTagNameNS(XMPMETA_NS, 'xmpmeta')[0] || dom.documentElement;
+  const tk = root.getAttributeNS(XMPMETA_NS, 'xmptk');
+  return {
+    props, blocks, tk: tk ? tk.trim() : null, root,
+  };
+}
+
+/**
+ * The packet as indented XML, under the writer's own element names.
+ * @param {Element} root
+ * @returns {HTMLElement}
+ */
+function xmpXml(root) {
+  const out = el('div', 'scribe-am-ins-xml');
+  const walk = (elem, depth) => {
+    const pad = '  '.repeat(depth);
+    const kids = [...elem.children];
+    const text = kids.length ? '' : (elem.textContent || '').trim();
+    const open = el('span', 't');
+    open.append(document.createTextNode('<'), el('span', 'n', elem.tagName));
+    for (const a of elem.attributes) open.append(document.createTextNode(` ${a.name}="`), el('span', 'a', a.value), document.createTextNode('"'));
+    open.append(document.createTextNode(kids.length || text ? '>' : '/>'));
+    out.append(document.createTextNode(pad), open);
+    if (!kids.length) {
+      if (text) out.append(el('span', 'v', text), el('span', 't', `</${elem.tagName}>`));
+      out.append(document.createTextNode('\n'));
+      return;
+    }
+    out.append(document.createTextNode('\n'));
+    for (const c of kids) walk(c, depth + 1);
+    out.append(document.createTextNode(pad), el('span', 't', `</${elem.tagName}>`), document.createTextNode('\n'));
+  };
+  walk(root, 0);
+  return out;
+}
+
+/**
+ * A description's or structure's properties.
+ * XMP lets a property be written as an attribute of its parent instead of a child element, so both forms are read.
+ * @param {Element} elem
+ * @returns {XmpProp[]}
+ */
+function xmpFields(elem) {
+  const out = [];
+  for (const a of elem.attributes) {
+    if (a.namespaceURI === RDF_NS || a.namespaceURI === XML_NS || a.namespaceURI === XMLNS_NS) continue;
+    out.push({
+      prefix: a.prefix || '', local: a.localName, uri: a.namespaceURI || '', kind: 'text', value: a.value,
+    });
+  }
+  for (const c of elem.children) if (c.namespaceURI !== RDF_NS) out.push(xmpProp(c));
+  return out;
+}
+
+/**
+ * @param {Element} elem - A property element.
+ * @returns {XmpProp}
+ */
+function xmpProp(elem) {
+  const base = { prefix: elem.prefix || '', local: elem.localName, uri: elem.namespaceURI || '' };
+  if (elem.getAttributeNS(RDF_NS, 'parseType') === 'Resource') return { ...base, kind: 'struct', fields: xmpFields(elem) };
+  const rdfChild = (name) => [...elem.children].find((c) => c.namespaceURI === RDF_NS && c.localName === name);
+  const arr = rdfChild('Seq') || rdfChild('Bag') || rdfChild('Alt');
+  if (arr) {
+    const items = [...arr.children].filter((li) => li.namespaceURI === RDF_NS && li.localName === 'li').map(xmpItem);
+    return { ...base, kind: /** @type {'seq'|'bag'|'alt'} */ (arr.localName.toLowerCase()), items };
+  }
+  const desc = rdfChild('Description');
+  if (desc) return { ...base, kind: 'struct', fields: xmpFields(desc) };
+  if (elem.children.length) return { ...base, kind: 'struct', fields: xmpFields(elem) };
+  return { ...base, kind: 'text', value: (elem.textContent || '').trim() };
+}
+
+/**
+ * @param {Element} li - An array entry.
+ * @returns {{kind: 'text'|'struct', lang: ?string, value?: string, fields?: XmpProp[]}}
+ */
+function xmpItem(li) {
+  const lang = li.getAttributeNS(XML_NS, 'lang') || null;
+  const desc = [...li.children].find((c) => c.namespaceURI === RDF_NS && c.localName === 'Description');
+  const attrProps = [...li.attributes].some((a) => a.namespaceURI !== RDF_NS && a.namespaceURI !== XML_NS && a.namespaceURI !== XMLNS_NS);
+  if (li.getAttributeNS(RDF_NS, 'parseType') === 'Resource' || li.children.length || attrProps) return { kind: 'struct', lang, fields: xmpFields(desc || li) };
+  return { kind: 'text', lang, value: (li.textContent || '').trim() };
+}
+
+/**
+ * A packet's properties as rows under a header per schema, each named as the packet names it, each value as stored.
+ * A structure, or a list of them, opens under its own row.
+ * @param {XmpProp[]} props
+ * @returns {DocumentFragment}
+ */
+function xmpRows(props) {
+  const out = document.createDocumentFragment();
+  const groups = new Map();
+  for (const p of props) {
+    const key = p.uri || p.prefix;
+    if (!groups.has(key)) groups.set(key, { prefix: p.prefix, uri: p.uri, props: [] });
+    groups.get(key).props.push(p);
+  }
+  for (const g of groups.values()) {
+    const hd = el('div', 'scribe-am-ins-schema', g.prefix || 'no prefix');
+    if (g.uri) hd.append(el('span', '', ` · ${g.uri}`));
+    out.append(hd, xmpGrid(g.props));
+  }
+  return out;
+}
+
+/**
+ * @param {XmpProp[]} props
+ * @returns {HTMLElement}
+ */
+function xmpGrid(props) {
+  const grid = el('div', 'scribe-am-ins-rows');
+  for (const p of props) {
+    const row = el('div', 'scribe-am-ins-kv scribe-am-ins-tech');
+    const k = el('div', 'scribe-am-ins-k');
+    k.append(document.createTextNode(`${p.prefix}:`), document.createElement('wbr'), document.createTextNode(p.local));
+    const v = el('div', 'scribe-am-ins-v');
+    const items = p.kind === 'struct' ? [{ kind: 'struct', lang: null, fields: p.fields }] : (p.items || []);
+    if (p.kind === 'struct' || items.some((it) => it.kind === 'struct')) {
+      row.classList.add('scribe-am-ins-xrow');
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.setAttribute('aria-expanded', 'false');
+      const tw = el('span', 'scribe-am-ins-tw');
+      tw.innerHTML = CHEVRON_SVG;
+      v.append(tw, document.createTextNode(p.kind === 'struct' ? `${items[0].fields.length} field${items[0].fields.length === 1 ? '' : 's'}` : `${items.length} entr${items.length === 1 ? 'y' : 'ies'}`));
+      const nest = el('div', 'scribe-am-ins-nest');
+      nest.hidden = true;
+      items.forEach((it, i) => {
+        if (items.length > 1) nest.append(el('div', 'scribe-am-ins-nest-hd', `${p.local} ${i + 1}`));
+        nest.append(it.kind === 'text' ? kvRows([['', it.value || null]]) : xmpGrid(it.fields || []));
+      });
+      const toggle = () => {
+        const open = nest.hidden;
+        nest.hidden = !open;
+        row.classList.toggle('open', open);
+        row.setAttribute('aria-expanded', String(open));
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      row.append(k, v);
+      grid.append(row, nest);
+      continue;
+    }
+    let text = '';
+    let lang = null;
+    if (p.kind === 'text') text = p.value || '';
+    else if (p.kind === 'alt') {
+      const it = items.find((x) => x.lang === 'x-default') || items[0];
+      if (it) { text = it.value || ''; lang = it.lang; }
+    } else text = items.filter((x) => x.kind === 'text' && x.value).map((x) => x.value).join(', ');
+    if (text) {
+      v.append(document.createTextNode(text));
+      if (lang) v.append(el('span', 'scribe-am-ins-lang', ` · ${lang}`));
+      if (p.kind === 'alt' && items.length > 1) v.append(el('span', 'scribe-am-ins-lang', ` · +${items.length - 1} more`));
+    } else v.append(el('span', 'scribe-am-ins-notset', 'Not set'));
+    row.append(k, v);
+    grid.append(row);
+  }
+  return grid;
+}
+
 /**
  * Build the workspace into `container`.
  * @param {import('./registry.js').AutomationHost} host
@@ -144,6 +340,12 @@ export function buildInspectWorkspace(host, container) {
   let pickBtn = null;
   /** Fonts whose detail rows are open, by identity (program object number or name). */
   const openFonts = new Set();
+  let xmpOpen = false;
+  let xmlOpen = false;
+  /** @type {?string} The packet text `xmpParsed` was read from. */
+  let xmpSource = null;
+  /** @type {?ReturnType<typeof readXmp>} */
+  let xmpParsed = null;
   /** @type {?import('../../../js/pdf/resourceInventory.js').InventoryFont} */
   let pinnedFont = null;
   /** @type {?import('../../../js/pdf/resourceInventory.js').InventoryFont} */
@@ -275,13 +477,64 @@ export function buildInspectWorkspace(host, container) {
       contents.push(['Bookmarks', bookmarks ? String(bookmarks) : null], ['Comments', comments ? String(comments) : null], ['Form fields', fields ? String(fields) : null]);
       contents.push(['Attachments', meta?.embeddedFiles?.length ? String(meta.embeddedFiles.length) : null]);
       contents.push(['Tagged (accessible)', meta?.structTree ? 'Yes' : 'No']);
-      contents.push(['XMP metadata', meta?.xmp?.catalog ? `${fmtInt(meta.xmp.catalog.length)} bytes` : null]);
       contents.push(['Document ID', meta?.docId ? String(meta.docId).replace(/[<>()]/g, '') : null]);
       contents.push(['Saved versions', meta?.priorRevisions ? `${meta.priorRevisions + 1} (${meta.priorRevisions} prior revision${meta.priorRevisions > 1 ? 's' : ''} kept)` : null]);
     } else if (doc) {
       contents.push(['Text', doc.inputData.ocrApplied ? 'Recognized' : 'None yet — run Recognize Text']);
     }
-    frag.append(catHeader('Contents'), kvRows(contents, true));
+    const packet = isPdf && meta?.xmp?.catalog && meta.xmp.catalog !== '(unreadable)' ? meta.xmp.catalog : null;
+    if (packet && packet !== xmpSource) { xmpSource = packet; xmpParsed = readXmp(packet); }
+    const xmp = packet ? xmpParsed : null;
+    if (packet && !xmp) contents.splice(contents.findIndex(([l]) => l === 'Document ID'), 0, ['XMP metadata', `${fmtInt(meta.xmp.catalogBytes)} bytes`]);
+    const grid = kvRows(contents, true);
+    if (xmp) {
+      const n = xmp.props.length;
+      const row = el('div', 'scribe-am-ins-kv scribe-am-ins-xrow');
+      row.setAttribute('role', 'button');
+      row.tabIndex = 0;
+      row.setAttribute('aria-expanded', String(xmpOpen));
+      row.classList.toggle('open', xmpOpen);
+      const v = el('div', 'scribe-am-ins-v');
+      const tw = el('span', 'scribe-am-ins-tw');
+      tw.innerHTML = CHEVRON_SVG;
+      v.append(tw, document.createTextNode(`${fmtInt(n)} field${n === 1 ? '' : 's'} · ${fmtBytes(meta.xmp.catalogBytes)}`));
+      row.append(el('div', 'scribe-am-ins-k', 'XMP metadata'), v);
+      const block = el('div', 'scribe-am-ins-xmp');
+      block.hidden = !xmpOpen;
+      const fill = () => {
+        const line = el('div', 'scribe-am-ins-xmlline');
+        const tk = xmp.tk ? (/^(Adobe XMP Core \d+(?:\.\d+)?)/.exec(xmp.tk)?.[1] || xmp.tk.split(',')[0].trim()) : null;
+        line.append(el('span', '', `${fmtBytes(meta.xmp.catalogBytes)} · ${xmp.blocks} block${xmp.blocks === 1 ? '' : 's'}${tk ? ` · ${tk}` : ''}`));
+        const link = el('a', 'scribe-am-ins-more-link', xmlOpen ? 'Hide XML' : 'Show XML');
+        link.href = '#';
+        let xmlElem = xmlOpen ? xmpXml(xmp.root) : null;
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          xmlOpen = !xmlOpen;
+          link.textContent = xmlOpen ? 'Hide XML' : 'Show XML';
+          if (!xmlOpen) { xmlElem?.remove(); return; }
+          if (!xmlElem) xmlElem = xmpXml(xmp.root);
+          line.after(xmlElem);
+        });
+        line.append(link);
+        block.append(xmpRows(xmp.props), line);
+        if (xmlElem) line.after(xmlElem);
+      };
+      if (xmpOpen) fill();
+      const toggle = () => {
+        xmpOpen = !xmpOpen;
+        block.hidden = !xmpOpen;
+        row.classList.toggle('open', xmpOpen);
+        row.setAttribute('aria-expanded', String(xmpOpen));
+        if (xmpOpen && !block.firstChild) fill();
+      };
+      row.addEventListener('click', toggle);
+      row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
+      const anchor = [...grid.children].find((r) => /^(Document ID|Saved versions)$/.test(r.firstChild?.textContent || '')) || null;
+      grid.insertBefore(row, anchor);
+      grid.insertBefore(block, anchor);
+    }
+    frag.append(catHeader('Contents'), grid);
     return frag;
   };
 
@@ -528,7 +781,7 @@ export function buildInspectWorkspace(host, container) {
   return {
     /** Rebuild against the (possibly new) active document. */
     refresh: () => {
-      inv = null; pinnedFont = null; hoverFont = null; openFonts.clear(); shownImages = IMAGE_ROW_LIMIT; shownFonts = FONT_ROW_LIMIT;
+      inv = null; pinnedFont = null; hoverFont = null; openFonts.clear(); xmpOpen = false; xmlOpen = false; shownImages = IMAGE_ROW_LIMIT; shownFonts = FONT_ROW_LIMIT;
       applyWash(null);
       if (invTimer) { clearTimeout(invTimer); invTimer = 0; }
       paint();
