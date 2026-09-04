@@ -3901,14 +3901,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-line-strong); border-radius: 4px; padding: 0 4px; line-height: 1.5;
     }
     .${r} .scribe-mode-banner-exit { margin-left: auto; display: inline-flex; align-items: center; flex: none; }
-    .${r} .scribe-mode-banner-pick {
-      flex: none; display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px 0 8px; margin-right: 8px;
-      border: 1px solid var(--scribe-line-strong); border-radius: 6px; background: var(--scribe-surface);
-      font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-ink); cursor: pointer; white-space: nowrap;
-    }
-    .${r} .scribe-mode-banner-pick:hover { background: var(--scribe-hover); }
-    .${r} .scribe-mode-banner-pick.active { border-color: var(--scribe-accent); color: var(--scribe-accent); background: var(--scribe-active); }
-    .${r} .scribe-mode-banner-pick-ic { width: 15px; height: 15px; display: inline-flex; flex: none; }
     .${r} .scribe-mode-banner-hint-armed { color: var(--scribe-accent); font-weight: 600; }
     .${r} .scribe-mode-banner-exit .scribe-mode-banner-done { margin-left: 0; }
     .${r} .scribe-mode-banner-discard { font-weight: 600; }

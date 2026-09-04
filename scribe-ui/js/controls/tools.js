@@ -3020,19 +3020,17 @@ export function createExtractTablesTool(app) {
 
 // eslint-disable-next-line max-len
 const INSPECT_MODE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/></svg>';
-const INSPECT_PICK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" '
-  + 'style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/></svg>';
 const INSPECT_ARMED_HINT = 'Click a word on the page to identify its font · Esc cancels';
 
 /**
  * The Inspect Document mode tool.
  * The document's facts, size and fonts show in the right panel, or the bottom sheet on the phone.
- * A font is identified by a deliberate pick: "Identify font" arms one click on the page, which pins the font that drew the word and rings the word.
+ * A font is identified by a deliberate pick: the panel's "Identify font" arms one click on the page, which pins the font that drew the word and rings the word.
  * The context menu and the touch callout offer the same verb without arming.
  * A click on the ringed word or on blank paper drops the pin.
  * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
  * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, open: () => void, close: () => void, docChanged: () => void,
- *   bannerElem: () => HTMLButtonElement, setArmed: (on: boolean) => void, isArmed: () => boolean, hintText: () => ?string, identify: (kw: any) => boolean }}
+ *   setArmed: (on: boolean) => void, isArmed: () => boolean, hintText: () => ?string, identify: (kw: any) => boolean }}
  */
 export function createInspectDocumentTool(app) {
   const toolbarElem = makeIconButton('Inspect Document', INSPECT_MODE_SVG);
@@ -3041,13 +3039,6 @@ export function createInspectDocumentTool(app) {
   toolbarLabelElem.className = 'cr-btn-label';
   toolbarLabelElem.textContent = 'Inspect Document';
   toolbarElem.appendChild(toolbarLabelElem);
-  // The banner's arming control: one pick per press.
-  const pickBtn = document.createElement('button');
-  pickBtn.type = 'button';
-  pickBtn.className = 'scribe-mode-banner-pick';
-  pickBtn.title = 'Identify a font by clicking a word on the page';
-  pickBtn.setAttribute('aria-pressed', 'false');
-  pickBtn.innerHTML = `<span class="scribe-mode-banner-pick-ic">${INSPECT_PICK_SVG}</span><span>Identify font</span>`;
   let active = false;
   let armed = false;
   /** @type {?{n: number, word: import('../../../js/objects/ocrObjects.js').OcrWord}} The word whose font is pinned. */
@@ -3120,8 +3111,6 @@ export function createInspectDocumentTool(app) {
   const setArmed = (on) => {
     if ((on && !active) || armed === on) return;
     armed = on;
-    pickBtn.classList.toggle('active', on);
-    pickBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
     const sv = app.scribe;
     // The Edit Text convention: the arrow while a pick is armed, since the hover box marks what a click takes.
     if (sv.textSel) sv.textSel.cursorOverride = on ? 'default' : null;
@@ -3190,7 +3179,6 @@ export function createInspectDocumentTool(app) {
     if (armed) { setArmed(false); e.preventDefault(); return; }
     if (clearPin()) e.preventDefault();
   };
-  pickBtn.addEventListener('click', () => setArmed(!armed));
   /** @type {?() => void} */
   let prevDisplayCb = null;
   /** @type {?() => void} */
@@ -3262,7 +3250,6 @@ export function createInspectDocumentTool(app) {
     open,
     close: () => setActive(false),
     docChanged,
-    bannerElem: () => pickBtn,
     setArmed,
     isArmed: () => armed,
     /** The banner hint while a pick is armed; null leaves the mode's own hint in place. */

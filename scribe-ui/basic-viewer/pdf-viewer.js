@@ -2637,7 +2637,6 @@ class ScribePDFViewer {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
       if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
       if (this._recognizeExtras) this._recognizeExtras.remove();
-      this._inspectTool?.bannerElem().remove();
       // The palette returns to its floating home so the closed bar holds nothing.
       const idlePal = this._fillSignTool?.paletteElem();
       if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
@@ -2735,16 +2734,8 @@ class ScribePDFViewer {
     this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
     this._modeBannerParts.hint.classList.remove('scribe-mode-banner-hint-armed');
 
-    // Inspect Document's "Identify font" sits before Done while its mode is active; an armed pick rewrites the hint.
-    const insPick = this._inspectTool ? this._inspectTool.bannerElem() : null;
-    if (insPick) {
-      if (activeBtn === this._inspectTool.toolbarElem) {
-        if (insPick.parentElement !== this._modeBanner) this._modeBanner.insertBefore(insPick, this._modeBannerParts.exit);
-        this._setInspectHint();
-      } else {
-        insPick.remove();
-      }
-    }
+    // The lines above just wrote the mode's own hint, so an armed pick's instruction has to be put back.
+    if (this._inspectTool && activeBtn === this._inspectTool.toolbarElem) this._setInspectHint();
 
     // Fill & Sign's placement palette belongs to the bar: it mounts before Done while its mode is active.
     // The phone layout has no bar, so there the palette keeps its floating pill above the dock.
