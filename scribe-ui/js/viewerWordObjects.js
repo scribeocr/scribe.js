@@ -135,14 +135,25 @@ export class UiText {
     ensureWordStyleSheet();
 
     // In the table preview a word draws with the document's own embedded font once its program has settled and covers the text.
-    // Style runs, small caps, and stroked words keep the substitute path, whose mechanics they need.
+    // Style runs and small caps keep the substitute path, whose mechanics they need.
     /** @type {?FontContainerFont} */
     let fontNative = null;
+    /** Faux-bold stroke the document draws the word with over its fill, in page px. */
+    let strokeWidthPx = 0;
+    /** @type {?string} */
+    let strokeColor = null;
+    /** Horizontal scale the document draws the word at, from its text matrix. */
+    let stretch = 1;
     if (_viewer.state.tablePreview && !word.styleRuns && !word.style.smallCaps && word.line) {
       const ntw = nativeTextForPage(_viewer.doc, word.line.page)[word.id];
+      // One span scales as a whole, so a word whose glyphs disagree stays unscaled.
+      if (ntw?.stretch) {
+        const scales = ntw.stretch.map((v) => v || 1);
+        if (Math.max(...scales) - Math.min(...scales) < 0.01) stretch = scales[0];
+      }
       const f = ntw?.fontObjNum;
-      const stroked = !!(ntw && (ntw.renderMode === 1 || ntw.renderMode === 2) && ntw.strokeWidthPx);
-      if (typeof f === 'number' && Number.isFinite(f) && !stroked) {
+      const strokeOnly = !!(ntw && ntw.renderMode === 1 && ntw.strokeWidthPx);
+      if (typeof f === 'number' && Number.isFinite(f) && !strokeOnly) {
         const ef = _viewer.doc.images.getEditFontSync(word.line.page.n, f);
         // A subset face has only the glyphs this document drew with it, so a word it cannot fully cover falls back.
         if (ef?.faceName && ef.program?.font
@@ -159,6 +170,11 @@ export class UiText {
               family: ef.program.familyName || ef.program.baseName,
               src: ef.bytes,
             });
+            // The substitute path stands a bold face in for the stroke, so the stroke is only carried with the document face.
+            if (ntw.renderMode === 2 && ntw.strokeWidthPx) {
+              strokeWidthPx = ntw.strokeWidthPx;
+              strokeColor = ntw.strokeColor || null;
+            }
           }
         }
       }
@@ -166,19 +182,21 @@ export class UiText {
 
     const {
       charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-    } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts, 0, fontNative ? { font: fontNative } : undefined);
+    } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts, 0, fontNative || stretch !== 1 ? { font: fontNative || undefined, stretch } : undefined);
 
     const fm = measureFace(font.fontFaceName, font.fontFaceStyle, font.fontFaceWeight, fontSize);
 
     const charSpacingFinal = !dynamicWidth ? charSpacing : 0;
 
+    // The metrics come back in the span's unscaled space, and the CSS transform scales what it draws.
+    // Hit-testing measures against the stored advances and bearings instead, so those are scaled here.
     const advanceArrTotal = [];
     for (let i = 0; i < advanceArr.length; i++) {
       let leftI = 0;
       leftI += advanceArr[i] || 0;
       leftI += kerningArr[i] || 0;
       leftI += charSpacingFinal || 0;
-      advanceArrTotal.push(leftI);
+      advanceArrTotal.push(leftI * stretch);
     }
 
     // The `dynamicWidth` option is useful for dummy text boxes that are not tied to OCR, however should be `false` for OCR text boxes.
@@ -189,7 +207,7 @@ export class UiText {
 
     // Subtract the side bearings from the width if they are not excluded from the `ocrWord` coordinates.
     if (!dynamicWidth && !word.visualCoords) {
-      width -= (leftSideBearing + rightSideBearing);
+      width -= (leftSideBearing + rightSideBearing) * stretch;
       width = Math.max(width, 7);
     }
 
@@ -205,7 +223,7 @@ export class UiText {
     this.charArr = charArr;
     this.charSpacing = charSpacingFinal;
     this.advanceArrTotal = advanceArrTotal;
-    this.leftSideBearing = leftSideBearing;
+    this.leftSideBearing = leftSideBearing * stretch;
     this.fontSize = fontSize;
     this.smallCapsMult = font.smallCapsMult;
     // The span's top and line-height are set from these, so they must be the metrics the browser builds the line box from or the glyph baseline misses `yActual`.
@@ -219,6 +237,8 @@ export class UiText {
     this.fontFaceWeight = font.fontFaceWeight;
     this.fontFaceName = font.fontFaceName;
     this.fontFamilyLookup = font.family;
+    this.strokeWidthPx = strokeWidthPx;
+    this.strokeColor = strokeColor;
     this.rotation = rotation;
     this.dynamicWidth = dynamicWidth;
     this.changeTextCallback = changeTextCallback;
@@ -229,7 +249,7 @@ export class UiText {
     this._y = y;
     this._width = width;
     this._height = fontSize * 0.6;
-    this._scaleX = 1;
+    this._scaleX = stretch;
     this._fill = fill;
     this._opacity = opacity;
     this._listening = true;
@@ -497,6 +517,15 @@ export class UiText {
       elem.style.opacity = String(opacity);
     }
 
+    // The stroke keeps the document's own stroke color while the word draws in its own ink.
+    // A preview recolor (ghost grey, plain black) takes the stroke with it.
+    if (this.strokeWidthPx > 0 && opacity !== 0) {
+      const ownInk = this.word.style.color || 'black';
+      elem.style.setProperty('-webkit-text-stroke', `${this.strokeWidthPx}px ${this._fill === ownInk && this.strokeColor ? this.strokeColor : this._fill}`);
+    } else if (restyle) {
+      elem.style.removeProperty('-webkit-text-stroke');
+    }
+
     // Glyph selection is wanted only in `invis` mode, where the transparent text layer is the searchable/copyable overlay.
     // In the visible modes the word box is the interactive unit, so selecting the letters too would only be noise.
     const selectText = this.viewer.state.displayMode === 'invis';
@@ -519,9 +548,13 @@ export class UiText {
     if (!this._visible) elem.style.display = 'none';
     else if (restyle) elem.style.display = '';
 
-    if (Math.abs(angle ?? 0) > 0.05) {
+    const transforms = [];
+    if (Math.abs(angle ?? 0) > 0.05) transforms.push(`rotate(${angle}deg)`);
+    if (this._scaleX !== 1) transforms.push(`scaleX(${this._scaleX})`);
+    if (transforms.length) {
+      // A centered origin would move the word's left edge under the scale, so both transforms anchor at the left.
       elem.style.transformOrigin = `left ${this._y - topHTML}px`;
-      elem.style.transform = `rotate(${angle}deg)`;
+      elem.style.transform = transforms.join(' ');
     } else if (restyle) {
       elem.style.transformOrigin = '';
       elem.style.transform = '';

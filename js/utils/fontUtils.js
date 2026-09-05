@@ -281,6 +281,8 @@ export function calcWordCharMetrics(wordText, fontOpentype, settings) {
  * @param {boolean} [settings.kerning]
  * @param {FontContainerFont} [settings.font] - Use this font instead of resolving the word's style against `docFonts`.
  *    The caller guarantees the font covers the word's text.
+ * @param {number} [settings.stretch] - Horizontal scale the word is drawn at.
+ *    The character spacing is fitted in the unscaled space the caller then scales.
  * @async
  * @return {WordMetrics}
  */
@@ -332,7 +334,7 @@ export function calcWordMetrics(word, docFonts, angle = 0, settings) {
   let charSpacing = 0;
   if (charArr2.length > 1) {
     const cosAngle = Math.cos(angle * (Math.PI / 180));
-    const actualWidth = (word.bbox.right - word.bbox.left) / cosAngle;
+    const actualWidth = (word.bbox.right - word.bbox.left) / cosAngle / (settings?.stretch || 1);
     charSpacing = Math.round((actualWidth - wordWidthPx) / (charArr2.length - 1) * 1e6) / 1e6;
   }
 
