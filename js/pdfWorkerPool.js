@@ -77,6 +77,7 @@ export async function initPdfWorker() {
     obj.parsePdfPage = wrap('parsePdfPage');
     obj.renderPdfPage = wrap('renderPdfPage');
     obj.getPdfFontBytes = wrap('getPdfFontBytes');
+    obj.getPdfEmbeddedFileBytes = wrap('getPdfEmbeddedFileBytes');
     obj.unloadPdf = wrap('unloadPdf');
 
     // A killed worker never answers, so teardown rejects outstanding calls too.

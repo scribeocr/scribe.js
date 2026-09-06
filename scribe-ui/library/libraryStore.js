@@ -62,6 +62,7 @@ export const folderNameProblem = (name) => {
  *    Recorded only from an open the app performs anyway, never from one run to measure.
  * @property {number} [pageRasterW] - Pixel width of the stored page rasters.
  *    Read from older manifests, never written.
+ * @property {boolean} [portfolio] - The file is a PDF portfolio (a catalog with a collection dictionary), so opening it lists its embedded files rather than showing its cover page.
  */
 
 /**

@@ -475,7 +475,12 @@ export function buildInspectWorkspace(host, container) {
       const comments = annots.filter((a) => a.type !== 'field' && a.type !== 'link').length;
       const fields = annots.filter((a) => a.type === 'field').length;
       contents.push(['Bookmarks', bookmarks ? String(bookmarks) : null], ['Comments', comments ? String(comments) : null], ['Form fields', fields ? String(fields) : null]);
-      contents.push(['Attachments', meta?.embeddedFiles?.length ? String(meta.embeddedFiles.length) : null]);
+      // The name tree lists every attachment with its size.
+      // The object sweep only counts file specifications, so it stands in when the tree is empty.
+      const attached = doc.attachments?.files || [];
+      contents.push(['Attachments', attached.length
+        ? `${attached.length}: ${attached.map((f) => (f.size == null ? f.name : `${f.name} (${fmtBytes(f.size)})`)).join(', ')}`
+        : (meta?.embeddedFiles?.length ? String(meta.embeddedFiles.length) : null)]);
       contents.push(['Tagged (accessible)', meta?.structTree ? 'Yes' : 'No']);
       contents.push(['Document ID', meta?.docId ? String(meta.docId).replace(/[<>()]/g, '') : null]);
       contents.push(['Saved versions', meta?.priorRevisions ? `${meta.priorRevisions + 1} (${meta.priorRevisions} prior revision${meta.priorRevisions > 1 ? 's' : ''} kept)` : null]);

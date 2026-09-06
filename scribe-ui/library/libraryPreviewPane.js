@@ -516,8 +516,59 @@ export function createPreviewPanes({
       pvHead.style.display = 'none';
       pvHost.style.display = 'none';
       pvLoading.style.display = 'none';
+      pane.classList.remove('scribe-library-pv-plated');
+      if (pvPlate) pvPlate.style.display = 'none';
       pvEmpty.textContent = emptyText;
       pvEmpty.style.display = '';
+    };
+
+    /** @type {?HTMLElement} */
+    let pvPlate = null;
+
+    /**
+     * Show a file the pane cannot render: its name and kind, and the one action that applies to it.
+     * @param {{title: string, badge: string, icon: string, note: string, action: string, onAction: () => void}} target
+     */
+    const showPlate = (target) => {
+      token++;
+      showBusyKey = null;
+      endVeil();
+      setLiveLocked(false);
+      releaseDoc(current ? current.hash : null);
+      current = null;
+      lastTarget = null;
+      viewer._previewDocName = target.title;
+      viewer._announceActiveDoc();
+      pvHead.style.display = '';
+      /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
+      pvMeta.textContent = target.badge;
+      pane.classList.add('scribe-library-pv-plated');
+      pvHost.style.display = 'none';
+      pvLoading.style.display = 'none';
+      pvEmpty.style.display = 'none';
+      if (!pvPlate) {
+        pvPlate = document.createElement('div');
+        pvPlate.className = 'scribe-library-pv-plate';
+        /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-stage')).appendChild(pvPlate);
+      }
+      pvPlate.replaceChildren();
+      pvPlate.insertAdjacentHTML('beforeend', `<span class="fi">${target.icon}</span>`);
+      const nameEl = document.createElement('div');
+      nameEl.className = 'n';
+      nameEl.textContent = target.title;
+      const badgeEl = document.createElement('span');
+      badgeEl.className = 'scribe-library-badge';
+      badgeEl.textContent = target.badge;
+      const noteEl = document.createElement('div');
+      noteEl.className = 'm';
+      noteEl.textContent = target.note;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scribe-library-btn';
+      btn.textContent = target.action;
+      btn.addEventListener('click', () => target.onAction());
+      pvPlate.append(nameEl, badgeEl, noteEl, btn);
+      pvPlate.style.display = '';
     };
 
     /** @type {?{elem: HTMLElement, timers: number[]}} */
@@ -619,6 +670,8 @@ export function createPreviewPanes({
       else pvMeta.textContent = target.meta;
       pvEmpty.style.display = 'none';
       pvLoading.style.display = 'none';
+      pane.classList.remove('scribe-library-pv-plated');
+      if (pvPlate) pvPlate.style.display = 'none';
       pvHost.style.display = '';
       if (!paneViewer) {
         paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
@@ -907,6 +960,7 @@ export function createPreviewPanes({
       onClose: null,
       show,
       showEmpty,
+      showPlate,
       shownHash,
       takeHydratedDoc,
       reshow,

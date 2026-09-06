@@ -961,12 +961,17 @@ export class ImageStore {
     // Initialize dedicated PDF workers and load the PDF into all of them.
     // Each worker creates its own ObjectCache and page tree.
     const pdfScheduler = await this.getPdfScheduler();
-    const { pageCount, pages, outline } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
+    const {
+      pageCount, pages, outline, attachments,
+    } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
     this.pageCount = pageCount;
     this.#ensurePrimarySource().sourcePageCount = pageCount;
     // The outline was parsed in the worker, so renumber its ids from the main-thread counter to keep subsequent edits from colliding.
     this.#doc.outline = reassignOutlineIds(outline || []);
+    // Embedded files and the portfolio collection, parsed in the worker beside the outline.
+    this.#doc.attachments.collection = attachments?.collection ?? null;
+    this.#doc.attachments.files = attachments?.files ?? [];
 
     this.pdfDims300.length = 0;
     for (const page of pages) {

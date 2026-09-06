@@ -1,6 +1,7 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
 import { ObjectCache } from './objectCache.js';
+import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import { parseSinglePage } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
@@ -38,6 +39,8 @@ export class PdfCore {
       pages: this.#pages.map((p) => ({ mediaBox: p.cropBox || p.mediaBox, rotate: p.rotate })),
       // Document outline (bookmarks), page-index-normalized; serializable across the worker boundary.
       outline: parseOutline(this.#objCache, this.#pages),
+      // Embedded files and the portfolio collection, a name-tree walk with no stream decoded.
+      attachments: parseAttachments(this.#objCache),
     };
   }
 
@@ -118,6 +121,19 @@ export class PdfCore {
     return {
       kind: entry.kind, bytes: entry.bytes.slice(0), allGlyphsEmpty, ...meta,
     };
+  }
+
+  /**
+   * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment), by the object number `doc.attachments.files[].objNum` carries.
+   * @param {{ objNum: number }} args
+   * @returns {?{ bytes: ArrayBuffer }} A fresh buffer, so the postMessage transfer can never detach cached data.
+   *   Null when the object is not a readable stream.
+   */
+  getEmbeddedFileBytes({ objNum }) {
+    if (!this.#objCache) throw new Error('PDF not loaded');
+    const bytes = this.#objCache.getStreamBytes(objNum);
+    if (!bytes) return null;
+    return { bytes: bytes.slice().buffer };
   }
 
   /**

@@ -233,7 +233,7 @@ export function buildNameDests(objCache, catalogText) {
  * @param {Map<string, string>} nameDests
  * @param {Set<number>} visited
  */
-function walkNameTree(nodeObjNum, objCache, nameDests, visited) {
+export function walkNameTree(nodeObjNum, objCache, nameDests, visited) {
   if (visited.has(nodeObjNum)) return;
   visited.add(nodeObjNum);
   const text = objCache.getObjectText(nodeObjNum);
@@ -248,7 +248,7 @@ function walkNameTree(nodeObjNum, objCache, nameDests, visited) {
  * @param {Map<string, string>} nameDests
  * @param {Set<number>} visited
  */
-function collectNameTreeNode(text, objCache, nameDests, visited) {
+export function collectNameTreeNode(text, objCache, nameDests, visited) {
   const namesArr = arrayTokenOf(rawValue(text, 'Names'), objCache);
   if (namesArr) parseNameLeaf(namesArr.slice(1, -1), nameDests);
 

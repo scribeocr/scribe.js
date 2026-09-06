@@ -680,10 +680,13 @@ class ScribePDFViewer {
     this._library = null;
     this._destroyed = false;
     /**
-     * Callbacks the library registers so tab lifecycle events can checkpoint-save `.scribe` sidecars.
-     * @type {?{docOpened?: () => void, emptied?: () => void, saveTabIfDirty?: (tab: Object) => Promise<void>, saveAllDirty?: () => Promise<void>}}
+     * The library-style surfaces mounted on this viewer: the document library and every open PDF portfolio.
+     * Tab lifecycle events go to all of them, so each can checkpoint-save the `.scribe` sidecars of the tabs it opened.
+     * @type {Array<import('../library/libraryView.js').LibraryInstance>}
      */
-    this._libraryHooks = null;
+    this._libraryInstances = [];
+    /** @type {?import('../library/libraryView.js').LibraryInstance} The pinned surface shown most recently, which an emptied tab strip returns to. */
+    this._lastPinned = null;
     /**
      * Fired when a document's assistant history changes, so the embedder can mark that document's session dirty.
      * The document is passed rather than assumed active, because a turn can settle after the user switches tabs.
@@ -1115,7 +1118,7 @@ class ScribePDFViewer {
       this._teardownCallbacks.push(this._open.installOpenShortcut());
     }
 
-    // A loaded document hides the empty-state drop zone, so it can't catch a dropped PDF.
+    // A loaded document hides the empty-state drop zone, and a library or portfolio surface stands in front of it, so neither can catch a dropped PDF.
     // Show a dedicated drag-over overlay during a file drag instead, and open the dropped PDF in a new tab.
     if (showDropZone) {
       const dragOverlay = document.createElement('div');
@@ -1132,6 +1135,10 @@ class ScribePDFViewer {
       // (`dataTransfer.files` is empty until `drop`, so we must check `types` instead.)
       /** @param {DragEvent} event */
       const isFileDrag = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files'));
+      // The empty-state drop zone highlights and opens on its own, so a drag that lands on it is left to it.
+      // Everywhere else the drop opens a new tab, with or without an attached document, so a surface standing in front of none still takes drops.
+      /** @param {DragEvent} event */
+      const overDropZone = (event) => !!this.dropZone && event.target instanceof Node && this.dropZone.contains(event.target);
       const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.opacity = '0'; };
       // A file dragged over the (visible, editable) thumbnail rail drops into the document at the hovered gap rather than opening a new tab.
       /** @param {number} clientX @param {number} clientY @returns {boolean} */
@@ -1142,7 +1149,7 @@ class ScribePDFViewer {
       };
       /** @param {DragEvent} event */
       const onDragEnter = (event) => {
-        if (!this.doc || !isFileDrag(event)) return;
+        if (overDropZone(event) || !isFileDrag(event)) return;
         this._fileDragDepth++;
         if (this._fileDragDepth !== 1) return;
         dragOverlay.style.top = `${this._topBarsHeight()}px`; // sit below the toolbar and tab strip, leaving them visible
@@ -1155,7 +1162,7 @@ class ScribePDFViewer {
       };
       /** @param {DragEvent} event */
       const onDragOver = (event) => {
-        if (!this.doc || !isFileDrag(event)) return;
+        if (overDropZone(event) || !isFileDrag(event)) return;
         event.preventDefault(); // allow the drop (otherwise the browser navigates to the dropped file)
         // dragover fires continuously, so it is the source of truth for which indicator shows as the cursor crosses in/out of the rail.
         if (overThumbnailRail(event.clientX, event.clientY)) {
@@ -1168,7 +1175,7 @@ class ScribePDFViewer {
       };
       /** @param {DragEvent} event */
       const onDragLeave = (event) => {
-        if (!this.doc || !isFileDrag(event)) return;
+        if (overDropZone(event) || !isFileDrag(event)) return;
         this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
         if (this._fileDragDepth === 0) {
           dragOverlay.style.opacity = '0';
@@ -1187,7 +1194,7 @@ class ScribePDFViewer {
       // The overlay is `pointer-events:none`, so the drop lands on the canvas/rail and bubbles to this root listener.
       /** @param {DragEvent} event */
       const onDrop = async (event) => {
-        if (!this.doc || !isFileDrag(event)) return;
+        if (overDropZone(event) || !isFileDrag(event)) return;
         event.preventDefault();
         const overRail = overThumbnailRail(event.clientX, event.clientY);
         const gap = overRail ? this._thumbnailPanel.dropIndicator.gapAt(event.clientX, event.clientY) : -1;
@@ -1840,7 +1847,7 @@ class ScribePDFViewer {
     this._ownsDoc = owns;
     this.scribe.doc = doc;
     this.resetSearch();
-    this._libraryHooks?.docOpened?.();
+    for (const inst of this._libraryInstances) inst.docOpened();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -2062,6 +2069,11 @@ class ScribePDFViewer {
         doc = await openDocumentFromFile(pdf, { deferText: true });
         // A readable PDF yields pages, so zero pages means the bytes were unusable and the open failed.
         if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
+        if (doc.attachments.collection) {
+          // A portfolio's page is only its cover sheet, so the files inside are what opens.
+          await this._openPortfolio(doc, pdf.name || 'Portfolio');
+          continue;
+        }
         opened.push({ doc, name: pdf.name || 'Document' });
       } catch (err) {
         // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
@@ -2121,6 +2133,11 @@ class ScribePDFViewer {
    * @returns {Promise<Object>} The created tab.
    */
   async _openDocAsTab(doc, name, extra = {}) {
+    // A portfolio's files are listed on a pinned surface, which needs the tab strip, so a viewer without one opens the cover sheet as an ordinary tab.
+    if (doc.attachments?.collection && this.toolbarElem && this._tabStrip) {
+      const { libraryHash, libraryRelPath, libraryOwner } = extra;
+      return this._openPortfolio(doc, name, { libraryHash, libraryRelPath, libraryOwner });
+    }
     const { activate = true, ...fields } = extra;
     const tab = { ...this._newTab(doc, name), ...fields };
     this._tabs.push(tab);
@@ -2131,6 +2148,24 @@ class ScribePDFViewer {
       this._applyTabResourcePolicy();
     }
     return tab;
+  }
+
+  /**
+   * Open a PDF portfolio as a pinned surface listing its embedded files (the library's own folder view over them), or bring one already open forward.
+   * The library code loads on demand here in every browser, unlike the library itself, which needs the File System Access API.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The portfolio document; the surface owns it from here on.
+   * @param {string} name
+   * @param {{libraryHash?: string, libraryRelPath?: string, libraryOwner?: number}} [fields] - Where it came from, when a library entry opened it.
+   * @returns {Promise<?Object>} The surface, or the tab when the document turns out not to be a portfolio.
+   */
+  async _openPortfolio(doc, name, fields = {}) {
+    if (!doc.attachments.collection) return this._openDocAsTab(doc, name, fields);
+    const { openPortfolio } = await import('../library/libraryView.js');
+    if (this._destroyed) {
+      await doc.close().catch(() => {});
+      return null;
+    }
+    return openPortfolio(this, doc, name, fields);
   }
 
   /**
@@ -2335,7 +2370,8 @@ class ScribePDFViewer {
     if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
       this._tabs[this._activeTab].lastPage = this.scribe.state.cp.n;
       // The outgoing tab's sidecar saves in the background, and its document stays alive across the switch.
-      this._libraryHooks?.saveTabIfDirty?.(this._tabs[this._activeTab]).catch(() => {});
+      const outgoing = this._tabs[this._activeTab];
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(outgoing))).catch(() => {});
     }
     const tab = this._tabs[i];
     this._activeTab = i;
@@ -2370,14 +2406,15 @@ class ScribePDFViewer {
     const wasActive = i === this._activeTab;
     const [removed] = this._tabs.splice(i, 1);
     // A library tab with unsaved edits writes its sidecar first, and closes only once that settles.
-    Promise.resolve(this._libraryHooks?.saveTabIfDirty?.(removed)).catch(() => {})
+    Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(removed))).catch(() => {})
       .then(() => removed.doc.close().catch(() => {}));
 
     if (this._tabs.length === 0) {
       this._activeTab = -1;
       this._renderTabs();
       this.detachDoc({ terminate: false });
-      this._libraryHooks?.emptied?.();
+      // The pinned surface shown most recently takes the empty strip, else the first (the library's, when it is installed).
+      (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
       return;
     }
     if (wasActive) {
@@ -4778,14 +4815,15 @@ class ScribePDFViewer {
    */
   async destroy({ terminateDoc } = {}) {
     this._destroyed = true;
-    if (this._libraryHooks?.saveAllDirty) {
+    for (const inst of this._libraryInstances) {
       // Flush unsaved library sidecars while the docs are still alive.
-      try { await this._libraryHooks.saveAllDirty(); } catch { /* Best effort; teardown continues. */ }
+      try { await inst.saveAllDirty(); } catch { /* Best effort; teardown continues. */ }
     }
     if (this._library) {
       this._library.destroy();
       this._library = null;
     }
+    for (const inst of [...this._libraryInstances]) inst.destroy();
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }

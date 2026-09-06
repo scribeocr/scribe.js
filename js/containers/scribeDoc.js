@@ -799,6 +799,14 @@ export class ScribeDoc {
     this.outline = [];
 
     /**
+     * Embedded files and, for a portfolio, the collection that presents them.
+     * Derived from the PDF on every open and never serialized.
+     * `files` is empty for a document with none.
+     * @type {import('../pdf/parseAttachments.js').Attachments}
+     */
+    this.attachments = { collection: null, files: [] };
+
+    /**
      * Resolves once this document's text extraction has completed.
      * Already resolved except during a `deferText` import, where extraction continues in the background after `importFiles` returns.
      * Resolves rather than rejects on `terminate()`, so waiters cannot hang on a dead worker pool.
@@ -1231,6 +1239,8 @@ export class ScribeDoc {
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;
     this.outline.length = 0;
+    this.attachments.collection = null;
+    this.attachments.files.length = 0;
     this.convertPageWarn.length = 0;
     this.images.clear();
     this.fonts.clear();
@@ -1638,6 +1648,20 @@ export class ScribeDoc {
    */
   getMetadata() {
     return getMetadataImpl(this);
+  }
+
+  /**
+   * The bytes of one embedded file (a portfolio member or a plain attachment), decoded by the PDF worker.
+   * @param {string} key - The file's `key` in `doc.attachments.files`.
+   * @returns {Promise<ArrayBuffer>} Rejects when no file has that key or its stream cannot be read.
+   */
+  async getAttachmentBytes(key) {
+    const file = this.attachments.files.find((f) => f.key === key);
+    if (!file) throw new Error(`No embedded file is keyed “${key}”.`);
+    const scheduler = await this.images.getPdfScheduler();
+    const res = await scheduler.getPdfEmbeddedFileBytes({ objNum: file.objNum });
+    if (!res) throw new Error(`The embedded file “${key}” has no readable stream.`);
+    return res.bytes;
   }
 
   /**

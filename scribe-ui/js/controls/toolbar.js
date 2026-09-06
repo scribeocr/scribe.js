@@ -605,7 +605,7 @@ export function createAppMenu(rootClass) {
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
  * @param {(index: number) => void} cfg.onCloseOthers - Called when the context menu's "Close Others" is picked, with the tab to keep.
  * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number) => void,
- *   setPinnedTab: (elem: ?HTMLElement) => void, setPinnedActive: (on: boolean) => void }}
+ *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void }}
  */
 export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   const tabStripElem = document.createElement('div');
@@ -664,25 +664,42 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncOverflow).observe(laneElem);
 
   /**
-   * Mount `elem` as a pinned tab ahead of the scroll lane.
-   * Pass null to unmount it.
-   * @param {?HTMLElement} elem
+   * Mount `elem` as a pinned tab ahead of the scroll lane, after any chips already pinned.
+   * The caller owns the chip's `active` class, and the strip lights only pinned chips that carry it.
+   * @param {HTMLElement} elem
    */
-  function setPinnedTab(elem) {
-    if (pinnedWrap) {
+  function addPinnedTab(elem) {
+    if (!pinnedWrap) {
+      pinnedWrap = document.createElement('span');
+      pinnedWrap.className = 'scribe-tab-pin';
+      const sep = document.createElement('span');
+      sep.className = 'scribe-tab-pin-sep';
+      pinnedWrap.appendChild(sep);
+      tabStripElem.insertBefore(pinnedWrap, tabStripElem.firstChild);
+    }
+    pinnedWrap.insertBefore(elem, pinnedWrap.lastElementChild);
+    syncOverflow();
+  }
+
+  /**
+   * Unmount a pinned chip.
+   * The pin slot goes with its last chip.
+   * @param {HTMLElement} elem
+   */
+  function removePinnedTab(elem) {
+    if (!pinnedWrap || elem.parentElement !== pinnedWrap) return;
+    elem.remove();
+    if (pinnedWrap.children.length <= 1) {
       pinnedWrap.remove();
       pinnedWrap = null;
       tabStripElem.style.removeProperty('--scribe-tab-pin-w');
     }
-    if (!elem) return;
-    pinnedWrap = document.createElement('span');
-    pinnedWrap.className = 'scribe-tab-pin';
-    pinnedWrap.appendChild(elem);
-    const sep = document.createElement('span');
-    sep.className = 'scribe-tab-pin-sep';
-    pinnedWrap.appendChild(sep);
-    tabStripElem.insertBefore(pinnedWrap, tabStripElem.firstChild);
     syncOverflow();
+  }
+
+  /** How many chips are pinned ahead of the lane. */
+  function pinnedCount() {
+    return pinnedWrap ? pinnedWrap.children.length - 1 : 0;
   }
 
   /**
@@ -804,7 +821,7 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   }
 
   return {
-    tabStripElem, render, setPinnedTab, setPinnedActive,
+    tabStripElem, render, addPinnedTab, removePinnedTab, pinnedCount, setPinnedActive,
   };
 }
 
@@ -2031,12 +2048,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-pin-sep { width: 1px; background: var(--scribe-line-strong); margin: 6px 4px; flex-shrink: 0; }
     .${r} .scribe-tab-icon { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; }
     .${r} .scribe-tab-icon svg { width: 100%; height: 100%; display: block; }
-    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab {
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab.active {
       background: var(--scribe-surface);
       color: var(--scribe-accent);
       border-bottom-color: var(--scribe-accent);
     }
-    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab-name { text-shadow: 0 0 .4px currentColor; }
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab.active .scribe-tab-name { text-shadow: 0 0 .4px currentColor; }
     .${r} .scribe-tab-strip.pin-active .scribe-tab-lane .scribe-tab.active {
       background: none;
       color: var(--scribe-ink-2);

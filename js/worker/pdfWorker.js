@@ -39,6 +39,14 @@ export async function getPdfFontBytes(args) {
 }
 
 /**
+ * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
+ * @param {{ objNum: number }} args
+ */
+export async function getPdfEmbeddedFileBytes(args) {
+  return core.getEmbeddedFileBytes(args);
+}
+
+/**
  * Release this worker's loaded PDF and its `_pdf_d${docId}_*` fonts.
  */
 export async function unloadPdf() {
@@ -61,10 +69,11 @@ if (parentPort) {
       parsePdfPage,
       renderPdfPage,
       getPdfFontBytes,
+      getPdfEmbeddedFileBytes,
       unloadPdf,
     })[func](args)
       .then((/** @type {any} */ x) => {
-        // Font bytes are a per-call copy, so transferring them detaches nothing shared.
+        // Font and embedded-file bytes are per-call copies, so transferring them detaches nothing shared.
         const transfer = (typeof ImageBitmap !== 'undefined' && x && x.bitmap instanceof ImageBitmap) ? [x.bitmap]
           : (x && x.bytes instanceof ArrayBuffer ? [x.bytes] : []);
         port.postMessage({ data: x, id, status: 'resolve' }, transfer);

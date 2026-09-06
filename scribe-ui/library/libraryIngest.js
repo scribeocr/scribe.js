@@ -437,6 +437,9 @@ export class LibraryIngest {
             : await openDocumentFromFile(buf, { skipFontOpt: true });
           entry.hash = hash;
           entry.pageCount = doc.inputData.pageCount;
+          // A portfolio's own page is only a cover sheet, so the library opens the entry as a portfolio view instead.
+          if (doc.attachments.collection) entry.portfolio = true;
+          else delete entry.portfolio;
           entry.pageDims = doc.pageMetrics.map((pm) => [
             Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
           ]);

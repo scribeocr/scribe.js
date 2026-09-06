@@ -2,9 +2,11 @@
 // Loaded by dynamic import behind the `library` option, so viewers without it never fetch this module or its styles.
 
 import scribeLib from '../../scribe.js';
+import { saveAs } from '../../js/utils/miscUtils.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
+import { PortfolioStore } from './portfolioStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
@@ -34,6 +36,13 @@ const FOLDER_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M17.3 3v3.7H13.6"/></svg>';
 // eslint-disable-next-line max-len
 const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
+
+// A PDF portfolio, drawn as two stacked sheets.
+// Stroked at 24 for rows, crumbs and cards, and filled at 16 for the pinned tab, as the library's own glyph is.
+// eslint-disable-next-line max-len
+const PORTFOLIO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M8 4.5h9a1.5 1.5 0 0 1 1.5 1.5v9.5"/><rect x="4.5" y="8" width="11" height="12" rx="1.5"/><path d="M7.5 12.5h5M7.5 15.5h5"/></svg>';
+// eslint-disable-next-line max-len
+const PORTFOLIO_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="5.5" y="2" width="8" height="9" rx="1" opacity=".55"/><rect x="2.5" y="5" width="8" height="9.5" rx="1"/></svg>';
 // eslint-disable-next-line max-len
 const IMAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="8.8" cy="9.3" r="1.6"/><path d="M3.5 16.5l5.2-4.6 3.9 3.4 3.1-2.6 4.8 4"/></svg>';
 // eslint-disable-next-line max-len
@@ -66,6 +75,40 @@ const COLS_STORAGE_KEY = 'scribe-library-cols';
 const RESUME_STORAGE_KEY = 'scribe-library-resume';
 
 /**
+ * @typedef {Object} LibraryInstanceOptions
+ * @property {'library'|'portfolio'} kind
+ * @property {string} name - The pinned tab's and the root crumb's label.
+ * @property {string} glyph - The pinned tab's icon.
+ * @property {string} [crumbGlyph] - An icon before the root crumb's label.
+ * @property {?Object} [store] - A store to open at once; the library connects its own folder instead.
+ * @property {'grid'|'list'|'compact'} [viewDefault]
+ * @property {boolean} [previewDefault]
+ * @property {boolean} [showOthersDefault]
+ * @property {boolean} [persistPrefs] - Read and write the view, column, preview and other-files preferences in localStorage.
+ * @property {boolean} [readOnly] - No file drops, folder operations, New menu or Refresh.
+ * @property {string} [emptyText]
+ * @property {?string} [initialRelPath] - The file to select and preview once the store is open.
+ * @property {?string} [libraryHash] - When a library entry opened this instance: that entry's hash, so it is not opened twice.
+ * @property {?number} [libraryOwner] - With `libraryHash`, the library instance the entry belongs to.
+ * @property {() => void} [onClose] - Mounted as a close control on the pinned tab.
+ */
+
+/**
+ * @typedef {Object} LibraryInstance
+ * @property {'library'|'portfolio'} kind
+ * @property {?string} libraryHash
+ * @property {?number} libraryOwner
+ * @property {() => boolean} visible
+ * @property {() => void} show
+ * @property {() => void} hide
+ * @property {() => void} docOpened
+ * @property {() => void} emptied
+ * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
+ * @property {() => Promise<void>} saveAllDirty
+ * @property {() => void} destroy
+ */
+
+/**
  * List-view columns, left to right, per view mode.
  * Name carries no `def` because it is sized to fill whatever the other columns leave.
  */
@@ -83,6 +126,8 @@ const COL_DROP_ORDER = { list: [1, 3, 2], compact: [1, 4, 3, 2] };
 const SORT_DEFAULT_DIR = {
   name: 1, added: -1, opened: -1, pages: 1, custom: 1,
 };
+
+let instanceCounter = 0;
 
 const AUTOSAVE_INTERVAL_MS = 60000;
 
@@ -327,6 +372,16 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.other:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
 .scribe-pdf-viewer .scribe-library-card.other .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-card.other .fthumb .fi { width: 46px; height: 46px; }
+.scribe-pdf-viewer .scribe-library-card.portfolio > img.thumb { display: none; }
+.scribe-pdf-viewer .scribe-library-card.portfolio .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-card.portfolio .fthumb .fi { width: 46px; height: 46px; }
+.scribe-pdf-viewer .scribe-library-crumbs > .fi { display: inline-flex; width: 16px; height: 16px; margin-right: 5px; color: var(--scribe-ink-2); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-pv-plate { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; color: var(--scribe-ink-2); font-size: 13px; text-align: center; }
+.scribe-pdf-viewer .scribe-library-pv-plate > .fi { width: 56px; height: 56px; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-pv-plate .n { font-weight: 600; color: var(--scribe-ink); overflow-wrap: anywhere; }
+.scribe-pdf-viewer .scribe-library-pv-plate .m { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-pv-plate .scribe-library-btn { margin-top: 8px; }
+.scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-find, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-open, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-head .vertical-separator { display: none; }
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
 /* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
@@ -387,12 +442,20 @@ const addLibraryStyles = () => {
 };
 
 /**
- * Install the document-library feature on a ScribePDFViewer instance.
+ * One library-style surface: the document library over its folder store, or that same surface over another store, such as a PDF portfolio's embedded files.
+ * The folder connection, the resume record and the app-menu items exist only for the library kind.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
- * @returns {{destroy: () => void}}
+ * @param {LibraryInstanceOptions} opts
+ * @returns {LibraryInstance}
  */
-export function installLibrary(viewer) {
+export function createLibraryInstance(viewer, opts) {
   addLibraryStyles();
+  const isLibrary = opts.kind === 'library';
+  const readOnly = !!opts.readOnly;
+  const persistPrefs = !!opts.persistPrefs;
+  const instanceId = ++instanceCounter;
+  /** @param {?{libraryOwner?: number}} tab */
+  const ownsTab = (tab) => !!tab && tab.libraryOwner === instanceId;
 
   /** @type {?LibraryStore} */
   let store = null;
@@ -407,30 +470,36 @@ export function installLibrary(viewer) {
   /** 1 or -1, relative to each key's ascending order. */
   let sortDir = 1;
   /** @type {'grid' | 'list' | 'compact'} */
-  let viewMode = 'grid';
-  try {
-    const storedView = window.localStorage.getItem(VIEW_STORAGE_KEY);
-    if (storedView === 'list' || storedView === 'compact') viewMode = storedView;
-  } catch { /* localStorage unavailable. */ }
+  let viewMode = opts.viewDefault ?? 'grid';
+  if (persistPrefs) {
+    try {
+      const storedView = window.localStorage.getItem(VIEW_STORAGE_KEY);
+      if (storedView === 'list' || storedView === 'compact') viewMode = storedView;
+    } catch { /* localStorage unavailable. */ }
+  }
   /** Whether the browse views also list the folder's non-PDF files. */
-  let showOthers = false;
-  try {
-    showOthers = window.localStorage.getItem(OTHERS_STORAGE_KEY) === '1';
-  } catch { /* localStorage unavailable. */ }
+  let showOthers = opts.showOthersDefault ?? false;
+  if (persistPrefs) {
+    try {
+      showOthers = window.localStorage.getItem(OTHERS_STORAGE_KEY) === '1';
+    } catch { /* localStorage unavailable. */ }
+  }
   /** @type {{list: ?number[], compact: ?number[]}} List column widths in px, null until the first list render sizes them. */
   const colWidths = { list: null, compact: null };
   /** Whether the user has resized a column in each mode, which a seeded width alone does not set. */
   const colSized = { list: false, compact: false };
-  try {
-    const stored = JSON.parse(window.localStorage.getItem(COLS_STORAGE_KEY) || '{}');
-    for (const mode of ['list', 'compact']) {
-      const w = stored[mode];
-      if (Array.isArray(w) && w.length === LIST_COLUMNS[mode].length && w.every((n) => Number.isFinite(n) && n > 0)) {
-        colWidths[mode] = w.map((n) => Math.round(n));
-        colSized[mode] = true;
+  if (persistPrefs) {
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(COLS_STORAGE_KEY) || '{}');
+      for (const mode of ['list', 'compact']) {
+        const w = stored[mode];
+        if (Array.isArray(w) && w.length === LIST_COLUMNS[mode].length && w.every((n) => Number.isFinite(n) && n > 0)) {
+          colWidths[mode] = w.map((n) => Math.round(n));
+          colSized[mode] = true;
+        }
       }
-    }
-  } catch { /* localStorage unavailable, or the stored value is not JSON. */ }
+    } catch { /* localStorage unavailable, or the stored value is not JSON. */ }
+  }
   let colDragActive = false;
   let colRenderPending = false;
   let colSuppressClickUntil = 0;
@@ -446,10 +515,12 @@ export function installLibrary(viewer) {
   let fullTextQuery = '';
   /** Split width while a list view hosts the preview pane. */
   let listPreviewWidth = 700;
-  let listPreviewOn = false;
-  try {
-    listPreviewOn = window.localStorage.getItem(PREVIEW_STORAGE_KEY) === '1';
-  } catch { /* localStorage unavailable. */ }
+  let listPreviewOn = opts.previewDefault ?? false;
+  if (persistPrefs) {
+    try {
+      listPreviewOn = window.localStorage.getItem(PREVIEW_STORAGE_KEY) === '1';
+    } catch { /* localStorage unavailable. */ }
+  }
   /** @type {?string} Doc shown in the list-view preview pane. */
   let listPreviewPath = null;
   let listPreviewPage = 0;
@@ -466,11 +537,13 @@ export function installLibrary(viewer) {
    *   view: ?{zoom: number, sx: number, sy: number}, lib: number}}
    */
   let resumeRecord = null;
-  try {
-    const rawResume = window.sessionStorage.getItem(RESUME_STORAGE_KEY);
-    const parsedResume = rawResume ? JSON.parse(rawResume) : null;
-    if (parsedResume?.v === 1 && Array.isArray(parsedResume.tabs)) resumeRecord = parsedResume;
-  } catch { /* sessionStorage unavailable, or the record is not JSON. */ }
+  if (isLibrary) {
+    try {
+      const rawResume = window.sessionStorage.getItem(RESUME_STORAGE_KEY);
+      const parsedResume = rawResume ? JSON.parse(rawResume) : null;
+      if (parsedResume?.v === 1 && Array.isArray(parsedResume.tabs)) resumeRecord = parsedResume;
+    } catch { /* sessionStorage unavailable, or the record is not JSON. */ }
+  }
   /** Set while `openLibrary` is reopening recorded tabs, so interim writes cannot clobber the record mid-restore. */
   let restoringTabs = false;
   /**
@@ -501,7 +574,7 @@ export function installLibrary(viewer) {
   header.className = 'scribe-library-header';
   const crumbsElem = document.createElement('div');
   crumbsElem.className = 'scribe-library-crumbs';
-  crumbsElem.textContent = 'Library';
+  crumbsElem.textContent = opts.name;
   header.appendChild(crumbsElem);
 
   const searchField = document.createElement('span');
@@ -599,7 +672,7 @@ export function installLibrary(viewer) {
 
   const headerSep = document.createElement('span');
   headerSep.className = 'vertical-separator';
-  header.appendChild(headerSep);
+  if (!readOnly) header.appendChild(headerSep);
 
   // The label and chevron shed at the bar's narrow rung, leaving the plain icon form.
   const newWrap = document.createElement('span');
@@ -637,14 +710,14 @@ export function installLibrary(viewer) {
   newMenu.appendChild(addPdfsItem);
   newWrap.appendChild(newBtn);
   newWrap.appendChild(newMenu);
-  header.appendChild(newWrap);
+  if (!readOnly) header.appendChild(newWrap);
 
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'scribe-library-hicon';
   refreshBtn.innerHTML = REFRESH_SVG;
   refreshBtn.title = 'Re-scan the library folder for new, changed, or removed files';
   refreshBtn.setAttribute('aria-label', 'Refresh folder');
-  header.appendChild(refreshBtn);
+  if (!readOnly) header.appendChild(refreshBtn);
 
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
@@ -699,7 +772,8 @@ export function installLibrary(viewer) {
     barControls = document.createElement('span');
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
-    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) barControls.appendChild(el);
+    // A read-only store (a portfolio) has nothing to add or rescan, so its bar ends at the preview toggle.
+    for (const el of readOnly ? [searchField, viewSeg, sortWrap, previewBtn] : [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) barControls.appendChild(el);
     // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
@@ -713,10 +787,24 @@ export function installLibrary(viewer) {
 
   const homeTab = document.createElement('div');
   homeTab.className = 'scribe-tab pinned';
-  homeTab.title = 'Library';
-  homeTab.innerHTML = `<span class="scribe-tab-icon">${LIBRARY_SVG}</span><span class="scribe-tab-name">Library</span>`;
+  homeTab.title = opts.name;
+  homeTab.innerHTML = `<span class="scribe-tab-icon">${opts.glyph}</span><span class="scribe-tab-name"></span>`;
+  /** @type {HTMLElement} */ (homeTab.querySelector('.scribe-tab-name')).textContent = opts.name;
+  if (opts.onClose) {
+    const close = document.createElement('span');
+    close.className = 'scribe-tab-close';
+    close.textContent = '×';
+    close.role = 'button';
+    close.ariaLabel = `Close ${opts.name}`;
+    // Stopped so closing never also selects the tab.
+    close.addEventListener('click', (e) => {
+      e.stopPropagation();
+      opts.onClose?.();
+    });
+    homeTab.appendChild(close);
+  }
   if (viewer._tabStrip) {
-    viewer._tabStrip.setPinnedTab(homeTab);
+    viewer._tabStrip.addPinnedTab(homeTab);
     viewer._tabStripMinTabs = 1;
     viewer._renderTabs();
   }
@@ -733,6 +821,13 @@ export function installLibrary(viewer) {
   let hiddenBarElems = [];
   let barSwapped = false;
   let priorEndZoneFlex = '';
+
+  /**
+   * This instance as the viewer and the other instances see it.
+   * Filled in below, once the pieces it exposes exist.
+   * @type {LibraryInstance}
+   */
+  const api = /** @type {LibraryInstance} */ ({});
 
   /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu and any shell window controls in place. */
   const swapBarIn = () => {
@@ -772,12 +867,18 @@ export function installLibrary(viewer) {
   };
 
   const showSurface = () => {
+    // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
+    for (const inst of viewer._libraryInstances) {
+      if (inst !== api && inst.visible()) inst.hide();
+    }
     visible = true;
+    viewer._lastPinned = api;
     positionSurface();
     viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
     viewer._searchBar?.closeSearch();
     swapBarIn();
     viewer._tabStrip?.setPinnedActive(true);
+    homeTab.classList.add('active');
     surface.style.display = 'flex';
     // A show that arrived while the surface was hidden only recorded its target, so replay it now that the pane has real dimensions.
     panes.mounted()?.reshow();
@@ -787,6 +888,7 @@ export function installLibrary(viewer) {
     closeCardMenu();
     swapBarOut();
     viewer._tabStrip?.setPinnedActive(false);
+    homeTab.classList.remove('active');
     surface.style.display = 'none';
     // Leaving the library puts an open tab back in front of the reader, so the pane's document stops standing in for the active one.
     viewer._previewDocName = null;
@@ -816,10 +918,11 @@ export function installLibrary(viewer) {
    * The `pagehide` call is the authoritative one, since sessionStorage is synchronous and so completes as the page unloads.
    */
   const writeResumeRecord = () => {
-    if (restoringTabs) return;
+    // Only the library's tabs come back after a reload, because a portfolio's members are gone with it.
+    if (!isLibrary || restoringTabs) return;
     try {
       const activeT = viewer._tabs[viewer._activeTab];
-      const libTabs = viewer._tabs.filter((t) => t.libraryHash || t.libraryRelPath);
+      const libTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
       if (!libTabs.length) {
         window.sessionStorage.removeItem(RESUME_STORAGE_KEY);
         return;
@@ -886,6 +989,8 @@ export function installLibrary(viewer) {
    * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: boolean, libraryRecognized?: boolean}} tab
    */
   const saveTabIfDirty = async (tab) => {
+    // A tab another instance opened (the library's, or another portfolio's) checkpoints through that instance.
+    if (!ownsTab(tab)) return;
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
@@ -934,12 +1039,14 @@ export function installLibrary(viewer) {
     crumbsElem.replaceChildren();
     const segs = currentDir ? currentDir.split('/') : [];
     if (!segs.length) {
-      crumbsElem.textContent = 'Library';
+      crumbsElem.textContent = '';
+      if (opts.crumbGlyph) crumbsElem.insertAdjacentHTML('beforeend', `<span class="fi">${opts.crumbGlyph}</span>`);
+      crumbsElem.appendChild(document.createTextNode(opts.name));
       return;
     }
     const rootBtn = document.createElement('button');
     rootBtn.className = 'scribe-library-crumb';
-    rootBtn.textContent = 'Library';
+    rootBtn.textContent = opts.name;
     rootBtn.dataset.dirTarget = '';
     rootBtn.addEventListener('click', () => openDir(''));
     crumbsElem.appendChild(rootBtn);
@@ -1042,9 +1149,9 @@ export function installLibrary(viewer) {
    * Bring the library surface up to date for the current mode and state.
    * A pass over an unchanged view identity refreshes the existing keyed cards and rows in place.
    * Anything else tears the surface down and rebuilds it.
-   * @param {{revealSelection?: boolean}} [opts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
+   * @param {{revealSelection?: boolean}} [renderOpts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
    */
-  const render = (opts) => {
+  const render = (renderOpts) => {
     // A rebuild mid-drag would pull the dragged card out from under the pointer.
     if (drag.deferRender()) return;
     // A rebuild also replaces the header a column divider is sizing.
@@ -1057,7 +1164,7 @@ export function installLibrary(viewer) {
     if (renameEditing) return;
     // A settle pending from the outgoing list would commit its layout onto whatever mode renders next.
     window.clearTimeout(colSettleTimer);
-    const revealSelection = !!(opts && opts.revealSelection);
+    const revealSelection = !!(renderOpts && renderOpts.revealSelection);
     const reveal = () => {
       if (!revealSelection) return;
       const item = (listPreviewPath && body.querySelector(`[data-rel-path="${CSS.escape(listPreviewPath)}"]`))
@@ -1073,7 +1180,7 @@ export function installLibrary(viewer) {
     syncCrumbs();
     if (manifest) {
       for (const p of selectedPaths) {
-        if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1)))) selectedPaths.delete(p);
+        if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1))) && !(manifest.others ?? []).includes(p)) selectedPaths.delete(p);
       }
     }
     const entries = manifest ? Object.entries(manifest.docs) : [];
@@ -1190,6 +1297,9 @@ export function installLibrary(viewer) {
     if (pane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) pane.destroy();
     if (!fullTextResults) results.dispose();
     if (!store || !manifest) {
+      // Only the library can be store-less, waiting at its folder wall.
+      // Every other instance has its store from birth and waits only for its scan.
+      if (!isLibrary) return;
       const card = document.createElement('div');
       card.className = 'scribe-library-card-wall';
       const connectBtn = document.createElement('button');
@@ -1228,7 +1338,7 @@ export function installLibrary(viewer) {
     if (emptyLib) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
-      empty.textContent = 'No PDFs in this folder yet. Drop files here or use “New › Add PDFs”.';
+      empty.textContent = opts.emptyText ?? 'No PDFs in this folder yet. Drop files here or use “New › Add PDFs”.';
       body.appendChild(empty);
       return;
     }
@@ -1450,6 +1560,21 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * Save each listed file as it is stored (a document's source PDF, or a non-PDF file as it is), one download apiece.
+   * @param {string[]} relPaths
+   */
+  const saveCopies = async (relPaths) => {
+    if (!store) return;
+    for (const p of relPaths) {
+      try {
+        await saveAs(await store.readFile(p), titleOf(p));
+      } catch (err) {
+        viewer._showToast(`Couldn't save “${titleOf(p)}” — ${err instanceof Error ? err.message : 'the file could not be read'}.`);
+      }
+    }
+  };
+
+  /**
    * Open the context menu at the cursor for the doc at `relPath`, or for a folder when the key carries a trailing slash.
    * When a doc card is part of a 2+ selection, the actions apply to every selected document.
    * @param {number} clientX
@@ -1469,10 +1594,12 @@ export function installLibrary(viewer) {
       item.className = danger ? 'scribe-thumb-menu-item danger' : 'scribe-thumb-menu-item';
       item.textContent = label;
       item.addEventListener('click', () => {
+        if (item.classList.contains('disabled')) return;
         closeCardMenu();
         fn();
       });
       menuElem.appendChild(item);
+      return item;
     };
     /**
      * Add the Index item for the stale documents among `docPaths`: queued, changed on disk, or failed.
@@ -1519,58 +1646,67 @@ export function installLibrary(viewer) {
     };
     if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
-      addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
+      if (!readOnly) addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
       const docsUnder = Object.keys(manifest.docs).filter((p) => p.startsWith(relPath));
       addIndexItem(docsUnder);
       addRecognizeItem(docsUnder);
     } else {
       const multi = selectedPaths.has(relPath) && selectedPaths.size >= 2;
-      // Folder keys in a mixed selection drop out here: these actions are document verbs.
-      const paths = (multi ? [...selectedPaths] : [relPath]).filter((p) => manifest && manifest.docs[p]);
-      if (paths.length >= 2) {
+      // Folder keys in a mixed selection drop out here, because these actions are document and file verbs.
+      const chosen = multi ? [...selectedPaths] : [relPath];
+      const paths = chosen.filter((p) => manifest && manifest.docs[p]);
+      const otherPaths = chosen.filter((p) => (manifest?.others ?? []).includes(p));
+      const all = [...paths, ...otherPaths];
+      if (all.length >= 2) {
         const menuHeader = document.createElement('div');
         menuHeader.className = 'scribe-thumb-menu-header';
-        menuHeader.textContent = `${paths.length} documents`;
+        menuHeader.textContent = otherPaths.length ? `${all.length} files` : `${paths.length} documents`;
         menuElem.appendChild(menuHeader);
       }
-      addItem('Open', false, async () => {
+      const openItem = addItem('Open', false, async () => {
         for (const p of paths) {
           const entry = manifest && manifest.docs[p];
           if (entry) await openEntry(p, entry);
         }
       });
+      // Files Scribe cannot open keep the verb in place, greyed, so the menu reads the same on every row.
+      if (!paths.length) openItem.classList.add('disabled');
+      addItem(all.length === 1 ? 'Save a copy…' : 'Save copies…', false, () => saveCopies(all));
       addIndexItem(paths);
       addRecognizeItem(paths);
-      menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
-      if (paths.length === 1) {
-        const e = manifest.docs[paths[0]];
-        if (e && e.status === 'indexed' && e.hash && e.editedAt) addItem('Revert to original…', true, () => openRevertDialog(paths[0]));
-      }
-      addItem('Remove from library', true, async () => {
-        if (!store || !manifest) return;
-        const msg = paths.length === 1
-          ? `Remove “${titleOf(paths[0])}” from the library?\n\nIts saved annotations and edits are deleted. The document file itself is not touched.`
-          : `Remove ${paths.length} documents from the library?\n\nTheir saved annotations and edits are deleted. The document files themselves are not touched.`;
-        if (!window.confirm(msg)) return;
-        for (const p of paths) {
-          const entry = manifest.docs[p];
-          if (!entry) continue;
-          delete manifest.docs[p];
-          // Identical files share a hash and therefore a sidecar; only drop the data files when this was the last reference.
-          const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
-          if (entry.hash && !shared) {
-            index.removeDoc(entry.hash);
-            await Promise.all([
-              store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
-              store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
-            ]).catch(() => {});
-            sessions.invalidate(entry.hash);
-            saveIndexSoon();
+      const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
+      const revertPath = single && single.status === 'indexed' && single.hash && single.editedAt ? paths[0] : null;
+      // Removal is the library's own verb, because a portfolio's files are what the portfolio holds.
+      const canRemove = isLibrary && paths.length > 0 && !otherPaths.length;
+      if (revertPath || canRemove) menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
+      if (revertPath) addItem('Revert to original…', true, () => openRevertDialog(revertPath));
+      if (canRemove) {
+        addItem('Remove from library', true, async () => {
+          if (!store || !manifest) return;
+          const msg = paths.length === 1
+            ? `Remove “${titleOf(paths[0])}” from the library?\n\nIts saved annotations and edits are deleted. The document file itself is not touched.`
+            : `Remove ${paths.length} documents from the library?\n\nTheir saved annotations and edits are deleted. The document files themselves are not touched.`;
+          if (!window.confirm(msg)) return;
+          for (const p of paths) {
+            const entry = manifest.docs[p];
+            if (!entry) continue;
+            delete manifest.docs[p];
+            // Identical files share a hash and therefore a sidecar, so the data files go only with the last reference to it.
+            const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
+            if (entry.hash && !shared) {
+              index.removeDoc(entry.hash);
+              await Promise.all([
+                store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
+                store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
+              ]).catch(() => {});
+              sessions.invalidate(entry.hash);
+              saveIndexSoon();
+            }
           }
-        }
-        await store.writeManifest(manifest);
-        render();
-      });
+          await store.writeManifest(manifest);
+          render();
+        });
+      }
     }
 
     // Show first so the menu has measurable dimensions, then clamp it inside the surface.
@@ -1635,7 +1771,18 @@ export function installLibrary(viewer) {
    */
   const updateCard = (card, relPath, entry) => {
     card.classList.toggle('selected', selectedPaths.has(relPath));
-    setThumbSrc(/** @type {HTMLImageElement} */ (card.querySelector(':scope > img.thumb')), entry);
+    // A portfolio's cover sheet is never shown, so its card carries the portfolio glyph where the thumbnail would be.
+    if (!!entry.portfolio !== card.classList.contains('portfolio')) {
+      card.classList.toggle('portfolio', !!entry.portfolio);
+      card.querySelector(':scope > .fthumb')?.remove();
+      if (entry.portfolio) {
+        const icon = document.createElement('div');
+        icon.className = 'fthumb';
+        icon.innerHTML = `<span class="fi">${PORTFOLIO_SVG}</span>`;
+        card.insertBefore(icon, card.firstChild);
+      }
+    }
+    if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */ (card.querySelector(':scope > img.thumb')), entry);
     const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
     meta.textContent = '';
     meta.removeAttribute('title');
@@ -1935,7 +2082,10 @@ export function installLibrary(viewer) {
     const name = relPath.split('/').pop() || relPath;
     const card = document.createElement('div');
     card.className = 'scribe-library-card other';
+    card.tabIndex = 0;
+    card.dataset.relPath = relPath;
     card.dataset.key = relPath;
+    card.classList.toggle('selected', selectedPaths.has(relPath));
     card.title = 'Not a PDF — Scribe can’t open it';
 
     const icon = document.createElement('div');
@@ -1958,6 +2108,17 @@ export function installLibrary(viewer) {
     meta.appendChild(extBadge);
     cardBody.appendChild(meta);
     card.appendChild(cardBody);
+    card.addEventListener('click', (e) => {
+      if (drag.clickSuppressed()) return;
+      const paths = [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])]
+        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+      applyClickSelection(e, relPath, paths);
+    });
+    card.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (drag.active() || drag.touchDragRecent()) return;
+      openCardMenu(e.clientX, e.clientY, relPath, card);
+    });
     return card;
   };
 
@@ -1975,8 +2136,21 @@ export function installLibrary(viewer) {
     const failed = !feedback && !!entry.ocrError && !entry.ocrQueued && recognizingPath !== relPath;
     const badge = (badgeInfo ? badgeInfo.html : '') + (failed ? '<span class="err">Recognition failed</span>' : '');
     const badgeTitle = failed ? entry.ocrError : badgeInfo?.title;
+    // A portfolio's cover sheet is never shown, so its row carries the portfolio glyph where the thumbnail or page icon would sit.
+    const nm = /** @type {HTMLElement} */ (row.querySelector(':scope > .nm'));
+    if (!!entry.portfolio !== !!nm.querySelector(':scope > .pf')) {
+      nm.querySelector(':scope > .pf')?.remove();
+      if (entry.portfolio) {
+        const glyph = document.createElement('span');
+        glyph.className = comfortable ? 'fthumb pf' : 'fi pf';
+        glyph.innerHTML = comfortable ? `<span class="fi">${PORTFOLIO_SVG}</span>` : PORTFOLIO_SVG;
+        nm.insertBefore(glyph, nm.firstChild);
+      }
+      const img = /** @type {?HTMLElement} */ (nm.querySelector(':scope > img'));
+      if (img) img.style.display = entry.portfolio ? 'none' : '';
+    }
     if (comfortable) {
-      setThumbSrc(/** @type {HTMLImageElement} */ (row.querySelector('.nm > img')), entry);
+      if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */ (row.querySelector('.nm > img')), entry);
       const stack = /** @type {HTMLElement} */ (row.querySelector('.nm > .tt'));
       stack.querySelector(':scope > .m2')?.remove();
       if (badge || feedback) {
@@ -2157,12 +2331,6 @@ export function installLibrary(viewer) {
     }
     row.appendChild(nm);
     for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
-    if (!comfortable) {
-      const statusCell = document.createElement('span');
-      statusCell.className = 'none';
-      statusCell.textContent = '—';
-      row.appendChild(statusCell);
-    }
     updateFolderRow(row, dirPath);
 
     const open = () => {
@@ -2207,7 +2375,10 @@ export function installLibrary(viewer) {
     const name = relPath.split('/').pop() || relPath;
     const row = document.createElement('div');
     row.className = comfortable ? 'scribe-library-row cf other' : 'scribe-library-row other';
+    row.tabIndex = 0;
+    row.dataset.relPath = relPath;
     row.dataset.key = relPath;
+    row.classList.toggle('selected', selectedPaths.has(relPath));
     row.title = 'Not a PDF — Scribe can’t open it';
 
     const badge = document.createElement('span');
@@ -2244,6 +2415,19 @@ export function installLibrary(viewer) {
       statusCell.appendChild(badge);
       row.appendChild(statusCell);
     }
+    row.addEventListener('click', (e) => {
+      if (drag.clickSuppressed()) return;
+      const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
+        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+      // Preview first: syncSelectionUI keeps the previewed file selected, so listPreviewPath must already point at this row.
+      showOtherPreview(relPath);
+      applyClickSelection(e, relPath, paths);
+    });
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (drag.active() || drag.touchDragRecent()) return;
+      openCardMenu(e.clientX, e.clientY, relPath, row);
+    });
     return row;
   };
 
@@ -2257,7 +2441,7 @@ export function installLibrary(viewer) {
    * @param {boolean} [fresh]
    */
   const startFolderRename = (dirPath, hostElem, fresh = false) => {
-    if (renameEditing || fsOpBusy) return;
+    if (readOnly || renameEditing || fsOpBusy) return;
     const target = hostElem.classList.contains('scribe-library-card')
       ? [...(hostElem.querySelector('.body .title')?.childNodes ?? [])].find((n) => n.nodeType === Node.TEXT_NODE)
       : hostElem.querySelector('.nm .t');
@@ -2396,7 +2580,7 @@ export function installLibrary(viewer) {
 
   /** Create a placeholder-named folder in the browsed directory and drop its card straight into rename. */
   const createNewFolder = async () => {
-    if (!store || !manifest || fsOpBusy || renameEditing) return;
+    if (readOnly || !store || !manifest || fsOpBusy || renameEditing) return;
     // A filter or search hides folder cards, so creating one returns to the browse view first.
     if (fullTextResults || filterText) {
       fullTextResults = null;
@@ -2454,7 +2638,7 @@ export function installLibrary(viewer) {
   // The list views use the New menu instead.
   body.addEventListener('contextmenu', (e) => {
     if (viewMode !== 'grid' || fullTextResults || filterText.trim()) return;
-    if (!store || !manifest || fsOpBusy || renameEditing) return;
+    if (readOnly || !store || !manifest || fsOpBusy || renameEditing) return;
     if (drag.active() || drag.touchDragRecent()) return;
     if (/** @type {Element} */ (e.target).closest('.scribe-library-card, .scribe-library-row, .scribe-thumb-menu, button, input')) return;
     e.preventDefault();
@@ -2508,6 +2692,7 @@ export function installLibrary(viewer) {
     const cols = LIST_COLUMNS[viewMode];
     // Only a mode the user has resized is written, so the other keeps re-fitting Name to the window on later visits.
     const saveCols = () => {
+      if (!persistPrefs) return;
       try {
         const sized = {};
         for (const mode of ['list', 'compact']) if (colSized[mode]) sized[mode] = colWidths[mode];
@@ -2832,6 +3017,8 @@ export function installLibrary(viewer) {
       const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
       if (entry && listPreviewPath) {
         showListPreview(listPreviewPath, entry, Math.min(listPreviewPage, (entry.pageCount || 1) - 1));
+      } else if (listPreviewPath && shownOthers.includes(listPreviewPath)) {
+        showOtherPreview(listPreviewPath);
       } else {
         listPreviewPath = null;
       }
@@ -2862,6 +3049,26 @@ export function installLibrary(viewer) {
       title: titleOf(relPath),
       meta: `Page ${pageN + 1} of ${pages}`,
       jump: true,
+    });
+  };
+
+  /**
+   * Show a non-PDF file in the list-view preview pane: its name and kind, and the one thing Scribe can do with it.
+   * @param {string} relPath
+   */
+  const showOtherPreview = (relPath) => {
+    if (!listPane) return;
+    listPreviewPath = relPath;
+    listPreviewPage = 0;
+    const name = relPath.split('/').pop() || relPath;
+    const dot = name.lastIndexOf('.');
+    listPane.showPlate({
+      title: name,
+      badge: dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE',
+      icon: FILE_SVG,
+      note: 'Not a PDF — Scribe can’t open it',
+      action: 'Save a copy…',
+      onAction: () => saveCopies([relPath]),
     });
   };
 
@@ -2900,7 +3107,37 @@ export function installLibrary(viewer) {
     if (openingDocs.has(openKey)) return;
     openingDocs.add(openKey);
     try {
-      const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash) : -1;
+      if (entry.portfolio) {
+        // A portfolio opens as its own pinned surface, never as a page tab.
+        // The file is read plain, with no sidecar and no seed.
+        entry.lastOpened = Date.now();
+        saveManifestSoon();
+        /** @type {File} */
+        let pdfFile;
+        try {
+          pdfFile = await store.readFile(relPath);
+        } catch {
+          entry.status = 'missing';
+          saveManifestSoon();
+          render();
+          viewer._showToast(`Couldn't open “${titleOf(relPath)}” — the file is no longer at ${relPath}.`);
+          return;
+        }
+        /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+        let doc;
+        panes.beginUserLoad();
+        try {
+          doc = await scribeLib.openDocument([pdfFile], { deferText: true });
+        } catch (err) {
+          viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
+          return;
+        } finally {
+          panes.endUserLoad();
+        }
+        await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
+        return;
+      }
+      const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash && ownsTab(t)) : -1;
       if (openIdx >= 0) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
@@ -2919,7 +3156,7 @@ export function installLibrary(viewer) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), {
-          libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+          libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
         });
         wrapMutators(pooled, tab);
         panes.persistRasterWindow(pooled, entry, target.pageN ?? 0);
@@ -2940,7 +3177,7 @@ export function installLibrary(viewer) {
             entry.lastOpened = Date.now();
             saveManifestSoon();
             const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), {
-              libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+              libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
             });
             if (pane.takeDirty()) tab.libraryDirty = true;
             wrapMutators(handoffDoc, tab);
@@ -2973,6 +3210,7 @@ export function installLibrary(viewer) {
         }
         handle.hydrated.catch(() => {}).finally(panes.endUserLoad);
         const tab = viewer._tabs[viewer._activeTab];
+        tab.libraryOwner = instanceId;
         tab.libraryHash = entry.hash;
         tab.libraryRelPath = relPath;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
@@ -3023,11 +3261,19 @@ export function installLibrary(viewer) {
       } finally {
         panes.endUserLoad();
       }
+      if (doc.attachments.collection) {
+        // An entry indexed before the library recorded portfolios shows its nature only now, so the manifest catches up here.
+        entry.portfolio = true;
+        entry.lastOpened = Date.now();
+        saveManifestSoon();
+        await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
+        return;
+      }
       entry.lastOpened = Date.now();
       saveManifestSoon();
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), {
-        libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+        libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
       });
       entry.firstPaintMs = Math.round(performance.now() - t0);
       saveManifestSoon();
@@ -3066,7 +3312,7 @@ export function installLibrary(viewer) {
   const closeTabsFor = (/** @type {string} */ hash) => {
     for (let i = viewer._tabs.length - 1; i >= 0; i--) {
       const tab = viewer._tabs[i];
-      if (tab.libraryHash !== hash) continue;
+      if (tab.libraryHash !== hash || !ownsTab(tab)) continue;
       tab.libraryDirty = false;
       viewer._closeTab(i);
     }
@@ -3175,7 +3421,7 @@ export function installLibrary(viewer) {
     li('Text edits, page changes, form entries, and bookmarks');
     const note = document.createElement('div');
     note.className = 'note';
-    const openTab = viewer._tabs.some((tab) => tab.libraryHash === entry.hash);
+    const openTab = viewer._tabs.some((tab) => tab.libraryHash === entry.hash && ownsTab(tab));
     note.textContent = `The PDF file in your library folder is not changed. You can undo this right afterward.${openTab ? ' Its open tab will close.' : ''}`;
     const foot = document.createElement('div');
     foot.className = 'foot';
@@ -3226,7 +3472,7 @@ export function installLibrary(viewer) {
 
     const myToken = token;
     const hash = entry.hash;
-    const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash)?.doc;
+    const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash && ownsTab(tab))?.doc;
     const docPromise = openTabDoc ? Promise.resolve(openTabDoc)
       : sessions.liveDocOrLoad(hash, async () => {
         const files = [await store.readFile(relPath)];
@@ -3286,7 +3532,7 @@ export function installLibrary(viewer) {
     saveManifestSoon,
     render,
     openCardMenu,
-    dragAllowed: () => !fullTextResults && !filterText.trim() && !fsOpBusy,
+    dragAllowed: () => !readOnly && !fullTextResults && !filterText.trim() && !fsOpBusy,
     reorderAllowed: () => sortMode === 'custom' && viewMode === 'grid',
   });
 
@@ -3409,7 +3655,7 @@ export function installLibrary(viewer) {
       },
       langs: () => viewer.scribe.opt.langs || ['eng'],
       liveDoc: async (hash) => {
-        const tab = viewer._tabs.find((t) => t.libraryHash === hash);
+        const tab = viewer._tabs.find((t) => t.libraryHash === hash && ownsTab(t));
         if (tab) {
           // A seeded tab is still hydrating; recognition needs the real document behind it.
           while (/** @type {any} */ (tab).provisional && viewer._tabs.includes(tab)) await new Promise((r) => { setTimeout(r, 250); });
@@ -3456,7 +3702,7 @@ export function installLibrary(viewer) {
           }
           if (!entry && rec.relPath && manifest.docs[rec.relPath]) { entryPath = rec.relPath; entry = manifest.docs[rec.relPath]; }
           if (!entry || !entryPath) continue;
-          if (entry.hash && viewer._tabs.some((t) => t.libraryHash === entry.hash)) continue;
+          if (entry.hash && viewer._tabs.some((t) => t.libraryHash === entry.hash && ownsTab(t))) continue;
           // Never take the foreground from a document that reached it first (e.g. a shell-opened file).
           const background = toLibrary || viewer._activeTab >= 0;
           // Set before the open, so the attach paints at this zoom rather than at a fit.
@@ -3565,7 +3811,7 @@ export function installLibrary(viewer) {
 
   /** @type {?HTMLElement} */
   let openFolderItem = null;
-  if (viewer._appMenu) {
+  if (viewer._appMenu && isLibrary) {
     openFolderItem = viewer._appMenu.addAction('Open folder', FOLDER_SVG, async () => {
       /** @type {LibraryStore} */
       let s;
@@ -3689,6 +3935,7 @@ export function installLibrary(viewer) {
     render();
   };
   for (const item of sortItems) item.addEventListener('click', onSortItemClick);
+  syncSortUI();
   const syncOthersItem = () => {
     othersItem.classList.toggle('on', showOthers);
     othersItem.setAttribute('aria-checked', String(showOthers));
@@ -3696,9 +3943,11 @@ export function installLibrary(viewer) {
   syncOthersItem();
   othersItem.addEventListener('click', () => {
     showOthers = !showOthers;
-    try {
-      window.localStorage.setItem(OTHERS_STORAGE_KEY, showOthers ? '1' : '0');
-    } catch { /* localStorage unavailable. */ }
+    if (persistPrefs) {
+      try {
+        window.localStorage.setItem(OTHERS_STORAGE_KEY, showOthers ? '1' : '0');
+      } catch { /* localStorage unavailable. */ }
+    }
     syncOthersItem();
     closeSortMenu();
     sortBtn.focus();
@@ -3722,9 +3971,11 @@ export function installLibrary(viewer) {
   const setViewMode = (mode) => {
     if (viewMode === mode) return;
     viewMode = mode;
-    try {
-      window.localStorage.setItem(VIEW_STORAGE_KEY, mode);
-    } catch { /* localStorage unavailable. */ }
+    if (persistPrefs) {
+      try {
+        window.localStorage.setItem(VIEW_STORAGE_KEY, mode);
+      } catch { /* localStorage unavailable. */ }
+    }
     syncViewUI();
     // The results view is mode-independent, so a toggle there must not rebuild anything.
     // The new mode applies when the reader goes back to the grid.
@@ -3735,9 +3986,11 @@ export function installLibrary(viewer) {
   compactViewBtn.addEventListener('click', () => setViewMode('compact'));
   previewBtn.addEventListener('click', () => {
     listPreviewOn = !listPreviewOn;
-    try {
-      window.localStorage.setItem(PREVIEW_STORAGE_KEY, listPreviewOn ? '1' : '0');
-    } catch { /* localStorage unavailable. */ }
+    if (persistPrefs) {
+      try {
+        window.localStorage.setItem(PREVIEW_STORAGE_KEY, listPreviewOn ? '1' : '0');
+      } catch { /* localStorage unavailable. */ }
+    }
     syncViewUI();
     if (!fullTextResults) render();
   });
@@ -3828,7 +4081,8 @@ export function installLibrary(viewer) {
 
   surface.addEventListener('dragover', (e) => {
     // preventDefault on dragover is what marks the surface as a drop target, so it has to stay behind this guard.
-    if (!isFileDrag(e)) return;
+    // A read-only surface leaves the drag to the viewer root, which opens the drop as a new tab.
+    if (readOnly || !isFileDrag(e)) return;
     e.preventDefault();
     if (dragClearTimer !== null) {
       window.clearTimeout(dragClearTimer);
@@ -3864,7 +4118,7 @@ export function installLibrary(viewer) {
     if (dragClearTimer === null) dragClearTimer = window.setTimeout(clearDragState, 600);
   });
   surface.addEventListener('drop', async (e) => {
-    if (!isFileDrag(e)) return;
+    if (readOnly || !isFileDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
     clearDragState();
@@ -3889,16 +4143,20 @@ export function installLibrary(viewer) {
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
   viewer.pdfViewerElem.addEventListener('input', onInput, true);
-  // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty.
-  viewer.scribe.onAnnotationsEdited = () => {
-    const tab = viewer._tabs[viewer._activeTab];
-    if (tab?.libraryHash) tab.libraryDirty = true;
-  };
-  // A turn can settle after a tab switch, so this hook resolves the tab from the document rather than the active tab.
-  viewer.onAssistantHistoryEdited = (doc) => {
-    const tab = viewer._tabs.find((t) => t.doc === doc);
-    if (tab?.libraryHash) tab.libraryDirty = true;
-  };
+  // Two single-slot hooks on the viewer: the first instance sets them, and they mark any instance's tab dirty.
+  const ownsEditHooks = !viewer.scribe.onAnnotationsEdited;
+  if (ownsEditHooks) {
+    // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty.
+    viewer.scribe.onAnnotationsEdited = () => {
+      const tab = viewer._tabs[viewer._activeTab];
+      if (tab?.libraryHash) tab.libraryDirty = true;
+    };
+    // A turn can settle after a tab switch, so this hook resolves the tab from the document rather than the active tab.
+    viewer.onAssistantHistoryEdited = (doc) => {
+      const tab = viewer._tabs.find((t) => t.doc === doc);
+      if (tab?.libraryHash) tab.libraryDirty = true;
+    };
+  }
   const autosaveTimer = window.setInterval(() => {
     saveTabIfDirty(viewer._tabs[viewer._activeTab]);
     writeResumeRecord();
@@ -3935,7 +4193,37 @@ export function installLibrary(viewer) {
   };
   document.addEventListener('keydown', onFindShortcut, true);
 
-  viewer._libraryHooks = {
+  // Document-level like the find shortcut, so it works with focus anywhere on the surface, never inside a text field.
+  /** @param {KeyboardEvent} e */
+  const onSelectAll = (e) => {
+    if (!visible || paneEngaged) return;
+    if (!((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey)) return;
+    if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
+    const paths = new Set([...body.querySelectorAll('.scribe-library-card[data-rel-path], .scribe-library-row[data-rel-path]')]
+      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? ''));
+    if (!paths.size) return;
+    e.preventDefault();
+    e.stopPropagation();
+    selectedPaths.clear();
+    for (const p of paths) selectedPaths.add(p);
+    selAnchor = null;
+    syncSelectionUI();
+  };
+  document.addEventListener('keydown', onSelectAll, true);
+
+  Object.assign(api, {
+    kind: opts.kind,
+    libraryHash: opts.libraryHash ?? null,
+    libraryOwner: opts.libraryOwner ?? null,
+    visible: () => visible,
+    show: () => {
+      if (visible) return;
+      showSurface();
+      render({ revealSelection: true });
+    },
+    hide: () => {
+      if (visible) hideSurface();
+    },
     docOpened: () => {
       if (visible) hideSurface();
       writeResumeRecord();
@@ -3951,11 +4239,31 @@ export function installLibrary(viewer) {
     saveAllDirty: async () => {
       for (const tab of viewer._tabs) await saveTabIfDirty(tab);
     },
-  };
+  });
+  viewer._libraryInstances.push(api);
 
   // --- Boot ---------------------------------------------------------------
 
   (async () => {
+    if (!isLibrary) {
+      showSurface();
+      render();
+      await openLibrary(/** @type {LibraryStore} */ (/** @type {unknown} */ (opts.store)));
+      if (destroyed) return;
+      const first = opts.initialRelPath;
+      const firstEntry = first ? manifest?.docs[first] : null;
+      if (first && firstEntry) {
+        // The author's first file can sit in a folder, so the view opens on that folder and the selection is in sight.
+        currentDir = first.slice(0, Math.max(0, first.lastIndexOf('/')));
+        selectedPaths.add(first);
+        selAnchor = first;
+        listPreviewPath = first;
+      }
+      render({ revealSelection: true });
+      // The render above reconciles the list in place, which leaves the pane alone, so the preview is asked for directly.
+      if (first && firstEntry) showListPreview(first, firstEntry, 0);
+      return;
+    }
     const handle = await LibraryStore.restoreHandle();
     if (destroyed) return;
     if (handle) {
@@ -3986,7 +4294,7 @@ export function installLibrary(viewer) {
     }
   })();
 
-  return {
+  Object.assign(api, {
     destroy() {
       destroyed = true;
       drag.cancel();
@@ -4010,6 +4318,7 @@ export function installLibrary(viewer) {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('keydown', onFindShortcut, true);
+      document.removeEventListener('keydown', onSelectAll, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
       // Flush, don't drop: a cancelled debounce would lose the last manifest/index update.
       if (manifestTimer !== null) {
@@ -4029,13 +4338,70 @@ export function installLibrary(viewer) {
       barTitle?.remove();
       barControls?.remove();
       if (viewer._tabStrip) {
-        viewer._tabStrip.setPinnedTab(null);
-        viewer._tabStripMinTabs = 2;
+        viewer._tabStrip.removePinnedTab(homeTab);
+        if (!viewer._tabStrip.pinnedCount()) viewer._tabStripMinTabs = 2;
         viewer._renderTabs();
       }
       openFolderItem?.remove();
-      viewer.scribe.onAnnotationsEdited = null;
-      viewer._libraryHooks = null;
+      if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;
+      const at = viewer._libraryInstances.indexOf(api);
+      if (at >= 0) viewer._libraryInstances.splice(at, 1);
+      if (viewer._lastPinned === api) viewer._lastPinned = null;
     },
-  };
+  });
+  return api;
+}
+
+/**
+ * Install the document library: the pinned Library tab, its folder connection and the app-menu items that go with it.
+ * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
+ */
+export function installLibrary(viewer) {
+  return createLibraryInstance(viewer, {
+    kind: 'library', name: 'Library', glyph: LIBRARY_SVG, persistPrefs: true,
+  });
+}
+
+/**
+ * Open a PDF portfolio as a pinned tab listing its embedded files, the surface the library shows over a folder, here over the portfolio's own in-memory store.
+ * A portfolio already open from the same library entry comes forward instead of opening twice.
+ * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The portfolio document (its cover sheet and its files); the surface owns it from here on.
+ * @param {string} name - Display name: the file name, as everywhere in the library.
+ * @param {{libraryHash?: string, libraryRelPath?: string, libraryOwner?: number}} [fields] - Where it came from, when a library entry opened it.
+ * @returns {Promise<LibraryInstance>}
+ */
+export async function openPortfolio(viewer, doc, name, fields = {}) {
+  const twin = fields.libraryHash
+    ? viewer._libraryInstances.find((i) => i.kind === 'portfolio' && i.libraryHash === fields.libraryHash && i.libraryOwner === (fields.libraryOwner ?? null))
+    : null;
+  if (twin) {
+    await doc.close().catch(() => {});
+    twin.show();
+    return twin;
+  }
+  const store = new PortfolioStore(doc, name);
+  const { collection } = doc.attachments;
+  const api = createLibraryInstance(viewer, {
+    kind: 'portfolio',
+    name,
+    glyph: PORTFOLIO_TAB_SVG,
+    crumbGlyph: PORTFOLIO_SVG,
+    store,
+    viewDefault: 'compact',
+    previewDefault: true,
+    showOthersDefault: true,
+    persistPrefs: false,
+    readOnly: true,
+    emptyText: 'This portfolio has no files.',
+    initialRelPath: collection?.initial ? store.relPathOfKey(collection.initial) : null,
+    libraryHash: fields.libraryHash ?? null,
+    libraryOwner: fields.libraryOwner ?? null,
+    onClose: () => {
+      api.destroy();
+      store.dispose();
+      doc.close().catch(() => {});
+    },
+  });
+  return api;
 }

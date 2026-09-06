@@ -40,6 +40,12 @@ export class PdfScheduler {
   getPdfFontBytes = (args) => this.scheduler.addJob('getPdfFontBytes', args);
 
   /**
+   * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
+   * @param {{ objNum: number }} args
+   */
+  getPdfEmbeddedFileBytes = (args) => this.scheduler.addJob('getPdfEmbeddedFileBytes', args);
+
+  /**
    * Set the page the main viewer is on, so staged viewer renders dispatch closest-to-current first.
    * @param {?number} n
    */
@@ -108,6 +114,12 @@ export class PdfSchedulerInProcess {
    * @param {{ fontObjNum: number, pageIndex?: number }} args
    */
   getPdfFontBytes = (args) => this.#core.getFontBytes(args);
+
+  /**
+   * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
+   * @param {{ objNum: number }} args
+   */
+  getPdfEmbeddedFileBytes = (args) => this.#core.getEmbeddedFileBytes(args);
 
   /**
    * No-op: in-process renders run immediately, so there is no staged queue to prioritize.
