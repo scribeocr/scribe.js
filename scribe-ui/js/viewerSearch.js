@@ -78,20 +78,7 @@ export async function goToMatch(viewer, index) {
   }
 
   const uiWord = uiWords.find((kw) => kw.word.id === match.wordIds[0]);
-  if (!uiWord) return;
-
-  // Center the match vertically in the viewport. Nudge horizontally only if it would sit off an edge.
-  // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
-  const rect = uiWord.getClientRect();
-  const margin = 30;
-  const sc = _viewer.scrollContainer;
-  const zoom = _viewer.zoomLevel || 1;
-  sc.scrollTop = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
-  const leftPx = rect.x * zoom - sc.scrollLeft;
-  const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
-  if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
-  else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
-  _viewer.updateCurrentPage();
+  if (uiWord) _viewer.scrollToWord(uiWord);
 }
 
 /**

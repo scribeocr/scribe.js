@@ -3346,9 +3346,11 @@ export function extractType3Fonts(pdfBytes) {
  * Build an OpenType.js font from a Type3 font object.
  * @param {string} objText - The Type3 font object text
  * @param {ObjectCache} objCache
+ * @param {?Map<string, { unicodes: number[], advanceWidth: number }>} [glyphOverrides] - Per CharProc name, the code points the glyph answers to and its advance in glyph space.
+ *   Absent, glyphs take consecutive private-use code points in CharProcs order and the CharProc's declared advance.
  * @returns {Type0FontInfo|null}
  */
-function buildType3OpentypeFont(objText, objCache) {
+export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null) {
   // Extract FontMatrix
   const fmStr = resolveArrayValue(objText, 'FontMatrix', objCache);
   const fontMatrix = fmStr ? fmStr.split(/\s+/).map(Number) : [0.001, 0, 0, 0.001, 0, 0];
@@ -3433,10 +3435,12 @@ function buildType3OpentypeFont(objText, objCache) {
       }
     }
 
+    const override = glyphOverrides ? glyphOverrides.get(glyphName) : undefined;
     const glyph = new opentype.Glyph({
       name: glyphName,
-      unicode: unicodeCounter,
-      advanceWidth: Math.round(pathData.advanceWidth * scaleX),
+      unicode: override ? undefined : unicodeCounter,
+      unicodes: override ? override.unicodes : [unicodeCounter],
+      advanceWidth: Math.round((override ? override.advanceWidth : pathData.advanceWidth) * scaleX),
       path: opPath,
     });
     glyphs.push(glyph);

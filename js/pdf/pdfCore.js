@@ -1,6 +1,7 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
 import { ObjectCache } from './objectCache.js';
+import { buildType3OpentypeFont } from './fonts/parsePdfFonts.js';
 import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import { parseSinglePage } from './parsePdfDoc.js';
@@ -83,10 +84,13 @@ export class PdfCore {
   /**
    * The font program the renderer draws the given embedded font with, plus the cascade inputs native-text editing needs.
    * @param {{ fontObjNum: number, pageIndex?: number }} args - `pageIndex` is a page the font is used on, letting this instance resolve a font from a page it never parsed.
-   * @returns {Promise<?{ kind: 'original'|'rebuilt'|'none', bytes?: ArrayBuffer, allGlyphsEmpty?: boolean,
+   * @returns {Promise<?{ kind: 'original'|'rebuilt'|'type3'|'none', bytes?: ArrayBuffer, allGlyphsEmpty?: boolean,
+   *   glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }>,
    *   baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: boolean|null,
    *   italicAngleDeg: ?number, capHeightPdf: ?number, xHeightPdf: ?number, stemV: ?number }>}
    *   `kind: 'none'` means the font has no usable embedded program, so editing must fall back the same way the renderer did.
+   *   `kind: 'type3'` is a program built from a Type 3 font's CharProcs, which the Inspect panel draws with but edited text does not.
+   *   `glyphs` names each CharProc with the codes that reach it and the text they extract as.
    *   Null means the `fontObjNum` is unknown.
    */
   async getFontBytes({ fontObjNum, pageIndex }) {
@@ -101,6 +105,40 @@ export class PdfCore {
       const { registerFontForEditing } = await import('./renderPdfPage.js');
       if (typeof process !== 'undefined') await ca.getCanvasNode();
       await registerFontForEditing(fontObj, this.#objCache);
+    }
+    // The program's glyphs answer to the text the parser gave each code, so the words it extracted draw in the font's own glyphs.
+    // That text is often a private-use placeholder rather than a real character.
+    if (fontObj.type3 && !this.#objCache.fontBytesCache.has(fontObjNum)) {
+      const t3 = fontObj.type3;
+      const overrides = new Map();
+      const table = [];
+      const taken = new Set();
+      for (const name of Object.keys(t3.charProcObjNums)) {
+        const info = t3.glyphs[name];
+        const hasOutline = !!(info && info.commands && info.commands.some((c) => c.type === 'L' || c.type === 'C'));
+        const codes = Object.entries(t3.encoding).filter(([, n]) => n === name).map(([c]) => Number(c)).sort((a, b) => a - b);
+        const unicodes = [];
+        for (const code of codes) {
+          const text = fontObj.toUnicode.get(code);
+          if (!text || [...text].length !== 1) continue;
+          const cp = /** @type {number} */ (text.codePointAt(0));
+          if (taken.has(cp)) continue;
+          taken.add(cp);
+          unicodes.push(cp);
+        }
+        // A placeholder d1 carries no usable advance, so the glyph's own ink sets the width instead.
+        const advanceWidth = info && info.placeholderD1 && info.bbox && info.bbox.x1 > 0 ? info.bbox.x1 + Math.max(0, info.bbox.x0) : (info ? info.advanceWidth : 0);
+        overrides.set(name, { unicodes, advanceWidth });
+        table.push({
+          name, codes, text: codes.length ? (fontObj.toUnicode.get(codes[0]) ?? null) : null, pathHash: (info && info.pathHash) || null, hasOutline,
+        });
+      }
+      const objText = this.#objCache.getObjectText(fontObjNum);
+      const built = objText && table.some((g) => g.hasOutline) ? buildType3OpentypeFont(objText, this.#objCache, overrides) : null;
+      if (built) {
+        const file = built.fontFile;
+        this.#objCache.fontBytesCache.set(fontObjNum, { bytes: file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength), kind: 'type3', glyphs: table });
+      }
     }
     const meta = {
       baseName: fontObj.baseName,
@@ -119,7 +157,7 @@ export class PdfCore {
       || this.#objCache.fontConversionCache.get(fontObjNum)?.allGlyphsEmpty);
     // Copied so the postMessage transfer can never detach the cached buffer.
     return {
-      kind: entry.kind, bytes: entry.bytes.slice(0), allGlyphsEmpty, ...meta,
+      kind: entry.kind, bytes: entry.bytes.slice(0), allGlyphsEmpty, ...meta, ...(entry.glyphs ? { glyphs: entry.glyphs } : {}),
     };
   }
 

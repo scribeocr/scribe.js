@@ -359,6 +359,35 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-xml .t, .${r} .scribe-am-ins-xml .a { color: var(--scribe-ink-3); }
     .${r} .scribe-am-ins-xml .n { color: var(--scribe-ink-2); }
     .${r} .scribe-am-ins-xml .v { color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-gllink { color: var(--scribe-accent); text-decoration: none; white-space: nowrap; }
+    .${r} .scribe-am-ins-gllink:hover { text-decoration: underline; }
+    .${r} .scribe-am-ins-gllink .scribe-am-ins-tw { margin: 0; }
+    .${r} .scribe-am-ins-glfont { display: flex; align-items: baseline; gap: 8px; padding: 8px 0 2px; }
+    .${r} .scribe-am-ins-glfont .nm { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-ins-glfont .ty { font-size: 11.5px; color: var(--scribe-ink-3); white-space: nowrap; }
+    .${r} .scribe-am-ins-gl .scribe-am-ins-sample { margin: 4px 0 8px; }
+    .${r} .scribe-am-ins-glwarn { color: #b45309; font-weight: 600; font-size: 10.5px; letter-spacing: 0; text-transform: none; }
+    .${r}[data-theme="dark"] .scribe-am-ins-glwarn { color: #f0b35a; }
+    .${r} .scribe-am-ins-glgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 2px; margin: 4px 0 2px; }
+    .${r} .scribe-am-ins-glcell {
+      position: relative; height: 42px; box-sizing: border-box; overflow: hidden; display: grid; place-items: center; cursor: pointer;
+      border: 1px solid var(--scribe-line); border-radius: 4px; background: var(--scribe-surface); -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-am-ins-glcell svg { width: 60%; height: 60%; margin-top: -8px; display: block; fill: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glcell:hover { border-color: var(--scribe-line-strong); background: var(--scribe-hover); }
+    .${r} .scribe-am-ins-glcell:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-am-ins-glcell.unused { background: var(--scribe-canvas); }
+    .${r} .scribe-am-ins-glcell.unused svg { fill: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-glcell.ph { background: color-mix(in srgb, var(--scribe-note) 16%, var(--scribe-surface)); border-color: color-mix(in srgb, var(--scribe-note) 40%, var(--scribe-line)); }
+    .${r} .scribe-am-ins-glcell.ph.unused { background: color-mix(in srgb, var(--scribe-note) 8%, var(--scribe-canvas)); }
+    .${r} .scribe-am-ins-glcell.sel { border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); background: var(--scribe-active); }
+    .${r} .scribe-am-ins-glcell.sel svg { fill: var(--scribe-accent); }
+    .${r} .scribe-am-ins-glcap { position: absolute; left: 0; right: 0; bottom: 1px; font-size: 8.5px; line-height: 1; color: var(--scribe-ink-3); text-align: center; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glcap.ph { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 7.5px; letter-spacing: -.02em; }
+    .${r} .scribe-am-ins-glfoot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 18px; font-size: 11.5px; color: var(--scribe-ink-2); padding: 3px 0 0; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glfoot .ch { font-size: 15px; line-height: 1; color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glfoot .ch.ph { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-ins-glfoot .dim { color: var(--scribe-ink-3); }
     .${r}.scribe-phone .scribe-am-ins { padding: 2px 14px 14px; }
     .${r}.scribe-phone .scribe-am-ins-kv { font-size: 14px; grid-template-columns: 120px minmax(0, 1fr); padding: 5px 0; }
     .${r}.scribe-phone .scribe-am-ins-tbl { font-size: 13px; }
@@ -367,6 +396,15 @@ function addAutomateStyles(rootClass) {
     .${r}.scribe-phone .scribe-am-ins-more, .${r}.scribe-phone .scribe-am-ins-fewer { font-size: 13px; }
     .${r}.scribe-phone .scribe-am-ins-xmp .scribe-am-ins-kv { font-size: 13px; grid-template-columns: 136px minmax(0, 1fr); }
     .${r}.scribe-phone .scribe-am-ins-schema, .${r}.scribe-phone .scribe-am-ins-lang, .${r}.scribe-phone .scribe-am-ins-nest-hd { font-size: 12px; }
+    .${r}.scribe-phone .scribe-am-ins-glfont .nm { font-size: 15px; }
+    .${r}.scribe-phone .scribe-am-ins-glfont .ty { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-glgrid { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 3px; }
+    .${r}.scribe-phone .scribe-am-ins-glcell { height: 50px; }
+    .${r}.scribe-phone .scribe-am-ins-glcell svg { margin-top: -10px; }
+    .${r}.scribe-phone .scribe-am-ins-glcap { font-size: 10px; bottom: 2px; }
+    .${r}.scribe-phone .scribe-am-ins-glcap.ph { font-size: 9px; }
+    .${r}.scribe-phone .scribe-am-ins-glfoot { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-glfoot .ch { font-size: 17px; }
     .${r}.scribe-phone .scribe-am-ins-xmlline { font-size: 13px; }
     .${r}.scribe-phone .scribe-am-ins-xml { font-size: 12px; }
     .${r}.scribe-phone .scribe-am-ins-cat { font-size: 13.5px; }
@@ -756,6 +794,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     redactElem.style.display = next === 'redact' ? '' : 'none';
     bulkElem.style.display = next === 'bulk' ? '' : 'none';
     backBtn.style.display = rest || !automations ? 'none' : '';
+    backBtn.title = 'Back to all automations';
     hdIcon.style.display = rest || !automations ? '' : 'none';
     if (!automations) hdIcon.innerHTML = next === 'inspect' ? INSPECT_SVG : (AUTOMATIONS.find((a) => a.id === 'extract-tables')?.svg || AUTOMATE_SVG);
     plusBtn.style.display = asst ? '' : 'none';
@@ -2299,7 +2338,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
     // The mode may have exited (or the view moved on) during the await.
     if (view !== 'inspect' || inspectHandle) return;
     inspectElem.textContent = '';
-    inspectHandle = module.buildInspectWorkspace(host, inspectElem);
+    inspectHandle = module.buildInspectWorkspace(host, inspectElem, {
+      // With no automations catalog there is no list to go back to, so the back control appears only for a sub-view.
+      setSubview: (title) => {
+        if (view !== 'inspect') return;
+        backBtn.style.display = title || automations ? '' : 'none';
+        backBtn.title = title ? 'Back to the fonts list' : 'Back to all automations';
+        hdIcon.style.display = title || automations ? 'none' : '';
+        hdTitle.textContent = title || 'Inspect Document';
+      },
+    });
   }
 
   /** Called when the Inspect Document mode exits: tear the workspace down and restore the prior view. */
@@ -2353,6 +2401,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   backBtn.addEventListener('click', () => {
     // Panel navigation only, because the canvas mode keeps running whatever the panel shows.
     // The toolbar button and the banner's Done are that mode's only exits.
+    if (view === 'inspect' && inspectHandle?.back()) return;
     if (activeRun && activeRun.status === 'form') activeRun = null;
     setView('rest');
   });

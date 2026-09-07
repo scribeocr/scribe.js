@@ -93,7 +93,9 @@ export class ObjectCache {
      * The font program bytes the renderer actually draws with, keyed by fontObjNum.
      * Native-text editing reads these so edited glyphs come from the same outlines as the raster.
      * Never evicted.
-     * @type {Map<number, { bytes: ArrayBuffer, kind: 'original'|'rebuilt' }>}
+     * A `type3` entry is built from the font's CharProcs on request and carries its glyph table.
+     * @type {Map<number, { bytes: ArrayBuffer, kind: 'original'|'rebuilt'|'type3',
+     *   glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }> }>}
      */
     this.fontBytesCache = new Map();
     /**

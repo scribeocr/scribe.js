@@ -16,6 +16,11 @@ const IMAGE_ROW_LIMIT = 8;
 const FONT_ROW_LIMIT = 10;
 /** Rows one "Show more" adds. */
 const ROW_STEP = 20;
+const GLYPH_CELL_LIMIT = 210;
+const GLYPH_STEP = 140;
+const SVGNS = 'http://www.w3.org/2000/svg';
+/** @param {number} cp */
+const hexCp = (cp) => `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
 
 /** Decimal units, so the figures agree with the file size operating systems report. */
 const fmtBytes = (n) => (n < 1000 ? `${n} B` : n < 1e6 ? `${Math.round(n / 1000)} KB` : `${(n / 1e6).toFixed(1)} MB`);
@@ -44,6 +49,12 @@ function fmtPageSize(w, h) {
   const name = PAPER_NAMES[`${w}x${h}`] || PAPER_NAMES[`${h}x${w}`] || null;
   return `${inches(w)} × ${inches(h)} in${name ? ` · ${name}` : ''}`;
 }
+
+/**
+ * The Page sizes row's value.
+ * @param {string[]} sizes - Most common first.
+ */
+const sizesValue = (sizes) => (sizes.length ? `${sizes.slice(0, 3).join(', ')}${sizes.length > 3 ? ` · ${fmtInt(sizes.length - 3)} more` : ''}` : null);
 
 /**
  * @param {import('../../../js/pdf/resourceInventory.js').InventoryImage} im
@@ -317,13 +328,30 @@ function xmpGrid(props) {
 }
 
 /**
+ * @typedef {Object} DrillGlyph - One glyph of the font open in the glyph view.
+ * @property {number} i - Index in the program.
+ * @property {import('../../../js/font-parser/src/glyph.js').Glyph} glyph
+ * @property {?string} name
+ * @property {?string} text - What the document's text carries for the glyph, or null when no character reaches it.
+ * @property {string[]} keys - The strings that mean this glyph in extracted text.
+ * @property {?number} cp - The lowest code point the glyph answers to.
+ * @property {boolean} placeholder - The text is a private-use code point rather than a real character.
+ * @property {number} uses - Occurrences in the document's text.
+ * @property {Set<number>} pages - 0-based pages with a use.
+ * @property {?{n: number, wordId: string}} first - The first use in reading order.
+ */
+
+/**
  * Build the workspace into `container`.
  * @param {import('./registry.js').AutomationHost} host
  * @param {HTMLElement} container
+ * @param {?{setSubview: (title: ?string) => void}} [nav] - The host's header.
+ *   A title puts the workspace in a sub-view whose back control calls `back()`.
+ *   Null restores the workspace's own title.
  * @returns {{refresh: () => void, teardown: () => void, pageChanged: () => void, selectWord: (n: number, wordId: string) => boolean,
- *   clearPin: () => boolean, hasPin: () => boolean, armedChanged: (on: boolean) => void}}
+ *   clearPin: () => boolean, hasPin: () => boolean, armedChanged: (on: boolean) => void, back: () => boolean, inSubview: () => boolean, clearGlyph: () => boolean}}
  */
-export function buildInspectWorkspace(host, container) {
+export function buildInspectWorkspace(host, container, nav = null) {
   const { viewer } = host;
   container.textContent = '';
   const body = el('div', 'scribe-am-ins');
@@ -352,11 +380,23 @@ export function buildInspectWorkspace(host, container) {
   let hoverFont = null;
   /** @type {Array<any>} UI words currently washed. */
   let washed = [];
+  /**
+   * The glyph view, in place of the list while a font is open.
+   * @type {?{font: import('../../../js/pdf/resourceInventory.js').InventoryFont, program: import('../../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string,
+   *   glyphs: DrillGlyph[], part: ?HTMLElement, scrollTop: number, paintSel: () => void, setFoot: (g: ?DrillGlyph) => void}}
+   */
+  let drill = null;
+  /** @type {?DrillGlyph} The glyph whose words are washed. */
+  let selGlyph = null;
+  let shownGlyphs = GLYPH_CELL_LIMIT;
   const radioName = `scribe-am-ins-scope-${Math.random().toString(36).slice(2, 8)}`;
   const fontKey = (f) => (f.programObjNum != null ? `p${f.programObjNum}` : `n-${f.name}-${f.fontObjNums[0]}`);
 
-  /** Wash the words drawn with `font` in every rendered page; null clears. */
-  const applyWash = (font) => {
+  /**
+   * Wash the words drawn with `font` in every rendered page; null clears.
+   * With `keys`, only the words whose text carries one of those strings.
+   */
+  const applyWash = (font, keys = null) => {
     for (const kw of washed) kw.fillBox = false;
     washed = [];
     const doc = viewer.doc;
@@ -366,15 +406,56 @@ export function buildInspectWorkspace(host, container) {
       if (!page || page.textSource !== 'pdf') continue;
       const entry = doc.nativeText.pages[page.n]?.[kw.word.id];
       if (!entry || entry.fontObjNum == null || !font.fontObjNums.includes(entry.fontObjNum)) continue;
+      if (keys && !keys.some((k) => kw.word.text.includes(k))) continue;
       kw.fillBox = true;
       washed.push(kw);
     }
   };
 
+  const scrollToHeader = (hdr) => {
+    const top = hdr.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
+    body.scrollTop = Math.max(0, top - 2);
+  };
+  /**
+   * The grow and fold controls under a shortened list.
+   * @param {number} total
+   * @param {number} shown
+   * @param {number} base
+   * @param {number} step - Rows one "Show more" adds.
+   * @param {(n: number) => void} setShown
+   * @param {HTMLElement} hdr - The group header a fold scrolls back to.
+   * @param {() => void} repaint - Rebuilds the list with the new count.
+   */
+  const listFooters = (total, shown, base, step, setShown, hdr, repaint) => {
+    const out = document.createDocumentFragment();
+    const linkTo = (text, n, fold) => {
+      const a = el('a', 'scribe-am-ins-more-link', text);
+      a.href = '#';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        setShown(n);
+        repaint();
+        if (fold) { const next = [...body.querySelectorAll('.scribe-am-cat')].find((c) => c.textContent === hdr.textContent); if (next) scrollToHeader(next); }
+      });
+      return a;
+    };
+    if (shown > base) {
+      const fewer = el('div', 'scribe-am-ins-fewer');
+      fewer.append(el('span', '', `Showing ${fmtInt(Math.min(shown, total))} of ${fmtInt(total)}`), linkTo('Show fewer', base, true));
+      out.append(fewer);
+    }
+    if (shown < total) {
+      const more = el('div', 'scribe-am-ins-more', `${fmtInt(total - shown)} more · `);
+      more.append(linkTo(`Show ${Math.min(step, total - shown)} more`, shown + step, false), document.createTextNode(' · '), linkTo(`Show all ${fmtInt(total)}`, total, false));
+      out.append(more);
+    }
+    return out;
+  };
+
   /**
    * A line of the words this font drew, in the document's own face once the renderer has rebuilt it; null when no text used it.
    * @param {import('../../../js/pdf/resourceInventory.js').InventoryFont} f
-   * @param {(program: ?import('../../../js/pdf/glyphResolve.js').EditFontProgram) => void} onProgram - Called once the program has settled.
+   * @param {(program: ?import('../../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string) => void} onProgram - Called once the program has settled, with the face it is registered under.
    */
   const sampleFor = (f, onProgram) => {
     const doc = viewer.doc;
@@ -401,8 +482,10 @@ export function buildInspectWorkspace(host, container) {
     const fontObjNum = f.fontObjNums[0];
     Promise.resolve(doc.images.getEditFont(firstPage, fontObjNum)).then((ef) => {
       if (ef?.faceName && line.isConnected) line.style.fontFamily = `'${ef.faceName}'`;
-      onProgram(ef?.program || null);
-    }).catch(() => onProgram(null));
+      // A Type 3 font whose glyphs are bitmaps yields no program, and its text is placeholders that no face can draw.
+      else if (f.subtype === 'Type3' && line.isConnected && /^[\s\uE000-\uF8FF]*$/.test(line.textContent || '')) line.replaceWith(el('div', 'scribe-am-ins-note', 'Glyphs are drawn by procedures in the file; no sample.'));
+      onProgram(ef?.program || null, ef?.faceName || null);
+    }).catch(() => onProgram(null, null));
     return line;
   };
 
@@ -426,7 +509,7 @@ export function buildInspectWorkspace(host, container) {
         const [w, h] = k.split('x').map(Number);
         return counts.size > 1 ? `${PAPER_NAMES[`${w}x${h}`] || fmtPageSize(w, h)} ×${c}` : fmtPageSize(w, h);
       });
-      rows.push(['Page size', sizes.length ? sizes.join(', ') : null]);
+      rows.push(['Page sizes', sizesValue(sizes)]);
       rows.push(['Title', info.Title || null], ['Author', info.Author || null], ['Subject', info.Subject || null], ['Keywords', info.Keywords || null]);
       rows.push(['Created', info.CreationDate ? fmtPdfDate(info.CreationDate) : null], ['Modified', info.ModDate ? fmtPdfDate(info.ModDate) : null]);
       rows.push(['Application', info.Creator || null], ['PDF producer', info.Producer || null]);
@@ -440,8 +523,10 @@ export function buildInspectWorkspace(host, container) {
       const approxBytes = dataUrl ? Math.round((dataUrl.length - dataUrl.indexOf(',') - 1) * 3 / 4) : null;
       rows.push(['Size', approxBytes != null ? `${fmtBytes(approxBytes)} (${fmtInt(approxBytes)} bytes)` : null]);
       rows.push(['Pages', String(pageCount)]);
-      const dims = doc.pageMetrics[0]?.dims;
-      rows.push(['Page size', dims ? `${Math.round(dims.width)} × ${Math.round(dims.height)} px` : null]);
+      const counts = new Map();
+      for (const pm of doc.pageMetrics) { if (!pm?.dims) continue; const k = `${Math.round(pm.dims.width)}x${Math.round(pm.dims.height)}`; counts.set(k, (counts.get(k) || 0) + 1); }
+      const sizes = [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([k, c]) => `${k.replace('x', ' × ')} px${counts.size > 1 ? ` ×${c}` : ''}`);
+      rows.push(['Page sizes', sizesValue(sizes)]);
     }
     const frag = document.createDocumentFragment();
     frag.append(catHeader('Document'), kvRows(rows));
@@ -594,45 +679,6 @@ export function buildInspectWorkspace(host, container) {
       const fontBytes = pageFonts.reduce((a, f) => a + f.bytes, 0);
       frag.append(catHeader(`Size · page ${curPage + 1}: ${fmtBytes(imageBytes + fontBytes + perPage.contentBytes)} of ${fmtBytes(inv.fileBytes)}`), sizeRows([['Images on this page', imageBytes, pageImages.length], ['Embedded fonts here', fontBytes, pageFonts.filter((f) => f.embedded).length], ['Page content', perPage.contentBytes, null]], inv.fileBytes), el('div', 'scribe-am-ins-note', 'Shares of the whole file. A font counts in full on every page that uses it.'));
     }
-    /** Scroll the panel so a group header sits at the top, after a list folds back. */
-    const scrollToHeader = (hdr) => {
-      const top = hdr.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
-      body.scrollTop = Math.max(0, top - 2);
-    };
-    /**
-     * A list's footers: "N more · Show 20 more · Show all" while rows are hidden, and "Showing k of N · Show fewer" once it has grown past its limit.
-     * The fold-back footer sticks to the panel's bottom edge, so the way back stays on screen however long the list is.
-     * @param {number} total
-     * @param {number} shown
-     * @param {number} base
-     * @param {(n: number) => void} setShown
-     * @param {HTMLElement} hdr - The group header a fold scrolls back to.
-     */
-    const listFooters = (total, shown, base, setShown, hdr) => {
-      const out = document.createDocumentFragment();
-      const linkTo = (text, n, fold) => {
-        const a = el('a', 'scribe-am-ins-more-link', text);
-        a.href = '#';
-        a.addEventListener('click', (e) => {
-          e.preventDefault();
-          setShown(n);
-          paintInventory();
-          if (fold) { const next = [...body.querySelectorAll('.scribe-am-cat')].find((c) => c.textContent === hdr.textContent); if (next) scrollToHeader(next); }
-        });
-        return a;
-      };
-      if (shown > base) {
-        const fewer = el('div', 'scribe-am-ins-fewer');
-        fewer.append(el('span', '', `Showing ${fmtInt(Math.min(shown, total))} of ${fmtInt(total)}`), linkTo('Show fewer', base, true));
-        out.append(fewer);
-      }
-      if (shown < total) {
-        const more = el('div', 'scribe-am-ins-more', `${fmtInt(total - shown)} more · `);
-        more.append(linkTo(`Show ${Math.min(ROW_STEP, total - shown)} more`, shown + ROW_STEP, false), document.createTextNode(' · '), linkTo(`Show all ${fmtInt(total)}`, total, false));
-        out.append(more);
-      }
-      return out;
-    };
     const images = docScope ? inv.images : pageImages;
     const imagesHdr = catHeader(`Images${images.length ? ` · ${fmtInt(images.length)}` : ''}`);
     frag.append(imagesHdr);
@@ -657,7 +703,7 @@ export function buildInspectWorkspace(host, container) {
       table.append(cols, head, tbody);
       // The list and its sticky footer share a wrapper, so the footer un-sticks where the list ends.
       const list = el('div', 'scribe-am-ins-list');
-      list.append(table, listFooters(images.length, shownImages, IMAGE_ROW_LIMIT, (n) => { shownImages = n; }, imagesHdr));
+      list.append(table, listFooters(images.length, shownImages, IMAGE_ROW_LIMIT, ROW_STEP, (n) => { shownImages = n; }, imagesHdr, paintInventory));
       frag.append(list);
     }
     const fonts = docScope ? inv.fonts : pageFonts;
@@ -726,9 +772,22 @@ export function buildInspectWorkspace(host, container) {
           const grid = kvRows(rows);
           // The glyph count comes from the program the sample line is drawn with, so no font is read for a row nobody opened.
           // A rebuilt program holds only the glyphs the document's encoding reaches, which is what its label says.
-          const sample = sampleFor(f, (program) => {
+          const sample = sampleFor(f, (program, faceName) => {
             const n = program?.font?.numGlyphs;
-            if (typeof n === 'number' && grid.isConnected) grid.insertBefore(kvRows([[program.kind === 'rebuilt' ? 'Glyphs in use' : 'Glyphs', fmtInt(n)]]).firstElementChild, grid.lastElementChild);
+            if (typeof n !== 'number' || !grid.isConnected) return;
+            const row = el('div', 'scribe-am-ins-kv');
+            row.append(el('div', 'scribe-am-ins-k', program.kind === 'rebuilt' ? 'Glyphs in use' : 'Glyphs'));
+            const v = el('div', 'scribe-am-ins-v');
+            const link = el('a', 'scribe-am-ins-gllink', `${fmtInt(n)} `);
+            link.href = '#';
+            link.title = 'Show the glyphs';
+            const chev = el('span', 'scribe-am-ins-tw');
+            chev.innerHTML = CHEVRON_SVG;
+            link.append(chev);
+            link.addEventListener('click', (e) => { e.preventDefault(); openDrill(f, program, faceName); });
+            v.append(link);
+            row.append(v);
+            grid.insertBefore(row, grid.lastElementChild);
           });
           if (sample) cell.append(sample);
           cell.append(grid);
@@ -746,7 +805,7 @@ export function buildInspectWorkspace(host, container) {
       });
       table.append(cols, head, tbody);
       const list = el('div', 'scribe-am-ins-list');
-      list.append(table, listFooters(fonts.length, shownFonts, FONT_ROW_LIMIT, (n) => { shownFonts = n; }, fontsHdr));
+      list.append(table, listFooters(fonts.length, shownFonts, FONT_ROW_LIMIT, ROW_STEP, (n) => { shownFonts = n; }, fontsHdr, paintInventory));
       frag.append(list);
     }
     return frag;
@@ -756,21 +815,259 @@ export function buildInspectWorkspace(host, container) {
   let invPart = null;
   const paintInventory = () => {
     const next = el('div', 'scribe-am-ins-part');
+    next.hidden = !!drill;
     next.append(inventoryGroups());
-    if (invPart) invPart.replaceWith(next); else body.append(next);
+    if (invPart) invPart.replaceWith(next); else if (drill?.part) body.insertBefore(next, drill.part); else body.append(next);
     invPart = next;
   };
   const paintDocument = () => {
     const next = el('div', 'scribe-am-ins-part');
+    next.hidden = !!drill;
     next.append(documentGroup());
     if (docPart) docPart.replaceWith(next); else body.prepend(next);
     docPart = next;
+  };
+
+  /** The glyph view for the font in `drill`. */
+  const paintDrill = () => {
+    if (!drill) return;
+    const {
+      font: f, program, faceName, glyphs,
+    } = drill;
+    const pf = /** @type {import('../../../js/font-parser/src/index.js').Font} */ (program.font);
+    const pageCount = inv ? inv.pageCount : (viewer.doc ? viewer.doc.pageMetrics.length : 0);
+    const part = el('div', 'scribe-am-ins-part scribe-am-ins-gl');
+    const nameLine = el('div', 'scribe-am-ins-glfont');
+    nameLine.append(el('span', 'nm', f.baseName), el('span', 'ty', fontTypeLabel(f)));
+    part.append(nameLine);
+    const sample = sampleFor(f, () => {});
+    if (sample) part.append(sample);
+    const placeholders = glyphs.filter((g) => g.placeholder).length;
+    const hdr = catHeader(`${program.kind === 'rebuilt' ? 'Glyphs in use' : 'Glyphs'} · ${fmtInt(glyphs.length)}`);
+    if (placeholders) hdr.append(el('span', 'scribe-am-ins-glwarn', ` · ${fmtInt(placeholders)} without a character`));
+    const cathd = el('div', 'scribe-am-ins-cathd');
+    cathd.append(hdr);
+    part.append(cathd);
+    // The cells scale to the program's ascender-to-descender band, not to each glyph, so the glyphs keep their relative sizes.
+    const upm = pf.unitsPerEm || 1000;
+    const asc = pf.ascender > 0 ? pf.ascender : Math.round(upm * 0.8);
+    const desc = pf.descender < 0 ? pf.descender : Math.round(-upm * 0.2);
+    const pad = (asc - desc) * 0.04;
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const glyphClass = (g) => {
+      if (g.cp == null) return 'other';
+      if (g.placeholder) return 'pua';
+      const ch = String.fromCodePoint(g.cp);
+      if (/\s/.test(ch)) return 'other';
+      if (/\p{Lu}/u.test(ch)) return 'upper';
+      if (/\p{Ll}/u.test(ch)) return 'lower';
+      if (/\p{L}/u.test(ch)) return 'letter';
+      if (/\p{Nd}/u.test(ch)) return 'digit';
+      return 'punct';
+    };
+    const counts = {};
+    for (const g of glyphs) counts[glyphClass(g)] = (counts[glyphClass(g)] || 0) + 1;
+    const summary = [
+      [counts.upper, 'uppercase'], [counts.lower, 'lowercase'], [counts.letter, 'other letters'], [counts.digit, 'figures'],
+      [counts.punct, 'punctuation'], [counts.pua, 'without a character'], [counts.other, 'other'],
+    ].filter(([n]) => n).map(([n, label]) => `${fmtInt(n)} ${label}`).join(' · ');
+    const usesText = (g) => {
+      if (!g.keys.length) return 'reached by code, not by a character';
+      if (g.text != null && /^\s+$/.test(g.text)) return 'word spacing, not counted';
+      if (!g.uses) return 'not used in the text';
+      const pages = [...g.pages].sort((a, b) => a - b);
+      const where = pagesLabel(pages, pageCount);
+      const on = where === 'all' ? 'on every page' : /pages$/.test(where) ? `on ${where}` : `on page${pages.length > 1 ? 's' : ''} ${where}`;
+      return `${fmtInt(g.uses)} use${g.uses === 1 ? '' : 's'} ${on}`;
+    };
+    const glyphTitle = (g) => {
+      if (g.placeholder) return hexCp(/** @type {number} */ (g.cp));
+      if (g.text != null) return /^\s+$/.test(g.text) ? 'space' : g.text;
+      return g.name || `glyph ${g.i}`;
+    };
+    const foot = el('div', 'scribe-am-ins-glfoot');
+    /** @type {?DrillGlyph} */
+    let hovered = null;
+    /** @type {Map<DrillGlyph, HTMLElement>} */
+    const cells = new Map();
+    const setFoot = (g) => {
+      foot.textContent = '';
+      if (!g) { foot.append(el('span', 'dim', summary)); return; }
+      const ch = el('span', 'ch', glyphTitle(g));
+      if (g.placeholder) ch.classList.add('ph');
+      else if (g.text != null && faceName && !/^\s+$/.test(g.text)) ch.style.fontFamily = `'${faceName}'`;
+      foot.append(ch);
+      const bits = [];
+      if (g.placeholder) bits.push('no character');
+      else if (g.cp != null) bits.push(hexCp(g.cp));
+      if (g.name && g.name !== ch.textContent) bits.push(`/${g.name}`);
+      bits.push(usesText(g));
+      foot.append(document.createTextNode(` ${bits.join(' · ')}`));
+      if (g === selGlyph && g.first) {
+        const first = g.first;
+        const link = el('a', 'scribe-am-ins-more-link', 'Go to first use');
+        link.href = '#';
+        link.addEventListener('click', async (e) => {
+          e.preventDefault();
+          await viewer.displayPage(first.n, false, false);
+          const kw = viewer.getUiWords().find((w) => w.word.line.page.n === first.n && w.word.id === first.wordId);
+          if (kw) viewer.scrollToWord(kw);
+          if (selGlyph === g) applyWash(f, g.keys);
+        });
+        foot.append(document.createTextNode(' · '), link);
+      }
+    };
+    const paintSel = () => { for (const [g, c] of cells) c.classList.toggle('sel', g === selGlyph); };
+    const select = (g) => {
+      selGlyph = selGlyph === g ? null : g;
+      paintSel();
+      setFoot(selGlyph || hovered);
+      if (selGlyph) applyWash(f, selGlyph.keys); else applyWash(pinnedFont || hoverFont);
+    };
+    const grid = el('div', 'scribe-am-ins-glgrid');
+    glyphs.slice(0, shownGlyphs).forEach((g) => {
+      const c = el('div', 'scribe-am-ins-glcell');
+      c.setAttribute('role', 'button');
+      c.tabIndex = 0;
+      let d = '';
+      let bb = null;
+      try {
+        const { path } = g.glyph;
+        if (path.commands.some((k) => k.type === 'L' || k.type === 'C' || k.type === 'Q')) { d = path.toPathData(1); bb = path.getBoundingBox(); }
+      } catch { /* An unreadable glyph is an empty cell. */ }
+      if (!g.uses && !(g.text != null && /^\s+$/.test(g.text))) c.classList.add('unused');
+      if (g.placeholder) c.classList.add('ph');
+      const yMax = bb ? Math.max(asc, bb.y2 + pad) : asc;
+      const yMin = bb ? Math.min(desc, bb.y1 - pad) : desc;
+      let w = yMax - yMin;
+      let x0 = ((g.glyph.advanceWidth || 0) - w) / 2;
+      if (bb) { x0 = Math.min(x0, bb.x1 - pad); w = Math.max(w, bb.x2 + pad - x0); }
+      const svg = document.createElementNS(SVGNS, 'svg');
+      svg.setAttribute('viewBox', `${r1(x0)} ${r1(-yMax)} ${r1(w)} ${r1(yMax - yMin)}`);
+      svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+      if (d) {
+        const p = document.createElementNS(SVGNS, 'path');
+        p.setAttribute('d', d);
+        p.setAttribute('transform', 'scale(1,-1)');
+        svg.append(p);
+      }
+      c.append(svg);
+      const cap = el('span', 'scribe-am-ins-glcap', g.placeholder ? hexCp(/** @type {number} */ (g.cp)).slice(2) : g.text == null ? '—' : /^\s+$/.test(g.text) ? 'sp' : g.text);
+      if (g.placeholder) cap.classList.add('ph');
+      c.append(cap);
+      c.title = `${glyphTitle(g)}${g.cp != null && !g.placeholder ? ` · ${hexCp(g.cp)}` : ''}`;
+      cells.set(g, c);
+      c.addEventListener('mouseenter', () => { hovered = g; if (!selGlyph) setFoot(g); });
+      c.addEventListener('mouseleave', () => { if (hovered === g) hovered = null; if (!selGlyph) setFoot(null); });
+      c.addEventListener('click', () => select(g));
+      c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(g); } });
+      grid.append(c);
+    });
+    paintSel();
+    const list = el('div', 'scribe-am-ins-list');
+    list.append(grid, listFooters(glyphs.length, shownGlyphs, GLYPH_CELL_LIMIT, GLYPH_STEP, (n) => { shownGlyphs = n; }, hdr, paintDrill));
+    part.append(list, foot);
+    setFoot(selGlyph);
+    part.append(catHeader('Details'), kvRows([
+      ['Embedded', f.embedded ? `Yes · ${fmtBytes(f.bytes)}` : 'No · shown with a substitute'],
+      ['Encoding', f.encoding],
+      ['Unicode mapping', f.toUnicode ? 'Present (ToUnicode)' : 'None — copied text may not match'],
+      ['Used on pages', pagesLabel(f.pages, pageCount)],
+    ]));
+    if (drill.part) drill.part.replaceWith(part); else body.append(part);
+    drill.part = part;
+    drill.paintSel = paintSel;
+    drill.setFoot = setFoot;
+  };
+
+  /**
+   * Open the glyph view for `f`.
+   * @param {import('../../../js/pdf/resourceInventory.js').InventoryFont} f
+   * @param {import('../../../js/pdf/glyphResolve.js').EditFontProgram} program
+   * @param {?string} faceName
+   */
+  const openDrill = (f, program, faceName) => {
+    const pf = program.font;
+    const doc = viewer.doc;
+    if (!pf || !doc) return;
+    const table = program.glyphs ? new Map(program.glyphs.map((g) => [g.name, g])) : null;
+    /** @type {DrillGlyph[]} */
+    const glyphs = [];
+    for (let i = 0; i < pf.numGlyphs; i++) {
+      const glyph = pf.glyphs.get(i);
+      const t3 = table ? table.get(glyph.name) : null;
+      let text = null;
+      let keys = [];
+      let cp = null;
+      if (t3) {
+        text = t3.text;
+        if (text) { keys = [text]; cp = [...text].length === 1 ? text.codePointAt(0) : null; }
+      } else {
+        const cps = (glyph.unicodes || []).filter((u) => u > 0 && u <= 0x10FFFF).sort((a, b) => a - b);
+        keys = cps.map((u) => String.fromCodePoint(u));
+        if (cps.length) { cp = cps[0]; text = String.fromCodePoint(cp); }
+      }
+      glyphs.push({
+        i, glyph, name: glyph.name || null, text, keys, cp, placeholder: cp != null && cp >= 0xE000 && cp <= 0xF8FF, uses: 0, pages: new Set(), first: null,
+      });
+    }
+    glyphs.sort((a, b) => (a.cp ?? Infinity) - (b.cp ?? Infinity) || a.i - b.i);
+    /** @type {Map<number, DrillGlyph[]>} */
+    const byCp = new Map();
+    /** @type {Array<[string, DrillGlyph]>} */
+    const multi = [];
+    for (const g of glyphs) {
+      for (const k of g.keys) {
+        if ([...k].length === 1) { const c = k.codePointAt(0); if (!byCp.has(c)) byCp.set(c, []); byCp.get(c).push(g); } else multi.push([k, g]);
+      }
+    }
+    const hit = (g, p, w) => { g.uses += 1; g.pages.add(p); if (!g.first) g.first = { n: p, wordId: w.id }; };
+    for (const p of f.pages) {
+      const page = doc.ocr?.active?.[p];
+      if (!page || page.textSource !== 'pdf') continue;
+      const nt = doc.nativeText.pages[p] || {};
+      for (const line of page.lines) {
+        for (const w of line.words) {
+          if (nt[w.id]?.fontObjNum == null || !f.fontObjNums.includes(nt[w.id].fontObjNum)) continue;
+          for (const ch of w.text) { const gs = byCp.get(ch.codePointAt(0)); if (gs) for (const g of gs) hit(g, p, w); }
+          for (const [k, g] of multi) { let at = w.text.indexOf(k); while (at >= 0) { hit(g, p, w); at = w.text.indexOf(k, at + k.length); } }
+        }
+      }
+    }
+    drill = {
+      font: f, program, faceName, glyphs, part: null, scrollTop: body.scrollTop, paintSel: () => {}, setFoot: () => {},
+    };
+    selGlyph = null;
+    shownGlyphs = GLYPH_CELL_LIMIT;
+    // The row's hover wash ends with the list.
+    hoverFont = null;
+    applyWash(pinnedFont);
+    docPart.hidden = true;
+    invPart.hidden = true;
+    nav?.setSubview(f.baseName);
+    paintDrill();
+    body.scrollTop = 0;
+  };
+  /** Leave the glyph view for the list, at the scroll position it was opened from. */
+  const closeDrill = () => {
+    if (!drill) return false;
+    const { scrollTop } = drill;
+    drill.part?.remove();
+    drill = null;
+    selGlyph = null;
+    docPart.hidden = false;
+    invPart.hidden = false;
+    nav?.setSubview(null);
+    applyWash(pinnedFont || hoverFont);
+    body.scrollTop = scrollTop;
+    return true;
   };
   const paint = () => {
     curPage = viewer.state.cp.n;
     paintDocument();
     paintInventory();
-    // The inventory reads the whole file once per document; the document facts paint first so the panel never opens blank.
+    // Building the inventory reads the whole file.
+    // The document facts paint first so the panel never opens blank.
     if (!inv && viewer.doc?.images?.pdfData && !invTimer) {
       invTimer = setTimeout(() => {
         invTimer = 0;
@@ -786,6 +1083,7 @@ export function buildInspectWorkspace(host, container) {
   return {
     /** Rebuild against the (possibly new) active document. */
     refresh: () => {
+      closeDrill();
       inv = null; pinnedFont = null; hoverFont = null; openFonts.clear(); xmpOpen = false; xmlOpen = false; shownImages = IMAGE_ROW_LIMIT; shownFonts = FONT_ROW_LIMIT;
       applyWash(null);
       if (invTimer) { clearTimeout(invTimer); invTimer = 0; }
@@ -793,6 +1091,7 @@ export function buildInspectWorkspace(host, container) {
     },
     teardown: () => {
       if (invTimer) { clearTimeout(invTimer); invTimer = 0; }
+      if (drill) { drill = null; selGlyph = null; nav?.setSubview(null); }
       pinnedFont = null; hoverFont = null;
       applyWash(null);
     },
@@ -803,7 +1102,8 @@ export function buildInspectWorkspace(host, container) {
         curPage = n;
         if (invPart) paintInventory();
       }
-      if (pinnedFont || hoverFont) applyWash(pinnedFont || hoverFont);
+      if (selGlyph && drill) applyWash(drill.font, selGlyph.keys);
+      else if (pinnedFont || hoverFont) applyWash(pinnedFont || hoverFont);
     },
     /**
      * The mode's pick landed on a word: pin the font that drew it, open its row and wash its words.
@@ -819,6 +1119,8 @@ export function buildInspectWorkspace(host, container) {
       if (!entry || entry.fontObjNum == null) return false;
       const font = inv.fonts.find((f) => f.fontObjNums.includes(entry.fontObjNum));
       if (!font) return false;
+      // The pick names a font in the list, so the list is where the panel shows it.
+      closeDrill();
       if (scope === 'page' && !font.pages.includes(curPage)) scope = 'doc';
       const idx = (scope === 'doc' ? inv.fonts : inv.perPage[curPage].fonts.map((i) => inv.fonts[i])).indexOf(font);
       if (idx >= shownFonts) shownFonts = idx + 1;
@@ -844,6 +1146,24 @@ export function buildInspectWorkspace(host, container) {
       if (!pickBtn) return;
       pickBtn.classList.toggle('on', on);
       pickBtn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    },
+    /**
+     * Leave the glyph view for the fonts list.
+     * Returns whether it was open.
+     */
+    back: () => closeDrill(),
+    inSubview: () => !!drill,
+    /**
+     * Drop the selected glyph and its wash.
+     * Returns whether there was one.
+     */
+    clearGlyph: () => {
+      if (!selGlyph || !drill) return false;
+      selGlyph = null;
+      drill.paintSel();
+      drill.setFoot(null);
+      applyWash(pinnedFont || hoverFont);
+      return true;
     },
   };
 }

@@ -48,6 +48,7 @@ const TOOLBAR_HEIGHT_MAX = 80;
 const TAB_STRIP_HEIGHT = 30;
 
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+const SHEET_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>';
 const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
@@ -4384,12 +4385,23 @@ class ScribePDFViewer {
       if (seg) seg.style.display = inspect ? 'none' : '';
       let title = hd.querySelector('.scribe-sheet-title');
       if (inspect && !title) {
+        const back = document.createElement('button');
+        back.type = 'button';
+        back.className = 'scribe-sheet-act scribe-sheet-back';
+        back.title = 'Back to the fonts list';
+        back.setAttribute('aria-label', 'Back to the fonts list');
+        back.innerHTML = SHEET_BACK_SVG;
+        back.style.display = 'none';
+        back.addEventListener('click', () => this._inspectSheetHandle?.back());
         title = document.createElement('span');
         title.className = 'scribe-sheet-title';
         title.textContent = 'Inspect Document';
+        hd.insertBefore(back, seg || hd.querySelector('.scribe-sheet-acts'));
         hd.insertBefore(title, seg || hd.querySelector('.scribe-sheet-acts'));
       }
       if (title) title.style.display = inspect ? '' : 'none';
+      const back = hd.querySelector('.scribe-sheet-back');
+      if (back) back.style.display = inspect && this._inspectSheetHandle?.inSubview() ? '' : 'none';
     }
     this._syncSheetHeader();
   }
@@ -4411,7 +4423,15 @@ class ScribePDFViewer {
     const { buildInspectWorkspace } = await import('../js/automations/inspectDocument.js');
     // The mode may have exited during the await.
     if (!this._inspectTool?.isActive() || this._inspectSheetHandle) return;
-    this._inspectSheetHandle = buildInspectWorkspace({ app: this, viewer: this.scribe }, this._inspectSheetElem);
+    this._inspectSheetHandle = buildInspectWorkspace({ app: this, viewer: this.scribe }, this._inspectSheetElem, {
+      setSubview: (title) => {
+        const hd = this._sheetElem?.querySelector('.scribe-sheet-hd');
+        const titleElem = hd?.querySelector('.scribe-sheet-title');
+        const back = hd?.querySelector('.scribe-sheet-back');
+        if (titleElem) titleElem.textContent = title || 'Inspect Document';
+        if (back) back.style.display = title ? '' : 'none';
+      },
+    });
   }
 
   /** Tear the inspector's sheet view down and give the sheet back to the panels. */

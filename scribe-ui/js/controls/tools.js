@@ -3171,12 +3171,13 @@ export function createInspectDocumentTool(app) {
     // Pinned: the ringed word toggles and blank paper clears; any other word is View's.
     if (pinned && (!kw || kw.word === pinned.word)) clearPin();
   };
-  // Escape cancels an armed pick, then drops a pinned font; with neither it falls through to the mode exit.
+  // An Escape that clears nothing here falls through to the mode-exit handler.
   const pageEscKey = (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (armed) { setArmed(false); e.preventDefault(); return; }
+    if (workspace()?.clearGlyph?.()) { e.preventDefault(); return; }
     if (clearPin()) e.preventDefault();
   };
   /** @type {?() => void} */

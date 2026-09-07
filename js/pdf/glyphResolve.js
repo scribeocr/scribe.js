@@ -13,8 +13,9 @@ import { GlobalFonts } from '../containers/fontContainer.js';
 
 /**
  * @typedef {Object} EditFontProgram
- * @property {'original'|'rebuilt'|'none'} kind
+ * @property {'original'|'rebuilt'|'type3'|'none'} kind - `type3` is built from a Type 3 font's CharProcs for the Inspect panel, not for drawing edited text.
  * @property {?import('../font-parser/src/index.js').Font} font
+ * @property {?Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }>} [glyphs] - Each CharProc, with its codes and the text they extract as.
  * @property {boolean} allGlyphsEmpty
  * @property {string} baseName
  * @property {string} familyName
@@ -30,7 +31,8 @@ import { GlobalFonts } from '../containers/fontContainer.js';
 
 /**
  * Parse a `getPdfFontBytes` payload into the resolver's per-font entry.
- * @param {?{ kind: string, bytes?: ArrayBuffer, allGlyphsEmpty?: boolean, baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: ?boolean }} payload
+ * @param {?{ kind: string, bytes?: ArrayBuffer, allGlyphsEmpty?: boolean, baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: ?boolean,
+ *   glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }> }} payload
  * @returns {?EditFontProgram}
  */
 export function parseEditFontPayload(payload) {
@@ -44,8 +46,9 @@ export function parseEditFontPayload(payload) {
     }
   }
   return {
-    kind: /** @type {'original'|'rebuilt'|'none'} */ (payload.kind),
+    kind: /** @type {'original'|'rebuilt'|'type3'|'none'} */ (payload.kind),
     font,
+    glyphs: payload.glyphs ?? null,
     allGlyphsEmpty: !!payload.allGlyphsEmpty,
     baseName: payload.baseName,
     familyName: payload.familyName,
@@ -181,9 +184,11 @@ function bundledFit(orig, subFont) {
  */
 export function resolveReplacementChar(ch, orig, style) {
   const codepoint = /** @type {number} */ (ch.codePointAt(0));
+  // A Type 3 program is built for the Inspect panel, not for drawing edited text.
+  const font = orig?.kind === 'type3' ? null : orig?.font;
 
-  if (orig?.font) {
-    const d = drawableGlyph(orig.font, ch);
+  if (font) {
+    const d = drawableGlyph(font, ch);
     if (d) {
       const advEm = d.glyph.advanceWidth / orig.font.unitsPerEm;
       return {
@@ -194,7 +199,7 @@ export function resolveReplacementChar(ch, orig, style) {
 
   const hints = { bold: !!style?.bold, italic: !!style?.italic };
   const baseName = orig?.baseName || '';
-  const sub = (orig?.font ? extendedFamilyToBundledFont(baseName, hints) : null)
+  const sub = (font ? extendedFamilyToBundledFont(baseName, hints) : null)
     || base14ToBundledFont(baseName, hints)
     || cssFamilyToBundledFont(standardFontToCSS(baseName), hints)
     || genericToBundledFont(cssGenericForFontObj({
@@ -209,7 +214,7 @@ export function resolveReplacementChar(ch, orig, style) {
       const gid = bundled.opentype.charToGlyphIndex(ch);
       if (gid > 0) {
         let fit = null;
-        if (orig?.font) {
+        if (font) {
           const fitKey = `${bundled.family}/${styleKey}`;
           if (!orig.fits) orig.fits = new Map();
           fit = orig.fits.get(fitKey);

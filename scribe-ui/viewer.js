@@ -3287,6 +3287,24 @@ export class ScribeViewer {
     return { box: imageCoords, n };
   }
 
+  /**
+   * Scroll so `kw` sits at the vertical center of the viewport, nudging horizontally only when it would sit off an edge.
+   * @param {UiOcrWord} kw - A word in the rendered window.
+   */
+  scrollToWord(kw) {
+    // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
+    const rect = kw.getClientRect();
+    const margin = 30;
+    const sc = this.scrollContainer;
+    const zoom = this.zoomLevel || 1;
+    sc.scrollTop = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
+    const leftPx = rect.x * zoom - sc.scrollLeft;
+    const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
+    if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
+    else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
+    this.updateCurrentPage();
+  }
+
   getUiWords() {
     /** @type {Array<UiOcrWord>} */
     const words = [];
