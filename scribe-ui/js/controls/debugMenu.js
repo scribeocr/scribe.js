@@ -2,6 +2,7 @@
 import { UiText } from '../viewerWordObjects.js';
 import { makeOutlineNode } from '../../../js/objects/outlineObjects.js';
 import { saveAs } from '../../../js/utils/miscUtils.js';
+import { calcEvalStatsDoc } from '../../../js/recognizeConvert.js';
 
 /** Bug glyph for the Debug section's rows. */
 const BUG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
@@ -156,6 +157,74 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       viewer.displayPage(viewer.state.cp.n, false, true);
     },
   );
+
+  const versionMenu = appMenu.addSubmenu('OCR version', BUG_SVG);
+  const rebuildVersionMenu = () => {
+    const doc = viewer.doc;
+    const names = doc ? Object.keys(doc.ocr).filter((name) => name !== 'active' && Array.isArray(doc.ocr[name])) : [];
+    versionMenu.setItems(names.map((name) => ({
+      label: `${doc.ocr[name] === doc.ocr.active ? '✓ ' : ' '}${name}`,
+      onClick: async () => {
+        // The ground-truth compare replaces the array under its key, so the layer is looked up at click time.
+        doc.ocr.active = doc.ocr[name];
+        viewer.destroyText(false);
+        await viewer.displayPage(viewer.state.cp.n, false, true);
+        // The comments panel's mark rows quote the words under them from the active layer.
+        if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+      },
+    })));
+  };
+  appMenu.triggerElem.addEventListener('click', rebuildVersionMenu);
+
+  appMenu.addToggle(
+    'Eval mode (vs Ground Truth)',
+    BUG_SVG,
+    () => viewer.state.displayMode === 'eval',
+    () => {
+      const doc = viewer.doc;
+      if (!doc) return;
+      const on = viewer.state.displayMode !== 'eval';
+      if (on && !doc.ocr['Ground Truth']) {
+        host?._showToast('Eval mode needs an OCR layer named “Ground Truth”.');
+        return;
+      }
+      doc.inputData.evalMode = on;
+      viewer.state.displayMode = on ? 'eval' : 'invis';
+      viewer.destroyText(false);
+      viewer.displayPage(viewer.state.cp.n, false, true);
+    },
+  );
+
+  // The strip announces the switch before the incoming document attaches, so the incoming document is read from the tab rather than from `viewer.doc`.
+  // Its first render already uses the mode set here.
+  const followEvalFlag = () => {
+    const doc = host?._tabs?.[host._activeTab]?.doc;
+    if (!doc) return;
+    if (doc.inputData.evalMode) viewer.state.displayMode = 'eval';
+    else if (viewer.state.displayMode === 'eval') viewer.state.displayMode = 'invis';
+  };
+  host?.container.addEventListener('scribe-active-doc-change', followEvalFlag);
+  host?._teardownCallbacks.push(() => host.container.removeEventListener('scribe-active-doc-change', followEvalFlag));
+
+  appMenu.addAction('Show eval counts', BUG_SVG, () => {
+    const n = viewer.state.cp.n;
+    const page = viewer.evalStats[n];
+    if (!page) {
+      host?._showToast('No eval counts yet: turn on Eval mode first.');
+      return;
+    }
+    const docStats = calcEvalStatsDoc(viewer.evalStats.filter(Boolean));
+    const line = (s) => `${s.correct} right, ${s.incorrect} wrong, ${s.missed} missed, ${s.extra} extra of ${s.total}`;
+    host?._showToast(`Page ${n + 1}: ${line(page)}. Document: ${line(docStats)}.`);
+  });
+
+  appMenu.addAction('Clear shapes', BUG_SVG, async () => {
+    const doc = viewer.doc;
+    if (!doc) return;
+    doc.clearShapes();
+    await viewer.displayPage(viewer.state.cp.n, false, true);
+    if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+  });
 
   // The overlay is built from this flag, so toggling rebuilds the text layer to apply.
   // Only the DOM engine has an overlay to disable (the built-in engine draws selection from the model), so this row is greyed and inert while the built-in engine is active.
