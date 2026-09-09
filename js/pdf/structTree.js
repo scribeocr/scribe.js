@@ -1,5 +1,5 @@
 import { findRootObjNum, findInfoObjNum } from './parsePdfUtils.js';
-import { resolveIntValue, resolveStringValue } from './pdfPrimitives.js';
+import { resolveIntValue, resolveStringValue, resolveDictValue } from './pdfPrimitives.js';
 
 const BLOCK = new Set([
   'P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'Title', 'Caption', 'BlockQuote',
@@ -143,11 +143,7 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
 
   // RoleMap: custom tag to standard tag.
   const roleMap = {};
-  let rmText = '';
-  const rmInline = /\/RoleMap\s*<<([\s\S]*?)>>/.exec(rootDict);
-  const rmRef = /\/RoleMap\s+(\d+)\s+\d+\s+R/.exec(rootDict);
-  if (rmInline) rmText = rmInline[1];
-  else if (rmRef) { const t = objCache.getObjectText(Number(rmRef[1])) || ''; const mm = /<<([\s\S]*?)>>/.exec(t); rmText = mm ? mm[1] : ''; }
+  const rmText = resolveDictValue(rootDict, 'RoleMap', objCache) || '';
   if (rmText) { const re = /\/([A-Za-z0-9._]+)\s*\/([A-Za-z0-9._]+)/g; let m; while ((m = re.exec(rmText))) roleMap[m[1]] = m[2]; }
   const mapTag = (s) => { if (!s) return '?'; let cur = s; const seen = new Set(); while (roleMap[cur] && !seen.has(cur)) { seen.add(cur); cur = roleMap[cur]; } return cur; };
 

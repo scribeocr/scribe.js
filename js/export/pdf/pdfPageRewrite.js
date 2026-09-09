@@ -1,6 +1,6 @@
 import {
   extractDict, bytesToLatin1, findTopLevelKeyIndex,
-  resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue,
+  resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue, resolveArrayValue, resolveDictValue,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
 import { annotIsModelManaged, annotIsLiftedReply, linkAnnotIsLifted } from '../../pdf/parsePdfAnnots.js';
@@ -388,15 +388,7 @@ export function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNu
   const directDestPage = resolveTargetPage(annotText, 'Dest');
   if (directDestPage != null) return !keptPageObjNums.has(directDestPage);
 
-  // /A action: indirect ref or inline dict. Either way we need the action's /D.
-  let actionText = null;
-  const actionRefMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
-  if (actionRefMatch) {
-    actionText = objCache.getObjectText(Number(actionRefMatch[1]));
-  } else {
-    const inlineActionMatch = /\/A\s*<<([\s\S]*?)>>/.exec(annotText);
-    if (inlineActionMatch) actionText = inlineActionMatch[1];
-  }
+  const actionText = resolveDictValue(annotText, 'A', objCache);
   if (actionText) {
     if (!/\/S\s*\/GoTo\b/.test(actionText)) return false;
     const actionDestPage = resolveTargetPage(actionText, 'D');
@@ -474,17 +466,8 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
  * @returns {string[]}
  */
 function collectSourceAnnotRefs(pageObjText, objCache) {
-  const indirectMatch = /\/Annots\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
-  /** @type {string[]} */
-  const refs = [];
-  if (indirectMatch && objCache) {
-    const arrayText = objCache.getObjectText(Number(indirectMatch[1]));
-    if (arrayText) for (const m of arrayText.matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
-    return refs;
-  }
-  const arrayMatch = /\/Annots\s*\[([\s\S]*?)\]/.exec(pageObjText);
-  if (arrayMatch) for (const m of arrayMatch[1].matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
-  return refs;
+  const arrayText = resolveArrayValue(pageObjText, 'Annots', objCache);
+  return arrayText ? [...arrayText.matchAll(/(\d+\s+\d+\s+R)/g)].map((m) => m[1]) : [];
 }
 
 /**

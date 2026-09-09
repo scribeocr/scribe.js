@@ -581,22 +581,9 @@ function parseICCProfile(profileObjNum, objCache) {
  * @param {ObjectCache} [objCache]
  */
 function findICCProfileObjNum(objText, objCache) {
-  // Array form: /ColorSpace [/ICCBased 5 0 R]
-  const arrayIcc = /\/ColorSpace\s*\[\s*\/ICCBased\s+(\d+)\s+\d+\s+R/.exec(objText);
-  if (arrayIcc) return Number(arrayIcc[1]);
-
-  // Indirect reference form: /ColorSpace N 0 R → resolve to find ICCBased
-  if (objCache) {
-    const refMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(objText);
-    if (refMatch) {
-      const csObjText = objCache.getObjectText(Number(refMatch[1]));
-      if (csObjText) {
-        const iccMatch = /\/ICCBased\s+(\d+)\s+\d+\s+R/.exec(csObjText);
-        if (iccMatch) return Number(iccMatch[1]);
-      }
-    }
-  }
-  return null;
+  const csContent = resolveArrayValue(objText, 'ColorSpace', objCache);
+  const iccMatch = csContent ? /^\/ICCBased\s+(\d+)\s+\d+\s+R/.exec(csContent) : null;
+  return iccMatch ? Number(iccMatch[1]) : null;
 }
 
 /**

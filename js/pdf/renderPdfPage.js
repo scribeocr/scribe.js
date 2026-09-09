@@ -8,7 +8,7 @@ import {
   findRootObjNum, applyPredictor, getPageContentStreams, isFormOCHidden, parseHiddenOCMCNames, parseFormMatrix,
 } from './parsePdfUtils.js';
 import {
-  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveNumArray, resolveStringValue,
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveNumArray, resolveStringValue, resolveDictValue,
   matMul, bytesToLatin1, scopeDictKeys,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
@@ -2321,19 +2321,8 @@ function parseSmaskTR(smaskDict, objCache) {
  * @returns {number[]|null}
  */
 function parseSmaskBC(smaskDict, objCache) {
-  let arrStr = null;
-  const refMatch = /\/BC\s+(\d+)\s+\d+\s+R/.exec(smaskDict);
-  if (refMatch) {
-    const t = objCache.getObjectText(Number(refMatch[1]));
-    const m = t && /\[([^\]]*)\]/.exec(t);
-    if (m) arrStr = m[1];
-  } else {
-    const m = /\/BC\s*\[([^\]]*)\]/.exec(smaskDict);
-    if (m) arrStr = m[1];
-  }
-  if (arrStr == null) return null;
-  const arr = arrStr.trim().split(/\s+/).filter((s) => s.length > 0).map(Number);
-  return arr.length > 0 && !arr.some(Number.isNaN) ? arr : null;
+  const arr = resolveNumArray(smaskDict, 'BC', objCache);
+  return arr && arr.length > 0 ? arr : null;
 }
 
 /**
@@ -4416,7 +4405,7 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
       }
     } else if (filter === 'LZWDecode') {
       const { decodeLZW } = await import('./codecs/decodeLZW.js');
-      data = decodeLZW(data, dictText);
+      data = decodeLZW(data, resolveIntValue(dictText, 'EarlyChange', null, 1));
     } else if (filter === 'RunLengthDecode') {
       const output = [];
       let pos = 0;
@@ -5220,17 +5209,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const annotKeys = scopeDictKeys(annotText);
       const subtypeText = annotKeys.keyText('Subtype');
 
-      let rectArrText = null;
-      const rectInlineMatch = /\/Rect\s*(\[[^\]]*\])/.exec(annotKeys.keyText('Rect'));
-      if (rectInlineMatch) {
-        rectArrText = rectInlineMatch[1];
-      } else {
-        const rectRefMatch = /\/Rect\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Rect'));
-        const rectObjText = rectRefMatch ? objCache.getObjectText(Number(rectRefMatch[1])) : null;
-        const rectObjArr = rectObjText ? /(\[[^\]]*\])/.exec(rectObjText) : null;
-        if (rectObjArr) rectArrText = rectObjArr[1];
-      }
-      if (!rectArrText) continue;
+      const rectArrText = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
+      if (rectArrText == null) continue;
       const rect = [];
       const rectTokRe = /(\d+)\s+\d+\s+R|(-?[\d.]+(?:[eE][-+]?\d+)?)/g;
       let rectTok;
@@ -5551,8 +5531,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             let inkDash = [];
             if (bsInkMatch) {
               const bsContent = bsInkMatch[1];
-              const wMatch = /\/W\s+([\d.]+)/.exec(bsContent);
-              if (wMatch) inkWidth = Number(wMatch[1]);
+              inkWidth = resolveNumValue(bsContent, 'W', objCache, 1);
               const dMatch = /\/D\s*\[\s*([\d.\s]+)\]/.exec(bsContent);
               if (dMatch) inkDash = dMatch[1].trim().split(/\s+/).map(Number);
             }
@@ -5610,14 +5589,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
           let widgetBorderWidth = widgetBorderColor ? 1 : 0;
           if (widgetBorderColor) {
-            const bsWMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotKeys.keyText('BS'));
-            if (bsWMatch) widgetBorderWidth = Number(bsWMatch[1]);
+            const bsWidgetMatch = /\/BS\s*<<([^>]*)>>/.exec(annotKeys.keyText('BS'));
+            if (bsWidgetMatch) widgetBorderWidth = resolveNumValue(bsWidgetMatch[1], 'W', objCache, 1);
           }
 
           const ftMatch = /\/FT\s*\/(\w+)/.exec(annotKeys.keyText('FT'));
           const ft = ftMatch ? ftMatch[1] : '';
-          const ffMatch = /\/Ff\s+(\d+)/.exec(annotKeys.keyText('Ff'));
-          const ff = ffMatch ? Number(ffMatch[1]) : 0;
+          const ff = resolveIntValue(annotKeys.keyText('Ff'), 'Ff', objCache, 0);
           // Signature fields and push buttons have no synthesizable box appearance.
           if (ft === 'Sig' || (ft === 'Btn' && (ff & 0x10000))) continue;
 
@@ -5701,18 +5679,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
         // /Border format: [hCornerRadius vCornerRadius width]; /BS overrides if present.
         const borderMatch = /\/Border\s*\[\s*[\d.]+\s+[\d.]+\s+([\d.]+)\s*\]/.exec(annotKeys.keyText('Border'));
-        const bsWidthMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotKeys.keyText('BS'));
-        let borderWidth = bsWidthMatch ? Number(bsWidthMatch[1]) : (borderMatch ? Number(borderMatch[1]) : 1);
-        if (!bsWidthMatch && !borderMatch) {
-          const bsIndirectMatch = /\/BS\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('BS'));
-          if (bsIndirectMatch) {
-            const bsText = objCache.getObjectText(Number(bsIndirectMatch[1]));
-            if (bsText) {
-              const bsWMatch = /\/W\s+([\d.]+)/.exec(bsText);
-              if (bsWMatch) borderWidth = Number(bsWMatch[1]);
-            }
-          }
-        }
+        const bsText = resolveDictValue(annotKeys.keyText('BS'), 'BS', objCache);
+        const bsWidth = bsText ? resolveNumValue(bsText, 'W', objCache, Number.NaN) : Number.NaN;
+        const borderWidth = Number.isNaN(bsWidth) ? (borderMatch ? Number(borderMatch[1]) : 1) : bsWidth;
 
         // Inset the rect by half the border width so strokes stay inside the annotation rect
         const hw = borderWidth / 2;

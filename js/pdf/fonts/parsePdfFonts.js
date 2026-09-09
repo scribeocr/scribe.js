@@ -4,7 +4,7 @@ import {
   findXrefOffset, parseXref,
 } from '../parsePdfUtils.js';
 import {
-  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, decodePdfName,
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveDictValue, decodePdfName,
 } from '../pdfPrimitives.js';
 import { ObjectCache } from '../objectCache.js';
 import {
@@ -773,16 +773,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const resObj = objCache.getObjectText(Number(t3ResRef[1]));
       if (resObj) t3ResText = resObj;
     }
-    // Match `/Font` only when followed by `<<` or an indirect ref, so `/FontMatrix`
-    // and `/FontBBox` in an inline-Resources Type3 font are not mistaken for it.
-    const t3FontMatch = /\/Font\s*(<<|\d+\s+\d+\s+R)/.exec(t3ResText);
-    if (!t3FontMatch) continue;
-    let t3FontDict;
-    if (t3FontMatch[1].startsWith('<<')) {
-      t3FontDict = extractDict(t3ResText, t3FontMatch.index + t3ResText.substring(t3FontMatch.index).indexOf('<<'));
-    } else {
-      t3FontDict = objCache.getObjectText(Number(/(\d+)\s+\d+\s+R/.exec(t3FontMatch[1])[1]));
-    }
+    const t3FontDict = resolveDictValue(t3ResText, 'Font', objCache);
     if (!t3FontDict) continue;
     for (const m of t3FontDict.matchAll(/\/([^\s/]+)\s+(\d+)\s+\d+\s+R/g)) {
       const innerTag = decodePdfName(m[1]);
@@ -1174,20 +1165,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      let diffContent = null;
-      const diffInlineMatch = /\/Differences\s*\[([\s\S]*?)\]/.exec(encodingText);
-      if (diffInlineMatch) {
-        diffContent = diffInlineMatch[1];
-      } else {
-        const diffRefMatch = /\/Differences\s+(\d+)\s+\d+\s+R/.exec(encodingText);
-        if (diffRefMatch) {
-          const diffObj = objCache.getObjectText(Number(diffRefMatch[1]));
-          if (diffObj) {
-            const arrMatch = /\[([\s\S]*)\]/.exec(diffObj);
-            if (arrMatch) diffContent = arrMatch[1];
-          }
-        }
-      }
+      const diffContent = resolveArrayValue(encodingText, 'Differences', objCache);
       if (diffContent) {
         differences = {};
         const tokens = [...diffContent.matchAll(/(\d+)|(\/[^\s/<>[\]]+)/g)];

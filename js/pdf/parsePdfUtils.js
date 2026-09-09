@@ -385,30 +385,18 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
   // Search only the text before the stream keyword so those are not read as the object's own properties.
   const dictText = objText.substring(0, streamKeyword);
 
-  const lengthMatch = /\/Length\s+(\d+)/.exec(dictText);
-  if (!lengthMatch) return null;
-  let streamLength = Number(lengthMatch[1]);
-  const indirectLengthMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(dictText);
-  if (indirectLengthMatch) {
+  let streamLength = resolveIntValue(dictText, 'Length', objCache, -1);
+  if (streamLength < 0) {
+    const indirectLengthMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(dictText);
+    if (!indirectLengthMatch) return null;
     const refObjNum = Number(indirectLengthMatch[1]);
-    // Some producers give every stream an indirect /Length, so the whole-file scan fallback below would cost O(pages x file bytes).
-    let resolved = false;
-    if (objCache) {
-      const refText = objCache.getObjectText(refObjNum);
-      if (refText) {
-        const numMatch = /^\s*(?:\d+\s+\d+\s+obj\b\s*)?(\d+)/.exec(refText);
-        if (numMatch) {
-          streamLength = Number(numMatch[1]);
-          resolved = true;
-        }
-      }
-    }
     const marker = `${refObjNum} `;
     let scanIdx = 0;
-    while (!resolved && (scanIdx = byteIndexOf(pdfBytes, marker, scanIdx)) !== -1) {
+    while ((scanIdx = byteIndexOf(pdfBytes, marker, scanIdx)) !== -1) {
       let p = scanIdx + marker.length;
       while (p < len && isAsciiDigit(pdfBytes[p])) p++;
-      if (p < len && pdfBytes[p] === 0x20) {
+      // A digit before the marker means it sits inside a longer object number, as "12 " does in "312 0 obj".
+      if ((scanIdx === 0 || !isAsciiDigit(pdfBytes[scanIdx - 1])) && p < len && pdfBytes[p] === 0x20) {
         p++;
         if (bytesEqualAt(pdfBytes, p, 'obj')) {
           p += 3;
@@ -432,6 +420,9 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
     streamStart += 1;
   }
 
+  // An unresolved /Length runs the stream to EOF, which the endstream check below trims back whenever an endstream follows.
+  // A truncated file has none, so the decoder still gets whatever bytes remain.
+  if (streamLength < 0) streamLength = len - streamStart;
   let data = pdfBytes.slice(streamStart, streamStart + streamLength);
 
   // The PDF spec permits 0, 1 or 2 EOL bytes between the stream data and endstream, so /Length is consistent with any of those three end positions.
@@ -759,7 +750,7 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
       }
       data = outLen === output.length ? output : output.slice(0, outLen);
     } else if (filter === 'LZWDecode' || filter === 'LZW') {
-      data = decodeLZW(data, dpText);
+      data = decodeLZW(data, resolveIntValue(dpText, 'EarlyChange', objCache, 1));
       data = applyPredictor(data, dpText, objCache);
     } else if (filter === 'RunLengthDecode' || filter === 'RL') {
       // Decode into a growable typed array (output size is unknown a priori).

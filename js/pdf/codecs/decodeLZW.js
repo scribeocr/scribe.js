@@ -4,13 +4,10 @@
  * The dictionary is four flat parallel arrays (prefix code, appended byte, sequence length, first byte).
  * A sequence is emitted by walking its prefix chain backwards straight into the output buffer, so decoding allocates nothing per code.
  * @param {Uint8Array} data - LZW-compressed bytes
- * @param {string} dpText - DecodeParms dictionary text
+ * @param {number} [earlyChange=1]
  * @returns {Uint8Array} Decoded bytes
  */
-export function decodeLZW(data, dpText) {
-  const earlyChangeMatch = /\/EarlyChange\s+(\d+)/.exec(dpText);
-  const earlyChange = earlyChangeMatch ? Number(earlyChangeMatch[1]) : 1;
-
+export function decodeLZW(data, earlyChange = 1) {
   const CLEAR_TABLE = 256;
   const EOD = 257;
   const dataLen = data.length;

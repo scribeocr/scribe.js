@@ -1,6 +1,6 @@
 import { extractRawStreamBytes, findInfoObjNum } from '../../pdf/parsePdfUtils.js';
 import {
-  extractDict, extractDictFromBytes, byteIndexOf, bytesToLatin1,
+  extractDict, extractDictFromBytes, byteIndexOf, bytesToLatin1, resolveIntValue,
   parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate, decodeTextStringBytes,
 } from '../../pdf/pdfPrimitives.js';
 import { md5 } from '../../pdf/pdfCrypto.js';
@@ -446,16 +446,7 @@ export function locateObjectByteRange(pdfBytes, objCache, entry) {
   if (streamKw !== -1 && streamKw < firstEndObj) {
     // Stream object: use /Length to skip past stream data.
     const headerText = bytesToLatin1(pdfBytes, offset, streamKw);
-    const indirectLenMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(headerText);
-    const directLenMatch = /\/Length\s+(\d+)/.exec(headerText);
-    let streamLength = 0;
-    if (indirectLenMatch) {
-      const refObjNum = Number(indirectLenMatch[1]);
-      const refText = objCache.getObjectText(refObjNum);
-      if (refText) streamLength = Number(refText.trim());
-    } else if (directLenMatch) {
-      streamLength = Number(directLenMatch[1]);
-    }
+    const streamLength = resolveIntValue(headerText, 'Length', objCache, 0);
     streamStart = streamKw + 6;
     if (pdfBytes[streamStart] === 0x0D && pdfBytes[streamStart + 1] === 0x0A) {
       streamStart += 2;

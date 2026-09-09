@@ -286,19 +286,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   /** @type {number[]} */
   const passthroughRefs = [];
 
-  let annotRefs = null;
-  const inlineMatch = /\/Annots\s*\[([^\]]*)\]/.exec(pageObjText);
-  if (inlineMatch) {
-    annotRefs = [...inlineMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-  } else {
-    const indirectMatch = /\/Annots\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
-    if (indirectMatch) {
-      const arrayText = objCache.getObjectText(Number(indirectMatch[1]));
-      if (arrayText) {
-        annotRefs = [...arrayText.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-      }
-    }
-  }
+  const annotsContent = resolveArrayValue(pageObjText, 'Annots', objCache);
+  const annotRefs = annotsContent ? [...annotsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1])) : null;
   if (!annotRefs || annotRefs.length === 0) {
     return {
       highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs,

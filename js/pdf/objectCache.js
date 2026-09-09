@@ -355,11 +355,7 @@ export class ObjectCache {
     if (rootObjNum != null) {
       const catText = this.getObjectText(rootObjNum);
       if (catText) {
-        const ocpMatch = /\/OCProperties\s+(\d+)\s+\d+\s+R/.exec(catText)
-          || /\/OCProperties\s*<</.exec(catText);
-        const ocpText = ocpMatch && ocpMatch[1]
-          ? this.getObjectText(Number(ocpMatch[1]))
-          : catText;
+        const ocpText = resolveDictValue(catText, 'OCProperties', this);
         if (ocpText) {
           // The /D default-config dict holds /OFF and /AS; it may be inline or a ref.
           const dText = resolveDictValue(ocpText, 'D', this) || ocpText;
