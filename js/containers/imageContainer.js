@@ -904,8 +904,9 @@ export class ImageStore {
     this.#editFontCache.clear();
     this.#editFontResolved.clear();
     if (typeof FontFace !== 'undefined') {
+      // `doc.clear()` reissues the id right after this call.
+      const prefix = `_edit_d${this.#doc.id}_`;
       import('./fontContainer.js').then(({ unregisterFontFacesMatching }) => {
-        const prefix = `_edit_d${this.#doc.id}_`;
         unregisterFontFacesMatching((family) => family.startsWith(prefix));
       }).catch(() => {});
     }

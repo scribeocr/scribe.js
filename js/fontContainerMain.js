@@ -380,13 +380,16 @@ export async function enableOpt(docFonts, enableOptArg, forceOptArg) {
 export async function syncToWorkers(docFonts) {
   if (!gs.schedulerInner) return;
   const { workers } = gs.schedulerInner;
+  // `doc.clear()` reissues the id across the awaits below, so the push stays under the id it started with.
+  const { id } = docFonts;
+  docFonts.inWorkers = true;
 
   for (const kind of /** @type {Array<'opt'|'doc'>} */ (['opt', 'doc'])) {
     const cont = docFonts[kind];
     if (!cont) continue;
 
     const input = {
-      opt: kind === 'opt', kind, docId: docFonts.id, src: {},
+      opt: kind === 'opt', kind, docId: id, src: {},
     };
     for (const [key, value] of Object.entries(cont)) {
       if (!value || !value.normal) continue;
@@ -400,8 +403,14 @@ export async function syncToWorkers(docFonts) {
     await Promise.all(workers.map((worker) => worker.loadFontsWorker(input)));
   }
 
+  if (docFonts.id !== id) {
+    // The loads above may have landed after the clear ran its own drop.
+    await Promise.all(workers.map((worker) => worker.dropFontsWorker({ docId: id })));
+    return;
+  }
+
   await Promise.all(workers.map((worker) => worker.updateFontContWorker({
-    docId: docFonts.id,
+    docId: id,
     rawMetrics: docFonts.rawMetrics,
     optMetrics: docFonts.optMetrics,
     sansDefaultName: docFonts.state.sansDefaultName,
@@ -413,12 +422,12 @@ export async function syncToWorkers(docFonts) {
 }
 
 /**
- * Remove this document's fonts from every worker: drop its `Map<docId, DocFonts>` entry and
- * unregister its optimized FontFaces. The process-wide raw fonts are left intact. Called on terminate.
+ * Remove this document's fonts from every worker.
  * @param {DocFonts} docFonts
  */
 export async function dropFromWorkers(docFonts) {
-  if (!gs.schedulerInner) return;
+  if (!gs.schedulerInner || !docFonts.inWorkers) return;
+  docFonts.inWorkers = false;
   await Promise.all(gs.schedulerInner.workers.map((worker) => worker.dropFontsWorker({ docId: docFonts.id })));
 }
 
@@ -441,6 +450,7 @@ export function setDefaultAuto(docFonts, charMetricsObj) {
   }
 
   if (gs.schedulerInner) {
+    docFonts.inWorkers = true;
     for (const worker of gs.schedulerInner.workers) {
       worker.updateFontContWorker({ docId: docFonts.id, defaultFontName: docFonts.state.defaultFontName });
     }

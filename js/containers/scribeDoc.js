@@ -699,7 +699,9 @@ export class ScribeDoc {
   static defaults = scribeDocDefaults;
 
   constructor() {
-    /** Process-unique id, used to namespace this document's fonts in shared registries. */
+    /**
+     * Identifier for the document currently loaded into this object.
+     */
     this.id = ++docIdCounter;
 
     const selfRef = new WeakRef(this);
@@ -1213,10 +1215,10 @@ export class ScribeDoc {
   get canRedo() { return this.docHistory.canRedo; }
 
   /**
-   * Reset all of this document's data.
-   * The document's own PDF pool is cleared but not terminated (see `terminate`).
+   * Reset all of this document's data and issue it a new id.
+   * The returned promise waits only for the previous file's fonts to leave the workers.
    */
-  clear() {
+  async clear() {
     // Settle any pending deferred extraction so its waiters resolve rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
@@ -1247,6 +1249,11 @@ export class ScribeDoc {
     this.docHistory.clear();
     this.history.clear();
     this.contentEditHistory.clear();
+    // `dropFromWorkers` drops the entry keyed by the current id, so it must run before the id changes.
+    const dropped = dropFromWorkers(this.fonts).catch((err) => opt.warningHandler(`Could not drop the previous file's fonts from the workers: ${err}`));
+    this.id = ++docIdCounter;
+    this.fonts.id = this.id;
+    await dropped;
   }
 
   /**

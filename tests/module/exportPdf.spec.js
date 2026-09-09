@@ -132,7 +132,11 @@ describe('Check export for .pdf files.', () => {
 
     scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
+    const idBeforeClear = doc.id;
     await doc.clear();
+    // Regression: the document id survived a clear, so a reimported file inherited its predecessor's identity in the OCR engines.
+    expect(doc.id, 'doc.clear() must issue a new id, so a file imported after it is a new document').not.toBe(idBeforeClear);
+    expect(doc.fonts.id, 'doc.clear() issued a new document id without repointing the fonts keyed by it').toBe(doc.id);
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
 

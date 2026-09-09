@@ -523,7 +523,7 @@ export async function importFiles(doc, files, options = {}) {
   // Wait for any in-flight extraction before clearing, so its workers don't write stale pages into the new document.
   await doc.textReady;
 
-  doc.clear();
+  await doc.clear();
   // Pre-warm the general worker pool, except with `opt.inProcess`.
   if (!opt.inProcess) gs.getGeneralScheduler();
 

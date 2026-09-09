@@ -435,6 +435,12 @@ export class DocFonts {
    */
   id = 0;
 
+  /**
+   * Whether this document's fonts or settings have been pushed to the general workers.
+   * @type {boolean}
+   */
+  inWorkers = false;
+
   /** @type {?FontContainer} */
   opt = null;
 
