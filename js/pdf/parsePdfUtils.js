@@ -349,35 +349,29 @@ function parseXrefStream(pdfBytes, offset, entries) {
 }
 
 /**
- * Decompress zlib-wrapped deflate data using pako.
- * Throws on any error — callers are expected to catch and handle
- * (e.g. retry without trailing byte, or return null for encrypted streams).
- * @param {Uint8Array} data - zlib-wrapped deflate data
+ * Decompress zlib-wrapped deflate data.
+ * Throws on any error.
+ * @param {Uint8Array} data
  * @param {{recovered?: boolean}} [meta] - set `recovered=true` if output was salvaged from a stream that errored mid-way
  */
 export function inflate(data, meta) {
   const result = pakoInflate(data, meta);
-  // Pako returns undefined (without throwing) for truncated streams where it
-  // processes valid blocks but never reaches end-of-stream. Treat as failure.
   if (!(result instanceof Uint8Array)) throw new Error('inflate: no output');
   return result;
 }
 
 /**
- * Extract raw stream bytes from a PDF object: find "stream" keyword, parse /Length,
- * slice the byte range, decrypt if needed. Used by extractStream.
+ * Extract raw stream bytes from a PDF object.
  * @param {Uint8Array} pdfBytes
  * @param {number} objOffset
  * @param {Uint8Array|null} encryptionKey
  * @param {number} encryptObjNum
  * @param {string} cipherMode
  * @param {number} objNum
- * @param {import('./objectCache.js').ObjectCache|null} [objCache] - resolves indirect /Length
- *   via the xref instead of a whole-file scan
+ * @param {import('./objectCache.js').ObjectCache|null} [objCache]
  * @returns {{ data: Uint8Array, dictText: string } | null}
  */
 export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum, objCache = null) {
-  // Bound the per-object scan: locate endobj first, then materialize only the dictionary as a string for the existing dict-text parsing logic.
   const len = pdfBytes.length;
   let objEnd = byteIndexOf(pdfBytes, 'endobj', objOffset);
   if (objEnd === -1) objEnd = Math.min(objOffset + 100000, len);
@@ -387,9 +381,8 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
   const streamKeyword = objText.indexOf('stream', dictEnd !== -1 ? dictEnd : 0);
   if (streamKeyword === -1) return null;
 
-  // Restrict dictionary property searches to before the stream keyword so that
-  // /Filter, /Length, /DecodeParms from inline image dicts inside the stream content
-  // are not mistakenly picked up as the object's own properties.
+  // Stream content can contain dictionary keys of its own, such as the /Filter and /DecodeParms of an inline image.
+  // Search only the text before the stream keyword so those are not read as the object's own properties.
   const dictText = objText.substring(0, streamKeyword);
 
   const lengthMatch = /\/Length\s+(\d+)/.exec(dictText);
@@ -398,8 +391,7 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
   const indirectLengthMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(dictText);
   if (indirectLengthMatch) {
     const refObjNum = Number(indirectLengthMatch[1]);
-    // Prefer the xref cache: some producers give every stream an indirect /Length,
-    // so the whole-file scan fallback below would be O(pages x file bytes).
+    // Some producers give every stream an indirect /Length, so the whole-file scan fallback below would cost O(pages x file bytes).
     let resolved = false;
     if (objCache) {
       const refText = objCache.getObjectText(refObjNum);
@@ -411,11 +403,9 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
         }
       }
     }
-    // Fallback: read the length integer from object refObjNum's definition.
     const marker = `${refObjNum} `;
     let scanIdx = 0;
     while (!resolved && (scanIdx = byteIndexOf(pdfBytes, marker, scanIdx)) !== -1) {
-      // Verify "N M obj <digits>" pattern starting at scanIdx
       let p = scanIdx + marker.length;
       while (p < len && isAsciiDigit(pdfBytes[p])) p++;
       if (p < len && pdfBytes[p] === 0x20) {
@@ -435,7 +425,7 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
     }
   }
 
-  let streamStart = objOffset + streamKeyword + 6; // after "stream"
+  let streamStart = objOffset + streamKeyword + 6;
   if (pdfBytes[streamStart] === 0x0D && pdfBytes[streamStart + 1] === 0x0A) {
     streamStart += 2;
   } else if (pdfBytes[streamStart] === 0x0A || pdfBytes[streamStart] === 0x0D) {
@@ -444,8 +434,7 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
 
   let data = pdfBytes.slice(streamStart, streamStart + streamLength);
 
-  // PDF spec permits 0/1/2 EOL bytes between stream data and `endstream`; trust
-  // /Length when it matches any of those, otherwise fall back to the endstream position.
+  // The PDF spec permits 0, 1 or 2 EOL bytes between the stream data and endstream, so /Length is consistent with any of those three end positions.
   const endstreamIdx = byteIndexOf(pdfBytes, 'endstream', objOffset + streamKeyword);
   if (endstreamIdx !== -1) {
     const expectedEnd = streamStart + streamLength;
@@ -465,10 +454,7 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
     }
   }
 
-  // Decrypt stream data if the PDF is encrypted (applied before decompression filters).
-  // The object key derives from (objNum, gen, fileKey); read the generation from the
-  // "<n> <gen> obj" header at objOffset so streams with gen != 0 (common in linearised
-  // and incrementally-updated PDFs) decrypt with the right key.
+  // The object key depends on the generation number, and linearised or incrementally-updated PDFs do use gen != 0.
   if (encryptionKey && objNum >= 0 && objNum !== encryptObjNum) {
     const headerMatch = /^\s*\d+\s+(\d+)\s+obj/.exec(objText);
     const genNum = headerMatch ? Number(headerMatch[1]) : 0;
@@ -488,14 +474,7 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
 
 /**
  * Reverse a PDF /Predictor on already-decompressed filter output.
- * Reads /Predictor, /Colors, /Columns, /BitsPerComponent from `dpText`
- * (supporting indirect refs via `objCache`). Returns the de-predicted
- * bytes, or the input unchanged if no predictor is requested.
- *
- * Shared by `extractStream`'s FlateDecode/LZWDecode branches and by the
- * inline-image path in `renderPdfPage.js`.
- *
- * @param {Uint8Array} data - Decompressed filter output (post-inflate / post-LZW).
+ * @param {Uint8Array} data
  * @param {string} dpText - The DecodeParms dict text (content between `<<` and `>>`).
  * @param {ObjectCache|null} objCache
  */
@@ -508,12 +487,10 @@ export function applyPredictor(data, dpText, objCache) {
   const bytesPerRow = Math.ceil(columns * colors * bpc / 8);
 
   if (pred === 2) {
-    // TIFF Predictor 2: horizontal differencing. Each sample is stored as the
-    // delta from the previous sample on the same row in the same component.
     const numRows = Math.floor(data.length / bytesPerRow);
     const result = new Uint8Array(data);
     if (bpc === 16) {
-      // 16-bit samples: must add as 16-bit values (with carry between bytes)
+      // A 16-bit sample must be added as one 16-bit value so the carry crosses the byte boundary.
       const bytesPerSample = 2;
       const strideBytes = colors * bytesPerSample;
       for (let row = 0; row < numRows; row++) {
@@ -1087,8 +1064,7 @@ function findCatalogAndPages(objCache) {
 }
 
 /**
- * Extract the contents of the /Kids array from a /Pages tree node, handling
- * both inline (/Kids [...]) and indirect-reference (/Kids N 0 R) forms.
+ * Extract the contents of the /Kids array from a /Pages tree node.
  *
  * @param {string} objText
  * @param {ObjectCache} objCache

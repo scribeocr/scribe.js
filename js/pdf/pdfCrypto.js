@@ -835,10 +835,9 @@ export function computeObjectKey(baseKey, objNum, genNum, useAES = false) {
 }
 
 /**
- * Scan PDF bytes for "/Encrypt N M R" and return the encrypted-dict object
- * number from the last matching reference, or null if no encryption marker
- * is present.
+ * Find the last "/Encrypt N M R" reference in the PDF bytes.
  * @param {Uint8Array} bytes
+ * @returns {{objNum: number, pos: number} | null} The referenced object number and the byte offset of its "/Encrypt", or null if there is no such reference.
  */
 function findEncryptRef(bytes) {
   const marker = '/Encrypt';
@@ -850,7 +849,6 @@ function findEncryptRef(bytes) {
     const idx = byteIndexOf(bytes, marker, from);
     if (idx === -1) return lastObjNum === null ? null : { objNum: lastObjNum, pos: lastPos };
     let p = idx + marker.length;
-    // Reject longer key names like /Encryptable
     if (p < len) {
       const c = bytes[p];
       if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || isAsciiDigit(c) || c === 0x5F) {
@@ -874,8 +872,7 @@ function findEncryptRef(bytes) {
 }
 
 /**
- * Scan a byte range for "/ID [" and return the byte offset
- * just past the '[' for the last match in that range.
+ * Scan a byte range for "/ID [" and return the byte offset just past the '[' for the last match, or -1 if there is none.
  * @param {Uint8Array} bytes
  * @param {number} from - inclusive start of search range
  * @param {number} to - exclusive end of search range
@@ -907,15 +904,10 @@ function findIdArrayOpenInRange(bytes, from, to) {
 }
 
 /**
- * Walk backward from `pos` to find the enclosing `<<` of the dict containing
- * that position, then forward to its matching `>>`.
- * Linearized PDFs have a second `/ID [` array in the old end-of-file trailer
- * that does not match the /ID used for encryption key derivation.
- * The correct /ID lives in the same dict as the /Encrypt reference,
- * so we need the bounds of that dict.
+ * Find the byte bounds of the dict enclosing `pos`, from its `<<` through its matching `>>`.
  * @param {Uint8Array} bytes
  * @param {number} pos - byte offset inside the target dict
- * @param {number} maxLookback - maximum bytes to scan backward
+ * @param {number} [maxLookback=32768] - maximum bytes to scan backward
  * @returns {{lo: number, hi: number} | null}
  */
 function findEnclosingDictBounds(bytes, pos, maxLookback = 32_768) {
@@ -934,7 +926,6 @@ function findEnclosingDictBounds(bytes, pos, maxLookback = 32_768) {
     }
   }
   if (lo === -1) return null;
-  // Walk forward from lo to find the matching '>>'
   let hi = -1;
   depth = 0;
   for (let p = lo; p < len - 1; p++) {
@@ -952,23 +943,18 @@ function findEnclosingDictBounds(bytes, pos, maxLookback = 32_768) {
 }
 
 /**
- * Detect and set up PDF document encryption. Called during ObjectCache construction.
- * Supports V=1/R=2 (RC4 40-bit), V=2/R=3 (RC4 variable-length), V=4/R=4 (AES-128 or RC4).
- * Assumes empty user password (most common for permissions-only encrypted PDFs).
+ * Detect and set up PDF document encryption.
+ * Supports V=1 and V=2 (RC4), V=4 (RC4 or AES-128), and V=5 (AES-256).
+ * Assumes an empty user password.
  * @param {import('./objectCache.js').ObjectCache} objCache
  */
 export function setupEncryption(objCache) {
   const { pdfBytes, xrefEntries } = objCache;
 
-  // Find /Encrypt reference (always lives in a trailer dict near the file end).
-  // Scan raw bytes for the marker rather than materializing the whole file as
-  // a string. /Encrypt may appear in non-trailer contexts (e.g. inside a stream
-  // payload), so we accept any occurrence whose suffix parses as "N N R".
   const encryptMatch = findEncryptRef(pdfBytes);
   if (!encryptMatch) return;
   const { objNum: encObjNum, pos: encryptRefPos } = encryptMatch;
 
-  // Force otherwise lazy xref repair to run for missing encryption dictionary.
   let encEntry = xrefEntries[encObjNum];
   if (!encEntry || encEntry.type !== 1 || !matchesObjMarker(pdfBytes, encEntry.offset, encObjNum)) {
     objCache.ensureXrefRepaired();
@@ -980,7 +966,6 @@ export function setupEncryption(objCache) {
   // Every decryption path also requires `encryptionKey`, which only a successful setup assigns.
   objCache.encryptObjNum = encObjNum;
 
-  // Find the dict boundaries in raw bytes
   const encRegion = pdfBytes.subarray(encOffset, Math.min(encOffset + 2000, pdfBytes.length));
   const encText = String.fromCharCode.apply(null, encRegion); // true latin1, no Windows-1252 remapping
 
@@ -994,8 +979,6 @@ export function setupEncryption(objCache) {
     return;
   }
 
-  // V=5: AES-256. R=5 (Acrobat 9 / Adobe Extension 3) uses single SHA-256.
-  // R=6 (PDF 2.0) uses an iterative hash with SHA-256/384/512 + AES rounds.
   if (V === 5) {
     const U = parsePdfStringAt(pdfBytes, encOffset, encText, '/U');
     const UE = parsePdfStringAt(pdfBytes, encOffset, encText, '/UE');
@@ -1017,7 +1000,6 @@ export function setupEncryption(objCache) {
     return;
   }
 
-  // Key length: V=1 always 40 bits (5 bytes); V=2 specified by /Length; V=4 always 128 bits (16 bytes)
   let keyLength = 5;
   if (V === 4) {
     keyLength = 16;
@@ -1025,37 +1007,22 @@ export function setupEncryption(objCache) {
     keyLength = resolveIntValue(encText, 'Length', objCache, 40) / 8;
   }
 
-  // V=4: determine cipher mode from crypt filters (CF/StmF)
-  // Default to RC4 for V=1/V=2
   let cipherMode = 'RC4';
   if (V === 4) {
-    // /StmF names the crypt filter for streams (default: Identity = no encryption)
     const stmfName = resolveNameValue(encText, 'StmF', objCache) || 'Identity';
     if (stmfName === 'Identity') return; // Streams are not encrypted
-    // Look up CFM in the named crypt filter dict: /CF<</StdCF<</CFM/AESV2 ...>>>>
     const cfDict = resolveDictValue(encText, 'CF', objCache);
     const filterDict = cfDict && resolveDictValue(cfDict, stmfName, objCache);
     const cfm = filterDict && resolveNameValue(filterDict, 'CFM', objCache);
     cipherMode = cfm === 'AESV2' ? 'AESV2' : 'RC4';
   }
 
-  // Parse /EncryptMetadata (V=4 only, default true)
   const encryptMetadata = resolveBoolValue(encText, 'EncryptMetadata', objCache, true);
 
-  // Parse /O (owner password hash) from raw bytes
   const O = parsePdfStringAt(pdfBytes, encOffset, encText, '/O');
   if (!O) return;
 
-  // Find document /ID in trailer (not needed for V=5, but required for V=1-4).
-  // /ID may be a hex string <...> OR a literal string (...). Parse from raw bytes
-  // because literal /ID values can contain bytes 0x80-0x9F that would be mangled
-  // by TextDecoder('latin1') (which is actually Windows-1252).
-  // Match /ID followed by '[' to target the trailer's ID array specifically.
-  // Page dicts can have /ID as an indirect reference (e.g. /ID 5 0 R for StructParent);
-  // those lack the '[' and must not be matched.
-  // Linearized PDFs may carry a second /ID array in the old end-of-file trailer
-  // that differs from the /ID used for key derivation. The correct /ID lives in
-  // the same dict as the /Encrypt reference.
+  // The /ID for key derivation is the one in the same dict as the /Encrypt reference, since a linearized PDF may carry a different array in its old end-of-file trailer.
   let idArrayIdx = -1;
   const encDict = encryptRefPos >= 0 ? findEnclosingDictBounds(pdfBytes, encryptRefPos) : null;
   if (encDict) idArrayIdx = findIdArrayOpenInRange(pdfBytes, encDict.lo, encDict.hi);
@@ -1072,10 +1039,8 @@ export function setupEncryption(objCache) {
     return;
   }
 
-  // Compute encryption key assuming empty user password
   const encKey = computeEncryptionKey(new Uint8Array(0), O, P, docID, keyLength, R, encryptMetadata);
 
-  // Store encryption state in objCache
   objCache.encryptionKey = encKey;
   objCache.cipherMode = cipherMode;
 }
@@ -1089,16 +1054,14 @@ export function setupEncryption(objCache) {
  * @returns {Uint8Array|null}
  */
 function parsePdfStringAt(pdfBytes, encOffset, encText, key) {
-  // Find the key, ensuring we don't match a longer key (e.g. /U shouldn't match /UE)
   const keyLen = key.length;
   let searchFrom = 0;
   let foundIdx = -1;
   while (true) {
     const idx = encText.indexOf(key, searchFrom);
     if (idx === -1) break;
-    // Check the char after the key isn't alphanumeric (would mean it's a different key)
     const nextChar = encText.charCodeAt(idx + keyLen);
-    if (nextChar >= 0x41 && nextChar <= 0x5A) { // A-Z — part of a longer key name
+    if (nextChar >= 0x41 && nextChar <= 0x5A) { // A-Z
       searchFrom = idx + 1;
       continue;
     }
@@ -1107,7 +1070,6 @@ function parsePdfStringAt(pdfBytes, encOffset, encText, key) {
   }
   if (foundIdx === -1) return null;
 
-  // Find the string value start (skip key + whitespace)
   let pos = encOffset + foundIdx + keyLen;
   while (pos < pdfBytes.length && (pdfBytes[pos] === 0x20 || pdfBytes[pos] === 0x0A || pdfBytes[pos] === 0x0D || pdfBytes[pos] === 0x09)) pos++;
   if (pdfBytes[pos] === 0x28) return parsePdfLiteralString(pdfBytes, pos).value;

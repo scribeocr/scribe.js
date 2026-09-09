@@ -204,10 +204,6 @@ export function loadGlyphsForOutlines(fontFile) {
           cmap = null;
         }
       }
-      // Build nameToGid from /post so PDFs that drive TrueType fonts via custom
-      // /Differences (charCode -> glyph name) can resolve names without falling
-      // back to cmap (which would interpret the charCode as a Unicode codepoint
-      // and pick a glyph from a totally different position in the font).
       let nameToGid = null;
       const postEntry = dir.post;
       if (postEntry) {
@@ -227,10 +223,6 @@ export function loadGlyphsForOutlines(fontFile) {
           nameToGid = null;
         }
       }
-      // Build a Unicode -> GID map from the /post glyph names: look up each name's codepoint in the Adobe Glyph List and key its GID by that codepoint.
-      // This lets a code resolve to a glyph by its /ToUnicode value when the PDF gives no /Differences glyph name,
-      // instead of falling back to a (1,0) Mac cmap that would map the raw byte to an unrelated Mac-Roman glyph.
-      // If several names share a codepoint, the first (lowest) GID wins.
       let unicodeToGid = null;
       if (nameToGid) {
         unicodeToGid = new Map();
@@ -272,8 +264,7 @@ export function loadGlyphsForOutlines(fontFile) {
       const effFm = (fdFm && fdFm[0] > 0 && fdFm[0] < 1) ? fdFm : fm;
       const upem = effFm && effFm[0] > 0 && effFm[0] < 1 ? Math.round(1 / effFm[0]) : 1000;
       shell.unitsPerEm = upem;
-      // Preserve the full FontMatrix, including any shear (italic CFF fonts encode the slant as fm[2]).
-      // Using a uniform-diagonal `[1/upem 0 0 1/upem 0 0]` would re-emit italic glyphs as upright.
+      // Italic CFF fonts encode the slant in `fm[2]`, so a uniform `[1/upem 0 0 1/upem 0 0]` diagonal would re-emit them upright.
       const fontMatrix = (Array.isArray(effFm) && effFm.length === 6)
         ? effFm.slice() : [1 / upem, 0, 0, 1 / upem, 0, 0];
       let nameToGid = null;
@@ -284,10 +275,8 @@ export function loadGlyphsForOutlines(fontFile) {
           if (charset[gid] && !nameToGid.has(charset[gid])) nameToGid.set(charset[gid], gid);
         }
       }
-      // parsePdfFonts skips its StandardEncoding fallback for FontFile3 fonts
-      // when /Encoding is absent, leaving charCodeToGlyphName empty.
-      // Derive the map from the CFF encoding here.
-      // For format-0/1 encodings, encoding[code] is the encoded-glyph index where 0 = first non-.notdef glyph, so add 1 to get the GID.
+      // parsePdfFonts skips its StandardEncoding fallback for FontFile3 fonts when /Encoding is absent, leaving charCodeToGlyphName empty.
+      // For format-0/1 encodings, encoding[code] is the encoded-glyph index where 0 = the first non-.notdef glyph, so add 1 to get the GID.
       let cffCharCodeToGid = null;
       const cffEnc = shell.cffEncoding;
       if (cffEnc && cffEnc.encoding && Array.isArray(charset)) {
@@ -302,8 +291,7 @@ export function loadGlyphsForOutlines(fontFile) {
           }
         }
       }
-      // For CID-keyed CFF (CIDFontType0C) the charset above is unusable.
-      // Its SIDs are actually CIDs, not standard-string indices, so the names it produced are wrong.
+      // In CID-keyed CFF (CIDFontType0C) the charset holds CIDs, not standard-string indices, so the glyph names built into nameToGid above are wrong.
       let cffCidToGid = null;
       if (shell.isCIDFont) {
         const m = parseCFFSummary(fontFile).cidToGID;
@@ -330,9 +318,7 @@ export function loadGlyphsForOutlines(fontFile) {
       const fm = parsed.fontMatrix;
       if (!fm || fm.length !== 6 || !(fm[0] > 0) || !(fm[3] > 0)) return null;
       const upem = Math.round(1 / fm[0]);
-      // Italic Type1 fonts encode the slant in `fm[2]` (the c element of the affine matrix).
-      // Carry the full FontMatrix through so the emitted Form XObject's /Matrix preserves the shear.
-      // Re-emitting as `[1/upem 0 0 1/upem 0 0]` would render italic glyphs upright.
+      // Italic Type1 fonts encode the slant in `fm[2]`, so a uniform `[1/upem 0 0 1/upem 0 0]` diagonal would render them upright.
       const fontMatrix = fm.slice();
       /** @type {Array<any>} */
       const glyphsArr = [];
@@ -362,8 +348,6 @@ export function loadGlyphsForOutlines(fontFile) {
 
 /**
  * Convert font-parser Path commands (font-unit space, Y up) to a PDF path operator string.
- * Quadratic Bézier commands are expanded to cubic via midpoint conversion
- * (PDF has no native quadratic operator).
  *
  * @param {ReadonlyArray<PathCommand>} commands
  */
@@ -373,8 +357,7 @@ function pathCommandsToOps(commands) {
   let cy = 0;
   let startX = 0;
   let startY = 0;
-  // Default to integer coords (compact, and TrueType/CFF glyphs are in integer font units).
-  // Type3 coords can be fractional (< 1), where integer rounding would wipe the path, so use decimals there.
+  // Type3 glyph coords can be fractional (< 1), where rounding to integers would destroy the outline.
   let needsFraction = false;
   for (let i = 0; i < commands.length && !needsFraction; i++) {
     const c = commands[i];
@@ -431,9 +414,7 @@ function operandHasBytes(operand) {
 }
 
 /**
- * Flatten a text-show operand into an ordered list of byte-codes and TJ
- * spacers. For Type 0/CID fonts with custom codespace ranges, byte groups are
- * decoded via the codespace; otherwise one entry per byte.
+ * Flatten a text-show operand into an ordered list of byte-codes and TJ spacers.
  *
  * @param {{type: string, value: any}} operand
  * @param {string} op - 'Tj' | 'TJ' | "'" | '"' (the last two flatten like Tj)
@@ -476,7 +457,7 @@ function flattenTextOperandTyped(operand, op, codespaceRanges) {
 }
 
 /**
- * Encode a code value back to a PDF hexstring fragment (2 hex chars per byte).
+ * Encode a code value back to a PDF hexstring fragment.
  * @param {number} code
  * @param {number} numBytes
  */
@@ -487,12 +468,9 @@ function codeToHex(code, numBytes) {
 }
 
 /**
- * Rewrite a page content stream replacing per-glyph text-show operations inside the supplied bboxes with inline outline fills (`q cm cm <ops> f Q`),
- * grouped by glyph shape so the content-stream Flate filter dedups the repeats.
+ * Rewrite a page content stream replacing per-glyph text-show operations inside the supplied bboxes with inline outline fills (`q cm cm <ops> f Q`).
  *
- * A text object whose every show converted (or carried no string bytes) is removed wholly:
- * no BT/ET, no text state or positioning ops, no spacer TJs.
- * Only the inline outline blocks remain, plus any ops whose effect persists past ET and corrective setters for text-state drift.
+ * A text object whose every show converted (or carried no string bytes) is removed wholly: no BT/ET, no text state or positioning ops, no spacer TJs.
  * Text objects that keep any bytes (region miss, gated Tr mode, unresolvable glyph, invisible-text layers) retain the full skeleton so the kept shows stay positioned.
  *
  * @param {string} streamText
@@ -505,19 +483,16 @@ function codeToHex(code, numBytes) {
  *   extGStates?: Map<string, {lw?: number, dash?: boolean, ml?: number}> | null,
  *   initialTextState?: {tc: number, tw: number, tz: number, tl: number, tr: number, ts: number} | null,
  *   hiddenOCMCNames?: Set<string> | null, humanReadable?: boolean }} [opts]
- *   - `initialCtm`: starting CTM (defaults to identity). Used when recursing into
- *     a Form XObject so the form's content is hit-tested in page user space.
- *   - `parentXobjects`: in-scope Form XObject names → objNum, used to identify Do
- *     calls that target a Form XObject for recursive conversion. Records appear
- *     in `formInvocations` on the return value.
- *   - `targetFontObjNums`: font object numbers whose glyphs are always converted
- *     (broken-Type3 fonts), independent of `bboxes`.
- *   - `initialLineWidth`/`initialDashActive`/`initialMiterLimit`: pen state at
- *     stream start. Page streams start from the spec defaults (1 / false / 10);
- *     a recursed form inherits its caller's state as recorded at the Do site,
- *     with null meaning unknown (Tr 1/2 shows then stay verbatim).
- *   - `extGStates`: in-scope /ExtGState name → stroke-relevant params, applied
- *     by `gs` ops. An unknown name degrades the pen state to unknown.
+ *   - `initialCtm`: starting CTM (defaults to identity).
+ *     Used when recursing into a Form XObject so the form's content is hit-tested in page user space.
+ *   - `parentXobjects`: in-scope Form XObject names -> objNum, used to identify Do calls that target a Form XObject for recursive conversion.
+ *     Records appear in `formInvocations` on the return value.
+ *   - `targetFontObjNums`: font object numbers whose glyphs are always converted (broken-Type3 fonts), independent of `bboxes`.
+ *   - `initialLineWidth`/`initialDashActive`/`initialMiterLimit`: pen state at stream start.
+ *     Page streams start from the spec defaults (1 / false / 10).
+ *     A recursed form inherits its caller's state as recorded at the Do site, with null meaning unknown (Tr 1/2 shows then stay verbatim).
+ *   - `extGStates`: in-scope /ExtGState name -> stroke-relevant params, applied by `gs` ops.
+ *     An unknown name degrades the pen state to unknown.
  * @returns {{ ok: true, text: string, changed: boolean,
  *   usedXobj: Map<string, {fontObjNum: number, glyphIndex: number,
  *     bbox: {xMin: number, yMin: number, xMax: number, yMax: number},
@@ -540,15 +515,11 @@ function codeToHex(code, numBytes) {
 export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, resolver, opts = {}) {
   const initialCtm = opts.initialCtm || [1, 0, 0, 1, 0, 0];
   const parentXobjects = opts.parentXobjects || null;
-  // Image XObjects in scope (name -> objNum), for redaction's pixel scrub.
-  // Unlike forms, an image can be hit-tested during the walk: its placed rect is the unit square times the CTM.
   const parentImages = opts.parentImages || null;
-  // Broken-Type3 font object numbers: glyphs drawn by these fonts are converted to paths regardless of bbox,
-  // so their gibberish PUA text stops being selectable.
   const targetFontObjNums = opts.targetFontObjNums || null;
   const extGStates = opts.extGStates || null;
-  // Redaction rects (page user space): a glyph whose extent overlaps any rect is DROPPED (replaced by an advance-mimicking spacer), never converted.
-  // Independent of `bboxes`; where both apply to a glyph, redaction wins.
+  // A glyph overlapping any redaction rect (page user space) is dropped and replaced by an advance-mimicking spacer, never converted to a path.
+  // Where a glyph also falls inside `bboxes`, redaction wins.
   const redactBboxes = opts.redactBboxes || null;
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Text-edit rects share redaction's glyph-drop handling but are text-only.
@@ -568,8 +539,6 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const pathDeletes = opts.pathDeletes && opts.pathDeletes.length > 0 ? opts.pathDeletes : null;
   const textDropActive = redactActive || editActive;
   const markedContentProps = opts.markedContentProps || null;
-  // Glyph-identifying `%tag` comments are a debug/traceability aid (they let tests and a human reader see which (font, glyph) each inline block draws).
-  // Emit them only in human-readable (uncompressed) output, never in production streams, where they would be dead weight.
   const commentGlyphs = !!opts.humanReadable;
   // Redaction and path deletion always tokenize, since they must see vector path ops, which this regex deliberately ignores.
   // Text edits always tokenize too, since `'`/`"` shows would slip past the regex.
@@ -596,12 +565,6 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const out = [];
 
   let inBT = false;
-  // Track text-object removal: when every show in a BT..ET converted or carried no string bytes, drop the whole skeleton at ET.
-  // Only ops whose effect persists past ET survive (graphics/colour state, marked content, flushed convert blocks),
-  // plus corrective setters for the text-state drift Tc/Tw/Tz/TL/Tf/Tr/Ts leave across text objects.
-  // btStart: index in `out` where the current BT was pushed (-1 = none).
-  // btPersist: [start, end) ranges in `out` retained when removing the object.
-  // btKept: a show in this object kept selectable/visible bytes (not removed).
   let btStart = -1;
   /** @type {Array<[number, number]>} */
   let btPersist = [];
@@ -611,9 +574,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   };
   let tm = [1, 0, 0, 1, 0, 0];
   let tlm = [1, 0, 0, 1, 0, 0];
-  // Text state. Defaults to the spec initial values, or inherits the caller's values when recursing into a Form XObject
-  // (forms inherit text state at the Do site, section 9.3.1).
-  // Without this, a form that relies on an inherited leading collapses every T*/'/" line break onto one baseline.
+  // Forms inherit text state at the Do site (section 9.3.1), so without these seeds a form relying on an inherited leading collapses every T*/'/" line break onto one baseline.
   const its = opts.initialTextState || null;
   let tc = its ? its.tc : 0;
   let tw = its ? its.tw : 0;
@@ -621,20 +582,15 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   let tl = its ? its.tl : 0;
   let tr = its ? its.tr : 0;
   let ts = its ? its.ts : 0;
-  // Optional-content (OCG) visibility.
-  // `/<name>` in hiddenOCMCNames marks a marked-content block (`/OC /<name> BDC ... EMC`) whose group is OFF.
-  // Its text must stay hidden, so it is left verbatim (the renderer hides it) rather than converted to always-visible paths.
-  // Mirrors the renderer's mcStack/ocHidden.
   const hiddenOCMCNames = opts.hiddenOCMCNames || null;
-  /** @type {boolean[]} one entry per open BDC/BMC; value = that block's hidden state */
+  /** @type {boolean[]} */
   const mcHiddenStack = [];
   let ocHidden = false;
   /** @type {string | null} */
   let currentFontTag = null;
   let currentFontSize = 0;
   let ctm = initialCtm.slice();
-  // Pen state for Tr 1/2 conversion.
-  // null = unknown (inherited from an unresolvable gs or an unrecorded caller), which blocks stroke conversion until an explicit `w`/`M` restores knowledge.
+  // A null width or miter limit means unknown, not absent, so the defaults apply only to a missing option.
   /** @type {number | null} */
   let lw = opts.initialLineWidth === undefined ? 1 : opts.initialLineWidth;
   let dashActive = !!opts.initialDashActive;
@@ -649,9 +605,6 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
   /**
    * Converted glyphs deferred to the next ET or graphics-state op, then emitted as inline outline fills.
-   * Each entry carries the placement matrix `M` captured at its original text-show.
-   * Stroke-mode entries also carry the glyph-space pen width to emit as `w` (computed at queue time, so a later `w` op in the source cannot skew it).
-   * Glyphs are non-overlapping, so the z-order shift vs interleaved text-show (and the shape-grouped reorder the flush applies) is acceptable.
    * @type {Array<{xobjTag: string, M: number[], strokeW?: number}>}
    */
   let pendingConverts = [];
@@ -663,8 +616,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
    */
   const usedXobj = new Map();
   /**
-   * Inline outline body (`pathCommandsToOps` output + the paint operator) per shape tag,
-   * computed once and reused for every placement of that glyph.
+   * Inline outline body (`pathCommandsToOps` output plus the paint operator) per shape tag.
    * @type {Map<string, string>}
    */
   const inlineBodyByTag = new Map();
@@ -693,8 +645,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   }
 
   /**
-   * Emit an op verbatim and, inside a text object, record its output range so text-object removal retains it:
-   * these are ops whose effect outlives ET (colour, general graphics state, marked content, Do), unlike text ops.
+   * Emit an op verbatim and, inside a text object, record its output range so text-object removal retains it.
+   * Use it for ops whose effect outlives ET (colour, general graphics state, marked content, Do), never for text ops.
    * @param {string} opVal
    */
   function emitPersistVerbatim(opVal) {
@@ -706,21 +658,15 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /**
    * Emit the queued converted glyphs as inline outline fills, grouped by shape.
    *
-   * Each glyph is placed by its own `q <M> cm <fontMatrix> cm <ops> <paint> Q` block:
-   * `M` carries the precision-critical fontSize*Tm placement at full PDF_MATRIX_DECIMALS, the font matrix rides a second per-shape cm,
-   * and the per-glyph q/Q resets the CTM so placement stays absolute with no cm drift across the run.
+   * Each glyph gets its own `q <M> cm <fontMatrix> cm <ops> <paint> Q` block, so every cm applies from the same base CTM and placements cannot drift across the run.
+   * Queued glyphs are non-overlapping and share one colour within a flush (any colour op bounce-flushes first), so reordering them is safe.
    *
-   * Glyphs are grouped by shape tag so the byte-identical outline ops (plus the per-shape font-matrix cm and `%tag` comment) sit adjacent,
-   * letting the stream's FlateDecode collapse every repeat after the first to a short back-reference.
-   * Reordering among the queued glyphs is safe: they are non-overlapping and share one colour within a flush (any colour op bounce-flushes first).
-   *
-   * Called at ET (outside BT) or before any graphics-state change.
+   * Must run at ET and before any graphics-state change (q/Q/cm/Do).
    */
   function flushPendingConverts() {
     if (pendingConverts.length === 0) return;
     const persistStart = out.length;
-    // Bucket by shape tag, preserving first-seen order, so identical outlines
-    // are emitted back-to-back for the deflate window to dedup.
+    // Bucket by shape tag, preserving first-seen order, so identical outline bodies land back-to-back for the deflate window to dedup.
     /** @type {string[]} */
     const order = [];
     /** @type {Map<string, Array<{xobjTag: string, M: number[], strokeW?: number}>>} */
@@ -753,8 +699,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       for (const c of buckets.get(tag)) {
         if (commentGlyphs) out.push(`%${tag}\n`);
         out.push('q\n');
-        // Stroke pen width is glyph-space and was computed at queue time.
-        // Scope it inside this q...Q so it cannot leak to the next glyph.
+        // The pen width is glyph-space and was computed at queue time, so a later source `w` cannot skew it.
         if (c.strokeW !== undefined) out.push(`${fmt(c.strokeW, PDF_MATRIX_DECIMALS)} w\n`);
         const M = c.M;
         out.push(`${fmt(M[0], PDF_MATRIX_DECIMALS)} ${fmt(M[1], PDF_MATRIX_DECIMALS)} ${fmt(M[2], PDF_MATRIX_DECIMALS)} ${fmt(M[3], PDF_MATRIX_DECIMALS)} ${fmt(M[4], PDF_MATRIX_DECIMALS)} ${fmt(M[5], PDF_MATRIX_DECIMALS)} cm\n`);
@@ -764,8 +709,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       }
     }
     pendingConverts = [];
-    // A flush inside BT (bounceFlushInBT, or a tolerated q/Q/cm/Do mid-object) is painted output, not text skeleton.
-    // Removal must keep it.
+    // A flush inside BT (from bounceFlushInBT, or a tolerated q/Q/cm/Do mid-object) is painted output rather than text skeleton, so removal must keep it.
     if (inBT && btStart >= 0) btPersist.push([persistStart, out.length]);
   }
 
@@ -782,11 +726,10 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
   /**
    * Re-establish the walker's text position after a fresh BT.
-   * `Tm` restores the line matrix, then a numeric TJ moves tm to the mid-line target without touching tlm.
-   * An off-axis displacement has no TJ equivalent and is skipped.
    * @param {number[]} [targetTm] - Text matrix to restore to.
    */
   function restoreTextPosition(targetTm = tm) {
+    // Tm restores the line matrix and a numeric TJ then reaches the mid-line target, because a second Tm would clobber tlm and shift every later T*/'/" break.
     out.push(`${fmt(tlm[0], PDF_MATRIX_DECIMALS)} ${fmt(tlm[1], PDF_MATRIX_DECIMALS)} ${fmt(tlm[2], PDF_MATRIX_DECIMALS)} ${fmt(tlm[3], PDF_MATRIX_DECIMALS)} ${fmt(tlm[4], PDF_MATRIX_DECIMALS)} ${fmt(tlm[5], PDF_MATRIX_DECIMALS)} Tm\n`);
     const deltaUx = targetTm[4] - tlm[4];
     const deltaUy = targetTm[5] - tlm[5];
@@ -848,14 +791,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /**
    * Numeric TJ spacer that displaces tm by the same amount a glyph of the given code would.
    * tlm is unaffected, so subsequent Td/Tm computations match the unconverted original.
-   * Derivation: equate glyph advance `(W/1000 * fontSize + tc + tw_if_space) * tz/100` with TJ spacer advance `-s/1000 * fontSize * tz/100`.
-   * The tz factor cancels.
    * @param {FontBinding} binding
    * @param {number} code
    * @param {number} numBytes
    * @returns {number}
    */
   function spacerForGlyphMimic(binding, code, numBytes) {
+    // Equating the glyph advance `(W/1000 * fontSize + tc + tw_if_space) * tz/100` with the spacer advance `-s/1000 * fontSize * tz/100` cancels tz, so it is absent below.
     if (currentFontSize === 0) return 0;
     const isWordSpace = numBytes === 1 && code === 0x20;
     if (binding.verticalMode) {
@@ -869,13 +811,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     return -W - 1000 * tcTwAdd / currentFontSize;
   }
 
-  // Per-(name, ctm) form aliases for redaction's per-site recursion.
   /** @type {Map<string, string>} */
   const redactFormAliases = new Map();
   // Image invocations whose placed rect crosses a redact rect, aliased for the pixel scrub.
-  // A name that also paints outside every rect goes in verbatimImageNames, so its original entry survives.
   /** @type {Array<{alias: string, name: string, objNum: number, ctm: number[]}>} */
   const imageInvocations = [];
+  // A name that also paints outside every rect lands here, so its original /XObject entry survives the scrub.
   /** @type {Set<string>} */
   const verbatimImageNames = new Set();
   // The same name can be dropped at one placement and kept at another, so the driver prunes a /XObject entry only when no kept placement remains.
@@ -917,8 +858,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           continue;
         }
       }
-      // Inline image (BI..ID..EI, one self-contained token) crossing a redact rect: drop the whole token.
-      // Partial scrub would require decoding arbitrary inline-image filters (unsupported), and dropping the whole token over-redacts, which is the safe side.
+      // A partial scrub would have to decode arbitrary inline-image filters, so the whole token goes and over-redacts, which is the safe side.
       if (redactActive && tok.type === 'inlineImage') {
         let ix0 = Infinity; let iy0 = Infinity; let ix1 = -Infinity; let iy1 = -Infinity;
         for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
@@ -937,12 +877,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     }
     const op = tok.value;
 
-    // Paint-state change with converts queued inside a text object: bounce-flush first so the queued glyphs paint with their show-time state.
-    // (Outside BT, pendingConverts is always empty because ET flushes.)
+    // Bounce-flush before a paint-state change so the queued glyphs paint with their show-time state.
     if (inBT && pendingConverts.length > 0 && PAINT_STATE_OPS.has(op)) bounceFlushInBT();
 
-    // Vector-path redaction and path deletion run only outside BT, since paths are illegal inside it.
-    // A nonconforming in-BT path keeps verbatim handling; the raster black box still covers it.
+    // Vector-path redaction and path deletion run only outside BT, since paths are illegal inside a text object.
+    // A nonconforming in-BT path stays verbatim, and redaction's raster black box still covers it.
     if ((redactActive || pathDeletes) && !inBT) {
       if (PATH_CONSTRUCTION_OPS.has(op)) {
         const numsNeeded = op === 'c' ? 6 : (op === 'v' || op === 'y' || op === 're' ? 4 : (op === 'h' ? 0 : 2));
@@ -996,8 +935,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           }
         }
         if (!pathBboxKnown && pathBuf.length > 0) {
-          // Unreadable geometry: keep the path and surface a warning.
-          // Redaction's raster box still covers the rect, and a missed path delete is visible and recoverable.
+          // Keeping an unverifiable path is safe: redaction's raster box still covers the rect, and a missed path delete is visible and recoverable.
           skipped.push({ fontObjNum: -1, charCode: -1, reason: redactActive ? 'redact-unverifiable-path' : 'path-delete-unverifiable-path' });
         }
         if (op !== 'n' && !pathIsClip && (intersects || deleteHit) && pathBuf.length > 0) {
@@ -1020,7 +958,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         continue;
       }
       if (pathBuf.length > 0) {
-        // Any other op arriving mid-path (nonconforming stream): flush the buffer verbatim first.
+        // A nonconforming stream can interleave other ops mid-path, so flush the buffer verbatim first.
         flushPathBufVerbatim();
       }
     }
@@ -1120,10 +1058,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     if (op === 'ET') {
       inBT = false;
       if (btStart >= 0 && !btKept) {
-        // No show in this text object kept any bytes: drop the whole text skeleton.
-        // Re-push the ops that persist past ET, then corrective setters for text-state drift:
-        // later text objects inherit Tc/Tw/Tz/TL/Tf/Tr/Ts, so a dropped setter must be replayed.
-        // Positioning state (tm/tlm) dies at ET and needs no replay.
+        // Later text objects inherit Tc/Tw/Tz/TL/Tf/Tr/Ts, so a setter dropped with this skeleton has to be replayed.
         const dropped = out.length - btStart;
         /** @type {string[]} */
         const persistOps = [];
@@ -1139,8 +1074,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         if ((currentFontTag !== btSnap.fontTag || currentFontSize !== btSnap.fontSize) && currentFontTag) {
           out.push(`/${currentFontTag} ${fmt(currentFontSize)} Tf\n`);
         }
-        // dropped === 2 is a bare `BT` push (empty object): removing the pair changes no semantics,
-        // so it alone does not force a rewrite.
+        // A bare `BT` push counts 2 entries, so `dropped > 2` means the object held real content.
+        // Removing an empty BT/ET pair changes no semantics and must not force a rewrite.
         if (dropped > 2) changed = true;
         operandBuf.length = 0;
         btStart = -1;
@@ -1446,12 +1381,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     }
 
     const operand = operandBuf[operandBuf.length - 1];
-    // Convertibility by render mode (section 9.3.6).
-    // Tr=0 fills (forms paint `f`).
-    // Tr=1/2 stroke or fill-then-stroke per glyph: forms paint `S`/`B` and inherit the ambient stroke/fill colours.
-    // The pen width is user-space, so a compensated `w` is emitted per invocation (forms are cached across pages and cannot bake it).
-    // Tr=3 is invisible (stripText's domain) and Tr>=4 adds clipping. Both stay verbatim.
-    // Type3 CharProcs paint themselves (modes other than 3/7 do not stroke them), so Type3 runs under Tr 1/2 also stay verbatim.
+    // Type3 CharProcs paint themselves and modes other than 3/7 do not stroke them (section 9.3.6), so Type3 runs under Tr 1/2 stay verbatim.
     /** @type {'stroke' | 'fillStroke' | null} */
     let strokeMode = null;
     let verbatimReason = null;
@@ -1467,12 +1397,10 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     // Their bytes are extractable regardless of visibility, so glyphs inside a rect must drop.
     const canConvert = !ocHidden && (tr === 0 || strokeMode !== null);
 
-    // `ocHidden`: this show sits in an OFF optional-content block.
-    // Keep it verbatim so the renderer goes on hiding it.
-    // Converting it to paths would make hidden content (e.g. alternate SAR values or print marks) always visible.
+    // Converting an OC-hidden show to paths would make hidden content always visible, so it stays verbatim.
     if (!binding || !operand || (!textDropActive && (ocHidden || (tr !== 0 && strokeMode === null)))) {
-      // Fail-closed when a show's font failed to parse: glyph geometry is uncomputable, so drop the WHOLE show if its start origin falls inside a rect grown by a line-height margin.
-      // Otherwise keep it and surface a warning.
+      // A show whose font failed to parse has uncomputable glyph geometry, so this fails closed.
+      // The whole show drops when its start origin falls inside a rect grown by a line-height margin.
       if (textDropActive && operand && !binding) {
         const originMat = matMul(tm, ctm);
         const pad = currentFontSize > 0 ? currentFontSize * 2 : 24;
@@ -1492,7 +1420,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           if (hitEdit) hitEdit = editGated.pts.some((pt) => Math.abs(originMat[4] - pt.x) <= pad && Math.abs(originMat[5] - pt.y) <= pad);
         }
         if (hitRedact || hitEdit) {
-          // No advance replay without widths; later absolute positioning ops (Tm/Td/TD/T*) re-anchor, so only same-object relative text drifts.
+          // No advance can be replayed without widths, but later absolute positioning (Tm/Td/TD/T*) re-anchors, so only same-object relative text drifts.
           skipped.push({ fontObjNum: -1, charCode: -1, reason: hitRedact ? 'redact-dropped-unresolved-font-show' : 'textedit-dropped-unresolved-font-show' });
           changed = true;
           operandBuf.length = 0;
@@ -1503,8 +1431,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (binding && operand && verbatimReason) {
         skipped.push({ fontObjNum: binding.fontObjNum, charCode: -1, reason: verbatimReason });
       }
-      // Verbatim text still advances the text matrix. Replay its advance onto tm
-      // so a later converted run in the same BT lands after the kept text instead of overlapping it.
+      // Replay the verbatim show's advance onto tm so a later converted run in the same BT lands after the kept text instead of overlapping it.
       if (binding && operand) {
         const vcs = binding.codespaceRanges || (binding.isType0 ? [{ bytes: 2, low: 0, high: 0xFFFF }] : null);
         for (const elem of flattenTextOperandTyped(operand, op === '"' ? 'Tj' : op, vcs)) {
@@ -1512,8 +1439,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           else advanceMatrixForGlyph(tm, binding, elem.value, elem.numBytes);
         }
       }
-      // The kept bytes render and/or stay selectable (Tr 3 included: in the region flow invisible text IS the selectable layer),
-      // so the enclosing text object cannot be removed.
+      // The kept bytes still render or stay selectable, so the enclosing text object cannot be removed.
+      // Tr 3 counts too, since invisible text is the selectable layer over a scanned page.
       if (inBT && operandHasBytes(operand)) btKept = true;
       emitVerbatim(op);
       continue;
@@ -1536,8 +1463,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     /** @type {?number[]} */
     let tmAtSplice = null;
     let anyConvert = false;
-    // Per-run stroke state, computed on the first resolved glyph:
-    // the 2x2 of trmPrefix * tm is translation-invariant across the run, so k, the anisotropy ratio, and the glyph-space pen width are run constants.
+    // The 2x2 of trmPrefix * tm is translation-invariant across the run, so the pen width and anisotropy ratio computed on the first resolved glyph hold for every glyph.
     /** @type {number | null} */
     let runStrokeW = null;
     /** @type {string | null} */
@@ -1564,6 +1490,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           ? (binding.charCodeToCID.get(code) ?? code)
           : code;
         const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
+        // The rect and identity strikes never consult the resolver, so glyphs in unembedded or broken fonts still drop.
         let dropHit = (redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes)))
           || (editBboxes && editBboxes.length > 0 && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editBboxes, TEXT_EDIT_GLYPH_SIZE_CAP))
           // The gated rects take no size cap because the identity match is the precision guard.
@@ -1574,14 +1501,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           const u = glyphUnicode ? glyphUnicode(binding.fontObjNum, code) : null;
           if (u != null && u.trim().length === 0) {
             // A broken font can map an inked glyph to U+0020, so the resolver gate keeps any glyph that actually paints.
-            // The renderer never strikes whitespace bands, so such a hole would ship without ever appearing on screen.
             // Code 32 in a simple font is the spec-defined word space, trusted when no outline is resolvable.
             const res = resolver({ fontObjNum: binding.fontObjNum, charCode: code });
             dropHit = 'error' in res ? (res.error === 'empty-path' || (!binding.isType0 && code === 32)) : false;
           }
         }
         if (dropHit) {
-          // The rect and identity strikes never consult the resolver, so glyphs in unembedded or broken fonts still drop.
           didConvert = true;
           outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
           anyConvert = true;
@@ -1589,7 +1514,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
             for (const e of editInserts) {
               if (!e.placed && !spliceNow.includes(e) && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, e.rects, TEXT_EDIT_GLYPH_SIZE_CAP)) {
                 if (spliceNow.length === 0) {
-                  // The split point: before this dropped glyph's spacer, at this glyph's position.
+                  // Split before this dropped glyph's spacer, at this glyph's position.
                   spliceElemIdx = outputElems.length - 1;
                   tmAtSplice = tm.slice();
                 }
@@ -1614,9 +1539,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         const res = resolver({ fontObjNum: binding.fontObjNum, charCode: code });
         if ('error' in res) {
           if (res.error === 'empty-path') {
-            // Invisible glyph (word space etc): emit a numeric spacer that matches its advance,
-            // dropping the residual selectable whitespace a viewer would otherwise extract from this TJ.
-            // `empty-path` covers both an outline glyph with no path and a Type3 glyph with an empty CharProc.
+            // A numeric spacer matching the advance takes the residual whitespace a viewer would otherwise extract from this TJ.
             didConvert = true;
             outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
             anyConvert = true;
@@ -1652,8 +1575,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
               }
             }
             if (runStrokeBad !== null) {
-              // Guard failure keeps the glyph as literal text.
-              // The TJ re-emitted below still renders in mode `tr`.
+              // The glyph falls through to literal text below, which still renders in mode `tr`.
               skipped.push({ fontObjNum: binding.fontObjNum, charCode: code, reason: runStrokeBad });
             } else if (runStrokeW !== null) {
               strokeW = runStrokeW;
@@ -1687,7 +1609,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
             let M = matMul(trmPrefix, tm);
             // Substitute fonts: squeeze the glyph horizontally to the PDF /Widths advance, mirroring the renderer's hScale.
             // The substitute's formMatrix is uniform-diagonal, so it commutes with an x-scale and the correction folds into M's first column (no extra cm, shape dedup preserved).
-            // Cap at 2x as the renderer does for non-embedded.
+            // Above 2x the ratio is not trusted and the correction is dropped, as the renderer does for non-embedded fonts.
             if (res.subAdvanceEm) {
               const ws = binding.isType0 && binding.charCodeToCID
                 ? (binding.charCodeToCID.get(code) ?? code) : code;
@@ -1719,13 +1641,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       continue;
     }
     changed = true;
-    // A partially converted run leaves real bytes in the TJ below.
     if (outputElems.some((e) => e.kind === 'glyph')) btKept = true;
 
-    // In-place replacement: the output position already equals this show's start (verbatim positioning ops plus advance-mimicking spacer TJs reproduce the original tm),
-    // so emit the TJ directly with no ET/BT bounce or Tm re-emit.
+    // Verbatim positioning ops and advance-mimicking spacer TJs have already reproduced the original tm, so the output position equals this show's start.
+    // The TJ therefore goes out in place, with no ET/BT bounce and no Tm re-emit.
     // ' and " advance to the next line (and " sets Tw/Tc) as part of the op being replaced, so emit those state effects explicitly.
-    // Use TJ, not Tj, to interleave numeric spacers between kept glyphs.
     if (op === "'") {
       out.push('T*\n');
     } else if (op === '"' && aw !== null && ac !== null) {
@@ -1749,8 +1669,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
     };
 
-    // A non-invertible CTM leaves the entries unplaced.
-    // The page driver appends leftover entries at the end of the page stream.
+    // A non-invertible CTM leaves these entries unplaced, and the page driver appends the leftovers at the end of the page stream.
     let spliced = false;
     if (spliceNow.length > 0 && tmAtSplice) {
       const det = ctm[0] * ctm[3] - ctm[1] * ctm[2];
@@ -1805,7 +1724,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 }
 
 /**
- * Compute glyph bounding box (font-unit space) by walking path commands.
+ * Compute a glyph bounding box in font-unit space.
  * @param {ReadonlyArray<PathCommand>} commands
  */
 function bboxFromCommands(commands) {
@@ -1842,7 +1761,7 @@ function bboxFromCommands(commands) {
 }
 
 /**
- * Resolve charCode → glyphIndex for a parsed PDF FontInfo + a font's cmap.
+ * Resolve charCode -> glyphIndex for a parsed PDF FontInfo + a font's cmap.
  *
  * @param {any} fontInfo - FontInfo from parsePageFonts
  * @param {number} charCode - the decoded code from the content stream
@@ -1874,7 +1793,6 @@ export function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
     if (gname) {
       const gid = loaded.nameToGid.get(gname);
       if (gid != null) return gid;
-      // AGL "uniXXXX" / "uXXXXXX" names encode a Unicode codepoint directly.
       const uniMatch = /^uni([0-9A-Fa-f]{4})$/.exec(gname) || /^u([0-9A-Fa-f]{4,6})$/.exec(gname);
       if (uniMatch && loaded.cmap?.glyphIndexMap) {
         const cp = parseInt(uniMatch[1], 16);
@@ -1884,15 +1802,13 @@ export function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
     }
   }
   const cmap = loaded && loaded.cmap;
-  // For a format-0 (single-byte) cmap, prefer the raw byteToGlyphIndex array over glyphIndexMap,
-  // which re-keys its 0x80..0xFF half by Mac-Roman Unicode and maps those byte codes to the wrong glyph.
+  // For a format-0 (single-byte) cmap, prefer the raw byteToGlyphIndex array over glyphIndexMap.
+  // glyphIndexMap re-keys its 0x80..0xFF half by Mac-Roman Unicode, mapping those byte codes to the wrong glyph.
   if (cmap && Array.isArray(cmap.byteToGlyphIndex) && charCode >= 0 && charCode < 256) {
     const g = cmap.byteToGlyphIndex[charCode];
     if (g != null && g > 0) return g;
   }
-  // Resolve by Unicode through the font's /post names when a unicodeToGid map exists, the code has a /ToUnicode entry, and /Differences does not name it.
-  // Then the code's identity comes only from /ToUnicode, and the raw (1,0) Mac cmap below would map the byte to an unrelated Mac-Roman glyph.
-  // Resolving by Unicode takes priority over that cmap[code] fallback below.
+  // When /Differences does not name the code, its identity comes only from /ToUnicode, and the raw (1,0) Mac cmap below would map the byte to an unrelated Mac-Roman glyph.
   if (loaded?.unicodeToGid && fontInfo.toUnicode && !fontInfo.charCodeToGlyphName?.get(charCode)) {
     const uniStr = fontInfo.toUnicode.get(charCode);
     if (uniStr && uniStr.length > 0) {
@@ -1924,13 +1840,12 @@ export function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
  * @property {Map<number, ReturnType<typeof loadGlyphsForOutlines>>} fontGlyphsCache
  *   Loaded glyph outlines, keyed by source font objNum.
  * @property {Set<number>} inProgress
- *   Form objNums currently on the recursion stack. Cycle guard.
+ *   Form objNums currently on the recursion stack.
  * @property {Map<string, number>} formCloneByKey
  *   Cloned Form XObject dedup, keyed by `${origObjNum}|${contentHash}|${redirectsHash}`.
  *   Lets pages sharing the same form with identical CTM reuse one clone object.
  * @property {Map<string, number>} type3GlyphIndexByKey
- *   Stable ordinal per Type3 (fontObjNum, glyphName)
- *   so the existing `TGP{font}g{gid}` Form-XObject dedup keys the same Type3 glyph the same way across pages.
+ *   Stable ordinal per Type3 (fontObjNum, glyphName), so the existing `TGP{font}g{gid}` Form-XObject dedup keys the same Type3 glyph the same way across pages.
  */
 
 /**
@@ -1943,7 +1858,8 @@ export function createConversionState() {
     inProgress: new Set(),
     formCloneByKey: new Map(),
     type3GlyphIndexByKey: new Map(),
-    // Dict texts the rebuild's reference trace must include for redaction: form clones whose originals are deliberately untraced, though the clones still reference live fonts/images.
+    // Dict texts the rebuild's reference trace must include for redaction.
+    // The form clones' originals are deliberately untraced, but the clones still reference live fonts and images.
     /** @type {string[]} */
     redactTraceTexts: [],
     // Scrubbed-image copies, keyed by source objNum + the unit-space regions painted.
@@ -1953,7 +1869,7 @@ export function createConversionState() {
 }
 
 /**
- * One Type3 CharProc, parsed to drawable path data (see `parseGlyphStreamPaths`).
+ * One Type3 CharProc, parsed to drawable path data.
  *
  * @typedef {{ commands: PathCommand[], provablyEmpty?: boolean, isD1?: boolean,
  *   paintMode?: string, evenOdd?: boolean }} Type3Glyph
@@ -1996,27 +1912,20 @@ function buildResolver(fontInfoByObjNum, state) {
       if (!glyph) return { error: 'type3-no-glyph' };
       const commands = glyph.commands;
       if (!commands || commands.length === 0) {
-        // Zero path commands is only evidence of an empty glyph when the CharProc is PROVABLY empty: every operator is non-marking (see parseType3Font).
-        // Bitmap glyphs (inline ImageMask, Do), nested text, shadings, and unreadable CharProcs all parse to zero path commands while still (possibly) painting,
-        // and dropping those erases the page's visible text.
-        // Route them to the same skipped-bitmap bucket as the stray-token case below.
+        // Zero path commands only proves the glyph is empty when the CharProc is provably empty, meaning every operator is non-marking (see parseType3Font).
+        // Bitmap glyphs (inline ImageMask, Do), nested text, shadings, and unreadable CharProcs all parse to zero commands while still able to paint, so dropping them erases visible text.
         if (!glyph.provablyEmpty) return { error: 'type3-no-moveto' };
-        // A genuinely empty CharProc draws nothing, the Type3 equivalent of an outline glyph with no path.
-        // Report it as `empty-path` so the caller drops it to a numeric spacer (removing the residual selectable whitespace) instead of leaving a selectable text-show op behind.
-        // Producers (e.g. Adobe "Print to PDF") encode inter-word spaces this way, often with a broken oversized FontBBox,
-        // so leaving them verbatim hijacks text selection.
+        // A genuinely empty CharProc draws nothing, so report it as `empty-path` and let the caller drop it to a numeric spacer.
+        // Producers such as Adobe "Print to PDF" encode inter-word spaces this way, often with a broken oversized FontBBox, so leaving them verbatim hijacks text selection.
         return { error: 'empty-path' };
       }
-      // A CharProc that paints via inline image or Do (bitmapped Type3 glyphs) produces no real path data.
-      // `parseGlyphStreamPaths` can still surface stray `h`/`Z` tokens from misinterpreting binary inline-image bytes,
-      // so guard against converting an empty-looking path: require at least one moveto.
+      // A bitmapped Type3 CharProc has no real path data, but `parseGlyphStreamPaths` can still surface stray `h`/`Z` tokens from misread binary inline-image bytes.
+      // Requiring a moveto keeps those from converting as an empty-looking path.
       if (!commands.some((c) => c.type === 'M')) {
         return { error: 'type3-no-moveto' };
       }
-      // PDF 32000-2 §9.6.4: a d1 CharProc is monochromatic and takes its colour from the graphics
-      // state (the fill colour at Tr=0), so a fill (`f`) inside the form picks up the caller's fill colour and round-trips.
-      // Skip the cases a Form XObject Do can't reproduce: d0 (supplies its own colours, which parseGlyphStreamPaths drops)
-      // and d1 + stroke/fillStroke (the form's S/B would source the caller's separate stroke colour, not d1's fill-as-stroke).
+      // A d1 CharProc is monochromatic and takes its colour from the graphics state (PDF 32000-2 section 9.6.4), so a fill inside the form picks up the caller's fill colour and round-trips.
+      // d0 supplies its own colours, which parseGlyphStreamPaths drops, and d1 with stroke/fillStroke would source the caller's separate stroke colour, so neither converts.
       if (!glyph.isD1) return { error: 'type3-d0-colour-not-preserved' };
       const pm = glyph.paintMode;
       if (pm === 'stroke' || pm === 'fillStroke') {
@@ -2028,9 +1937,8 @@ function buildResolver(fontInfoByObjNum, state) {
         glyphIndex = state.type3GlyphIndexByKey.size;
         state.type3GlyphIndexByKey.set(key, glyphIndex);
       }
-      // Derive the bbox from the path commands, not `glyph.bbox`: the two come from different walks
-      // of the CharProc (`parseGlyphStream` vs `parseGlyphStreamPaths` in `parsePdfFonts.js`) and land
-      // in different coordinate spaces when the CharProc contains scaling cm ops, so they are not mixable.
+      // Derive the bbox from the path commands, not from `glyph.bbox`.
+      // The two come from different walks of the CharProc (`parseGlyphStream` vs `parseGlyphStreamPaths`) and land in different coordinate spaces when the CharProc scales with cm.
       const bbox = bboxFromCommands(commands);
       return {
         glyphIndex,
@@ -2050,12 +1958,11 @@ function buildResolver(fontInfoByObjNum, state) {
       if (fi.type0 && fi.type0.fontFile) fontFile = fi.type0.fontFile;
       else if (fi.type1 && fi.type1.fontFile) fontFile = fi.type1.fontFile;
       loaded = fontFile ? loadGlyphsForOutlines(fontFile) : null;
-      // Fully unembedded font (no FontFile at all): substitute with our built-in outlines, as every viewer already does.
+      // A fully unembedded font (no FontFile at all) gets our built-in outlines, as every viewer already does.
       // An embedded-but-unparseable program has a fontFile, so it fails this gate and keeps the skip-tail behavior.
       if (!loaded && !fontFile && (fi.type1 || fi.type0) && GlobalFonts.raw) {
         // Resolve the substitute family via the same cascade the renderer uses for non-embedded fonts (registerNonEmbeddedFont), so the outlines match the baseline render.
         const hints = { bold: !!fi.bold, italic: !!fi.italic };
-        // A 'cursive' generic returns null (no bundled cursive face), so that font keeps the skip-tail behavior rather than rendering wrong.
         const sub = base14ToBundledFont(fi.baseName, hints)
           || cssFamilyToBundledFont(standardFontToCSS(fi.baseName || '') || '', hints)
           || genericToBundledFont(cssGenericForFontObj(fi), hints);
@@ -2082,8 +1989,7 @@ function buildResolver(fontInfoByObjNum, state) {
     if (!loaded) return { error: 'font-not-embedded-or-unsupported' };
     let glyphIndex;
     if (loaded.fontType === 'substitute') {
-      // Drawing identity comes from the PDF encoding (glyph name via AGL, covering /Differences and base encodings),
-      // with the encoding-derived and /ToUnicode maps as fallbacks, bridged into the substitute font's Unicode cmap.
+      // Drawing identity comes from the PDF encoding, not /ToUnicode, so the glyph name leads and the Unicode maps are only fallbacks.
       let uni = null;
       const gname = fi.charCodeToGlyphName ? fi.charCodeToGlyphName.get(charCode) : null;
       if (gname) {
@@ -2097,7 +2003,6 @@ function buildResolver(fontInfoByObjNum, state) {
       if (!uni && fi.toUnicode) uni = fi.toUnicode.get(charCode) || null;
       if (!uni || uni.length === 0) {
         // A control byte (C0 0x00-0x1F or DEL 0x7F) with no glyph-name/Unicode mapping paints nothing, so drop it to an advance-only spacer rather than residual selectable text.
-        // Any other glyph that merely lacks Unicode keeps the skip-tail.
         if (charCode < 0x20 || charCode === 0x7f) return { error: 'empty-path' };
         return { error: 'substitute-no-unicode' };
       }
@@ -2128,9 +2033,7 @@ function buildResolver(fontInfoByObjNum, state) {
     const inv = 1 / upem;
     const formMatrix = (Array.isArray(loaded.fontMatrix) && loaded.fontMatrix.length === 6)
       ? loaded.fontMatrix : [inv, 0, 0, inv, 0, 0];
-    // For a substitute (non-embedded) font, the drawn outline carries the substitute's natural advance, not the PDF's /Widths.
-    // The renderer squeezes it horizontally to the specified width (renderPdfPage hScale).
-    // Report the substitute glyph's natural advance (em) so the caller can do the same.
+    // A substitute font's outline carries its own natural advance, not the PDF's /Widths, so report that advance for the caller to correct with.
     const subAdvanceEm = (loaded.fontType === 'substitute'
       && typeof glyph.advanceWidth === 'number' && glyph.advanceWidth > 0)
       ? glyph.advanceWidth / upem : undefined;
@@ -2145,8 +2048,7 @@ function buildResolver(fontInfoByObjNum, state) {
 }
 
 /**
- * Add a container's fonts (parsed from its /Resources) into the shared
- * fontInfoByObjNum and into a per-container fontsByTag map.
+ * Add a container's fonts (parsed from its /Resources) into the shared fontInfoByObjNum and into a per-container fontsByTag map.
  *
  * @param {Map<string, any>} pdfFontInfos - Output of parsePageFonts.
  * @param {Map<string, FontBinding>} fontsByTag - Mutated: adds container fonts.
@@ -2212,8 +2114,8 @@ function djb2(s) {
 }
 
 /**
- * Build the dedup key for a cloned Form XObject. Two invocations with the same
- * key produce byte-identical clone objects, so a single clone is shared.
+ * Build the dedup key for a cloned Form XObject.
+ * Two invocations with the same key produce byte-identical clone objects, so a single clone is shared.
  *
  * @param {number} origObjNum
  * @param {string} text - Rewritten content stream text.
@@ -2230,15 +2132,11 @@ function makeCloneDedupKey(origObjNum, text, xobjEntries, formClonesByName) {
 
 /**
  * Inline merger for the cloned form's /Resources/XObject dict.
- * PDF spec allows duplicate keys in dicts with last-entry-wins semantics,
- * so appending entries (including redirects) is sufficient.
  *
  * @param {string} resourcesDictText - The form's /Resources sub-dict as `<<...>>`.
- *   Empty string or null is treated as missing — a fresh /Resources is built.
- * @param {string} entriesStr - Newline-separated `/Name N 0 R` entries to add
- *   to /XObject.
- * @param {import('../../pdf/objectCache.js').ObjectCache} objCache - Used to
- *   resolve an indirect /XObject sub-dict if the form's Resources references one.
+ *   Empty string or null is treated as missing, and a fresh /Resources is built.
+ * @param {string} entriesStr - Newline-separated `/Name N 0 R` entries to add to /XObject.
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache - Used to resolve an indirect /XObject sub-dict if the form's Resources references one.
  */
 function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
   if (!entriesStr) return resourcesDictText || '<<\n>>';
@@ -2269,14 +2167,13 @@ function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
       return `<<${inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length)}\n>>`;
     }
   }
-  // Last-wins fallback: append a duplicate /XObject sub-dict with our entries.
+  // Fallback when /XObject is neither an inline dict nor resolvable: append a second one and rely on readers taking the last entry.
   return `<<${inner}\n/XObject<<\n${entriesStr}>>\n>>`;
 }
 
 /**
  * Resolve an object's /Resources to its literal `<<...>>` dict text, following an indirect reference if present.
- * Returns null when the object has no /Resources of its own
- * (a Form XObject may omit it and inherit its parent's per PDF spec 7.8.3).
+ * Returns null when the object has no /Resources of its own, which is legal: a Form XObject may omit it and inherit its parent's (PDF spec 7.8.3).
  *
  * @param {string} objText
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
@@ -2400,23 +2297,20 @@ function parseExtGStates(resourcesText, objCache) {
 
 /**
  * Build the dict-extras string (everything between `<<` and `/Length`) for a cloned Form XObject.
- * Preserves the original dict's keys verbatim except
- * /Length and /Filter (re-emitted by `encodeStreamObject`) and /Resources
- * (rebuilt to splice in per-glyph entries and nested-form redirects).
+ * Preserves the original dict's keys verbatim except /Length and /Filter, which are re-emitted fresh, and /Resources, which is rebuilt to splice in per-glyph entries and nested-form redirects.
  *
  * @param {string} originalFormObjText - `N 0 obj\n<<...>>\nstream\n...\nendobj`
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
- * @param {Map<string, number>} perGlyphXobjEntries - tag → objNum for per-glyph forms used inside.
- * @param {Map<string, number>} nestedFormRedirects - name → cloneObjNum for nested forms invoked inside.
- * @param {string | null} inheritedResourcesText - The parent scope's /Resources dict text,
- *   used as the clone's /Resources base when the original form has none of its own.
+ * @param {Map<string, number>} perGlyphXobjEntries - tag -> objNum for per-glyph forms used inside.
+ * @param {Map<string, number>} nestedFormRedirects - name -> cloneObjNum for nested forms invoked inside.
+ * @param {string | null} inheritedResourcesText - The parent scope's /Resources dict text, used as the clone's /Resources base when the original form has none of its own.
  * @returns {string}
  */
 function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText, dropXObjectNames = null) {
   const dictStart = originalFormObjText.indexOf('<<');
   if (dictStart === -1) return '';
   const dictText = extractDict(originalFormObjText, dictStart);
-  // Strip /Length and /Filter. encodeStreamObject re-emits both fresh.
+  // encodeStreamObject re-emits /Length and /Filter fresh.
   const dictBody = dictText.startsWith('<<') && dictText.endsWith('>>')
     ? dictText.slice(2, -2)
     : dictText;
@@ -2425,16 +2319,13 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
     .map((e) => `/${e.name} ${e.valueText}`)
     .join('\n');
 
-  // Build the /XObject entries we need to add to /Resources.
   let entriesStr = '';
   for (const [tag, on] of perGlyphXobjEntries) entriesStr += `/${tag} ${on} 0 R\n`;
   for (const [name, on] of nestedFormRedirects) entriesStr += `/${name} ${on} 0 R\n`;
 
-  // Locate /Resources entry; replace it (or append if missing).
   const resIdx = body.indexOf('/Resources');
-  // A form that omits /Resources inherits its parent's (PDF spec 7.8.3).
-  // The clone gets its own explicit /Resources, which severs that inheritance, so seed it from the inherited dict.
-  // Otherwise images and fonts the form drew via inheritance drop out of the clone.
+  // A form that omits /Resources inherits its parent's (PDF spec 7.8.3), and the clone's own explicit /Resources severs that inheritance.
+  // Seeding from the inherited dict keeps the images and fonts the form drew that way from dropping out of the clone.
   let resourcesDictText = resIdx === -1 ? (inheritedResourcesText || '') : '';
   let beforeRes = body;
   let afterRes = '';
@@ -2907,8 +2798,7 @@ async function rewriteFormContentForRegions({
       };
     }
 
-    // Glyphs are inlined into smResult.text; the clone needs no per-glyph
-    // /XObject entries of its own (nested-form redirects still apply below).
+    // The converted glyphs are inlined into smResult.text, so the clone needs no per-glyph /XObject entries of its own.
     /** @type {Map<string, number>} */
     const perGlyphEntries = new Map();
 
