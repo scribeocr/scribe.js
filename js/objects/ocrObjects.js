@@ -167,8 +167,13 @@ export function WordDebugInfo() {
 export function OcrWord(line, id, text, bbox) {
   /** @type {string} */
   this.text = text;
-  /** @type {?string} */
-  this.textAlt = null;
+  /**
+   * Other readings of the word. Usually `undefined`. Usage varies by OCR model.
+   * `span` is the number of consecutive words, starting at this one, that the reading replaces.
+   * `source` and `msg` are optional fields that may be used to communicate the source and arbitrary data.
+   * @type {Array<{source?: string, text: string, conf: number, span: number, msg?: string}>|undefined}
+   */
+  this.alt = undefined;
   /** @type {Style} */
   this.style = {
     font: null,
@@ -802,7 +807,7 @@ function cloneLine(line) {
  */
 function cloneWord(word) {
   const wordNew = new OcrWord(word.line, word.id, word.text, { ...word.bbox });
-  wordNew.textAlt = word.textAlt;
+  wordNew.alt = word.alt ? word.alt.map((a) => ({ ...a })) : undefined;
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
   if (word.styleRuns) wordNew.styleRuns = word.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } }));

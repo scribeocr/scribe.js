@@ -2,6 +2,7 @@
 import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
+import { readingsListKey } from './viewerReadings.js';
 import {
   deleteSelectedWord, modifySelectedWordBbox, modifySelectedWordStyle,
 } from './viewerModifySelectedWords.js';
@@ -66,6 +67,7 @@ export function selectNextWord(viewer) {
     scrollIntoView(_viewer, nextUiWord);
     _viewer.CanvasSelection.addWords(nextUiWord);
     UiOcrWord.addControls(nextUiWord);
+    nextUiWord.select();
     UiOcrWord.updateUI();
   }
 }
@@ -97,6 +99,7 @@ export function selectPrevWord(viewer) {
     scrollIntoView(_viewer, prevUiWord);
     _viewer.CanvasSelection.addWords(prevUiWord);
     UiOcrWord.addControls(prevUiWord);
+    prevUiWord.select();
     UiOcrWord.updateUI();
   }
 }
@@ -340,6 +343,14 @@ export function handleKeyboardEvent(viewer, event) {
       }
       return;
     }
+  }
+
+  // Proof mode's readings list takes a digit (apply that reading) or Escape (hide it) while it is showing.
+  if (readingsListKey(_viewer, event)) {
+    event.preventDefault();
+    event.stopPropagation();
+    _viewer.interactionCallback(event);
+    return;
   }
 
   if (event.key === 'PageUp') {

@@ -102,48 +102,9 @@ async function recognizeArea(viewer, n, box, wordMode = false) {
   imageCoords.height = bottomClip - topClip;
   if (imageCoords.width < 4 || imageCoords.height < 4) return;
 
-  const res0 = await viewer.doc.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
+  const res = await viewer.doc.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
 
-  let pageNew;
-  if (legacy && lstm) {
-    const resLegacy = await res0[0];
-    const resLSTM = await res0[1];
-
-    const pageObjLSTM = resLSTM.convert.lstm.pageObj;
-    const pageObjLegacy = resLegacy.convert.legacy.pageObj;
-
-    const debugLabel = 'recognizeArea';
-
-    if (debugLabel && !viewer.doc.debug.debugImg[debugLabel]) {
-      viewer.doc.debug.debugImg[debugLabel] = new Array(viewer.doc.images.pageCount);
-      for (let i = 0; i < viewer.doc.images.pageCount; i++) {
-        viewer.doc.debug.debugImg[debugLabel][i] = [];
-      }
-    }
-
-    /** @type {Parameters<typeof viewer.doc.compareOCR>[2]} */
-    const compOptions = {
-      mode: 'comb',
-      debugLabel,
-      ignoreCap: scribe.ScribeDoc.defaults.ignoreCap,
-      ignorePunct: scribe.ScribeDoc.defaults.ignorePunct,
-      confThreshHigh: scribe.ScribeDoc.defaults.confThreshHigh,
-      confThreshMed: scribe.ScribeDoc.defaults.confThreshMed,
-      legacyLSTMComb: true,
-    };
-
-    const res = await viewer.doc.compareOCR([pageObjLegacy], [pageObjLSTM], compOptions);
-
-    if (viewer.doc.debug.debugImg[debugLabel]) viewer.doc.debug.debugImg[debugLabel] = res.debug;
-
-    pageNew = res.ocr[0];
-  } else if (legacy) {
-    const resLegacy = await res0[0];
-    pageNew = resLegacy.convert.legacy.pageObj;
-  } else {
-    const resLSTM = await res0[0];
-    pageNew = resLSTM.convert.lstm.pageObj;
-  }
+  const pageNew = res.convert.page.pageObj;
 
   scribe.combineOCRPage(pageNew, viewer.doc.ocr.active[n], viewer.doc.pageMetrics[n]);
 

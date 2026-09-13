@@ -40,6 +40,10 @@ describe('Check style detection.', () => {
     expect(doc.ocr.active[0].lines[0].words[6].style.italic).toBe(false);
   });
 
+  test('The page names the bundled engine as its text source', async () => {
+    expect(doc.ocr.active[0].textSource, 'a page recognized by the bundled engine does not name it as the text source').toBe('scribe.js');
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -109,13 +113,52 @@ describe('Check auto-rotate features.', () => {
 
   test('Overlap with clockwise rotation is decent', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/simple_paragraph_rot5.png`]);
+    // 'quality' must select both engines. The pass-time and alternative-reading assertions below fail if it selects one.
     await doc.recognize({
-      modeAdv: 'legacy',
+      mode: 'quality',
     });
 
     if (!doc.fonts.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!doc.fonts.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     expect(doc.fonts.optMetrics.NimbusRoman).toBeLessThan(0.45);
+
+    // Regression guard: recognition used to install the engine's deskewed copy as the page raster, holding a second full-page PNG per skewed page for the document's lifetime.
+    const native0 = await doc.images.native[0];
+    const upload0 = await doc.images.nativeSrc[0];
+    expect(native0, 'recognition replaced the uploaded raster with a deskewed copy').toBe(upload0);
+    expect(native0.rotated, 'page raster is no longer in the upload frame after recognition').toBe(false);
+
+    // Regression guard: the combined merge once decided which LSTM words belong to a Legacy line from page-frame boxes.
+    // On a skewed page those are tall enough to reach the neighboring lines, so every line took words from above and below.
+    const { lines } = doc.ocr.active[0];
+    expect(lines.length, 'combined recognition of a skewed page lost or merged lines').toBe(14);
+    expect(lines[0].words.map((w) => w.text).join(' '), 'a line of a skewed page took words from its neighbors')
+      .toBe('JNJ announced this morning the acquisition of privately–held Aragon for $650 million');
+
+    const words = lines.flatMap((line) => line.words);
+    expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
+    expect(doc.ocr.active[0].textSource, 'a page recognized by the bundled engine does not name it as the text source').toBe('scribe.js');
+    expect(words.find((w) => w.text === 'Aragon’s')?.alt, 'a word with a classifier reading and a losing engine reading carries both, higher confidence first, each naming its origin in msg')
+      .toEqual([{
+        text: 'Aragons', conf: 68, span: 1, msg: 'c1',
+      }, {
+        text: 'Aragon‘s', conf: 63, span: 1, msg: 'a1',
+      }]);
+    expect(words.find((w) => w.text === '2012')?.alt, 'a word the engines disagreed on carries the other engine\'s reading with its confidence and the arbiter\'s rule').toEqual([{
+      text: '20l2', conf: 89, span: 1, msg: 'a1',
+    }]);
+    expect(words.find((w) => w.text === 'be')?.alt, 'a word whose classifier preferred another reading carries that reading with its confidence').toEqual([{
+      text: 'bc', conf: 88, span: 1, msg: 'c1',
+    }]);
+    expect(lines[0].words[0].alt, 'a word both engines agreed on carries no alternative reading').toBe(undefined);
+    const repeated = words.filter((w) => w.alt?.some((a) => a.text === w.text) || (w.alt && new Set(w.alt.map((a) => a.text)).size !== w.alt.length));
+    expect(repeated.length, 'an alternative reading repeats the shipped text or another alternative').toBe(0);
+
+    // The core times its own passes; the dev telemetry and the timing runner read them from `doc.ocrTiming` by timing code.
+    const timing = doc.ocrTiming[0].Combined;
+    expect(typeof timing[0], 'the recognition run left no per-page timing record').toBe('number');
+    expect(typeof timing[2], 'the core reported no Legacy pass time for a combined recognition').toBe('number');
+    expect(typeof timing[3], 'the core reported no LSTM pass time for a combined recognition').toBe('number');
   });
 
   test('Overlap with counterclockwise rotation is decent', async () => {
@@ -127,6 +170,11 @@ describe('Check auto-rotate features.', () => {
     if (!doc.fonts.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!doc.fonts.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     expect(doc.fonts.optMetrics.NimbusRoman).toBeLessThan(0.45);
+
+    const native0 = await doc.images.native[0];
+    const upload0 = await doc.images.nativeSrc[0];
+    expect(native0, 'recognition replaced the uploaded raster with a deskewed copy').toBe(upload0);
+    expect(native0.rotated, 'page raster is no longer in the upload frame after recognition').toBe(false);
   });
 
   afterAll(async () => {
@@ -246,8 +294,9 @@ describe('Check monospace font detection and optimization (M.D.Fla.).', () => {
 describe('Check vanilla recognition engine.', () => {
   test('Enabling vanillaMode option should use unmodified recognition engine', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/bill.png`]);
+    // Under vanillaMode 'quality' runs the LSTM engine alone, which is the only engine that reads the header row asserted below.
     await doc.recognize({
-      vanillaMode: true,
+      vanillaMode: true, mode: 'quality',
     });
     // This region contains text that is recognized by the modified engine
     // however is missed by the unmodified ("vanilla") engine.
@@ -257,7 +306,17 @@ describe('Check vanilla recognition engine.', () => {
         left: 24, top: 54, right: 930, bottom: 91,
       });
 
-    expect(txt).toBe('Debits Credits Balance');
+    expect(txt, 'the vanilla LSTM reading of the header row').toBe('Debits Credits Balance');
+    const debits = doc.ocr.active[0].lines.flatMap((line) => line.words).find((w) => w.text === 'Debits');
+    expect(debits?.lang, 'a word recognized by the vanilla engine carries its language').toBe('eng');
+    // Vanilla Tesseract's font and style output is unreliable, so the vanilla converter should never read it.
+    expect(debits?.style.font, 'a word recognized by the vanilla engine carries no Tesseract font').toBe(null);
+    expect(doc.ocr.active[0].textSource, 'a page recognized by the vanilla engine does not name it as the text source').toBe('tesseract');
+  });
+
+  test('Combined mode is rejected with vanillaMode, whose cores carry no merge', async () => {
+    await expect(doc.recognize({ vanillaMode: true, modeAdv: 'combined' }), 'a vanilla run with modeAdv combined must throw rather than run one engine')
+      .rejects.toThrow("modeAdv 'combined' is not available with vanillaMode");
   });
 
   afterAll(async () => {

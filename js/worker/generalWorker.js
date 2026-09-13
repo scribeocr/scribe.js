@@ -1,6 +1,6 @@
 import { convertPageAbbyy } from '../import/convertPageAbbyy.js';
 import { convertPageAlto } from '../import/convertPageAlto.js';
-import { convertPageBlocks } from '../import/convertPageBlocks.js';
+import { convertPageBlocks, convertPageBlocksVanilla } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
 import { convertDocTextract } from '../import/convertDocTextract.js';
@@ -49,6 +49,19 @@ const defaultConfigs = {
   textord_tabfind_find_tables: '0',
 };
 
+// The core caps the Legacy engine's per-page cache of static-classifier results at 4 MB per worker.
+// Raising it to 8 MB gains 2 to 4 percent of the Legacy pass, most of that on dense or harshly scanned pages.
+const largeCache = await (async () => {
+  if (typeof process === 'undefined') {
+    const nav = globalThis.navigator;
+    const mobile = nav?.userAgentData?.mobile === true || /Mobi|Android|iPhone|iPad/i.test(nav?.userAgent || '');
+    return !mobile && (nav?.deviceMemory || 0) >= 8;
+  }
+  const os = await import('node:os');
+  return os.totalmem() >= 8 * 1024 ** 3;
+})();
+if (largeCache) defaultConfigs.classify_static_cache_mb = '8';
+
 const defaultInitConfigsVanilla = {};
 
 const defaultInitConfigs = {
@@ -68,18 +81,15 @@ let vanillaMode_ = false;
 // Custom build is currently only used for browser version, while the Node.js version uses the published npm package.
 // If recognition capabilities are ever added for the Node.js version, then we should use the same build for consistency. .
 const tessOptions = typeof process === 'undefined' ? {
-  legacyCore: true,
   legacyLang: true,
   workerBlobURL: false,
-} : { legacyCore: true, legacyLang: true };
+} : { legacyLang: true };
 
 /** @type {?TessWorker} */
 let worker;
 
-/** @type {?TessWorker} */
-let workerLegacy;
-/** @type {?TessWorker} */
-let workerLSTM;
+/** @type {?number} */
+let lastDocId = null;
 
 // Per-document font state, keyed by document id. The built-in raw fonts are shared globally on
 // `GlobalFonts`; only per-document fonts/metrics/settings live here.
@@ -171,116 +181,22 @@ const reinitialize = async ({
 };
 
 /**
- * Alternative version of `reinitialize` that uses two workers and allows for parallelizing recognition for the same image.
- * This is experimental and not currently called by anything.
- * Function to change language, OEM, and vanilla mode.
- * All arguments can be set to `null` to keep the current settings.
- * This function should return early if requested settings match the current settings.
- *
- * @param {Object} param
- * @param {?Array<string>} param.langs
- * @param {?number} param.oem
- * @param {?boolean} param.vanillaMode
- * @param {?string} [param.langPath] - Custom path/URL to load `.traineddata` files from.
- */
-const reinitialize2 = async ({ langs, vanillaMode, langPath }) => {
-  if (langPath !== undefined && langPath !== null) tessOptions.langPath = langPath;
-  const langArr = typeof langs === 'string' ? langs.split('+') : langs;
-  const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
-  const changeVanilla = vanillaMode && vanillaMode !== vanillaMode_;
-
-  if (!changeLang && !changeVanilla && workerLegacy && workerLSTM) return;
-  if (changeLang) langArrCurrent = langArr;
-  if (changeVanilla) vanillaMode_ = vanillaMode;
-
-  const initConfigs = vanillaMode_ ? defaultInitConfigsVanilla : defaultInitConfigs;
-
-  // The worker only needs to be created from scratch if the build of Tesseract being used changes,
-  // or if it was never created in the first place.
-  if (changeVanilla || !workerLegacy || !workerLSTM) {
-    if (vanillaMode_) {
-      tessOptions.vanillaEngine = true;
-    } else {
-      tessOptions.vanillaEngine = false;
-    }
-
-    if (workerLegacy) {
-      console.log('terminating legacy');
-      await workerLegacy.terminate();
-      workerLegacy = null;
-    }
-    if (workerLSTM) {
-      console.log('terminating lstm');
-      await workerLSTM.terminate();
-      workerLSTM = null;
-    }
-
-    workerLegacy = await TessWorker.create(langArrCurrent, 0, tessOptions, initConfigs);
-    workerLSTM = await TessWorker.create(langArrCurrent, 1, tessOptions, initConfigs);
-  } else if (changeLang) {
-    await workerLegacy.reinitialize(langArrCurrent, 0, initConfigs);
-    await workerLSTM.reinitialize(langArrCurrent, 1, initConfigs);
-  }
-
-  const config = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
-
-  await workerLegacy.setParameters(config);
-  await workerLSTM.setParameters(config);
-};
-
-/**
- * Asynchronously recognizes or processes an image based on specified options and parameters.
- *
- * @param {Object} params -
- * @param {ArrayBuffer} params.image -
- * @param {Object} params.options -
+ * Recognize one page image and convert the result into this library's page objects.
+ * @param {Object} params
+ * @param {Parameters<TessWorker['recognize']>[0]} params.image
+ * @param {Parameters<TessWorker['recognize']>[1]} params.options
  * @param {Parameters<TessWorker['recognize']>[2]} params.output
- * @param {number} params.n -
+ * @param {number} params.n
  * @param {dims} params.pageDims - Original (unrotated) dimensions of input image.
  * @param {?number} [params.knownAngle] - The known angle, or `null` if the angle is not known at the time of recognition.
- * @param {?string} [params.engineName] -
+ * @param {?Array<string>} [params.langs] - Languages for this job.
+ * @param {boolean} [params.vanillaMode]
+ * @param {?number} [params.docId]
  * Exported for type inference purposes, should not be imported anywhere.
  */
 export const recognizeAndConvert = async ({
-  image, options, output, n, knownAngle = null, pageDims,
+  image, options, output, n, pageDims, knownAngle = null, langs = null, vanillaMode = false, docId = null,
 }) => {
-  if (!worker) throw new Error('Worker not initialized');
-
-  const res1 = await worker.recognize(image, options, output);
-
-  const angle = knownAngle === null || knownAngle === undefined ? (res1.data.rotateRadians || 0) * (180 / Math.PI) * -1 : knownAngle;
-
-  const keepItalic = oemCurrent === 0;
-
-  const ocrBlocks = res1.data.blocks;
-
-  if (!ocrBlocks) {
-    throw new Error('No OCR blocks returned from recognition.');
-  }
-
-  const res2 = await convertPageBlocks({
-    ocrBlocks, n, pageDims, rotateAngle: angle, keepItalic,
-  });
-
-  return { recognize: res1.data, convert: res2 };
-};
-
-/**
- * Asynchronously recognizes or processes an image based on specified options and parameters.
- *
- * @param {Object} params -
- * @param {ArrayBuffer} params.image -
- * @param {Object} params.options -
- * @param {Parameters<TessWorker['recognize']>[2]} params.output
- * @param {number} params.n -
- * @param {dims} params.pageDims - Original (unrotated) dimensions of input image.
- * @param {?number} [params.knownAngle] - The known angle, or `null` if the angle is not known at the time of recognition.
- * @param {?string} [params.engineName] -
- * Exported for type inference purposes, should not be imported anywhere.
- */
-export const recognizeAndConvert2 = async ({
-  image, options, output, n, pageDims, knownAngle = null, langs = null, vanillaMode = false,
-}, id) => {
   // Ensure this worker's Tesseract engine matches the job's language before recognizing.
   // This makes the config part of the job (not a separate broadcast another document could race),
   // so documents in different languages can share the pool.
@@ -291,86 +207,28 @@ export const recognizeAndConvert2 = async ({
     });
   }
 
+  if (!worker) throw new Error('Worker not initialized');
+  if (docId !== lastDocId) {
+    await worker.resetState();
+    lastDocId = docId;
+  }
   const startTime = performance.now();
-  // Disable output formats that are not used.
-  // Leaving these enabled can significantly inflate runtimes for no benefit.
-  if (!output) output = {};
-  output.hocr = false;
-  output.tsv = false;
-  output.text = false;
+  const res = await worker.recognize(image, options, output);
+  const recognize = res.data;
 
-  output.debug = false;
-
-  // The function `worker.recognize2` returns 2 promises.
-  // If both Legacy and LSTM data are requested, only the second promise will contain the LSTM data.
-  // This allows the Legacy data to be used immediately, which halves the amount of delay between user
-  // input and something appearing on screen.
-  let resArr;
-  if (workerLegacy && workerLSTM) {
-    if (options.legacy && !options.lstm) {
-      const res1Promise = workerLegacy.recognize(image, options, output);
-      resArr = [res1Promise];
-    } else if (!options.legacy && options.lstm) {
-      const res1Promise = workerLSTM.recognize(image, options, output);
-      resArr = [res1Promise];
-    } else {
-      const res1Promise = workerLegacy.recognize(image, options, output);
-      const res2Promise = workerLSTM.recognize(image, options, output);
-      resArr = [res1Promise, res2Promise];
-    }
-  } else if (worker) {
-    resArr = await worker.recognize2(image, options, output);
-  } else {
-    throw new Error('Worker not initialized');
-  }
-
-  const res0 = await resArr[0];
-
-  const angle = knownAngle === null || knownAngle === undefined ? (res0.data.rotateRadians || 0) * (180 / Math.PI) * -1 : knownAngle;
-
-  let resLegacy;
-  let resLSTM;
-  if (options.lstm && options.legacy) {
-    const legacyBlocks = res0.data.blocks;
-    if (!legacyBlocks) throw new Error('No OCR blocks returned from recognition.');
-    resLegacy = await convertPageBlocks({
-      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
+  const angle = knownAngle === null || knownAngle === undefined ? (recognize.rotateRadians || 0) * (180 / Math.PI) * -1 : knownAngle;
+  if (!recognize.blocks) throw new Error('No OCR blocks returned from recognition.');
+  const page = vanillaMode_
+    ? await convertPageBlocksVanilla({
+      ocrBlocks: /** @type {TessBlockVanilla[]} */ (recognize.blocks), n, pageDims, rotateAngle: angle, legacy: !!options.legacy, upscale: recognize.upscale,
+    })
+    : await convertPageBlocks({
+      ocrBlocks: /** @type {TessBlock[]} */ (recognize.blocks), n, pageDims, rotateAngle: angle, upscale: recognize.upscale,
     });
-    (async () => {
-      const res1 = await resArr[1];
+  // The block JSON is already converted, so dropping it keeps a large payload out of the message to the main thread.
+  delete recognize.blocks;
 
-      const lstmBlocks = res1.data.blocks;
-      if (!lstmBlocks) throw new Error('No OCR blocks returned from recognition.');
-      resLSTM = await convertPageBlocks({
-        ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
-      });
-
-      const xB = { recognize: res1.data, convert: { legacy: null, lstm: resLSTM } };
-
-      parentPort.postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
-    })();
-  } else if (!options.lstm && options.legacy) {
-    const legacyBlocks = res0.data.blocks;
-    if (!legacyBlocks) throw new Error('No OCR blocks returned from recognition.');
-    resLegacy = await convertPageBlocks({
-      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
-    });
-  } else if (options.lstm && !options.legacy) {
-    const lstmBlocks = res0.data.blocks;
-    if (!lstmBlocks) throw new Error('No OCR blocks returned from recognition.');
-    resLSTM = await convertPageBlocks({
-      ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
-    });
-  }
-
-  const elapsedTime = performance.now() - startTime;
-
-  const x = { recognize: res0.data, convert: { legacy: resLegacy, lstm: resLSTM }, recognitionTime: elapsedTime };
-
-  parentPort.postMessage({ data: x, id, status: 'resolve' });
-
-  // Both promises must resolve for the scheduler to move on, even if only one OCR engine is being run.
-  if (!options.legacy || !options.lstm) parentPort.postMessage({ data: null, id: `${id}b` });
+  return { recognize, convert: { page }, recognitionTime: performance.now() - startTime };
 };
 
 /**
@@ -463,11 +321,6 @@ const handleMessage = async (data) => {
   // Point font lookups at the requesting document's fonts before the job runs.
   if (fontDependentFuncs.has(func)) setActiveDocFonts(getWorkerFonts(args?.docId));
 
-  if (func === 'recognizeAndConvert2') {
-    recognizeAndConvert2(args, id);
-    return;
-  }
-
   ({
     // Convert page functions
     convertPageAbbyy,
@@ -495,7 +348,6 @@ const handleMessage = async (data) => {
 
     // Recognition
     reinitialize,
-    reinitialize2,
     recognize,
     recognizeAndConvert,
 

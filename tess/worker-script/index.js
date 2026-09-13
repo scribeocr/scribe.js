@@ -1,6 +1,6 @@
 import arrayBufferToBase64 from './utils/arrayBufferToBase64.js';
 import {
-  OEM, PSM, imageType, defaultParams, defaultOutput,
+  PSM, imageType, defaultParams, defaultOutput,
 } from '../constants.js';
 
 /**
@@ -43,7 +43,7 @@ const isURL = (string) => {
 
 // eslint-disable-next-line max-len
 export const relaxedSimd = async () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 15, 1, 13, 0, 65, 1, 253, 15, 65, 2, 253, 15, 253, 128, 2, 11]));
-// eslint-disable-next-line max-len
+
 export const simd = async () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
 
 const cache = {
@@ -110,8 +110,9 @@ const parentPort = typeof process === 'undefined' ? globalThis : (await import('
 if (!parentPort) throw new Error('This file must be run in a worker');
 
 let TesseractCore = null;
+let coreVariant = null;
 
-const getCore = async (oem, vanillaEngine, res) => {
+const getCore = async (vanillaEngine, res) => {
   if (TesseractCore === null) {
     const statusText = 'loading tesseract core';
 
@@ -121,32 +122,20 @@ const getCore = async (oem, vanillaEngine, res) => {
 
     if (vanillaEngine) {
       if (relaxedSimdSupport) {
-        if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-          TesseractCore = (await import('../core-vanilla/tesseract-core-relaxedsimd-lstm.js')).default;
-        } else {
-          TesseractCore = (await import('../core-vanilla/tesseract-core-relaxedsimd.js')).default;
-        }
+        TesseractCore = (await import('../core-vanilla/tesseract-core-relaxedsimd.js')).default;
+        coreVariant = 'vanilla-relaxedsimd';
       } else if (simdSupport) {
-        if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-          TesseractCore = (await import('../core-vanilla/tesseract-core-simd-lstm.js')).default;
-        } else {
-          TesseractCore = (await import('../core-vanilla/tesseract-core-simd.js')).default;
-        }
+        TesseractCore = (await import('../core-vanilla/tesseract-core-simd.js')).default;
+        coreVariant = 'vanilla-simd';
       } else {
         throw Error('This runtime is not supported (WASM SIMD required).');
       }
     } else if (relaxedSimdSupport) {
-      if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-        TesseractCore = (await import('../core/tesseract-core-relaxedsimd-lstm.js')).default;
-      } else {
-        TesseractCore = (await import('../core/tesseract-core-relaxedsimd.js')).default;
-      }
+      TesseractCore = (await import('../core/tesseract-core-relaxedsimd.js')).default;
+      coreVariant = 'relaxedsimd';
     } else if (simdSupport) {
-      if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-        TesseractCore = (await import('../core/tesseract-core-simd-lstm.js')).default;
-      } else {
-        TesseractCore = (await import('../core/tesseract-core-simd.js')).default;
-      }
+      TesseractCore = (await import('../core/tesseract-core-simd.js')).default;
+      coreVariant = 'simd';
     } else {
       throw Error('This runtime is not supported (WASM SIMD required).');
     }
@@ -211,9 +200,7 @@ const dump = (TessModule, api, output, options) => {
     imageGrey: output.imageGrey ? getImage(imageType.GREY) : null,
     imageBinary: output.imageBinary ? getImage(imageType.BINARY) : null,
     confidence: !options.skipRecognition ? api.MeanTextConf() : null,
-    blocks: output.blocks && !options.skipRecognition ? JSON.parse(api.GetJSONText()).blocks : null,
-    layoutBlocks: output.layoutBlocks && options.skipRecognition
-      ? JSON.parse(api.GetJSONText()).blocks : null,
+    blocks: output.blocks && !options.skipRecognition ? JSON.parse(api.GetJSONText(0)).blocks : null,
     psm: enumToString(api.GetPageSegMode(), 'PSM'),
     oem: enumToString(api.oem(), 'OEM'),
     version: api.Version(),
@@ -232,15 +219,26 @@ let TessModule;
 let api = null;
 let latestJob;
 let params = defaultParams;
-let loadLanguageLangsWorker;
+/**
+ * Entries passed to `loadLanguage`, keyed by language code.
+ * `initialize` unlinks each file once `Init` has read it, so a later `Init` reloads through these entries.
+ * @type {Map<string, string | { code: string, data: Uint8Array }>}
+ */
+const langEntries = new Map();
+/**
+ * Buffers the file store owns, keyed by language code, so `initialize` can free them after `Init`.
+ * Unlinking alone leaves relies on garbage collection which is less reliable.
+ * @type {Map<string, ArrayBuffer>}
+ */
+const langFileBuffers = new Map();
 let loadLanguageOptionsWorker;
 let dataFromCache = false;
 
-const load = async ({ workerId, jobId, payload: { options: { lstmOnly, vanillaEngine } } }, res) => { // eslint-disable-line max-len
+const load = async ({ workerId, jobId, payload: { options: { vanillaEngine } } }, res) => {
   const statusText = 'initializing tesseract';
 
   if (!TessModule) {
-    const Core = await getCore(lstmOnly, vanillaEngine, res);
+    const Core = await getCore(vanillaEngine, res);
 
     res.progress({ workerId, status: statusText, progress: 0 });
 
@@ -280,8 +278,7 @@ const loadLanguage = async (
   },
   res,
 ) => {
-  // Remember options for later, as cache may be deleted if `initialize` fails
-  loadLanguageLangsWorker = langs;
+  // Kept for `initialize`, which reloads a language through them and deletes the cache when `Init` fails.
   loadLanguageOptionsWorker = {
     langPath,
     dataPath,
@@ -298,6 +295,7 @@ const loadLanguage = async (
 
   const loadAndGunzipFile = async (_lang) => {
     const lang = typeof _lang === 'string' ? _lang : _lang.code;
+    langEntries.set(lang, _lang);
     const readCache = ['refresh', 'none'].includes(cacheMethod)
       ? () => Promise.resolve()
       : cache.readCache;
@@ -346,7 +344,7 @@ const loadLanguage = async (
           data = await cache.readCache(`${langPathDownload}/${lang}.traineddata${gzip ? '.gz' : ''}`);
         }
       } else {
-        data = _lang.data; // eslint-disable-line
+        data = _lang.data;
       }
     }
 
@@ -368,7 +366,11 @@ const loadLanguage = async (
           if (res) res.reject(err.toString());
         }
       }
-      TessModule.FS.writeFile(`${dataPath || '.'}/${lang}.traineddata`, data);
+      // The file store keeps `data` itself rather than a copy, so `initialize` can release it after `Init`.
+      // A caller's own buffer (`{ code, data }`) and a view into a larger buffer are copied instead, since something else may still use them.
+      const own = (typeof _lang === 'string' || data !== _lang.data) && data.byteOffset === 0 && data.byteLength === data.buffer.byteLength;
+      TessModule.FS.writeFile(`${dataPath || '.'}/${lang}.traineddata`, data, { canOwn: own });
+      if (own) langFileBuffers.set(lang, data.buffer);
     }
 
     if (newData && ['write', 'refresh', undefined].includes(cacheMethod)) {
@@ -390,7 +392,9 @@ const loadLanguage = async (
     await Promise.all(langsArr.map(loadAndGunzipFile));
     if (res) res.resolve(langs);
   } catch (err) {
-    if (res) res.reject(err.toString());
+    // A reload from `initialize` has no job of its own to reject, so its caller must see the failure.
+    if (!res) throw err;
+    res.reject(err.toString());
   }
 };
 
@@ -454,6 +458,23 @@ const initialize = async ({
       TessModule.FS.writeFile(configFile, configStr);
     }
 
+    // Each language file is unlinked once `Init` has read it, so a later `Init` (a new engine mode or config) first reloads what it needs.
+    const dataPath = loadLanguageOptionsWorker?.dataPath;
+    const langsArr = langs.split('+');
+    if (loadLanguageOptionsWorker) {
+      const missing = langsArr.filter((lang) => {
+        try {
+          TessModule.FS.stat(`${dataPath || '.'}/${lang}.traineddata`);
+          return false;
+        } catch {
+          return true;
+        }
+      });
+      if (missing.length > 0) {
+        await loadLanguage({ workerId, payload: { langs: missing.map((lang) => langEntries.get(lang) ?? lang), options: loadLanguageOptionsWorker } });
+      }
+    }
+
     api = new TessModule.TessBaseAPI();
     let status = api.Init(null, langs, oem, configFile);
     if (status === -1) {
@@ -464,7 +485,6 @@ const initialize = async ({
       // is definitely unrelated to cached data] or (2) cache is set to read-only
       // [so we do not have permission to make any changes].
       if (['write', 'refresh', undefined].includes(loadLanguageOptionsWorker.cacheMethod)) {
-        const langsArr = langs.split('+');
         const delCachePromise = langsArr.map((lang) => cache.deleteCache(`${loadLanguageOptionsWorker.cachePath || '.'}/${lang}.traineddata`));
         await Promise.all(delCachePromise);
 
@@ -475,19 +495,43 @@ const initialize = async ({
         // supports the requested model, so this only becomes apparent when initialization fails.
 
         // Check for this error message:
-        // eslint-disable-next-line
+
         // "Tesseract (legacy) engine requested, but components are not present in ./eng.traineddata!!""
         // The .wasm build of Tesseract saves this message in a separate file
         // (in addition to the normal debug file location).
         const debugStr = TessModule.FS.readFile('/debugDev.txt', { encoding: 'utf8', flags: 'a+' });
         if (dataFromCache && /components are not present/.test(debugStr)) {
           // In this case, language data is re-loaded
-          await loadLanguage({ workerId, payload: { langs: loadLanguageLangsWorker, options: loadLanguageOptionsWorker } }); // eslint-disable-line max-len
+          await loadLanguage({ workerId, payload: { langs: langsArr.map((lang) => langEntries.get(lang) ?? lang), options: loadLanguageOptionsWorker } });
           status = api.Init(null, langs, oem, configFile);
           if (status === -1) {
             const delCachePromise2 = langsArr.map((lang) => cache.deleteCache(`${loadLanguageOptionsWorker.cachePath || '.'}/${lang}.traineddata`));
             await Promise.all(delCachePromise2);
           }
+        }
+      }
+    }
+
+    if (status !== -1) {
+      // The engine now holds every component, so the file only costs memory until the next `Init`, which reloads it.
+      for (const lang of langEntries.keys()) {
+        try {
+          TessModule.FS.unlink(`${dataPath || '.'}/${lang}.traineddata`);
+        } catch {
+          // Already unlinked by an earlier `Init`.
+        }
+        const buffer = langFileBuffers.get(lang);
+        if (!buffer) continue;
+        langFileBuffers.delete(lang);
+        // `transfer` frees the bytes now, and where it is missing a transferring `structuredClone` detaches the same way.
+        try {
+          if (typeof buffer.transfer === 'function') {
+            buffer.transfer(0);
+          } else {
+            structuredClone(buffer, { transfer: [buffer] });
+          }
+        } catch {
+          // A buffer that cannot be detached is left to the garbage collector.
         }
       }
     }
@@ -517,7 +561,8 @@ const processOutput = (output) => {
   if (params.tessjs_create_tsv === '1') workingOutput.tsv = true;
   if (params.tessjs_create_unlv === '1') workingOutput.unlv = true;
 
-  const nonRecOutputs = ['imageColor', 'imageGrey', 'imageBinary', 'layoutBlocks', 'debug'];
+  // Every other truthy key asks the engine to run.
+  const nonRecOutputs = ['imageColor', 'imageGrey', 'imageBinary', 'debug', 'debugVis'];
   let recOutputCount = 0;
   for (const prop of Object.keys(output)) {
     workingOutput[prop] = output[prop];
@@ -542,105 +587,6 @@ const recognize = async ({
     image, options, output,
   },
 }, res) => {
-  try {
-    const upscale = options.upscale || false;
-    const optionsTess = {};
-    if (typeof options === 'object' && Object.keys(options).length > 0) {
-      // The options provided by users contain a mix of options for Tesseract.js
-      // and parameters passed through to Tesseract.
-      for (const param of Object.keys(options)) {
-        if (!param.startsWith('tessjs_') && !tessjsOptions.includes(param)) {
-          optionsTess[param] = options[param];
-        }
-      }
-    }
-    if (output.debug) {
-      optionsTess.debug_file = '/debugInternal.txt';
-      TessModule.FS.writeFile('/debugInternal.txt', '');
-    }
-    // If any parameters are changed here they are changed back at the end
-    if (Object.keys(optionsTess).length > 0) {
-      api.SaveParameters();
-      for (const prop of Object.keys(optionsTess)) {
-        api.SetVariable(prop, optionsTess[prop]);
-      }
-    }
-
-    const { workingOutput, skipRecognition } = processOutput(output);
-
-    // When the auto-rotate option is True, setImage is called with no angle,
-    // then the angle is calculated by Tesseract and then setImage is re-called.
-    // Otherwise, setImage is called once using the user-provided rotateRadiansFinal value.
-    let rotateRadiansFinal;
-    if (options.rotateAuto) {
-      // The angle is only detected if auto page segmentation is used
-      // Therefore, if this is not the mode specified by the user, it is enabled temporarily here
-      const psmInit = api.GetPageSegMode();
-      let psmEdit = false;
-      if (![PSM.AUTO, PSM.AUTO_ONLY, PSM.OSD].includes(psmInit)) {
-        psmEdit = true;
-        api.SetVariable('tessedit_pageseg_mode', String(PSM.AUTO));
-      }
-
-      setImage(TessModule, api, image, 0, upscale);
-      api.FindLines();
-
-      // The function GetAngle will be replaced with GetGradient in 4.0.4,
-      // but for now we want to maintain compatibility.
-      // We can switch to only using GetGradient in v5.
-      const rotateRadiansCalc = api.GetGradient ? api.GetGradient() : api.GetAngle();
-
-      // Restore user-provided PSM setting
-      if (psmEdit) {
-        api.SetVariable('tessedit_pageseg_mode', String(psmInit));
-      }
-
-      // Small angles (<0.005 radians/~0.3 degrees) are ignored to save on runtime
-      if (Math.abs(rotateRadiansCalc) >= 0.005) {
-        rotateRadiansFinal = rotateRadiansCalc;
-        setImage(TessModule, api, image, rotateRadiansFinal, upscale);
-      } else {
-        // Image needs to be reset if run with different PSM setting earlier
-        if (psmEdit) {
-          setImage(TessModule, api, image, 0, upscale);
-        }
-        rotateRadiansFinal = 0;
-      }
-    } else {
-      rotateRadiansFinal = options.rotateRadians || 0;
-      setImage(TessModule, api, image, rotateRadiansFinal, upscale);
-    }
-
-    const rec = options.rectangle;
-    if (typeof rec === 'object') {
-      api.SetRectangle(rec.left, rec.top, rec.width, rec.height);
-    }
-
-    if (!skipRecognition) {
-      api.Recognize(null);
-    } else if (output.layoutBlocks) {
-      api.AnalyseLayout();
-    }
-    const result = dump(TessModule, api, workingOutput, { skipRecognition });
-    result.rotateRadians = rotateRadiansFinal;
-
-    if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
-
-    if (Object.keys(optionsTess).length > 0) {
-      api.RestoreParameters();
-    }
-
-    res.resolve(result);
-  } catch (err) {
-    res.reject(err.toString());
-  }
-};
-
-const recognize2 = async ({
-  payload: {
-    image, options, output,
-  },
-}, res, resB) => {
   try {
     const lstm = options.lstm || false;
     const legacy = options.legacy || false;
@@ -695,6 +641,7 @@ const recognize2 = async ({
     // then the angle is calculated by Tesseract and then setImage is re-called.
     // Otherwise, setImage is called once using the user-provided rotateRadiansFinal value.
     let rotateRadiansFinal;
+    let findLinesMs = 0;
 
     // TODO: Auto upscaling only works when auto rotation is enabled.
     // This is fine for Scribe.js but we may want to change this in the future.
@@ -710,12 +657,11 @@ const recognize2 = async ({
       }
 
       setImage(TessModule, api, image, 0, upscale);
+      const findLinesStart = performance.now();
       api.FindLines();
+      findLinesMs = performance.now() - findLinesStart;
 
-      // The function GetAngle will be replaced with GetGradient in 4.0.4,
-      // but for now we want to maintain compatibility.
-      // We can switch to only using GetGradient in v5.
-      const rotateRadiansCalc = api.GetGradient ? api.GetGradient() : api.GetAngle();
+      const rotateRadiansCalc = api.GetGradient();
 
       const estimatedResolution = api.GetEstimatedResolution();
 
@@ -752,52 +698,27 @@ const recognize2 = async ({
       api.SetRectangle(rec.left, rec.top, rec.width, rec.height);
     }
 
+    // The core's own phase times by timing code: 1 layout, 2 Legacy, 3 LSTM, 4 snapshot.
+    let coreTiming = null;
     if (!skipRecognition) {
-      if (legacy) {
-        api.SetVariable('tessedit_ocr_engine_mode', '0');
-      } else {
-        api.SetVariable('tessedit_ocr_engine_mode', '1');
-      }
-      api.Recognize(null);
-    } else if (output.layoutBlocks) {
-      api.AnalyseLayout();
+      if (api.Recognize(legacy, lstm) !== 0) throw new Error(`Recognition failed (legacy: ${legacy}, lstm: ${lstm}).`);
+      if (typeof api.GetRecognitionTimings === 'function') coreTiming = JSON.parse(api.GetRecognitionTimings() || 'null');
     }
+    const dumpStart = performance.now();
     const result = dump(TessModule, api, workingOutput, { skipRecognition });
+    const dumpMs = performance.now() - dumpStart;
     result.rotateRadians = rotateRadiansFinal;
     result.upscale = upscaleFinal;
-
-    if (output.debugVis) {
-      // Disable debugging options.
-      // This should happen before running the LSTM model to avoid duplicating visualizations.
-      api.SetVariable('textord_tabfind_show_blocks', '0');
-      api.SetVariable('textord_tabfind_show_strokewidths', '0');
-      api.SetVariable('textord_tabfind_show_initialtabs', '0');
-      api.SetVariable('textord_tabfind_show_images', '0');
-      api.SetVariable('textord_tabfind_show_reject_blobs', '0');
-      api.SetVariable('textord_tabfind_show_finaltabs', '0');
-      api.SetVariable('textord_tabfind_show_columns', '0');
-      api.SetVariable('textord_tabfind_show_initial_partitions', '0');
-      api.SetVariable('textord_show_tables', '0');
-      api.SetVariable('textord_tabfind_show_partitions', '0');
-      api.SetVariable('textord_tabfind_show_vlines_scrollview', '0');
-      api.SetVariable('tessedit_dump_pageseg_images', '0');
-      api.SetVariable('textord_debug_nontext', '0');
-      api.SetVariable('textord_show_word_blobs', '0');
-    }
-
-    res.resolve(result);
-
-    let result2;
-    if (!skipRecognition && legacy && lstm) {
-      api.SetVariable('tessedit_ocr_engine_mode', '1');
-      api.Recognize(null);
-      // Intermediate images are only returned in the first promise.
-      // They would be identical, so there is no reason to incur more memory/runtime costs.
-      workingOutput.imageColor = false;
-      workingOutput.imageGrey = false;
-      workingOutput.imageBinary = false;
-      result2 = dump(TessModule, api, workingOutput, { skipRecognition });
-    }
+    // Code 1 adds this worker's own FindLines call.
+    // Code 4 is the snapshot plus the dump, which is where the merge runs.
+    result.timing = {
+      1: findLinesMs + (coreTiming ? coreTiming[1] : 0),
+      2: coreTiming ? coreTiming[2] : null,
+      3: coreTiming ? coreTiming[3] : null,
+      4: (coreTiming ? coreTiming[4] : 0) + dumpMs,
+    };
+    result.core = coreVariant;
+    result.kernel = api.GetStringVariable('dotproduct');
 
     if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
     if (output.debugVis) TessModule.FS.unlink('/debugVisInternal.txt');
@@ -806,7 +727,7 @@ const recognize2 = async ({
       api.RestoreParameters();
     }
 
-    resB.resolve(result2);
+    res.resolve(result);
   } catch (err) {
     res.reject(err.toString());
   }
@@ -818,6 +739,17 @@ const terminate = async (_, res) => {
       api.End();
     }
     res.resolve({ terminated: true });
+  } catch (err) {
+    res.reject(err.toString());
+  }
+};
+
+const resetState = async (_, res) => {
+  try {
+    if (api !== null) {
+      api.ClearAdaptiveClassifier();
+    }
+    res.resolve();
   } catch (err) {
     res.reject(err.toString());
   }
@@ -855,32 +787,15 @@ export const dispatchHandlers = (packet, send) => {
 
   latestJob = res;
 
-  const resB = (status, data) => {
-    // Return only the necessary info to avoid sending unnecessarily large messages
-    const packetRes = {
-      jobId: `${packet.jobId}b`,
-      workerId: packet.workerId,
-      action: packet.action,
-    };
-    send({
-      ...packetRes,
-      status,
-      data,
-    });
-  };
-  resB.resolve = resB.bind(this, 'resolve');
-  resB.reject = resB.bind(this, 'reject');
-  resB.progress = resB.bind(this, 'progress');
-
   ({
     load,
     loadLanguage,
     initialize,
     setParameters,
+    resetState,
     recognize,
-    recognize2,
     terminate,
-  })[packet.action](packet, res, resB)
+  })[packet.action](packet, res)
     .catch((err) => res.reject(err.toString()));
 };
 

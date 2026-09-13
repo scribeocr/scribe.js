@@ -60,11 +60,9 @@ export function ocrAddsNewText(nativePage, ocrPage) {
 /**
  * Build the canonical 'Combined' layer for a partial page selection and point `active` at it.
  * Per page it keeps the engine's OCR, or falls back to native (PDF) text when the keep/discard gate finds the OCR adds nothing the native layer lacks.
- * Every page is cloned, so editing 'Combined' cannot corrupt the source layers it draws from.
- * `doc.inputData.ocrApplied` is modified in place to narrow to the pages this leaves OCR-backed.
- * A no-op when OCR ran on every page, when the document carries user-uploaded OCR, or when no page was OCR'd.
+ * Records the per-page choice in `doc.inputData.ocrApplied`, narrowed in place to the pages this leaves OCR-backed.
  * @param {ScribeDoc} doc
- * @param {OcrPage[]} source - The engine's full-document OCR layer ('Tesseract Combined' or a custom model's).
+ * @param {OcrPage[]} source - The engine's full-document OCR layer ('Combined' itself, or a custom model's).
  * @param {boolean[]} ocrPageMask - Which pages were sent to OCR.
  * @param {boolean} gateApplies - Whether the keep/discard gate runs (the `auto*` ocrPages modes only).
  * @param {boolean} fullOcr - True when every page was OCR'd, in which case `active` already names the engine layer.
@@ -73,27 +71,30 @@ export function ocrAddsNewText(nativePage, ocrPage) {
  */
 function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr, native, userOcr) {
   if (fullOcr || userOcr || !ocrPageMask.some(Boolean)) return;
-  // Relocate the pure Legacy+LSTM combine from 'Combined' to 'Tesseract Combined' (unless an existing-OCR
-  // run already put it there) so 'Combined' can hold the canonical result.
-  if (source === doc.ocr.Combined && !doc.ocr['Tesseract Combined']) doc.ocr['Tesseract Combined'] = source;
   const combined = Array(doc.inputData.pageCount);
   for (let i = 0; i < combined.length; i++) {
     const nat = native && native[i];
     const ocrPage = source[i];
     let chosen;
+    let fromOcr;
     if (ocrPageMask[i] && ocrPage) {
       const keepOcr = !(gateApplies && nat && !ocrAddsNewText(nat, ocrPage));
       chosen = keepOcr ? ocrPage : nat;
-      // The searchable-PDF export reads this flag to pick pages to flatten.
+      fromOcr = keepOcr;
       if (!keepOcr) doc.inputData.ocrApplied[i] = false;
     } else {
       chosen = nat || ocrPage;
+      fromOcr = !nat && !!ocrPage;
       if (nat) doc.inputData.ocrApplied[i] = false;
     }
-    if (chosen) {
-      combined[i] = ocr.clonePage(chosen);
-    } else {
+    if (!chosen) {
       combined[i] = new OcrPage(i, doc.pageMetrics[i].dims);
+    } else if (fromOcr && source === doc.ocr.Combined) {
+      // The engine's page is taken as it is, because the document keeps one OCR tree per page and nothing else holds it.
+      combined[i] = chosen;
+    } else {
+      // A native or custom-model page is cloned, so editing 'Combined' cannot corrupt the layer its own holder still reads.
+      combined[i] = ocr.clonePage(chosen);
     }
   }
   doc.ocr.Combined = combined;
@@ -216,7 +217,7 @@ export async function evalOCRPage(doc, params) {
  * @param {ScribeDoc} doc
  * @param {Array<OcrPage>} ocrA
  * @param {Array<OcrPage>} ocrB
- * @param  {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} [options]
+ * @param {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} [options]
  * @param {?function} [progressCallback=null]
  */
 export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = null) {
@@ -228,7 +229,7 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
     confThreshMed: scribeDocDefaults.confThreshMed,
   };
 
-  if (options) Object.assign(compOptions, options);
+  Object.assign(compOptions, options || {});
 
   /** @type {Array<OcrPage>} */
   const ocrArr = [];
@@ -304,14 +305,11 @@ async function calcRecognizeRotateArgs(doc, n, areaMode) {
   const rotateDegrees = rotate && angle && Math.abs(angle || 0) > 0.05 && !nativeN.rotated ? angle * -1 : 0;
   const rotateRadians = rotateDegrees * (Math.PI / 180);
 
-  let saveNativeImage = false;
   let saveBinaryImageArg = false;
 
-  // Images are not saved when using "recognize area" as these intermediate images are cropped.
+  // The binary image is not saved when using "recognize area" as these intermediate images are cropped.
   if (!areaMode) {
     const binaryN = await doc.images.binary[n];
-    // Images are saved if either (1) we do not have any such image at present or (2) the current version is not rotated but the user has the "auto rotate" option enabled.
-    if (autoRotate && !nativeN.rotated[n] && (!angleKnown || Math.abs(rotateRadians) > angleThresh)) saveNativeImage = true;
     if (!binaryN || autoRotate && !binaryN.rotated && (!angleKnown || Math.abs(rotateRadians) > angleThresh)) saveBinaryImageArg = true;
   }
 
@@ -319,7 +317,6 @@ async function calcRecognizeRotateArgs(doc, n, areaMode) {
     angleThresh,
     angleKnown,
     rotateRadians,
-    saveNativeImage,
     saveBinaryImageArg,
   };
 }
@@ -331,18 +328,23 @@ async function calcRecognizeRotateArgs(doc, n, areaMode) {
  *
  * @param {ScribeDoc} doc
  * @param {number} n - Page number to recognize.
- * @param {boolean} legacy -
- * @param {boolean} lstm -
+ * @param {boolean} legacy - Run the Legacy engine. At least one engine must be named.
+ * @param {boolean} lstm - Run the LSTM engine.
  * @param {boolean} areaMode -
  * @param {Object<string, string>} tessOptions - Options to pass to Tesseract.js.
  * @param {boolean} [debugVis=false] - Generate instructions for debugging visualizations.
  * @param {?Array<string>} [langs=null] - Languages for this job. When set, the worker ensures its
  *    engine matches before recognizing, so concurrent documents in different languages stay isolated.
  * @param {boolean} [vanillaMode=false] - Use the vanilla Tesseract.js model.
+ * @returns {Promise<Awaited<ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>>>} The page's result: `recognize` and `convert`.
+ *    `convert.page` holds the page.
  */
-export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false, langs = null, vanillaMode = false) {
+export async function recognizePageImp(
+  doc, n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false, langs = null, vanillaMode = false,
+) {
+  if (!legacy && !lstm) throw new Error('recognizePageImp needs an engine: set legacy or lstm.');
   const {
-    angleThresh, angleKnown, rotateRadians, saveNativeImage, saveBinaryImageArg,
+    angleThresh, angleKnown, rotateRadians, saveBinaryImageArg,
   } = await calcRecognizeRotateArgs(doc, n, areaMode);
 
   const nativeN = await doc.images.getNative(n);
@@ -358,62 +360,43 @@ export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptio
 
   const pageDims = doc.pageMetrics[n].dims;
 
-  // If `legacy` and `lstm` are both `false`, recognition is not run, but layout analysis is.
-  // This combination of options would be set for debug mode, where the point of running Tesseract
-  // is to get debugging images for layout analysis rather than get text.
-  const runRecognition = legacy || lstm;
-
-  const resArr = await gs.recognizeAndConvert2({
+  const res = await gs.recognizeAndConvert({
     // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
     image: nativeN.ensureSrc(),
     options: config,
+    // Nothing reads the plain-text output, which the worker produces by default.
     output: {
-      // text, blocks, hocr, and tsv must all be `false` to disable recognition
-      text: runRecognition,
-      blocks: runRecognition,
-      hocr: runRecognition,
-      tsv: runRecognition,
-      layoutBlocks: !runRecognition,
-      imageBinary: saveBinaryImageArg,
-      imageColor: saveNativeImage,
-      debug: true,
-      debugVis,
+      blocks: true, text: false, imageBinary: saveBinaryImageArg, debugVis,
     },
     n,
     knownAngle: doc.pageMetrics[n].angle,
     pageDims,
     langs,
     vanillaMode,
+    docId: doc.id,
   });
 
-  const res0 = await resArr[0];
-
-  const elapsedSec = res0.recognitionTime / 1000;
+  const elapsedSec = res.recognitionTime / 1000;
   if (scribeDocDefaults.printRecognitionTime === true || (typeof scribeDocDefaults.printRecognitionTime === 'number' && elapsedSec > scribeDocDefaults.printRecognitionTime)) {
     console.log(`Page ${n} recognition time: ${elapsedSec.toFixed(2)}s`);
   }
 
-  if (!angleKnown) doc.pageMetrics[n].angle = (res0.recognize.rotateRadians || 0) * (180 / Math.PI) * -1;
+  if (!angleKnown) doc.pageMetrics[n].angle = (res.recognize.rotateRadians || 0) * (180 / Math.PI) * -1;
 
   // An image is rotated if either the source was rotated or rotation was applied by Tesseract.
-  const isRotated = Boolean(res0.recognize.rotateRadians || 0) || nativeN.rotated;
+  const isRotated = Boolean(res.recognize.rotateRadians || 0) || nativeN.rotated;
 
   // Images from Tesseract should not overwrite the existing images in the case where rotateAuto is true,
   // but no significant rotation was actually detected.
-  const significantRotation = Math.abs(res0.recognize.rotateRadians || 0) > angleThresh;
+  const significantRotation = Math.abs(res.recognize.rotateRadians || 0) > angleThresh;
 
-  const upscale = res0.recognize.upscale || false;
-  if (saveBinaryImageArg && res0.recognize.imageBinary && (significantRotation || !doc.images.binary[n])) {
+  const upscale = res.recognize.upscale || false;
+  if (saveBinaryImageArg && res.recognize.imageBinary && (significantRotation || !doc.images.binary[n])) {
     doc.images.binaryProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: 'binary' };
-    doc.images.binary[n] = new ImageWrapper(n, res0.recognize.imageBinary, 'binary', isRotated, upscale);
+    doc.images.binary[n] = new ImageWrapper(n, res.recognize.imageBinary, 'binary', isRotated, upscale);
   }
 
-  if (saveNativeImage && res0.recognize.imageColor && significantRotation) {
-    doc.images.nativeProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: scribeDocDefaults.colorMode };
-    doc.images.native[n] = new ImageWrapper(n, res0.recognize.imageColor, 'native', isRotated, upscale);
-  }
-
-  return resArr;
+  return res;
 }
 
 /**
@@ -424,7 +407,7 @@ export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptio
  * @param {number} n - Page number
  * @param {TextSource} format - Format of raw data.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
- * @returns {Promise<Awaited<ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>>['convert']>}
+ * @returns {Promise<Awaited<ReturnType<typeof import('./import/convertPageBlocks.js').convertPageBlocks>>>}
  */
 async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
   await gs.getGeneralScheduler();
@@ -505,7 +488,7 @@ export function insertParsedPage(doc, n, page, {
  * This needs to be a separate function from `convertOCRPage`, given that sometimes recognition and conversion are combined by using `recognizeAndConvert`.
  *
  * @param {ScribeDoc} doc
- * @param {Awaited<ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>>['convert']} params
+ * @param {Awaited<ReturnType<typeof import('./import/convertPageBlocks.js').convertPageBlocks>>} params
  * @param {number} n
  * @param {boolean} mainData
  * @param {string} engineName - Name of OCR engine.
@@ -522,8 +505,6 @@ async function convertPageCallback(doc, {
   }
   await Promise.all(fontPromiseArr);
 
-  if (['Tesseract Legacy', 'Tesseract LSTM'].includes(engineName)) doc.ocr['Tesseract Latest'][n] = pageObj;
-
   insertParsedPage(doc, n, pageObj, {
     engineName, dataTables, warn, mainData, setActive: false,
   });
@@ -537,7 +518,7 @@ async function convertPageCallback(doc, {
  * @param {string[]} ocrRawArr - Array with raw OCR data, with an element for each page
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
- *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
+ *  For Tesseract.js recognition, the engine's results are flagged as the "main" data.
  * @param {TextSource} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
@@ -643,57 +624,26 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
  * @param {Object<string, string>} [config={}]
  * @param {?boolean[]} [ocrPageMask=null] - Per-page mask. When set, only `true` pages are recognized.
  */
-async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null) {
+async function recognizeAllPages(
+  doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null,
+) {
   const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
 
-  if (legacy) {
-    const oemText = 'Tesseract Legacy';
-    if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
-    doc.ocr.active = doc.ocr[oemText];
-  }
-
-  if (lstm) {
-    const oemText = 'Tesseract LSTM';
-    if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
-    doc.ocr.active = doc.ocr[oemText];
-  }
-
-  // 'Tesseract Latest' includes the last version of Tesseract to run.
-  // It exists only so that data can be consistently displayed during recognition,
-  // should never be enabled after recognition is complete, and should never be editable by the user.
-  {
-    const oemText = 'Tesseract Latest';
-    if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
-    doc.ocr.active = doc.ocr[oemText];
-  }
+  // Whichever engines ran, the result lands under 'Combined': the merged page of a dual-engine run, or the engine's own page.
+  if (!doc.ocr.Combined) doc.ocr.Combined = Array(doc.inputData.pageCount);
+  doc.ocr.active = doc.ocr.Combined;
 
   await gs.initTesseract({
     anyOk: false, vanillaMode, langs, config,
   });
 
-  // If Legacy and LSTM are both requested, LSTM completion is tracked by a second array of promises (`promisesB`).
-  // In this case, `convertPageCallbackBrowser` can be run after the Legacy recognition is finished,
-  // however this function only returns after all recognition is completed.
-  // This provides no performance benefit in absolute terms, however halves the amount of time the user has to wait
-  // before seeing the initial recognition results.
-  // `resolvesA`/`resolvesB` are keyed by page index (sparse) so each result lands in its correct slot,
-  // while `promisesA`/`promisesB` stay dense for `Promise.all`.
-  const promisesA = [];
-  const resolvesA = [];
-  const promisesB = [];
-  const resolvesB = [];
-
+  // `resolves` is keyed by page index (sparse) so each result lands in its correct slot, while `promises` stays dense for `Promise.all`.
+  const promises = [];
+  const resolves = [];
   for (const x of inputPages) {
-    promisesA.push(new Promise((resolve, reject) => {
-      resolvesA[x] = { resolve, reject };
+    promises.push(new Promise((resolve, reject) => {
+      resolves[x] = { resolve, reject };
     }));
-    const promiseB = new Promise((resolve, reject) => {
-      resolvesB[x] = { resolve, reject };
-    });
-    // `promisesB` is awaited only in dual-engine mode, and not at all once `promisesA` rejects.
-    // This no-op handler keeps a page failure from surfacing as an unhandled rejection on those paths.
-    promiseB.catch(() => {});
-    promisesB.push(promiseB);
   }
 
   // Upscaling is enabled only for image data, and only if the user has explicitly enabled it.
@@ -710,60 +660,41 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
 
   for (const x of inputPages) {
     while (inFlight.size >= maxInFlight) await Promise.race(inFlight);
-    const chain = recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (resArr) => {
-      const res0 = await resArr[0];
-
-      if (res0.recognize.debugVis) {
-        const gzStream = new Blob([res0.recognize.debugVis]).stream().pipeThrough(new CompressionStream('gzip'));
+    const chain = recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (res) => {
+      if (res.recognize.debugVis) {
+        const gzStream = new Blob([res.recognize.debugVis]).stream().pipeThrough(new CompressionStream('gzip'));
         doc.vis[x] = new Uint8Array(await new Response(gzStream).arrayBuffer());
       }
 
-      if (legacy) {
-        await convertPageCallback(doc, res0.convert.legacy, x, mainData, 'Tesseract Legacy');
-        resolvesA[x].resolve();
-      } else if (lstm) {
-        await convertPageCallback(doc, res0.convert.lstm, x, false, 'Tesseract LSTM');
-        resolvesA[x].resolve();
-      }
+      await convertPageCallback(doc, res.convert.page, x, mainData, 'Combined');
+      doc.ocrTiming[x] = {
+        ...doc.ocrTiming[x],
+        Combined: {
+          0: res.recognitionTime, ...res.recognize.timing, core: res.recognize.core, kernel: res.recognize.kernel,
+        },
+      };
 
-      // Releasing here is safe because the compare and font-eval tail read only `binary`, and the LSTM wave below works from the copy its worker already holds.
-      // A deskewed write-back is kept instead, because re-deriving one costs an engine pass rather than a plain re-render.
-      if (doc.inputData.pdfMode && doc.images.nativeProps[x] && !doc.images.nativeProps[x].rotated) {
+      // Releasing here is safe because the compare and font-eval tail read only `binary`.
+      if (doc.inputData.pdfMode) {
         doc.images.native[x] = undefined;
         doc.images.nativeProps[x] = undefined;
       }
-
-      if (legacy && lstm) {
-        (async () => {
-          const res1 = await resArr[1];
-          await convertPageCallback(doc, res1.convert.lstm, x, false, 'Tesseract LSTM');
-          resolvesB[x].resolve();
-        })().catch((err) => resolvesB[x].reject(err));
-      }
+      resolves[x].resolve();
     }).catch((err) => {
       // A failed page must neither stall the pump nor hang the run's Promise.all.
-      resolvesA[x].reject(err);
-      resolvesB[x].reject(err);
+      resolves[x].reject(err);
     });
     inFlight.add(chain);
     chain.then(() => inFlight.delete(chain));
   }
 
-  await Promise.all(promisesA);
+  await Promise.all(promises);
 
   if (mainData) {
     await checkCharWarn(doc, doc.convertPageWarn);
   }
 
-  if (legacy && lstm) await Promise.all(promisesB);
-
-  if (lstm) {
-    const oemText = 'Tesseract LSTM';
-    doc.ocr.active = doc.ocr[oemText];
-  } else {
-    const oemText = 'Tesseract Legacy';
-    doc.ocr.active = doc.ocr[oemText];
-  }
+  doc.ocr.active = doc.ocr.Combined;
 }
 
 /**
@@ -1126,6 +1057,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
         result = await model.recognizeImage(imageData, modelOptionsWithSignal);
 
         if (result.success) {
+          doc.ocrTiming[n] = { ...doc.ocrTiming[n], [engineName]: { 0: Date.now() - recognizeStart } };
           const elapsedSec = (Date.now() - recognizeStart) / 1000;
           if (scribeDocDefaults.printRecognitionTime === true || (typeof scribeDocDefaults.printRecognitionTime === 'number' && elapsedSec > scribeDocDefaults.printRecognitionTime)) {
             console.log(`Page ${n} recognition time: ${elapsedSec.toFixed(2)}s`);
@@ -1217,7 +1149,8 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
  * The results of recognition can be exported by calling `exportData` after this function.
  * @param {ScribeDoc} doc
  * @param {Object} options
- * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode.
+ * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode. `'quality'` runs the default engine set, both engines under the bundled model and the LSTM engine under `vanillaMode`.
+ *    `'speed'` runs the LSTM engine alone.
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
@@ -1230,7 +1163,9 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
  * @param {typeof scribeDocDefaults.usePDFText} [options.usePDFText] - How to use a PDF's own extracted text, for this call.
  *    Defaults to `scribeDocDefaults.usePDFText`. For a document with an existing OCR layer, `ocr.main: true` trusts that
  *    layer as primary and skips OCR; `ocr.supp: true` merges it into a fresh OCR run; both false re-OCRs and discards it.
- * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
+ * @param {boolean} [options.vanillaMode=false] - Use the unmodified Tesseract.js model, whose cores carry no merge.
+ *    One engine runs, `modeAdv` `'lstm'` (the default under this option) or `'legacy'`.
+ *    `'combined'` throws.
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
  * @param {Object} [options.modelOptions={}] - Options passed to the model's `recognizeImage` method.
@@ -1241,6 +1176,9 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
  */
 export async function recognize(doc, options = {}) {
   if (!doc.inputData.pdfMode && !doc.inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
+  if (options.vanillaMode && options.modeAdv === 'combined') {
+    throw new Error("modeAdv 'combined' is not available with vanillaMode: the unmodified Tesseract.js cores carry no merge. Use modeAdv 'lstm' or 'legacy'.");
+  }
 
   // The page selection below reads extraction outputs (pageStats, pdfType, ocr.pdf), which a deferred import may still be producing.
   await doc.textReady;
@@ -1299,11 +1237,11 @@ export async function recognize(doc, options = {}) {
   const config = options && options.config ? options.config : {};
 
   const langs = options && options.langs ? options.langs : ['eng'];
-  let oemMode = 'combined';
+  let oemMode = vanillaMode ? 'lstm' : 'combined';
   if (options && options.modeAdv) {
     oemMode = options.modeAdv;
-  } else if (options && options.mode) {
-    oemMode = options.mode === 'speed' ? 'lstm' : 'legacy';
+  } else if (options && options.mode === 'speed') {
+    oemMode = 'lstm';
   }
 
   const fontPromiseArr = [];
@@ -1328,24 +1266,21 @@ export async function recognize(doc, options = {}) {
       || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
   }
 
-  // A single Tesseract engine can be used (Legacy or LSTM) or the results from both can be used and combined.
-  if (oemMode === 'legacy' || oemMode === 'lstm') {
-    // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
-    // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(doc, oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode, config, ocrPageMask);
+  // Tesseract is the "main" data, which the page metrics come from, unless user-uploaded data exists.
+  const dual = oemMode === 'combined';
+  await recognizeAllPages(doc, oemMode !== 'lstm', oemMode !== 'legacy', !existingOCR, langs, vanillaMode, config, ocrPageMask);
 
+  if (!dual) {
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
-      const charMetrics = calcCharMetricsFromPages(doc.ocr['Tesseract Legacy']);
+      const charMetrics = calcCharMetricsFromPages(doc.ocr.Combined);
       if (Object.keys(charMetrics).length > 0) {
         clearObjectProperties(doc.fonts.state.charMetrics);
         Object.assign(doc.fonts.state.charMetrics, charMetrics);
       }
-      await doc.runOptimization(doc.ocr['Tesseract Legacy']);
+      await doc.runOptimization(doc.ocr.Combined);
     }
-  } else if (oemMode === 'combined') {
-    await recognizeAllPages(doc, true, true, !existingOCR, langs, vanillaMode, config, ocrPageMask);
-
+  } else {
     const progressCb = () => doc.progressHandler({ type: 'recognize' });
 
     if (scribeDocDefaults.saveDebugImages) {
@@ -1355,83 +1290,19 @@ export async function recognize(doc, options = {}) {
       }
     }
 
-    if (existingOCR) {
-      const oemText = 'Tesseract Combined';
-      if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
-      doc.ocr.active = doc.ocr[oemText];
-
-      if (scribeDocDefaults.saveDebugImages) {
-        doc.debug.debugImg['Tesseract Combined'] = new Array(doc.images.pageCount);
-        for (let i = 0; i < doc.images.pageCount; i++) {
-          doc.debug.debugImg['Tesseract Combined'][i] = [];
-        }
-      }
-    }
-
-    // A new version of OCR data is created for font optimization and validation purposes.
-    // This version has the bounding box and style data from the Legacy data, however uses the text from the LSTM data whenever conflicts occur.
-    // Additionally, confidence is set to 0 when conflicts occur. Using this version benefits both font optimiztion and validation.
-    // For optimization, using this version rather than Tesseract Legacy excludes data that conflicts with Tesseract LSTM and is therefore likely incorrect,
-    // as low-confidence words are excluded when calculating overall character metrics.
-    // For validation, this version is superior to both Legacy and LSTM, as it combines the more accurate bounding boxes/style data from Legacy
-    // with the more accurate (on average) text data from LSTM.
-    if (!doc.ocr['Tesseract Combined Temp']) doc.ocr['Tesseract Combined Temp'] = Array(doc.inputData.pageCount);
-
-    {
-      /** @type {Parameters<typeof doc.compareOCR>[2]} */
-      const compOptions = {
-        mode: 'comb',
-        evalConflicts: false,
-        legacyLSTMComb: true,
-      };
-
-      const res = await compareOCR(doc, doc.ocr['Tesseract Legacy'], doc.ocr['Tesseract LSTM'], compOptions, progressCb);
-
-      clearObjectProperties(doc.ocr['Tesseract Combined Temp']);
-      Object.assign(doc.ocr['Tesseract Combined Temp'], res.ocr);
-    }
-
+    const recognizedPages = [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]);
     // The font eval skips pages without OCR data, so binarizing an unrecognized page would cost a render plus an engine pass for nothing.
-    const fontEvalPages = [];
-    for (let i = 0; i < doc.images.pageCount && fontEvalPages.length < 6; i++) {
-      if (ocrPageMask[i]) fontEvalPages.push(i);
-    }
+    const fontEvalPages = recognizedPages.slice(0, 6);
+
+    const fontLayer = doc.ocr.Combined;
     await doc.images.preRenderRange({ pageArr: fontEvalPages, binary: true });
-    const charMetrics = calcCharMetricsFromPages(doc.ocr['Tesseract Combined Temp']);
+    const charMetrics = calcCharMetricsFromPages(fontLayer);
     if (Object.keys(charMetrics).length > 0) {
       clearObjectProperties(doc.fonts.state.charMetrics);
       Object.assign(doc.fonts.state.charMetrics, charMetrics);
     }
-    await doc.runOptimization(doc.ocr['Tesseract Combined Temp']);
+    await doc.runOptimization(fontLayer);
 
-    const oemText = 'Combined';
-    if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
-    doc.ocr.active = doc.ocr[oemText];
-
-    {
-      const tessCombinedLabel = existingOCR ? 'Tesseract Combined' : 'Combined';
-
-      /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
-      const compOptions = {
-        mode: 'comb',
-        debugLabel: scribeDocDefaults.saveDebugImages ? tessCombinedLabel : undefined,
-        ignoreCap: scribeDocDefaults.ignoreCap,
-        ignorePunct: scribeDocDefaults.ignorePunct,
-        confThreshHigh: scribeDocDefaults.confThreshHigh,
-        confThreshMed: scribeDocDefaults.confThreshMed,
-        legacyLSTMComb: true,
-      };
-
-      const res = await compareOCR(doc, doc.ocr['Tesseract Legacy'], doc.ocr['Tesseract LSTM'], compOptions, progressCb);
-
-      if (doc.debug.debugImg[tessCombinedLabel]) doc.debug.debugImg[tessCombinedLabel] = res.debug;
-
-      clearObjectProperties(doc.ocr[tessCombinedLabel]);
-      Object.assign(doc.ocr[tessCombinedLabel], res.ocr);
-    }
-
-    // Compare the existing text layer against a secondary text layer word-by-word.
-    // Runs for a whole-document OCR pass or for User-Upload data.
     if (existingOCR && (userOcr || fullOcr)) {
       if (combineMode === 'conf') {
         /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
@@ -1445,7 +1316,7 @@ export async function recognize(doc, options = {}) {
           editConf: true,
         };
 
-        const res = await compareOCR(doc, existingOCR, doc.ocr['Tesseract Combined'], compOptions, progressCb);
+        const res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
 
         if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
@@ -1460,15 +1331,16 @@ export async function recognize(doc, options = {}) {
           ignorePunct: scribeDocDefaults.ignorePunct,
           confThreshHigh: scribeDocDefaults.confThreshHigh,
           confThreshMed: scribeDocDefaults.confThreshMed,
+          combinedA: forceMainData,
           // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
           useBboxB: !forceMainData && existingOCR === nativeText && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
         };
 
         let res;
         if (forceMainData) {
-          res = await compareOCR(doc, doc.ocr['Tesseract Combined'], existingOCR, compOptions, progressCb);
+          res = await compareOCR(doc, doc.ocr.Combined, existingOCR, compOptions, progressCb);
         } else {
-          res = await compareOCR(doc, existingOCR, doc.ocr['Tesseract Combined'], compOptions, progressCb);
+          res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
         }
 
         if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
@@ -1479,8 +1351,6 @@ export async function recognize(doc, options = {}) {
     }
   }
 
-  // The engine's OCR layer to route: 'Tesseract Combined' for an existing-OCR run (where `active` points elsewhere), otherwise `active` itself.
-  const tessSource = (existingOCR && doc.ocr['Tesseract Combined']) ? doc.ocr['Tesseract Combined'] : doc.ocr.active;
-  buildCombinedLayer(doc, tessSource, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
-  return (doc.ocr.active);
+  buildCombinedLayer(doc, doc.ocr.Combined, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
+  return doc.ocr.active;
 }

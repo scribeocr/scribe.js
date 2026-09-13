@@ -32,6 +32,7 @@ import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { readingsListDestroy } from '../js/viewerReadings.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { DEBUG_MENU } from '../devFlags.js';
@@ -4870,7 +4871,7 @@ class ScribePDFViewer {
     // Remove the underlying viewer from the global registry and tear it down.
     // Once the last viewer is gone, drop the shared context menu so nothing of ours remains in the host.
     this.scribe.destroy();
-    if (ScribeViewer.getAllViewers().size === 0) destroyContextMenu();
+    if (ScribeViewer.getAllViewers().size === 0) { destroyContextMenu(); readingsListDestroy(); }
     if (this.pdfViewerElem.parentNode) this.pdfViewerElem.parentNode.removeChild(this.pdfViewerElem);
   }
 

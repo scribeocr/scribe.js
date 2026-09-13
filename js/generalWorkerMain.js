@@ -84,28 +84,6 @@ export async function initGeneralWorker() {
       };
     }
 
-    /**
-     * Similar to wrap, but handles two promises.
-     * @param {string} func The function name to call.
-     * @returns {Array} Returns two promises in an array.
-     */
-    function wrap2(func) {
-      return function (...args) {
-        if (workerError) return [Promise.reject(workerError), Promise.reject(workerError)];
-        const id = promiseId++;
-        const promiseB = new Promise((innerResolve, innerReject) => {
-          workerPromises[`${id}b`] = { resolve: innerResolve, reject: innerReject, func };
-        });
-
-        const promiseA = new Promise((innerResolve, innerReject) => {
-          workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
-          worker.postMessage([func, args[0], id]);
-        });
-
-        return [promiseA, promiseB];
-      };
-    }
-
     obj.convertPageHocr = wrap('convertPageHocr');
     obj.convertPageAbbyy = wrap('convertPageAbbyy');
     obj.convertPageAlto = wrap('convertPageAlto');
@@ -126,10 +104,8 @@ export async function initGeneralWorker() {
     obj.compareOCRPageImp = wrap('compareOCRPageImp');
 
     obj.reinitialize = wrap('reinitialize');
-    obj.reinitialize2 = wrap('reinitialize2');
     obj.recognize = wrap('recognize');
     obj.recognizeAndConvert = wrap('recognizeAndConvert');
-    obj.recognizeAndConvert2 = wrap2('recognizeAndConvert2');
     obj.renderPageStaticImp = wrap('renderPageStaticImp');
 
     obj.loadFontsWorker = wrap('loadFontsWorker');
@@ -308,12 +284,6 @@ export class gs {
    * @returns {ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>}
    */
   static recognizeAndConvert = async (args) => (await gs.schedulerInner.addJob('recognizeAndConvert', args));
-
-  /**
-   * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert2>[0]} args
-   * @returns {Promise<[ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>, ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>]>}
-   */
-  static recognizeAndConvert2 = async (args) => (await gs.schedulerInner.addJob('recognizeAndConvert2', args));
 
   /**
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageBase>[0]} args

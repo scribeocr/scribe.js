@@ -31,7 +31,7 @@ const desktopEngineTrim = () => ({
   enforce: 'pre',
   resolveId(source, importer) {
     const file = source.startsWith('.') && importer ? path.resolve(path.dirname(importer), source) : source;
-    return /\/tess\/core-vanilla\/tesseract-core[^/]*\.js$/.test(file) || /\/tess\/core\/tesseract-core(-lstm|-simd|-simd-lstm)?\.js$/.test(file)
+    return /\/tess\/core-vanilla\/tesseract-core[^/]*\.js$/.test(file) || /\/tess\/core\/tesseract-core-simd\.js$/.test(file)
       ? `\0desktop-trimmed:${file}`
       : null;
   },

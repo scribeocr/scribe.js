@@ -59,6 +59,7 @@ function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
   arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
+  if (Array.isArray(doc.ocrTiming)) arrs.push(doc.ocrTiming);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
   arrs.push(doc.images.nativeSrc, doc.images.pdfDims300);
@@ -209,6 +210,7 @@ function clonePageBundle(doc, i) {
     fillShapes,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
+    ocrTiming: cloneAt(doc.ocrTiming),
     convertPageWarn: cloneAt(doc.convertPageWarn),
     pageStats: cloneAt(doc.inputData.pageStats),
     xmlMode: refAt(doc.inputData.xmlMode),
@@ -728,6 +730,12 @@ export class ScribeDoc {
      */
     this.vis = [];
 
+    /**
+     * Per-page recognition cost by OCR layer name, milliseconds by timing code.
+     * @type {Array<Record<string, OcrPageTiming>|undefined>}
+     */
+    this.ocrTiming = [];
+
     /** @type {Array<Object<string, string>>} */
     this.convertPageWarn = [];
 
@@ -1052,6 +1060,7 @@ export class ScribeDoc {
       spliceFull(this.nativeText.pages, bundles.map((b) => b.nativeText ?? {}));
       spliceFull(this.fillShapes.pages, bundles.map((b) => b.fillShapes ?? null));
       spliceFull(this.vis, bundles.map((b) => b.vis));
+      spliceFull(this.ocrTiming, bundles.map((b) => b.ocrTiming));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
       spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
       spliceFull(this.images.pdfDims300, bundles.map((b) => b.pdfDims300));
@@ -1244,6 +1253,7 @@ export class ScribeDoc {
     this.attachments.collection = null;
     this.attachments.files.length = 0;
     this.convertPageWarn.length = 0;
+    this.ocrTiming.length = 0;
     this.images.clear();
     this.fonts.clear();
     this.docHistory.clear();

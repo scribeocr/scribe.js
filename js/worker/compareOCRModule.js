@@ -1,5 +1,4 @@
 // Disable linter rule.  Many async functions in this files draw on the canvas (a side effect) so need to be run one at a time.
-/* eslint-disable no-await-in-loop */
 
 import ocr from '../objects/ocrObjects.js';
 import { calcLineFontSize, calcWordFontSize, calcWordMetrics } from '../utils/fontUtils.js';
@@ -395,33 +394,6 @@ export async function evalWords({
 }
 
 /**
- * Determines whether Tesseract Legacy word should be rejected in favor of LSTM word.
- * This should only be run when combining Tesseract Legacy and Tesseract LSTM,
- * as these heuristics are based specifically on Tesseract Legacy issues,
- * and it should only include patterns that are highly likely to be incorrect when only found in Legacy.
- * Patterns that should merely be penalized (in all engines) should be in `penalizeWord`,
- *
- * @param {string} legacyText
- * @param {string} lstmText
- */
-function rejectWordLegacy(legacyText, lstmText) {
-  // Automatically reject words that contain a number between two letters.
-  // Tesseract Legacy commonly identifies letters as numbers (usually 1).
-  // This does not just happen with "l"--in test documents "r" and "i" were also misidentified as "1" multiple times.
-  const replaceNum = /[a-z]\d[a-z]/i.test(legacyText) && !/[a-z]\d[a-z]/i.test(lstmText);
-
-  // Automatically reject words where "ii" is between two non-"i" letters
-  // Tesseract Legacy commonly recognizes "ii" when the (actual) letter contains an accent,
-  // while Tesseract LSTM usually recognizes the correct letter, sans the accent.
-  // This "ii" pattern is automatically discarded, regardless of the overlap metrics,
-  // because the overlap metrics often fail in this case.
-  // E.g. the letter "ö" (o with umlaut) may overlap better with "ii" than "o".
-  const replaceII = /[a-hj-z]ii[a-hj-z]/i.test(legacyText) && !/[a-hj-z]ii[a-hj-z]/i.test(lstmText);
-
-  return replaceNum || replaceII;
-}
-
-/**
  * Calculate penalty for word using ad-hoc heuristics.
  * Supplements word overlap strategy by penalizing patterns that may have plausible overlap
  * but are implausible from a language perspective (e.g. "1%" being misidentified as "l%")
@@ -495,11 +467,13 @@ async function penalizeWord(wordObjs) {
  * @param {object} params.options
  * @param {("stats"|"comb")} [params.options.mode='stats'] - If `mode = 'stats'` stats quantifying the number of matches/mismatches are returned.
  *    If `mode = 'comb'` a new version of `pageA`, with text and confidence metrics informed by comparisons with pageB, is created.
+ *    The losing reading of each conflict whose words align one-to-one or two-to-one is kept as an `alt` of the surviving words, with `source` set to its page's `textSource`.
  * @param {boolean} [params.options.editConf] - Whether confidence metrics should be updated when `mode = 'stats'`,
  *    rather than simply setting `compTruth`/`matchTruth`. Enabled when using recognition to update confidence metrics, but not when comparing to ground truth.
- * @param {boolean} [params.options.legacyLSTMComb] - Whether Tesseract Legacy and Tesseract LSTM are being combined, when `mode = 'comb'`.
- *    When `legacyLSTMComb` is enabled, additional heuristics are applied that are based on specific behaviors of the Tesseract Legacy engine.
  * @param {boolean} [params.options.useBboxB] - Use bounding boxes from `pageB` in combined output.
+ * @param {boolean} [params.options.combinedA] - Whether `pageA` is a combined run of the bundled engine.
+ *    Its words keep their confidence where `pageB` has no counterpart.
+ *    On a conflict, a word at confidence 100, which both engines agreed on, keeps its reading at confidence 80.
  * @param {string} [params.options.debugLabel]
  * @param {boolean} [params.options.evalConflicts] - Whether to evaluate word quality on conflicts. If `false` the text from `pageB` is always assumed correct.
  *    This option is useful for combining the style from Tesseract Legacy with the text from Tesseract LSTM.
@@ -529,8 +503,8 @@ export async function compareOCRPageImp({
 
   const mode = options?.mode === undefined ? 'stats' : options?.mode;
   const editConf = options?.editConf === undefined ? false : options?.editConf;
-  const legacyLSTMComb = options?.legacyLSTMComb === undefined ? false : options?.legacyLSTMComb;
   const useBboxB = options?.useBboxB === undefined ? false : options?.useBboxB;
+  const combinedA = options?.combinedA === undefined ? false : options?.combinedA;
   const debugLabel = options?.debugLabel === undefined ? '' : options?.debugLabel;
   const evalConflicts = options?.evalConflicts === undefined ? true : options?.evalConflicts;
   const supplementComp = options?.supplementComp === undefined ? false : options?.supplementComp;
@@ -573,11 +547,21 @@ export async function compareOCRPageImp({
   // This is used to get the original confidence metrics later in the code.
   const pageAInt = structuredClone(pageA);
 
-  if (mode === 'comb') {
+  const confOrig = new Map(ocr.getPageWords(pageA).map((x) => [x.id, x.conf]));
+
+  if (mode === 'comb' && !combinedA) {
     ocr.getPageWords(pageAInt).forEach((x) => {
       x.conf = 0;
     });
   }
+
+  // Punctuation next to a number is never ignored, as it is usually substantive there ("-$1,000" vs "$1,000", "$100" vs "$1.00").
+  const compText = (text) => {
+    let t = ocr.replaceLigatures(text);
+    if (ignorePunct) t = t.replace(/(^|\D)[\W_]($|\D)/g, '$1$2');
+    if (ignoreCap) t = t.toLowerCase();
+    return t;
+  };
 
   // TODO: This assumes that the lines are in a specific order, which may not always be the case.
   //    Add a sorting step or otherwise make more robust.
@@ -680,18 +664,8 @@ export async function compareOCRPageImp({
               // Mark `wordA` as having been compared
               wordA.compTruth = true;
 
-              let wordTextA = ocr.replaceLigatures(wordA.text);
-              let wordTextB = ocr.replaceLigatures(wordB.text);
-              if (ignorePunct) {
-                // Punctuation next to numbers is not ignored, even if this setting is enabled, as punctuation differences are
-                // often/usually substantive in this context (e.g. "-$1,000" vs $1,000" or "$100" vs. "$1.00")
-                wordTextA = wordTextA.replace(/(^|\D)[\W_]($|\D)/g, '$1$2');
-                wordTextB = wordTextB.replace(/(^|\D)[\W_]($|\D)/g, '$1$2');
-              }
-              if (ignoreCap) {
-                wordTextA = wordTextA.toLowerCase();
-                wordTextB = wordTextB.toLowerCase();
-              }
+              const wordTextA = compText(wordA.text);
+              const wordTextB = compText(wordB.text);
 
               hocrAOverlap[wordA.id] = 1;
               hocrBOverlap[wordB.id] = 1;
@@ -716,34 +690,15 @@ export async function compareOCRPageImp({
                 wordA.matchTruth = false;
 
                 // Check if there is a 1-to-1 comparison between words (this is usually true)
-                let oneToOne = Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxB.right - wordBoxA.right) < (wordBoxA.right - wordBoxA.left) * 0.1;
+                const oneToOne = Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxB.right - wordBoxA.right) < (wordBoxA.right - wordBoxA.left) * 0.1;
 
-                // Note: The following block solves an issue that I believe has been patched in our version of Tesseract.
-                // Due to a bug with the LSTM engine, when a word is split into 3 words (for example), the first and last word can have the right bound.
-                // This condition should catch cases where `oneToOne` is `true`, however the appropriate comparison is actually 2-to-1 or 3-to-1.
                 const wordBNext = lineB.words[l + 1];
                 const wordBNext2 = lineB.words[l + 2];
                 const wordBNext3 = lineB.words[l + 3];
-                if (oneToOne && legacyLSTMComb) {
-                  if (wordBNext3 && wordBNext3.text.length > 2) {
-                    const wordBoxBNext3 = wordBNext3.bbox;
-                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext3.right) < (wordBoxBNext3.right - wordBoxA.left) * 0.1) oneToOne = false;
-                  }
-
-                  if (wordBNext2 && wordBNext2.text.length > 2) {
-                    const wordBoxBNext2 = wordBNext2.bbox;
-                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) oneToOne = false;
-                  }
-
-                  if (wordBNext && wordBNext.text.length > 2) {
-                    const wordBoxBNext = wordBNext.bbox;
-                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext.right) < (wordBoxBNext.right - wordBoxA.left) * 0.1) oneToOne = false;
-                  }
-                }
 
                 let twoToOne = false;
                 const wordsAArr = [];
-                let wordsBArr = [];
+                const wordsBArr = [];
 
                 // If there is no 1-to-1 comparison, check if a 2-to-1 comparison is possible using the next word in either dataset
                 if (!oneToOne) {
@@ -795,43 +750,16 @@ export async function compareOCRPageImp({
                         wordsBArr.push(wordBNext);
                       }
                     }
+                  }
+                }
 
-                    // If comparing one word from Tesseract Legacy with multiple words from Tesseract LSTM, and the letters are mostly the same,
-                    // use the bounding boxes from Tesseract Legacy.  These should be more accurate.
-                    if (twoToOne && legacyLSTMComb) {
-                      const wordsAText = wordsAArr.map((x) => x.text).join('');
-                      const wordsBText = wordsBArr.map((x) => x.text).join('');
-                      if (wordsAArr.length === 1 && wordsAArr[0]?.chars?.length === wordsAText.length && wordsAText.length === wordsBText.length) {
-                        // To make sure the legacy boxes are comparable, either:
-                        // (1) the text must be the same between Legacy and LSTM (aside from one word being split/combined), or
-                        // (2) the LSTM version must have 2 words, one word matches, and the total number of letters is the same.
-                        const match = wordsAText === wordsBText;
-                        const match1 = wordsAArr[0].text.substring(0, wordsBArr[0].text.length) === wordsBArr[0].text;
-                        const match2 = wordsAArr[0].text.substring(wordsBArr[0].text.length, wordsBArr[0].text.length + wordsBArr[1].text.length) === wordsBArr[1].text;
-
-                        if (match || (wordsBArr.length === 2 && (match1 || match2))) {
-                          wordsBArr = wordsBArr.map((x) => ocr.cloneWord(x));
-                          wordsBArr[0].chars = wordsAArr[0].chars.slice(0, wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
-                          wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
-                          if (wordsBArr[2]) {
-                            wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length,
-                              wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length).map((x) => ocr.cloneChar(x));
-                          }
-                          if (wordsBArr[3]) {
-                            wordsBArr[3].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length,
-                              wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length + wordsBArr[3].text.length).map((x) => ocr.cloneChar(x));
-                          }
-                          if (!match) {
-                            wordsBArr[0].chars.forEach((x, i) => x.text = wordsBArr[0].text[i]);
-                            wordsBArr[1].chars.forEach((x, i) => x.text = wordsBArr[1].text[i]);
-                            if (wordsBArr[2]) wordsBArr[2].chars.forEach((x, i) => x.text = wordsBArr[2].text[i]);
-                          }
-                          for (const word of wordsBArr) {
-                            // @ts-ignore
-                            word.bbox = ocr.calcBboxUnion(word.chars.map((x) => x.bbox));
-                          }
-                        }
-                      }
+                const rangeA = twoToOne ? wordsAArr : [wordA];
+                let agreedA = false;
+                if (combinedA) {
+                  for (const x of rangeA) {
+                    if (confOrig.get(x.id) === 100) {
+                      x.conf = 80;
+                      agreedA = true;
                     }
                   }
                 }
@@ -839,26 +767,19 @@ export async function compareOCRPageImp({
                 // Only consider switching word contents if their bounding boxes are close together
                 // This should filter off cases where 2+ words in one dataset match to 1 word in another
                 // TODO: Account for cases without 1-to-1 mapping between bounding boxes
-                if (!oneToOne && !twoToOne) {
-                  continue;
-                }
+                if (!oneToOne && !twoToOne) continue;
+
+                // The reading of `pageA` is already in place, so 'legacy' leaves the word as is and 'lstm' writes the reading of `pageB` over it.
+                /** @type {'legacy'|'lstm'} */
+                let winner = 'legacy';
 
                 let hocrAError = 1;
                 let hocrBError = 1;
-                let hocrAAltError = 1;
 
-                if (!evalConflicts) {
-                  hocrBError = 0;
-                } else if (oneToOne) {
-                  // Some common patterns detected by Tesseract Legacy are so implausible that they are automatically rejected.
-                  if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) {
+                if (!agreedA) {
+                  if (!evalConflicts) {
                     hocrBError = 0;
-                  // If the top choice out of the Tesseract Legacy classifier (but not entire model) is the same as the Tesseract LSTM choice, use the LSTM choice.
-                  // This condition is common when the Legacy model improperly applies a dictionary "correction" to a word that was already correct.
-                  } else if (legacyLSTMComb && wordA.textAlt && wordA.textAlt === wordB.text) {
-                    hocrBError = 0;
-                  // Otherwise, the words are compared visually.
-                  } else {
+                  } else if (oneToOne) {
                     // TODO: Figure out how to compare between small caps/non small-caps words (this is the only relevant style as it is the only style LSTM detects)
                     // Clone hocrAWord and set text content equal to hocrBWord
                     const wordAClone = ocr.cloneWord(wordA);
@@ -876,26 +797,6 @@ export async function compareOCRPageImp({
                     hocrAError = evalRes.metricA + (await penalizeWord([wordA]));
                     hocrBError = evalRes.metricB + (await penalizeWord([wordB]));
 
-                    // Reject Tesseract Legacy word if appropriate
-                    if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) hocrBError = 0;
-
-                    // The alternative word from Tesseract legacy is tested if both other options are rejected.
-                    // This can be useful for relatively high-quality scans of non-dictionary words, which both the LSTM model and the Legacy model (after dictionary correction) may fail on,
-                    // with the raw results from the Legacy classifier being the most accurate.
-                    if (legacyLSTMComb && hocrAError > 0.5 && hocrBError > 0.5 && wordA.textAlt && wordA.textAlt !== wordB.text) {
-                      wordAClone.text = wordA.textAlt;
-
-                      // This would run faster if it was built into the original evalWords function, but this case should be rare enough that it doesn't matter.
-                      const evalResAlt = await evalWords({
-                        wordsA: [wordAClone], binaryImage: binaryImageBit, angle: imgAngle, options: { view: Boolean(debugLabel) },
-                      });
-
-                      hocrAAltError = evalResAlt.metricA + (await penalizeWord([wordAClone]));
-
-                      // To use the alt word, the error must be less than 0.5, and the alt word but be at least 0.1 better than both other options.
-                      if (hocrAAltError >= 0.5 || (hocrAError - hocrAAltError) < 0.1 || (hocrBError - hocrAAltError) < 0.1) hocrAAltError = 1;
-                    }
-
                     if (evalRes.debug) {
                       const debugObj = evalRes.debug;
                       debugObj.errorAdjA = hocrAError;
@@ -903,14 +804,10 @@ export async function compareOCRPageImp({
 
                       debugImg.push(debugObj);
                     }
-                  }
-                } else if (twoToOne) {
-                  const wordsAText = wordsAArr.map((x) => x.text).join('');
-                  const wordsBText = wordsBArr.map((x) => x.text).join('');
+                  } else if (twoToOne) {
+                    const wordsAText = wordsAArr.map((x) => x.text).join('');
+                    const wordsBText = wordsBArr.map((x) => x.text).join('');
 
-                  if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) {
-                    hocrBError = 0;
-                  } else {
                     const evalRes = await evalWords({
                       wordsA: wordsAArr, wordsB: wordsBArr, binaryImage: binaryImageBit, angle: imgAngle, options: { view: Boolean(debugLabel) },
                     });
@@ -932,9 +829,6 @@ export async function compareOCRPageImp({
                       }
                     }
 
-                    // Reject Tesseract Legacy word if appropriate
-                    if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) hocrBError = 0;
-
                     if (evalRes.debug) {
                       const debugObj = evalRes.debug;
                       debugObj.errorAdjA = hocrAError;
@@ -945,67 +839,74 @@ export async function compareOCRPageImp({
                   }
                 }
 
-                // The LSTM model is known to be more accurate on average.
-                // Therefore, if both metrics are terrible (indicating the word isn't lined up at all), the LSTM word is used.
-                if ((hocrBError < hocrAError && hocrBError < hocrAAltError) || (legacyLSTMComb && hocrAError > 0.5 && hocrAAltError > 0.5)) {
-                  const skip = ['eg', 'ie'].includes(wordA.text.replace(/\W/g, ''));
+                if (hocrBError < hocrAError && hocrBError < 1) {
+                  if (!['eg', 'ie'].includes(wordA.text.replace(/\W/g, ''))) winner = 'lstm';
+                }
 
-                  if (!skip) {
-                    if (oneToOne) {
-                      lineWordsEditedNew += 1;
-                      lineBReplace = lineB;
+                const rangeB = oneToOne ? [wordB] : wordsBArr;
+                const losers = winner === 'lstm' ? rangeA : rangeB;
+                const lostText = losers.map((x) => x.text).join(' ');
 
-                      wordA.text = wordB.text;
+                let survivors = rangeA;
+                if (winner === 'lstm') {
+                  if (oneToOne) {
+                    lineWordsEditedNew += 1;
+                    lineBReplace = lineB;
+
+                    wordA.text = wordB.text;
+
+                    // Erase character-level data rather than replacing it, as the LSTM data is not expected to be accurate.
+                    // There should eventually be an option to disable this when Tesseract Combined is the "B" data and user-provided data is the "A".
+                    wordA.chars = null;
+
+                    // Switch to small caps/non-small caps based on style of replacement word.
+                    // This is not relevant for italics as the LSTM engine does not detect italics.
+                    if (wordB.style.smallCaps) wordA.style.smallCaps = true;
+                  } else {
+                    const wordsBArrRep = wordsBArr.map((x) => ocr.cloneWord(x));
+
+                    lineWordsEditedNew += wordsBArrRep.length;
+                    lineBReplace = lineB;
+
+                    wordsBArrRep.forEach((x) => {
+                      x.conf = 0;
 
                       // Erase character-level data rather than replacing it, as the LSTM data is not expected to be accurate.
                       // There should eventually be an option to disable this when Tesseract Combined is the "B" data and user-provided data is the "A".
-                      wordA.chars = null;
+                      x.chars = null;
 
-                      // Switch to small caps/non-small caps based on style of replacement word.
-                      // This is not relevant for italics as the LSTM engine does not detect italics.
-                      if (wordB.style.smallCaps) wordA.style.smallCaps = true;
-                    } else {
-                      const wordsBArrRep = wordsBArr.map((x) => ocr.cloneWord(x));
+                      x.compTruth = true;
+                      x.matchTruth = false;
 
-                      lineWordsEditedNew += wordsBArrRep.length;
-                      lineBReplace = lineB;
+                      x.line = lineA;
 
-                      wordsBArrRep.forEach((x) => {
-                        // Use style from word A (assumed to be Tesseract Legacy)
-                        if (legacyLSTMComb) {
-                          x.style = { ...wordA.style };
-                        }
+                      // Change ID to prevent duplicates
+                      x.id += 'b';
+                    });
 
-                        // Set confidence to 0
-                        x.conf = 0;
+                    // Replace "A" words with "B" words
+                    lineA.words.splice(k, wordsAArr.length, ...wordsBArrRep);
 
-                        // Erase character-level data rather than replacing it, as the LSTM data is not expected to be accurate.
-                        // There should eventually be an option to disable this when Tesseract Combined is the "B" data and user-provided data is the "A".
-                        x.chars = null;
+                    k = k + wordsBArrRep.length - 1;
 
-                        x.compTruth = true;
-                        x.matchTruth = false;
-
-                        x.line = lineA;
-
-                        // Change ID to prevent duplicates
-                        x.id += 'b';
-                      });
-
-                      // Replace "A" words with "B" words
-                      lineA.words.splice(k, wordsAArr.length, ...wordsBArrRep);
-
-                      k = k + wordsBArrRep.length - 1;
-
-                      // Move to next hocrAWord
-                      break;
-                    }
+                    survivors = wordsBArrRep;
                   }
-                } else if (wordA.textAlt && hocrAAltError < 0.5 && hocrAAltError < hocrAError) {
-                  lineWordsEditedNew += 1;
-                  if (wordA.text.length !== wordA.textAlt.length) wordA.chars = null;
-                  wordA.text = wordA.textAlt;
                 }
+
+                const lostConfs = losers.map((x) => (winner === 'lstm' ? (confOrig.get(x.id) ?? 0) : x.conf));
+                const alt = [...(survivors[0].alt || []), {
+                  source: (winner === 'lstm' ? pageA.textSource : pageB.textSource) || undefined,
+                  text: lostText,
+                  conf: Math.round(lostConfs.reduce((a, b) => a + b, 0) / lostConfs.length),
+                  span: survivors.length,
+                }];
+                // A reading that covers only part of the dropped range has no word left to attach to.
+                const rangeDropped = winner === 'lstm' && !oneToOne ? rangeA : rangeB;
+                for (const a of rangeDropped[0].alt || []) if (a.span === rangeDropped.length) alt.push({ ...a, span: survivors.length });
+                const survivorsText = survivors.map((x) => x.text).join(' ');
+                survivors[0].alt = alt.filter((a) => !(a.span === survivors.length && a.text === survivorsText)).sort((a, b) => b.conf - a.conf);
+
+                if (winner === 'lstm' && !oneToOne) break;
               }
             }
           }
@@ -1173,6 +1074,7 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
   const { canvas } = await drawWordActual(wordsA, binaryImage, angle);
 
   const extraConfig = {
+    lstm: true,
     tessedit_pageseg_mode: '6', // "Single block"
   };
 

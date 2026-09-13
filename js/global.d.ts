@@ -27,7 +27,7 @@ declare global {
 
     // The kind of file or data a page's text layer was imported from.
     // `stext` is the legacy spelling of `pdf`, remapped when older files are restored.
-    type TextSource = null | 'pdf' | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx' | 'md';
+    type TextSource = null | 'scribe.js' | 'pdf' | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx' | 'md';
 
     /**
      * Parse-time signals for one word.
@@ -615,6 +615,8 @@ declare global {
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;
         fillShapes?: Array<EncodedFillShapes | null>;
+        /** Per-page conflict-arbiter payloads, written by sessions saved before 2026-09-03 and ignored on import. */
+        arbiterDecisions?: Array<object | null>;
         assistantChats?: AssistantChatRecord[];
         redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
     };
@@ -980,7 +982,6 @@ declare global {
     type TessOutputFormats = {
         text: boolean;
         blocks: boolean;
-        layoutBlocks: boolean;
         hocr: boolean;
         tsv: boolean;
         box: boolean;
@@ -990,12 +991,16 @@ declare global {
         imageGrey: boolean;
         imageBinary: boolean;
         debug: boolean;
+        debugVis: boolean;
     };
 
     type TessRecognizeOptions = {
         rectangle: TessRectangle;
         rotateAuto: boolean;
         rotateRadians: number;
+        legacy: boolean;
+        lstm: boolean;
+        upscale: boolean;
     };
 
     type TessRecognizeResult = {
@@ -1017,7 +1022,6 @@ declare global {
         y0: number;
         x1: number;
         y1: number;
-        has_baseline: boolean;
     };
 
     type TessRowAttributes = {
@@ -1039,111 +1043,128 @@ declare global {
     };
 
     type TessSymbol = {
-        choices: TessChoice[];
-        image: any;
         text: string;
         confidence: number;
-        baseline: TessBaseline;
         bbox: TessBbox;
-        is_superscript: boolean;
-        is_subscript: boolean;
-        is_dropcap: boolean;
-        word: TessWord;
-        line: TessLine;
-        paragraph: TessParagraph;
-        block: TessBlock;
-        page: TessPage;
     };
 
     type TessWord = {
-        symbols: TessSymbol[];
-        choices: TessChoice[];
+        symbols: TessSymbol[] | null;
         text: string;
         confidence: number;
-        baseline: TessBaseline;
         bbox: TessBbox;
-        is_numeric: boolean;
-        in_dictionary: boolean;
-        direction: string;
-        language: string;
-        is_bold: boolean;
-        is_italic: boolean;
-        is_underlined: boolean;
-        is_monospace: boolean;
-        is_serif: boolean;
-        is_smallcaps: boolean;
-        font_size: number;
-        font_id: number;
+        language: string | null;
         font_name: string;
-        line: TessLine;
-        paragraph: TessParagraph;
-        block: TessBlock;
-        page: TessPage;
+        italic: number;
+        smallcaps: number;
+        superscript: number;
+        /** Other readings of the word. */
+        alt: Array<{ text: string; conf: number; span: number; msg: string }> | null;
+        comp: number;
+        match: number;
+        charsKept: number;
     };
 
     type TessLine = {
         words: TessWord[];
+        baseline: TessBaseline;
+        xheight: number | null;
+        ascheight: number | null;
+        bbox: TessBbox;
+    };
+
+    type TessParagraph = {
+        lines: TessLine[];
+        bbox: TessBbox;
+        is_ltr: number;
+    };
+
+    type TessBlock = {
+        paragraphs: TessParagraph[];
+        bbox: TessBbox;
+        blocktype: number;
+    };
+
+    // The block JSON the vanilla core serializes.
+    type TessSymbolVanilla = {
+        text: string;
+        confidence: number;
+        bbox: TessBbox;
+        is_superscript: number;
+        is_subscript: number;
+        is_dropcap: number;
+    };
+
+    type TessWordVanilla = {
+        symbols: TessSymbolVanilla[];
+        choices: TessChoice[];
+        text: string;
+        confidence: number;
+        bbox: TessBbox;
+        language: string | null;
+        font_name: string;
+    };
+
+    type TessLineVanilla = {
+        words: TessWordVanilla[];
         text: string;
         confidence: number;
         baseline: TessBaseline;
         rowAttributes: TessRowAttributes;
         bbox: TessBbox;
-        paragraph: TessParagraph;
-        block: TessBlock;
-        page: TessPage;
-        symbols: TessSymbol[];
     };
 
-    type TessParagraph = {
-        lines: TessLine[];
+    type TessParagraphVanilla = {
+        lines: TessLineVanilla[];
         text: string;
         confidence: number;
-        baseline: TessBaseline;
         bbox: TessBbox;
-        is_ltr: boolean;
-        block: TessBlock;
-        page: TessPage;
-        words: TessWord[];
-        symbols: TessSymbol[];
+        is_ltr: number;
     };
 
-    type TessBlock = {
-        paragraphs: TessParagraph[];
+    type TessBlockVanilla = {
+        paragraphs: TessParagraphVanilla[];
         text: string;
         confidence: number;
-        baseline: TessBaseline;
         bbox: TessBbox;
-        blocktype: string;
-        polygon: any;
-        page: TessPage;
-        lines: TessLine[];
-        words: TessWord[];
-        symbols: TessSymbol[];
+        blocktype: number;
     };
 
     type TessPage = {
-        blocks: TessBlock[] | null;
+        blocks: TessBlock[] | TessBlockVanilla[] | null;
         confidence: number;
-        lines: TessLine[];
         oem: string;
         osd: string;
-        paragraphs: TessParagraph[];
         psm: string;
-        symbols: TessSymbol[];
         text: string;
         version: string;
-        words: TessWord[];
         hocr: string | null;
         tsv: string | null;
         box: string | null;
         unlv: string | null;
-        sd: string | null;
         imageColor: string | null;
         imageGrey: string | null;
         imageBinary: string | null;
         rotateRadians: number | null;
+        upscale: boolean;
         debug: string | null;
         debugVis: string | null;
+        timing: { 1: number; 2: number | null; 3: number | null; 4: number };
+        core: string | null;
+        kernel: string;
+    };
+
+    /**
+     * One recognition run's cost for a page. Dev only, not stable.
+     */
+    type OcrPageTiming = {
+        0: number;
+        1?: number;
+        2?: number | null;
+        3?: number | null;
+        4?: number;
+        core?: string | null;
+        kernel?: string;
     };
 
 }

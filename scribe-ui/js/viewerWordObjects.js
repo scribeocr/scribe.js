@@ -3,6 +3,8 @@ import { nativeTextForPage } from '../../js/textEdits.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
+// eslint-disable-next-line import/no-cycle
+import { readingsListSync } from './viewerReadings.js';
 
 /**
  * Resolve the viewer associated with a UiText/UiOcrWord.
@@ -64,7 +66,8 @@ function ensureWordStyleSheet() {
   // No overflow:hidden by design: there is nothing to clip, and a clip node per filler across thousands of them taxes paint and compositing every frame.
   styleEl.textContent = '.scribe-word{position:absolute;z-index:1;white-space:nowrap;font-kerning:normal;pointer-events:auto;padding:0}'
     + '.scribe-fill{position:absolute;z-index:0;pointer-events:auto;width:0;white-space:pre;font-size:2px;color:transparent}'
-    + '.scribe-fill::selection{background:transparent;color:transparent}';
+    + '.scribe-fill::selection{background:transparent;color:transparent}'
+    + '.scribe-word>.scribe-word-readings{position:absolute;left:0;right:0;height:0;border-bottom:calc(2px / var(--scribe-zoom,1)) dotted rgba(31,37,48,.72);pointer-events:none}';
   document.head.appendChild(styleEl);
 }
 
@@ -360,7 +363,7 @@ export class UiText {
 
   get selected() { return this._selected; }
 
-  set selected(v) { this._selected = v; this._applyStateStyle(); }
+  set selected(v) { this._selected = v; this._applyStateStyle(); readingsListSync(getViewer(this)); }
 
   get fillBox() { return this._fillBox; }
 
@@ -590,6 +593,14 @@ export class UiText {
       elem.style.textDecoration = '';
     }
 
+    // Proof mode marks a word the model gave other readings with a dotted rule under its box, so the reader knows the readings list has something for it.
+    if (!pad && this.word.alt?.length && this.viewer.state.displayMode === 'proof') {
+      const mark = document.createElement('i');
+      mark.className = 'scribe-word-readings';
+      mark.style.bottom = `calc(${this.fontDescentPx}px - 4px / var(--scribe-zoom, 1))`;
+      elem.appendChild(mark);
+    }
+
     elem.classList.add('scribe-word');
     elem.id = this.word.id;
 
@@ -741,6 +752,9 @@ export class UiText {
       viewer.scheduleMarkRepaint(n);
       if (!viewer.textSel.isEmpty()) viewer.textSel.renderPage(n);
     }
+
+    // The readings list hangs under the word, so it follows the word's new geometry.
+    readingsListSync(viewer);
   };
 
   /**
@@ -854,6 +868,7 @@ export class UiText {
       UiText.inputWord = null;
       UiText.inputInnerHTMLLast = '';
       UiText.inputCursorLast = 0;
+      readingsListSync(getViewer(itext));
     };
 
     UiText.input.addEventListener('blur', () => (UiText.inputRemove));
@@ -917,6 +932,8 @@ export class UiText {
 
     // Hide the read-only word while editing so only the input shows.
     itext.hide();
+    // The readings list stays out of the way while the editor is open.
+    readingsListSync(getViewer(itext));
   };
 }
 
@@ -1022,7 +1039,9 @@ export class UiOcrWord extends UiText {
    * Update the UI to reflect the properties of selected words.
    * This should be called when any word is selected, after adding them to the selection.
    */
-  static updateUI = () => {};
+  static updateUI = () => {
+    for (const viewer of ScribeViewer.getAllViewers()) readingsListSync(viewer);
+  };
 
   /**
    * Add controls for editing the left/right bounds of a word: a draggable handle `<div>` on each vertical edge.
