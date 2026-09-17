@@ -133,7 +133,7 @@ describe('Check auto-rotate features.', () => {
     const { lines } = doc.ocr.active[0];
     expect(lines.length, 'combined recognition of a skewed page lost or merged lines').toBe(14);
     expect(lines[0].words.map((w) => w.text).join(' '), 'a line of a skewed page took words from its neighbors')
-      .toBe('JNJ announced this morning the acquisition of privately–held Aragon for $650 million');
+      .toBe('JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
 
     const words = lines.flatMap((line) => line.words);
     expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
@@ -317,6 +317,12 @@ describe('Check vanilla recognition engine.', () => {
   test('Combined mode is rejected with vanillaMode, whose cores carry no merge', async () => {
     await expect(doc.recognize({ vanillaMode: true, modeAdv: 'combined' }), 'a vanilla run with modeAdv combined must throw rather than run one engine')
       .rejects.toThrow("modeAdv 'combined' is not available with vanillaMode");
+  });
+
+  test('The bundled engine comes back after a vanilla run in the same session', async () => {
+    // Regression guard: the worker treated a request for the bundled engine as "keep the current one", so every run after a vanilla run stayed vanilla.
+    await doc.recognize({ mode: 'quality' });
+    expect(doc.ocr.active[0].textSource, 'a run after a vanilla run in the same session still used the vanilla engine').toBe('scribe.js');
   });
 
   afterAll(async () => {

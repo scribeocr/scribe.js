@@ -93,13 +93,14 @@ export class LibraryIngest {
    *    `explicit` is true for a request made this session, false for one resumed from the manifest.
    *    Omitting it disables recognition entirely.
    * @param {() => string[]} [callbacks.langs] - Recognition languages.
+   * @param {() => ('speed'|'quality')} [callbacks.recognizeMode] - Recognition speed, passed to `recognize()` as `mode`.
    * @param {(hash: string) => (LiveDoc | null | Promise<LiveDoc | null>)} [callbacks.liveDoc] - The copy of a document already open, so recognition runs on it rather than a second copy.
    *    A tab-owned copy comes with `checkpoint`, which persists it through that tab.
    *    A copy without one is handed over until `releaseLiveDoc`.
    * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
    */
   constructor(store, manifest, index, {
-    onProgress, onDocDone, warmGate, recognizeGate, langs, liveDoc, releaseLiveDoc,
+    onProgress, onDocDone, warmGate, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
   } = {}) {
     this.store = store;
     this.manifest = manifest;
@@ -109,6 +110,7 @@ export class LibraryIngest {
     this.warmGate = warmGate || null;
     this.recognizeGate = recognizeGate || null;
     this.langs = langs || null;
+    this.recognizeMode = recognizeMode || null;
     this.liveDoc = liveDoc || null;
     this.releaseLiveDoc = releaseLiveDoc || null;
     /**
@@ -534,7 +536,7 @@ export class LibraryIngest {
         });
       };
       try {
-        await doc.recognize({ langs: this.langs?.() ?? ['eng'], ocrPages: 'autoDeep' });
+        await doc.recognize({ langs: this.langs?.() ?? ['eng'], mode: this.recognizeMode?.(), ocrPages: 'autoDeep' });
       } finally {
         doc.progressHandler = prevProgress;
       }

@@ -121,7 +121,7 @@ const ASSISTANT_KEY_STORAGE_KEY = 'scribe-assistant-api-key';
 /** localStorage key for the assistant's chosen model, holding the provider's model id rather than its display label. */
 const ASSISTANT_MODEL_STORAGE_KEY = 'scribe-assistant-model';
 
-/** Chevron-down for the Recognize Text mode's language button. */
+/** Chevron-down for the Recognize Text mode's pickers. */
 const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>';
 
 /**
@@ -2541,11 +2541,12 @@ class ScribePDFViewer {
     // The verb bar takes over the palette's slot while a Fill & Sign item is picked, so only one of the two counts.
     const fsPal = this._fsBarOn && this._fillSignTool && !vbar ? this._fillSignTool.paletteElem() : null;
     const fsBar = fsPal ? fsPal.offsetHeight || 52 : 0;
+    const recogBar = this._recogBarOn && this._recognizeChoiceBar ? this._recognizeChoiceBar.offsetHeight || 52 : 0;
     const cs = this._companionStrip;
     const strip = cs && cs.stripElem.classList.contains('on') && !cs.isTucked() && !this._stripDragLayout
       && !this._phoneLineEditing
       ? cs.stripElem.offsetHeight : 0;
-    return dock + vbar + fsBar + strip;
+    return dock + vbar + fsBar + recogBar + strip;
   }
 
   /**
@@ -2671,6 +2672,19 @@ class ScribePDFViewer {
       this._fsBarOn = fsBarOn;
       if (this.scribe.scrollContainer) this._relayout();
     }
+    // The dock's mode row has no room for the speed picker at phone width, so the phone gives it a bar of its own above the dock.
+    const recogBarOn = this._phoneUi && !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem && !this._recognizeAlreadyRan();
+    if (recogBarOn) this._ensureRecognizeExtras();
+    if (this._recognizeChoiceBar) {
+      const speedHome = recogBarOn ? this._recognizeChoiceBar : this._recognizeSettings;
+      if (this._recognizeSpeedWrap.parentElement !== speedHome) speedHome.appendChild(this._recognizeSpeedWrap);
+      this._recognizeChoiceBar.classList.toggle('on', recogBarOn);
+    }
+    this.pdfViewerElem.classList.toggle('scribe-recogbar-on', recogBarOn);
+    if (recogBarOn !== !!this._recogBarOn) {
+      this._recogBarOn = recogBarOn;
+      if (this.scribe.scrollContainer) this._relayout();
+    }
     if (this._dockEditBtn) this._dockEditBtn.classList.toggle('active', !!activeBtn);
     if (!activeBtn) {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
@@ -2709,12 +2723,15 @@ class ScribePDFViewer {
         if (this._recognizeAlreadyRan()) {
           this._recognizeExtras?.remove();
           this._dockModeParts.nm.style.display = 'none';
-          this._dockModeParts.status.textContent = '✓ Recognized — text is selectable';
+          this._dockModeParts.status.textContent = this.scribe.opt.vanillaMode || this.scribe.opt.ignorePdfText
+            ? `✓ Recognized${this.scribe.opt.vanillaMode ? ' with Tesseract' : ''}${this.scribe.opt.ignorePdfText ? ', PDF text ignored' : ''}`
+            : '✓ Recognized — text is selectable';
           this._dockModeParts.status.classList.add('scribe-recog-done');
         } else {
           this._ensureRecognizeExtras();
           const pages = this._deepOcrPageCount();
           this._recognizeRunBtn.disabled = pages === 0;
+          this._syncRecognizeSpeedPicker();
           if (this._recognizeExtras.parentElement !== this._dockModeRow) {
             this._dockModeRow.insertBefore(this._recognizeExtras, this._dockModeParts.status);
           }
@@ -2803,12 +2820,13 @@ class ScribePDFViewer {
     if (recogMode) {
       if (this._recognizeAlreadyRan()) {
         this._recognizeExtras?.remove();
-        this._modeBannerParts.hint.textContent = '✓ Recognized — text is selectable and searchable';
+        this._modeBannerParts.hint.textContent = `✓ Recognized${this.scribe.opt.vanillaMode ? ' with Tesseract' : ''}${this.scribe.opt.ignorePdfText ? ', PDF text ignored' : ''} — text is selectable and searchable`;
       } else {
         this._ensureRecognizeExtras();
         const pages = this._deepOcrPageCount();
         if (pages === 0) this._modeBannerParts.hint.textContent = 'Text is already selectable on every page';
         this._recognizeRunBtn.disabled = pages === 0;
+        this._syncRecognizeSpeedPicker();
         if (this._recognizeExtras.parentElement !== this._modeBanner) this._modeBanner.insertBefore(this._recognizeExtras, this._modeBannerParts.exit);
       }
     } else if (this._recognizeExtras) {
@@ -2822,49 +2840,87 @@ class ScribePDFViewer {
     this._positionBanners();
   }
 
-  /**
-   * Build the Recognize Text working controls (language picker and Start) once.
-   * The active surface mounts them, either the desktop mode banner or the phone dock's mode bar.
-   */
+  /** Build the Recognize Text mode's working controls once. */
   _ensureRecognizeExtras() {
     if (this._recognizeExtras) return;
+    const opt = this.scribe.opt;
+    /**
+     * @param {string} name - Class-name stem: the button gets `scribe-mode-banner-<name>`, its wrap `scribe-mode-banner-<name>wrap`.
+     * @param {string} title
+     * @param {Array<[string, string]>} options - [value, label] pairs, in menu order.
+     * @param {string} current
+     * @param {(value: string) => void} onPick
+     * @returns {{ wrap: HTMLSpanElement, show: (value: string) => void }} The picker and a setter for the value it displays.
+     */
+    const buildPicker = (name, title, options, current, onPick) => {
+      const wrap = document.createElement('span');
+      wrap.className = `scribe-mode-banner-pickwrap scribe-mode-banner-${name}wrap`;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `scribe-mode-banner-pick scribe-mode-banner-${name}`;
+      btn.title = title;
+      // The button keeps its widest option's width, so nothing beside it moves when the pick changes.
+      const label = document.createElement('span');
+      label.className = 'scribe-mode-banner-pick-label';
+      const menu = document.createElement('div');
+      menu.className = 'scribe-edit-menu';
+      menu.style.display = 'none';
+      /** @type {Array<{value: string, labelElem: HTMLSpanElement, item: ?HTMLDivElement}>} */
+      const entries = [];
+      const show = (value) => {
+        for (const entry of entries) {
+          entry.labelElem.classList.toggle('on', entry.value === value);
+          entry.item?.classList.toggle('selected', entry.value === value);
+        }
+      };
+      // A current value the options list lacks, such as a language set by code, shows as its own code with no menu row.
+      const listed = options.some(([value]) => value === current);
+      for (const [value, text] of listed ? options : [...options, [current, current]]) {
+        const labelElem = document.createElement('span');
+        labelElem.textContent = text;
+        label.appendChild(labelElem);
+        let item = null;
+        if (value !== current || listed) {
+          item = document.createElement('div');
+          item.className = 'scribe-edit-menu-item';
+          item.textContent = text;
+          item.addEventListener('mousedown', (e) => e.preventDefault());
+          item.addEventListener('click', () => {
+            onPick(value);
+            show(value);
+            menu.style.display = 'none';
+            btn.classList.remove('active');
+          });
+          menu.appendChild(item);
+        }
+        entries.push({ value, labelElem, item });
+      }
+      show(current);
+      const caret = document.createElement('span');
+      caret.innerHTML = CARET_SVG;
+      btn.append(label, caret);
+      this._wireDropdown(btn, menu);
+      wrap.append(btn, menu);
+      return { wrap, show };
+    };
+    const lang = buildPicker('lang', 'Recognition language',
+      [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']],
+      opt.langs?.[0] || 'eng', (code) => { opt.langs = [code]; });
+    const speed = buildPicker('speed', 'Recognition speed', [['speed', 'Fast'], ['quality', 'Accurate']], opt.recognizeMode, (mode) => {
+      opt.recognizeMode = /** @type {'speed'|'quality'} */ (mode);
+    });
+    const settings = document.createElement('span');
+    settings.className = 'scribe-mode-banner-settings';
+    settings.append(lang.wrap, speed.wrap);
+    const choiceBar = document.createElement('div');
+    choiceBar.className = 'scribe-recog-bar';
+    const choiceBarLabel = document.createElement('span');
+    choiceBarLabel.className = 'scribe-recog-bar-label';
+    choiceBarLabel.textContent = 'Recognition';
+    choiceBar.appendChild(choiceBarLabel);
+    this.pdfViewerElem.appendChild(choiceBar);
     const tools = document.createElement('span');
-    tools.className = 'scribe-mode-banner-tools';
-    const langWrap = document.createElement('span');
-    langWrap.className = 'scribe-mode-banner-langwrap';
-    const langBtn = document.createElement('button');
-    langBtn.type = 'button';
-    langBtn.className = 'scribe-mode-banner-lang';
-    langBtn.title = 'Recognition language';
-    const langLabel = document.createElement('span');
-    const langMenu = document.createElement('div');
-    langMenu.className = 'scribe-edit-menu';
-    langMenu.style.display = 'none';
-    const current = this.scribe.opt.langs?.[0] || 'eng';
-    /** @type {Array<HTMLDivElement>} */
-    const langItems = [];
-    for (const [code, label] of [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']]) {
-      const item = document.createElement('div');
-      item.className = 'scribe-edit-menu-item';
-      item.textContent = label;
-      if (code === current) { item.classList.add('selected'); langLabel.textContent = label; }
-      item.addEventListener('mousedown', (e) => e.preventDefault());
-      item.addEventListener('click', () => {
-        this.scribe.opt.langs = [code];
-        langLabel.textContent = label;
-        for (const it of langItems) it.classList.toggle('selected', it === item);
-        langMenu.style.display = 'none';
-        langBtn.classList.remove('active');
-      });
-      langItems.push(item);
-      langMenu.appendChild(item);
-    }
-    if (!langLabel.textContent) langLabel.textContent = current;
-    const caret = document.createElement('span');
-    caret.innerHTML = CARET_SVG;
-    langBtn.append(langLabel, caret);
-    this._wireDropdown(langBtn, langMenu);
-    langWrap.append(langBtn, langMenu);
+    tools.className = 'scribe-mode-banner-tools scribe-recog-tools';
     const runBtn = document.createElement('button');
     runBtn.type = 'button';
     runBtn.className = 'scribe-mode-banner-run';
@@ -2874,8 +2930,11 @@ class ScribePDFViewer {
       this._recognizeAll(runBtn);
     });
     this._recognizeRunBtn = runBtn;
-    this._recognizeLangWrap = langWrap;
-    tools.append(langWrap, runBtn);
+    this._recognizeSettings = settings;
+    this._recognizeSpeedWrap = speed.wrap;
+    this._recognizeSpeedShow = speed.show;
+    this._recognizeChoiceBar = choiceBar;
+    tools.append(settings, runBtn);
     this._recognizeExtras = tools;
   }
 
@@ -5092,7 +5151,7 @@ class ScribePDFViewer {
     // `_setDoc` re-runs this once `textReady` lands.
     if (doc._textReadySettle) return 0;
     const { pageStats, pageCount, pdfType } = doc.inputData;
-    if (doc.ocr?.['User Upload'] || !pageStats || pageStats.length !== pageCount) return pageCount;
+    if (this.scribe.opt.ignorePdfText || doc.ocr?.['User Upload'] || !pageStats || pageStats.length !== pageCount) return pageCount;
     return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
   }
 
@@ -5102,7 +5161,27 @@ class ScribePDFViewer {
    * @returns {boolean}
    */
   _recognizeAlreadyRan() {
-    return !!this.doc && this._recognizeRuns.get(this.doc) === (this.scribe.opt.langs || ['eng']).join('+');
+    return !!this.doc && this._recognizeRuns.get(this.doc) === this._recognizeRunSig();
+  }
+
+  /**
+   * The settings a Recognize Text run is keyed on.
+   */
+  _recognizeRunSig() {
+    const opt = this.scribe.opt;
+    return `${(opt.langs || ['eng']).join('+')}|${opt.recognizeMode}${opt.vanillaMode ? '|vanilla' : ''}${opt.ignorePdfText ? '|nopdf' : ''}`;
+  }
+
+  /**
+   * Hard-code speed picker at 'speed' when Tesseract.js engine is used.
+   * There is only 1 mode for the Tesseract.js engine, so this avoids confusion.
+   */
+  _syncRecognizeSpeedPicker() {
+    const speedBtn = this._recognizeSpeedWrap?.querySelector('button');
+    if (!speedBtn) return;
+    speedBtn.disabled = !!this.scribe.opt.vanillaMode;
+    speedBtn.title = this.scribe.opt.vanillaMode ? 'Tesseract runs its LSTM engine only' : 'Recognition speed';
+    this._recognizeSpeedShow(this.scribe.opt.vanillaMode ? 'speed' : this.scribe.opt.recognizeMode);
   }
 
   /** Show the touch app-menu recognition row only when deep OCR would actually recognize at least one page and this session has not already done so. */
@@ -5156,15 +5235,16 @@ class ScribePDFViewer {
     const label = btn.textContent;
     btn.textContent = 'Recognizing…';
     btn.classList.add('busy');
-    // Hiding the picker also keeps the busy label from crushing the mode name on the narrow phone row.
-    if (this._recognizeLangWrap) this._recognizeLangWrap.style.display = 'none';
+    if (this._recognizeSettings) this._recognizeSettings.style.display = 'none';
+    const speedBtn = this._recognizeSpeedWrap?.querySelector('button');
+    if (speedBtn) speedBtn.disabled = true;
     this.pdfViewerElem.classList.add('scribe-recog-alive');
 
     // Key progress strictly on `convert` events (deduped by page index) so the faster pre-render `render` events do not inflate it.
     // The desktop toolbar line runs from a 0.04 sliver to 0.9, reserving the last tenth for the compare/optimize tail (no page index), which the snap-to-full fills on success.
     const bar = this._ocrProgress;
     const total = this._deepOcrPageCount();
-    const langSig = (this.scribe.opt.langs || ['eng']).join('+');
+    const runSig = this._recognizeRunSig();
     const seen = new Set();
     if (bar) {
       bar.style.transition = 'none';
@@ -5188,9 +5268,18 @@ class ScribePDFViewer {
 
     let ok = false;
     try {
-      await doc.recognize({ langs: this.scribe.opt.langs, ocrPages: 'autoDeep' });
+      /** @type {Parameters<typeof doc.recognize>[0]} */
+      const recognizeOptions = {
+        langs: this.scribe.opt.langs, mode: this.scribe.opt.recognizeMode, vanillaMode: !!this.scribe.opt.vanillaMode, ocrPages: 'autoDeep',
+      };
+      if (this.scribe.opt.ignorePdfText) {
+        recognizeOptions.ocrPages = 'all';
+        recognizeOptions.usePDFText = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
+      }
+      await doc.recognize(recognizeOptions);
       ok = true;
-      this._recognizeRuns.set(doc, langSig);
+      this._recognizeRuns.set(doc, runSig);
+      this.scribe.destroyText(false);
       await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
     } catch (err) {
       console.error('OCR failed:', err);
@@ -5201,7 +5290,8 @@ class ScribePDFViewer {
       btn.textContent = label;
       btn.classList.remove('busy');
       this.pdfViewerElem.classList.remove('scribe-recog-alive');
-      if (this._recognizeLangWrap) this._recognizeLangWrap.style.display = '';
+      if (this._recognizeSettings) this._recognizeSettings.style.display = '';
+      if (speedBtn) speedBtn.disabled = !!this.scribe.opt.vanillaMode;
       if (bar) {
         if (ok) bar.style.transform = 'scaleX(1)';
         setTimeout(() => { bar.style.opacity = '0'; }, ok ? 250 : 0);

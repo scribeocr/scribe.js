@@ -45,8 +45,20 @@ export class ScribeViewerOpts {
     this.enablePageEditing = false;
     this.enableXlsxExport = false;
     this.downloadFormat = 'pdf';
+    /**
+     * Run recognition on the unmodified Tesseract.js LSTM engine instead of the Scribe.js engine.
+     */
     this.vanillaMode = false;
+    /**
+     * Ignore any existing PDF text when running recognition.
+     */
+    this.ignorePdfText = false;
     this.langs = ['eng'];
+    /**
+     * Recognition speed the viewer's recognition controls pass to `recognize()` as `mode`.
+     * @type {'speed'|'quality'}
+     */
+    this.recognizeMode = 'speed';
     /** @type {'conf'|'data'} */
     this.combineMode = 'data';
     /**

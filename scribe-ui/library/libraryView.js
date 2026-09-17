@@ -3654,6 +3654,7 @@ export function createLibraryInstance(viewer, opts) {
         return explicit || Date.now() - lastInteraction >= WARM_IDLE_MS;
       },
       langs: () => viewer.scribe.opt.langs || ['eng'],
+      recognizeMode: () => viewer.scribe.opt.recognizeMode,
       liveDoc: async (hash) => {
         const tab = viewer._tabs.find((t) => t.libraryHash === hash && ownsTab(t));
         if (tab) {

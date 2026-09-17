@@ -260,6 +260,32 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     },
   );
 
+  appMenu.addToggle(
+    'Recognize with Tesseract',
+    BUG_SVG,
+    () => viewer.opt.vanillaMode,
+    () => {
+      viewer.opt.vanillaMode = !viewer.opt.vanillaMode;
+      if (host) {
+        host._updateRecognizeButton();
+        host._syncModeBanner();
+      }
+    },
+  );
+
+  appMenu.addToggle(
+    'Ignore PDF text when recognizing',
+    BUG_SVG,
+    () => viewer.opt.ignorePdfText,
+    () => {
+      viewer.opt.ignorePdfText = !viewer.opt.ignorePdfText;
+      if (host) {
+        host._updateRecognizeButton();
+        host._syncModeBanner();
+      }
+    },
+  );
+
   appMenu.addAction('Generate sample comments', BUG_SVG, async () => {
     const doc = viewer.doc;
     if (!doc || !doc.ocr.active.length) {

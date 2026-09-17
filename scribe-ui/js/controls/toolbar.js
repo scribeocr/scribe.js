@@ -1460,14 +1460,18 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-dock-mode-discard { font-weight: 600; }
     .${r} .scribe-dock-mode-save:disabled { color: var(--scribe-ink-3); cursor: default; }
-    /* The language menu opens upward from the dock's mode bar, where below is the safe area. */
-    .${r} .scribe-dock-mode .scribe-edit-menu { top: auto; bottom: calc(100% + 8px); }
-    /* The banner sizes Recognize's controls for a mouse row, so the dock re-sizes them as touch targets. */
-    .${r} .scribe-dock-mode .scribe-mode-banner-lang,
+    /* Recognize's picker menus open upward from the phone's bottom bars, where below is the safe area. */
+    .${r} .scribe-dock-mode .scribe-edit-menu,
+    .${r} .scribe-recog-bar .scribe-edit-menu { top: auto; bottom: calc(100% + 8px); }
+    /* The banner sizes Recognize's controls for a mouse row, so the phone bars re-size them as touch targets. */
+    .${r} .scribe-dock-mode .scribe-mode-banner-pick,
+    .${r} .scribe-recog-bar .scribe-mode-banner-pick,
     .${r} .scribe-dock-mode .scribe-mode-banner-run { min-height: 40px; padding-left: 12px; padding-right: 12px; font-size: 13.5px; }
 
-    /* The picked object's verbs, docked above the dock and never over the document. */
-    .${r} .scribe-vbar {
+    /* The picked object's verbs, docked above the dock and never over the document.
+       Recognize Text's choice bar takes the same slot while that mode is open. */
+    .${r} .scribe-vbar,
+    .${r} .scribe-recog-bar {
       position: absolute;
       left: 0; right: 0;
       bottom: calc(56px + env(safe-area-inset-bottom, 0px));
@@ -1477,7 +1481,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-surface);
       border-top: 1px solid var(--scribe-line);
     }
-    .${r}.scribe-phone .scribe-vbar.on { display: flex; }
+    .${r}.scribe-phone .scribe-vbar.on,
+    .${r}.scribe-phone .scribe-recog-bar.on { display: flex; }
+    .${r} .scribe-recog-bar { gap: 10px; padding: 0 6px 0 14px; }
+    .${r} .scribe-recog-bar-label { font-size: 13px; color: var(--scribe-ink-2); white-space: nowrap; }
+    .${r} .scribe-recog-bar .scribe-mode-banner-pickwrap { margin-left: auto; }
     .${r} .scribe-vbtn {
       min-height: 44px; min-width: 44px; padding: 0 9px;
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -1501,8 +1509,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-vbar-hint { font-size: 12.5px; color: var(--scribe-ink-3); padding-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
     .${r}.scribe-phone.scribe-vbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
-    /* The Fill & Sign tool bar occupies the same slot, so the strip yields to it the same way. */
-    .${r}.scribe-phone.scribe-fsbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+    .${r}.scribe-phone.scribe-fsbar-on .scribe-strip,
+    .${r}.scribe-phone.scribe-recogbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
     .${r}.scribe-line-editing .scribe-strip.on { display: none; }
     .${r}.scribe-phone.scribe-line-editing .scribe-vbar.on {
       bottom: max(calc(56px + env(safe-area-inset-bottom, 0px)), var(--scribe-kb-inset, 0px));
@@ -3936,13 +3944,21 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-banner .scribe-fs-grip { display: none; }
     .${r} .scribe-mode-banner .scribe-fs-pal + .scribe-mode-banner-exit { margin-left: 0; }
     .${r} .scribe-mode-banner .scribe-fs-menu { bottom: auto; top: calc(100% + 6px); right: 0; }
-    .${r} .scribe-mode-banner-langwrap { position: relative; display: inline-flex; }
-    .${r} .scribe-mode-banner-lang {
+    .${r} .scribe-recog-tools { gap: 20px; }
+    .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
+    .${r} .scribe-mode-banner-settings { display: inline-flex; align-items: center; gap: 2px; }
+    .${r} .scribe-mode-banner-pickwrap { position: relative; display: inline-flex; }
+    .${r} .scribe-mode-banner-pick {
       display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: none; border-radius: 6px;
       background: transparent; font: inherit; font-size: 12px; color: var(--scribe-ink-2); cursor: pointer;
     }
-    .${r} .scribe-mode-banner-lang:hover, .${r} .scribe-mode-banner-lang.active { background: var(--scribe-active); }
-    .${r} .scribe-mode-banner-lang svg { display: block; }
+    .${r} .scribe-mode-banner-pick:not(:disabled):hover, .${r} .scribe-mode-banner-pick.active { background: var(--scribe-active); }
+    .${r} .scribe-mode-banner-pick:disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-mode-banner-pick svg { display: block; }
+    /* Every option's label shares one grid cell, so the button is as wide as its longest option whichever is picked. */
+    .${r} .scribe-mode-banner-pick-label { display: inline-grid; justify-items: start; }
+    .${r} .scribe-mode-banner-pick-label > span { grid-area: 1 / 1; white-space: nowrap; }
+    .${r} .scribe-mode-banner-pick-label > span:not(.on) { visibility: hidden; }
     .${r} .scribe-mode-banner-run {
       flex: none; display: inline-flex; align-items: center; padding: 2px 12px; border: 1px solid var(--scribe-accent);
       border-radius: 6px; background: transparent; font: inherit; font-size: 12.5px; font-weight: 650; color: var(--scribe-accent); cursor: pointer;

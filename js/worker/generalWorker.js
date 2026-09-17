@@ -139,7 +139,7 @@ const reinitialize = async ({
   const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
   // oem can be 0, so using "truthy" checks does not work
   const changeOEM = oem !== null && oem !== undefined && oem !== oemCurrent;
-  const changeVanilla = vanillaMode && vanillaMode !== vanillaMode_;
+  const changeVanilla = vanillaMode !== null && vanillaMode !== undefined && vanillaMode !== vanillaMode_;
 
   if (!changeLang && !changeOEM && !changeVanilla && worker) {
     if (config && Object.keys(config).length > 0) {
@@ -203,7 +203,7 @@ export const recognizeAndConvert = async ({
   // `reinitialize` early-returns when the config is unchanged, so same-language documents pay nothing.
   if (langs) {
     await reinitialize({
-      langs, oem: null, vanillaMode: vanillaMode || null, config: {},
+      langs, oem: null, vanillaMode, config: {},
     });
   }
 
