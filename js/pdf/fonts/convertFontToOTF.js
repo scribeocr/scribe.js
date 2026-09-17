@@ -439,7 +439,7 @@ export function cidCodepoint(toUniStr, cid, width) {
       const cp = toUniStr.codePointAt(0) || 0;
       // U+FFFD is excluded because mapping the decode-failure placeholder would collapse every undecoded CID onto one glyph.
       const latinCombiningBaseGlyph = cp >= 0x300 && cp <= 0x36F && typeof width === 'number' && width > 0;
-      if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp)
+      if (cp > 0x20 && cp !== 0xFFFD && toUniStr.trim() !== '' && !isCombiningOrIndicMark(cp)
         && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)
         && !latinCombiningBaseGlyph) {
         return { codepoint: cp, isPUA: false };
