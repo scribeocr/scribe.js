@@ -42,7 +42,8 @@ export function OcrPage(n, dims) {
  * 'header' and 'footer' are running furniture such as a running head, a court/docket stamp, or a Bates stamp, split by which half of the page they sit in.
  * 'blockquote' is a quotation set off by indentation from both margins.
  * 'linenum' is the left-margin column of integers, one per text line, found in legal depositions and pleadings.
- * Use 'linenum' only when the line number occupies its own line, since one fused into a body line is marked per-word with OcrWord.lineNum instead.
+ * The layout engine splits a number fused into a body line into its own 'linenum' line.
+ * The printed values themselves are recorded on the lines as `OcrLine.pageNum` and `OcrLine.lineNum`.
  * @typedef {'title' | 'body' | 'footnote' | 'endnote' | 'pagenum' | 'blockquote' | 'header' | 'footer' | 'linenum'} ParType
  */
 
@@ -126,6 +127,8 @@ export function LineDebugInfo() {
  * @property {?number} xHeight -
  * @property {Array<OcrWord>} words - words in line
  * @property {OcrPage} page - page line belongs to
+ * @property {?number} lineNum - printed transcript line number of the row this line lies on
+ * @property {?string} pageNum - printed page number of the page or condensed mini-page this line lies on
  * @property {?string} raw - Raw string this object was parsed from.
  *    Exists only for debugging purposes, should be `null` in production contexts.
  */
@@ -149,6 +152,16 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
   this.par = null;
   /** @type {number} */
   this.orientation = 0;
+  /**
+   * The line number printed beside this line's row on numbered transcript paper.
+   * @type {?number}
+   */
+  this.lineNum = null;
+  /**
+   * The page number printed on the page, or condensed mini-page, this line lies on.
+   * @type {?string}
+   */
+  this.pageNum = null;
   /** @type {LineDebugInfo} */
   this.debug = new LineDebugInfo();
 }
@@ -202,11 +215,6 @@ export function OcrWord(line, id, text, bbox) {
   this.compTruth = false;
   /** @type {boolean} */
   this.matchTruth = false;
-  /**
-   * @type {boolean} - If true, this word is a transcript line number fused into the start of a body line, dropped by the reflowed-text exports and retained by the structural formats.
-   * A line number occupying its own line is marked with par.type 'linenum' instead.
-   */
-  this.lineNum = false;
   /** @type {string} */
   this.id = id;
   /** @type {OcrLine} */
@@ -791,6 +799,8 @@ function cloneLine(line) {
   const lineNew = new OcrLine(line.page, { ...line.bbox }, line.baseline.slice(), line.ascHeight, line.xHeight);
   lineNew.id = line.id;
   lineNew.orientation = line.orientation;
+  lineNew.lineNum = line.lineNum;
+  lineNew.pageNum = line.pageNum;
   Object.assign(lineNew.debug, line.debug);
   for (const word of line.words) {
     const wordNew = cloneWord(word);
@@ -814,7 +824,6 @@ function cloneWord(word) {
   wordNew.lang = word.lang;
   wordNew.compTruth = word.compTruth;
   wordNew.matchTruth = word.matchTruth;
-  wordNew.lineNum = word.lineNum;
   wordNew.visualCoords = word.visualCoords;
   Object.assign(wordNew.debug, word.debug);
   wordNew.footnoteParId = word.footnoteParId;
@@ -1138,6 +1147,9 @@ export const addCircularRefsOcr = (pages) => {
         if (word.footnoteParId === undefined) {
           word.footnoteParId = null;
         }
+        // Files from older versions carry a stale boolean `lineNum` on words.
+        // @ts-ignore
+        delete word.lineNum;
         // Restore debug object if not present
         if (!word.debug) {
           word.debug = new WordDebugInfo();

@@ -18,6 +18,7 @@ import { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObje
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { reassignOutlineIds } from '../objects/outlineObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
+import { assignPageLineNums } from './assignPageLineNums.js';
 import { importImageFileToBase64 } from '../utils/imageUtils.js';
 import {
   readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
@@ -410,6 +411,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.pageMetrics[i].rotation = scribeRestoreObj.pageRotations?.[i] || 0;
     doc.pageMetrics[i].sourcePageN = scribeRestoreObj.pageSourceIndices?.[i] ?? null;
   }
+  // The page:line fields load as saved; a file from before they existed gets the pass run once on the restored layer.
+  if (doc.ocr[oemName].some((page) => page && page.lines.some((line) => line.lineNum === undefined))) assignPageLineNums(doc.ocr[oemName]);
 
   // The active text layer is now the imported OCR for every page, so mark every page OCR-applied.
   // Skip if a newer .scribe.json already restored an explicit `ocrApplied` array above.
@@ -794,6 +797,7 @@ export async function importFiles(doc, files, options = {}) {
         await doc.runOptimization(doc.ocr.active);
       }
     });
+    assignPageLineNums(doc.ocr[oemName]);
   }
 
   // A PDF still needs parsing when an OCR file accompanies it.
@@ -855,4 +859,5 @@ export async function importFilesSupp(doc, files, ocrName) {
   const format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
 
   await convertOCR(doc, ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode, doc.pageMetrics);
+  assignPageLineNums(doc.ocr[ocrName]);
 }

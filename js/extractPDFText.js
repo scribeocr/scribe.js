@@ -2,6 +2,7 @@ import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType, applyDocParagraphLayout, promoteContinuationTables } from './pdf/parsePdfDoc.js';
+import { assignPageLineNums } from './import/assignPageLineNums.js';
 import { computeRequiresOCR } from './pdf/ocrPageSelection.js';
 import { findXrefOffset, parseXref, getPageObjects } from './pdf/parsePdfUtils.js';
 import { ObjectCache } from './pdf/objectCache.js';
@@ -112,6 +113,8 @@ export async function extractInternalPDFText(doc, options = {}) {
       applyDocParagraphLayout(objCache, arr, rawPages, pageResults.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), type);
     } catch { /* */ }
   }
+
+  assignPageLineNums(doc.ocr.pdf);
 
   doc.tableLinkSuggestions = promoteContinuationTables(pageResults);
 

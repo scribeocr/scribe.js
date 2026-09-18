@@ -23,6 +23,7 @@ import {
 import { cmykToRgb, parseTintColorSpace, tintComponentsToRGB } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 import { analyzeLayout } from '../import/analyzeLayout.js';
+import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { buildStructElemMap, resolveStructElems, docAuthoredByWord } from './structTree.js';
 import { buildOutlineHeadingIndex } from './outlineIndex.js';
 
@@ -1538,6 +1539,7 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
   let pdfType = 'text';
   try { pdfType = determinePdfType(results.map((r) => r && r.pageStats).filter(Boolean), results.length).type; } catch { /*  */ }
   applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType);
+  assignPageLineNums(results.map((r) => (r ? r.pageObj : null)));
 
   return results;
 }

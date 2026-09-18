@@ -224,7 +224,7 @@ export function analyzeLayout(pages, opts = {}) {
         // filled in Phase 3 setup (list-region detection): a confirmed member of a local list run.
         listConfirmed: false,
         // set by the line-number pass: this whole line is a standalone left-margin line number (case A) -> role 'linenum' -> dropped from reflowed text.
-        // (Merged line numbers (case B) instead set OcrWord.lineNum on the leading prefix words and leave the line a body paragraph.)
+        // Merged line numbers (case B) instead go into the lnWords set below and leave the line a body paragraph until the split.
         lineNum: false,
         // set by the sequence-tracking folio pass: a lone number whose value tracks the page across a contiguous run of pages (a top/bottom page-number folio) -> role 'pagenum',
         // regardless of how far it sits from the physical page edge.
@@ -270,6 +270,8 @@ export function analyzeLayout(pages, opts = {}) {
   /** @type {Map<number, LineFeat[]>} */
   const lnByPage = new Map();
   for (const f of feats) { if (!lnByPage.has(f.page)) lnByPage.set(f.page, []); lnByPage.get(f.page).push(f); }
+  /** @type {Set<OcrWord>} */
+  const lnWords = new Set();
   // Per page: the longest incrementing run of left-region leading-integer lines, its members and column x.
   /** @type {Map<number, {run: number, members: Array<{f: LineFeat, value: number, prefixWords: number, standalone: boolean, x: number}>, colX: number}>} */
   const lnPageRuns = new Map();
@@ -378,7 +380,7 @@ export function analyzeLayout(pages, opts = {}) {
           if (c.standalone) {
             c.f.lineNum = true;
           } else {
-            for (let w = 0; w < c.prefixWords && w < c.f.line.words.length; w++) c.f.line.words[w].lineNum = true;
+            for (let w = 0; w < c.prefixWords && w < c.f.line.words.length; w++) lnWords.add(c.f.line.words[w]);
           }
         };
         // No run-length floor here: the page and column are already confirmed.
@@ -395,9 +397,9 @@ export function analyzeLayout(pages, opts = {}) {
   for (const f of feats) {
     if (f.lineNum) { f.enumerator = null; continue; }
     const lnWs = f.line.words;
-    if (!lnWs.length || !lnWs[0].lineNum) continue;
+    if (!lnWs.length || !lnWords.has(lnWs[0])) continue;
     let lnJ = 0;
-    while (lnJ < lnWs.length && lnWs[lnJ].lineNum) lnJ++;
+    while (lnJ < lnWs.length && lnWords.has(lnWs[lnJ])) lnJ++;
     f.enumerator = lineEnumerator({ words: lnWs.slice(lnJ) });
   }
 
@@ -406,9 +408,9 @@ export function analyzeLayout(pages, opts = {}) {
   for (const f of feats) {
     if (f.lineNum) continue;
     const ws = f.line.words;
-    if (!ws.length || !ws[0].lineNum) continue;
+    if (!ws.length || !lnWords.has(ws[0])) continue;
     let j = 0;
-    while (j < ws.length && ws[j].lineNum) j++;
+    while (j < ws.length && lnWords.has(ws[j])) j++;
     if (j === 0 || j >= ws.length) continue;
     const w0 = ws[j];
     f.left = w0.bbox.left;
@@ -2042,7 +2044,7 @@ export function analyzeLayout(pages, opts = {}) {
     for (let i = 0; i < arr.length; i++) {
       const f = arr[i];
       if (f.lineNum || f.left >= bodyTextLeft - bodySize) continue;
-      let cwc = 0; for (const w of f.line.words) if (!w.lineNum && ++cwc > 2) break;
+      let cwc = 0; for (const w of f.line.words) if (!lnWords.has(w) && ++cwc > 2) break;
       if (cwc > 2) continue; // a marker is a few chars (<= 2 content words), not a wrapped body line
       // A same-row line to f's right at the body column = the testimony this lead introduces.
       // feats are top-sorted, so f's row is a short contiguous span around i: scan out only while the top stays in band.
@@ -2433,7 +2435,7 @@ export function analyzeLayout(pages, opts = {}) {
     for (const f of pf) {
       const ws = f.line.words;
       let j = 0;
-      if (!f.lineNum && ws.length && ws[0].lineNum) { while (j < ws.length && ws[j].lineNum) j++; }
+      if (!f.lineNum && ws.length && lnWords.has(ws[0])) { while (j < ws.length && lnWords.has(ws[j])) j++; }
       if (j > 0 && j < ws.length) {
         const lnWords = ws.slice(0, j);
         const lnLine = new OcrLine(f.line.page, calcBboxUnion(lnWords.map((w) => w.bbox)), f.line.baseline, f.line.ascHeight, f.line.xHeight);
@@ -3533,12 +3535,13 @@ const LN_INT_RE = new RegExp(`^[${LN_LEADER}]*(\\d{1,4})[${LN_LEADER}]*$`);
 /**
  * Leading line-number of a line, tolerating leader dots that decorate transcript line numbers.
  * prefixWords counts the leading dots, the integer, and any trailing dots, so words[prefixWords] is the first body word.
+ * wordIndex is the position of the integer word itself.
  * standalone means the line is just that prefix (case A) versus having body text after it (case B).
  * ASCII '.' is deliberately not a leader char, so a numbered-list marker ("1.") does not match.
  * @param {OcrLine} line
- * @returns {?{value: number, prefixWords: number, standalone: boolean}}
+ * @returns {?{value: number, prefixWords: number, wordIndex: number, standalone: boolean}}
  */
-function leadingLineNumber(line) {
+export function leadingLineNumber(line) {
   const words = line.words;
   if (!words || !words.length) return null;
   let i = 0;
@@ -3548,7 +3551,9 @@ function leadingLineNumber(line) {
   if (!m) return null;
   let pfx = i + 1;
   while (pfx < words.length && LN_LEADER_RE.test((words[pfx].text || '').trim())) pfx++;
-  return { value: Number(m[1]), prefixWords: pfx, standalone: pfx >= words.length };
+  return {
+    value: Number(m[1]), prefixWords: pfx, wordIndex: i, standalone: pfx >= words.length,
+  };
 }
 
 /**
@@ -3556,7 +3561,7 @@ function leadingLineNumber(line) {
  * @param {Array<number>} values
  * @param {number} tol
  */
-function clusterPeaks(values, tol) {
+export function clusterPeaks(values, tol) {
   if (!values.length) return [];
   const sorted = [...values].sort((a, b) => a - b);
   const peaks = [];

@@ -9,6 +9,8 @@ import {
   addRedactions as addRedactionsImpl, removeRedactions as removeRedactionsImpl,
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
+import { resolveCitation as resolveCitationImpl } from '../resolveCitation.js';
+import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
 import { removeCircularRefsRegions, removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import {
@@ -1326,6 +1328,15 @@ export class ScribeDoc {
   }
 
   /**
+   * Resolve a transcript citation ("34:14", "34:14-18", "34:14-35:2", "34") against the active layer's printed page and line numbers.
+   * @param {string} text
+   * @returns {ReturnType<typeof resolveCitationImpl>} One span per printed page touched, in page order; empty when nothing resolves.
+   */
+  resolveCitation(text) {
+    return resolveCitationImpl(this.ocr.active || [], text);
+  }
+
+  /**
    * Add FreeText (text label) annotations at fixed page positions.
    * @param {Parameters<typeof addFreeTextImpl>[1]} annotations
    * @returns {ReturnType<typeof addFreeTextImpl>}
@@ -1559,7 +1570,11 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof recognizeImpl>}
    */
   recognize(options) {
-    return recognizeImpl(this, options);
+    // The page:line pass runs once on the layer recognition leaves active, whichever internal exit produced it.
+    return recognizeImpl(this, options).then((res) => {
+      if (this.ocr.active) assignPageLineNums(this.ocr.active);
+      return res;
+    });
   }
 
   /**

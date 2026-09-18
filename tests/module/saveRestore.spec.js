@@ -81,7 +81,6 @@ describe('Check .scribe export function.', () => {
       word0.alt = [{
         source: 'stamp', text: 'alt', conf: 1, span: 1,
       }];
-      word0.lineNum = true;
       word0.styleRuns = [{ i: 1, style: { bold: true } }];
       orig.pars[0].type = 'footnote';
       orig.pars[0].parNum = '1';
