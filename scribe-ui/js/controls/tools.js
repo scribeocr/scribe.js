@@ -3229,9 +3229,10 @@ export function createInspectDocumentTool(app) {
     setActive(!active);
   });
 
-  // Re-derives the workspace for a newly opened document, since a tab switch keeps the mode running; the pick and pin belong to the old one.
+  /** Re-derive the workspace on the current layout's surface after a tab switch or a layout switch. */
   const docChanged = () => {
     if (!active) return;
+    // The pick and pin belong to the old workspace.
     setArmed(false);
     pinned = null;
     ringElem.remove();

@@ -3854,6 +3854,14 @@ class ScribePDFViewer {
     this._syncSidebarControls();
     this._syncDocGatedControls();
     this._closeModeSheet();
+    // The Inspect Document mode's workspace is still in the old layout's panel, so it is rebuilt in the new layout's.
+    if (this._inspectTool?.isActive()) {
+      if (phone) this._automatePanel?.closeInspectWorkspace();
+      else this._closeInspectSheet();
+      this._inspectTool.docChanged();
+    }
+    // Extract Tables ends on a switch to the phone, which does not offer it.
+    if (phone && this._extractTablesTool?.isActive()) this._extractTablesTool.close();
     // A mode can be running through the flip, so its bar moves between the banner and the dock.
     this._syncModeBanner();
     this.scribe._editTextRefreshFrames?.();
@@ -4343,7 +4351,11 @@ class ScribePDFViewer {
         this._sheetDragLayout = true;
         this._relayout();
       },
-      onDismiss: () => this._closeSheet(),
+      // While a mode is on, the dock hides the Panels button, so a dismissed inspector could not be reopened.
+      onDismiss: () => {
+        if (this._inspectTool?.isActive()) this._inspectTool.toolbarElem.click();
+        this._closeSheet();
+      },
       onSettle: () => {
         this._sheetRelayoutT = setTimeout(() => {
           this._sheetRelayoutT = null;
@@ -4385,7 +4397,10 @@ class ScribePDFViewer {
       btn.style.display = panel && panel.toggleElem.style.display === 'none' ? 'none' : '';
     }
     const viewBtn = this._sheetSegBtns[this._sheetView];
-    if (this._sheetView !== 'inspect' && (!viewBtn || viewBtn.style.display === 'none')) {
+    // The inspector's view outlasts its mode only while the sheet slides out, so opening the sheet after the mode ends falls back as for a hidden tab.
+    const staleInspect = this._sheetView === 'inspect' && !this._inspectTool?.isActive();
+    if (staleInspect && this._inspectSheetElem) this._inspectSheetElem.textContent = '';
+    if (staleInspect || (this._sheetView !== 'inspect' && (!viewBtn || viewBtn.style.display === 'none'))) {
       const bm = this._sheetSegBtns.bookmarks;
       this._sheetView = (bm && bm.style.display !== 'none') ? 'bookmarks' : 'comments';
     }
@@ -4455,13 +4470,15 @@ class ScribePDFViewer {
         back.addEventListener('click', () => this._inspectSheetHandle?.back());
         title = document.createElement('span');
         title.className = 'scribe-sheet-title';
-        title.textContent = 'Inspect Document';
         hd.insertBefore(back, seg || hd.querySelector('.scribe-sheet-acts'));
         hd.insertBefore(title, seg || hd.querySelector('.scribe-sheet-acts'));
       }
       if (title) title.style.display = inspect ? '' : 'none';
+      // A subview's title outlasts the teardown that ends it, so the top-level title is restored here.
+      const sub = inspect && !!this._inspectSheetHandle?.inSubview();
+      if (title && inspect && !sub) title.textContent = 'Inspect Document';
       const back = hd.querySelector('.scribe-sheet-back');
-      if (back) back.style.display = inspect && this._inspectSheetHandle?.inSubview() ? '' : 'none';
+      if (back) back.style.display = sub ? '' : 'none';
     }
     this._syncSheetHeader();
   }
@@ -4481,10 +4498,12 @@ class ScribePDFViewer {
     else this._openSheet();
     if (this._inspectSheetHandle) { this._inspectSheetHandle.refresh(); return; }
     const { buildInspectWorkspace } = await import('../js/automations/inspectDocument.js');
-    // The mode may have exited during the await.
-    if (!this._inspectTool?.isActive() || this._inspectSheetHandle) return;
+    // The mode may have exited, or the layout left the phone, during the await.
+    if (!this._inspectTool?.isActive() || this._inspectSheetHandle || !this._phoneUi) return;
     this._inspectSheetHandle = buildInspectWorkspace({ app: this, viewer: this.scribe }, this._inspectSheetElem, {
       setSubview: (title) => {
+        // The teardown's reset waits for `_showSheetView` on the next open, so a sheet sliding out after the mode ends keeps its header.
+        if (!this._inspectTool?.isActive()) return;
         const hd = this._sheetElem?.querySelector('.scribe-sheet-hd');
         const titleElem = hd?.querySelector('.scribe-sheet-title');
         const back = hd?.querySelector('.scribe-sheet-back');
@@ -4494,14 +4513,12 @@ class ScribePDFViewer {
     });
   }
 
-  /** Tear the inspector's sheet view down and give the sheet back to the panels. */
+  /** Tear the inspector's sheet workspace down, closing the sheet when it shows the inspector. */
   _closeInspectSheet() {
     if (this._inspectSheetHandle) { this._inspectSheetHandle.teardown(); this._inspectSheetHandle = null; }
-    if (this._inspectSheetElem) this._inspectSheetElem.textContent = '';
-    if (this._sheetView !== 'inspect') return;
-    if (this._sheetOpen) this._closeSheet();
-    const bm = this._sheetSegBtns.bookmarks;
-    this._showSheetView((bm && bm.style.display !== 'none') ? 'bookmarks' : 'comments');
+    // The sheet slides out still showing the inspector, which the next `_openSheet` swaps back for the panels.
+    if (this._sheetView === 'inspect') this._closeSheet();
+    else if (this._inspectSheetElem) this._inspectSheetElem.textContent = '';
   }
 
   /** The Inspect banner's hint: the arming instruction while a pick is armed, the mode's own hint otherwise. */
