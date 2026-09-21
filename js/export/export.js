@@ -233,12 +233,15 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     layoutDataTables: envelope.layoutDataTables,
     annotations: envelope.annotations,
     pageRotations: envelope.pageRotations,
-    pageSourceIndices: envelope.pageSourceIndices,
     outline: envelope.outline,
     inputData: envelope.inputData,
     session: envelope.session
       ? {
-        v: envelope.session.v, fillText: envelope.session.fillText, assistantChats: envelope.session.assistantChats, redactions: envelope.session.redactions,
+        v: envelope.session.v,
+        pageSourceIndices: envelope.session.pageSourceIndices,
+        fillText: envelope.session.fillText,
+        assistantChats: envelope.session.assistantChats,
+        redactions: envelope.session.redactions,
       }
       : undefined,
   };
@@ -847,7 +850,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
       pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
-      pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       outline: outlineWithoutIds(doc.outline || []),
       inputData: {
         pdfType: doc.inputData.pdfType,
@@ -861,7 +863,11 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
     if (scribeSession) {
       envelope.session = {
-        v: 1, contentEdits: doc.contentEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
+        v: 1,
+        contentEdits: doc.contentEdits.pages,
+        nativeText: doc.nativeText.pages,
+        fillText: collectFillTextRefs(doc),
+        pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       };
       // Site matching pads by 2px, so rounding coordinates to 0.1px is lossless.
       const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;

@@ -1551,8 +1551,9 @@ describe('Check native text line deletion and replacement survive .scribe persis
 
   test('Standard .scribe carries no app session data while the session save carries it all', () => {
     expect(Object.keys(standardObj).sort(), 'the standard .scribe export grew an undocumented top-level field')
-      .toEqual(['annotations', 'fontState', 'inputData', 'layoutDataTables', 'layoutRegions', 'ocr', 'outline', 'pageRotations', 'pageSourceIndices']);
+      .toEqual(['annotations', 'fontState', 'inputData', 'layoutDataTables', 'layoutRegions', 'ocr', 'outline', 'pageRotations']);
     expect(sessionObj.session?.v, 'the session block is missing from a session save').toBe(1);
+    expect(sessionObj.session?.pageSourceIndices, 'page source indices are missing from the session block').toEqual([null, null, null]);
     expect(sessionObj.session?.contentEdits?.[0]?.length, 'edit records are missing from the session block').toBe(3);
     expect(sessionObj.session?.contentEdits?.[0]?.[2]?.type, 'the path-delete record is missing from the session block').toBe('deletePath');
     expect(sessionObj.session?.contentEdits?.[1]?.length, 'the image-delete record is missing from the session block').toBe(1);

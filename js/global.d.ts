@@ -608,6 +608,8 @@ declare global {
      */
     type ScribeSessionData = {
         v: number;
+        /** Per-page index of the source page each slot shows, null before any page edit. */
+        pageSourceIndices?: Array<number | null>;
         contentEdits?: ContentEdit[][];
         /** Pre-rename key for `contentEdits`, read from sessions saved before 2026-08 and never written. */
         textEdits?: ContentEdit[][];

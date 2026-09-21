@@ -166,7 +166,7 @@ export const importImageFilesP = async (files) => {
  * Read a .scribe file and restore session data into this document.
  * @param {ScribeDoc} doc
  * @param {string | File | FileNode | ArrayBuffer} scribeFile
- * @returns {Promise<number[]|null>} Per-page user rotations from the .scribe (or null if absent).
+ * @returns {Promise<{rotations: ?Array<number>, sourceIndices: ?Array<?number>, outline: ?Array<import('../objects/outlineObjects.js').OutlineNode>}>}
  */
 async function restoreSessionFromFile(doc, scribeFile) {
   /** @type {?Uint8Array} */
@@ -237,7 +237,6 @@ async function restoreSessionFromFile(doc, scribeFile) {
           layoutDataTables: header.layoutDataTables,
           annotations: header.annotations,
           pageRotations: header.pageRotations,
-          pageSourceIndices: header.pageSourceIndices,
           outline: header.outline,
           inputData: header.inputData,
           session: header.session ? {
@@ -402,6 +401,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
   doc.ocr[oemName] = scribeRestoreObj.ocr;
   doc.ocr.active = doc.ocr[oemName];
 
+  const savedRotations = scribeRestoreObj.pageRotations ?? null;
+  const savedSourceIndices = scribeRestoreObj.session?.pageSourceIndices ?? null;
   for (let i = 0; i < doc.ocr[oemName].length; i++) {
     if (!doc.ocr[oemName][i]) {
       doc.ocr[oemName][i] = new OcrPage(i, { height: 1920, width: 1080 });
@@ -409,8 +410,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.inputData.xmlMode[i] = true;
     doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
     doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
-    doc.pageMetrics[i].rotation = scribeRestoreObj.pageRotations?.[i] || 0;
-    doc.pageMetrics[i].sourcePageN = scribeRestoreObj.pageSourceIndices?.[i] ?? null;
+    doc.pageMetrics[i].rotation = savedRotations?.[i] || 0;
+    doc.pageMetrics[i].sourcePageN = savedSourceIndices?.[i] ?? null;
   }
   // The page:line fields load as saved; a file from before they existed gets the pass run once on the restored layer.
   if (doc.ocr[oemName].some((page) => page && page.lines.some((line) => line.lineNum === undefined))) assignPageLineNums(doc.ocr[oemName]);
@@ -418,7 +419,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
   // The caller applies `outline` after the PDF loads, since openMainPDF's parse of the source /Outlines would otherwise clobber it.
   // A returned `null` (key absent) means a pre-outline .scribe, so the PDF's own bookmarks win; `[]` means the session deliberately had none.
   return {
-    rotations: scribeRestoreObj.pageRotations || null,
+    rotations: savedRotations,
+    sourceIndices: savedSourceIndices,
     outline: 'outline' in scribeRestoreObj ? (scribeRestoreObj.outline || []) : null,
   };
 }
@@ -613,11 +615,14 @@ export async function importFiles(doc, files, options = {}) {
 
   /** @type {number[]|null} */
   let restoredRotations = null;
+  /** @type {Array<?number>|null} */
+  let restoredSourceIndices = null;
   /** @type {Array<import('../objects/outlineObjects.js').OutlineNode>|null} */
   let restoredOutline = null;
   if (scribeFiles[0]) {
     const restoreRes = await restoreSessionFromFile(doc, scribeFiles[0]);
     restoredRotations = restoreRes.rotations;
+    restoredSourceIndices = restoreRes.sourceIndices;
     restoredOutline = restoreRes.outline;
   }
 
@@ -698,6 +703,8 @@ export async function importFiles(doc, files, options = {}) {
   }
 
   doc.inputData.pageCount = pageCountImage ?? pageCountOcr;
+  // A session whose pages were deleted or moved has its own page count, not the source file's.
+  if (restoredSourceIndices?.some((s) => s != null)) doc.inputData.pageCount = restoredSourceIndices.length;
 
   // OCR imported from external files (.hocr/.xml/Textract/etc.) becomes the active layer for every page,
   // so mark each page OCR-applied for the export flatten gate (a category-flagged page flattens iff OCR was applied to it).
@@ -745,8 +752,8 @@ export async function importFiles(doc, files, options = {}) {
   }
 
   if (doc.inputData.imageMode) {
-    doc.images.pageCount = doc.inputData.pageCount;
-    for (let i = 0; i < doc.inputData.pageCount; i++) {
+    doc.images.pageCount = imageFiles.length;
+    for (let i = 0; i < imageFiles.length; i++) {
       doc.images.nativeSrc[i] = await importImageFileToBase64(imageFiles[i]).then(async (imgStr) => {
         const imgWrapper = new ImageWrapper(i, imgStr, 'native', false, false);
         const imageDims = await imageUtils.getDims(imgWrapper);
@@ -761,11 +768,35 @@ export async function importFiles(doc, files, options = {}) {
   // Re-apply page angles from .scribe data after PDF/image loading overwrites pageMetrics.
   // The PDF/image loading creates new PageMetrics with correct dimensions but angle=null.
   if (scribeFiles[0] && doc.ocr.active) {
-    for (let i = 0; i < doc.ocr.active.length; i++) {
-      if (doc.ocr.active[i]?.angle != null && doc.pageMetrics[i]) {
+    // The source load builds its per-page arrays in source order, so a session whose pages were deleted or moved is put back in its own order.
+    if (restoredSourceIndices?.some((s) => s != null)) {
+      const order = restoredSourceIndices.map((s, i) => s ?? i);
+      const sourceMetrics = doc.pageMetrics.slice();
+      const sourceDims = doc.images.pdfDims300.slice();
+      const sourceImages = doc.images.nativeSrc.slice();
+      if (order.every((s) => s >= 0 && s < sourceMetrics.length)) {
+        doc.pageMetrics.length = 0;
+        if (sourceDims.length) doc.images.pdfDims300.length = 0;
+        if (sourceImages.length) doc.images.nativeSrc.length = 0;
+        order.forEach((s, i) => {
+          doc.pageMetrics[i] = new PageMetrics(sourceMetrics[s].dims);
+          doc.pageMetrics[i].sourcePageN = s;
+          if (sourceDims.length) doc.images.pdfDims300[i] = sourceDims[s];
+          if (sourceImages.length) doc.images.nativeSrc[i] = sourceImages[s];
+        });
+        doc.inputData.pageCount = order.length;
+        doc.images.pageCount = order.length;
+        doc.images.loadCount = order.length;
+      } else {
+        doc.warningHandler({ message: 'The session refers to pages the source file does not have, so the source page order is kept.' });
+      }
+    }
+    // An image document with no text has an empty text layer, so the page count bounds this loop.
+    for (let i = 0; i < doc.pageMetrics.length; i++) {
+      if (doc.ocr.active[i]?.angle != null) {
         doc.pageMetrics[i].angle = doc.ocr.active[i].angle;
       }
-      if (restoredRotations?.[i] && doc.pageMetrics[i]) {
+      if (restoredRotations?.[i]) {
         doc.pageMetrics[i].rotation = restoredRotations[i];
       }
     }

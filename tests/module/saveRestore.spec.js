@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { LAYOUTS, saveRestoreSave, emptyStores } from './_scribeRoundTrip.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -337,6 +338,109 @@ describe('Check .scribe export function.', () => {
 
     await doc.clear();
     await scribe.terminate();
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+// A saved file that restores to a different file is wrong whatever the field, so the whole file is compared rather than a chosen few.
+describe('A standard .scribe file survives save and restore unchanged.', () => {
+  const filingPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
+  const imagePath = `${ASSETS_PATH}/testocr.png`;
+  const pagePaths = ['simple_paragraph_1line_r180.png', 'simple_paragraph_3lines_r180.png', 'simple_paragraph.png'].map((f) => `${ASSETS_PATH}/${f}`);
+  const states = [
+    { name: 'An untouched filing', source: { pdfFiles: [filingPath] }, fontSwitchFlips: false },
+    { name: 'A filing with every store filled', source: { pdfFiles: [filingPath] }, fontSwitchFlips: false },
+    { name: 'An image with an uploaded OCR file', source: { imageFiles: [imagePath] }, fontSwitchFlips: true },
+    {
+      name: 'Three images with no text, one rotated', source: { imageFiles: pagePaths }, fontSwitchFlips: false, needsSource: true,
+    },
+  ];
+  const paths = ['alone', 'beside its source'];
+  // A page with no text is only its image, so a session of such pages has nothing to restore without the images beside it.
+  const pathsFor = (/** @type {{needsSource?: boolean}} */ state) => (state.needsSource ? ['beside its source'] : paths);
+
+  /** @type {Record<string, Array<string>>} The values that differ between the two saves, per state, layout and restore path. */
+  const changed = {};
+  /** @type {Record<string, any>} The first single-layout save of the filled state. */
+  let filledFile;
+
+  beforeAll(async () => {
+    const filing = await scribe.openDocument([filingPath]);
+    const image = await scribe.openDocument([imagePath, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const pages = await scribe.openDocument({ imageFiles: pagePaths });
+    pages.pageMetrics[1].rotation = 90;
+    const docs = [filing, filing, image, pages];
+
+    for (const [k, state] of states.entries()) {
+      if (k === 1) {
+        await filing.recognize({ model: MockHocrModel, ocrPages: [false, true, false, false, false, false] });
+        filing.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
+        filing.addFreeText([{
+          page: 0,
+          bbox: {
+            left: 200, top: 300, right: 600, bottom: 360,
+          },
+          contents: 'A typed note',
+        }]);
+        filing.addRedactions([{
+          page: 0,
+          bbox: {
+            left: 100, top: 100, right: 400, bottom: 140,
+          },
+        }]);
+        const regionPage = filing.layoutRegions.pages[0];
+        const region = new scribe.layout.LayoutRegion(regionPage, 0, {
+          left: 100, top: 200, right: 500, bottom: 400,
+        }, 'exclude');
+        regionPage.boxes[region.id] = region;
+        const tablesPage = filing.layoutDataTables.pages[0];
+        const table = new scribe.layout.LayoutDataTable(tablesPage);
+        table.boxes.push(new scribe.layout.LayoutDataColumn({
+          left: 100, top: 200, right: 300, bottom: 400,
+        }, table));
+        tablesPage.tables.push(table);
+        filing.addBookmark({ title: 'Added', page: 1 });
+        filing.pageMetrics[4].rotation = 90;
+      }
+      for (const [layout, options] of LAYOUTS) {
+        for (const path of pathsFor(state)) {
+          const result = await saveRestoreSave(docs[k], options, path === 'alone' ? null : state.source);
+          if (k === 1 && layout === 'single') filledFile = JSON.parse(result.firstText);
+          changed[`${state.name}, ${layout}, ${path}`] = result.changed;
+        }
+      }
+    }
+
+    await filing.close();
+    await image.close();
+    await pages.close();
+  });
+
+  for (const state of states) {
+    for (const [layout] of LAYOUTS) {
+      for (const path of pathsFor(state)) {
+        // Restored beside an image, the font optimization switch is re-decided against images that are not loaded yet and flips off.
+        // That one difference is expected until the restore keeps the saved decision, and this expectation fails the day it does.
+        const fontSwitchFlips = state.fontSwitchFlips && path !== 'alone';
+        const expected = fontSwitchFlips ? [`${layout === 'single' ? 'file' : 'header'}.fontState.enableOpt: true -> false`] : [];
+        test(`${state.name} saves again unchanged: ${layout} file, restored ${path}`, () => {
+          expect(changed[`${state.name}, ${layout}, ${path}`], 'values changed between the first save and the save made after restoring it').toEqual(expected);
+        });
+      }
+    }
+  }
+
+  // A store that is empty in the filled state passes the comparison above without being tested, since nothing equals nothing.
+  test('The filled state fills every store the standard file holds', () => {
+    const grew = 'the standard file gained or lost a store: fill it in the filled state above, then list it here';
+    expect(Object.keys(filledFile).sort(), grew).toEqual([
+      'annotations', 'fontState', 'inputData', 'layoutDataTables', 'layoutRegions', 'ocr', 'outline', 'pageRotations',
+    ]);
+    expect(Object.keys(filledFile.inputData).sort(), grew).toEqual(['ocrApplied', 'pageStats', 'pdfType', 'requiresOCR']);
+    expect([...emptyStores(filledFile), ...emptyStores(filledFile.inputData, 'inputData.')], 'a store holds nothing in the filled state, so its round trip goes untested').toEqual([]);
   });
 
   afterAll(async () => {
