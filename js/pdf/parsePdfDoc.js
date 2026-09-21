@@ -3613,6 +3613,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         ntEntry.penX = wordChars.map((c) => round3(c.x));
         if (wordChars.some((c) => c.skew)) ntEntry.skew = wordChars.map((c) => c.skew || 0);
         if (wordChars.some((c) => c.stretch)) ntEntry.stretch = wordChars.map((c) => c.stretch || 0);
+        // A character recorded later replaces a placeholder's U+E000 + code text in place, so the code is kept to find the glyph again.
+        const placeholderCode = (c) => (c._font?.type3 && Number.isInteger(c._charCode) && c.text === String.fromCodePoint(0xE000 + c._charCode) ? c._charCode : -1);
+        if (wordChars.some((c) => placeholderCode(c) >= 0)) ntEntry.codes = wordChars.map(placeholderCode);
       }
 
       // Apply small caps lowercase restoration.

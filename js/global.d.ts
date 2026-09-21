@@ -600,6 +600,22 @@ declare global {
         strokeWidthPx?: number;
         /** Stroke color, `#rrggbb`; black when absent. */
         strokeColor?: string;
+        /**
+         * Per-glyph character code of each glyph that extracted as a placeholder (a Type 3 glyph with no Unicode mapping), -1 for every other glyph.
+         * Present only on a word drawn by a Type 3 font that has such a glyph.
+         */
+        codes?: number[];
+    };
+
+    /**
+     * The outline hash of every Type 3 glyph in one source document, keyed by font object number and character code, with the reverse index.
+     * `blank` marks a procedure that draws nothing.
+     * `hash` is null when the procedure could not be read.
+     */
+    type Type3GlyphHashes = {
+        fonts: Map<number, { byCode: Map<number, { hash: ?string, blank: boolean }> }>;
+        /** Every `[fontObjNum, code]` bound to an outline. */
+        byHash: Map<string, Array<[number, number]>>;
     };
 
     /**
@@ -621,6 +637,8 @@ declare global {
         arbiterDecisions?: Array<object | null>;
         assistantChats?: AssistantChatRecord[];
         redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
+        /** Characters recorded against Type 3 glyph outlines, as `[pathHash, text]` pairs. */
+        type3GlyphMappings?: Array<[string, string]>;
     };
 
     /**

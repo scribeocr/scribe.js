@@ -17,31 +17,54 @@ import { getCIDToUnicodeMap } from './cidToUnicode.js';
 import { cffStandardEncoding, standardNames } from '../../font-parser/src/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
+// Half-font-unit lattices in em, for the unitsPerEm values fonts use (2048, 1000, 256, 1024, 512, 4096).
+// Their least common multiple makes a coordinate snapped to any of them an integer count of 1/1024000 em.
+const GLYPH_LATTICES = [4096, 2000, 512, 2048, 1024, 8192];
+const GLYPH_LATTICE_LCM = 1024000;
+
 /**
- * Stable hex hash of a parsed Type3 glyph commands array.
- * Same glyph paths across different fonts (or pages) collapse to the same string.
+ * Stable hex hash of a parsed Type3 glyph outline, keyed on the font program's own coordinates.
+ * One outline hashes alike wherever it appears, across fonts, pages and documents.
  * @param {Array<{ type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number }>} commands
+ * @param {number[]} fontMatrix - the Type3 font's FontMatrix, mapping glyph space to text (em) space
  */
-function hashGlyphCommands(commands) {
+export function hashGlyphCommands(commands, fontMatrix) {
+  const [ma, mb, mc, md, me, mf] = fontMatrix;
+  /** Em-space coordinates in command order: x, y pairs. */
+  const coords = [];
+  const types = [];
+  for (let i = 0; i < commands.length; i++) {
+    const c = commands[i];
+    types.push(c.type.charCodeAt(0));
+    const pairs = c.type === 'C' ? [[c.x1, c.y1], [c.x2, c.y2], [c.x, c.y]] : c.x === undefined ? [] : [[c.x, c.y]];
+    for (const [x, y] of pairs) {
+      coords.push(ma * x + mc * y + me, mb * x + md * y + mf);
+    }
+  }
+  let lattice = GLYPH_LATTICES[0];
+  let bestResidual = Infinity;
+  for (const u of GLYPH_LATTICES) {
+    let residual = 0;
+    for (let i = 0; i < coords.length; i++) {
+      const v = coords[i] * u;
+      residual += Math.abs(v - Math.round(v)) / u;
+    }
+    if (residual < bestResidual) { bestResidual = residual; lattice = u; }
+  }
+  const scale = GLYPH_LATTICE_LCM / lattice;
   let h1 = 0x811c9dc5 >>> 0;
   let h2 = 0xcbf29ce4 >>> 0;
   const mix = (b) => {
     h1 = Math.imul(h1 ^ (b & 0xff), 16777619) >>> 0;
     h2 = Math.imul(h2 ^ ((b >>> 8) & 0xff), 16777619) >>> 0;
   };
-  for (let i = 0; i < commands.length; i++) {
-    const c = commands[i];
-    mix(c.type.charCodeAt(0));
-    const fields = ['x', 'y', 'x1', 'y1', 'x2', 'y2'];
-    for (let k = 0; k < fields.length; k++) {
-      const v = c[fields[k]];
-      if (v === undefined) continue;
-      const n = Math.round(v * 1000) | 0;
-      mix(n);
-      mix(n >>> 8);
-      mix(n >>> 16);
-      mix(n >>> 24);
-    }
+  for (let i = 0; i < types.length; i++) mix(types[i]);
+  for (let i = 0; i < coords.length; i++) {
+    const n = (Math.round(coords[i] * lattice) * scale) | 0;
+    mix(n);
+    mix(n >>> 8);
+    mix(n >>> 16);
+    mix(n >>> 24);
   }
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
@@ -355,18 +378,9 @@ export function extractType3DistinctGlyphs(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
-  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
-  objCache.ensureXrefRepaired();
 
   const seen = new Map();
-  for (const [objNum] of Object.entries(xrefEntries)) {
-    const objText = objCache.getObjectText(Number(objNum));
-    if (!objText) continue;
-    if (!/\/Subtype\s*\/Type3/.test(objText)) continue;
-
-    const fontInfo = parseType3Font(objText, objCache);
-    if (!fontInfo) continue;
-
+  for (const [objNum, fontInfo] of enumerateType3Fonts(objCache)) {
     for (const [charCodeStr, glyphName] of Object.entries(fontInfo.encoding)) {
       const glyph = fontInfo.glyphs[glyphName];
       if (!glyph || !glyph.pathHash) continue;
@@ -381,11 +395,30 @@ export function extractType3DistinctGlyphs(pdfBytes) {
         fontBBox: fontInfo.fontBBox,
         exampleCharCode: Number(charCodeStr),
         exampleGlyphName: glyphName,
-        exampleFontObjNum: Number(objNum),
+        exampleFontObjNum: objNum,
       });
     }
   }
   return [...seen.values()];
+}
+
+/**
+ * Every Type 3 font object in the file, parsed.
+ * @param {ObjectCache} objCache
+ * @returns {Array<[number, NonNullable<ReturnType<typeof parseType3Font>>]>} `[objNum, fontInfo]` pairs.
+ */
+export function enumerateType3Fonts(objCache) {
+  // Doc-wide object enumeration needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
+  const fonts = [];
+  for (const objNumStr of Object.keys(objCache.xrefEntries)) {
+    const objNum = Number(objNumStr);
+    const objText = objCache.getObjectText(objNum);
+    if (!objText || !/\/Subtype\s*\/Type3/.test(objText)) continue;
+    const fontInfo = parseType3Font(objText, objCache);
+    if (fontInfo) fonts.push([objNum, fontInfo]);
+  }
+  return fonts;
 }
 
 // Type3 CharProc operators that provably leave no marks on the page:
@@ -493,7 +526,7 @@ export function parseType3Font(objText, objCache) {
       ...parsed,
       commands: pathData.commands,
       pathHash: pathData.commands && pathData.commands.length
-        ? hashGlyphCommands(pathData.commands) : null,
+        ? hashGlyphCommands(pathData.commands, fontMatrix) : null,
       paintMode: pathData.paintMode,
       evenOdd: pathData.evenOdd,
       lineWidth: pathData.lineWidth,

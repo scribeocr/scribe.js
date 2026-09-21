@@ -338,6 +338,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
     }
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (Array.isArray(scribeRestoreObj.session.assistantChats)) doc.assistantChats.chats = scribeRestoreObj.session.assistantChats;
+    if (Array.isArray(scribeRestoreObj.session.type3GlyphMappings)) {
+      for (const [hash, text] of scribeRestoreObj.session.type3GlyphMappings) doc.type3GlyphMappings.set(hash, text);
+    }
     if (Array.isArray(scribeRestoreObj.session.redactions?.terms)) {
       doc.redactions = {
         terms: scribeRestoreObj.session.redactions.terms,

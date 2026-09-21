@@ -77,6 +77,7 @@ export async function initPdfWorker() {
     obj.parsePdfPage = wrap('parsePdfPage');
     obj.renderPdfPage = wrap('renderPdfPage');
     obj.getPdfFontBytes = wrap('getPdfFontBytes');
+    obj.getPdfType3GlyphHashes = wrap('getPdfType3GlyphHashes');
     obj.getPdfEmbeddedFileBytes = wrap('getPdfEmbeddedFileBytes');
     obj.unloadPdf = wrap('unloadPdf');
 

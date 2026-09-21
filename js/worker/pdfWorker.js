@@ -38,6 +38,11 @@ export async function getPdfFontBytes(args) {
   return core.getFontBytes(args);
 }
 
+/** Every Type 3 font in the file with the outline hash of each glyph, keyed by character code. */
+export async function getPdfType3GlyphHashes() {
+  return core.getType3GlyphHashes();
+}
+
 /**
  * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
  * @param {{ objNum: number }} args
@@ -69,6 +74,7 @@ if (parentPort) {
       parsePdfPage,
       renderPdfPage,
       getPdfFontBytes,
+      getPdfType3GlyphHashes,
       getPdfEmbeddedFileBytes,
       unloadPdf,
     })[func](args)

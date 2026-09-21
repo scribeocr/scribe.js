@@ -40,6 +40,12 @@ export class PdfScheduler {
   getPdfFontBytes = (args) => this.scheduler.addJob('getPdfFontBytes', args);
 
   /**
+   * Every Type 3 font in the file with the outline hash of each glyph, keyed by character code.
+   * @param {{}} args
+   */
+  getPdfType3GlyphHashes = (args) => this.scheduler.addJob('getPdfType3GlyphHashes', args);
+
+  /**
    * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
    * @param {{ objNum: number }} args
    */
@@ -114,6 +120,13 @@ export class PdfSchedulerInProcess {
    * @param {{ fontObjNum: number, pageIndex?: number }} args
    */
   getPdfFontBytes = (args) => this.#core.getFontBytes(args);
+
+  /**
+   * Every Type 3 font in the file with the outline hash of each glyph, keyed by character code.
+   * @param {{}} args
+   */
+  // eslint-disable-next-line no-unused-vars
+  getPdfType3GlyphHashes = (args) => this.#core.getType3GlyphHashes();
 
   /**
    * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).

@@ -10,6 +10,7 @@ import {
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
 import { resolveCitation as resolveCitationImpl } from '../resolveCitation.js';
+import { setType3GlyphMappings as setType3GlyphMappingsImpl } from '../type3GlyphMappings.js';
 import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
 import { removeCircularRefsRegions, removeCircularRefsDataTables } from '../objects/layoutObjects.js';
@@ -774,6 +775,15 @@ export class ScribeDoc {
     this.nativeText = { pages: [] };
 
     /**
+     * Characters recorded against Type 3 glyph outlines, keyed by the glyph's path hash.
+     * The parser's `type3GlyphMappings` option and the PDF export use the same key.
+     * Written through `setType3GlyphMappings`, which applies each change to the words in place.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {Map<string, string>}
+     */
+    this.type3GlyphMappings = new Map();
+
+    /**
      * Per-page image/path placements and fill-detection shapes from the PDF parse, in the page-pixel frame.
      * Serialized only into the `.scribe` `session` block, so a default export omits it.
      * A restore beside the PDF runs no parse of its own, so the persisted copy is what keeps Edit Graphics working there.
@@ -1243,6 +1253,7 @@ export class ScribeDoc {
     this.annotations.restored = false;
     this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
+    this.type3GlyphMappings.clear();
     this.fillShapes.pages.length = 0;
     this.assistantChats.chats.length = 0;
     this.redactions.terms.length = 0;
@@ -1562,6 +1573,16 @@ export class ScribeDoc {
    */
   download(format, fileName, options) {
     return downloadImpl(this, format, fileName, options);
+  }
+
+  /**
+   * Record characters against Type 3 glyph outlines and apply them to every word drawn with those glyphs, in place, as one undoable step.
+   * @param {Parameters<typeof setType3GlyphMappingsImpl>[1]} entries - `[pathHash, text]` pairs; a null or empty text removes the outline's character.
+   * @param {Parameters<typeof setType3GlyphMappingsImpl>[2]} [options]
+   * @returns {ReturnType<typeof setType3GlyphMappingsImpl>} The pages whose words changed.
+   */
+  setType3GlyphMappings(entries, options) {
+    return setType3GlyphMappingsImpl(this, entries, options);
   }
 
   /**

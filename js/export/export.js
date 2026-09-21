@@ -6,6 +6,7 @@ import { writePdf } from './pdf/writePdf.js';
 import { overlayPdfText } from './pdf/writePdfOverlay.js';
 import { subsetPdf } from './pdf/subsetPdf.js';
 import { mergePdfs } from './pdf/mergePdfs.js';
+import { replaceType3FontsWithCorrected } from './pdf/replaceType3Fonts.js';
 import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
 import { remapOutline, pageArrIndexMap } from '../objects/outlineObjects.js';
 import { writeHocr } from './writeHocr.js';
@@ -242,6 +243,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
         fillText: envelope.session.fillText,
         assistantChats: envelope.session.assistantChats,
         redactions: envelope.session.redactions,
+        type3GlyphMappings: envelope.session.type3GlyphMappings,
       }
       : undefined,
   };
@@ -526,6 +528,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
             overlayContentEditsPages = pageArr.map((i) => doc.contentEdits.pages[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
+          }
+
+          if (doc.type3GlyphMappings.size) {
+            basePdfData = await replaceType3FontsWithCorrected({ basePdfData, type3GlyphMappings: doc.type3GlyphMappings, humanReadable: humanReadablePDF });
           }
 
           // Snapshot the real OCR before the routing below empties overlayOcrArr for clean text-native pages,
@@ -887,6 +893,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       });
       if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
       if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
+      if (doc.type3GlyphMappings.size) envelope.session.type3GlyphMappings = [...doc.type3GlyphMappings];
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {

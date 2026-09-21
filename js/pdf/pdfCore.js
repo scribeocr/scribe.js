@@ -1,7 +1,7 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
 import { ObjectCache } from './objectCache.js';
-import { buildType3OpentypeFont } from './fonts/parsePdfFonts.js';
+import { buildType3OpentypeFont, enumerateType3Fonts } from './fonts/parsePdfFonts.js';
 import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import { parseSinglePage } from './parsePdfDoc.js';
@@ -79,6 +79,32 @@ export class PdfCore {
       dpi = (72 * targetWidth) / visualWidthPts;
     }
     return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality, edits);
+  }
+
+  /**
+   * Every Type 3 font in the file with the outline hash of the glyph bound to each character code.
+   * @returns {{ fonts: Array<{ objNum: number, codes: number[], hashes: Array<?string>, blank: boolean[] }> }}
+   *   `hashes[i]` is null when the procedure bound to `codes[i]` could not be read.
+   *   `blank[i]` marks a procedure that draws nothing.
+   */
+  getType3GlyphHashes() {
+    if (!this.#objCache) throw new Error('PDF not loaded');
+    const fonts = [];
+    for (const [objNum, info] of enumerateType3Fonts(this.#objCache)) {
+      const codes = [];
+      const hashes = [];
+      const blank = [];
+      for (const [codeStr, name] of Object.entries(info.encoding)) {
+        const glyph = info.glyphs[name];
+        codes.push(Number(codeStr));
+        hashes.push(glyph?.pathHash ?? null);
+        blank.push(!glyph || glyph.bbox === null);
+      }
+      fonts.push({
+        objNum, codes, hashes, blank,
+      });
+    }
+    return { fonts };
   }
 
   /**

@@ -404,6 +404,53 @@ export class ImageStore {
    */
   getEditFontSync = (n, fontObjNum) => this.#editFontResolved.get(`${this.#pageMetrics[n]?.sourceId ?? 'p'}_${fontObjNum}`);
 
+  /** @type {Map<string, Promise<Type3GlyphHashes>>} */
+  #type3HashCache = new Map();
+
+  /** @type {Map<string, Type3GlyphHashes>} */
+  #type3HashResolved = new Map();
+
+  /**
+   * The outline hash of every Type 3 glyph in display slot `n`'s source document, keyed by font object number and character code.
+   * Requested once per source and kept for the document's life.
+   * @param {number} n - Page number
+   * @returns {Promise<Type3GlyphHashes>}
+   */
+  getType3GlyphHashes = (n) => {
+    const pm = this.#pageMetrics[n];
+    const key = pm?.sourceId ?? 'p';
+    let entry = this.#type3HashCache.get(key);
+    if (!entry) {
+      entry = (async () => {
+        const scheduler = await this.resolveSource(pm).getScheduler();
+        const res = await scheduler.getPdfType3GlyphHashes({});
+        /** @type {Type3GlyphHashes} */
+        const table = { fonts: new Map(), byHash: new Map() };
+        for (const f of res.fonts) {
+          const byCode = new Map();
+          for (let i = 0; i < f.codes.length; i++) {
+            byCode.set(f.codes[i], { hash: f.hashes[i], blank: f.blank[i] });
+            if (!f.hashes[i]) continue;
+            if (!table.byHash.has(f.hashes[i])) table.byHash.set(f.hashes[i], []);
+            table.byHash.get(f.hashes[i]).push([f.objNum, f.codes[i]]);
+          }
+          table.fonts.set(f.objNum, { byCode });
+        }
+        this.#type3HashResolved.set(key, table);
+        return table;
+      })();
+      this.#type3HashCache.set(key, entry);
+      entry.catch(() => this.#type3HashCache.delete(key));
+    }
+    return entry;
+  };
+
+  /**
+   * The settled `getType3GlyphHashes` answer for display slot `n`'s source, or `undefined` when no request has settled.
+   * @param {number} n - Page number
+   */
+  getType3GlyphHashesSync = (n) => this.#type3HashResolved.get(this.#pageMetrics[n]?.sourceId ?? 'p');
+
   /**
    * Drop every cached raster of display slot `n`.
    * The viewer separately drops its own display-width raster and canvas for the page.
@@ -903,6 +950,8 @@ export class ImageStore {
     this.renderDrawMs.length = 0;
     this.#editFontCache.clear();
     this.#editFontResolved.clear();
+    this.#type3HashCache.clear();
+    this.#type3HashResolved.clear();
     if (typeof FontFace !== 'undefined') {
       // `doc.clear()` reissues the id right after this call.
       const prefix = `_edit_d${this.#doc.id}_`;
