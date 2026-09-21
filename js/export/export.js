@@ -835,6 +835,11 @@ export async function exportData(doc, format = 'txt', options = {}) {
       doc,
     });
   } else if (format === 'scribe') {
+    // The restore assigns every node a fresh id, so a saved id could never be read back.
+    /** @param {Array<import('../objects/outlineObjects.js').OutlineNode>} nodes @returns {Array<Object>} */
+    const outlineWithoutIds = (nodes) => nodes.map((n) => ({
+      title: n.title, dest: n.dest, action: n.action, open: n.open, children: outlineWithoutIds(n.children),
+    }));
     /** @type {Record<string, any>} */
     const envelope = {
       fontState: doc.fonts.state,
@@ -843,7 +848,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       annotations: doc.annotations.pages,
       pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
       pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
-      outline: doc.outline,
+      outline: outlineWithoutIds(doc.outline || []),
       inputData: {
         pdfType: doc.inputData.pdfType,
         pageStats: doc.inputData.pageStats,

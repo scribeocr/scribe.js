@@ -387,6 +387,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
       doc.inputData.pageStats = scribeRestoreObj.inputData.pageStats;
       doc.inputData.requiresOCR = !!scribeRestoreObj.inputData.requiresOCR;
     }
+    // A document that was never recognized saves null here, so leave it null rather than filling in a default.
     if (doc.inputData.ocrApplied == null && scribeRestoreObj.inputData.ocrApplied) {
       doc.inputData.ocrApplied = scribeRestoreObj.inputData.ocrApplied;
     }
@@ -413,12 +414,6 @@ async function restoreSessionFromFile(doc, scribeFile) {
   }
   // The page:line fields load as saved; a file from before they existed gets the pass run once on the restored layer.
   if (doc.ocr[oemName].some((page) => page && page.lines.some((line) => line.lineNum === undefined))) assignPageLineNums(doc.ocr[oemName]);
-
-  // The active text layer is now the imported OCR for every page, so mark every page OCR-applied.
-  // Skip if a newer .scribe.json already restored an explicit `ocrApplied` array above.
-  if (doc.inputData.ocrApplied == null) {
-    doc.inputData.ocrApplied = Array(doc.ocr[oemName].length).fill(true);
-  }
 
   // The caller applies `outline` after the PDF loads, since openMainPDF's parse of the source /Outlines would otherwise clobber it.
   // A returned `null` (key absent) means a pre-outline .scribe, so the PDF's own bookmarks win; `[]` means the session deliberately had none.
