@@ -103,3 +103,30 @@ describe('Check Tesseract .hocr import function imports styles correctly.', () =
     await scribe.terminate();
   });
 });
+
+async function readFileContent(filePath) {
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    const fs = await import('node:fs/promises');
+    return fs.readFile(filePath, 'utf-8');
+  }
+  const response = await fetch(filePath);
+  return response.text();
+}
+
+describe('Check hOCR detection from content alone.', () => {
+  test('Should import the bare ocr_page fragment tesseract.js writes, without a file name', async () => {
+    const text = await readFileContent(`${ASSETS_PATH}/bill.tesseractjs.hocr`);
+    doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(text).buffer] });
+    expect(doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' '), 'a fragment with no XML declaration or html root is read as hOCR').toBe('FIRST CHEQUING');
+  });
+
+  // The input carries an XML declaration because any XML with one was once read as hOCR.
+  test('Should reject an XML file that is no OCR format', async () => {
+    const xml = '<?xml version="1.0" encoding="UTF-8"?>\n<notes><note>This is not an OCR file.</note></notes>\n';
+    await expect(scribe.openDocument({ ocrFiles: [new TextEncoder().encode(xml).buffer] }), 'unknown XML is rejected at detection').rejects.toThrow('No supported OCR format detected');
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});

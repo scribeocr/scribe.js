@@ -157,3 +157,16 @@ describe('Check stext import function with multiline XML formatting (spacing var
     await scribe.terminate();
   });
 });
+
+describe('Check stext detection from content alone.', () => {
+  test('Should import stext without a file name', async () => {
+    const text = await readFileContent(`${ASSETS_PATH}/testocr.stext`);
+    doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(text).buffer] });
+    expect(doc.ocr.active[0].lines.length, 'the page keeps its 8 lines when the format is read from the content').toBe(8);
+    expect(doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' '), 'the first line reads as stext, not as hOCR').toBe('This is a lot of 12 point text to test the');
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});

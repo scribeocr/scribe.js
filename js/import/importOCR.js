@@ -9,7 +9,7 @@ export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/,
   .split(/(?=<div class=['"]ocr_page['"])/);
 
 /**
- *
+ * Detects an OCR file's format from its content and extension.
  * @param {string} ocrStr - The OCR string to detect the format of.
  * @param {string} [ext] - The file extension of the OCR file.
  * @returns {?TextSource}
@@ -28,47 +28,37 @@ const detectOcrFormat = (ocrStr, ext) => {
     }
   }
 
-  // Check whether input is ALTO XML
-  if (/<alto[\s>]/i.test(ocrStr) && /xmlns="http:\/\/www\.loc\.gov\/standards\/alto/i.test(ocrStr)) {
-    return 'alto';
+  // The root element of an XML or HTML file: the first tag after a byte-order mark, the XML declaration, a doctype and comments.
+  const root = ocrStr.slice(0, 2000).match(/^\uFEFF?\s*(?:(?:<\?[\s\S]*?\?>|<![^>]*>|<!--[\s\S]*?-->)\s*)*(<[a-zA-Z][^>]*>)/)?.[1];
+  if (root) {
+    if (/^<(?:\w+:)?alto[\s>]/i.test(root) && /loc\.gov\/standards\/alto/i.test(root)) {
+      return 'alto';
+    }
+    // mupdf's stext shares its root name with ABBYY's format and carries no namespace.
+    if (/^<(?:\w+:)?document[\s>]/i.test(root)) {
+      return /abbyy\.com/i.test(root) ? 'abbyy' : 'stext';
+    }
+    // An XHTML document, or the bare ocr_page fragment tesseract.js writes.
+    if (/class=['"]ocr_page['"]/i.test(ocrStr)) {
+      return 'hocr';
+    }
+    return null;
   }
 
-  // Check whether input is Abbyy XML
-  // TODO: The auto-detection of formats needs to be more robust.
-  // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
-  const node2 = ocrStr.substring(0, 500).match(/>([^>]+)/)?.[1];
-
-  if (!!node2 && !!/abbyy/i.test(node2)) {
-    return 'abbyy';
-  }
-
-  if (!!node2 && !!/<document name/.test(node2)) {
-    return 'stext';
-  }
-
-  if (!node2 && !!/"DetectDocumentTextModelVersion"/i.test(ocrStr)) {
-    return 'textract';
-  }
-
-  if (!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(ocrStr)) {
-    return 'textract';
-  }
-
-  if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"fullTextAnnotation"/i.test(ocrStr)) {
-    return 'google_vision';
-  }
-
-  if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"textAnchor"/i.test(ocrStr) && !!/"tokens"/i.test(ocrStr)) {
-    return 'google_doc_ai';
-  }
-
-  if (/"createdDateTime"/i.test(ocrStr) && /"analyzeResult"/i.test(ocrStr) && /"modelId"/i.test(ocrStr)) {
-    return 'azure_doc_intel';
-  }
-
-  if (!!node2 && !!/class=['"]ocr_page['"]/i.test(ocrStr)
-      || !!/<\?xml version/i.test(ocrStr)) {
-    return 'hocr';
+  if (/^\uFEFF?\s*[{[]/.test(ocrStr)) {
+    if (/"(?:DetectDocumentText|AnalyzeDocument)ModelVersion"/.test(ocrStr)) {
+      return 'textract';
+    }
+    if (/"fullTextAnnotation"/.test(ocrStr)) {
+      return 'google_vision';
+    }
+    if (/"textAnchor"/.test(ocrStr) && /"tokens"/.test(ocrStr)) {
+      return 'google_doc_ai';
+    }
+    if (/"analyzeResult"/.test(ocrStr) && /"modelId"/.test(ocrStr)) {
+      return 'azure_doc_intel';
+    }
+    return null;
   }
 
   if (ext && ext.toLowerCase() === 'txt') {
