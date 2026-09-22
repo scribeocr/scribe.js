@@ -349,7 +349,7 @@ describe('Check .scribe export function.', () => {
 describe('A standard .scribe file survives save and restore unchanged.', () => {
   const filingPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
   const imagePath = `${ASSETS_PATH}/testocr.png`;
-  const pagePaths = ['simple_paragraph_1line_r180.png', 'simple_paragraph_3lines_r180.png', 'simple_paragraph.png'].map((f) => `${ASSETS_PATH}/${f}`);
+  const pagePaths = ['simple.png', 'ascenders_descenders_test.png', 'italics_1.png'].map((f) => `${ASSETS_PATH}/${f}`);
   const states = [
     { name: 'An untouched filing', source: { pdfFiles: [filingPath] }, fontSwitchFlips: false },
     { name: 'A filing with every store filled', source: { pdfFiles: [filingPath] }, fontSwitchFlips: false },
