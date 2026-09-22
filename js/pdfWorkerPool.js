@@ -105,21 +105,6 @@ const spare = [];
 /** @type {Set<Object>} */
 const leased = new Set();
 
-/** @type {number} */
-let spawning = 0;
-
-/**
- * Soft cap on total pool size.
- * Acquires past the cap still spawn rather than block, so a viewer document and a background ingest can never deadlock waiting on each other's workers.
- */
-export const poolSoftCap = () => {
-  if (typeof process === 'undefined') return Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
-  return 6;
-};
-
-// In-flight spawns count toward the total so concurrent acquires do not each see room under the cap and overshoot it.
-const totalWorkers = () => spare.length + leased.size + spawning;
-
 /**
  * Lease `n` workers, reusing spares and spawning the shortfall.
  * @param {number} n
@@ -135,22 +120,14 @@ export async function acquireWorkers(n) {
   }
   const shortfall = n - out.length;
   if (shortfall > 0) {
-    if (totalWorkers() + shortfall > poolSoftCap()) {
-      console.warn(`[pdf-pool] soft cap ${poolSoftCap()} exceeded (leasing ${shortfall} extra)`);
-    }
-    spawning += shortfall;
-    try {
-      const fresh = await Promise.all(Array.from({ length: shortfall }, async () => {
-        const w = await initPdfWorker();
-        w.id = `pdf-${Math.random().toString(16).slice(3, 8)}`;
-        return w;
-      }));
-      for (const w of fresh) {
-        leased.add(w);
-        out.push(w);
-      }
-    } finally {
-      spawning -= shortfall;
+    const fresh = await Promise.all(Array.from({ length: shortfall }, async () => {
+      const w = await initPdfWorker();
+      w.id = `pdf-${Math.random().toString(16).slice(3, 8)}`;
+      return w;
+    }));
+    for (const w of fresh) {
+      leased.add(w);
+      out.push(w);
     }
   }
   return out;

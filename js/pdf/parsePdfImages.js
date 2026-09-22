@@ -172,8 +172,7 @@ function extractXObjectsFromResources(objText, objCache, prefix, images, forms, 
       const transparencyGroup = parseTransparencyGroup(entryObjText, objCache);
       if (transparencyGroup) formEntry.transparencyGroup = transparencyGroup;
       forms.set(prefix + tag, formEntry);
-      // Recurse into the Form's Resources to discover nested images,
-      // but skip Form XObjects already visited to avoid exponential expansion
+      // The visited set is shared across the whole traversal, not per path, so a form reachable many ways cannot expand exponentially.
       if (options.recurseForms && !visitedFormObjNums.has(objNum)) {
         visitedFormObjNums.add(objNum);
         extractXObjectsFromResources(
@@ -318,8 +317,7 @@ export function parseImageObject(objText, objNum, objCache) {
       if (csObj) csText = csObj;
     }
     const parsedTintCS = parseTintColorSpace(csText, objCache);
-    // The tint transform is applied lazily, when the renderer decodes a drawn image (imageInfoToBitmap),
-    // so an unused DeviceN image in a shared Resources dict costs nothing here.
+    // Deferring the tint transform to imageInfoToBitmap keeps undrawn images in a shared Resources dict from paying for it.
     if (parsedTintCS.tintFn && parsedTintCS.nInputs >= 1) deviceNTintCS = parsedTintCS;
   }
 
@@ -362,8 +360,6 @@ export function parseImageObject(objText, objNum, objCache) {
     const sMaskObjNum = Number(maskRefMatch[1]);
     const sMaskObjText = objCache.getObjectText(sMaskObjNum);
     if (sMaskObjText) {
-      // An SMask is itself an image dict that can carry a /DecodeParms, so read its dimensions
-      // from the top level too (same reason as the main image above).
       sMaskWidth = readTopLevelInt(sMaskObjText, '/Width', 0, objCache);
       sMaskHeight = readTopLevelInt(sMaskObjText, '/Height', 0, objCache);
       sMask = objCache.getStreamBytes(sMaskObjNum);
@@ -371,8 +367,6 @@ export function parseImageObject(objText, objNum, objCache) {
         const isImageMask = /\/ImageMask\s+true/.test(sMaskObjText);
         const smBpc = readTopLevelInt(sMaskObjText, '/BitsPerComponent', isImageMask ? 1 : 8, objCache);
         if (smBpc === 1) {
-          // Unpack 1 bit/sample to 1 byte/sample (0 or 255), a whole packed byte at a time with bit ops
-          // to stay fast on large bilevel masks.
           const unpacked = new Uint8Array(sMaskWidth * sMaskHeight);
           const rowBytes = Math.ceil(sMaskWidth / 8);
           for (let y = 0; y < sMaskHeight; y++) {
@@ -397,14 +391,12 @@ export function parseImageObject(objText, objNum, objCache) {
           }
           sMask = unpacked;
         }
-        // For explicit /Mask with ImageMask: default Decode [0 1] means
-        // sample 0 = paint (opaque), sample 1 = don't paint (transparent).
-        // The unpacking above produces 0→0, 1→255, so we must invert.
-        // A /Decode [1 0] on the mask would cancel this inversion.
+        // A stencil mask's default Decode [0 1] paints sample 0 and leaves sample 1 transparent.
+        // The unpacking above produces the reverse, where 0 is transparent alpha.
+        // A /Decode [1 0] on the mask flips that back.
         const isExplicitMask = !!explicitMaskRefMatch;
         const maskDecode = resolveNumArray(sMaskObjText, 'Decode', objCache, null);
         const decodeInverted = maskDecode != null && maskDecode.length >= 2 && maskDecode[0] > maskDecode[1];
-        // Invert if: explicit stencil mask with default Decode, OR soft mask with /Decode [1 0]
         const shouldInvert = (isExplicitMask && isImageMask && !decodeInverted) || (!isExplicitMask && decodeInverted);
         // A DCTDecode/JPXDecode mask is still a compressed codestream here.
         // Inverting these bytes would corrupt it, so defer the inversion until imageInfoToBitmap decodes it.
@@ -499,8 +491,7 @@ export function parseColorSpace(objText, objCache) {
 
 /**
  * Parse an ICC profile stream to extract the color transform parameters.
- * Returns gamma values (per channel) and a 3x3 matrix that converts from
- * the profile's RGB to CIE XYZ (D50). Returns null if the profile can't be parsed.
+ * Returns per-channel gamma values and a 3x3 matrix converting the profile's RGB to CIE XYZ (D50), or null if the profile cannot be parsed.
  * @param {number} profileObjNum
  * @param {ObjectCache} objCache
  */
@@ -511,17 +502,14 @@ function parseICCProfile(profileObjNum, objCache) {
   if (!streamBytes || streamBytes.length < 132) { cache.set(profileObjNum, null); return null; }
   const d = streamBytes;
 
-  // Validate ICC signature at offset 36
   if (d[36] !== 0x61 || d[37] !== 0x63 || d[38] !== 0x73 || d[39] !== 0x70) { cache.set(profileObjNum, null); return null; } // 'acsp'
 
-  // Read color space at offset 16 — only handle RGB profiles
   const csBytes = String.fromCharCode(d[16], d[17], d[18], d[19]);
   if (csBytes.trim() !== 'RGB') { cache.set(profileObjNum, null); return null; }
 
   const tagCount = (d[128] << 24) | (d[129] << 16) | (d[130] << 8) | d[131];
   if (tagCount < 1 || tagCount > 100) { cache.set(profileObjNum, null); return null; }
 
-  // Build tag index
   const tags = {};
   for (let i = 0; i < tagCount; i++) {
     const off = 132 + i * 12;
@@ -532,10 +520,10 @@ function parseICCProfile(profileObjNum, objCache) {
     tags[sig] = { offset: tagOff, size: tagSize };
   }
 
-  // Read XYZ tag: 4-byte type sig + 4-byte reserved + X(s15.16) + Y(s15.16) + Z(s15.16)
+  // A 4-byte type signature and 4 reserved bytes precede X, Y and Z, each s15.16 fixed point.
   const readXYZ = (tag) => {
     if (!tag || tag.offset + 20 > d.length) return null;
-    const o = tag.offset + 8; // skip type sig + reserved
+    const o = tag.offset + 8;
     const buf = new DataView(d.buffer, d.byteOffset);
     return [buf.getInt32(o) / 65536, buf.getInt32(o + 4) / 65536, buf.getInt32(o + 8) / 65536];
   };
@@ -545,22 +533,20 @@ function parseICCProfile(profileObjNum, objCache) {
   const bXYZ = readXYZ(tags.bXYZ);
   if (!rXYZ || !gXYZ || !bXYZ) { cache.set(profileObjNum, null); return null; }
 
-  // Profile RGB→XYZ matrix (column-major: columns are rXYZ, gXYZ, bXYZ)
-  // Stored as row-major 3x3: matrix[row*3 + col]
+  // Row-major 3x3 mapping profile RGB to XYZ, indexed as matrix[row * 3 + col].
   const matrix = [
     rXYZ[0], gXYZ[0], bXYZ[0],
     rXYZ[1], gXYZ[1], bXYZ[1],
     rXYZ[2], gXYZ[2], bXYZ[2],
   ];
 
-  // Read TRC (transfer function / gamma) for each channel
   const readGamma = (tag) => {
-    if (!tag || tag.offset + 12 > d.length) return 2.2; // default sRGB-ish
+    if (!tag || tag.offset + 12 > d.length) return 2.2;
     const buf = new DataView(d.buffer, d.byteOffset);
     const count = buf.getUint32(tag.offset + 8);
-    if (count === 0) return 1.0; // linear
+    if (count === 0) return 1.0;
     if (count === 1) return buf.getUint16(tag.offset + 12) / 256; // u8.8 fixed point
-    return 2.2; // complex curve — approximate as sRGB
+    return 2.2; // Complex curve, approximated as sRGB gamma.
   };
 
   const gamma = [
@@ -587,9 +573,7 @@ function findICCProfileObjNum(objText, objCache) {
 }
 
 /**
- * Resolve an ICCBased color space to its Device* equivalent based on the /N component count.
- * ICCBased color spaces are functionally equivalent to DeviceGray (N=1), DeviceRGB (N=3),
- * or DeviceCMYK (N=4) for rendering purposes.
+ * Resolve an ICCBased color space to the Device* space with the same /N component count.
  * @param {string} csText - Text containing the ICCBased array (e.g., "[/ICCBased 5 0 R]")
  * @param {ObjectCache} objCache
  */
@@ -606,8 +590,7 @@ function resolveICCBased(csText, objCache) {
 }
 
 /**
- * Pre-convert an indexed palette whose base is a tint-based color space
- * (Separation or DeviceN) to RGB using the tint transform.
+ * Convert an indexed palette with a Separation or DeviceN base to an RGB palette.
  *
  * @param {Uint8Array} palette - Raw palette bytes (nColors * nInputComponents)
  * @param {string} baseObjText - Text of the Separation/DeviceN base CS array object
@@ -638,26 +621,19 @@ function convertTintPalette(palette, baseObjText, objCache) {
  *
  * @param {string} rawCsText - Text containing the Indexed array (e.g. "[/Indexed /DeviceRGB 255 <hex>]")
  * @param {ObjectCache} objCache
- * @param {number|null} [objNum=null] - Object number for raw-byte literal string parsing
+ * @param {number|null} [objNum=null] - Object number the color space text was read from, used to decrypt string palettes
  * @returns {{palette: Uint8Array, hival: number, base: string}|null}
  */
 export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
-  // PDF allows `% ... newline` comments. Strip them so the
-  // structural regexes below don't trip over a stray comment between tokens.
-  //
-  // Use `csText` (stripped) only for shape-matching regexes. Use `rawCsText`
-  // (original bytes) for extracting palette data from `(...)` literal strings:
-  // a `%` byte inside a literal is data, not a comment, and stripping would
-  // silently corrupt those palette bytes.
+  // `csText` has PDF `%` comments stripped, so only it is safe for the structural regexes below.
+  // Palette bytes are read from `rawCsText` instead, because a `%` inside a `(...)` literal string is data and stripping it corrupts the palette.
   const csText = rawCsText.replace(/%[^\r\n]*/g, '');
   let paletteBase = null;
   let paletteHival = 0;
   let palette = null;
-  let baseObjText = null; // for tint/Lab post-processing
+  let baseObjText = null;
 
-  // ── Step 1: Try stream-ref patterns first ──────────────────────────────────
-
-  // 1a: direct base name + stream: /Indexed /DeviceRGB 255 67 0 R
+  // /Indexed /DeviceRGB 255 67 0 R
   const directStreamMatch = /\/Indexed\s*\/(\w+)\s+(\d+)\s+(\d+)\s+\d+\s+R/.exec(csText);
   if (directStreamMatch) {
     paletteBase = directStreamMatch[1];
@@ -666,7 +642,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     palette = objCache.getStreamBytes(palObjNum) || readIndirectLiteralPalette(objCache, palObjNum);
   }
 
-  // 1b: indirect base ref + stream: /Indexed 74 0 R 13 67 0 R
+  // /Indexed 74 0 R 13 67 0 R
   if (!palette) {
     const refStreamMatch = /\/Indexed\s+(\d+)\s+\d+\s+R\s+(\d+)\s+(\d+)\s+\d+\s+R/.exec(csText);
     if (refStreamMatch) {
@@ -682,7 +658,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // 1c: array-form base + stream: [/Indexed [/CalRGB <<...>>] 3 102 0 R]
+  // [/Indexed [/CalRGB <<...>>] 3 102 0 R]
   if (!palette) {
     const arrBaseMatch = /\/Indexed\s*\[/.exec(csText);
     if (arrBaseMatch) {
@@ -698,7 +674,6 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
       const baseNameMatch = /\/(\w+)/.exec(baseArr);
       if (baseNameMatch) {
         const afterArr = csText.substring(arrEnd + 1).trim();
-        // After the base array: hival N 0 R (stream), or hival <hex>, or hival (literal)
         const streamAfterArr = /^(\d+)\s+(\d+)\s+\d+\s+R/.exec(afterArr);
         const hexAfterArr = !streamAfterArr ? /^(\d+)\s*<([0-9a-fA-F\s]+)>/.exec(afterArr) : null;
         if (streamAfterArr) {
@@ -729,9 +704,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // ── Step 2: Try literal string patterns ────────────────────────────────────
-
-  // 2a: direct base name + literal: /Indexed /DeviceRGB 255 (bytes...)
+  // /Indexed /DeviceRGB 255 (bytes...)
   if (!palette) {
     const litDirectMatch = /\/Indexed\s*\/(\w+)\s+(\d+)\s*\(/.exec(rawCsText);
     if (litDirectMatch) {
@@ -741,7 +714,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // 2b: indirect base ref + literal: /Indexed 639 0 R 18 (bytes...)
+  // /Indexed 639 0 R 18 (bytes...)
   if (!palette) {
     const litRefMatch = /\/Indexed\s+(\d+)\s+\d+\s+R\s+(\d+)\s*\(/.exec(rawCsText);
     if (litRefMatch) {
@@ -756,9 +729,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // ── Step 3: Try hex string patterns ────────────────────────────────────────
-
-  // 3a: direct base name + hex: /Indexed /DeviceRGB 202 <hex>
+  // /Indexed /DeviceRGB 202 <hex>
   if (!palette) {
     const hexDirectMatch = /\/Indexed\s*\/(\w+)\s+(\d+)\s*<([0-9a-fA-F\s]+)>/.exec(csText);
     if (hexDirectMatch) {
@@ -771,7 +742,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // 3b: indirect base ref + hex: /Indexed 8 0 R 202 <hex>
+  // /Indexed 8 0 R 202 <hex>
   if (!palette) {
     const hexRefMatch = /\/Indexed\s+(\d+)\s+\d+\s+R\s+(\d+)\s*<([0-9a-fA-F\s]+)>/.exec(csText);
     if (hexRefMatch) {
@@ -791,13 +762,9 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
 
   if (!palette || !paletteBase) return null;
 
-  // ── Step 4: Resolve base color space ───────────────────────────────────────
-
-  // Cal* → Device*
   if (paletteBase === 'CalRGB') paletteBase = 'DeviceRGB';
   else if (paletteBase === 'CalGray') paletteBase = 'DeviceGray';
 
-  // ICCBased → Device* via /N
   if (paletteBase === 'ICCBased') {
     const iccSrc = baseObjText || csText;
     const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(iccSrc);
@@ -810,9 +777,6 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // ── Step 5: Pre-convert exotic base palettes ───────────────────────────────
-
-  // Separation/DeviceN → pre-convert palette via tint transform
   if ((paletteBase === 'Separation' || paletteBase === 'DeviceN') && baseObjText) {
     const converted = convertTintPalette(palette, baseObjText, objCache);
     if (converted) {
@@ -821,7 +785,6 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     }
   }
 
-  // Lab → pre-convert L*a*b* → sRGB
   if (paletteBase === 'Lab' && baseObjText) {
     const rangeStr = resolveArrayValue(baseObjText, 'Range', objCache);
     const rangeNums = rangeStr ? rangeStr.split(/\s+/).map(Number) : null;
@@ -862,8 +825,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
 }
 
 /**
- * Read an indirect palette object as a literal string. Used when /Indexed names
- * an object number whose payload is a `(...)` string literal rather than a stream.
+ * Read an indirect palette object as a literal string.
  * @param {ObjectCache} objCache
  * @param {number} objNum
  * @returns {Uint8Array|null}
@@ -920,7 +882,7 @@ function readIndirectLiteralPalette(objCache, objNum) {
 }
 
 /**
- * Parse a literal string palette from csText, with raw-byte fallback for type-1 objects.
+ * Parse a literal string palette from an Indexed color space definition.
  * @param {string} csText
  * @param {RegExpExecArray} regexMatch - The regex match that found the literal opening
  * @param {ObjectCache} objCache
@@ -951,7 +913,7 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
       if (parenPos >= 0) return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, parenPos).value, objNum);
     }
   }
-  // Fallback: parse from text via charCodeAt (works for compressed objects)
+  // Fallback for objects inside an object stream, which have no file offset of their own.
   const parenIdx = csText.indexOf('(', regexMatch.index + regexMatch[0].length - 1);
   if (parenIdx < 0) return null;
   const bytes = [];
@@ -991,18 +953,16 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
 }
 
 /**
- * Classify a DeviceN color space. Single-colorant DeviceN (e.g., [/DeviceN [/Black] ...])
- * is functionally equivalent to Separation and needs ink inversion. Multi-colorant DeviceN
- * (e.g., [/DeviceN [/Red /Green /Blue /Alpha] ...]) should be treated as RGB-like.
+ * Classify a DeviceN color space.
+ * A single-colorant DeviceN is reported as Separation.
  * @param {string} csText
  */
 function classifyDeviceN(csText) {
-  // Count colorant names in the array: /DeviceN [ /Name1 /Name2 ... ]
-  // Names may contain PDF hex escapes (e.g., /PANTONE#202755#20U), so match any
-  // non-delimiter chars rather than \w+.
+  // Colorant names may contain PDF hex escapes (e.g., /PANTONE#202755#20U), so match any non-delimiter chars rather than \w+.
   const namesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csText);
   if (namesMatch) {
     const colorants = namesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || [];
+    // A one-colorant DeviceN behaves exactly like a Separation, and the Separation path is what applies its ink inversion.
     if (colorants.length === 1) return 'Separation';
   }
   return 'DeviceN';

@@ -249,7 +249,6 @@ export function makeCmapTable(glyphs) {
   for (i = glyphs.length - 1; i > 0; i -= 1) {
     const g = glyphs.get(i);
     if (g.unicode > 65535) {
-      console.log('Adding CMAP format 12 (needed!)');
       needFormat12 = true;
       break;
     }

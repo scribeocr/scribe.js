@@ -586,22 +586,7 @@ export function xyzToSRGB(X, Y, Z, sourceWP) {
 const DEFAULT_LAB_WHITEPOINT = [0.9642, 1.0, 0.8249];
 
 /**
- * Convert CMYK (0-1) → RGB (0-255).
- *
- * Pure-K (C=M=Y=0) bypasses the polynomial and returns exact gray
- * `255*(1-K)`. In PDFs pure-K almost always means "intended as neutral
- * black" — body text, diagrams, line art. But SWOP black ink isn't
- * perfectly neutral, so feeding pure-K through the polynomial yields
- * R≠G≠B (e.g. CMYK(0,0,0,0.72) → RGB(107,109,114)), giving a visible
- * color cast on grayscale content. pdf.js applies the polynomial
- * unconditionally and accepts the tint; the bypass is our addition.
- *
- * Chromatic CMYK → polynomial approximation of US Web Coated (SWOP) v2.
- * The naive subtractive formula `(1-C)(1-K)` etc. gives wrong hues for
- * chromatic fills (e.g. forest-green renders as lime). Polynomial
- * adapted from Mozilla pdf.js (Apache 2.0), src/core/colorspace.js
- * DeviceCmykCS.
- *
+ * Convert CMYK (0-1) to RGB (0-255).
  * @param {number} c
  * @param {number} m
  * @param {number} y
@@ -609,11 +594,16 @@ const DEFAULT_LAB_WHITEPOINT = [0.9642, 1.0, 0.8249];
  * @returns {[number, number, number]}
  */
 export function cmykToRgb(c, m, y, k) {
+  // Pure K in a PDF is almost always intended as neutral black.
+  // SWOP black ink is not neutral, so the polynomial below returns R != G != B for pure K and visibly casts grayscale content.
   if (c === 0 && m === 0 && y === 0) {
     const gray = Math.max(0, Math.min(255, Math.round(255 * (1 - k))));
     return [gray, gray, gray];
   }
   if (c === 1 && m === 1 && y === 1 && k === 1) return [0, 0, 0];
+  // The naive subtractive formula (1-C)(1-K) gets chromatic hues badly wrong, turning forest green into lime.
+  // This polynomial approximates US Web Coated (SWOP) v2, adapted from Mozilla pdf.js (Apache 2.0), src/core/colorspace.js DeviceCmykCS.
+  // The pure-K bypass above is not part of that adaptation.
   const r = 255
     + c * (-4.387332384609988 * c + 54.48615194189176 * m + 18.82290502165302 * y + 212.25662451639585 * k - 285.2331026137004)
     + m * (1.7149763477362134 * m - 5.6096736904047315 * y - 17.873870861415444 * k - 5.497006427196366)
@@ -705,7 +695,7 @@ export function parseTintColorSpace(csText, objCache) {
   /** @type {ParsedAltCS} */
   let altCS = { type: 'DeviceRGB' };
 
-  // Try direct name match: /Separation /Name /DeviceCMYK or /Lab
+  // /Separation /Name /DeviceCMYK
   const sepDirect = /\/Separation\s*\/[^\s/<>[\]]+\s*\/(Device\w+|CalRGB|CalGray|Lab|ICCBased)/.exec(csText);
   if (sepDirect) {
     altCS = parseAltColorSpace(`/${sepDirect[1]}`, objCache);
@@ -715,7 +705,7 @@ export function parseTintColorSpace(csText, objCache) {
       const altObjText = objCache.getObjectText(Number(sepRef[1]));
       if (altObjText) altCS = parseAltColorSpace(altObjText, objCache);
     } else {
-      // DeviceN: [/DeviceN [names] altCS tintFunc ...]
+      // [/DeviceN [names] altCS tintFunc ...]
       const dnDirect = /\/DeviceN\s*\[[^\]]*\]\s*\/(Device\w+|CalRGB|CalGray|Lab|ICCBased)/.exec(csText);
       const dnRef = !dnDirect && /\/DeviceN\s*\[[^\]]*\]\s*(\d+)\s+\d+\s+R/.exec(csText);
       if (dnDirect) {
@@ -724,7 +714,7 @@ export function parseTintColorSpace(csText, objCache) {
         const altObjText = objCache.getObjectText(Number(dnRef[1]));
         if (altObjText) altCS = parseAltColorSpace(altObjText, objCache);
       } else {
-        // Fall back to scanning the whole text (handles inline `[/Lab <<...>>]`).
+        // The whole-text scan catches the inline dict form, e.g. [/Lab <<...>>].
         altCS = parseAltColorSpace(csText, objCache);
       }
     }
@@ -749,18 +739,15 @@ export function parseTintColorSpace(csText, objCache) {
     }
   }
 
-  // Number of input components: for DeviceN, count colorant names; for Separation, always 1.
   let nInputs = 1;
-  // PDF name escapes (e.g., /PANTONE#202755#20U) — match any non-delimiter chars.
+  // PDF names can contain #XX escapes, e.g. /PANTONE#202755#20U, so match any non-delimiter characters rather than \w.
   const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csText);
   if (dnNamesMatch) {
     nInputs = (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length;
   }
 
-  // Detect the common RGBA-as-DeviceN pattern, e.g. [/DeviceN [/Red /Green /Blue /Alpha] /DeviceRGB { pop }].
+  // A DeviceN tint program can be a passthrough, e.g. [/DeviceN [/Red /Green /Blue /Alpha] /DeviceRGB { pop }].
   // The flag lets tintSamplesToRgb copy channels byte-for-byte instead of evaluating the tint function per pixel.
-  // The check runs the tint function on the probes below rather than pattern-matching the PostScript program text.
-  // Any tint program that behaves as a passthrough qualifies, whether written as { pop }, { }, or a stack shuffle.
   let rgbPassthrough = false;
   if (tintFn && altCS.type === 'DeviceRGB' && nInputs >= 3 && tintFn.nOutputs === 3) {
     const probes = [
@@ -869,21 +856,10 @@ export function tintSamplesToRgb(parsed, src, nComp, nPixels) {
 }
 
 /**
- * Precompute RGB tint samples for a Separation or DeviceN colorspace, ready
- * for indexed lookup by the renderer. Wraps parseTintColorSpace +
- * buildTintLookupTable / sample-grid conversion in one call.
- *
- * Output shape:
- *   - Single-input Separation/DeviceN: a 256-entry RGB lookup table
- *     (256*3 bytes), indexed by `tint = comp * 255`.
- *   - Multi-input DeviceN with a sampled tint function (FunctionType 0):
- *     the function's full sample grid converted from the alternate color
- *     space to sRGB. The caller must read /Size[] from the function dict
- *     to know how to address the grid (Size[0] varies fastest).
- *   - Multi-input DeviceN with FunctionType 2/4: a diagonal 256-entry sweep
- *     (every input set to the same t). Approximation; works because the
- *     multi-channel "tint" case has colors lying along a 1D path.
- *
+ * Precompute RGB tint samples for a Separation or DeviceN color space, ready for indexed lookup by the renderer.
+ * Single-input: a 256-entry RGB lookup table, indexed by `tint = comp * 255`.
+ * Multi-input with a sampled tint function (FunctionType 0): the function's whole sample grid in sRGB, addressed by /Size[] from the function dict, with Size[0] varying fastest.
+ * Multi-input with FunctionType 2 or 4: an approximate 256-entry sweep with every input set to the same t.
  * @param {string} csText
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {{tintSamples: Uint8Array|null, nComponents: number}}
@@ -892,13 +868,11 @@ export function parseSeparationTint(csText, objCache) {
   const parsed = parseTintColorSpace(csText, objCache);
   if (!parsed.tintFn) return { tintSamples: null, nComponents: 3 };
 
-  // Single-input: standard 256-entry lookup table.
   if (parsed.nInputs === 1) {
     const tintSamples = buildTintLookupTable(parsed);
     return { tintSamples, nComponents: 3 };
   }
 
-  // Multi-input: sampled function — convert each grid sample to RGB.
   if (parsed.tintFn.type === 0) {
     const fn = parsed.tintFn;
     const totalSamples = fn.size.reduce((a, b) => a * b, 1);
@@ -921,7 +895,7 @@ export function parseSeparationTint(csText, objCache) {
     return { tintSamples: out, nComponents: 3 };
   }
 
-  // Multi-input FunctionType 2/4: diagonal 256-entry sweep (approximation).
+  // Sampling only the diagonal is an approximation, and it holds when the colorants vary together along a single path.
   const samples = new Uint8Array(256 * 3);
   const inputs = new Array(parsed.nInputs);
   for (let i = 0; i < 256; i++) {
