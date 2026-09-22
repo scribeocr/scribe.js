@@ -3158,7 +3158,7 @@ export function createInspectDocumentTool(app) {
     down = null;
     if (ev.button !== 0) return;
     const t = /** @type {?HTMLElement} */ (ev.target);
-    if (t && t.closest && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
+    if (t && t.closest && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, .scribe-inspect-wordfield, [contenteditable]')) return;
     down = { x: ev.clientX, y: ev.clientY };
   };
   const onPointerUp = (ev) => {
@@ -3168,6 +3168,7 @@ export function createInspectDocumentTool(app) {
     const kw = app.scribe.textSel?.wordAt?.(ev.clientX, ev.clientY) || null;
     // Armed: a click on text with no known font, a picture or blank paper leaves the pick armed.
     if (armed) { if (kw) pickWord(kw); return; }
+    if (kw && workspace()?.wordClicked?.(kw)) return;
     // Pinned: the ringed word toggles and blank paper clears; any other word is View's.
     if (pinned && (!kw || kw.word === pinned.word)) clearPin();
   };
@@ -3177,6 +3178,8 @@ export function createInspectDocumentTool(app) {
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (armed) { setArmed(false); e.preventDefault(); return; }
+    if (workspace()?.closeWordField?.()) { e.preventDefault(); return; }
+    if (workspace()?.leaveEditMode?.()) { e.preventDefault(); return; }
     if (workspace()?.clearGlyph?.()) { e.preventDefault(); return; }
     if (clearPin()) e.preventDefault();
   };

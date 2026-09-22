@@ -1245,6 +1245,8 @@ class ScribePDFViewer {
         this._thumbnailPanel.cancelCut();
         this._thumbnailPanel.rebuild(Math.max(0, Math.min(this.scribe.state.cp.n, len - 1)));
       }
+      // An undo or redo changes recorded characters without passing through the Inspect Document view.
+      (this._phoneUi ? this._inspectSheetHandle : this._automatePanel?.inspectWorkspace?.())?.docEdited?.();
       this._syncUndoState();
     };
 

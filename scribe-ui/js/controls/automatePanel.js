@@ -368,12 +368,12 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-gl .scribe-am-ins-sample { margin: 4px 0 8px; }
     .${r} .scribe-am-ins-glwarn { color: #b45309; font-weight: 600; font-size: 10.5px; letter-spacing: 0; text-transform: none; }
     .${r}[data-theme="dark"] .scribe-am-ins-glwarn { color: #f0b35a; }
-    .${r} .scribe-am-ins-glgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(34px, 1fr)); gap: 2px; margin: 4px 0 2px; }
+    .${r} .scribe-am-ins-glgrid { --scribe-glyph-scale: 1.35; display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(34px * var(--scribe-glyph-scale)), 1fr)); gap: calc(2px * var(--scribe-glyph-scale)); margin: 4px 0 2px; }
     .${r} .scribe-am-ins-glcell {
-      position: relative; height: 42px; box-sizing: border-box; overflow: hidden; display: grid; place-items: center; cursor: pointer;
+      position: relative; aspect-ratio: 49 / 69; box-sizing: border-box; overflow: hidden; display: block; cursor: pointer;
       border: 1px solid var(--scribe-line); border-radius: 4px; background: var(--scribe-surface); -webkit-tap-highlight-color: transparent;
     }
-    .${r} .scribe-am-ins-glcell svg { width: 60%; height: 60%; margin-top: -8px; display: block; fill: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glcell svg { position: absolute; left: 2px; top: 2px; width: calc(100% - 4px); aspect-ratio: 1; height: auto; display: block; fill: var(--scribe-ink); overflow: visible; }
     .${r} .scribe-am-ins-glcell:hover { border-color: var(--scribe-line-strong); background: var(--scribe-hover); }
     .${r} .scribe-am-ins-glcell:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
     .${r} .scribe-am-ins-glcell.unused { background: var(--scribe-canvas); }
@@ -382,12 +382,42 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-glcell.ph.unused { background: color-mix(in srgb, var(--scribe-note) 8%, var(--scribe-canvas)); }
     .${r} .scribe-am-ins-glcell.sel { border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); background: var(--scribe-active); }
     .${r} .scribe-am-ins-glcell.sel svg { fill: var(--scribe-accent); }
-    .${r} .scribe-am-ins-glcap { position: absolute; left: 0; right: 0; bottom: 1px; font-size: 8.5px; line-height: 1; color: var(--scribe-ink-3); text-align: center; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
-    .${r} .scribe-am-ins-glcap.ph { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 7.5px; letter-spacing: -.02em; }
-    .${r} .scribe-am-ins-glfoot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 18px; font-size: 11.5px; color: var(--scribe-ink-2); padding: 3px 0 0; font-variant-numeric: tabular-nums; }
-    .${r} .scribe-am-ins-glfoot .ch { font-size: 15px; line-height: 1; color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glcap { position: absolute; left: 0; right: 0; bottom: 2px; height: 20px; line-height: 20px; font-size: 15px; color: var(--scribe-ink-3); text-align: center; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glcap.ph { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; letter-spacing: -.02em; }
+    /* Fixed rows of one line each, so the footer keeps its height whatever it shows. */
+    .${r} .scribe-am-ins-glfoot { display: grid; grid-template-rows: 18px 18px; font-size: 11.5px; line-height: 18px; color: var(--scribe-ink-2); padding: 3px 0 0; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glfoot .row { display: flex; align-items: baseline; min-width: 0; white-space: nowrap; }
+    .${r} .scribe-am-ins-glfoot .tx { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-am-ins-glfoot .go { flex: none; }
+    .${r} .scribe-am-ins-glfoot .ch { flex: none; margin-right: 6px; font-size: 15px; line-height: 1; color: var(--scribe-ink); }
     .${r} .scribe-am-ins-glfoot .ch.ph { font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--scribe-ink-2); }
-    .${r} .scribe-am-ins-glfoot .dim { color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-glfoot .dim { grid-row: span 2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-glok { color: #2e7d4f; font-weight: 600; font-size: 10.5px; letter-spacing: 0; text-transform: none; }
+    .${r}[data-theme="dark"] .scribe-am-ins-glok { color: #5abd85; }
+    .${r} .scribe-am-ins-glcell.conf .scribe-am-ins-glcap { color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glfield { position: absolute; left: 3px; right: 3px; bottom: 2px; height: 20px; box-sizing: border-box; border: 1px solid var(--scribe-accent); border-radius: 3px; background: var(--scribe-surface); color: var(--scribe-ink); font: inherit; font-size: 15px; line-height: 1; text-align: center; padding: 0 2px; outline: none; }
+    .${r} .scribe-am-ins-glfield::placeholder { color: var(--scribe-ink-3); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; letter-spacing: -.02em; }
+    .${r} .scribe-am-ins-glfield:focus { box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-am-ins-glq { border-top: 1px solid var(--scribe-line); border-bottom: 1px solid var(--scribe-line); padding: 7px 0 8px; margin: 4px 0; }
+    .${r} .scribe-am-ins-glqh { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-ins-glqh .tt { font-weight: 600; color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glqh .n { color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glqrow { display: flex; flex-wrap: wrap; gap: 0 1px; align-items: flex-end; margin: 6px 0 4px; min-height: 40px; }
+    .${r} .scribe-am-ins-glqc { display: grid; justify-items: center; gap: 1px; min-width: 0; }
+    .${r} .scribe-am-ins-glqg { font-size: 22px; line-height: 1.1; color: var(--scribe-ink); padding: 0; white-space: pre; }
+    .${r} .scribe-am-ins-glqc.tgt .scribe-am-ins-glqg { color: var(--scribe-accent); }
+    .${r} .scribe-am-ins-glql { font-size: 11px; line-height: 14px; min-height: 14px; min-width: 0; text-align: center; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-glql.typed { color: var(--scribe-ink); }
+    .${r} .scribe-am-ins-glql.bad { color: var(--scribe-danger); font-weight: 700; }
+    .${r} .scribe-am-ins-glqin { display: block; width: 100%; height: 26px; box-sizing: border-box; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 3px; border: 1px solid var(--scribe-line-strong); border-radius: 5px; background: var(--scribe-surface); color: var(--scribe-ink); padding: 0 7px; outline: none; }
+    .${r} .scribe-am-ins-glqin:focus { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-am-ins-glqin.err { border-color: var(--scribe-danger); }
+    .${r} .scribe-am-ins-glqmsg { font-size: 11px; color: var(--scribe-ink-3); margin-top: 5px; min-height: 15px; }
+    .${r} .scribe-am-ins-glqmsg.err { color: var(--scribe-danger); }
+    .${r} .scribe-am-ins-glqlinks { font-size: 11.5px; margin-top: 3px; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-ins-glqprog { font-size: 11px; color: var(--scribe-ink-3); margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-glqbar { height: 3px; background: var(--scribe-sunken); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+    .${r} .scribe-am-ins-glqbar i { display: block; height: 100%; background: var(--scribe-accent); border-radius: 2px; }
     .${r}.scribe-phone .scribe-am-ins { padding: 2px 14px 14px; }
     .${r}.scribe-phone .scribe-am-ins-kv { font-size: 14px; grid-template-columns: 120px minmax(0, 1fr); padding: 5px 0; }
     .${r}.scribe-phone .scribe-am-ins-tbl { font-size: 13px; }
@@ -398,13 +428,21 @@ function addAutomateStyles(rootClass) {
     .${r}.scribe-phone .scribe-am-ins-schema, .${r}.scribe-phone .scribe-am-ins-lang, .${r}.scribe-phone .scribe-am-ins-nest-hd { font-size: 12px; }
     .${r}.scribe-phone .scribe-am-ins-glfont .nm { font-size: 15px; }
     .${r}.scribe-phone .scribe-am-ins-glfont .ty { font-size: 13px; }
-    .${r}.scribe-phone .scribe-am-ins-glgrid { grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: 3px; }
-    .${r}.scribe-phone .scribe-am-ins-glcell { height: 50px; }
-    .${r}.scribe-phone .scribe-am-ins-glcell svg { margin-top: -10px; }
-    .${r}.scribe-phone .scribe-am-ins-glcap { font-size: 10px; bottom: 2px; }
-    .${r}.scribe-phone .scribe-am-ins-glcap.ph { font-size: 9px; }
-    .${r}.scribe-phone .scribe-am-ins-glfoot { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-glgrid { grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); gap: 3px; }
+    .${r}.scribe-phone .scribe-am-ins-glcell { aspect-ratio: 43 / 64; }
+    .${r}.scribe-phone .scribe-am-ins-glcell svg { left: 1px; width: calc(100% - 2px); }
+    .${r}.scribe-phone .scribe-am-ins-glcap { font-size: 14px; height: 19px; line-height: 19px; bottom: 2px; }
+    .${r}.scribe-phone .scribe-am-ins-glcap.ph { font-size: 12px; }
+    .${r}.scribe-phone .scribe-am-ins-glfield { height: 19px; font-size: 14px; left: 2px; right: 2px; }
+    .${r}.scribe-phone .scribe-am-ins-glfield::placeholder { font-size: 12px; }
+    .${r}.scribe-phone .scribe-am-ins-glfoot { grid-template-rows: 20px 20px; font-size: 13px; line-height: 20px; }
     .${r}.scribe-phone .scribe-am-ins-glfoot .ch { font-size: 17px; }
+    .${r}.scribe-phone .scribe-am-ins-glq { padding: 8px 0 10px; }
+    .${r}.scribe-phone .scribe-am-ins-glqh { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-glqg { font-size: 28px; }
+    .${r}.scribe-phone .scribe-am-ins-glql { font-size: 13px; line-height: 16px; min-width: 0; }
+    .${r}.scribe-phone .scribe-am-ins-glqin { height: 34px; font-size: 17px; letter-spacing: 4px; }
+    .${r}.scribe-phone .scribe-am-ins-glqmsg, .${r}.scribe-phone .scribe-am-ins-glqlinks, .${r}.scribe-phone .scribe-am-ins-glqprog { font-size: 13px; }
     .${r}.scribe-phone .scribe-am-ins-xmlline { font-size: 13px; }
     .${r}.scribe-phone .scribe-am-ins-xml { font-size: 12px; }
     .${r}.scribe-phone .scribe-am-ins-cat { font-size: 13.5px; }

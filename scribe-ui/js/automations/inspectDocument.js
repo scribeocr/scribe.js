@@ -1,8 +1,11 @@
+import { ensureType3GlyphCodes } from '../../../js/type3GlyphMappings.js';
+
 // Local copy of the toolbar's lineIcon.
 // Importing toolbar.js from here would pull the whole viewer into this lazy module.
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const CHEVRON_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 const PICK_SVG = lineIcon('<circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/>');
+const PEN_SVG = lineIcon('<path d="M4 20h4l10.5-10.5a1.5 1.5 0 0 0 0-2.1l-1.9-1.9a1.5 1.5 0 0 0-2.1 0L4 16z"/><path d="M13 7l4 4"/>');
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const PAPER_NAMES = {
@@ -336,6 +339,8 @@ function xmpGrid(props) {
  * @property {string[]} keys - The strings that mean this glyph in extracted text.
  * @property {?number} cp - The lowest code point the glyph answers to.
  * @property {boolean} placeholder - The text is a private-use code point rather than a real character.
+ * @property {?string} hash - The outline's hash, which a recorded character is keyed by.
+ * @property {number[]} codes - The character codes that reach the glyph.
  * @property {number} uses - Occurrences in the document's text.
  * @property {Set<number>} pages - 0-based pages with a use.
  * @property {?{n: number, wordId: string}} first - The first use in reading order.
@@ -383,20 +388,39 @@ export function buildInspectWorkspace(host, container, nav = null) {
   /**
    * The glyph view, in place of the list while a font is open.
    * @type {?{font: import('../../../js/pdf/resourceInventory.js').InventoryFont, program: import('../../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string,
-   *   glyphs: DrillGlyph[], part: ?HTMLElement, scrollTop: number, paintSel: () => void, setFoot: (g: ?DrillGlyph) => void}}
+   *   glyphs: DrillGlyph[], byCode: Map<number, DrillGlyph>, part: ?HTMLElement, scrollTop: number, paintSel: () => void, setFoot: (g: ?DrillGlyph) => void,
+   *   refreshCaps: () => void}}
    */
   let drill = null;
   /** @type {?DrillGlyph} The glyph whose words are washed. */
   let selGlyph = null;
   let shownGlyphs = GLYPH_CELL_LIMIT;
+  /** Whether Edit Characters is on. */
+  let editMode = false;
+  /** @type {?Type3GlyphHashes} The document's outline hashes, requested when a glyph view opens. */
+  let hashes = null;
+  /** @type {?() => void} Closes the word field open on the page. */
+  let closeField = null;
+  /**
+   * Edit Characters' queue of words and single glyphs to type, or null while the mode is off.
+   * @type {?Array<{kind: 'word'|'glyph', n: number, word: any, entry: any, g?: DrillGlyph}>}
+   */
+  let queue = null;
+  let queueAt = 0;
+  /** @type {Array<any>} Items skipped in this pass, asked again after the rest. */
+  let queueSkipped = [];
+  /** @type {?string} The word the page was last brought to for the queue, so a repaint does not scroll again. */
+  let queueShown = null;
+  /** @type {?() => void} Removes the ring around the queue's word on the page. */
+  let closeRing = null;
   const radioName = `scribe-am-ins-scope-${Math.random().toString(36).slice(2, 8)}`;
   const fontKey = (f) => (f.programObjNum != null ? `p${f.programObjNum}` : `n-${f.name}-${f.fontObjNums[0]}`);
 
   /**
    * Wash the words drawn with `font` in every rendered page; null clears.
-   * With `keys`, only the words whose text carries one of those strings.
+   * With `glyph`, only the words that draw it.
    */
-  const applyWash = (font, keys = null) => {
+  const applyWash = (font, glyph = null) => {
     for (const kw of washed) kw.fillBox = false;
     washed = [];
     const doc = viewer.doc;
@@ -406,10 +430,51 @@ export function buildInspectWorkspace(host, container, nav = null) {
       if (!page || page.textSource !== 'pdf') continue;
       const entry = doc.nativeText.pages[page.n]?.[kw.word.id];
       if (!entry || entry.fontObjNum == null || !font.fontObjNums.includes(entry.fontObjNum)) continue;
-      if (keys && !keys.some((k) => kw.word.text.includes(k))) continue;
+      // Recorded codes still find the glyph once a word's text reads as characters.
+      if (glyph && !(entry.codes ? glyph.codes.some((c) => entry.codes.includes(c)) : glyph.keys.some((k) => kw.word.text.includes(k)))) continue;
       kw.fillBox = true;
       washed.push(kw);
     }
+  };
+  /** The character the document records for a placeholder glyph, or null. */
+  const charOf = (g) => (g.placeholder && g.hash ? (viewer.doc?.type3GlyphMappings.get(g.hash) ?? null) : null);
+  /**
+   * A word as the font draws it, in the placeholder code points the font's own face maps to its glyphs.
+   * It follows the recorded glyph codes, so it stays the same after the word's text is repaired.
+   */
+  const glyphRun = (word, entry) => (entry?.codes ? entry.codes.map((c, i) => (c >= 0 ? String.fromCodePoint(0xE000 + c) : (word.chars?.[i]?.text ?? ''))).join('') : word.text);
+  /** A word's current reading: the recorded characters, with a dot per glyph that has none. */
+  const readingOfWord = (word, entry) => {
+    if (!entry?.codes || !drill) return word.text;
+    return entry.codes.map((c, i) => {
+      if (c < 0) return word.chars?.[i]?.text ?? '';
+      const g = drill.byCode.get(c);
+      return g ? (charOf(g) ?? '·') : '·';
+    }).join('');
+  };
+  /** Apply the wash the view's current state calls for. */
+  const washNow = () => {
+    if (drill && selGlyph) applyWash(drill.font, selGlyph);
+    else if (drill && editMode) applyWash(drill.font);
+    else applyWash(pinnedFont || hoverFont);
+  };
+  /**
+   * A fresh layer above the page's other layers, in the coordinate space of `orientation`, for the ring and the word field.
+   * The caller removes it with what it holds.
+   * @param {number} n
+   * @param {number} orientation
+   * @returns {?HTMLDivElement}
+   */
+  const floatingLayer = (n, orientation) => {
+    const pageEl = viewer.getTextGroup(n, orientation)?.parentElement;
+    if (!pageEl) return null;
+    // In the text layer the ring and the field would sit under the wash, whose rectangles paint in the select layer above it.
+    const layer = viewer.createGroup(n, orientation);
+    layer.classList.add('scribe-layer-inspect');
+    layer.style.zIndex = '4';
+    layer.style.pointerEvents = 'none';
+    pageEl.appendChild(layer);
+    return layer;
   };
 
   const scrollToHeader = (hdr) => {
@@ -469,7 +534,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       for (const line of page.lines) {
         for (const w of line.words) {
           if (nt[w.id]?.fontObjNum == null || !f.fontObjNums.includes(nt[w.id].fontObjNum)) continue;
-          words.push(w.text);
+          words.push(glyphRun(w, nt[w.id]));
           if (firstPage < 0) firstPage = p;
           if (words.join(' ').length > 48) break;
         }
@@ -834,20 +899,43 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const {
       font: f, program, faceName, glyphs,
     } = drill;
+    const doc = viewer.doc;
     const pf = /** @type {import('../../../js/font-parser/src/index.js').Font} */ (program.font);
-    const pageCount = inv ? inv.pageCount : (viewer.doc ? viewer.doc.pageMetrics.length : 0);
+    const pageCount = inv ? inv.pageCount : (doc ? doc.pageMetrics.length : 0);
     const part = el('div', 'scribe-am-ins-part scribe-am-ins-gl');
     const nameLine = el('div', 'scribe-am-ins-glfont');
     nameLine.append(el('span', 'nm', f.baseName), el('span', 'ty', fontTypeLabel(f)));
     part.append(nameLine);
     const sample = sampleFor(f, () => {});
     if (sample) part.append(sample);
-    const placeholders = glyphs.filter((g) => g.placeholder).length;
+    const placeholders = glyphs.filter((g) => g.placeholder);
+    const editable = placeholders.some((g) => g.hash) && !!doc?.images?.pdfData;
+    const remaining = () => placeholders.filter((g) => charOf(g) == null).length;
     const hdr = catHeader(`${program.kind === 'rebuilt' ? 'Glyphs in use' : 'Glyphs'} · ${fmtInt(glyphs.length)}`);
-    if (placeholders) hdr.append(el('span', 'scribe-am-ins-glwarn', ` · ${fmtInt(placeholders)} without a character`));
+    const warn = el('span', 'scribe-am-ins-glwarn');
+    if (placeholders.length) hdr.append(warn);
+    const paintWarn = () => {
+      const n = remaining();
+      warn.textContent = n ? ` · ${fmtInt(n)} without a character` : ' · every glyph has a character';
+      warn.className = n ? 'scribe-am-ins-glwarn' : 'scribe-am-ins-glok';
+    };
+    paintWarn();
     const cathd = el('div', 'scribe-am-ins-cathd');
     cathd.append(hdr);
+    if (editable) {
+      const editBtn = el('button', 'scribe-am-ins-pick');
+      editBtn.type = 'button';
+      editBtn.title = 'Type the character each glyph stands for';
+      editBtn.innerHTML = `<span class="scribe-am-ins-pick-ic">${PEN_SVG}</span><span>Edit Characters</span>`;
+      editBtn.classList.toggle('on', editMode);
+      editBtn.setAttribute('aria-pressed', editMode ? 'true' : 'false');
+      editBtn.addEventListener('click', () => setEditMode(!editMode));
+      cathd.append(editBtn);
+    }
     part.append(cathd);
+    const qbox = el('div', 'scribe-am-ins-glq');
+    qbox.hidden = !(editMode && queue);
+    part.append(qbox);
     // The cells scale to the program's ascender-to-descender band, not to each glyph, so the glyphs keep their relative sizes.
     const upm = pf.unitsPerEm || 1000;
     const asc = pf.ascender > 0 ? pf.ascender : Math.round(upm * 0.8);
@@ -855,24 +943,27 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const pad = (asc - desc) * 0.04;
     const r1 = (v) => Math.round(v * 10) / 10;
     const glyphClass = (g) => {
-      if (g.cp == null) return 'other';
-      if (g.placeholder) return 'pua';
-      const ch = String.fromCodePoint(g.cp);
-      if (/\s/.test(ch)) return 'other';
+      const t = charOf(g);
+      if (t == null && g.cp == null) return 'other';
+      if (t == null && g.placeholder) return 'pua';
+      const ch = t ?? String.fromCodePoint(/** @type {number} */ (g.cp));
+      if (/^\s/.test(ch)) return 'other';
       if (/\p{Lu}/u.test(ch)) return 'upper';
       if (/\p{Ll}/u.test(ch)) return 'lower';
       if (/\p{L}/u.test(ch)) return 'letter';
       if (/\p{Nd}/u.test(ch)) return 'digit';
       return 'punct';
     };
-    const counts = {};
-    for (const g of glyphs) counts[glyphClass(g)] = (counts[glyphClass(g)] || 0) + 1;
-    const summary = [
-      [counts.upper, 'uppercase'], [counts.lower, 'lowercase'], [counts.letter, 'other letters'], [counts.digit, 'figures'],
-      [counts.punct, 'punctuation'], [counts.pua, 'without a character'], [counts.other, 'other'],
-    ].filter(([n]) => n).map(([n, label]) => `${fmtInt(n)} ${label}`).join(' · ');
+    const summary = () => {
+      const byClass = {};
+      for (const g of glyphs) byClass[glyphClass(g)] = (byClass[glyphClass(g)] || 0) + 1;
+      return [
+        [byClass.upper, 'uppercase'], [byClass.lower, 'lowercase'], [byClass.letter, 'other letters'], [byClass.digit, 'figures'],
+        [byClass.punct, 'punctuation'], [byClass.pua, 'without a character'], [byClass.other, 'other'],
+      ].filter(([n]) => n).map(([n, label]) => `${fmtInt(n)} ${label}`).join(' · ');
+    };
     const usesText = (g) => {
-      if (!g.keys.length) return 'reached by code, not by a character';
+      if (!g.keys.length && !g.codes.length) return 'reached by code, not by a character';
       if (g.text != null && /^\s+$/.test(g.text)) return 'word spacing, not counted';
       if (!g.uses) return 'not used in the text';
       const pages = [...g.pages].sort((a, b) => a - b);
@@ -881,28 +972,69 @@ export function buildInspectWorkspace(host, container, nav = null) {
       return `${fmtInt(g.uses)} use${g.uses === 1 ? '' : 's'} ${on}`;
     };
     const glyphTitle = (g) => {
+      const t = charOf(g);
+      if (t != null) return /^\s+$/.test(t) ? 'space' : t;
       if (g.placeholder) return hexCp(/** @type {number} */ (g.cp));
       if (g.text != null) return /^\s+$/.test(g.text) ? 'space' : g.text;
       return g.name || `glyph ${g.i}`;
+    };
+    const capText = (g) => {
+      const t = charOf(g);
+      if (t != null) return /^\s+$/.test(t) ? 'sp' : t;
+      if (g.placeholder) return hexCp(/** @type {number} */ (g.cp)).slice(2);
+      return g.text == null ? '—' : /^\s+$/.test(g.text) ? 'sp' : g.text;
+    };
+    const fontNameOf = (objNum) => inv?.fonts.find((x) => x.fontObjNums.includes(objNum))?.baseName ?? `font ${objNum}`;
+    /** The document's other fonts that draw the same outline, by name. */
+    const twinFonts = (g) => {
+      if (!hashes || !g.hash) return [];
+      const names = new Set();
+      for (const [objNum] of hashes.byHash.get(g.hash) || []) if (!f.fontObjNums.includes(objNum)) names.add(fontNameOf(objNum));
+      return [...names];
     };
     const foot = el('div', 'scribe-am-ins-glfoot');
     /** @type {?DrillGlyph} */
     let hovered = null;
     /** @type {Map<DrillGlyph, HTMLElement>} */
     const cells = new Map();
+    /** The glyph after `g` in the grid that still has no character, wrapping round, or null. */
+    const nextUnset = (g) => {
+      const list = glyphs.filter((x) => x.placeholder && x.hash && charOf(x) == null && x !== g);
+      if (!list.length) return null;
+      const i = glyphs.indexOf(g);
+      return list.find((x) => glyphs.indexOf(x) > i) || list[0];
+    };
     const setFoot = (g) => {
       foot.textContent = '';
-      if (!g) { foot.append(el('span', 'dim', summary)); return; }
-      const ch = el('span', 'ch', glyphTitle(g));
-      if (g.placeholder) ch.classList.add('ph');
-      else if (g.text != null && faceName && !/^\s+$/.test(g.text)) ch.style.fontFamily = `'${faceName}'`;
-      foot.append(ch);
+      if (!g) {
+        const sum = el('div', 'dim', summary());
+        sum.title = sum.textContent;
+        foot.append(sum);
+        return;
+      }
+      const t = charOf(g);
+      const ch = el('span', 'ch', t != null ? (/^\s+$/.test(t) ? 'space' : t) : glyphTitle(g));
+      if (t == null && g.placeholder) ch.classList.add('ph');
+      else if (t == null && g.text != null && faceName && !/^\s+$/.test(g.text)) ch.style.fontFamily = `'${faceName}'`;
       const bits = [];
-      if (g.placeholder) bits.push('no character');
+      if (t != null) bits.push('recorded');
+      else if (g.placeholder) bits.push('no character');
       else if (g.cp != null) bits.push(hexCp(g.cp));
       if (g.name && g.name !== ch.textContent) bits.push(`/${g.name}`);
-      bits.push(usesText(g));
-      foot.append(document.createTextNode(` ${bits.join(' · ')}`));
+      const uses = [usesText(g)];
+      if (g === selGlyph && t != null) {
+        const twins = twinFonts(g);
+        if (twins.length) uses.push(`also the same glyph in ${twins.join(', ')}`);
+      }
+      const idRow = el('div', 'row');
+      const idText = el('span', 'tx', bits.join(' · '));
+      idText.title = idText.textContent;
+      idRow.append(ch, idText);
+      const useRow = el('div', 'row');
+      const useText = el('span', 'tx', uses.join(' · '));
+      useText.title = useText.textContent;
+      useRow.append(useText);
+      foot.append(idRow, useRow);
       if (g === selGlyph && g.first) {
         const first = g.first;
         const link = el('a', 'scribe-am-ins-more-link', 'Go to first use');
@@ -912,9 +1044,12 @@ export function buildInspectWorkspace(host, container, nav = null) {
           await viewer.displayPage(first.n, false, false);
           const kw = viewer.getUiWords().find((w) => w.word.line.page.n === first.n && w.word.id === first.wordId);
           if (kw) viewer.scrollToWord(kw);
-          if (selGlyph === g) applyWash(f, g.keys);
+          washNow();
         });
-        foot.append(document.createTextNode(' · '), link);
+        // An item of its own, so the text's ellipsis never cuts the link.
+        const go = el('span', 'go', '\u00a0·\u00a0');
+        go.append(link);
+        useRow.append(go);
       }
     };
     const paintSel = () => { for (const [g, c] of cells) c.classList.toggle('sel', g === selGlyph); };
@@ -922,7 +1057,60 @@ export function buildInspectWorkspace(host, container, nav = null) {
       selGlyph = selGlyph === g ? null : g;
       paintSel();
       setFoot(selGlyph || hovered);
-      if (selGlyph) applyWash(f, selGlyph.keys); else applyWash(pinnedFont || hoverFont);
+      washNow();
+    };
+    /** The field that stands in for a placeholder cell's caption in Edit Characters. */
+    const fieldFor = (g) => {
+      const input = document.createElement('input');
+      input.className = 'scribe-am-ins-glfield';
+      input.maxLength = 3;
+      input.setAttribute('aria-label', `Character for glyph ${g.name || g.i}`);
+      let timer = 0;
+      const commitField = () => {
+        if (timer) { clearTimeout(timer); timer = 0; }
+        // Whitespace is refused, since a glyph mapped to a space would split words and re-key every record keyed by word id.
+        const value = input.value.replace(/\s+/g, '');
+        if (value !== input.value) input.value = value;
+        const hash = /** @type {string} */ (g.hash);
+        if (value !== (charOf(g) ?? '')) commit([[hash, value || null]], 'Edit characters');
+      };
+      input.addEventListener('focus', () => { selGlyph = g; paintSel(); setFoot(g); washNow(); });
+      input.addEventListener('click', (e) => e.stopPropagation());
+      input.addEventListener('input', () => { if (timer) clearTimeout(timer); timer = setTimeout(commitField, 250); });
+      input.addEventListener('blur', () => { if (timer) commitField(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === 'ArrowRight' || (e.key === 'Tab' && !e.shiftKey)) {
+          e.preventDefault();
+          commitField();
+          const next = nextUnset(g);
+          const ni = next ? cells.get(next)?.querySelector('input') : null;
+          if (ni) ni.focus(); else input.blur();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          commitField();
+          setEditMode(false);
+        }
+      });
+      return input;
+    };
+    /** Draw a cell's caption, or its field in Edit Characters, from the glyph's current character. */
+    const paintCap = (g, c) => {
+      const t = charOf(g);
+      c.classList.toggle('ph', g.placeholder && t == null);
+      c.classList.toggle('conf', g.placeholder && t != null);
+      let cap = c.querySelector('.scribe-am-ins-glcap, .scribe-am-ins-glfield');
+      if (editMode && g.placeholder && g.hash) {
+        if (!cap || cap.tagName !== 'INPUT') { cap?.remove(); cap = fieldFor(g); c.append(cap); }
+        const input = /** @type {HTMLInputElement} */ (cap);
+        if (document.activeElement !== input) input.value = t ?? '';
+        input.placeholder = hexCp(/** @type {number} */ (g.cp)).slice(2);
+      } else {
+        if (!cap || cap.tagName === 'INPUT') { cap?.remove(); cap = el('span', 'scribe-am-ins-glcap'); c.append(cap); }
+        cap.textContent = capText(g);
+        cap.className = `scribe-am-ins-glcap${g.placeholder && t == null ? ' ph' : ''}`;
+      }
+      c.title = `${glyphTitle(g)}${g.cp != null && !g.placeholder ? ` · ${hexCp(g.cp)}` : ''}`;
     };
     const grid = el('div', 'scribe-am-ins-glgrid');
     glyphs.slice(0, shownGlyphs).forEach((g) => {
@@ -936,7 +1124,6 @@ export function buildInspectWorkspace(host, container, nav = null) {
         if (path.commands.some((k) => k.type === 'L' || k.type === 'C' || k.type === 'Q')) { d = path.toPathData(1); bb = path.getBoundingBox(); }
       } catch { /* An unreadable glyph is an empty cell. */ }
       if (!g.uses && !(g.text != null && /^\s+$/.test(g.text))) c.classList.add('unused');
-      if (g.placeholder) c.classList.add('ph');
       const yMax = bb ? Math.max(asc, bb.y2 + pad) : asc;
       const yMin = bb ? Math.min(desc, bb.y1 - pad) : desc;
       let w = yMax - yMin;
@@ -952,17 +1139,21 @@ export function buildInspectWorkspace(host, container, nav = null) {
         svg.append(p);
       }
       c.append(svg);
-      const cap = el('span', 'scribe-am-ins-glcap', g.placeholder ? hexCp(/** @type {number} */ (g.cp)).slice(2) : g.text == null ? '—' : /^\s+$/.test(g.text) ? 'sp' : g.text);
-      if (g.placeholder) cap.classList.add('ph');
-      c.append(cap);
-      c.title = `${glyphTitle(g)}${g.cp != null && !g.placeholder ? ` · ${hexCp(g.cp)}` : ''}`;
       cells.set(g, c);
+      paintCap(g, c);
       c.addEventListener('mouseenter', () => { hovered = g; if (!selGlyph) setFoot(g); });
-      c.addEventListener('mouseleave', () => { if (hovered === g) hovered = null; if (!selGlyph) setFoot(null); });
       c.addEventListener('click', () => select(g));
-      c.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(g); } });
+      c.addEventListener('keydown', (e) => {
+        if (e.target !== c) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          select(g);
+        }
+      });
       grid.append(c);
     });
+    // Leaving the grid, not a cell, restores the summary, so the footer does not flicker as the pointer crosses the gaps between cells.
+    grid.addEventListener('mouseleave', () => { hovered = null; if (!selGlyph) setFoot(null); });
     paintSel();
     const list = el('div', 'scribe-am-ins-list');
     list.append(grid, listFooters(glyphs.length, shownGlyphs, GLYPH_CELL_LIMIT, GLYPH_STEP, (n) => { shownGlyphs = n; }, hdr, paintDrill));
@@ -978,6 +1169,388 @@ export function buildInspectWorkspace(host, container, nav = null) {
     drill.part = part;
     drill.paintSel = paintSel;
     drill.setFoot = setFoot;
+    /**
+     * Paint the queue block for the current item and ring its word on the page.
+     * Typing in progress survives a repaint of the same item.
+     */
+    const paintQueue = () => {
+      qbox.hidden = !(editMode && queue);
+      if (qbox.hidden) return;
+      const prev = qbox.querySelector('input');
+      const keep = prev ? {
+        value: prev.value, focused: document.activeElement === prev, at: prev.selectionStart, item: qbox.dataset.item,
+      } : null;
+      qbox.textContent = '';
+      // A word or glyph recorded elsewhere leaves items with nothing to teach.
+      const teaches = (it) => {
+        if (it.kind === 'glyph') return charOf(it.g) == null ? 1 : 0;
+        const fresh = it.entry.codes.map((c) => { const g = c >= 0 ? drill.byCode.get(c) : null; return g?.placeholder && g.hash && charOf(g) == null ? g.hash : null; });
+        return new Set(fresh.filter(Boolean)).size;
+      };
+      while (queue[queueAt] && !teaches(queue[queueAt])) queueAt += 1;
+      if (!queue[queueAt] && queueSkipped.length) { queue.push(...queueSkipped.splice(0)); while (queue[queueAt] && !teaches(queue[queueAt])) queueAt += 1; }
+      if (!queue[queueAt] && remaining()) {
+        // An undo or a cleared cell can leave glyphs without a character after a pass, so the queue is built again over them.
+        buildQueue();
+      }
+      const it = queue[queueAt] || null;
+      const key = it ? `${it.n}:${it.word.id}:${it.kind === 'glyph' ? it.g.i : ''}` : '';
+      qbox.dataset.item = key;
+      const wordsTotal = queue.filter((q) => q.kind === 'word').length;
+      const recorded = placeholders.length - remaining();
+      const head = el('div', 'scribe-am-ins-glqh');
+      if (!it) head.append(el('span', 'tt', remaining() ? `${fmtInt(remaining())} unused glyph${remaining() === 1 ? ' has' : 's have'} no character` : 'Every glyph has a character'), el('span', 'n', `${fmtInt(recorded)} recorded`));
+      else if (it.kind === 'word') head.append(el('span', 'tt', 'Type the words the page needs'), el('span', 'n', `${fmtInt(Math.min(queueAt, wordsTotal) + 1)} of ${fmtInt(wordsTotal)}`));
+      else head.append(el('span', 'tt', 'Type the blue glyph only'), el('span', 'n', `${fmtInt(queueAt - wordsTotal + 1)} of ${fmtInt(queue.length - wordsTotal)}`));
+      qbox.append(head);
+      if (it) {
+        const { word, entry } = it;
+        const gs = entry.codes.map((c, i) => ({ code: c, g: c >= 0 ? drill.byCode.get(c) || null : null, ch: c >= 0 ? String.fromCodePoint(0xE000 + c) : (word.chars?.[i]?.text ?? '') }));
+        const tgt = it.kind === 'glyph' ? gs.findIndex((x) => x.g === it.g) : -1;
+        const known = gs.map((x) => (x.g ? (x.g.placeholder ? charOf(x.g) : (x.g.text ?? null)) : x.ch));
+        const row = el('div', 'scribe-am-ins-glqrow');
+        const cols = gs.map((x, i) => {
+          const c = el('div', `scribe-am-ins-glqc${i === tgt ? ' tgt' : ''}`);
+          const g = el('span', 'scribe-am-ins-glqg', x.ch);
+          if (faceName) g.style.fontFamily = `'${faceName}'`;
+          c.append(g, el('span', 'scribe-am-ins-glql'));
+          row.append(c);
+          return /** @type {HTMLElement} */ (c.lastChild);
+        });
+        const input = document.createElement('input');
+        input.className = 'scribe-am-ins-glqin';
+        input.setAttribute('aria-label', it.kind === 'glyph' ? 'The character for the highlighted glyph' : 'The word as it should read');
+        if (it.kind === 'glyph') { input.maxLength = 3; input.placeholder = '·'; } else input.placeholder = known.map((k) => k ?? '·').join('');
+        const msg = el('div', 'scribe-am-ins-glqmsg');
+        const newCount = teaches(it);
+        const baseMsg = it.kind === 'glyph' ? 'This glyph has no character · type it, Enter records it' : `${fmtInt(newCount)} new glyph${newCount === 1 ? '' : 's'} in this word · Enter records ${newCount === 1 ? 'it' : 'them'}`;
+        msg.textContent = baseMsg;
+        /** @type {?{i: number, text: string, replace: ?DrillGlyph}} The first typed letter that disagrees with what its glyph stands for. */
+        let bad = null;
+        const paintTyped = () => {
+          const chars = [...input.value];
+          bad = null;
+          if (it.kind === 'glyph') {
+            cols[tgt].className = `scribe-am-ins-glql${chars.length ? ' typed' : ''}`;
+            cols[tgt].textContent = chars.join('');
+          } else {
+            /** @type {Map<string, number>} The position that first typed each outline, so one glyph typed two ways is caught. */
+            const seen = new Map();
+            gs.forEach((x, i) => {
+              const ch = chars[i];
+              const col = cols[i];
+              col.className = 'scribe-am-ins-glql';
+              if (ch == null) { col.textContent = known[i] ?? ''; return; }
+              col.textContent = ch;
+              col.classList.add('typed');
+              if (known[i] != null && known[i] !== ch) {
+                col.classList.add('bad');
+                if (!bad) bad = { i, text: `The ${nth(i + 1)} glyph is recorded as "${known[i]}", you typed "${ch}"${x.g?.placeholder ? ' · ' : ''}`, replace: x.g?.placeholder ? x.g : null };
+              } else if (x.g?.placeholder && x.g.hash) {
+                const first = seen.get(x.g.hash);
+                if (first != null && chars[first] !== ch) {
+                  col.classList.add('bad');
+                  if (!bad) bad = { i, text: `The ${nth(i + 1)} glyph is the ${nth(first + 1)} again, typed as "${chars[first]}" and "${ch}"`, replace: null };
+                } else if (first == null) seen.set(x.g.hash, i);
+              }
+            });
+          }
+          input.classList.toggle('err', !!bad);
+          msg.className = `scribe-am-ins-glqmsg${bad ? ' err' : ''}`;
+          msg.textContent = bad ? bad.text : baseMsg;
+          if (bad?.replace) {
+            const a = el('a', 'scribe-am-ins-more-link', `Replace it with "${chars[bad.i]}"`);
+            a.href = '#';
+            const hash = /** @type {string} */ (bad.replace.hash);
+            const ch = chars[bad.i];
+            a.addEventListener('click', (e) => { e.preventDefault(); commit([[hash, ch]], 'Edit characters'); });
+            msg.append(a);
+          }
+        };
+        input.addEventListener('input', paintTyped);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditMode(false); return; }
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          e.stopPropagation();
+          const chars = [...input.value];
+          const fail = (text) => { input.classList.add('err'); msg.className = 'scribe-am-ins-glqmsg err'; msg.textContent = text; };
+          if (it.kind === 'glyph') {
+            const text = input.value.replace(/\s+/g, '');
+            if (!text) { fail('Type the character for the highlighted glyph'); return; }
+            queueAt += 1;
+            const hash = /** @type {string} */ (it.g.hash);
+            commit([[hash, text]], 'Type a glyph');
+            return;
+          }
+          if (chars.length !== gs.length) { fail(`${fmtInt(gs.length)} glyphs, ${fmtInt(chars.length)} characters typed`); return; }
+          if (chars.some((ch) => /\s/.test(ch))) { fail('A glyph cannot stand for a space'); return; }
+          if (bad) return;
+          /** @type {Array<[string, ?string]>} */
+          const entries = [];
+          const done = new Set();
+          gs.forEach((x, i) => { if (x.g?.placeholder && x.g.hash && known[i] == null && !done.has(x.g.hash)) { done.add(x.g.hash); entries.push([x.g.hash, chars[i]]); } });
+          queueAt += 1;
+          if (entries.length) commit(entries, 'Type a word'); else paintQueue();
+        });
+        const links = el('div', 'scribe-am-ins-glqlinks');
+        const skip = el('a', 'scribe-am-ins-more-link', 'Skip');
+        skip.href = '#';
+        skip.addEventListener('click', (e) => { e.preventDefault(); queueSkipped.push(queue.splice(queueAt, 1)[0]); paintQueue(); });
+        links.append(skip, document.createTextNode(it.kind === 'glyph' ? ` · in "${known.map((k) => k ?? '·').join('')}" on the page` : ' · the page shows the word'));
+        qbox.append(row, input, msg, links);
+        if (keep && keep.item === key) { input.value = keep.value; paintTyped(); }
+        if (keep?.focused) { input.focus(); if (keep.item === key && keep.at != null) input.setSelectionRange(keep.at, keep.at); }
+      }
+      qbox.append(el('div', 'scribe-am-ins-glqprog', `${fmtInt(remaining())} glyph${remaining() === 1 ? '' : 's'} still without a character`));
+      const bar = el('div', 'scribe-am-ins-glqbar');
+      const fill = document.createElement('i');
+      fill.style.width = `${placeholders.length ? Math.round((recorded / placeholders.length) * 100) : 100}%`;
+      bar.append(fill);
+      qbox.append(bar);
+      closeRing?.();
+      if (!it) { queueShown = null; return; }
+      const ring = () => {
+        const layer = floatingLayer(it.n, it.word.line.orientation || 0);
+        if (!layer) return;
+        const z = 'var(--scribe-zoom, 1)';
+        const box = el('div', 'scribe-inspect-wordring');
+        Object.assign(box.style, {
+          position: 'absolute',
+          left: `${it.word.bbox.left}px`,
+          top: `${it.word.bbox.top}px`,
+          width: `${it.word.bbox.right - it.word.bbox.left}px`,
+          height: `${it.word.bbox.bottom - it.word.bbox.top}px`,
+          boxShadow: `0 0 0 calc(2px / ${z}) var(--scribe-accent)`,
+          borderRadius: `calc(2px / ${z})`,
+          pointerEvents: 'none',
+        });
+        layer.appendChild(box);
+        closeRing = () => { layer.remove(); closeRing = null; };
+      };
+      if (queueShown === key) { ring(); return; }
+      queueShown = key;
+      (async () => {
+        await viewer.displayPage(it.n, false, false);
+        const kw = viewer.getUiWords().find((x) => x.word.line.page.n === it.n && x.word.id === it.word.id);
+        if (kw) viewer.scrollToWord(kw);
+        if (queueShown === key && editMode) { closeRing?.(); ring(); }
+        washNow();
+      })();
+    };
+    paintQueue();
+    drill.refreshCaps = () => {
+      paintWarn();
+      for (const [g, c] of cells) paintCap(g, c);
+      paintQueue();
+    };
+  };
+  /** A count as an ordinal, as in 1st, 2nd, 3rd and 4th. */
+  const nth = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+
+  /** Refresh what shows the words a mapping change rewrote. */
+  const refreshPages = (pages) => {
+    for (const n of pages) {
+      if (viewer.textGroupsRenderIndices.includes(n)) viewer.renderWords(n);
+      viewer.textSel?.invalidatePage(n);
+    }
+    // renderWords rebuilt the window's word objects, so the wash goes on the new ones.
+    washNow();
+    drill?.refreshCaps();
+    drill?.setFoot(selGlyph);
+    viewer.onEditCallback?.();
+  };
+  /**
+   * Record characters against outlines through the document, one undoable step, and refresh what shows them.
+   * @param {Array<[string, ?string]>} entries
+   * @param {string} label
+   */
+  const commit = async (entries, label) => {
+    const doc = viewer.doc;
+    if (!doc || !entries.length) return;
+    let pages;
+    try {
+      pages = await doc.setType3GlyphMappings(entries, { label });
+    } catch (err) {
+      console.warn(err);
+      return;
+    }
+    if (viewer.doc === doc) refreshPages(pages);
+  };
+  /**
+   * Build Edit Characters' queue over the glyphs that have no character yet.
+   * It asks for the words of a greedy set cover first, then for each glyph no chosen word teaches, shown in the shortest word that draws it.
+   */
+  const buildQueue = () => {
+    queueAt = 0;
+    queueSkipped = [];
+    const doc = viewer.doc;
+    const { font: f, byCode, glyphs } = drill;
+    /** The outline a glyph code stands for while it still has no character, else null. */
+    const outlineOf = (c) => { const g = c >= 0 ? byCode.get(c) : null; return g?.placeholder && g.hash && charOf(g) == null ? g.hash : null; };
+    const words = [];
+    for (const p of f.pages) {
+      const page = doc?.ocr?.active?.[p] ?? doc?.ocr?.pdf?.[p];
+      if (!page || page.textSource !== 'pdf') continue;
+      const nt = doc.nativeText.pages[p] || {};
+      for (const line of page.lines) {
+        for (const w of line.words) {
+          const entry = nt[w.id];
+          if (!entry?.codes || !f.fontObjNums.includes(entry.fontObjNum)) continue;
+          const outlines = [...new Set(entry.codes.map(outlineOf).filter(Boolean))];
+          if (outlines.length) {
+            words.push({
+              n: p, word: w, entry, outlines, len: entry.codes.filter((c) => c >= 0).length,
+            });
+          }
+        }
+      }
+    }
+    const left = new Set(words.flatMap((x) => x.outlines));
+    const covered = new Set();
+    queue = [];
+    while (left.size) {
+      let best = null;
+      let bestGain = 0;
+      for (const x of words) {
+        const gain = x.outlines.filter((h) => left.has(h)).length;
+        if (gain > bestGain || (gain === bestGain && gain && x.len < best.len)) { best = x; bestGain = gain; }
+      }
+      // A word that teaches a single glyph costs more typing than that glyph alone.
+      if (!best || bestGain < 2) break;
+      queue.push({
+        kind: 'word', n: best.n, word: best.word, entry: best.entry,
+      });
+      for (const h of best.outlines) { left.delete(h); covered.add(h); }
+    }
+    for (const g of glyphs) {
+      if (!g.placeholder || !g.hash || charOf(g) != null || covered.has(g.hash)) continue;
+      const holder = words.filter((x) => x.outlines.includes(g.hash)).sort((a, b) => a.len - b.len)[0];
+      if (holder) {
+        queue.push({
+          kind: 'glyph', g, n: holder.n, word: holder.word, entry: holder.entry,
+        });
+      }
+    }
+  };
+  /** Turn Edit Characters on or off. */
+  const setEditMode = (on) => {
+    if (!drill || editMode === on) return;
+    editMode = on;
+    closeField?.();
+    closeRing?.();
+    queue = null;
+    queueAt = 0;
+    queueSkipped = [];
+    queueShown = null;
+    if (on) buildQueue();
+    paintDrill();
+    washNow();
+    if (on) {
+      const input = drill.part?.querySelector('.scribe-am-ins-glqin');
+      if (input) { input.focus(); if (host.app?._phoneUi) input.scrollIntoView({ block: 'nearest' }); }
+    }
+  };
+  /**
+   * Open the word field beneath a word on the page.
+   * @param {any} kw - A UI word of the open font.
+   * @returns {boolean} Whether the field opened.
+   */
+  const openWordField = (kw) => {
+    closeField?.();
+    const doc = viewer.doc;
+    const d = drill;
+    const { word } = kw;
+    const n = word.line.page.n;
+    const entry = doc?.nativeText.pages[n]?.[word.id];
+    if (!doc || !d || !entry?.codes) return false;
+    const layer = floatingLayer(n, word.line.orientation || 0);
+    if (!layer) return false;
+    const z = 'var(--scribe-zoom, 1)';
+    const box = el('div', 'scribe-inspect-wordfield');
+    Object.assign(box.style, {
+      position: 'absolute',
+      left: `${word.bbox.left}px`,
+      top: `calc(${word.bbox.bottom}px + 4px / ${z})`,
+      width: `calc(250px / ${z})`,
+      boxSizing: 'border-box',
+      background: 'var(--scribe-surface, #fff)',
+      border: `calc(1px / ${z}) solid var(--scribe-line, #e4e8ef)`,
+      borderRadius: `calc(8px / ${z})`,
+      boxShadow: 'var(--scribe-menu-shadow, 0 1px 2px rgba(20,30,60,.10), 0 5px 14px rgba(20,30,60,.12))',
+      padding: `calc(8px / ${z}) calc(10px / ${z})`,
+      display: 'grid',
+      gap: `calc(6px / ${z})`,
+      pointerEvents: 'auto',
+      color: 'var(--scribe-ink, #1f2530)',
+      fontFamily: '-apple-system, system-ui, "Segoe UI", sans-serif',
+    });
+    const run = el('span', '', glyphRun(word, entry));
+    Object.assign(run.style, {
+      fontSize: `calc(18px / ${z})`, lineHeight: '1.2', letterSpacing: `calc(2px / ${z})`, whiteSpace: 'pre',
+    });
+    if (d.faceName) run.style.fontFamily = `'${d.faceName}'`;
+    const input = document.createElement('input');
+    const reading = readingOfWord(word, entry);
+    input.value = reading.includes('·') ? '' : reading;
+    input.placeholder = reading;
+    input.setAttribute('aria-label', 'The word as it should read');
+    Object.assign(input.style, {
+      font: `calc(14px / ${z}) ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`,
+      letterSpacing: `calc(3px / ${z})`,
+      height: `calc(26px / ${z})`,
+      boxSizing: 'border-box',
+      border: `calc(1px / ${z}) solid var(--scribe-line-strong, #d7dce4)`,
+      borderRadius: `calc(5px / ${z})`,
+      background: 'var(--scribe-surface, #fff)',
+      color: 'inherit',
+      padding: `0 calc(7px / ${z})`,
+      outline: 'none',
+      width: '100%',
+    });
+    const glyphCount = entry.codes.length;
+    const msg = el('span', '', `${fmtInt(glyphCount)} glyph${glyphCount === 1 ? '' : 's'} · type the word, Enter to apply`);
+    Object.assign(msg.style, { fontSize: `calc(11px / ${z})`, color: 'var(--scribe-ink-3, #98a1b0)' });
+    box.append(run, input, msg);
+    input.addEventListener('input', () => { input.style.borderColor = ''; });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        const chars = [...input.value];
+        if (chars.length !== glyphCount) {
+          input.style.borderColor = 'var(--scribe-danger, #d1493d)';
+          msg.textContent = `${fmtInt(glyphCount)} glyphs, ${fmtInt(chars.length)} characters typed`;
+          return;
+        }
+        /** @type {Array<[string, ?string]>} */
+        const entries = [];
+        entry.codes.forEach((code, i) => {
+          // A space or a dot leaves that glyph as it is.
+          if (code < 0 || /\s/.test(chars[i]) || chars[i] === '·') return;
+          const g = d.byCode.get(code);
+          if (g?.hash) entries.push([g.hash, chars[i]]);
+        });
+        closeField?.();
+        commit(entries, 'Type a word');
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        closeField?.();
+      }
+    });
+    const onPointerDown = (e) => { if (!box.contains(/** @type {Node} */ (e.target))) closeField?.(); };
+    box.addEventListener('pointerdown', (e) => e.stopPropagation());
+    layer.appendChild(box);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    closeField = () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      layer.remove();
+      closeField = null;
+    };
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    return true;
   };
 
   /**
@@ -1008,7 +1581,18 @@ export function buildInspectWorkspace(host, container, nav = null) {
         if (cps.length) { cp = cps[0]; text = String.fromCodePoint(cp); }
       }
       glyphs.push({
-        i, glyph, name: glyph.name || null, text, keys, cp, placeholder: cp != null && cp >= 0xE000 && cp <= 0xF8FF, uses: 0, pages: new Set(), first: null,
+        i,
+        glyph,
+        name: glyph.name || null,
+        text,
+        keys,
+        cp,
+        placeholder: cp != null && cp >= 0xE000 && cp <= 0xF8FF,
+        hash: t3?.pathHash ?? null,
+        codes: t3?.codes ?? [],
+        uses: 0,
+        pages: new Set(),
+        first: null,
       });
     }
     glyphs.sort((a, b) => (a.cp ?? Infinity) - (b.cp ?? Infinity) || a.i - b.i);
@@ -1016,29 +1600,57 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const byCp = new Map();
     /** @type {Array<[string, DrillGlyph]>} */
     const multi = [];
+    /** @type {Map<number, DrillGlyph>} */
+    const byCode = new Map();
     for (const g of glyphs) {
       for (const k of g.keys) {
         if ([...k].length === 1) { const c = k.codePointAt(0); if (!byCp.has(c)) byCp.set(c, []); byCp.get(c).push(g); } else multi.push([k, g]);
       }
+      for (const c of g.codes) byCode.set(c, g);
     }
-    const hit = (g, p, w) => { g.uses += 1; g.pages.add(p); if (!g.first) g.first = { n: p, wordId: w.id }; };
+    const hit = (g, p, w) => {
+      g.uses += 1;
+      g.pages.add(p);
+      if (!g.first) g.first = { n: p, wordId: w.id };
+    };
     for (const p of f.pages) {
-      const page = doc.ocr?.active?.[p];
+      const page = doc.ocr?.active?.[p] ?? doc.ocr?.pdf?.[p];
       if (!page || page.textSource !== 'pdf') continue;
       const nt = doc.nativeText.pages[p] || {};
       for (const line of page.lines) {
         for (const w of line.words) {
-          if (nt[w.id]?.fontObjNum == null || !f.fontObjNums.includes(nt[w.id].fontObjNum)) continue;
+          const entry = nt[w.id];
+          if (entry?.fontObjNum == null || !f.fontObjNums.includes(entry.fontObjNum)) continue;
+          // A word with recorded glyph codes is matched by them, since its text may already read as characters.
+          if (entry.codes) {
+            for (const c of entry.codes) { const g = c >= 0 ? byCode.get(c) : null; if (g) hit(g, p, w); }
+            continue;
+          }
           for (const ch of w.text) { const gs = byCp.get(ch.codePointAt(0)); if (gs) for (const g of gs) hit(g, p, w); }
           for (const [k, g] of multi) { let at = w.text.indexOf(k); while (at >= 0) { hit(g, p, w); at = w.text.indexOf(k, at + k.length); } }
         }
       }
     }
+    closeField?.();
+    editMode = false;
     drill = {
-      font: f, program, faceName, glyphs, part: null, scrollTop: body.scrollTop, paintSel: () => {}, setFoot: () => {},
+      font: f,
+      program,
+      faceName,
+      glyphs,
+      byCode,
+      part: null,
+      scrollTop: body.scrollTop,
+      paintSel: () => {},
+      setFoot: () => {},
+      refreshCaps: () => {},
     };
     selGlyph = null;
     shownGlyphs = GLYPH_CELL_LIMIT;
+    // Only the footer's list of other fonts reads these, so a document restored without its PDF goes without.
+    if (!hashes && f.pages.length) doc.images.getType3GlyphHashes(f.pages[0]).then((t) => { hashes = t; if (drill?.font === f) drill.setFoot(selGlyph); }).catch(() => {});
+    // A session saved before the parser recorded glyph codes gets them now, so the word field can read the words it is clicked on.
+    if (f.pages.length) ensureType3GlyphCodes(doc, f.pages).catch(() => {});
     // The row's hover wash ends with the list.
     hoverFont = null;
     applyWash(pinnedFont);
@@ -1052,13 +1664,17 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const closeDrill = () => {
     if (!drill) return false;
     const { scrollTop } = drill;
+    closeField?.();
+    closeRing?.();
+    queue = null;
+    editMode = false;
     drill.part?.remove();
     drill = null;
     selGlyph = null;
     docPart.hidden = false;
     invPart.hidden = false;
     nav?.setSubview(null);
-    applyWash(pinnedFont || hoverFont);
+    washNow();
     body.scrollTop = scrollTop;
     return true;
   };
@@ -1084,6 +1700,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
     /** Rebuild against the (possibly new) active document. */
     refresh: () => {
       closeDrill();
+      hashes = null;
       inv = null; pinnedFont = null; hoverFont = null; openFonts.clear(); xmpOpen = false; xmlOpen = false; shownImages = IMAGE_ROW_LIMIT; shownFonts = FONT_ROW_LIMIT;
       applyWash(null);
       if (invTimer) { clearTimeout(invTimer); invTimer = 0; }
@@ -1091,6 +1708,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
     },
     teardown: () => {
       if (invTimer) { clearTimeout(invTimer); invTimer = 0; }
+      closeField?.();
+      closeRing?.();
+      queue = null;
+      editMode = false;
       if (drill) { drill = null; selGlyph = null; nav?.setSubview(null); }
       pinnedFont = null; hoverFont = null;
       applyWash(null);
@@ -1102,8 +1723,9 @@ export function buildInspectWorkspace(host, container, nav = null) {
         curPage = n;
         if (invPart) paintInventory();
       }
-      if (selGlyph && drill) applyWash(drill.font, selGlyph.keys);
-      else if (pinnedFont || hoverFont) applyWash(pinnedFont || hoverFont);
+      closeField?.();
+      if (drill || pinnedFont || hoverFont) washNow();
+      drill?.refreshCaps();
     },
     /**
      * The mode's pick landed on a word: pin the font that drew it, open its row and wash its words.
@@ -1162,7 +1784,38 @@ export function buildInspectWorkspace(host, container, nav = null) {
       selGlyph = null;
       drill.paintSel();
       drill.setFoot(null);
-      applyWash(pinnedFont || hoverFont);
+      washNow();
+      return true;
+    },
+    /**
+     * Open the word field when a click lands on a word of the open font while Edit Characters is on.
+     * Returns whether the click was taken.
+     */
+    wordClicked: (kw) => {
+      // The phone's sheet covers the page, so the phone keeps the cell fields alone.
+      if (!editMode || !drill || host.app?._phoneUi) return false;
+      const page = kw?.word?.line?.page;
+      const entry = page && page.textSource === 'pdf' ? viewer.doc?.nativeText.pages[page.n]?.[kw.word.id] : null;
+      if (!entry?.codes || !drill.font.fontObjNums.includes(entry.fontObjNum)) return false;
+      return openWordField(kw);
+    },
+    /** Close the word field on the page; returns whether one was open. */
+    closeWordField: () => {
+      if (!closeField) return false;
+      closeField();
+      return true;
+    },
+    /** Repaint the view after the document changed outside it, as by an undo or redo. */
+    docEdited: () => {
+      if (!drill) return;
+      washNow();
+      drill.refreshCaps();
+      drill.setFoot(selGlyph);
+    },
+    /** Leave Edit Characters; returns whether it was on. */
+    leaveEditMode: () => {
+      if (!editMode) return false;
+      setEditMode(false);
       return true;
     },
   };

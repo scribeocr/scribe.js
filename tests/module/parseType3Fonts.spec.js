@@ -355,4 +355,125 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     expect(medianAfterH).toBe(26);
     expect(medianAfterW).toBe(21);
   });
+
+  test('A Type 3 font answers the editor with a program built from its CharProcs and each code\'s mapped text', async () => {
+    const ef = await doc.images.getEditFont(0, 450);
+    expect(ef?.program?.kind, 'a Type 3 font with drawable CharProcs answers as a type3 program').toBe('type3');
+    expect(ef.program.font?.numGlyphs, 'one glyph per CharProc plus .notdef').toBe(176);
+    const table = ef.program.glyphs;
+    expect(table?.length, 'the glyph table lists every CharProc').toBe(175);
+    const g2 = table.find((g) => g.name === '2');
+    expect(g2?.codes, 'CharProc "2" is reached by code 3').toEqual([3]);
+    expect(g2?.text, 'code 3 extracts as the placeholder U+E003, which is what the glyph maps to').toBe('\uE003');
+    expect(g2?.hasOutline, 'CharProc "2" draws an outline').toBe(true);
+    expect(ef.program.font.glyphs.get(ef.program.font.charToGlyphIndex('\uE003')).name, 'the placeholder draws CharProc "2"').toBe('2');
+    const sp = table.find((g) => g.name === 'i255');
+    expect(sp?.codes, 'the inkless CharProc "i255" is reached by code 9').toEqual([9]);
+    expect(sp?.text, 'the inkless CharProc extracts as a space').toBe(' ');
+    expect(sp?.hasOutline, 'CharProc "i255" has no outline').toBe(false);
+  });
+
+  // Runs last in this describe, since it rewrites the shared document's text.
+  describe('Characters recorded against Type 3 glyph outlines', () => {
+    const adobePath = `${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`;
+    /** @type {number[]} */
+    let setPages;
+    /** @type {Record<string, string>} */
+    let afterSet;
+    /** @type {Record<string, string>} */
+    let afterUndo;
+    /** @type {Record<string, string>} */
+    let afterRedo;
+    /** @type {Record<string, string>} */
+    let afterRestore;
+    /** @type {number[]} */
+    let editPages;
+    /** @type {string} */
+    let afterEdit;
+    /** @type {string} */
+    let afterLegacyEdit;
+    /** @type {{ line: string[], nextPage: string, lines: number, words: number }} */
+    let fromPdf;
+
+    beforeAll(async () => {
+      const page = doc.ocr.pdf[0];
+      const word = page.lines[1].words[0];
+      const entry = doc.nativeText.pages[0][word.id];
+      const hashes = await doc.images.getType3GlyphHashes(0);
+      const outlines = entry.codes.map((code) => hashes.fonts.get(entry.fontObjNum).byCode.get(code).hash);
+      const read = () => ({
+        word: word.text,
+        chars: word.chars.map((c) => c.text).join(''),
+        mixed: page.lines[1].words[1].text,
+        heading: page.lines[0].words[0].text,
+        nextPage: doc.ocr.pdf[1].lines[1].words[0].text,
+      });
+      setPages = await doc.setType3GlyphMappings(outlines.map((hash, i) => [hash, 'Iris'[i]]));
+      afterSet = read();
+      doc.undo();
+      afterUndo = read();
+      doc.redo();
+      afterRedo = read();
+
+      // The viewer shows a placeholder-text document from its `pdf` layer; the export reads the active one.
+      doc.ocr.active = doc.ocr.pdf;
+      const scribeData = await doc.exportData('scribe', { scribeSession: true });
+      const restored = await scribe.openDocument({ pdfFiles: [adobePath], scribeFiles: [scribeData] });
+      const restoredLine = restored.ocr.active[0].lines[1];
+      afterRestore = {
+        word: restoredLine.words[0].text,
+        mixed: restoredLine.words[1].text,
+        nextPage: restored.ocr.active[1].lines[1].words[0].text,
+      };
+
+      const mixed = restoredLine.words[1];
+      const mixedEntry = restored.nativeText.pages[0][mixed.id];
+      const restoredHashes = await restored.images.getType3GlyphHashes(0);
+      const outlineAt = (i) => restoredHashes.fonts.get(mixedEntry.fontObjNum).byCode.get(mixedEntry.codes[i]).hash;
+      const bOutline = outlineAt(2);
+      const cOutline = outlineAt(6);
+      editPages = await restored.setType3GlyphMappings([[bOutline, 'b']]);
+      afterEdit = mixed.text;
+      // A session saved before the parser recorded glyph codes restores its words without them, so the next edit has to fetch them from the PDF.
+      for (const record of Object.values(restored.nativeText.pages[0])) delete record.codes;
+      await restored.setType3GlyphMappings([[cOutline, 'c']]);
+      afterLegacyEdit = mixed.text;
+
+      const reopened = await scribe.openDocument({ pdfFiles: [await restored.exportData('pdf')] });
+      const reopenedPage = reopened.ocr.pdf[0];
+      fromPdf = {
+        line: reopenedPage.lines[1].words.map((w) => w.text),
+        nextPage: reopened.ocr.pdf[1].lines[1].words[0].text,
+        lines: reopenedPage.lines.length,
+        words: reopenedPage.lines.flatMap((line) => line.words).length,
+      };
+    });
+
+    test('A recorded character repairs every word drawn with its glyph, in place, as one undoable step', () => {
+      expect(setPages, 'the change reports the pages whose words it rewrote').toEqual([0, 1]);
+      expect(afterSet.word, 'the word whose glyphs were mapped reads as the mapped characters').toBe('Iris');
+      expect(afterSet.chars, 'the per-character text follows the word text').toBe('Iris');
+      expect(afterSet.mixed, 'a word that mixes mapped and unmapped glyphs keeps placeholders for the unmapped ones').toBe('siiri');
+      expect(afterSet.heading, 'the heading, set in another face, is untouched').toBe('');
+      expect(afterSet.nextPage, 'the same outlines in the next page\'s font are repaired too, keyed by outline').toBe('Iris');
+      expect(afterUndo.word, 'undo restores the placeholder text').toBe('');
+      expect(afterUndo.nextPage, 'undo restores every page the change rewrote').toBe('');
+      expect(afterRedo.word, 'redo re-applies the recorded characters').toBe('Iris');
+    });
+
+    test('A restored session keeps the repaired words and can still be edited', () => {
+      expect(afterRestore.word, 'the repaired word survives the session round-trip').toBe('Iris');
+      expect(afterRestore.mixed, 'a partly repaired word survives the session round-trip with its placeholders').toBe('siiri');
+      expect(afterRestore.nextPage, 'the repair on the next page survives the session round-trip').toBe('Iris');
+      expect(editPages, 'a character recorded on the restored session reaches every page that draws the outline').toEqual([0, 1]);
+      expect(afterEdit, 'a character recorded on the restored session repairs its words').toBe('sibiri');
+      expect(afterLegacyEdit, 'a session restored without glyph codes is still repaired').toBe('sibiric');
+    });
+
+    test('A PDF exported from the restored session carries the text in its fonts, each word once', () => {
+      expect(fromPdf.line, 'characters recorded before and after the restore extract from the PDF, and a glyph without one stays a placeholder').toEqual(['Iris', 'sibiric']);
+      expect(fromPdf.nextPage, 'the next page\'s font carries the recorded characters too').toBe('Iris');
+      expect([fromPdf.lines, fromPdf.words], 'the exported page repeats no repaired word in a text overlay').toEqual([44, 240]);
+    });
+  });
 });
