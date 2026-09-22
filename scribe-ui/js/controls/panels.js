@@ -4,7 +4,8 @@ import { makeIconButton } from './toolbar.js';
 import { installPageReorder, REORDER_SLIDE_MS } from './pageReorder.js';
 
 /**
- * @typedef {{thumbElem: HTMLDivElement, imgElem: HTMLImageElement, url: ?string, pending: boolean}} ThumbRow
+ * @typedef {{thumbElem: HTMLDivElement, imgElem: HTMLImageElement, url: ?string, pending: boolean, pm?: ?object}} ThumbRow
+ *   `pm` is the page-metrics object whose picture `url` shows.
  */
 
 // A left column of small previews beside a larger page, evoking a thumbnails panel.
@@ -280,6 +281,12 @@ export function createThumbnailPanel(scribe, {
   let viewportH = 0;
   let viewportW = 0;
 
+  /**
+   * The last picture shown for a page, keyed by its page-metrics object.
+   * The image container keeps a retired URL loadable until the page's next thumbnail is handed out.
+   * @type {WeakMap<object, string>}
+   */
+  const carriedUrls = new WeakMap();
   /** @type {Map<number, ThumbRow>} */
   const mounted = new Map();
   // Bumped on every teardown (rebuild, hide, destroy) so an in-flight render from a previous generation is ignored.
@@ -601,6 +608,8 @@ export function createThumbnailPanel(scribe, {
    * @param {ThumbRow} entry
    */
   function unmountRow(n, entry) {
+    // A remount reuses this picture until the fresh render lands, so a rebuild never flashes a blank cell.
+    if (entry.url && entry.pm) carriedUrls.set(entry.pm, entry.url);
     entry.thumbElem.remove();
     mounted.delete(n);
   }
@@ -824,9 +833,13 @@ export function createThumbnailPanel(scribe, {
     thumbElem.appendChild(chkBtn);
 
     scrollElem.appendChild(thumbElem);
+    /** @type {ThumbRow} */
     const entry = {
-      thumbElem, imgElem, url: null, pending: false,
+      thumbElem, imgElem, url: null, pending: false, pm: null,
     };
+    const pm = scribe.doc && scribe.doc.pageMetrics ? scribe.doc.pageMetrics[n] : null;
+    const carried = pm ? carriedUrls.get(pm) : undefined;
+    if (carried) imgElem.src = carried;
     mounted.set(n, entry);
     restyleRow(entry, n);
   }
@@ -846,6 +859,7 @@ export function createThumbnailPanel(scribe, {
       if (mounted.get(n) !== entry) return;
       if (!url) { entry.pending = false; return; }
       entry.url = url;
+      entry.pm = (doc.pageMetrics && doc.pageMetrics[n]) || null;
       entry.imgElem.src = url;
     }).catch(() => {
       if (mounted.get(n) === entry) entry.pending = false;
@@ -1147,7 +1161,9 @@ export function createThumbnailPanel(scribe, {
     /** @type {Array<HTMLElement>} */
     const animated = [];
     for (const [n, entry] of mounted) {
-      let dx, dy, s;
+      let dx;
+      let dy;
+      let s;
       const retarget = retargets.get(n);
       if (retarget) {
         ({ dx, dy, s } = retarget);

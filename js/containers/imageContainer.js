@@ -222,6 +222,13 @@ export class ImageStore {
   thumbnailUrls = new Map();
 
   /**
+   * Object URLs of thumbnails a page has replaced, per page index.
+   * Revoked once the page's next thumbnail URL is handed out, or on `clear`.
+   * @type {Array<Array<string> | undefined>}
+   */
+  retiredThumbnailUrls = [];
+
+  /**
    * Estimated cost of re-rendering each display slot (ms), from its last render with one-time work excluded.
    * @type {Array<number|undefined>}
    */
@@ -464,12 +471,13 @@ export class ImageStore {
     const oldThumb = this.thumbnails[n];
     this.thumbnails[n] = undefined;
     if (oldThumb) {
+      // A thumbnail rail keeps showing the old picture while the page re-renders, so this URL is retired instead of revoked.
       Promise.resolve(oldThumb).then((blob) => {
         if (!blob) return;
         const url = this.thumbnailUrls.get(blob);
         if (url) {
-          URL.revokeObjectURL(url);
           this.thumbnailUrls.delete(blob);
+          (this.retiredThumbnailUrls[n] ||= []).push(url);
         }
       }).catch(() => {});
     }
@@ -853,6 +861,12 @@ export class ImageStore {
       url = URL.createObjectURL(blob);
       this.thumbnailUrls.set(blob, url);
     }
+    // Revoked a task later, once the caller has swapped its image over to the fresh URL.
+    const retired = this.retiredThumbnailUrls[n];
+    if (retired && retired.length > 0) {
+      this.retiredThumbnailUrls[n] = undefined;
+      setTimeout(() => { for (const old of retired) URL.revokeObjectURL(old); }, 0);
+    }
     return url;
   };
 
@@ -937,6 +951,8 @@ export class ImageStore {
   clear = () => {
     for (const url of this.thumbnailUrls.values()) URL.revokeObjectURL(url);
     this.thumbnailUrls.clear();
+    for (const retired of this.retiredThumbnailUrls) if (retired) for (const url of retired) URL.revokeObjectURL(url);
+    this.retiredThumbnailUrls = [];
     this.nativeSrc = [];
     this.native = [];
     this.binary = [];
