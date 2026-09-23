@@ -448,6 +448,11 @@ export class ScribeViewer {
     /** @type {?ReturnType<typeof setTimeout>} Debounce for re-rastering page canvases after a zoom settles. */
     this._rerasterTimer = null;
 
+    /**
+     * Whether a zoom gesture is in flight.
+     */
+    this._zoomGestureActive = false;
+
     /** Per-instance controls array (transformers/handles for the currently selected word). */
     /** @type {Array<any>} */
     this._controlArr = [];
@@ -953,16 +958,19 @@ export class ScribeViewer {
     // Containers built before `calcPageLayout` finalized `_contentWidth` can keep a stale position, so re-place all.
     // The write guards read inline style (no forced layout), so skipping unmoved pages costs nothing.
     // Read the layout arrays directly, since `_pageLeft`/`getPageStop` could re-enter `calcPageLayout`.
-    for (let n = 0; n < this.pageContainerArr.length; n++) {
-      const pc = this.pageContainerArr[n];
-      if (!pc) continue;
-      if (this._pageLefts[n] !== undefined) {
-        const left = `${this._snapToDevice(this._pageLefts[n])}px`;
-        if (pc.style.left !== left) pc.style.left = left;
-      }
-      if (this._pageStopsStart[n] !== undefined) {
-        const top = `${this._snapToDevice(this._pageStopsStart[n])}px`;
-        if (pc.style.top !== top) pc.style.top = top;
+    // Skipped mid-gesture, since the snap changes with every zoom step and a moved container repaints its whole subtree, word spans included.
+    if (!this._zoomGestureActive) {
+      for (let n = 0; n < this.pageContainerArr.length; n++) {
+        const pc = this.pageContainerArr[n];
+        if (!pc) continue;
+        if (this._pageLefts[n] !== undefined) {
+          const left = `${this._snapToDevice(this._pageLefts[n])}px`;
+          if (pc.style.left !== left) pc.style.left = left;
+        }
+        if (this._pageStopsStart[n] !== undefined) {
+          const top = `${this._snapToDevice(this._pageStopsStart[n])}px`;
+          if (pc.style.top !== top) pc.style.top = top;
+        }
       }
     }
     this._updateHCentering(this.scrollContainer ? this.scrollContainer.clientWidth : 0);
@@ -971,11 +979,12 @@ export class ScribeViewer {
   /**
    * Scale the zoom layer and mirror the scale into the `--scribe-zoom` custom property.
    * Strokes on scaled descendants divide it back out with `calc(Npx / var(--scribe-zoom, 1))` so they keep a constant on-screen width at any zoom.
-   * Every site that scales the layer must go through here so the property never drifts from the transform.
+   * Every site that scales the layer must go through here so the property never drifts from the transform outside a zoom gesture.
    * @param {number} z
    */
   _applyZoomTransform(z) {
     this.zoomLayer.style.transform = `scale(${z})`;
+    if (this._zoomGestureActive) return;
     this.zoomLayer.style.setProperty('--scribe-zoom', String(z));
     for (let n = 0; n < this._commentMarks.length; n++) {
       if (this._commentMarks[n]) this._placeCommentMarks(n);
@@ -1454,12 +1463,18 @@ export class ScribeViewer {
       }
     }
 
+    if (!this._zoomGestureActive) {
+      this._zoomGestureActive = true;
+      // Not on iOS, which sizes a promoted surface from the unscaled layout box (see `_setPinching`).
+      if (!IOS_WEBKIT) this.zoomLayer.style.willChange = 'transform';
+    }
+    // Scheduled ahead of the step, since the settle is the only thing that clears the flag and a throw below would otherwise leave it set.
+    this._scheduleReraster();
     this._zoomStageImp(scaleBy, center);
     this.updateCurrentPage();
-    this._scheduleReraster();
   }
 
-  /** After a zoom settles, re-raster the visible page canvases at the new resolution so they stay crisp. */
+  /** After a zoom settles, end the zoom gesture and re-raster the visible page canvases at the new resolution so they stay crisp. */
   _scheduleReraster() {
     if (this._rerasterTimer) clearTimeout(this._rerasterTimer);
     this._rerasterTimer = setTimeout(() => {
@@ -1467,6 +1482,12 @@ export class ScribeViewer {
       // Mid-pinch a finger pause would otherwise land fresh canvases inside the actively-animating layer.
       // `_setPinching(false)` re-schedules, so the render happens once, after the gesture.
       if (this.drag.isPinching) return;
+      if (this._zoomGestureActive) {
+        this._zoomGestureActive = false;
+        this.zoomLayer.style.willChange = '';
+        this._applyZoomTransform(this.zoomLevel);
+        this._updateContentSize();
+      }
       if (this.doc.inputData.pdfMode || this.doc.inputData.imageMode) {
         this.imageCache.renderAheadBehindBrowser(this.state.cp.n);
       }
