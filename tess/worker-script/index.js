@@ -336,6 +336,10 @@ const loadLanguage = async (
           if (!resp.ok) {
             throw Error(`Network error while fetching ${fetchUrl}. Response code: ${resp.status}`);
           }
+          // A host that answers a missing path with its app page returns 200 and HTML.
+          if (/^text\/html\b/i.test(resp.headers.get('content-type') || '')) {
+            throw Error(`${fetchUrl} returned an HTML page, not language data`);
+          }
           data = new Uint8Array(await resp.arrayBuffer());
 
         // langPathDownload is a local file, read .traineddata from local filesystem
@@ -538,6 +542,7 @@ const initialize = async ({
 
     if (status === -1) {
       res.reject('initialization failed');
+      return;
     }
 
     res.progress({
