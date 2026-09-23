@@ -283,7 +283,7 @@ export class gs {
    * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert>[0]} args
    * @returns {ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>}
    */
-  static recognizeAndConvert = async (args) => (await gs.schedulerInner.addJob('recognizeAndConvert', args));
+  static recognizeAndConvert = async (args, signal = null) => (await gs.schedulerInner.addJob('recognizeAndConvert', args, false, signal));
 
   /**
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageBase>[0]} args
@@ -362,17 +362,30 @@ export class gs {
 
     if (gs.schedulerReadyTesseract) await gs.schedulerReadyTesseract;
 
+    /** @type {(reason: any) => void} */
+    let rejectReady = () => {};
     gs.schedulerReadyTesseract = new Promise((resolve, reject) => {
       gs.#resReadyTesseract = resolve;
+      rejectReady = reject;
     });
 
     // Wait for the first worker to load.
     // A behavior (likely bug) was observed where, if the workers are loaded in parallel,
     // data will be loaded over network from all workers (rather than downloading once and caching).
     const worker0 = gs.schedulerInner.workers[0];
-    await worker0.reinitialize({
-      langs, vanillaMode, config, langPath: opt.langPath,
-    });
+    try {
+      await worker0.reinitialize({
+        langs, vanillaMode, config, langPath: opt.langPath,
+      });
+    } catch (err) {
+      // A failed load settles and drops the ready promise, so the next run retries instead of waiting on it forever.
+      const failed = gs.schedulerReadyTesseract;
+      gs.schedulerReadyTesseract = null;
+      gs.#resReadyTesseract = null;
+      rejectReady(err);
+      failed.catch(() => {});
+      throw err;
+    }
 
     if (gs.schedulerInner.workers.length > 0) {
       const resArr = gs.schedulerInner.workers.slice(1).map((x) => x.reinitialize({

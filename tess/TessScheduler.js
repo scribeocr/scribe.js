@@ -148,7 +148,7 @@ export class TessScheduler {
     }
   }
 
-  #queue(action, payload, forViewer = false) {
+  #queue(action, payload, forViewer = false, signal = null) {
     return new Promise((resolve, reject) => {
       const id = `Job-${TessScheduler.#jobCounter++}-${Math.random().toString(16).slice(3, 8)}`;
       const job = {
@@ -163,6 +163,12 @@ export class TessScheduler {
       }
       // `#dequeue` removes the job from the queue before invoking it.
       const jobFunction = async (w) => {
+        // A job whose run was canceled while it was staged never reaches the worker, which takes the next staged job instead.
+        if (signal && signal.aborted) {
+          reject(signal.reason);
+          this.#dequeue();
+          return;
+        }
         this.#runningWorkers[w.id] = job;
         if (DEBUG_RENDER_SCHED && job.action === 'renderPdfPage') {
           job.dispatchedAt = performance.now();
@@ -281,13 +287,20 @@ export class TessScheduler {
     return w.id;
   }
 
-  async addJob(action, payload, forViewer = false) {
+  /**
+   * Stage a job for the next free worker.
+   * @param {string} action
+   * @param {*} payload
+   * @param {boolean} [forViewer=false] - Serve it ahead of background jobs, newest first.
+   * @param {?AbortSignal} [signal=null] - Rejects the job with the signal's reason if it fires before the job is dispatched.
+   */
+  async addJob(action, payload, forViewer = false, signal = null) {
     if (this.#terminated) return SKIPPED;
     if (this.getNumWorkers() === 0) {
       throw Error(`[${this.#id}]: You need to have at least one worker before adding jobs`);
     }
 
-    return this.#queue(action, payload, forViewer);
+    return this.#queue(action, payload, forViewer, signal);
   }
 
   /**

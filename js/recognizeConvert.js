@@ -336,11 +336,12 @@ async function calcRecognizeRotateArgs(doc, n, areaMode) {
  * @param {?Array<string>} [langs=null] - Languages for this job. When set, the worker ensures its
  *    engine matches before recognizing, so concurrent documents in different languages stay isolated.
  * @param {boolean} [vanillaMode=false] - Use the vanilla Tesseract.js model.
+ * @param {?AbortSignal} [signal=null] - The run's cancel signal. A page whose run was canceled while it waited for the pool is not sent to a worker.
  * @returns {Promise<Awaited<ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>>>} The page's result: `recognize` and `convert`.
  *    `convert.page` holds the page.
  */
 export async function recognizePageImp(
-  doc, n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false, langs = null, vanillaMode = false,
+  doc, n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false, langs = null, vanillaMode = false, signal = null,
 ) {
   if (!legacy && !lstm) throw new Error('recognizePageImp needs an engine: set legacy or lstm.');
   const {
@@ -360,6 +361,8 @@ export async function recognizePageImp(
 
   const pageDims = doc.pageMetrics[n].dims;
 
+  throwIfAborted(signal);
+
   const res = await gs.recognizeAndConvert({
     // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
     image: nativeN.ensureSrc(),
@@ -374,7 +377,7 @@ export async function recognizePageImp(
     langs,
     vanillaMode,
     docId: doc.id,
-  });
+  }, signal);
 
   const elapsedSec = res.recognitionTime / 1000;
   if (scribeDocDefaults.printRecognitionTime === true || (typeof scribeDocDefaults.printRecognitionTime === 'number' && elapsedSec > scribeDocDefaults.printRecognitionTime)) {
@@ -623,9 +626,10 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
  * @param {boolean} [vanillaMode=false]
  * @param {Object<string, string>} [config={}]
  * @param {?boolean[]} [ocrPageMask=null] - Per-page mask. When set, only `true` pages are recognized.
+ * @param {?AbortSignal} [signal=null] - The run's cancel signal. Once it fires no further page is scheduled and the pages already on a worker land, then the run throws an AbortError.
  */
 async function recognizeAllPages(
-  doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null,
+  doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null, signal = null,
 ) {
   const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
 
@@ -636,15 +640,11 @@ async function recognizeAllPages(
   await gs.initTesseract({
     anyOk: false, vanillaMode, langs, config,
   });
+  throwIfAborted(signal);
 
-  // `resolves` is keyed by page index (sparse) so each result lands in its correct slot, while `promises` stays dense for `Promise.all`.
-  const promises = [];
-  const resolves = [];
-  for (const x of inputPages) {
-    promises.push(new Promise((resolve, reject) => {
-      resolves[x] = { resolve, reject };
-    }));
-  }
+  // The first page to fail ends the run, once the pages in flight have landed.
+  /** @type {{ failure: ?Error }} */
+  const run = { failure: null };
 
   // Upscaling is enabled only for image data, and only if the user has explicitly enabled it.
   // For PDF data, if upscaling is desired, that should be handled by rendering the PDF at a higher resolution.
@@ -659,8 +659,12 @@ async function recognizeAllPages(
   const inFlight = new Set();
 
   for (const x of inputPages) {
+    if ((signal && signal.aborted) || run.failure) break;
     while (inFlight.size >= maxInFlight) await Promise.race(inFlight);
-    const chain = recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (res) => {
+    if ((signal && signal.aborted) || run.failure) break;
+    const chain = recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode, signal).then(async (res) => {
+      // A page that lands after the run stopped must not write into a document that is being put back.
+      if ((signal && signal.aborted) || run.failure) return;
       if (res.recognize.debugVis) {
         const gzStream = new Blob([res.recognize.debugVis]).stream().pipeThrough(new CompressionStream('gzip'));
         doc.vis[x] = new Uint8Array(await new Response(gzStream).arrayBuffer());
@@ -679,16 +683,17 @@ async function recognizeAllPages(
         doc.images.native[x] = undefined;
         doc.images.nativeProps[x] = undefined;
       }
-      resolves[x].resolve();
     }).catch((err) => {
-      // A failed page must neither stall the pump nor hang the run's Promise.all.
-      resolves[x].reject(err);
+      // A chain never rejects, so the pump's race above cannot throw. A page that stopped on the cancel is not a failure.
+      if (!run.failure && !(signal && signal.aborted)) run.failure = err;
     });
     inFlight.add(chain);
     chain.then(() => inFlight.delete(chain));
   }
 
-  await Promise.all(promises);
+  await Promise.all(inFlight);
+  if (run.failure) throw run.failure;
+  throwIfAborted(signal);
 
   if (mainData) {
     await checkCharWarn(doc, doc.convertPageWarn);
@@ -1169,19 +1174,22 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
  * @param {Object} [options.modelOptions={}] - Options passed to the model's `recognizeImage` method.
- * @param {AbortSignal} [options.signal] - Optional abort signal for cancelling a custom-model
- *    recognition run. When aborted, scribe.js stops scheduling new pages, drains any in-flight
- *    page requests (so their network activity is not wasted), preserves the OCR data of pages
- *    that already completed, and throws an AbortError. Only applies when `options.model` is set.
+ * @param {AbortSignal} [options.signal] - Optional abort signal. Once it fires, no further page is scheduled and the call throws an AbortError when the pages already on a worker have landed.
+ *    A built-in run then puts the document back exactly as it was before the call, as it also does when a run fails.
+ *    The end of a `'quality'` run, font optimization and the compare pass, still completes once every page has landed.
+ *    A custom-model run instead keeps the pages that completed, and drains its in-flight requests before throwing.
  */
 export async function recognize(doc, options = {}) {
   if (!doc.inputData.pdfMode && !doc.inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
   if (options.vanillaMode && options.modeAdv === 'combined') {
     throw new Error("modeAdv 'combined' is not available with vanillaMode: the unmodified Tesseract.js cores carry no merge. Use modeAdv 'lstm' or 'legacy'.");
   }
+  const signal = options.signal;
+  throwIfAborted(signal);
 
   // The page selection below reads extraction outputs (pageStats, pdfType, ocr.pdf), which a deferred import may still be producing.
   await doc.textReady;
+  throwIfAborted(signal);
 
   // Decide which pages require OCR based on document contents and options specified.
   const ocrPages = options.ocrPages ?? scribeDocDefaults.ocrPages;
@@ -1212,6 +1220,20 @@ export async function recognize(doc, options = {}) {
   } else {
     ocrPageMask = selectOcrPages(stats, doc.inputData.pdfType, /** @type {'all'|'none'|'auto'|'autoShallow'|'autoDeep'} */ (ocrPages), usePDFText);
   }
+  // Every place a built-in run writes, so a cancel or a failure can put the document back; a new per-page write belongs here too.
+  // Angles are copied because a page can change the angle of an existing metrics object rather than replacing the object.
+  const before = {
+    active: doc.ocr.active,
+    ocrApplied: doc.inputData.ocrApplied,
+    combined: doc.ocr.Combined ? doc.ocr.Combined.slice() : null,
+    pageMetrics: doc.pageMetrics.slice(),
+    angles: doc.pageMetrics.map((metrics) => (metrics ? metrics.angle : undefined)),
+    convertPageWarn: doc.convertPageWarn.slice(),
+    tables: doc.layoutDataTables.pages.slice(),
+    xmlMode: doc.inputData.xmlMode.slice(),
+    ocrTiming: doc.ocrTiming.slice(),
+  };
+
   doc.inputData.ocrApplied = ocrPageMask.slice();
   const fullOcr = ocrPageMask.every(Boolean);
   // The keep/discard gate runs only for the `auto*` ocrPages modes (not `all`, `none`, or an explicit mask).
@@ -1230,127 +1252,149 @@ export async function recognize(doc, options = {}) {
     return doc.ocr.active;
   }
 
-  await gs.getGeneralScheduler();
+  try {
+    await gs.getGeneralScheduler();
 
-  const combineMode = options && options.combineMode ? options.combineMode : 'data';
-  const vanillaMode = options && options.vanillaMode !== undefined ? options.vanillaMode : false;
-  const config = options && options.config ? options.config : {};
+    const combineMode = options && options.combineMode ? options.combineMode : 'data';
+    const vanillaMode = options && options.vanillaMode !== undefined ? options.vanillaMode : false;
+    const config = options && options.config ? options.config : {};
 
-  const langs = options && options.langs ? options.langs : ['eng'];
-  let oemMode = vanillaMode ? 'lstm' : 'combined';
-  if (options && options.modeAdv) {
-    oemMode = options.modeAdv;
-  } else if (options && options.mode === 'speed') {
-    oemMode = 'lstm';
-  }
+    const langs = options && options.langs ? options.langs : ['eng'];
+    let oemMode = vanillaMode ? 'lstm' : 'combined';
+    if (options && options.modeAdv) {
+      oemMode = options.modeAdv;
+    } else if (options && options.mode === 'speed') {
+      oemMode = 'lstm';
+    }
 
-  const fontPromiseArr = [];
-  // Chinese requires loading a separate font.
-  if (langs.includes('chi_sim')) fontPromiseArr.push(loadChiSimFont());
-  // Greek and Cyrillic require loading a version of the base fonts that include these characters.
-  if (langs.includes('rus') || langs.includes('ukr') || langs.includes('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
-  await Promise.all(fontPromiseArr);
+    const fontPromiseArr = [];
+    // Chinese requires loading a separate font.
+    if (langs.includes('chi_sim')) fontPromiseArr.push(loadChiSimFont());
+    // Greek and Cyrillic require loading a version of the base fonts that include these characters.
+    if (langs.includes('rus') || langs.includes('ukr') || langs.includes('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
+    await Promise.all(fontPromiseArr);
 
-  let forceMainData = false;
-  let existingOCR;
-  if (userOcr) {
-    existingOCR = userOcr;
-  } else if (
-    nativeText
-    && ((doc.inputData.pdfType === 'text' && usePDFText.native.supp)
-      || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
-  ) {
-    existingOCR = nativeText;
-    // Not keyed on `doc.ocr.active`, which the editor aliases to `doc.ocr.pdf` for display.
-    forceMainData = !((doc.inputData.pdfType === 'text' && usePDFText.native.main)
-      || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
-  }
+    let forceMainData = false;
+    let existingOCR;
+    if (userOcr) {
+      existingOCR = userOcr;
+    } else if (
+      nativeText
+      && ((doc.inputData.pdfType === 'text' && usePDFText.native.supp)
+        || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
+    ) {
+      existingOCR = nativeText;
+      // Not keyed on `doc.ocr.active`, which the editor aliases to `doc.ocr.pdf` for display.
+      forceMainData = !((doc.inputData.pdfType === 'text' && usePDFText.native.main)
+        || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
+    }
 
-  // Tesseract is the "main" data, which the page metrics come from, unless user-uploaded data exists.
-  const dual = oemMode === 'combined';
-  await recognizeAllPages(doc, oemMode !== 'lstm', oemMode !== 'legacy', !existingOCR, langs, vanillaMode, config, ocrPageMask);
+    // Tesseract is the "main" data, which the page metrics come from, unless user-uploaded data exists.
+    const dual = oemMode === 'combined';
+    await recognizeAllPages(doc, oemMode !== 'lstm', oemMode !== 'legacy', !existingOCR, langs, vanillaMode, config, ocrPageMask, signal);
 
-  if (!dual) {
-    // Metrics from the LSTM model are so inaccurate they are not worth using.
-    if (oemMode === 'legacy') {
-      const charMetrics = calcCharMetricsFromPages(doc.ocr.Combined);
+    if (!dual) {
+      // Metrics from the LSTM model are so inaccurate they are not worth using.
+      if (oemMode === 'legacy') {
+        const charMetrics = calcCharMetricsFromPages(doc.ocr.Combined);
+        if (Object.keys(charMetrics).length > 0) {
+          clearObjectProperties(doc.fonts.state.charMetrics);
+          Object.assign(doc.fonts.state.charMetrics, charMetrics);
+        }
+        await doc.runOptimization(doc.ocr.Combined);
+      }
+    } else {
+      const progressCb = () => doc.progressHandler({ type: 'recognize' });
+
+      if (scribeDocDefaults.saveDebugImages) {
+        doc.debug.debugImg.Combined = new Array(doc.images.pageCount);
+        for (let i = 0; i < doc.images.pageCount; i++) {
+          doc.debug.debugImg.Combined[i] = [];
+        }
+      }
+
+      const recognizedPages = [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]);
+      // The font eval skips pages without OCR data, so binarizing an unrecognized page would cost a render plus an engine pass for nothing.
+      const fontEvalPages = recognizedPages.slice(0, 6);
+
+      const fontLayer = doc.ocr.Combined;
+      await doc.images.preRenderRange({ pageArr: fontEvalPages, binary: true });
+      const charMetrics = calcCharMetricsFromPages(fontLayer);
       if (Object.keys(charMetrics).length > 0) {
         clearObjectProperties(doc.fonts.state.charMetrics);
         Object.assign(doc.fonts.state.charMetrics, charMetrics);
       }
-      await doc.runOptimization(doc.ocr.Combined);
-    }
-  } else {
-    const progressCb = () => doc.progressHandler({ type: 'recognize' });
+      await doc.runOptimization(fontLayer);
 
-    if (scribeDocDefaults.saveDebugImages) {
-      doc.debug.debugImg.Combined = new Array(doc.images.pageCount);
-      for (let i = 0; i < doc.images.pageCount; i++) {
-        doc.debug.debugImg.Combined[i] = [];
-      }
-    }
+      if (existingOCR && (userOcr || fullOcr)) {
+        if (combineMode === 'conf') {
+          /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
+          const compOptions = {
+            debugLabel: scribeDocDefaults.saveDebugImages ? 'Combined' : undefined,
+            supplementComp: true,
+            ignoreCap: scribeDocDefaults.ignoreCap,
+            ignorePunct: scribeDocDefaults.ignorePunct,
+            confThreshHigh: scribeDocDefaults.confThreshHigh,
+            confThreshMed: scribeDocDefaults.confThreshMed,
+            editConf: true,
+          };
 
-    const recognizedPages = [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]);
-    // The font eval skips pages without OCR data, so binarizing an unrecognized page would cost a render plus an engine pass for nothing.
-    const fontEvalPages = recognizedPages.slice(0, 6);
+          const res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
 
-    const fontLayer = doc.ocr.Combined;
-    await doc.images.preRenderRange({ pageArr: fontEvalPages, binary: true });
-    const charMetrics = calcCharMetricsFromPages(fontLayer);
-    if (Object.keys(charMetrics).length > 0) {
-      clearObjectProperties(doc.fonts.state.charMetrics);
-      Object.assign(doc.fonts.state.charMetrics, charMetrics);
-    }
-    await doc.runOptimization(fontLayer);
+          if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
-    if (existingOCR && (userOcr || fullOcr)) {
-      if (combineMode === 'conf') {
-        /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
-        const compOptions = {
-          debugLabel: scribeDocDefaults.saveDebugImages ? 'Combined' : undefined,
-          supplementComp: true,
-          ignoreCap: scribeDocDefaults.ignoreCap,
-          ignorePunct: scribeDocDefaults.ignorePunct,
-          confThreshHigh: scribeDocDefaults.confThreshHigh,
-          confThreshMed: scribeDocDefaults.confThreshMed,
-          editConf: true,
-        };
+          clearObjectProperties(doc.ocr.Combined);
+          Object.assign(doc.ocr.Combined, res.ocr);
+        } else if (combineMode === 'data') {
+          /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
+          const compOptions = {
+            mode: 'comb',
+            debugLabel: 'Combined',
+            ignoreCap: scribeDocDefaults.ignoreCap,
+            ignorePunct: scribeDocDefaults.ignorePunct,
+            confThreshHigh: scribeDocDefaults.confThreshHigh,
+            confThreshMed: scribeDocDefaults.confThreshMed,
+            combinedA: forceMainData,
+            // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
+            useBboxB: !forceMainData && existingOCR === nativeText && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
+          };
 
-        const res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
+          let res;
+          if (forceMainData) {
+            res = await compareOCR(doc, doc.ocr.Combined, existingOCR, compOptions, progressCb);
+          } else {
+            res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
+          }
 
-        if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
+          if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
-        clearObjectProperties(doc.ocr.Combined);
-        Object.assign(doc.ocr.Combined, res.ocr);
-      } else if (combineMode === 'data') {
-        /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
-        const compOptions = {
-          mode: 'comb',
-          debugLabel: 'Combined',
-          ignoreCap: scribeDocDefaults.ignoreCap,
-          ignorePunct: scribeDocDefaults.ignorePunct,
-          confThreshHigh: scribeDocDefaults.confThreshHigh,
-          confThreshMed: scribeDocDefaults.confThreshMed,
-          combinedA: forceMainData,
-          // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
-          useBboxB: !forceMainData && existingOCR === nativeText && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
-        };
-
-        let res;
-        if (forceMainData) {
-          res = await compareOCR(doc, doc.ocr.Combined, existingOCR, compOptions, progressCb);
-        } else {
-          res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
+          clearObjectProperties(doc.ocr.Combined);
+          Object.assign(doc.ocr.Combined, res.ocr);
         }
-
-        if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
-
-        clearObjectProperties(doc.ocr.Combined);
-        Object.assign(doc.ocr.Combined, res.ocr);
       }
     }
-  }
 
-  buildCombinedLayer(doc, doc.ocr.Combined, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
-  return doc.ocr.active;
+    buildCombinedLayer(doc, doc.ocr.Combined, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
+    return doc.ocr.active;
+  } catch (err) {
+    const restore = (arr, saved) => {
+      // A page's timing row can land past the end of an array the run found empty, so the length comes back too.
+      arr.length = saved.length;
+      for (let n = 0; n < saved.length; n++) {
+        if (n in saved) arr[n] = saved[n];
+        else delete arr[n];
+      }
+    };
+    doc.ocr.active = before.active;
+    doc.inputData.ocrApplied = before.ocrApplied;
+    if (before.combined) restore(doc.ocr.Combined, before.combined);
+    else delete doc.ocr.Combined;
+    restore(doc.pageMetrics, before.pageMetrics);
+    doc.pageMetrics.forEach((metrics, n) => { if (metrics) metrics.angle = before.angles[n]; });
+    restore(doc.convertPageWarn, before.convertPageWarn);
+    restore(doc.layoutDataTables.pages, before.tables);
+    restore(doc.inputData.xmlMode, before.xmlMode);
+    restore(doc.ocrTiming, before.ocrTiming);
+    throw err;
+  }
 }

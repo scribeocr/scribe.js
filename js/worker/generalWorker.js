@@ -147,13 +147,13 @@ const reinitialize = async ({
     }
     return;
   }
-  if (changeLang) langArrCurrent = langArr;
-  if (changeOEM) oemCurrent = oem;
-  if (changeVanilla) vanillaMode_ = vanillaMode;
+  const langArrNext = changeLang ? langArr : langArrCurrent;
+  const oemNext = changeOEM ? oem : oemCurrent;
+  const vanillaNext = changeVanilla ? vanillaMode : vanillaMode_;
 
-  const initConfigs = vanillaMode_ ? structuredClone(defaultInitConfigsVanilla) : structuredClone(defaultInitConfigs);
+  const initConfigs = vanillaNext ? structuredClone(defaultInitConfigsVanilla) : structuredClone(defaultInitConfigs);
 
-  const defaultConfigsI = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
+  const defaultConfigsI = vanillaNext ? defaultConfigsVanilla : defaultConfigs;
   for (const [key, value] of Object.entries(defaultConfigsI)) {
     initConfigs[key] = value;
   }
@@ -167,17 +167,21 @@ const reinitialize = async ({
   // The worker only needs to be created from scratch if the build of Tesseract being used changes,
   // or if it was never created in the first place.
   if (changeVanilla || !worker) {
-    if (vanillaMode_) {
-      tessOptions.vanillaEngine = true;
-    } else {
-      tessOptions.vanillaEngine = false;
-    }
+    tessOptions.vanillaEngine = !!vanillaNext;
 
-    if (worker) await worker.terminate();
-    worker = await TessWorker.create(langArrCurrent, oemCurrent, tessOptions, initConfigs);
+    // The old worker is dropped before the new one exists, so a create that fails leaves no dead worker to reuse.
+    if (worker) {
+      await worker.terminate();
+      worker = null;
+    }
+    worker = await TessWorker.create(langArrNext, oemNext, tessOptions, initConfigs);
   } else {
-    await worker.reinitialize(langArrCurrent, oemCurrent, initConfigs);
+    await worker.reinitialize(langArrNext, oemNext, initConfigs);
   }
+  // The settings become current only once the engine holds them, so a load that failed is retried rather than remembered as done.
+  langArrCurrent = langArrNext;
+  oemCurrent = oemNext;
+  vanillaMode_ = vanillaNext;
 };
 
 /**

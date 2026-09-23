@@ -1460,18 +1460,68 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-dock-mode-discard { font-weight: 600; }
     .${r} .scribe-dock-mode-save:disabled { color: var(--scribe-ink-3); cursor: default; }
-    /* Recognize's picker menus open upward from the phone's bottom bars, where below is the safe area. */
-    .${r} .scribe-dock-mode .scribe-edit-menu,
-    .${r} .scribe-recog-bar .scribe-edit-menu { top: auto; bottom: calc(100% + 8px); }
-    /* The banner sizes Recognize's controls for a mouse row, so the phone bars re-size them as touch targets. */
-    .${r} .scribe-dock-mode .scribe-mode-banner-pick,
-    .${r} .scribe-recog-bar .scribe-mode-banner-pick,
-    .${r} .scribe-dock-mode .scribe-mode-banner-run { min-height: 40px; padding-left: 12px; padding-right: 12px; font-size: 13.5px; }
+    /* The banner sizes Start for a mouse row, so the dock re-sizes it as a touch target. */
+    .${r} .scribe-dock-mode .scribe-mode-banner-run { flex: none; min-height: 40px; padding-left: 16px; padding-right: 16px; font-size: 13.5px; }
 
-    /* The picked object's verbs, docked above the dock and never over the document.
-       Recognize Text's choice bar takes the same slot while that mode is open. */
-    .${r} .scribe-vbar,
-    .${r} .scribe-recog-bar {
+    .${r} .scribe-recog-dock { display: contents; }
+    /* The row's status span carries nothing in this mode, and its auto margin would otherwise hold Start away from Done. */
+    .${r} .scribe-dock-mode.scribe-mode-recognize .scribe-dock-mode-status { display: none; }
+    .${r} .scribe-recog-chip {
+      flex: 0 1 auto; min-width: 0; min-height: 40px; padding: 0 8px 0 12px; margin-right: auto;
+      display: inline-flex; align-items: center; gap: 3px;
+      border: 1px solid var(--scribe-line-strong); border-radius: 8px; background: none; cursor: pointer;
+      font-family: inherit; font-size: 13.5px; color: var(--scribe-ink-2); white-space: nowrap;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-recog-chip b { color: var(--scribe-ink); font-weight: 600; }
+    .${r} .scribe-recog-chip svg, .${r} .scribe-recog-two-b svg { width: 14px; height: 14px; color: var(--scribe-ink-3); display: block; flex: none; }
+    .${r} .scribe-recog-two {
+      flex: 1 1 auto; min-width: 0; min-height: 44px; padding: 0 4px;
+      display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px;
+      background: none; border: none; border-radius: 8px; cursor: pointer; text-align: left;
+      font-family: inherit; color: var(--scribe-ink);
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-recog-two-a { max-width: 100%; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-recog-two-b { font-size: 12px; color: var(--scribe-ink-2); display: inline-flex; align-items: center; gap: 1px; white-space: nowrap; }
+    .${r} .scribe-recog-prog { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+    .${r} .scribe-recog-prog-row { display: flex; align-items: baseline; font-size: 12.5px; font-weight: 600; color: var(--scribe-ink); white-space: nowrap; }
+    .${r} .scribe-recog-track { height: 5px; border-radius: 3px; background: var(--scribe-sunken); overflow: hidden; position: relative; }
+    .${r} .scribe-recog-track > i { display: block; height: 100%; width: 0%; background: var(--scribe-accent); border-radius: 3px; transition: width .2s ease; }
+    /* A sheen for the stretches with no page fraction to draw. */
+    .${r} .scribe-recog-track.alive::after {
+      content: ''; position: absolute; top: 0; bottom: 0; width: 42%; left: 0;
+      background: linear-gradient(100deg, transparent, var(--scribe-accent-ring), transparent);
+      animation: scribe-recog-sheen 1.8s ease-in-out infinite;
+    }
+    .${r} .scribe-recog-cancel {
+      width: 44px; height: 44px; padding: 8px; margin-right: -4px; flex: none;
+      border: none; background: none; border-radius: 8px; color: var(--scribe-accent); cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .${r} .scribe-recog-cancel svg { display: block; width: 100%; height: 100%; }
+    .${r} .scribe-recog-cancel:disabled { opacity: .45; cursor: default; }
+    .${r} .scribe-recog-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 6px 16px; box-sizing: border-box; color: var(--scribe-ink); }
+    .${r} .scribe-recog-row-nm { font-size: 15px; font-weight: 600; }
+    /* The select's 44px target overhangs the row's padding by 2px each way, so the row keeps the sheet's 52px rhythm. */
+    .${r} .scribe-recog-selwrap { margin-left: auto; margin-block: -2px; position: relative; display: inline-flex; align-items: center; }
+    /* 16px, since iOS Safari zooms the page for a focused control set smaller. */
+    .${r} .scribe-recog-select {
+      appearance: none; -webkit-appearance: none; border: 0; background: none; cursor: pointer;
+      font-family: inherit; font-size: 16px; font-weight: 400; color: var(--scribe-ink-2);
+      min-height: 44px; padding: 0 20px 0 8px; max-width: 210px; border-radius: 8px;
+      text-align: right; text-align-last: right;
+    }
+    .${r} .scribe-recog-selwrap svg { position: absolute; right: 2px; top: 50%; width: 14px; height: 14px; transform: translateY(-50%); color: var(--scribe-ink-3); pointer-events: none; }
+    .${r} .scribe-recog-row .scribe-sheet-seg { margin-left: auto; }
+    .${r} .scribe-recog-row .scribe-sheet-seg button:disabled { opacity: .45; cursor: default; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-recog-track.alive::after { content: none; }
+      .${r} .scribe-recog-track > i { transition: none; }
+    }
+
+    /* The picked object's verbs, docked above the dock and never over the document. */
+    .${r} .scribe-vbar {
       position: absolute;
       left: 0; right: 0;
       bottom: calc(56px + env(safe-area-inset-bottom, 0px));
@@ -1481,11 +1531,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-surface);
       border-top: 1px solid var(--scribe-line);
     }
-    .${r}.scribe-phone .scribe-vbar.on,
-    .${r}.scribe-phone .scribe-recog-bar.on { display: flex; }
-    .${r} .scribe-recog-bar { gap: 10px; padding: 0 6px 0 14px; }
-    .${r} .scribe-recog-bar-label { font-size: 13px; color: var(--scribe-ink-2); white-space: nowrap; }
-    .${r} .scribe-recog-bar .scribe-mode-banner-pickwrap { margin-left: auto; }
+    .${r}.scribe-phone .scribe-vbar.on { display: flex; }
     .${r} .scribe-vbtn {
       min-height: 44px; min-width: 44px; padding: 0 9px;
       display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -1509,8 +1555,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-vbar-hint { font-size: 12.5px; color: var(--scribe-ink-3); padding-left: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
     .${r}.scribe-phone.scribe-vbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
-    .${r}.scribe-phone.scribe-fsbar-on .scribe-strip,
-    .${r}.scribe-phone.scribe-recogbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
+    .${r}.scribe-phone.scribe-fsbar-on .scribe-strip { bottom: calc(108px + env(safe-area-inset-bottom, 0px)); }
     .${r}.scribe-line-editing .scribe-strip.on { display: none; }
     .${r}.scribe-phone.scribe-line-editing .scribe-vbar.on {
       bottom: max(calc(56px + env(safe-area-inset-bottom, 0px)), var(--scribe-kb-inset, 0px));
@@ -3945,6 +3990,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-banner .scribe-fs-pal + .scribe-mode-banner-exit { margin-left: 0; }
     .${r} .scribe-mode-banner .scribe-fs-menu { bottom: auto; top: calc(100% + 6px); right: 0; }
     .${r} .scribe-recog-tools { gap: 20px; }
+    /* The cancel glyph at the size of the banner's other icon buttons. */
+    .${r} .scribe-recog-desk { display: inline-flex; align-items: center; gap: 4px; }
+    .${r} .scribe-recog-desk .cr-icon-button { width: 28px; height: 28px; }
+    .${r} .scribe-recog-desk .cr-icon-button > svg { width: 28px; height: 28px; display: block; }
+    .${r} .scribe-recog-status { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
     .${r} .scribe-mode-banner-settings { display: inline-flex; align-items: center; gap: 2px; }
     .${r} .scribe-mode-banner-pickwrap { position: relative; display: inline-flex; }

@@ -329,3 +329,38 @@ describe('Check vanilla recognition engine.', () => {
     await scribe.terminate();
   });
 });
+
+describe('Check that a run which does not finish leaves the document as it was.', () => {
+  const wordCount = (layer) => layer.reduce((n, page) => n + page.lines.reduce((m, line) => m + line.words.length, 0), 0);
+  const rejection = (promise) => promise.then(() => null, (err) => err);
+
+  beforeAll(async () => {
+    doc = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
+    await doc.textReady;
+  });
+
+  test('A run whose signal is already aborted rejects and changes nothing', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const err = await rejection(doc.recognize({ langs: ['eng'], ocrPages: 'all', signal: controller.signal }));
+    expect(err?.name, 'a run on an aborted signal rejects with an AbortError').toBe('AbortError');
+    expect(doc.ocr.active, 'the parsed text stays the active layer after an aborted run').toBe(doc.ocr.pdf);
+    expect(wordCount(doc.ocr.active), 'the active text is untouched by an aborted run').toBe(497);
+    expect(doc.ocr.active[0].lines[0].words[0].text, 'the first word after an aborted run').toBe('WHISTLEBLOWERS');
+    expect(doc.inputData.ocrApplied, 'no page is marked OCR-applied by an aborted run').toBe(null);
+  });
+
+  // Regression: the run pointed the active layer at its empty result before any page landed, and a failure left it there.
+  test('A run that fails on a missing language file rejects and changes nothing', async () => {
+    const err = await rejection(doc.recognize({ langs: ['zzz'], ocrPages: 'all' }));
+    expect(String(err?.message ?? err), 'a run on a language that cannot load rejects, naming the file').toMatch(/zzz\.traineddata/);
+    expect(doc.ocr.active, 'the parsed text stays the active layer after a failed run').toBe(doc.ocr.pdf);
+    expect(wordCount(doc.ocr.active), 'the active text is untouched by a failed run').toBe(497);
+    expect(doc.ocr.active[0].lines[0].words[0].text, 'the first word after a failed run').toBe('WHISTLEBLOWERS');
+    expect(doc.inputData.ocrApplied, 'no page is marked OCR-applied by a failed run').toBe(null);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});

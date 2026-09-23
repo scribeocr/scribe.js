@@ -131,6 +131,9 @@ const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="
  * @returns {string}
  */
 const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+/** Ringed stop square, the cancel control for a recognition run. */
+const STOP_SVG = editIcon('<circle cx="12" cy="12" r="8.5"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>');
+const RECOGNIZE_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']];
 const ICON_EXPORT = editIcon('<path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M5 19h14"/>');
 const ICON_COMBINE = editIcon('<path d="M4 8h9v9H4zM11 5h9v9"/>');
 const ICON_SPLIT = editIcon('<circle cx="6" cy="7" r="2.1"/><circle cx="6" cy="17" r="2.1"/><path d="M8 8l11 8M8 16L19 8"/>');
@@ -141,9 +144,6 @@ const ICON_FIELDS = editIcon('<rect x="3.5" y="7.5" width="17" height="9" rx="1.
 const ICON_TWO_PAGE = editIcon('<path d="M12 6.1C10.4 4.8 7.9 4.3 4.5 4.5v13.7c3.4-.2 5.9.3 7.5 1.7 1.6-1.4 4.1-1.9 7.5-1.7V4.5c-3.4-.2-5.9.3-7.5 1.6Z"/><path d="M12 6.1v13.8"/>');
 /** Facing-page pair for the app menu's cover-page row. */
 const ICON_COVER_ALONE = editIcon('<rect x="3.5" y="5" width="7.6" height="14" rx="1"/><rect x="12.9" y="5" width="7.6" height="14" rx="1"/>');
-/** Scan corners around a letterform, for the touch-only Recognize text menu row. */
-// eslint-disable-next-line max-len
-const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
 // The Automate glyph, duplicated here (like the other app-menu icons) so the menu row needs no import from the flag-gated panel module.
 const ICON_AUTOMATE = editIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 const ICON_INSPECT = editIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
@@ -576,6 +576,14 @@ class ScribePDFViewer {
     this._dockModeParts = null;
     /** @type {WeakMap<object, string>} Documents recognized this session, keyed to the run's language signature, and never exported. */
     this._recognizeRuns = new WeakMap();
+    /**
+     * The recognition run in flight. One run at a time.
+     * @type {?{doc: import('../../js/containers/scribeDoc.js').ScribeDoc, controller: AbortController,
+     *   phase: 'running'|'canceling'|'finishing', seen: Set<number>, total: number, mode: 'speed'|'quality', statusWidth: number}}
+     */
+    this._recognizeRun = null;
+    /** The document whose last run did not finish, so the row can say so until the next Start. */
+    this._recognizeFailedDoc = null;
     /** @type {?HTMLDivElement} The docked verb bar for the picked line or placement. */
     this._vbarElem = null;
     this._fsBarOn = false;
@@ -1950,8 +1958,8 @@ class ScribePDFViewer {
         // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
         this._extractTablesTool?.docChanged?.();
         this._inspectTool?.docChanged?.();
-        // The Recognize verdict depends on the page stats a deferred import produces, so re-evaluate once they land.
-        if (this._editEnabled) this._updateRecognizeButton();
+        // The desktop shell's menu state reads the document, so it refreshes once extraction lands.
+        this._notifyMenuState();
         if (this._commentsPanel && this._thumbnailPanel) {
           this._commentsPanel.rebuild();
           const hasCommentsNow = ((doc.annotations && doc.annotations.pages) || []).some((p) => (p || []).some((a) => a.comment || a.type === 'text'));
@@ -1965,11 +1973,7 @@ class ScribePDFViewer {
 
     if (this.dropZone) this.dropZone.style.display = 'none';
 
-    // Refresh the edit actions whose availability depends on the new document (recognizable pages, bookmark count).
-    if (this._editEnabled) {
-      this._updateRecognizeButton();
-      this._updateSplitButton();
-    }
+    if (this._editEnabled) this._updateSplitButton();
 
     return displaced;
   }
@@ -2023,8 +2027,8 @@ class ScribePDFViewer {
 
     if (terminatePrev) prev.close().catch(() => {});
 
-    // The now-empty viewer has nothing to recognize.
-    if (this._editEnabled) this._updateRecognizeButton();
+    // The now-empty viewer disables the desktop shell's document commands.
+    this._notifyMenuState();
 
     return prev;
   }
@@ -2543,12 +2547,11 @@ class ScribePDFViewer {
     // The verb bar takes over the palette's slot while a Fill & Sign item is picked, so only one of the two counts.
     const fsPal = this._fsBarOn && this._fillSignTool && !vbar ? this._fillSignTool.paletteElem() : null;
     const fsBar = fsPal ? fsPal.offsetHeight || 52 : 0;
-    const recogBar = this._recogBarOn && this._recognizeChoiceBar ? this._recognizeChoiceBar.offsetHeight || 52 : 0;
     const cs = this._companionStrip;
     const strip = cs && cs.stripElem.classList.contains('on') && !cs.isTucked() && !this._stripDragLayout
       && !this._phoneLineEditing
       ? cs.stripElem.offsetHeight : 0;
-    return dock + vbar + fsBar + recogBar + strip;
+    return dock + vbar + fsBar + strip;
   }
 
   /**
@@ -2674,24 +2677,13 @@ class ScribePDFViewer {
       this._fsBarOn = fsBarOn;
       if (this.scribe.scrollContainer) this._relayout();
     }
-    // The dock's mode row has no room for the speed picker at phone width, so the phone gives it a bar of its own above the dock.
-    const recogBarOn = this._phoneUi && !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem && !this._recognizeAlreadyRan();
-    if (recogBarOn) this._ensureRecognizeExtras();
-    if (this._recognizeChoiceBar) {
-      const speedHome = recogBarOn ? this._recognizeChoiceBar : this._recognizeSettings;
-      if (this._recognizeSpeedWrap.parentElement !== speedHome) speedHome.appendChild(this._recognizeSpeedWrap);
-      this._recognizeChoiceBar.classList.toggle('on', recogBarOn);
-    }
-    this.pdfViewerElem.classList.toggle('scribe-recogbar-on', recogBarOn);
-    if (recogBarOn !== !!this._recogBarOn) {
-      this._recogBarOn = recogBarOn;
-      if (this.scribe.scrollContainer) this._relayout();
-    }
     if (this._dockEditBtn) this._dockEditBtn.classList.toggle('active', !!activeBtn);
     if (!activeBtn) {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
       if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
       if (this._recognizeExtras) this._recognizeExtras.remove();
+      this._recognizeDockUi?.remove();
+      this._closeRecognizeSheet();
       // The palette returns to its floating home so the closed bar holds nothing.
       const idlePal = this._fillSignTool?.paletteElem();
       if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
@@ -2713,33 +2705,22 @@ class ScribePDFViewer {
       this._dockElem.classList.add('scribe-mode-on');
       this._dockModeParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
       this._dockModeParts.nm.textContent = activeBtn.title;
-      // Undo a previous sync's receipt state before the mode-specific branches restate it.
+      // The Recognize row hides the mode's name, so a later sync for another mode puts it back.
       this._dockModeParts.nm.style.display = '';
-      if (this._dockModeParts.status.classList.contains('scribe-recog-done')) {
-        this._dockModeParts.status.textContent = '';
-        this._dockModeParts.status.classList.remove('scribe-recog-done');
-      }
       const recogMode = !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem;
       this._dockModeRow.classList.toggle('scribe-mode-recognize', recogMode);
       if (recogMode) {
-        if (this._recognizeAlreadyRan()) {
-          this._recognizeExtras?.remove();
-          this._dockModeParts.nm.style.display = 'none';
-          this._dockModeParts.status.textContent = this.scribe.opt.vanillaMode || this.scribe.opt.ignorePdfText
-            ? `✓ Recognized${this.scribe.opt.vanillaMode ? ' with Tesseract' : ''}${this.scribe.opt.ignorePdfText ? ', PDF text ignored' : ''}`
-            : '✓ Recognized — text is selectable';
-          this._dockModeParts.status.classList.add('scribe-recog-done');
-        } else {
-          this._ensureRecognizeExtras();
-          const pages = this._deepOcrPageCount();
-          this._recognizeRunBtn.disabled = pages === 0;
-          this._syncRecognizeSpeedPicker();
-          if (this._recognizeExtras.parentElement !== this._dockModeRow) {
-            this._dockModeRow.insertBefore(this._recognizeExtras, this._dockModeParts.status);
-          }
-        }
-      } else if (this._recognizeExtras) {
+        this._ensureRecognizeExtras();
         this._recognizeExtras.remove();
+        this._dockModeParts.nm.style.display = 'none';
+        if (this._recognizeDockUi.parentElement !== this._dockModeRow) this._dockModeRow.insertBefore(this._recognizeDockUi, this._dockModeParts.status);
+        if (this._recognizeRunBtn.parentElement !== this._recognizeDockUi) this._recognizeDockUi.appendChild(this._recognizeRunBtn);
+        this._syncRecognizeSpeedPicker();
+        this._syncRecognizeRow();
+      } else {
+        this._recognizeExtras?.remove();
+        this._recognizeDockUi?.remove();
+        this._closeRecognizeSheet();
       }
       this._syncModeExitButtons(activeBtn);
       if (this._modeTrackWrap) this._syncModeTrackValue();
@@ -2820,6 +2801,8 @@ class ScribePDFViewer {
     const recogMode = !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem;
     this._modeBanner.classList.toggle('scribe-mode-recognize', recogMode);
     if (recogMode) {
+      this._recognizeDockUi?.remove();
+      this._closeRecognizeSheet();
       if (this._recognizeAlreadyRan()) {
         this._recognizeExtras?.remove();
         this._modeBannerParts.hint.textContent = `✓ Recognized${this.scribe.opt.vanillaMode ? ' with Tesseract' : ''}${this.scribe.opt.ignorePdfText ? ', PDF text ignored' : ''} — text is selectable and searchable`;
@@ -2830,6 +2813,7 @@ class ScribePDFViewer {
         this._recognizeRunBtn.disabled = pages === 0;
         this._syncRecognizeSpeedPicker();
         if (this._recognizeExtras.parentElement !== this._modeBanner) this._modeBanner.insertBefore(this._recognizeExtras, this._modeBannerParts.exit);
+        this._syncRecognizeRow();
       }
     } else if (this._recognizeExtras) {
       this._recognizeExtras.remove();
@@ -2905,8 +2889,7 @@ class ScribePDFViewer {
       wrap.append(btn, menu);
       return { wrap, show };
     };
-    const lang = buildPicker('lang', 'Recognition language',
-      [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']],
+    const lang = buildPicker('lang', 'Recognition language', RECOGNIZE_LANGS,
       opt.langs?.[0] || 'eng', (code) => { opt.langs = [code]; });
     const speed = buildPicker('speed', 'Recognition speed', [['speed', 'Fast'], ['quality', 'Accurate']], opt.recognizeMode, (mode) => {
       opt.recognizeMode = /** @type {'speed'|'quality'} */ (mode);
@@ -2914,13 +2897,6 @@ class ScribePDFViewer {
     const settings = document.createElement('span');
     settings.className = 'scribe-mode-banner-settings';
     settings.append(lang.wrap, speed.wrap);
-    const choiceBar = document.createElement('div');
-    choiceBar.className = 'scribe-recog-bar';
-    const choiceBarLabel = document.createElement('span');
-    choiceBarLabel.className = 'scribe-recog-bar-label';
-    choiceBarLabel.textContent = 'Recognition';
-    choiceBar.appendChild(choiceBarLabel);
-    this.pdfViewerElem.appendChild(choiceBar);
     const tools = document.createElement('span');
     tools.className = 'scribe-mode-banner-tools scribe-recog-tools';
     const runBtn = document.createElement('button');
@@ -2929,15 +2905,274 @@ class ScribePDFViewer {
     runBtn.textContent = 'Start';
     runBtn.addEventListener('click', () => {
       if (runBtn.classList.contains('busy') || runBtn.disabled) return;
-      this._recognizeAll(runBtn);
+      this._recognizeAll();
     });
+    // Cooperative: the pages already on a worker land before the run ends.
+    const cancelRun = () => {
+      const run = this._recognizeRun;
+      if (!run || run.phase !== 'running') return;
+      run.phase = 'canceling';
+      run.controller.abort();
+      this._syncRecognizeRow();
+    };
+    const deskWrap = document.createElement('span');
+    deskWrap.className = 'scribe-recog-desk';
+    const deskCancel = document.createElement('span');
+    deskCancel.className = 'cr-icon-button';
+    deskCancel.role = 'button';
+    deskCancel.tabIndex = 0;
+    deskCancel.title = 'Cancel';
+    deskCancel.ariaLabel = 'Cancel';
+    deskCancel.innerHTML = STOP_SVG;
+    deskCancel.addEventListener('mousedown', (e) => e.preventDefault());
+    deskCancel.addEventListener('click', cancelRun);
+    deskCancel.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      cancelRun();
+    });
+    const deskStatus = document.createElement('span');
+    deskStatus.className = 'scribe-recog-status';
+    deskWrap.append(deskCancel, deskStatus);
+    this._recognizeDeskParts = { wrap: deskWrap, cancel: deskCancel, status: deskStatus };
+    tools.append(settings, deskWrap, runBtn);
     this._recognizeRunBtn = runBtn;
     this._recognizeSettings = settings;
     this._recognizeSpeedWrap = speed.wrap;
     this._recognizeSpeedShow = speed.show;
-    this._recognizeChoiceBar = choiceBar;
-    tools.append(settings, runBtn);
+    this._recognizeLangShow = lang.show;
     this._recognizeExtras = tools;
+
+    // Start is the banner's own button, re-homed here while the phone UI is up.
+    const dockUi = document.createElement('span');
+    dockUi.className = 'scribe-recog-dock';
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'scribe-recog-chip';
+    chip.title = 'Recognition settings';
+    const chipLang = document.createElement('b');
+    const chipSpeed = document.createElement('span');
+    const chipCaret = document.createElement('span');
+    chipCaret.innerHTML = CARET_SVG;
+    chip.append(chipLang, chipSpeed, chipCaret);
+    chip.addEventListener('click', () => {
+      if (this._recognizeSheetElem?.classList.contains('open')) this._closeRecognizeSheet();
+      else this._openRecognizeSheet();
+    });
+    const two = document.createElement('button');
+    two.type = 'button';
+    two.className = 'scribe-recog-two';
+    two.title = 'Recognition settings';
+    const twoLead = document.createElement('span');
+    twoLead.className = 'scribe-recog-two-a';
+    const twoSum = document.createElement('span');
+    twoSum.className = 'scribe-recog-two-b';
+    const twoSumText = document.createTextNode('');
+    const twoCaret = document.createElement('span');
+    twoCaret.innerHTML = CARET_SVG;
+    twoSum.append(twoSumText, twoCaret);
+    two.append(twoLead, twoSum);
+    two.addEventListener('click', () => {
+      if (this._recognizeSheetElem?.classList.contains('open')) this._closeRecognizeSheet();
+      else this._openRecognizeSheet();
+    });
+    const prog = document.createElement('div');
+    prog.className = 'scribe-recog-prog';
+    const progRow = document.createElement('div');
+    progRow.className = 'scribe-recog-prog-row';
+    const progLabel = document.createElement('span');
+    progRow.appendChild(progLabel);
+    const progTrack = document.createElement('div');
+    progTrack.className = 'scribe-recog-track';
+    const progFill = document.createElement('i');
+    progTrack.appendChild(progFill);
+    prog.append(progRow, progTrack);
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'scribe-recog-cancel';
+    cancel.title = 'Cancel';
+    cancel.setAttribute('aria-label', 'Cancel');
+    cancel.innerHTML = STOP_SVG;
+    cancel.addEventListener('click', cancelRun);
+    dockUi.append(chip, two, prog, cancel);
+    this._recognizeDockUi = dockUi;
+    this._recognizeDockParts = {
+      chip, chipLang, chipSpeed, two, twoLead, twoSumText, prog, progLabel, progTrack, progFill, cancel,
+    };
+    this._recognizeSettingsBtn = chip;
+    this._recognizeCancelBtn = cancel;
+
+    // The sheet reuses the mode sheet's shell, so those rules style it too.
+    const sheet = document.createElement('div');
+    sheet.className = 'scribe-mode-sheet scribe-recog-sheet';
+    const sheetHd = document.createElement('div');
+    sheetHd.className = 'scribe-mode-sheet-hd';
+    const sheetPill = document.createElement('div');
+    sheetPill.className = 'scribe-sheet-pill';
+    sheetHd.appendChild(sheetPill);
+    const langRow = document.createElement('div');
+    langRow.className = 'scribe-recog-row';
+    const langNm = document.createElement('span');
+    langNm.className = 'scribe-recog-row-nm';
+    langNm.textContent = 'Language';
+    const selWrap = document.createElement('span');
+    selWrap.className = 'scribe-recog-selwrap';
+    // A native select, so the phone's own picker opens on a tap.
+    const select = document.createElement('select');
+    select.className = 'scribe-recog-select';
+    select.setAttribute('aria-label', 'Language');
+    for (const [code, name] of RECOGNIZE_LANGS) select.add(new Option(name, code));
+    select.addEventListener('change', () => {
+      opt.langs = [select.value];
+      lang.show(select.value);
+      // A changed setting decides whether the row shows the receipt or Start.
+      this._syncModeBanner();
+    });
+    const selCaret = document.createElement('span');
+    selCaret.innerHTML = CARET_SVG;
+    selWrap.append(select, selCaret);
+    langRow.append(langNm, selWrap);
+    const speedRow = document.createElement('div');
+    speedRow.className = 'scribe-recog-row';
+    const speedNm = document.createElement('span');
+    speedNm.className = 'scribe-recog-row-nm';
+    speedNm.textContent = 'Speed';
+    const seg = document.createElement('span');
+    seg.className = 'scribe-sheet-seg';
+    seg.setAttribute('role', 'group');
+    seg.setAttribute('aria-label', 'Speed');
+    const segBtn = (mode, label) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.addEventListener('click', () => {
+        if (b.disabled) return;
+        opt.recognizeMode = mode;
+        speed.show(mode);
+        this._syncModeBanner();
+      });
+      seg.appendChild(b);
+      return b;
+    };
+    const segFast = segBtn('speed', 'Fast');
+    const segAccurate = segBtn('quality', 'Accurate');
+    speedRow.append(speedNm, seg);
+    sheet.append(sheetHd, langRow, speedRow);
+    this.pdfViewerElem.appendChild(sheet);
+    attachSheetDrag(sheet, sheetHd, { host: this.pdfViewerElem, resizable: false, onDismiss: () => this._closeRecognizeSheet() });
+    const onSheetDocClick = (e) => {
+      if (!sheet.classList.contains('open')) return;
+      const t = /** @type {Node} */ (e.target);
+      if (sheet.contains(t) || chip.contains(t) || two.contains(t)) return;
+      this._closeRecognizeSheet();
+    };
+    document.addEventListener('click', onSheetDocClick);
+    this._teardownCallbacks.push(() => document.removeEventListener('click', onSheetDocClick));
+    // Capture plus preventDefault, so closing the sheet never also exits the mode.
+    const onSheetKey = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || !sheet.classList.contains('open')) return;
+      e.preventDefault();
+      this._closeRecognizeSheet();
+    };
+    document.addEventListener('keydown', onSheetKey, true);
+    this._teardownCallbacks.push(() => document.removeEventListener('keydown', onSheetKey, true));
+    this._recognizeSheetElem = sheet;
+    this._recognizeSheetParts = { select, segFast, segAccurate };
+  }
+
+  /**
+   * Draw the Recognize Text controls from the run's state.
+   * The phone's dock row, the desktop banner's Start and the settings sheet all read the same run.
+   */
+  _syncRecognizeRow() {
+    if (!this._recognizeExtras) return;
+    const doc = this.doc;
+    const opt = this.scribe.opt;
+    const run = this._recognizeRun && this._recognizeRun.doc === doc ? this._recognizeRun : null;
+    const ui = this._recognizeDockParts;
+    const runBtn = this._recognizeRunBtn;
+    const onPhone = runBtn.parentElement === this._recognizeDockUi;
+    // Start is busy for its own run, and disabled while another document's run holds the engine or nothing needs recognizing.
+    runBtn.classList.toggle('busy', !!run);
+    runBtn.textContent = run ? 'Recognizing…' : 'Start';
+    runBtn.disabled = !run && (!!this._recognizeRun || this._deepOcrPageCount() === 0);
+    this._recognizeSettings.style.display = run ? 'none' : '';
+    const receipt = !run && this._recognizeAlreadyRan();
+    const failed = !run && !!doc && this._recognizeFailedDoc === doc;
+    const langCode = opt.langs?.[0] || 'eng';
+    const langName = (RECOGNIZE_LANGS.find(([code]) => code === langCode) || [langCode, langCode])[1];
+    const fast = !!opt.vanillaMode || opt.recognizeMode === 'speed';
+    const speedName = fast ? 'Fast' : 'Accurate';
+    ui.chipLang.textContent = langName;
+    ui.chipSpeed.textContent = ` · ${speedName}`;
+    ui.twoLead.textContent = !receipt ? 'Didn’t finish — nothing changed'
+      : opt.vanillaMode || opt.ignorePdfText ? `✓ Recognized${opt.vanillaMode ? ' with Tesseract' : ''}${opt.ignorePdfText ? ', PDF text ignored' : ''}`
+        : '✓ Recognized — text is selectable';
+    ui.twoSumText.textContent = `${langName} · ${speedName}`;
+    ui.chip.style.display = !run && !receipt && !failed ? '' : 'none';
+    ui.two.style.display = !run && (receipt || failed) ? '' : 'none';
+    ui.prog.style.display = run ? '' : 'none';
+    ui.cancel.style.display = run ? '' : 'none';
+    const dk = this._recognizeDeskParts;
+    dk.wrap.style.display = run && !onPhone ? '' : 'none';
+    runBtn.style.display = run || (onPhone && receipt) ? 'none' : '';
+    if (run) {
+      const n = run.seen.size;
+      const label = run.phase === 'canceling' ? 'Canceling…' : run.phase === 'finishing' ? 'Finishing…' : n === 0 ? 'Starting…' : `${n} of ${run.total} pages`;
+      ui.progLabel.textContent = label;
+      // An Accurate run ends with a pass that cannot be canceled, so its pages fill the first nine tenths of the bar.
+      const span = run.mode === 'quality' ? 90 : 100;
+      ui.progFill.style.width = `${run.total > 0 ? Math.round((n / run.total) * span) : 0}%`;
+      ui.progTrack.classList.toggle('alive', n === 0 || run.phase !== 'running');
+      ui.cancel.disabled = run.phase !== 'running';
+      dk.cancel.classList.toggle('disabled', run.phase !== 'running');
+      dk.cancel.setAttribute('aria-disabled', String(run.phase !== 'running'));
+      // The count keeps the width of its longest wording, so the glyph beside it never moves mid-run.
+      if (!run.statusWidth && !onPhone && dk.wrap.isConnected) {
+        for (const text of ['Starting…', 'Canceling…', 'Finishing…', `${run.total} of ${run.total} pages`]) {
+          dk.status.textContent = text;
+          run.statusWidth = Math.max(run.statusWidth, Math.ceil(dk.status.getBoundingClientRect().width));
+        }
+      }
+      dk.status.style.minWidth = run.statusWidth ? `${run.statusWidth}px` : '';
+      dk.status.textContent = label;
+    }
+    // A language set by code is not in the list, so it is added as its own code rather than shown as another language.
+    const sp = this._recognizeSheetParts;
+    if (![...sp.select.options].some((o) => o.value === langCode)) sp.select.add(new Option(langCode, langCode));
+    sp.select.value = langCode;
+    sp.segFast.classList.toggle('on', fast);
+    sp.segFast.setAttribute('aria-pressed', String(fast));
+    sp.segAccurate.classList.toggle('on', !fast);
+    sp.segAccurate.setAttribute('aria-pressed', String(!fast));
+    sp.segFast.disabled = !!opt.vanillaMode;
+    sp.segAccurate.disabled = !!opt.vanillaMode;
+  }
+
+  /** The Recognize Text row's subtitle in the phone's tools sheet. */
+  _recognizeSheetSubtitle() {
+    const run = this._recognizeRun && this._recognizeRun.doc === this.doc ? this._recognizeRun : null;
+    if (run) {
+      const n = run.seen.size;
+      return run.phase === 'canceling' ? 'Canceling…' : run.phase === 'finishing' ? 'Finishing…' : n === 0 ? 'Recognizing…' : `Recognizing — ${n} of ${run.total} pages`;
+    }
+    return this._recognizeAlreadyRan() ? 'Recognized' : 'Make scanned pages selectable';
+  }
+
+  /** Open the settings sheet, closing the tools sheet if it was open. */
+  _openRecognizeSheet() {
+    if (!this._recognizeSheetElem) return;
+    this._closeModeSheet();
+    this._syncRecognizeRow();
+    this._recognizeSheetElem.classList.add('open');
+  }
+
+  _closeRecognizeSheet() {
+    const sheet = this._recognizeSheetElem;
+    if (!sheet) return;
+    sheet.classList.remove('open', 'dragging');
+    // An inline offset outranks the class transform, so the one a dismissing drag leaves must not survive to the next open.
+    sheet.style.transform = '';
   }
 
   /**
@@ -3573,7 +3808,7 @@ class ScribePDFViewer {
 
   /**
    * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
-   * @returns {{docOpen: boolean, recognize: boolean, combine: boolean, split: boolean,
+   * @returns {{docOpen: boolean, combine: boolean, split: boolean,
    *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
    *   fieldsEnabled: boolean, fieldsChecked: boolean}}
    */
@@ -3581,7 +3816,6 @@ class ScribePDFViewer {
     const doc = this.doc;
     return {
       docOpen: !!doc,
-      recognize: !!doc && this._deepOcrPageCount() > 0 && !this._recognizeAlreadyRan(),
       combine: this._tabs.length >= 2,
       split: !!doc && outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length >= 2,
       coverEnabled: this.scribe.state.pagesPerRow === 2,
@@ -3851,7 +4085,6 @@ class ScribePDFViewer {
         if (this._bookmarksPanel) this._bookmarksPanel.setPhoneMode(false);
       }
     }
-    this._updateRecognizeButton();
     this._syncDockPageNumWidth();
     this._syncSidebarControls();
     this._syncDocGatedControls();
@@ -3913,7 +4146,7 @@ class ScribePDFViewer {
           if (!this._roomOpen) this._pagesRoomGesture('tap', 0);
           this._setRoomEditing(true);
         }],
-        [this._recognizeTool?.toolbarElem, this._recognizeAlreadyRan() ? 'Recognized' : 'Make scanned pages selectable', null],
+        [this._recognizeTool?.toolbarElem, this._recognizeSheetSubtitle(), null],
         [this._inspectTool?.toolbarElem, 'Metadata, fonts, images and size', null],
       ];
       for (const [btn, sub, act] of rows) {
@@ -5045,17 +5278,12 @@ class ScribePDFViewer {
   }
 
   /**
-   * Build the edit toolbar's document actions and recognition surfaces.
-   * Recognition itself lives in the Recognize Text tool mode; here only the touch app-menu row and the progress line are mounted.
+   * Build the edit toolbar's document actions and the recognition progress line.
    */
   _buildEditToolbar() {
     // Export PDF, the document-level actions (Combine / Split), and the Dark mode toggle live in the far-left app menu, which the viewer already seeded with Open / Print.
     const appMenu = this._appMenu;
     if (appMenu) {
-      // Touch-only row replacing the bar's split button.
-      this._menuCommands.recognize = () => { if (this._ocrMenuItem) this._recognizeAll(this._ocrMenuItem); };
-      this._ocrMenuItem = appMenu.addAction('Recognize text', ICON_RECOGNIZE, this._menuCommands.recognize);
-      this._ocrMenuItem.classList.add('scribe-touch-row');
       // The `busy` class barely shows (the menu closes on click; the browser's download UI is the real progress cue) but is kept to match the Combine / Split siblings.
       this._menuCommands['export-pdf'] = async () => {
         // No-op at 0 pages (e.g. every page removed) rather than throwing deep in the PDF writer.
@@ -5153,14 +5381,12 @@ class ScribePDFViewer {
     const progressHost = (this._phoneUi && this._dockElem) ? this._dockElem : this.toolbarElemEnd?.parentElement;
     progressHost?.appendChild(progressBar);
 
-    this._updateRecognizeButton();
     this._updateCombineButton();
     this._updateSplitButton();
   }
 
   /**
    * Pages deep OCR would recognize for the current document, or 0 when there is none.
-   * Drives the Recognize Text mode's Start state, the touch menu row's visibility, and the progress bar's page total.
    * @returns {number}
    */
   _deepOcrPageCount() {
@@ -5175,8 +5401,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * True when this session already recognized the current document with the current settings, so every
-   * surface that would start that identical run again withdraws the offer (the mode shows a receipt instead).
+   * True when this session already recognized the current document with the current settings.
    * @returns {boolean}
    */
   _recognizeAlreadyRan() {
@@ -5201,12 +5426,6 @@ class ScribePDFViewer {
     speedBtn.disabled = !!this.scribe.opt.vanillaMode;
     speedBtn.title = this.scribe.opt.vanillaMode ? 'Tesseract runs its LSTM engine only' : 'Recognition speed';
     this._recognizeSpeedShow(this.scribe.opt.vanillaMode ? 'speed' : this.scribe.opt.recognizeMode);
-  }
-
-  /** Show the touch app-menu recognition row only when deep OCR would actually recognize at least one page and this session has not already done so. */
-  _updateRecognizeButton() {
-    if (this._ocrMenuItem) this._ocrMenuItem.style.display = this._deepOcrPageCount() > 0 && !this._recognizeAlreadyRan() ? '' : 'none';
-    this._notifyMenuState();
   }
 
   /** Show the Combine menu item only when 2+ documents (tabs) are open. Combining one document is a no-op. */
@@ -5245,26 +5464,34 @@ class ScribePDFViewer {
   }
 
   /**
-   * Recognize the auto-selected (deep) pages, showing progress, then re-render the current page so the new text appears.
-   * @param {HTMLSpanElement} btn - The button to show a busy state on.
+   * Recognize the auto-selected (deep) pages, then re-render the current page so the new text appears.
+   * A cancel is honored until the last page lands, and puts the document back as it was.
    */
-  async _recognizeAll(btn) {
+  async _recognizeAll() {
     const doc = this.doc;
-    if (!doc) return;
-    const label = btn.textContent;
-    btn.textContent = 'Recognizing…';
-    btn.classList.add('busy');
-    if (this._recognizeSettings) this._recognizeSettings.style.display = 'none';
-    const speedBtn = this._recognizeSpeedWrap?.querySelector('button');
-    if (speedBtn) speedBtn.disabled = true;
+    if (!doc || this._recognizeRun) return;
+    const total = this._deepOcrPageCount();
+    const runSig = this._recognizeRunSig();
+    const controller = new AbortController();
+    const run = {
+      doc,
+      controller,
+      phase: /** @type {'running'|'canceling'|'finishing'} */ ('running'),
+      seen: new Set(),
+      total,
+      mode: /** @type {'speed'|'quality'} */ (this.scribe.opt.vanillaMode ? 'speed' : this.scribe.opt.recognizeMode),
+      statusWidth: 0,
+    };
+    this._recognizeRun = run;
+    if (this._recognizeFailedDoc === doc) this._recognizeFailedDoc = null;
+    this._closeRecognizeSheet();
     this.pdfViewerElem.classList.add('scribe-recog-alive');
+    this._syncRecognizeRow();
 
     // Key progress strictly on `convert` events (deduped by page index) so the faster pre-render `render` events do not inflate it.
     // The desktop toolbar line runs from a 0.04 sliver to 0.9, reserving the last tenth for the compare/optimize tail (no page index), which the snap-to-full fills on success.
-    const bar = this._ocrProgress;
-    const total = this._deepOcrPageCount();
-    const runSig = this._recognizeRunSig();
-    const seen = new Set();
+    // The phone's dock row draws its own bar, so the line stays idle there.
+    const bar = this._phoneUi ? null : this._ocrProgress;
     if (bar) {
       bar.style.transition = 'none';
       bar.style.transform = 'scaleX(0.04)';
@@ -5275,21 +5502,24 @@ class ScribePDFViewer {
     const prevProgress = doc.progressHandler;
     doc.progressHandler = (msg) => {
       prevProgress?.(msg);
-      if (msg && msg.type === 'convert' && typeof msg.n === 'number') seen.add(msg.n);
-      if (bar && total > 0) bar.style.transform = `scaleX(${Math.max(0.04, 0.9 * Math.min(1, seen.size / total))})`;
+      if (msg && msg.type === 'convert' && typeof msg.n === 'number') run.seen.add(msg.n);
+      if (bar && total > 0) bar.style.transform = `scaleX(${Math.max(0.04, 0.9 * Math.min(1, run.seen.size / total))})`;
       // A one-page job has no wind bar to fill, so the icon and button cues carry its whole run.
-      if (seen.size > 0 && total > 1) {
+      if (run.seen.size > 0 && total > 1) {
         this.pdfViewerElem.classList.remove('scribe-recog-alive');
         // Mid-run, a tab switch moves this.doc to another document, whose strip must not show this run's band.
-        if (this.doc === doc) this._companionStrip?.setRecognition(Math.min(1, seen.size / total));
+        if (this.doc === doc) this._companionStrip?.setRecognition(Math.min(1, run.seen.size / total));
       }
+      // Once every page has landed, an Accurate run's end (font optimization and the compare pass) cannot be canceled.
+      if (run.phase === 'running' && run.mode === 'quality' && total > 0 && run.seen.size >= total) run.phase = 'finishing';
+      this._syncRecognizeRow();
     };
 
     let ok = false;
     try {
       /** @type {Parameters<typeof doc.recognize>[0]} */
       const recognizeOptions = {
-        langs: this.scribe.opt.langs, mode: this.scribe.opt.recognizeMode, vanillaMode: !!this.scribe.opt.vanillaMode, ocrPages: 'autoDeep',
+        langs: this.scribe.opt.langs, mode: this.scribe.opt.recognizeMode, vanillaMode: !!this.scribe.opt.vanillaMode, ocrPages: 'autoDeep', signal: controller.signal,
       };
       if (this.scribe.opt.ignorePdfText) {
         recognizeOptions.ocrPages = 'all';
@@ -5301,16 +5531,23 @@ class ScribePDFViewer {
       this.scribe.destroyText(false);
       await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
     } catch (err) {
-      console.error('OCR failed:', err);
-      // A banner, not a toast: recognition is a long async job the user may have stepped away from.
-      this._showBanner('Text recognition didn’t finish. The document was left unchanged.');
+      if (err && err.name === 'AbortError') {
+        // The library put the document back. The page is drawn again from the restored text, and nothing is recorded or announced.
+        if (this.doc === doc) {
+          this.scribe.destroyText(false);
+          await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+        }
+      } else {
+        console.error('OCR failed:', err);
+        this._recognizeFailedDoc = doc;
+        // A banner, since recognition is a long async job the user may have stepped away from, except while the phone's row can carry the failure itself.
+        const inRow = this._phoneUi && this.doc === doc && !!this._recognizeTool && this._modeBannerBtn === this._recognizeTool.toolbarElem;
+        if (!inRow) this._showBanner('Text recognition didn’t finish. The document was left unchanged.');
+      }
     } finally {
       doc.progressHandler = prevProgress;
-      btn.textContent = label;
-      btn.classList.remove('busy');
+      this._recognizeRun = null;
       this.pdfViewerElem.classList.remove('scribe-recog-alive');
-      if (this._recognizeSettings) this._recognizeSettings.style.display = '';
-      if (speedBtn) speedBtn.disabled = !!this.scribe.opt.vanillaMode;
       if (bar) {
         if (ok) bar.style.transform = 'scaleX(1)';
         setTimeout(() => { bar.style.opacity = '0'; }, ok ? 250 : 0);
@@ -5320,8 +5557,8 @@ class ScribePDFViewer {
         if (ok && total > 1) this._companionStrip.finishRecognition();
         else this._companionStrip.setRecognition(null);
       }
-      // The run ends on its own result: the mode stays open, and these syncs repaint it as the receipt.
-      this._updateRecognizeButton();
+      // The mode stays open on the run's own result, so these syncs repaint the row as the receipt, Ready, or the failure.
+      this._syncModeBanner();
       this._syncDocGatedControls();
     }
   }
@@ -5505,8 +5742,6 @@ class ScribePDFViewer {
       }
       /* The phone draws recognition progress on the companion strip's wind bar just above the dock, so the dock's own line stays hidden. */
       .scribe-pdf-viewer .scribe-dock .scribe-ocr-progress { display: none; }
-
-      .scribe-pdf-viewer .scribe-dock-mode-status.scribe-recog-done { color: var(--scribe-ink-2); }
 
       /* Signs of life while a run has no page fraction to draw, on a single-page document or before the first page lands. */
       .scribe-pdf-viewer.scribe-recog-alive .scribe-dock-mode.scribe-mode-recognize .scribe-dock-mode-ic,

@@ -132,12 +132,15 @@ export class TessWorker {
       this.#promises[promiseId].resolve({ jobId, data: responseData });
       delete this.#promises[promiseId];
     } else if (status === 'reject') {
-      this.#promises[promiseId].reject(responseData);
+      const pending = this.#promises[promiseId];
       delete this.#promises[promiseId];
+      if (pending) pending.reject(responseData);
       if (action === 'load') workerResReject(responseData);
       if (this.#errorHandler) {
         this.#errorHandler(responseData);
-      } else {
+      } else if (!pending) {
+        // In Node a throw here is an uncaught exception that kills the thread hosting this worker, so a rejection already delivered above is not thrown as well.
+        // An error nobody awaits is still thrown, so it is not lost.
         throw Error(responseData);
       }
     } else if (status === 'progress') {
@@ -200,11 +203,14 @@ export class TessWorker {
 
     const langsArr = typeof langs === 'string' ? langs.split('+') : langs;
     const _langs = langsArr.filter((x) => !this.#currentLangs.includes(x));
-    this.#currentLangs.push(..._langs);
 
     if (_langs.length > 0) {
+      // A language counts as loaded only once its data is in, so a load that failed is retried next time rather than skipped.
       return this.#loadLanguageInternal(_langs, jobId)
-        .then(() => this.#initializeInternal(langs, _oem, _config, jobId));
+        .then(() => {
+          this.#currentLangs.push(..._langs);
+          return this.#initializeInternal(langs, _oem, _config, jobId);
+        });
     }
 
     return this.#initializeInternal(langs, _oem, _config, jobId);

@@ -273,7 +273,6 @@ ipcMain.on('menu-state', (_event, state) => {
   set('export-pdf', { enabled: state.docOpen });
   set('rotate-left', { enabled: state.docOpen });
   set('rotate-right', { enabled: state.docOpen });
-  set('recognize', { enabled: state.recognize });
   set('combine', { enabled: state.combine });
   set('split', { enabled: state.split });
   set('cover-alone', { enabled: state.coverEnabled, checked: state.coverChecked });
@@ -358,7 +357,6 @@ if (!gotTheLock) {
             { type: 'separator' },
             { role: 'close' },
             { type: 'separator' },
-            { id: 'recognize', label: 'Recognize Text…', enabled: false, click: send('recognize') },
             { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
             { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
             { id: 'split', label: 'Split at Bookmarks', enabled: false, click: send('split') },
