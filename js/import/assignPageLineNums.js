@@ -42,7 +42,8 @@ export function assignPageLineNums(pages) {
     const trailing = [];
     // On a document without numbered paper nearly every line leaves at the first-character test, so no costlier test belongs before it.
     for (const line of pg.lines) {
-      line.lineNum = null; line.pageNum = null;
+      // pageNum is cleared only on the pages this module labels, below, so a value the layout pass wrote survives everywhere else.
+      line.lineNum = null;
       const first = line.words[0];
       if (!first) continue;
       const t = first.text || '';
@@ -262,7 +263,7 @@ export function assignPageLineNums(pages) {
       }
       const r = home.head || home.foot;
       const h = line.bbox.bottom - line.bbox.top;
-      // A band line is read in chains split at wide gaps, so a bare folio at the right end of a running head stands alone.
+      // A band line is read in chains split at wide gaps, so a bare page number at the right end of a running head stands alone.
       /** @type {Array<Array<{t: string, w: import('../objects/ocrObjects.js').OcrWord}>>} */
       const chains = [];
       let prevW = null;
@@ -391,6 +392,8 @@ export function assignPageLineNums(pages) {
     const ownRow = new Map();
     for (const r of info.regions) for (const x of r.rows) if (x.line) ownRow.set(x.line, { r, n: x.n });
     for (const line of info.page.lines) {
+      // On numbered paper this module owns the field, so the layout pass's value is cleared from every line of the page.
+      line.pageNum = null;
       if ((line.orientation || 0) !== info.orientation) continue;
       const own = ownRow.get(line);
       if (own) { line.lineNum = own.n; if (own.r.label != null) line.pageNum = String(own.r.label); continue; }
@@ -594,7 +597,7 @@ function homeOf(info, line, x) {
  */
 function bandOf(home, single, docFoot) {
   if (home.body) return { region: home.body, band: 'body' };
-  // A document that prints its page numbers below the rows reads only foot bands, so a short page's folio never becomes the next mini-page's header.
+  // A document that prints its page numbers below the rows reads only foot bands, so the page number of a short page never becomes the next mini-page's header.
   if (docFoot) return home.foot ? { region: home.foot, band: 'foot' } : null;
   if (home.head) return { region: home.head, band: 'head' };
   // Otherwise a foot band is read only on a single-region page, so a sheet's own footer never labels a mini-page.

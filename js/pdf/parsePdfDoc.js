@@ -1454,7 +1454,7 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
   // Microsoft Word emits one struct element per paragraph, so on Word-authored docs analyzeLayout can treat element boundaries as paragraph boundaries outright.
   let elementFaithful = false;
   try { elementFaithful = docAuthoredByWord(objCache, pdfBytes); } catch { /* best-effort */ }
-  // Stamp each page with its detected data-table regions so analyzeLayout can suppress the bare-folio and line-number-column furniture rules inside a table.
+  // Stamp each page with its detected data-table regions so analyzeLayout can suppress the lone-number and line-number-column furniture rules inside a table.
   // A table's lone-integer cells are otherwise indistinguishable from page numbers and pleading line numbers, and would be dropped on export.
   for (const r of results) {
     if (!r || !r.pageObj || !r.dataTablePage) continue;
@@ -1469,7 +1469,7 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
       }
       if (!(right > left)) return null;
       // Trust a table as a furniture-suppression region only when its content is predominantly numeric, i.e. a genuine data table.
-      // A deposition or pleading transcript is also detected as a columnar table, but its line-number margin and folios are real furniture that must stay eligible for those rules.
+      // A deposition or pleading transcript is also detected as a columnar table, but its line-number margin and page numbers are real furniture that must stay eligible for those rules.
       let numeric = 0; let total = 0;
       for (const line of r.pageObj.lines) {
         for (const w of line.words) {
@@ -1657,7 +1657,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   /** @type {Array<any>} */
   const operandStack = [];
 
-  // The PDF spec defines /Artifact marked content as non-content furniture (running heads, folios, line numbers), letting tagged docs identify furniture authoritatively instead of by geometry.
+  // The PDF spec defines /Artifact marked content as non-content furniture (running heads, page numbers, line numbers), letting tagged docs identify furniture authoritatively instead of by geometry.
   // inheritedTextState.artifact carries the flag into Form XObjects.
   /** @type {Array<{tag: string, mcid: (number|null), art: boolean}>} */
   const mcStack = [];

@@ -143,6 +143,16 @@ describe('Check paragraph detection with footnotes.', () => {
     expect(footnotePars[2].lines[0].words[0].text).toBe('9');
   });
 
+  test('The printed page number is read into every line of its page at the document\'s convention', async () => {
+    // The report numbers its pages 1-22 in the foot. The cover carries no number, and the appended CV restarts at 2, so 2-8 name two pages each and are not read.
+    expect(doc.ocr.active[0].lines[0].pageNum, 'the unnumbered cover page gets no page number').toBe(null);
+    expect(doc.ocr.active[2].lines[0].pageNum, 'the first numbered page reads its printed 1').toBe('1');
+    expect(doc.ocr.active[10].lines[0].pageNum, 'a page inside the report reads its printed number').toBe('9');
+    expect(doc.ocr.active[23].lines[0].pageNum, 'the last report page reads its printed 22').toBe('22');
+    const folios = doc.ocr.active[10].lines.filter((line) => line.par && line.par.type === 'pagenum');
+    expect(folios.map((line) => line.words[0].text), 'only the folio line is typed pagenum, the role export drops as furniture').toEqual(['9']);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

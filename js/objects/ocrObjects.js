@@ -28,7 +28,7 @@ export function OcrPage(n, dims) {
   /**
    * Detected data-table regions, one bounding box per table rather than per column, in the same top-left coordinate space as line bboxes.
    * Populated only at PDF import and consumed during that same import, so OCR pages have none.
-   * Exempts a table's cells from the bare-folio and line-number-column furniture rules, which would otherwise mistype them as furniture.
+   * Exempts a table's cells from the lone-number and line-number-column furniture rules, which would otherwise mistype them as furniture.
    * @type {Array<{left: number, top: number, right: number, bottom: number}>}
    */
   this.tableBoxes = [];
@@ -38,7 +38,8 @@ export function OcrPage(n, dims) {
 
 /**
  * Semantic role of a paragraph.
- * 'pagenum' is reserved for a real folio: a lone digit or roman-numeral token in the margin, e.g. "5", "- 6 -", "ii".
+ * 'pagenum' is a line holding only the page number, bare or wrapped, e.g. "5", "- 6 -", "Page 6".
+ * A lone number in the margin that was not read as the page number is a 'header' or 'footer'.
  * 'header' and 'footer' are running furniture such as a running head, a court/docket stamp, or a Bates stamp, split by which half of the page they sit in.
  * 'blockquote' is a quotation set off by indentation from both margins.
  * 'linenum' is the left-margin column of integers, one per text line, found in legal depositions and pleadings.
@@ -48,7 +49,7 @@ export function OcrPage(n, dims) {
  */
 
 /**
- * Whether a paragraph is page furniture: a folio, a running header or footer, or a left-margin line-number column.
+ * Whether a paragraph is page furniture: a page-number line, a running header or footer, or a left-margin line-number column.
  * @param {?OcrPar} par
  * @returns {boolean}
  */

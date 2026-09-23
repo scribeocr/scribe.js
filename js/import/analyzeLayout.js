@@ -208,7 +208,7 @@ export function analyzeLayout(pages, opts = {}) {
         orientation: line.orientation || 0,
         topFrac: pageH ? b.top / pageH : 0,
         bottomFrac: pageH ? b.bottom / pageH : 0,
-        // A table's lone-integer cells and leading index column otherwise trip the bare-folio and line-number-column rules and are dropped on export.
+        // A table's lone-integer cells and leading index column otherwise trip the lone-number and line-number-column rules and are dropped on export.
         inTable: !!tBoxes && tBoxes.some((bx) => (left + right) / 2 >= bx.left && (left + right) / 2 <= bx.right
           && (b.top + b.bottom) / 2 >= bx.top && (b.top + b.bottom) / 2 <= bx.bottom),
         structId: structResolved ? structId : null,
@@ -226,9 +226,8 @@ export function analyzeLayout(pages, opts = {}) {
         // set by the line-number pass: this whole line is a standalone left-margin line number (case A) -> role 'linenum' -> dropped from reflowed text.
         // Merged line numbers (case B) instead go into the lnWords set below and leave the line a body paragraph until the split.
         lineNum: false,
-        // set by the sequence-tracking folio pass: a lone number whose value tracks the page across a contiguous run of pages (a top/bottom page-number folio) -> role 'pagenum',
-        // regardless of how far it sits from the physical page edge.
-        folio: false,
+        // set by the page-number pass: the line holds only the page number, bare or wrapped -> role 'pagenum'.
+        pageNumLine: false,
         // set by the hanging-marker (outdent) pass: this line is a short lead in an outdent column to the left of the body column, with the body text a separate line on the same row.
         // Such a lead is a transcript "Q"/"A"/"BY MR. X" speaker marker or a hanging-indent item lead.
         // It always starts a new paragraph (the mirror of a first-line indent).
@@ -318,7 +317,7 @@ export function analyzeLayout(pages, opts = {}) {
     const pageBodyLeft = bodyPeaks.length ? bodyPeaks[0].center : colX;
     const indentOk = colX <= pageBodyLeft + LN_MAX_INDENT;
     // A run entirely below the body is a footnote/endnote number block, and locking on it would strip the note numbers, so require a member at or above the lowest body line.
-    // 'Body' means a non-member line carrying letters, so a bare-number folio at the bottom cannot extend the span down and re-admit the block.
+    // 'Body' means a non-member line carrying letters, so a bare page number at the bottom cannot extend the span down and re-admit the block.
     // Skipped under 4 body lines so a fully-numbered case-B page whose members are the body stays accepted.
     const bodyLines = pf.filter((f) => !memberSet.has(f) && /[A-Za-z]/.test(f.text || ''));
     const bodyBottom = bodyLines.length ? Math.max(...bodyLines.map((f) => f.top)) : Infinity;
@@ -1093,7 +1092,7 @@ export function analyzeLayout(pages, opts = {}) {
   /** @type {Map<number, number>} */
   const footnoteContinues = new Map();
   const supRefRun = schemeRuns['sup-ref'];
-  // note prose below a separator, excluding a centred folio/footer (anchored left of the note column)
+  // note prose below a separator, excluding a centered page number or footer (anchored left of the note column)
   const noteLeftMax = (q) => (pageFlush.get(q) ?? bodyLeft) + bodySize * 4;
   // The open-note test below reads an unpunctuated final line as a note left unfinished, which presumes this document's notes normally end punctuated.
   // Citation-style notes (a bare page or Bates number) flout that convention, so it is first measured on notes that are provably complete.
@@ -1235,7 +1234,7 @@ export function analyzeLayout(pages, opts = {}) {
   for (const f of feats) {
     if (!(f.topFrac < 0.12 || f.bottomFrac > 0.88)) continue;
     const key = `${f.bottomFrac > 0.88 ? 'b' : 't'}|${f.text.toLowerCase().replace(/\d+/g, '').replace(/[^a-z]+/g, ' ').trim()}`;
-    if (key.length < 5) continue; // 'b|'/'t|' + at least 3 letters: skips folios and trivial marks
+    if (key.length < 5) continue; // 'b|'/'t|' + at least 3 letters: skips bare page numbers and trivial marks
     f.marginKey = key;
     if (!marginGroups.has(key)) marginGroups.set(key, []);
     marginGroups.get(key).push({
@@ -1261,7 +1260,7 @@ export function analyzeLayout(pages, opts = {}) {
     // Real page furniture is ~1x body size, so a giant-font mark is never furniture however it recurs, and typing it as furniture would drop it on export.
     if (insts.filter((i) => i.sizeRatio > 3).length * 2 >= insts.length) continue;
     const keyPages = new Set(insts.map((i) => i.page));
-    // A page-tracking number (value - page constant on most pages), i.e. a folio, "Page N of M", a PageID, or a Bates number.
+    // A page-tracking number (value - page constant on most pages), i.e. a page number, "Page N of M", a PageID, or a Bates number.
     // Keys established this way skip the style/prose test below.
     /** @type {Map<number, Set<number>>} */
     const offsetPages = new Map();
@@ -1330,43 +1329,177 @@ export function analyzeLayout(pages, opts = {}) {
     // A run-admitted key (section head/footer below the recurrence gate) may be shared by a one-off section-opener heading sitting just inside the margin band.
     // Mark only instances in the tight band where the running-head banner actually sits, so that title stays a heading rather than being dropped as furniture.
     if (runAdmittedKeys.has(f.marginKey) && !(f.topFrac < 0.08 || f.bottomFrac > 0.92)) continue;
-    // Keys are digit-stripped, so a numberless body line can collapse onto a folio-bearing footer's number-key.
+    // Keys are digit-stripped, so a numberless body line can collapse onto the number-key of a footer that carries the page number.
     // That line is not the stamp, and marking it furniture would delete its content on export.
     if (numberKeys.has(f.marginKey) && !/\d/.test(f.text)) continue;
     f.runningFurniture = true;
   }
 
-  // Bare page-number folios that the two other furniture paths miss.
-  // The text-keyed pass above needs letters to key on, and classifyRole's fallback keys on proximity to the page edge, so it drops a folio set in a tall margin.
-  // Keys instead on a value-minus-page offset that holds across a contiguous run of pages.
-  /** @type {Map<string, Array<{f: LineFeat, page: number, val: number}>>} */
-  const folioBySide = new Map();
+  // Page numbers added by courts and other post-processing steps are removed.
+  const HEADER_RE = /(^|\s)(Case|USCA\d*|Appeal|Docket)\b[^]*\b(Filed|Entered|PageID|Pg:|Page:)/i;
+  // A short number and a dash before a numeral make it half of a compound page number ("3-14").
+  // A four-digit number there is a year ("May 2, 2012 - 11"), so the numeral stays a candidate.
+  const compoundBefore = /(^|\D)\d{1,3}\s*[-–—]\s*$/;
+  // The wrapped forms of a page number, each capturing its numeral.
+  // These alone are read at the start of a shared row, since the row rule below reads a bare number there.
+  const phraseForms = [
+    /^[-–—]+\s*(\d{1,4})\s*[-–—]+$/, // "- 12 -"
+    /^[[(]\s*(\d{1,4})\s*[\])]$/, // "[12]", "(12)"
+    /^(?:page\s*)?(\d{1,4})\s*of\s*\d{1,4}$/i, // "12 of 40", "Page 12 of 40"
+    /^page\s*(?:no\.?\s*)?[-–—]?\s*(\d{1,4})\s*[-–—]?$/i, // "Page 12", "Page No. 12", "Page - 12 -"
+    /^(?:p\s*a\s*g\s*e\s*\|\s*(\d{1,4})|(\d{1,4})\s*\|\s*p\s*a\s*g\s*e)$/i, // "Page | 12", "12 | Page"
+  ];
+  const bareForm = /^(\d{1,4})$/;
+  const numForms = [bareForm, ...phraseForms];
+  // Every form opens with a digit, a dash, a bracket or "page".
+  const formStart = /^[-–—[(\dp]/i;
+
+  /** @type {Map<number, Array<PageNumCandidate>>} */
+  const placeGroups = new Map();
   for (const f of feats) {
-    const tt = f.text.trim();
-    if (!/^\d{1,4}$/.test(tt)) continue;
-    // A data table's numeric cells also sit in the top/bottom band and increment across pages, forming spurious page-tracking offset runs, so a table cell must never be taken for a folio.
+    const head = f.topFrac < 0.15;
+    if (!head && !(f.bottomFrac > 0.85)) continue;
     if (f.inTable) continue;
-    // A superscript note marker (incl. repaired split markers) is never a folio.
-    // Sequential notes at steady page positions otherwise read as a perfect page-tracking run and the notes vanish as furniture.
-    if (f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref') continue;
-    if (!(f.topFrac < 0.15 || f.bottomFrac > 0.80)) continue;
-    const side = f.bottomFrac > 0.80 ? 'b' : 't';
-    if (!folioBySide.has(side)) folioBySide.set(side, []);
-    folioBySide.get(side).push({ f, page: f.page, val: Number(tt) });
-  }
-  for (const insts of folioBySide.values()) {
-    /** @type {Map<number, Array<{f: LineFeat, page: number}>>} */
-    const byOffset = new Map();
-    for (const c of insts) {
-      const off = c.val - c.page;
-      if (!byOffset.has(off)) byOffset.set(off, []);
-      byOffset.get(off).push(c);
+    if (HEADER_RE.test(f.text)) continue;
+
+    const words = f.line.words;
+    const text = f.text.trim();
+    /** @type {Array<{value: string, box: {left: number, right: number}, whole: boolean}>} */
+    const found = [];
+    if (formStart.test(text)) {
+      for (const re of numForms) {
+        const m = re.exec(text);
+        if (m) {
+          found.push({ value: m[1] ?? m[2], box: f.line.bbox, whole: true });
+          break;
+        }
+      }
     }
-    for (const cs of byOffset.values()) {
-      const pgs = [...new Set(cs.map((c) => c.page))].sort((a, b) => a - b);
-      let run = pgs.length ? 1 : 0; let best = run;
-      for (let k = 1; k < pgs.length; k++) { run = pgs[k] === pgs[k - 1] + 1 ? run + 1 : 1; if (run > best) best = run; }
-      if (best >= 3) for (const c of cs) c.f.folio = true;
+    if (!found.length && words.length > 1) {
+      // The parser merges a page number and the running head or foot it shares a row with into one line, and the number keeps to an end of that row.
+      // So both ends are candidates, and a year at the other end ("2 AMUSEMENT TODAY July 2022") later drops out because its value repeats across pages.
+      const first = words[0];
+      const last = words[words.length - 1];
+      if (bareForm.test(last.text)) {
+        const rest = words.slice(0, -1).map((w) => w.text).join(' ');
+        if (!compoundBefore.test(rest)) found.push({ value: last.text, box: last.bbox, whole: false });
+      }
+      if (bareForm.test(first.text) && !f.firstWordSup) found.push({ value: first.text, box: first.bbox, whole: false });
+
+      let prefix = '';
+      for (let k = 0; k + 1 < words.length && k < 4; k++) {
+        prefix += (k ? ' ' : '') + words[k].text;
+        const phrase = prefix.trim();
+        if (!phrase) continue;
+        if (!formStart.test(phrase)) break;
+        let m = null;
+        for (const re of phraseForms) {
+          m = re.exec(phrase);
+          if (m) break;
+        }
+        if (!m) continue;
+        const numberWord = words.slice(0, k + 1).find((w) => /\d/.test(w.text)) || first;
+        found.push({ value: m[1] ?? m[2], box: numberWord.bbox, whole: false });
+        break;
+      }
+    }
+    if (!found.length) continue;
+
+    const mid = (f.topFrac + f.bottomFrac) / 2;
+    const depth = head ? mid : 1 - mid;
+    const n = pages[f.page].n;
+    const width = pages[f.page].dims?.width || 1;
+    for (const { value, box, whole } of found) {
+      // Stamps pad their counts with leading zeros ("pg. 01") and printed page numbers rarely do.
+      if (value.length > 1 && value[0] === '0') continue;
+      const across = (box.left + box.right) / 2 / width;
+      /** @type {PageNumCandidate} */
+      const c = {
+        f, value, depth, off: Number(value) - n, whole, head, across,
+      };
+      // Each candidate is binned on four grids, unshifted or shifted half a step in depth, side or both, so numbers less than half a step apart in each direction always share a bin on one of them.
+      for (let lat = 0; lat < 4; lat++) {
+        const depthShift = lat & 1 ? 0.5 : 0;
+        const sideShift = lat & 2 ? 0.5 : 0;
+        const depthBin = Math.min(63, Math.max(0, Math.round(depth / 0.02 + depthShift)));
+        // Each candidate is also filed with its position flipped left to right on every other page, so numbers that alternate sides form one place.
+        for (let mirror = 0; mirror < 2; mirror++) {
+          const x = mirror === 1 && n % 2 === 1 ? 1 - across : across;
+          const sideBin = Math.min(31, Math.max(0, Math.round(x * 10 + sideShift) + 2));
+          const key = ((((head ? 1 : 0) * 4 + lat) * 64 + depthBin) * 2 + mirror) * 32 + sideBin;
+          const group = placeGroups.get(key);
+          if (group) group.push(c);
+          else placeGroups.set(key, [c]);
+        }
+      }
+    }
+  }
+
+  /** @type {?Array<PageNumCandidate>} */
+  let convention = null;
+  let bestPages = 0;
+  let bestChain = -1;
+  for (const group of placeGroups.values()) {
+    // A group covers no more pages than it has candidates, so this skips only groups that could not win.
+    if (group.length < 2 || group.length < bestPages) continue;
+
+    // A page number names one page, so a value found on two of a group's pages is dropped from the group.
+    // Otherwise a number repeated at a fixed place, such as a year in a running head, could cover more pages than the page number and win.
+    /** @type {Map<string, number>} */
+    const pageOfValue = new Map();
+    /** @type {Set<string>} */
+    const repeated = new Set();
+    for (const c of group) {
+      const page = pageOfValue.get(c.value);
+      if (page === undefined) pageOfValue.set(c.value, c.f.page);
+      else if (page !== c.f.page) repeated.add(c.value);
+    }
+    /** @type {Array<PageNumCandidate>} */
+    const sound = [];
+    /** @type {Set<number>} */
+    const soundPages = new Set();
+    for (const c of group) {
+      if (repeated.has(c.value)) continue;
+      sound.push(c);
+      soundPages.add(c.f.page);
+    }
+    if (soundPages.size < 2 || soundPages.size < bestPages) continue;
+
+    /** @type {Map<number, Set<number>>} */
+    const pagesByOff = new Map();
+    for (const c of sound) {
+      const offPages = pagesByOff.get(c.off);
+      if (offPages) offPages.add(c.f.page);
+      else pagesByOff.set(c.off, new Set([c.f.page]));
+    }
+    let chain = 0;
+    for (const offPages of pagesByOff.values()) chain = Math.max(chain, offPages.size);
+
+    if (soundPages.size > bestPages || chain > bestChain) {
+      bestPages = soundPages.size;
+      bestChain = chain;
+      convention = sound;
+    }
+  }
+
+  if (convention) {
+    /** @type {Map<number, PageNumCandidate>} */
+    const readPage = new Map();
+    for (const c of convention) {
+      const prev = readPage.get(c.f.page);
+      if (!prev || c.depth < prev.depth) readPage.set(c.f.page, c);
+    }
+    const numbered = [...readPage.keys()].sort((a, b) => a - b);
+    for (let i = 0; i < numbered.length; i++) {
+      const c = readPage.get(numbered[i]);
+      const before = i > 0 ? readPage.get(numbered[i - 1]) : null;
+      const after = i + 1 < numbered.length ? readPage.get(numbered[i + 1]) : null;
+      // Page numbers count up one per page, so a page is read only if its value continues the count of the nearest numbered page before or after it.
+      const carriesCount = (before && before.off === c.off) || (after && after.off === c.off);
+      if (!carriesCount) continue;
+      // The 'pagenum' role marks a line holding only the page number, bare or wrapped, so a running head that shares its row with the number keeps its own role.
+      if (c.whole) c.f.pageNumLine = true;
+      for (const line of pages[numbered[i]].lines) line.pageNum = c.value;
     }
   }
 
@@ -1377,7 +1510,7 @@ export function analyzeLayout(pages, opts = {}) {
   if (supRefScheme && supRefScheme.active) {
     // Furniture is never a note entry: a pleading-paper margin number is itself a raised sup-ref digit, and once the scheme is active it would open a "note block" that swallows the page's body text.
     const opensEntry = (f) => f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
-      && !f.lineNum && !f.folio && !f.runningFurniture
+      && !f.lineNum && !f.pageNumLine && !f.runningFurniture
       && supRefScheme.sequenceValues.has(f.enumerator.value);
     /** @type {Map<number, LineFeat[]>} */
     const featsByPage = new Map();
@@ -1457,7 +1590,7 @@ export function analyzeLayout(pages, opts = {}) {
   // Computed independently of the superscript pass so documents that pass already handles cannot be perturbed.
   const baselineOpens = (f) => !!(f.enumerator && f.enumerator.scheme === 'num-dot'
     && f.enumerator.value != null && !f.firstWordSup
-    && !f.lineNum && !f.folio && !f.runningFurniture
+    && !f.lineNum && !f.pageNumLine && !f.runningFurniture
     && bodyRefLabelsDoc.has(String(f.enumerator.value)));
   if (feats.some(baselineOpens)) {
     /** @type {Map<number, LineFeat[]>} */
@@ -1520,7 +1653,7 @@ export function analyzeLayout(pages, opts = {}) {
       // Roles are not assigned yet at this stage (classifyRole itself consumes f.endnote), so the heading is matched by its text form alone.
       const fo = notePages.get(first).openers.slice().sort((a, b) => a.top - b.top)[0];
       const anchored = (byPage.get(first) || []).some((f) => {
-        if (f.runningFurniture || f.folio || f.lineNum || f.top >= fo.top - 1) return false;
+        if (f.runningFurniture || f.pageNumLine || f.lineNum || f.top >= fo.top - 1) return false;
         const t = (f.text || '').trim();
         return noteHeadingRe.test(t)
           || (t.length <= 60 && /\b(documents?|materials?|sources)\b/i.test(t) && /\b(cited|considered|reviewed|relied)\b/i.test(t));
@@ -1537,7 +1670,7 @@ export function analyzeLayout(pages, opts = {}) {
         if (!block) continue;
         const fo = block.openers.slice().sort((a, b) => a.top - b.top)[0];
         const above = (byPage.get(p) || [])
-          .filter((f) => !f.endnote && !f.runningFurniture && !f.folio && !f.lineNum && f.top < fo.top - 1)
+          .filter((f) => !f.endnote && !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.top < fo.top - 1)
           .sort((a, b) => b.top - a.top);
         let cur = fo;
         for (const g of above) {
@@ -1555,7 +1688,7 @@ export function analyzeLayout(pages, opts = {}) {
     for (const [p, pf] of byPage) {
       const rp = bodyRefLabels.get(p);
       if (!rp) continue;
-      const regionContent = pf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const regionContent = pf.filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
       const opener = regionContent
         .filter((f) => baselineOpens(f) && !f.endnote && !f.inTable && f.sizeRatio <= 0.86
           && rp.has(String(f.enumerator.value))
@@ -1571,10 +1704,10 @@ export function analyzeLayout(pages, opts = {}) {
       const prevPf = byPage.get(p - 1);
       const pf = byPage.get(p);
       if (!prevPf || !pf) continue;
-      const prevContent = prevPf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const prevContent = prevPf.filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
       const prevLast = prevContent.reduce((a, b) => (!a || b.top > a.top ? b : a), null);
       if (!prevLast || !prevLast.footnoteBlock || prevLast.endsTerminal) continue;
-      const content = pf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const content = pf.filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
       const marked = content.filter((f) => f.footnoteBlock);
       const regionTop = marked.length ? Math.min(...marked.map((f) => f.top)) : Infinity;
       const zone = content.filter((f) => f.top < regionTop).sort((a, b) => a.top - b.top);
@@ -1681,7 +1814,7 @@ export function analyzeLayout(pages, opts = {}) {
   const subBoldGroups = new Map();
   if (opts.pdfType === 'text') {
     for (const f of feats) {
-      if (f.lineNum || f.folio || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
+      if (f.lineNum || f.pageNumLine || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
       if (!(f.bold > 0.6 && f.sizeRatio < 0.95)) continue;
       const key = `${Math.round(f.size * 2) / 2}|${f.familyCore}`;
       let g = subBoldGroups.get(key);
@@ -1704,13 +1837,13 @@ export function analyzeLayout(pages, opts = {}) {
     if (g.n >= 3 && g.lowStart / g.n <= 0.1 && g.endsTerm / g.n <= 0.1 && g.distinct === g.n) subBodyBoldFaces.add(key);
   }
 
-  // Furniture, folios, line numbers, table cells, and note blocks are excluded so a style tuple shared between those roles and headings is judged on its content instances only.
+  // Furniture, page-number lines, line numbers, table cells, and note blocks are excluded so a style tuple shared between those roles and headings is judged on its content instances only.
   // The table detector owns cell detection, so heading rules here do not compensate for the cells it misses.
   /** @type {Map<string, {n: number, short: number, strong: number, weak: number, weakBig: number, enumLed: number, letterDom: number, lowerStart: number, headsBody: number}>} */
   const sigStats = new Map();
   for (const f of feats) {
     f.sigKey = `${Math.round(f.size * 2) / 2}|${f.bold > 0.6 ? 'b' : ''}${f.italic > 0.6 ? 'i' : ''}${f.allCaps ? 'c' : ''}|${f.fontFamily.replace(/^[A-Z]{6}\+/, '')}|${f.color}`;
-    if (f.lineNum || f.folio || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
+    if (f.lineNum || f.pageNumLine || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
     let s = sigStats.get(f.sigKey);
     if (!s) {
       s = {
@@ -1805,7 +1938,7 @@ export function analyzeLayout(pages, opts = {}) {
           let mate = null;
           for (const g of sorted) {
             if (g === start || g.role !== 'body' || g.top >= start.top || g.bottom <= start.top || g.left <= start.left) continue;
-            if (g.runningFurniture || g.lineNum || g.folio || g.inTable) continue;
+            if (g.runningFurniture || g.lineNum || g.pageNumLine || g.inTable) continue;
             if (!mate || g.left < mate.left) mate = g;
           }
           if (mate && mate.size >= start.size * 0.9 && (mate.sizeRatio <= 1.08 || mate.size <= bodySize * 1.08)
@@ -1829,7 +1962,7 @@ export function analyzeLayout(pages, opts = {}) {
           if (g.left < leftMin
             || g.left - colRight > bodySize * (startBare && cur === start ? 3.5 : 2.5)) continue;
           if (g.role !== 'body') break; // heading/furniture in the note's own column: the note has ended
-          if (g.runningFurniture || g.lineNum || g.folio || g.inTable) break;
+          if (g.runningFurniture || g.lineNum || g.pageNumLine || g.inTable) break;
           if (g.top - cur.top > leading * 2.2) break;
           // A plain note never continues into bold display text.
           if (startBare && cur === start) {
@@ -1848,7 +1981,7 @@ export function analyzeLayout(pages, opts = {}) {
       const sorted = [...pf].sort((a, b) => a.top - b.top || a.left - b.left);
       for (let i = 1; i < sorted.length - 1; i++) {
         const f = sorted[i];
-        if (f.role !== 'body' || f.runningFurniture || f.lineNum || f.folio || f.inTable) continue;
+        if (f.role !== 'body' || f.runningFurniture || f.lineNum || f.pageNumLine || f.inTable) continue;
         const up = sorted[i - 1];
         const dn = sorted[i + 1];
         if (up.role !== dn.role || (up.role !== 'footnote' && up.role !== 'endnote')) continue;
@@ -2447,7 +2580,7 @@ export function analyzeLayout(pages, opts = {}) {
           lineNum: true,
           role: 'linenum',
           hangMarker: false,
-          folio: false,
+          pageNumLine: false,
           left: lnLine.bbox.left,
           right: lnLine.bbox.right,
           text: lnWords.map((w) => w.text).join(' '),
@@ -3249,34 +3382,33 @@ function classifyRole(f, model, colWidth, prev) {
   // Standalone left-margin line number (case A), flagged by the document-level line-number pass.
   // Checked first: a bare digit line carries no other role.
   if (f.lineNum) return 'linenum';
-  // f.folio precedes the edge-proximity folio rules below so a folio set in a tall margin is still caught.
-  if (f.folio) return 'pagenum';
+  // Checked before the edge rules below, which type a lone margin number a header or footer.
+  if (f.pageNumLine) return 'pagenum';
   const t = f.text.trim();
-  // Folios first: a lone digit/roman margin token is a page number by its form, so these tests precede the furniture rules that would otherwise claim it.
-  // The extreme-margin guard keeps an in-body citation fragment ("1229.") that wrapped onto its own line from being typed 'pagenum' and deleted on export.
-  // The size guard rejects a short row of small footnote-reference markers ("1 2 3", ~0.4x body) that would likewise be deleted as a page number.
-  // A small folio that tracks the page is already caught by f.folio above.
+  const furniture = (f.topFrac + f.bottomFrac) / 2 < 0.5 ? 'header' : 'footer';
+  // Only the page-number pass types a line 'pagenum', so a lone number or roman numeral at the edge that it did not read is a header or footer.
+  // Without these rules the content rules further down would claim such a line.
+  // The extreme-margin guard keeps an in-body citation fragment ("1229.") that wrapped onto its own line from being dropped as furniture on export.
+  // The size guard rejects a short row of small footnote-reference markers ("1 2 3", ~0.4x body) that would likewise be deleted.
   if (!f.inTable && (f.topFrac < 0.08 || f.bottomFrac > 0.92) && f.sizeRatio >= 0.5
       && /^[\d.\-—–]{1,5}$/.test(t.replace(/\s+/g, '')) && /\d/.test(t)) {
-    // A page number cannot exceed the sheet count (plus a few uncounted cover/insert sheets), so a larger lone margin number is content, and typing it 'pagenum' would delete it on export.
-    // A genuine folio above the sheet count (an excerpt of a larger document) tracks the page and is already caught by f.folio above.
+    // A number above the page count, allowing a few uncounted covers or inserts, is rarely a page number, so it is left to the content rules rather than deleted on export as furniture.
     const val = parseInt(t.replace(/\D/g, ''), 10);
-    if (val <= model.pageCount + 3) return 'pagenum';
+    if (val <= model.pageCount + 3) return furniture;
   }
-  // Roman-numeral folio.
-  // Must be a canonical roman numeral, not a loose [ivxlcdm]+, so English words made only of roman-numeral letters ("civil", "mild", "did") do not false-match as a page number.
+  // A lone roman numeral at the edge.
+  // Must be a canonical roman numeral, not a loose [ivxlcdm]+, so English words made only of roman-numeral letters ("civil", "mild", "did") do not false-match.
   if (f.topFrac < 0.08 || f.bottomFrac > 0.92) {
-    const romanFolio = t.replace(/[\s\-—–]/g, '');
-    if (romanFolio.length > 0 && /^m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i.test(romanFolio)) return 'pagenum';
+    const romanText = t.replace(/[\s\-—–]/g, '');
+    if (romanText.length > 0 && /^m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i.test(romanText)) return furniture;
   }
   // "N of M" page counter (scanned exhibit/form pages), placed before the footnote rule that would otherwise claim it.
   // "of" passes that rule's letters test and the counter is small and low like a note.
   // The whole-line anchor keeps it off genuine footnotes, which open with a marker and prose and so are never a bare "N of M" line.
-  if (/^\d{1,3}\s+of\s+\d{1,3}$/.test(t) && (f.topFrac < 0.08 || f.bottomFrac > 0.92)) return 'pagenum';
-  const furniture = (f.topFrac + f.bottomFrac) / 2 < 0.5 ? 'header' : 'footer';
+  if (/^\d{1,3}\s+of\s+\d{1,3}$/.test(t) && (f.topFrac < 0.08 || f.bottomFrac > 0.92)) return furniture;
   // Some producers tag the whole content stream /Artifact, so trust the tag only in the extreme top/bottom bands, else a fully-tagged page loses its entire body as header/footer on export.
   // Dropped doc-wide when model.artifactUnreliable (producer tags body content /Artifact).
-  // Even the band is coarse (a full page's last body line can reach into the bottom 8%), and real furniture outside it is still caught by recurrence (runningFurniture) and the folio rules above.
+  // Even the band is coarse (a full page's last body line can reach into the bottom 8%), and real furniture outside it is still caught by recurrence (runningFurniture) and the margin-number rules above.
   if (f.artifact && !model.artifactUnreliable && (f.topFrac < 0.08 || f.bottomFrac > 0.92)) return furniture;
   // Caught before the heading/footnote rules so an all-caps running footer is not read as a section title.
   if (f.runningFurniture) return furniture;
@@ -3300,7 +3432,7 @@ function classifyRole(f, model, colWidth, prev) {
   if (fnRuleY != null && noteEnvelope && f.top > fnRuleY && f.bottomFrac > 0.5 && f.sizeRatio <= 0.86 && /^\d{1,3}$/.test(t)
       && f.left <= (model.pageFlush.get(f.page) ?? model.bodyLeft) + model.bodySize
       && model.bodyRefLabels.get(f.page)?.has(t)) return 'footnote';
-  // The left bound reaches 4x bodySize to admit the note indent but stays left of page centre so a centred folio or footer below the separator is not swept in.
+  // The left bound reaches 4x bodySize to admit the note indent but stays left of page center so a centered page number or footer below the separator is not swept in.
   // The size ceiling is the open note's own size (footnoteContinues stores it), so larger body or display text cannot be swept into a continuation.
   if (model.footnoteContinues && model.footnoteContinues.has(f.page) && fnRuleY != null && noteEnvelope
       && f.top > fnRuleY && !f.allCaps && !f.inTable && /[A-Za-z]{2,}/.test(t)
@@ -3668,7 +3800,7 @@ function lineEnumerator(line) {
   const w0 = line.words[0]?.text || '';
   const w1 = line.words[1]?.text || '';
   let m;
-  // A bare integer is ambiguous with an inline citation, a folio, or a dotless list item.
+  // A bare integer is ambiguous with an inline citation, a page number, or a dotless list item.
   // Unlike the punctuation-anchored schemes below, this branch keys on superscript style to mark it a note reference.
   // Strict `^\d{1,3}$` (no trailing punctuation) routes a superscripted "12." to the num-dot scheme below instead.
   if (line.words[0]?.style?.sup && /^\d{1,3}$/.test(w0)) {
@@ -3829,6 +3961,17 @@ function enumeratedListItemStart(f, model) {
  */
 
 /**
+ * @typedef {object} PageNumCandidate
+ * @property {LineFeat} f - the line the numeral was read from.
+ * @property {string} value - the numeral as printed.
+ * @property {number} depth - distance of the line's middle from its nearer page edge, as a fraction of the page height.
+ * @property {number} off - the value minus the page index.
+ * @property {boolean} whole - the whole line is the numeral, bare or wrapped.
+ * @property {boolean} head - the line is in the top band.
+ * @property {number} across - horizontal center of the numeral, as a fraction of the page width.
+ */
+
+/**
  * @typedef {object} LineFeat
  * @property {number} page
  * @property {number} lineIdx
@@ -3883,7 +4026,7 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} [footnoteBlock] - line belongs to the note block of an isolated note-dominated page (not part of an endnote-section run).
  * @property {boolean} listConfirmed - line is a confirmed member of a local list region (a contiguous, consecutively valued, column-aligned run of >=3 markers).
  * @property {boolean} lineNum - line is a standalone left-margin line number.
- * @property {boolean} folio - a lone number whose value tracks the page across a contiguous run of pages.
+ * @property {boolean} pageNumLine - the line holds only the page number, bare or wrapped, as read by the page-number pass.
  * @property {boolean} hangMarker - short outdented lead (a transcript "Q."/"A." speaker marker or hanging-list lead) with its body text on the same row.
  * @property {boolean} [rowFragment] - small same-row marker token (a note reference beside a taller line) routed out of the top-to-bottom flow.
  * @property {boolean} [inInsetRun] - line sits in a run of >=2 consecutive lines sharing one left edge.
