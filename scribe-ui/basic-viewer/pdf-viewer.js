@@ -165,6 +165,8 @@ const FLICK_WINDOW_MS = 100;
 const FLICK_MIN_TRAVEL = 24;
 // Two samples a fraction of a millisecond apart divide out to any speed at all, so a release measured over less than a frame cannot be read as a flick.
 const FLICK_MIN_INTERVAL_MS = 8;
+// The .scribe-sheet-full height in toolbar.js hard-codes the same 44px.
+const SHEET_FULL_GAP = 44;
 
 /**
  * The release decision shared by the phone's pull-down panels.
@@ -197,10 +199,21 @@ function createPullDismiss() {
      */
     dismisses(down, travel) {
       if (down > Math.min(140, travel * 0.25)) return true;
+      return this.flick() === 1;
+    },
+    /**
+     * The direction the release was flicked in.
+     * @returns {-1|0|1} 1 down, -1 up, 0 when the release was not a flick.
+     */
+    flick() {
       const last = samples[samples.length - 1];
-      if (!last || last.y - startY < FLICK_MIN_TRAVEL || performance.now() - last.t > FLICK_WINDOW_MS) return false;
+      if (!last || performance.now() - last.t > FLICK_WINDOW_MS) return 0;
       const dt = last.t - samples[0].t;
-      return dt >= FLICK_MIN_INTERVAL_MS && (last.y - samples[0].y) / dt >= FLICK_SPEED;
+      if (dt < FLICK_MIN_INTERVAL_MS) return 0;
+      const speed = (last.y - samples[0].y) / dt;
+      if (last.y - startY >= FLICK_MIN_TRAVEL && speed >= FLICK_SPEED) return 1;
+      if (startY - last.y >= FLICK_MIN_TRAVEL && -speed >= FLICK_SPEED) return -1;
+      return 0;
     },
   };
 }
@@ -213,12 +226,16 @@ function createPullDismiss() {
  * @param {HTMLElement} opts.host - Element the resize is measured against.
  * @param {boolean} opts.resizable - Whether the pull resizes the sheet as it goes, or only dismisses it.
  * @param {() => void} opts.onDismiss - Close the sheet. The dragged height and transform are left for it to clear.
- * @param {HTMLElement} [opts.body] - The sheet's content box, pinned at its rest height while a resize drag runs.
+ * @param {HTMLElement} [opts.body] - The sheet's content box, pinned at its rest height while a resize drag runs, unless the sheet offers a full height.
  * @param {() => void} [opts.onEngage] - Runs once per drag, as it passes the slop.
  * @param {() => void} [opts.onSettle] - Runs on the release of a drag that kept the sheet open.
+ * @param {() => ?number} [opts.fullHeight] - The sheet's full height in px while it offers one, or null while it keeps to half.
+ *   A drag can then reach it, and its release settles on one of the two heights.
+ * @param {(full: boolean) => void} [opts.onHeight] - Apply the height a drag settled on.
+ * @param {() => void} [opts.onTap] - Runs on a press of the header that neither moved nor started on a button.
  */
 function attachSheetDrag(sheet, handle, {
-  host, resizable, onDismiss, body, onEngage, onSettle,
+  host, resizable, onDismiss, body, onEngage, onSettle, fullHeight, onHeight, onTap,
 }) {
   let dragActive = false;
   let dragStartY = 0;
@@ -226,6 +243,9 @@ function attachSheetDrag(sheet, handle, {
   let dragOver = 0;
   let dragMoved = false;
   let dragFromButton = false;
+  /** @type {?number} */
+  let dragFullH = null;
+  let pinned = false;
   let unpinT = null;
   const pull = createPullDismiss();
   handle.addEventListener('pointerdown', (e) => {
@@ -236,6 +256,7 @@ function attachSheetDrag(sheet, handle, {
     pull.begin(e.clientY);
     dragStartY = e.clientY;
     dragStartH = sheet.getBoundingClientRect().height;
+    dragFullH = resizable && fullHeight ? fullHeight() : null;
     dragOver = 0;
     dragMoved = false;
     dragFromButton = !!(e.target instanceof Element && e.target.closest('button'));
@@ -255,11 +276,12 @@ function attachSheetDrag(sheet, handle, {
     if (!dragMoved && onEngage) onEngage();
     // Without the pin, centered content re-centers as the box shrinks and slides within the card.
     // Measure before flex: none collapses the body to its content height.
-    if (!dragMoved && resizable && body) {
+    if (!dragMoved && resizable && body && dragFullH == null) {
       const restH = body.getBoundingClientRect().height;
       body.style.flex = 'none';
       body.style.height = `${restH}px`;
       sheet.style.overflow = 'hidden';
+      pinned = true;
     }
     dragMoved = true;
     sheet.classList.add('dragging');
@@ -268,7 +290,7 @@ function attachSheetDrag(sheet, handle, {
       const targetH = dragStartH + dy;
       // The resize floor doubles as the release-to-close threshold, so the bottom edge detaching announces that letting go dismisses.
       const floorH = Math.max(140, avail * 0.28);
-      sheet.style.height = `${Math.min(Math.round(avail * 0.5), Math.max(floorH, targetH))}px`;
+      sheet.style.height = `${Math.min(dragFullH ?? Math.round(avail * 0.5), Math.max(floorH, targetH))}px`;
       dragOver = Math.max(0, floorH - targetH);
     } else {
       dragOver = Math.max(0, -dy);
@@ -280,13 +302,30 @@ function attachSheetDrag(sheet, handle, {
     sheet.getBoundingClientRect();
     sheet.classList.remove('dragging');
     // The pin outlasts the release, since the snap back to rest height re-centers the contents just as the drag did.
-    if (resizable && body) {
+    if (pinned) {
+      pinned = false;
       unpinT = setTimeout(() => {
         unpinT = null;
         body.style.flex = '';
         body.style.height = '';
         sheet.style.overflow = '';
       }, 300);
+    }
+    // A flick down from full lands on half instead of dismissing.
+    if (dragFullH != null) {
+      const halfH = Math.round(host.clientHeight * 0.5);
+      const h = sheet.getBoundingClientRect().height;
+      const flick = pull.flick();
+      const fromFull = dragStartH > halfH + 40 && h > halfH - 20;
+      if (dragOver > 0 || (flick === 1 && !fromFull)) {
+        onDismiss();
+        return;
+      }
+      sheet.style.height = '';
+      sheet.style.transform = '';
+      onHeight?.(flick === -1 || (flick === 0 && h > (halfH + dragFullH) / 2));
+      if (onSettle) onSettle();
+      return;
     }
     // A resize only overshoots after crossing its floor, so any overshoot at all commits the dismissal.
     // The zero travel passed for a resize is what drops that threshold to nothing.
@@ -304,6 +343,7 @@ function attachSheetDrag(sheet, handle, {
     dragActive = false;
     if (!dragMoved) {
       sheet.classList.remove('dragging');
+      if (onTap && !dragFromButton) onTap();
       return;
     }
     settleDrag();
@@ -605,6 +645,7 @@ class ScribePDFViewer {
     /** @type {Partial<Record<'bookmarks'|'comments', HTMLButtonElement>>} Sheet segmented-control buttons by view. */
     this._sheetSegBtns = {};
     this._sheetOpen = false;
+    this._sheetFull = false;
     /** @type {'bookmarks'|'comments'} The sheet view last shown (restored on reopen). */
     this._sheetView = 'bookmarks';
     /** @type {?HTMLElement} The Inspect Document workspace's home in the bottom sheet, built on the phone on first use. */
@@ -4598,7 +4639,38 @@ class ScribePDFViewer {
           this._relayout();
         }, 300);
       },
+      fullHeight: () => (this._sheetView === 'inspect' ? this.pdfViewerElem.clientHeight - (this._dockElem?.offsetHeight || 56) - SHEET_FULL_GAP : null),
+      onHeight: (full) => this._setSheetFull(full),
+      onTap: () => { if (this._sheetView === 'inspect') this._setSheetFull(!this._sheetFull); },
     });
+  }
+
+  /**
+   * Put the sheet at full height or back at half.
+   * @param {boolean} full
+   */
+  _setSheetFull(full) {
+    this._sheetFull = full;
+    this._sheetElem?.classList.toggle('scribe-sheet-full', full);
+  }
+
+  /** Bring a full-height inspector sheet down to half. */
+  _lowerInspectSheet() {
+    if (!this._sheetOpen || this._sheetView !== 'inspect' || !this._sheetFull) return;
+    const sheet = this._sheetElem;
+    const body = this._inspectSheetElem?.querySelector('.scribe-am-ins');
+    const top0 = body ? body.scrollTop : 0;
+    const h0 = sheet.getBoundingClientRect().height;
+    this._setSheetFull(false);
+    if (!body) return;
+    // The list holds still against the bottom edge while the top edge slides down, so the pressed control stays put.
+    const t0 = performance.now();
+    const follow = () => {
+      body.scrollTop = top0 + h0 - sheet.getBoundingClientRect().height;
+      // The height transition runs 0.26s.
+      if (performance.now() - t0 < 320) requestAnimationFrame(follow);
+    };
+    follow();
   }
 
   /** Open the bottom sheet on the last-shown view. */
@@ -4609,9 +4681,10 @@ class ScribePDFViewer {
     if (uncover) this._beginRoomSink();
     else this._closePagesRoom(true);
     this._sheetOpen = true;
-    if (this._sheetElem.style.height) {
+    if (this._sheetElem.style.height || this._sheetFull) {
       this._sheetElem.style.transition = 'none';
       this._sheetElem.style.height = '';
+      this._setSheetFull(false);
       this._sheetElem.getBoundingClientRect();
       this._sheetElem.style.transition = '';
     }

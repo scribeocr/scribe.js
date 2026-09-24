@@ -3116,6 +3116,7 @@ export function createInspectDocumentTool(app) {
     if (sv.textSel) sv.textSel.cursorOverride = on ? 'default' : null;
     if (!on) hideHover();
     app._setInspectHint?.();
+    if (on) app._lowerInspectSheet?.();
     sv._modeStatus?.(on ? 'Tap a word on the page' : '');
     workspace()?.armedChanged?.(on);
   };

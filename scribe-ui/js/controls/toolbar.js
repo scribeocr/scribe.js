@@ -1585,6 +1585,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       flex-direction: column;
       box-sizing: border-box;
       background: var(--scribe-surface);
+      /* Text the views leave uncolored, like the inspector's table cells, takes the surface's ink rather than the root's black. */
+      color: var(--scribe-ink);
       border-radius: 18px 18px 0 0;
       box-shadow: var(--scribe-shadow-pop);
       /* The hidden transform adds the dock offset: the sheet rests one dock-height above the bottom edge, so a bare 102% would leave it peeking over the dock. */
@@ -1592,6 +1594,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       transition: transform 0.26s cubic-bezier(0.3, 0.9, 0.3, 1), height 0.26s cubic-bezier(0.3, 0.9, 0.3, 1);
     }
     .${r} .scribe-sheet.open { transform: translateY(0); }
+    /* The inspector's full height leaves 44px of page in view above it (SHEET_FULL_GAP in pdf-viewer.js). */
+    .${r} .scribe-sheet.scribe-sheet-full { height: calc(100% - 56px - 44px - env(safe-area-inset-bottom, 0px)); }
     .${r} .scribe-sheet.dragging { transition: none; }
     @media (prefers-reduced-motion: reduce) {
       .${r} .scribe-sheet, .${r} .scribe-sheet-scrim { transition: none; }
@@ -1701,6 +1705,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-sheet-content .scribe-cm-list { top: 0; }
     .${r} .scribe-sheet-content .scribe-bm-resize,
     .${r} .scribe-sheet-content .scribe-cm-resize { display: none; }
+    .${r} .scribe-sheet-content > .scribe-am-inswrap { position: absolute; inset: 0; }
 
     /* ---- Full-height Pages room: the companion strip's expanded state. ----
        Slides up from behind the dock like the sheet: a header over the re-homed thumbnail panel, whose compact grid spreads across the room's full width. */
