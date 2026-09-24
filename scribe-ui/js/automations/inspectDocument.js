@@ -824,7 +824,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
             ['Type', fontTypeLabel(f)],
             ['Embedded', f.embedded ? `Yes · ${fmtBytes(f.bytes)}` : 'No · shown with a substitute'],
             ['Encoding', f.encoding],
-            ['Unicode mapping', f.toUnicode ? 'Present (ToUnicode)' : 'None — copied text may not match'],
+            ['ToUnicode CMap', f.toUnicode ? 'Yes' : 'No'],
           ];
           if (f.flags != null) {
             const flags = [
@@ -1162,7 +1162,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
     part.append(catHeader('Details'), kvRows([
       ['Embedded', f.embedded ? `Yes · ${fmtBytes(f.bytes)}` : 'No · shown with a substitute'],
       ['Encoding', f.encoding],
-      ['Unicode mapping', f.toUnicode ? 'Present (ToUnicode)' : 'None — copied text may not match'],
+      ['ToUnicode CMap', f.toUnicode ? 'Yes' : 'No'],
       ['Used on pages', pagesLabel(f.pages, pageCount)],
     ]));
     if (drill.part) drill.part.replaceWith(part); else body.append(part);
