@@ -1,6 +1,7 @@
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
+import { parseCitation } from '../../js/resolveCitation.js';
 
 /**
  * Repaint match highlights on the currently-rendered words from `_searchState`.
@@ -26,17 +27,39 @@ function applyHighlights(viewer) {
 }
 
 /**
+ * Repaint the citation highlight.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Set<string>} previous - The word ids `viewer._citationIds` held before it changed.
+ */
+function repaintCitation(viewer, previous) {
+  const s = viewer._searchState;
+  const activeEntry = s.matchList[s.activeMatch];
+  const searchIds = activeEntry ? new Set(activeEntry.wordIds) : new Set();
+  // Pages kept built off-screen hold the previous highlight too.
+  for (const pageWords of viewer._wordObjs) {
+    if (!pageWords) continue;
+    for (const kw of pageWords) {
+      const id = kw.word.id;
+      if (!kw._destroyed && (viewer._citationIds.has(id) || previous.has(id))) kw.activeMatch = viewer._citationIds.has(id) || searchIds.has(id);
+    }
+  }
+}
+
+/**
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {string} text
  */
 export function findText(viewer, text) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const s = _viewer._searchState;
+  const previous = _viewer._citationIds;
+  _viewer._citationIds = new Set();
   s.search = text.trim();
   s.matchList = s.search ? scribe.utils.ocr.getDocMatches(s.search, _viewer.doc.ocr.active) : [];
   // Selecting a match belongs to goToMatch, so a recompute can refresh highlights without adopting one.
   s.activeMatch = -1;
   applyHighlights(_viewer);
+  repaintCitation(_viewer, previous);
 }
 
 /**
@@ -127,4 +150,37 @@ export class search {
   static nextMatch = () => nextMatch(ScribeViewer.getDefault());
 
   static prevMatch = () => prevMatch(ScribeViewer.getDefault());
+}
+
+/**
+ * Navigate `viewer` to a citation.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {string} text
+ * @param {object} [options]
+ * @param {boolean} [options.highlight=true]
+ * @returns {Promise<ReturnType<import('../../js/containers/scribeDoc.js').ScribeDoc['resolveCitation']>>}
+ */
+export async function goToCitation(viewer, text, { highlight = true } = {}) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const doc = _viewer.doc;
+  if (!doc) return [];
+  if (doc._textReadySettle) {
+    await doc.textReady;
+    if (_viewer.doc !== doc) return [];
+  }
+  const spans = doc.resolveCitation(text);
+  /** @type {Set<string>} */
+  const ids = new Set();
+  if (highlight) for (const sp of spans) for (const l of sp.lines) for (const w of l.words) ids.add(w.id);
+  const previous = _viewer._citationIds;
+  _viewer._citationIds = ids;
+  const wholePage = parseCitation(text)?.kind === 'page';
+  if (spans.length) await _viewer.displayPage(spans[0].page, wholePage, false);
+  const uiWords = _viewer.getUiWords();
+  repaintCitation(_viewer, previous);
+  if (!spans.length || wholePage) return spans;
+  const first = spans[0].lines.flatMap((l) => l.words)[0];
+  const uiWord = first && uiWords.find((kw) => kw.word.id === first.id);
+  if (uiWord) _viewer.scrollToWord(uiWord);
+  return spans;
 }

@@ -74,7 +74,7 @@ function getTextWidth(text, size, font) {
  * @property {Array<MdRun>} runs
  * @property {number} fontSize
  * @property {number} indent - Offset of this block's left edge from the page's text margin, in pixels.
- * @property {?string} parNum - List marker as the reader sees it, or `null` when the block is not a list item.
+ * @property {?string} marker - List marker as the reader sees it, or `null` when the block is not a list item.
  * @property {?number} headingLevel
  * @property {string} sourceStyle - Word style name for the markdown construct, matching the names the .docx importer records.
  * @property {boolean} preserveBreaks - Set for code blocks, which keep their source line breaks instead of reflowing.
@@ -126,7 +126,7 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
       runs: b.runs,
       fontSize: b.headingLevel ? HEADING_SIZES[b.headingLevel - 1] : FONT_SIZE,
       indent,
-      parNum: (b.kind === 'footnote' ? b.footnoteLabel : b.marker) ?? null,
+      marker: (b.kind === 'footnote' ? b.footnoteLabel : b.marker) ?? null,
       headingLevel: b.kind === 'heading' ? b.headingLevel : null,
       sourceStyle,
       preserveBreaks: b.kind === 'code',
@@ -206,7 +206,7 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
       });
       parObj.lines = parLines.slice();
       parObj.type = block.type;
-      parObj.parNum = block.parNum;
+      parObj.marker = block.marker;
       parObj.headingLevel = block.headingLevel;
       parObj.debug.sourceStyle = block.sourceStyle;
       for (const parLine of parObj.lines) parLine.par = parObj;

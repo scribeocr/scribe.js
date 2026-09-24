@@ -1339,9 +1339,9 @@ export class ScribeDoc {
   }
 
   /**
-   * Resolve a transcript citation ("34:14", "34:14-18", "34:14-35:2", "34") against the active layer's printed page and line numbers.
-   * @param {string} text
-   * @returns {ReturnType<typeof resolveCitationImpl>} One span per printed page touched, in page order; empty when nothing resolves.
+   * Resolve a citation against the active layer.
+   * @param {string} text - A citation such as "34", "34:14" or "¶ 12".
+   * @returns {ReturnType<typeof resolveCitationImpl>} The spans in page order.
    */
   resolveCitation(text) {
     return resolveCitationImpl(this.ocr.active || [], text);

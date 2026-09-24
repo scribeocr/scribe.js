@@ -17,7 +17,7 @@ const parText = (par) => par.lines.map((line) => line.words.map((word) => word.t
 
 /** @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc */
 const parStructure = (doc) => doc.ocr.active.flatMap((page, n) => page.pars.map(
-  (par) => `page ${n} | ${par.type} | h${par.headingLevel} | ${par.parNum} | left ${par.bbox.left} | ${parText(par)}`,
+  (par) => `page ${n} | ${par.type} | h${par.headingLevel} | ${par.marker} | left ${par.bbox.left} | ${parText(par)}`,
 ));
 
 /**
@@ -131,11 +131,11 @@ describe('Check markdown import.', () => {
 
   test('List markers leave the text and become the paragraph number', () => {
     expect(parText(doc.ocr.active[0].pars[5]), 'a bullet item must import without its `-` marker').toBe('A charged phone with the survey app installed');
-    expect(doc.ocr.active[0].pars[5].parNum, 'a bullet item records the bullet the reader sees').toBe('•');
+    expect(doc.ocr.active[0].pars[5].marker, 'a bullet item records the bullet the reader sees').toBe('•');
     expect(parText(doc.ocr.active[0].pars[6]), 'a nested bullet item must import as its own paragraph').toBe('A battery pack, for a full day in the field');
     expect(parText(doc.ocr.active[0].pars[12]), 'a numbered item must import without its `1.` marker').toBe('Photograph the quadrat from directly above.');
-    expect(doc.ocr.active[0].pars[12].parNum, 'a numbered item records its number as written').toBe('1.');
-    expect(doc.ocr.active[0].pars[15].parNum, 'list numbering must follow the source through the whole list').toBe('4.');
+    expect(doc.ocr.active[0].pars[12].marker, 'a numbered item records its number as written').toBe('1.');
+    expect(doc.ocr.active[0].pars[15].marker, 'list numbering must follow the source through the whole list').toBe('4.');
   });
 
   test('A block quote imports as a blockquote paragraph', () => {
@@ -193,9 +193,9 @@ describe('Check markdown import.', () => {
     expect(parText(pars[5]), 'an escaped `>` must import as body text with the character kept').toBe('> 90% of transects finish within two hours of low tide.');
     expect(pars[5].type, 'a line beginning with an escaped `>` must not become a block quote').toBe('body');
     expect(parText(pars[6]), 'an escaped `-` must import as body text with the character kept').toBe('- 4 degrees is the coldest morning recorded at this site.');
-    expect(pars[6].parNum, 'a line beginning with an escaped `-` must not become a list item').toBe(null);
+    expect(pars[6].marker, 'a line beginning with an escaped `-` must not become a list item').toBe(null);
     expect(parText(pars[7]), 'an escaped ordered-list marker must import as body text').toBe('12. Removal procedures were renumbered in this revision.');
-    expect(pars[7].parNum, 'a line beginning with `12\\.` must not become a numbered item').toBe(null);
+    expect(pars[7].marker, 'a line beginning with `12\\.` must not become a numbered item').toBe(null);
     expect(parText(pars[8]), 'an escaped `|` must import as body text with the pipes kept').toBe('| Depth readings | come from the staff gauge, not the app estimate.');
     expect(parText(pars[10]), 'a rule of equals signs after a blank line must import as text, not a setext underline').toBe('=====');
   });
@@ -248,7 +248,7 @@ describe('Check markdown import.', () => {
   test('A footnote definition becomes a linked footnote paragraph', () => {
     const notePar = doc.ocr.active[1].pars[25];
     expect(notePar.type, 'a `[^1]:` definition must import as a footnote paragraph').toBe('footnote');
-    expect(notePar.parNum, 'the footnote keeps its label as the marker').toBe('1');
+    expect(notePar.marker, 'the footnote keeps its label as the marker').toBe('1');
     expect(parText(notePar), 'the footnote body must survive without its label syntax').toBe('Photos larger than 10 MB upload only on wifi.');
     const marker = doc.ocr.active[1].lines.flatMap((line) => line.words).find((word) => word.text === '1' && word.style.sup);
     expect(marker.footnoteParId, 'the `[^1]` reference must link to its footnote paragraph').toBe(notePar.id);
@@ -256,15 +256,15 @@ describe('Check markdown import.', () => {
   });
 
   test('Task-list checkboxes become visible markers', () => {
-    expect(doc.ocr.active[1].pars[15].parNum, 'an unchecked task imports with an empty-checkbox marker').toBe('☐');
+    expect(doc.ocr.active[1].pars[15].marker, 'an unchecked task imports with an empty-checkbox marker').toBe('☐');
     expect(parText(doc.ocr.active[1].pars[15]), 'the checkbox syntax must leave the item text').toBe('Confirm your tide-table subscription');
-    expect(doc.ocr.active[1].pars[16].parNum, 'a checked task imports with a checked-checkbox marker').toBe('☑');
+    expect(doc.ocr.active[1].pars[16].marker, 'a checked task imports with a checked-checkbox marker').toBe('☑');
   });
 
   test('List nesting follows the parent content column', () => {
-    expect(doc.ocr.active[1].pars[17].parNum, 'the outer numbered item keeps its number').toBe('1.');
+    expect(doc.ocr.active[1].pars[17].marker, 'the outer numbered item keeps its number').toBe('1.');
     expect(doc.ocr.active[1].pars[17].bbox.left, 'the outer numbered item sits at first-level indent').toBe(44);
-    expect(doc.ocr.active[1].pars[18].parNum, 'the nested numbered item keeps its number').toBe('1.');
+    expect(doc.ocr.active[1].pars[18].marker, 'the nested numbered item keeps its number').toBe('1.');
     expect(doc.ocr.active[1].pars[18].bbox.left, 'a marker at the parent content column nests one level, not two').toBe(68);
   });
 
@@ -283,7 +283,7 @@ describe('Check markdown import.', () => {
     expect(pars[21].lines[0].words[0].style.bold, 'a quoted heading keeps its heading weight').toBe(true);
     expect(parText(pars[22]), 'quoted paragraph lines must merge without their `>` markers').toBe('Thank you for another season. Every record helps someone downstream.');
     expect(pars[23].type, 'a quoted list item imports as a quote paragraph').toBe('blockquote');
-    expect(pars[23].parNum, 'a quoted bullet keeps its marker without the `-` reaching the text').toBe('•');
+    expect(pars[23].marker, 'a quoted bullet keeps its marker without the `-` reaching the text').toBe('•');
     expect(parText(pars[23]), 'the quoted item text must survive').toBe('Keep your site maps');
   });
 

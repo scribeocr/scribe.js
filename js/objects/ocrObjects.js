@@ -91,9 +91,14 @@ export function OcrPar(page, bbox) {
   this.type = 'body';
 
   /**
-   * Contains the paragraph / list number if applicable.
-   * This is not an index, but the actual number/letter as it appears in the text.
+   * The list marker or footnote label the paragraph opens with, as printed.
    * @type {string | null}
+   */
+  this.marker = null;
+  /**
+   * The number a paragraph citation names.
+   * The paragraphs that continue a numbered paragraph carry its number too.
+   * @type {number | null}
    */
   this.parNum = null;
   /**
@@ -754,6 +759,7 @@ export function clonePage(page) {
     parNew.id = par.id;
     parNew.reason = par.reason;
     parNew.type = par.type;
+    parNew.marker = par.marker;
     parNew.parNum = par.parNum;
     parNew.footnoteRefId = par.footnoteRefId;
     parNew.headingLevel = par.headingLevel;
@@ -1181,6 +1187,8 @@ export const addCircularRefsOcr = (pages) => {
       if (par.headingLevel === undefined) {
         par.headingLevel = null;
       }
+      if (par.marker === undefined) par.marker = null;
+      if (par.parNum === undefined) par.parNum = null;
       // Restore lines array from lineIds
       // @ts-ignore
       if (par.lineIds && !par.lines) {

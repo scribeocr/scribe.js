@@ -84,7 +84,7 @@ describe('Check .scribe export function.', () => {
       }];
       word0.styleRuns = [{ i: 1, style: { bold: true } }];
       orig.pars[0].type = 'footnote';
-      orig.pars[0].parNum = '1';
+      orig.pars[0].marker = '1';
       orig.pars[0].headingLevel = 2;
       orig.pars[0].footnoteRefId = word0.id;
       word0.footnoteParId = orig.pars[0].id;

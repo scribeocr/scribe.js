@@ -35,7 +35,7 @@ function escapeLeadingSyntax(text) {
  */
 function markerInText(par) {
   const word = par.lines[0] && par.lines[0].words[0];
-  return !!word && word.text.startsWith(/** @type {string} */ (par.parNum));
+  return !!word && word.text.startsWith(/** @type {string} */ (par.marker));
 }
 
 /**
@@ -154,7 +154,7 @@ export function writeMarkdown({
   for (const g of pageArr) {
     if (!ocrCurrent[g]) continue;
     for (const par of ocrCurrent[g].pars) {
-      if (par.type === 'footnote' && par.parNum && /^[^\s\]]+$/.test(par.parNum) && !markerInText(par)) fnLabelById.set(par.id, par.parNum);
+      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !markerInText(par)) fnLabelById.set(par.id, par.marker);
     }
   }
 
@@ -240,7 +240,7 @@ export function writeMarkdown({
     let depthLefts = [];
     if (reflowText) {
       const listLefts = [...new Set(pageObj.pars
-        .filter((par) => par.parNum && par.type !== 'blockquote' && par.type !== 'footnote' && !markerInText(par))
+        .filter((par) => par.marker && par.type !== 'blockquote' && par.type !== 'footnote' && !markerInText(par))
         .map((par) => par.bbox.left))].sort((a, b) => a - b);
       depthLefts = listLefts.filter((left, i) => i === 0 || left - listLefts[i - 1] > 5);
     }
@@ -299,10 +299,10 @@ export function writeMarkdown({
             linePrefix = `${'#'.repeat(Math.min(Math.max(par.headingLevel || 1, 1), 6))} `;
           } else if (par && par.type === 'blockquote') {
             linePrefix = '> ';
-            if (par.parNum && !markerInText(par)) linePrefix += `${LIST_MARKERS[par.parNum] || par.parNum} `;
-          } else if (par && par.type === 'footnote' && par.parNum && !markerInText(par) && /^[^\s\]]+$/.test(par.parNum)) {
-            linePrefix = `[^${par.parNum}]: `;
-          } else if (par && par.parNum) {
+            if (par.marker && !markerInText(par)) linePrefix += `${LIST_MARKERS[par.marker] || par.marker} `;
+          } else if (par && par.type === 'footnote' && par.marker && !markerInText(par) && /^[^\s\]]+$/.test(par.marker)) {
+            linePrefix = `[^${par.marker}]: `;
+          } else if (par && par.marker) {
             if (markerInText(par)) {
               // Escaping here would turn the item's own `1.` into literal text and lose the list on re-import.
               lineEscape = false;
@@ -310,7 +310,7 @@ export function writeMarkdown({
               let depth = 0;
               for (let d = 1; d < depthLefts.length && depthLefts[d] <= par.bbox.left + 5; d++) depth = d;
               depth = Math.min(depth, 3);
-              const marker = LIST_MARKERS[par.parNum] || par.parNum;
+              const marker = LIST_MARKERS[par.marker] || par.marker;
               // Markdown treats an item as nested only when its marker starts at the parent's content column.
               const pad = depth === 0 ? 0 : listCols[depth - 1] ?? depth * 2;
               linePrefix = `${' '.repeat(pad)}${marker} `;

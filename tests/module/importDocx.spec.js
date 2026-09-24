@@ -394,7 +394,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
     expect(footnoteRefWords[0].text).toBe('1');
   });
 
-  test('Should set parNum on footnote paragraphs', async () => {
+  test('Should set marker on footnote paragraphs', async () => {
     const footnotePars = [];
     for (const page of doc.ocr.active) {
       for (const par of page.pars) {
@@ -407,18 +407,18 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
     expect(footnotePars.length).toBe(13);
 
     for (const par of footnotePars) {
-      expect(par.parNum).not.toBeNull();
-      expect(par.parNum).toMatch(/^\d+$/);
+      expect(par.marker).not.toBeNull();
+      expect(par.marker).toMatch(/^\d+$/);
     }
 
     const firstFootnote = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
-    expect(firstFootnote.parNum).toBe('1');
+    expect(firstFootnote.marker).toBe('1');
   });
 
-  test('Should set parNum on numbered body paragraphs', async () => {
+  test('Should set marker on numbered body paragraphs', async () => {
     const bodyPar = doc.ocr.active[0].pars.find((par) => par.id === '38168435');
     expect(bodyPar).not.toBeNull();
-    expect(bodyPar.parNum).toBe('1.1');
+    expect(bodyPar.marker).toBe('1.1');
 
     const parText = scribe.utils.ocr.getParText(bodyPar);
     expect(parText.startsWith('1.1')).toBe(false);

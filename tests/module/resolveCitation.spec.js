@@ -63,6 +63,7 @@ describe('one-up native transcript', () => {
     expect(doc.resolveCitation('44:1'), 'printed page 44 is not in the document').toEqual([]);
     expect(doc.resolveCitation('36:26'), 'page 36 has no row 26').toEqual([]);
     expect(doc.resolveCitation('not a citation'), 'text that is not a citation').toEqual([]);
+    expect(doc.resolveCitation('¶ 3'), 'a transcript has no numbered paragraphs').toEqual([]);
   });
 
   test('the fields survive a .scribe round trip, and an older file gets them on restore', async () => {

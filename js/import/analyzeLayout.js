@@ -2665,7 +2665,7 @@ export function analyzeLayout(pages, opts = {}) {
                   : f.role === 'footer' ? 'footer'
                     : f.role === 'linenum' ? 'linenum'
                       : 'body';
-        if (f.enumerator) par.parNum = f.enumerator.raw;
+        if (f.enumerator) par.marker = f.enumerator.raw;
         if (f.hangMarker) hangMarkerPars.add(par);
         par.debug.sourceType = f.role;
         parArr.push(par);
@@ -2720,6 +2720,154 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
 
+  // Paragraph numbering: the document's one numbering of "12."-style paragraphs, which citations name.
+  {
+    const seqValues = model.schemes['num-dot'] ? model.schemes['num-dot'].sequenceValues : new Set();
+    /** @type {Map<OcrLine, LineFeat>} */
+    const featOf = new Map();
+    for (const pf of featByPage.values()) for (const f of pf) featOf.set(f.line, f);
+    /** @type {Array<{par: OcrPar, page: number}>} */
+    const flat = [];
+    for (let p = 0; p < pages.length; p++) for (const par of (pages[p] && pages[p].pars) || []) flat.push({ par, page: p });
+    const enumOf = (par) => { const f = featOf.get(par.lines[0]); return f ? f.enumerator : null; };
+    const skipped = (t) => t === 'header' || t === 'footer' || t === 'pagenum' || t === 'linenum' || t === 'footnote' || t === 'endnote';
+    const subItem = new Set(['paren-alpha', 'paren-roman', 'paren-num', 'alpha-paren', 'roman-paren', 'alpha-dot', 'roman-dot', 'bullet', 'bracket-num']);
+    /** @type {Array<{i: number, v: number, entry: boolean}>} */
+    const cands = [];
+    for (let i = 0; i < flat.length; i++) {
+      const { par } = flat[i];
+      if (par.type !== 'body' && par.type !== 'blockquote') continue;
+      const e = enumOf(par);
+      if (!e || e.scheme !== 'num-dot' || e.value == null || !seqValues.has(e.value)) continue;
+      const f0 = featOf.get(par.lines[0]);
+      const fLast = featOf.get(par.lines[par.lines.length - 1]);
+      // A contents entry ends on its leader even when wrapped, or is a line or two on a page of leader lines.
+      if (!f0 || !fLast) continue;
+      if (/(?:\.\s*){3,}\d{1,4}$/.test((fLast.text || '').trim()) || (par.lines.length <= 2 && (model.pageLeaderCount.get(f0.page) || 0) >= 3)) continue;
+      // An entry opens like a reference, as in "Surname, C.", or is a line or two without terminal punctuation.
+      // A fragment followed by an unmarked continuation is a paragraph the break rules cut short, not an entry.
+      let next = i + 1;
+      while (next < flat.length && skipped(flat[next].par.type)) next++;
+      const continued = next < flat.length && (flat[next].par.type === 'body' || flat[next].par.type === 'blockquote') && !enumOf(flat[next].par);
+      const entry = /^\S+\s+(?:[“"]|[A-Z][A-Za-z'’-]+,\s*(?:[A-Z]\.|[A-Z][a-z]+\s[A-Z]\.)|[A-Z][A-Za-z'’-]+\s[A-Z]{1,2},|.*\((?:19|20)\d\d\))/.test(f0.text) || (par.lines.length <= 2 && !!fLast && !fLast.endsTerminal && !continued);
+      cands.push({ i, v: e.value, entry });
+    }
+    // A list numbered downward, such as a CV's publications newest first, is not a numbering.
+    /** @type {Set<{i: number, v: number, entry: boolean}>} */
+    const down = new Set();
+    for (let k = 2; k < cands.length; k++) {
+      if (cands[k].v === cands[k - 1].v - 1 && cands[k - 1].v === cands[k - 2].v - 1) for (let j = k - 2; j <= k; j++) down.add(cands[j]);
+    }
+    const counted = cands.filter((c) => !down.has(c));
+    /** @type {Array<Array<{i: number, v: number, entry: boolean}>>} */
+    const segs = [];
+    for (const c of counted) {
+      const s = segs[segs.length - 1];
+      if (s && c.v === s[s.length - 1].v + 1) s.push(c); else segs.push([c]);
+    }
+    // A run that is mostly entries is a list and is dropped whole, so a paragraph that only looks like an entry keeps its place in its run.
+    const runs = segs.filter((s) => s.length < 3 || s.filter((c) => c.entry).length * 2 <= s.length);
+    const best = runs.map((s) => s.length);
+    const prev = runs.map(() => -1);
+    const pos = new Map(counted.map((c, k) => [c, k]));
+    const before = runs.map((s) => counted[/** @type {number} */ (pos.get(s[0])) - 1]);
+    const nextRun = runs.map((r, b) => {
+      let c = b + 1;
+      while (c < runs.length && runs[c][0].v !== r[r.length - 1].v + 1) c++;
+      return c;
+    });
+    for (let a = 0; a < runs.length; a++) {
+      const s = runs[a][0].v;
+      const pre = before[a];
+      for (let b = 0; b < a; b++) {
+        const last = runs[b][runs[b].length - 1];
+        // Right after this run, a run joins it by counting on, or by restating up to a fifth of its numbers first as a complaint's counts section can, unless it restarts at 1.
+        // After an interruption, a run joins only by counting on.
+        // It is refused when it continues the count just before it more closely or skips this run's own next run, as the later pieces of an appendix list do.
+        const restates = s <= last.v && s > 1 && last.v - s < Math.max(3, last.v / 5) && runs[a][runs[a].length - 1].v > last.v;
+        if (pre === last ? s <= last.v && !restates : s <= last.v || (pre.v < s && s - pre.v < s - last.v) || nextRun[b] < a) continue;
+        // Ties go to the nearest predecessor, so the body's own head beats an introductory list of the same length before it.
+        if (best[b] + runs[a].length >= best[a]) { best[a] = best[b] + runs[a].length; prev[a] = b; }
+      }
+    }
+    let end = -1;
+    for (let a = 0; a < runs.length; a++) if (end < 0 || best[a] >= best[end]) end = a;
+    // A numbering that has run for five pages is the body's, and a list that starts after it never replaces it, however long.
+    const extended = runs.map(() => false);
+    for (let a = 0; a < runs.length; a++) if (prev[a] >= 0) extended[prev[a]] = true;
+    for (let a = 0; a < runs.length; a++) {
+      if (extended[a] || best[a] < 10) continue;
+      let start = a; while (prev[start] >= 0) start = prev[start];
+      if (flat[runs[a][runs[a].length - 1].i].page - flat[runs[start][0].i].page + 1 < 5) continue;
+      let endStart = end; while (prev[endStart] >= 0) endStart = prev[endStart];
+      if (runs[start][0].i < runs[endStart][0].i || (runs[start][0].i === runs[endStart][0].i && best[a] > best[end])) end = a;
+    }
+    /** @type {Array<{i: number, v: number}>} */
+    let members = [];
+    for (let a = end; a >= 0; a = prev[a]) members = runs[a].concat(members);
+    // Repeats of one or two numbers, such as a checklist's recurring "1.", are not a numbering.
+    if (new Set(members.map((m) => m.v)).size >= 3) {
+      // A heading-typed paragraph whose number fills a hole in the count is a numbered paragraph the role pass misread.
+      for (let k = 0; k < members.length - 1; k++) {
+        let cur = members[k];
+        const hi = members[k + 1];
+        if (hi.v - cur.v < 2) continue;
+        for (let i = cur.i + 1; i < hi.i; i++) {
+          if (flat[i].par.type !== 'title') continue;
+          const e = enumOf(flat[i].par);
+          if (!e || e.scheme !== 'num-dot' || e.value == null || e.value <= cur.v || e.value >= hi.v) continue;
+          cur = { i, v: e.value };
+          members.splice(++k, 0, cur);
+        }
+      }
+      // The break rules sometimes merge a numbered paragraph into the one before it, where its number still opens a line inside the member's extent.
+      for (let k = 0; k < members.length; k++) {
+        const nextV = k + 1 < members.length ? members[k + 1].v : Infinity;
+        const stop = k + 1 < members.length ? members[k + 1].i : flat.length;
+        let done = false;
+        for (let i = members[k].i; i < stop && !done; i++) {
+          const { par, page } = flat[i];
+          if (par.type !== 'body' && par.type !== 'blockquote') continue;
+          for (let li = 1; li < par.lines.length; li++) {
+            const f = featOf.get(par.lines[li]);
+            const e = f ? f.enumerator : null;
+            if (!e || e.scheme !== 'num-dot' || e.value !== members[k].v + 1 || e.value >= nextV) continue;
+            const split = new OcrPar(pages[page], calcBboxUnion(par.lines.slice(li).map((l) => l.bbox)));
+            split.lines = par.lines.splice(li);
+            for (const l of split.lines) l.par = split;
+            par.bbox = calcBboxUnion(par.lines.map((l) => l.bbox));
+            split.marker = e.raw;
+            split.reason = 'numbering';
+            pages[page].pars.splice(pages[page].pars.indexOf(par) + 1, 0, split);
+            flat.splice(i + 1, 0, { par: split, page });
+            for (let m = k + 1; m < members.length; m++) members[m].i++;
+            members.splice(k + 1, 0, { i: i + 1, v: e.value });
+            done = true;
+            break;
+          }
+        }
+      }
+      for (let k = 0; k < members.length; k++) {
+        const m = members[k];
+        const stop = k + 1 < members.length ? members[k + 1].i : flat.length;
+        const lastMember = k === members.length - 1;
+        flat[m.i].par.parNum = m.v;
+        for (let i = m.i + 1; i < stop; i++) {
+          const { par, page } = flat[i];
+          if (skipped(par.type)) continue;
+          if (par.type === 'title') break;
+          // The last member has no next member to stop it, and the closing block (a prayer, a signature, a perjury clause) follows it unnumbered.
+          if (lastMember) {
+            const e = enumOf(par);
+            const pageTop = page > flat[m.i].page && !flat.slice(m.i + 1, i).some((x) => x.page === page && !skipped(x.par.type));
+            if (!pageTop && !(e && subItem.has(e.scheme))) break;
+          }
+          par.parNum = m.v;
+        }
+      }
+    }
+  }
+
   // Footnote linking: set the same par.footnoteRefId <-> word.footnoteParId link the .docx importer produces, so exporters can emit real footnotes rather than inline text.
   const markerRe = /^[\d*†‡]{1,3}$/;
   const labelOf = (t) => (t || '').trim().replace(/[.)\]]+$/, '');
@@ -2744,7 +2892,7 @@ export function analyzeLayout(pages, opts = {}) {
     for (const par of pages[p].pars) {
       if ((par.type !== 'footnote' && par.type !== 'endnote') || par.footnoteRefId) continue;
       // The note's own label: its enumerator if present, else its leading superscript marker word.
-      let label = par.parNum && markerRe.test(labelOf(par.parNum)) ? labelOf(par.parNum) : null;
+      let label = par.marker && markerRe.test(labelOf(par.marker)) ? labelOf(par.marker) : null;
       if (!label) {
         const w0 = par.lines[0] && par.lines[0].words[0];
         if (w0 && w0.style && w0.style.sup && markerRe.test(labelOf(w0.text))) label = labelOf(w0.text);

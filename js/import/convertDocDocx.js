@@ -241,7 +241,7 @@ function formatNumber(num, numFmt) {
  * @param {ParsedNumbering} numberingData
  * @param {Map<string, number[]>} counters
  */
-function generateParNum(numId, ilvl, numberingData, counters) {
+function generateMarker(numId, ilvl, numberingData, counters) {
   const abstractNumId = numberingData.numIdToAbstractNumId.get(numId);
   if (!abstractNumId) return undefined;
 
@@ -458,7 +458,7 @@ export function parseFootnotes(footnotesXml) {
  * @property {string} [footnoteId] - If type is 'footnote', this is the footnote ID
  * @property {number} [footnoteIndex] - If type is 'footnote', this is the 1-based footnote number
  * @property {string} [paraId] - The paragraph ID from Word (w14:paraId attribute)
- * @property {string} [parNum] - The paragraph number (e.g., "1.1", "1.2") if numbered
+ * @property {string} [marker] - The list marker as Word renders it, if numbered
  * @property {string | null} [styleId] - The Word style ID (e.g., "Heading1", "Normal")
  */
 
@@ -508,11 +508,11 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
     const parStyle = styleId ? stylesMap.get(styleId) : null;
 
     // Extract paragraph numbering
-    let parNum;
+    let marker;
     if (numberingData && styleId) {
       const styleNum = numberingData.styleToNumbering.get(styleId);
       if (styleNum) {
-        parNum = generateParNum(styleNum.numId, styleNum.ilvl, numberingData, numberingCounters);
+        marker = generateMarker(styleNum.numId, styleNum.ilvl, numberingData, numberingCounters);
       }
     }
 
@@ -564,7 +564,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
 
     if (runs.length > 0) {
       paragraphs.push({
-        runs, type: parType, paraId, parNum, styleId,
+        runs, type: parType, paraId, marker, styleId,
       });
     }
   }
@@ -729,7 +729,7 @@ const convertDocumentXML = async ({
     const parFootnoteId = paragraph.footnoteId;
     const parFootnoteIndex = paragraph.footnoteIndex;
     const parParaId = paragraph.paraId;
-    const parParNum = paragraph.parNum;
+    const parMarker = paragraph.marker;
     const parStyleId = paragraph.styleId;
 
     while (runIndex < parRuns.length) {
@@ -912,10 +912,10 @@ const convertDocumentXML = async ({
       if (parParaId) parObj.id = parParaId;
       parObj.lines = parLines;
       parObj.type = parType;
-      if (parParNum) {
-        parObj.parNum = parParNum;
+      if (parMarker) {
+        parObj.marker = parMarker;
       } else if (parFootnoteIndex !== undefined) {
-        parObj.parNum = String(parFootnoteIndex);
+        parObj.marker = String(parFootnoteIndex);
       }
       if (parStyleId) parObj.debug.sourceStyle = parStyleId;
       for (const ln of parLines) ln.par = parObj;

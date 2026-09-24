@@ -7,6 +7,7 @@ import { ScribeViewer } from '../viewer.js';
 import '../js/selection/customSelectionEngine.js';
 import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
+import { goToCitation as goToCitationImpl } from '../js/viewerSearch.js';
 import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
 import {
   signIntoField, selectedFillItem, deleteSelectedFillItem, deselectFillItem,
@@ -1653,6 +1654,17 @@ class ScribePDFViewer {
    */
   async goToPage(n) {
     await this.scribe.displayPage(n, true, false);
+  }
+
+  /**
+   * Navigate to a citation.
+   * @param {string} text - A citation such as "34", "34:14" or "¶ 12", or an empty string to clear the previous citation's highlight.
+   * @param {object} [options]
+   * @param {boolean} [options.highlight=true] - Light the cited lines.
+   * @returns {Promise<ReturnType<import('../../js/containers/scribeDoc.js').ScribeDoc['resolveCitation']>>}
+   */
+  goToCitation(text, options) {
+    return goToCitationImpl(this.scribe, text, options);
   }
 
   /**

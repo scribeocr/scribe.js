@@ -558,6 +558,11 @@ export class ScribeViewer {
        * */
       activeMatch: -1,
     };
+    /**
+     * Ids of the words currently lit by a citation jump.
+     * @type {Set<string>}
+     */
+    this._citationIds = new Set();
 
     this.evalStats = [];
     this._evalStatsConfig = {
@@ -713,6 +718,7 @@ export class ScribeViewer {
     this._searchState = {
       search: '', matchList: [], activeMatch: -1,
     };
+    this._citationIds = new Set();
 
     this.state.cp.n = 0;
     this.state.searchMode = false;
@@ -3612,7 +3618,7 @@ export class ScribeViewer {
           rotation: 0,
           word: wordObj,
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
-          activeMatch: activeIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id) || this._citationIds.has(wordObj.id),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,
           highlightGroupId: annot ? (annot.groupId || null) : null,
@@ -3660,7 +3666,7 @@ export class ScribeViewer {
     if (this.useCustomSelection && this.state.displayMode === 'invis') {
       if (this.opt.outlinePars) this._renderParOutlines(page, angle);
       // Word objects exist to carry highlight and search state; a page with neither needs none.
-      const needsWords = (this.doc.annotations.pages[page.n] || []).length > 0 || this.state.searchMode;
+      const needsWords = (this.doc.annotations.pages[page.n] || []).length > 0 || this.state.searchMode || this._citationIds.size > 0;
       if (needsWords && !this._wordObjMaps[page.n]) this._buildWordObjs(page);
       this.renderHighlights(page.n);
       /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderMarks(page.n);
@@ -3784,7 +3790,7 @@ export class ScribeViewer {
           word: wordObj,
           outline: outlineWord,
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
-          activeMatch: activeIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id) || this._citationIds.has(wordObj.id),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,
           highlightGroupId: annot ? (annot.groupId || null) : null,

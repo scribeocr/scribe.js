@@ -153,6 +153,37 @@ describe('Check paragraph detection with footnotes.', () => {
     expect(folios.map((line) => line.words[0].text), 'only the folio line is typed pagenum, the role export drops as furniture').toEqual(['9']);
   });
 
+  // Page 8 is avoided, since the per-page detector above rebuilt its paragraphs.
+  test('a paragraph citation resolves at the document\'s one numbering, through page breaks and lettered sub-items', () => {
+    const opening = (span, i, n) => span.lines[i].words.slice(0, n).map((w) => w.text).join(' ');
+    const key = (spans) => spans.map((s) => [s.page, s.paragraphs, s.lines.map((l) => l.id)]);
+    const first = doc.resolveCitation('¶ 1');
+    expect(first.map((s) => [s.page, s.pageNum, s.paragraphs, s.lines.length, s.first, s.last, s.missing]),
+      '¶ 1 is the report\'s first paragraph on physical page 2, not the survey answer numbered 1 on page 20 or footnote 1').toEqual([[2, '1', [1], 5, null, null, []]]);
+    expect(opening(first[0], 0, 8), 'the span opens on the paragraph\'s marker line').toBe('1. I am Kent D. Van Liere. I');
+    const crossing = doc.resolveCitation('¶ 35');
+    expect(crossing.map((s) => [s.page, s.paragraphs, s.lines.length]), '¶ 35 runs from the foot of page 19 onto page 20').toEqual([[19, [35], 4], [20, [35], 8]]);
+    expect(opening(crossing[1], 0, 8), 'the page-20 lines are the continuation, past the footnote and the page number').toBe('her earlier conclusion that the items purchased by');
+    const listed = doc.resolveCitation('¶ 15');
+    expect(listed.map((s) => [s.page, s.paragraphs, s.lines.length]), '¶ 15 includes its lettered list on the next page').toEqual([[6, [15], 6], [7, [15], 13]]);
+    expect([opening(listed[1], 0, 8), opening(listed[1], 12, 7)], 'the list runs a) to d) and takes the sentence after it, up to paragraph 16')
+      .toEqual(['a) The response rate to her survey is', 'Each of these areas is discussed below.']);
+    const range = doc.resolveCitation('¶¶ 34-36');
+    expect(range.map((s) => [s.page, s.pageNum, s.paragraphs, s.lines.length, s.missing]), '¶¶ 34-36 spans two pages and ¶ 35 is listed on both')
+      .toEqual([[19, '18', [34, 35], 22, []], [20, '19', [35, 36], 16, []]]);
+    expect(opening(range[1], 13, 5), '¶ 36 takes the quoted survey answer after it and stops at the misread heading').toBe('1. ONLY AT WHOLE FOODS');
+    const twelve = doc.resolveCitation('para. 12');
+    expect(twelve.map((s) => [s.page, s.paragraphs]), 'para. 12 resolves to one page').toEqual([[5, [12]]]);
+    expect(key(doc.resolveCitation('¶12')), '¶12 without a space is the same citation').toEqual(key(twelve));
+    expect(key(doc.resolveCitation('paragraph 12')), 'the spelled-out form is the same citation').toEqual(key(twelve));
+    expect(key(doc.resolveCitation('¶ 15(b)')), 'a sub-item citation resolves to its paragraph').toEqual(key(listed));
+    expect(doc.resolveCitation('¶ 99'), 'a paragraph past the end resolves to nothing').toEqual([]);
+    expect(doc.resolveCitation('¶¶ 34, 36'), 'a comma list is not a citation yet').toEqual([]);
+    const tail = doc.resolveCitation('¶¶ 41-45');
+    expect(tail.map((s) => [s.page, s.paragraphs, s.lines.length, s.missing]), 'the last paragraph stops before the closing sentences, and the numbers past the end are missing')
+      .toEqual([[23, [41, 42], 9, [43, 44, 45]]]);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
