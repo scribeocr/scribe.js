@@ -31,6 +31,7 @@ import {
   getDefaultViewer, getAllViewers, findViewerForTarget,
 } from './js/viewerRuntime.js';
 import { DEBUG_RENDER_SCHED } from '../tess/TessScheduler.js';
+import { parIsFurniture } from '../js/objects/ocrObjects.js';
 
 /**
  * Per-viewer canvas controller. Owns its own scroll container, document, selection, and event state.
@@ -1640,17 +1641,62 @@ export class ScribeViewer {
   }
 
   /**
-   * Double-tap zoom: from near the width-fit zoom, zoom to a reading zoom anchored at the tap.
-   * From anywhere else, return to width-fit.
+   * Toggle between width-fit and a zoom that fits the text column under the tap to the viewport width.
    * @param {{x: number, y: number}} center - Tap point in client coordinates.
    */
   _toggleDoubleTapZoom(center) {
     if (!this.scrollContainer || !(this._contentWidth > 0) || !(this.zoomLevel > 0)) return;
-    const fitZoom = this.scrollContainer.clientWidth / this._contentWidth;
+    const sc = this.scrollContainer;
+    const fitZoom = sc.clientWidth / this._contentWidth;
     const zoomedIn = this.zoomLevel > fitZoom * 1.15;
-    const totalScale = (zoomedIn ? fitZoom : fitZoom * 2.2) / this.zoomLevel;
+    let targetZoom = zoomedIn ? fitZoom : fitZoom * 2.2;
+    /** @type {?number} */
+    let columnX = null;
+    if (!zoomedIn) {
+      const { x: tapX, y: tapY } = this.clientToContent(center.x, center.y);
+      const n = this.pageAtContentPoint(tapX, tapY);
+      const page = this.doc.ocr.active?.[n];
+      const disp = this.getDisplayDims(n);
+      if (page && disp) {
+        const lines = [];
+        for (const line of page.lines) {
+          if (parIsFurniture(line.par)) continue;
+          const a = this.localToContent(n, line.orientation, line.bbox.left, line.bbox.top);
+          const b = this.localToContent(n, line.orientation, line.bbox.right, line.bbox.bottom);
+          const left = Math.min(a.x, b.x);
+          const right = Math.max(a.x, b.x);
+          if (right - left >= disp.width * 0.05) lines.push({ left, right });
+        }
+        let column = lines.filter((l) => l.left <= tapX && tapX <= l.right);
+        if (column.length < 3) {
+          let seedX = tapX;
+          let nearestDist = Infinity;
+          for (const l of lines) {
+            const dist = Math.max(l.left - tapX, tapX - l.right);
+            if (dist > 0 && dist < nearestDist) { nearestDist = dist; seedX = (l.left + l.right) / 2; }
+          }
+          column = lines.filter((l) => l.left <= seedX && seedX <= l.right);
+        }
+        if (column.length >= 3) {
+          const lefts = column.map((l) => l.left).sort((a, b) => a - b);
+          const rights = column.map((l) => l.right).sort((a, b) => a - b);
+          const left = lefts[Math.floor(lefts.length * 0.1)];
+          const right = rights[Math.ceil(rights.length * 0.9) - 1];
+          // Keep the floor above the 1.15x zoomed-in threshold so the next double tap zooms back out.
+          const pageFit = sc.clientWidth / disp.width;
+          const pad = sc.clientWidth * 0.03;
+          targetZoom = Math.min(pageFit * 4, Math.max(pageFit * 1.2, (sc.clientWidth - 2 * pad) / (right - left)));
+          columnX = (left + right) / 2;
+        }
+      }
+    }
+    const totalScale = targetZoom / this.zoomLevel;
+    const step = (scaleBy) => {
+      this.zoom(scaleBy, center);
+      if (columnX !== null) sc.scrollLeft = columnX * this.zoomLevel - sc.clientWidth / 2;
+    };
     if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      this.zoom(totalScale, center);
+      step(totalScale);
       return;
     }
     const FRAMES = 9;
@@ -1659,7 +1705,7 @@ export class ScribeViewer {
     const tick = () => {
       frame++;
       // Multiplicative ease-out: the largest factor lands on the first frame.
-      this.zoom(totalScale ** ((FRAMES - frame + 1) / weightSum), center);
+      step(totalScale ** ((FRAMES - frame + 1) / weightSum));
       if (frame < FRAMES) requestAnimationFrame(tick);
     };
     requestAnimationFrame(tick);
