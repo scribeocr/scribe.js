@@ -314,8 +314,23 @@ function parseTextColorSpaces(containerObjText, objCache) {
   for (const m of csDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
     addEntry(m[1], objCache.getObjectText(Number(m[2])));
   }
-  for (const m of csDictText.matchAll(/\/([^\s/<>[\]]+)\s*(\[[^\]]*\])/g)) {
-    addEntry(m[1], m[2]);
+  // A Separation/DeviceN array nests its alternate space, as in `[/Separation /Black [/ICCBased 27 0 R] 28 0 R]`, so the entry runs to the balanced close bracket.
+  // Stopping at the first one drops the tint function that follows it.
+  for (const m of csDictText.matchAll(/\/([^\s/<>[\]]+)\s*\[/g)) {
+    const arrStart = m.index + m[0].length - 1;
+    let depth = 0;
+    let arrEnd = -1;
+    for (let i = arrStart; i < csDictText.length; i++) {
+      if (csDictText[i] === '[') depth++;
+      else if (csDictText[i] === ']') {
+        depth--;
+        if (depth === 0) {
+          arrEnd = i + 1;
+          break;
+        }
+      }
+    }
+    if (arrEnd > 0) addEntry(m[1], csDictText.substring(arrStart, arrEnd));
   }
   return map;
 }
