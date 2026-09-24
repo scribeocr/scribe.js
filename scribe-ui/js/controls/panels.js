@@ -807,19 +807,13 @@ export function createThumbnailPanel(scribe, {
     // chkPress swallows the click that follows any press: a handled press already toggled, and a catch-the-scroll press must not toggle.
     // A keyboard activation is a click with no preceding press, so it still toggles.
     let chkPress = false;
-    // The genuine tail click arrives synchronously with its pointerup, before a zero timeout runs.
-    // A paint drag released elsewhere delivers no click here, so without the deferred reset the stranded flag would swallow the next keyboard activation.
-    const chkPressEnd = () => {
-      window.removeEventListener('pointerup', chkPressEnd);
-      window.removeEventListener('pointercancel', chkPressEnd);
-      setTimeout(() => { chkPress = false; }, 0);
-    };
     chkBtn.addEventListener('pointerdown', (e) => {
       chkPress = true;
-      window.addEventListener('pointerup', chkPressEnd);
-      window.addEventListener('pointercancel', chkPressEnd);
       reorder.onChkPointerDown(e, idx());
     });
+    // A paint drag released elsewhere strands the flag with no click to consume it, so a key press clears it ahead of the keyboard's click.
+    // Resetting it at pointerup would break touch, whose tap click arrives only after tasks queued at pointerup have run.
+    chkBtn.addEventListener('keydown', () => { chkPress = false; });
     chkBtn.addEventListener('click', () => {
       const pressed = chkPress;
       chkPress = false;
