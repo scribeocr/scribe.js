@@ -10,8 +10,9 @@ import { webdriverio } from '@vitest/browser-webdriverio';
 // Browser/driver paths default to webdriverio auto-discovery (selenium-manager).
 // Set CHROMIUM_BINARY / CHROMEDRIVER_BINARY / FIREFOX_BINARY to pin specific
 // binaries in restricted-network environments (dev container, CI).
+// The WebGPU flags give headless Chrome a software adapter, which the recognition worker refuses unless a test forces the GPU path with `scribe.opt.dev.forceGPU`.
 /** @type {Record<string, any>} */
-const chromeOptions = { args: ['--no-sandbox', '--disable-dev-shm-usage'] };
+const chromeOptions = { args: ['--no-sandbox', '--disable-dev-shm-usage', '--enable-unsafe-webgpu', '--enable-unsafe-swiftshader', '--use-webgpu-adapter=swiftshader', '--ignore-gpu-blocklist'] };
 if (process.env.CHROMIUM_BINARY) chromeOptions.binary = process.env.CHROMIUM_BINARY;
 
 /** @type {Record<string, any>} */

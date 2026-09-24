@@ -446,6 +446,7 @@ const initialize = async ({
       workerId, status: statusText, progress: 0,
     });
     if (api !== null) {
+      TessModule.dropGpu();
       api.End();
     }
     let configFile;
@@ -585,7 +586,7 @@ const processOutput = (output) => {
 
 // List of options for Tesseract.js (rather than passed through to Tesseract),
 // not including those with prefix "tessjs_"
-const tessjsOptions = ['rectangle', 'rotateAuto', 'rotateRadians', 'lstm', 'legacy', 'upscale'];
+const tessjsOptions = ['rectangle', 'rotateAuto', 'rotateRadians', 'lstm', 'legacy', 'upscale', 'gpu'];
 
 const recognize = async ({
   payload: {
@@ -705,8 +706,12 @@ const recognize = async ({
 
     // The core's own phase times by timing code: 1 layout, 2 Legacy, 3 LSTM, 4 snapshot.
     let coreTiming = null;
+    let gpu = false;
+    let gpuReason = null;
     if (!skipRecognition) {
-      if (api.Recognize(legacy, lstm) !== 0) throw new Error(`Recognition failed (legacy: ${legacy}, lstm: ${lstm}).`);
+      const page = await TessModule.recognizePage(api, legacy, lstm, options.gpu);
+      gpu = page.gpu;
+      gpuReason = page.reason;
       if (typeof api.GetRecognitionTimings === 'function') coreTiming = JSON.parse(api.GetRecognitionTimings() || 'null');
     }
     const dumpStart = performance.now();
@@ -722,8 +727,9 @@ const recognize = async ({
       3: coreTiming ? coreTiming[3] : null,
       4: (coreTiming ? coreTiming[4] : 0) + dumpMs,
     };
-    result.core = coreVariant;
-    result.kernel = api.GetStringVariable('dotproduct');
+    result.dev = {
+      core: coreVariant, kernel: api.GetStringVariable('dotproduct'), gpu, gpuReason,
+    };
 
     if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
     if (output.debugVis) TessModule.FS.unlink('/debugVisInternal.txt');
@@ -741,6 +747,7 @@ const recognize = async ({
 const terminate = async (_, res) => {
   try {
     if (api !== null) {
+      TessModule.dropGpu();
       api.End();
     }
     res.resolve({ terminated: true });

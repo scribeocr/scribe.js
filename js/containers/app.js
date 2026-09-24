@@ -38,6 +38,8 @@ export class opt {
    */
   static usePdfSharedBuffer = false;
 
+  static dev = { disableGPU: false, forceGPU: false };
+
   static warningHandler = (x) => console.warn(x);
 
   static errorHandler = (x) => console.error(x);

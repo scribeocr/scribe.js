@@ -14,8 +14,23 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check basic recognition features.', () => {
   test('Should recognize basic .png image using single function', async () => {
-    const txt = await scribe.extractText([`${ASSETS_PATH}/simple.png`]);
-    expect(txt).toBe('Tesseract.js');
+    scribe.opt.dev.forceGPU = true;
+    try {
+      const gpuDoc = await scribe.openDocument([`${ASSETS_PATH}/simple.png`]);
+      await gpuDoc.recognize({ langs: ['eng'] });
+      const txt = await gpuDoc.exportData('txt');
+      expect(txt, 'the words read under the GPU path').toBe('Tesseract.js');
+      const timing = gpuDoc.ocrTiming[0].Combined;
+      if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+        expect(timing.dev.gpu, 'Node has no GPU path').toBe(false);
+        expect(timing.dev.gpuReason, 'why the GPU path was off in Node').toBe('no WebGPU: not a browser, or not a secure context');
+      } else if (/Chrome/.test(navigator.userAgent)) {
+        expect(timing.dev.gpu, 'the GPU path read the page in Chrome').toBe('split@4');
+      }
+      await gpuDoc.close();
+    } finally {
+      scribe.opt.dev.forceGPU = false;
+    }
   });
 
   test('Should recognize basic .jpg image using single function', async () => {

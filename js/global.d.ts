@@ -1021,6 +1021,7 @@ declare global {
         legacy: boolean;
         lstm: boolean;
         upscale: boolean;
+        gpu: 'auto' | 'force' | 'off';
     };
 
     type TessRecognizeResult = {
@@ -1183,8 +1184,7 @@ declare global {
         2?: number | null;
         3?: number | null;
         4?: number;
-        core?: string | null;
-        kernel?: string;
+        dev?: Record<string, unknown>;
     };
 
 }

@@ -650,7 +650,7 @@ async function recognizeAllPages(
   // For PDF data, if upscaling is desired, that should be handled by rendering the PDF at a higher resolution.
   const upscale = doc.inputData.imageMode && scribeDocDefaults.enableUpscale;
 
-  const configPage = { upscale };
+  const configPage = { upscale, gpu: opt.dev.disableGPU ? 'off' : opt.dev.forceGPU ? 'force' : 'auto' };
 
   // The bound caps how many page rasters are resident at once, since each chain renders its own page and releases it below.
   // Recognition is 10-20x slower than rendering, so a lookahead this small still keeps every engine busy.
@@ -674,7 +674,7 @@ async function recognizeAllPages(
       doc.ocrTiming[x] = {
         ...doc.ocrTiming[x],
         Combined: {
-          0: res.recognitionTime, ...res.recognize.timing, core: res.recognize.core, kernel: res.recognize.kernel,
+          0: res.recognitionTime, ...res.recognize.timing, dev: res.recognize.dev,
         },
       };
 
