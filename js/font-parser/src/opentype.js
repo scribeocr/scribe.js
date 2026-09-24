@@ -1485,13 +1485,17 @@ export function makeHheaTable(options) {
 // The `hmtx` table contains the horizontal metrics for all glyphs.
 // https://www.microsoft.com/typography/OTSPEC/hmtx.htm
 
-export function parseHmtxTable(data, start, numMetrics, numGlyphs, glyphs) {
+export function parseHmtxTable(data, start, numMetrics, numGlyphs, glyphs, length) {
   let advanceWidth;
   let leftSideBearing;
   const p = new parse.Parser(data, start);
   for (let i = 0; i < numGlyphs; i += 1) {
     if (i < numMetrics) {
       advanceWidth = p.parseUShort();
+      leftSideBearing = p.parseShort();
+    } else if (p.relativeOffset + 2 <= length) {
+      // Past numberOfHMetrics the advance repeats, but the trailing array holds one left side bearing per glyph.
+      // Fonts embedded in PDFs can end this array early while keeping the full glyph count.
       leftSideBearing = p.parseShort();
     }
 
@@ -3983,7 +3987,7 @@ function parseBuffer(buffer, options = {}) {
   }
 
   const hmtxTable = uncompressTable(data, hmtxTableEntry);
-  parseHmtxTable(hmtxTable.data, hmtxTable.offset, font.numberOfHMetrics, font.numGlyphs, font.glyphs);
+  parseHmtxTable(hmtxTable.data, hmtxTable.offset, font.numberOfHMetrics, font.numGlyphs, font.glyphs, hmtxTableEntry.length);
   addGlyphNames(font);
 
   if (kernTableEntry) {

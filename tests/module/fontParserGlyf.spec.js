@@ -51,7 +51,7 @@ function parseGlyphsFromFont(fontBytes) {
   const glyphs = parseGlyfTable(dv, tableDir.glyf.offset, loca, fontShell);
   fontShell.glyphs = glyphs;
 
-  parseHmtxTable(dv, tableDir.hhea.offset, hhea.numberOfHMetrics, maxp.numGlyphs, glyphs);
+  parseHmtxTable(dv, tableDir.hmtx.offset, hhea.numberOfHMetrics, maxp.numGlyphs, glyphs, tableDir.hmtx.length);
 
   for (let i = 0; i < maxp.numGlyphs; i++) {
     glyphs.get(i).path;
@@ -280,6 +280,32 @@ describe('parseGlyfTable keeps the GlyphSet sparse for subset fonts (memory)', (
 
   test('out-of-range index returns undefined', () => {
     expect(fresh().get(99999)).toBe(undefined);
+  });
+});
+
+describe('hmtx with fewer metrics than glyphs (parse → toArrayBuffer → reparse)', () => {
+  /** @type {import('../../js/font-parser/src/font.js').default} */
+  let font;
+  /** @type {import('../../js/font-parser/src/font.js').default} */
+  let reparsed;
+
+  beforeAll(async () => {
+    const fontBytes = await readFileBytes(`${ASSETS_PATH}/../../js/font-parser/fonts/FDArrayTest257.otf`);
+    const ab = fontBytes.buffer.slice(fontBytes.byteOffset, fontBytes.byteOffset + fontBytes.byteLength);
+    font = opentype.parse(ab);
+    reparsed = opentype.parse(font.toArrayBuffer());
+  });
+
+  test('glyphs past numberOfHMetrics carry their own left side bearing', () => {
+    expect(font.tables.hhea.numberOfHMetrics, 'the fixture has one metric for 257 glyphs').toBe(1);
+    expect(font.glyphs.get(128).leftSideBearing, 'left side bearing read from the trailing lsb array').toBe(62);
+    expect(font.glyphs.get(256).leftSideBearing, 'left side bearing of the last glyph').toBe(124);
+    expect(font.glyphs.get(256).advanceWidth, 'the shared advance of the last metric').toBe(1000);
+  });
+
+  test('left side bearings survive re-serialization', () => {
+    expect(reparsed.glyphs.get(128).leftSideBearing, 'left side bearing after toArrayBuffer and reparse').toBe(62);
+    expect(reparsed.glyphs.get(256).leftSideBearing, 'left side bearing of the last glyph after reparse').toBe(124);
   });
 });
 

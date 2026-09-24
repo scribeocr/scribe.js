@@ -41,7 +41,6 @@ function getTextWidth(text, size, font) {
   const wordLastGlyphMetrics = font.charToGlyph(text.at(-1)).getMetrics();
   const wordFirstGlyphMetrics = font.charToGlyph(text[0]).getMetrics();
 
-  // The `leftSideBearing`/`rightSideBearing`/ numbers reported by Opentype.js are not accurate for mono-spaced fonts, so `xMin`/`xMax` are used instead.
   const wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
   const lastGlyphMax = wordLastGlyphMetrics.xMax || 0;
   const wordRightBearing = advanceArr[advanceArr.length - 1] - lastGlyphMax;

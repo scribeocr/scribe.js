@@ -315,7 +315,6 @@ export function calcWordMetrics(word, docFonts, angle = 0, settings) {
   const wordLastGlyphMetrics = fontOpentype.charToGlyph(charArr2.at(-1)).getMetrics();
   const wordFirstGlyphMetrics = fontOpentype.charToGlyph(charArr2[0]).getMetrics();
 
-  // The `leftSideBearing`/`rightSideBearing`/ numbers reported by Opentype.js are not accurate for mono-spaced fonts, so `xMin`/`xMax` are used instead.
   let wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
   let lastGlyphMax = wordLastGlyphMetrics.xMax || 0;
   if (word.style.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) lastGlyphMax *= fontI.smallCapsMult;

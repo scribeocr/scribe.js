@@ -691,7 +691,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
 
     const fontShell = { unitsPerEm: head.unitsPerEm, numGlyphs: maxp.numGlyphs, tables: {} };
     fontShell.glyphs = opentype.parseGlyfTable(data, tableDir.glyf.offset, loca, fontShell);
-    opentype.parseHmtxTable(data, tableDir.hmtx.offset, hhea.numberOfHMetrics, maxp.numGlyphs, fontShell.glyphs);
+    opentype.parseHmtxTable(data, tableDir.hmtx.offset, hhea.numberOfHMetrics, maxp.numGlyphs, fontShell.glyphs, tableDir.hmtx.length);
 
     const glyphToUnicode = new Map();
     /** @type {Map<number, Set<number>>} Every codepoint a Unicode cmap maps to a glyph, not just the primary one. */
