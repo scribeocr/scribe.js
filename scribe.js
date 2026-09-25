@@ -83,7 +83,13 @@ const openDocument = async (files, options) => {
     await init({ font: true });
   }
   const doc = new ScribeDoc();
-  await doc.importFiles(files, options);
+  try {
+    await doc.importFiles(files, options);
+  } catch (err) {
+    // The caller never receives a document whose import failed, so nobody else could close the PDF it may hold in the worker pool.
+    await doc.close().catch(() => {});
+    throw err;
+  }
   return doc;
 };
 

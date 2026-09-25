@@ -14,7 +14,7 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import {
   addCircularRefsDataTables, addCircularRefsRegions, LayoutDataTablePage, LayoutPage,
 } from '../objects/layoutObjects.js';
-import { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
+import ocr, { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { reassignOutlineIds } from '../objects/outlineObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
@@ -649,6 +649,7 @@ export async function importFiles(doc, files, options = {}) {
 
   let existingOpt = false;
   const oemName = 'User Upload';
+  let pdfTextExtracted = false;
   if (xmlModeImport) {
     // Initialize a new array on `ocr` if one does not already exist
     if (!doc.ocr[oemName]) doc.ocr[oemName] = Array(doc.inputData.pageCount);
@@ -666,14 +667,152 @@ export async function importFiles(doc, files, options = {}) {
     }
 
     doc.ocrRaw.active = ocrData.hocrRaw;
-    // Subset OCR data to avoid uncaught error that occurs when there are more pages of OCR data than image data.
-    // While this should be rare, it appears to be fairly common with Archive.org documents.
-    // TODO: Add warning message displayed to user for doc.
-    // Textract JSON data is returned in arbitrary chunks (multiple pages may be in one file, or one page may be in multiple files).
-    // Therefore, it is impossible to know how many pages of OCR data there are based only on the length of `doc.ocrRaw.active`.
-    if (pageCountImage && doc.ocrRaw.active.length > pageCountImage && ocrData.format !== 'textract' && ocrData.format !== 'google_doc_ai') {
-      console.log(`Identified ${doc.ocrRaw.active.length} pages of OCR data but ${pageCountImage} pages of image/pdf data. Only first ${pageCountImage} pages will be used.`);
-      doc.ocrRaw.active = doc.ocrRaw.active.slice(0, pageCountImage);
+    // Textract, Google Document AI and Azure Document Intelligence data come in document-level or arbitrary chunks, so the array length says nothing about their page count.
+    // Text, Markdown and DOCX inputs have no pages of their own.
+    const pagedOcr = !['textract', 'google_doc_ai', 'azure_doc_intel', 'text', 'docx', 'md'].includes(format);
+    if (pageCountImage && pagedOcr && doc.ocrRaw.active.length !== pageCountImage) {
+      const ocrRawAll = doc.ocrRaw.active;
+      const ocrPageCount = ocrRawAll.length;
+      const mismatch = `The OCR file has ${ocrPageCount} page${ocrPageCount === 1 ? '' : 's'} but the ${doc.inputData.pdfMode ? 'PDF' : 'image input'} has ${pageCountImage}`;
+      // Archive.org's ABBYY and hOCR files include scan leaves (insert cards, blank leaves, plates) that the item's PDF omits, at varying positions.
+      // Neither truncation nor a constant offset lines such a file up, and a wrong guess silently puts every page's text on the wrong page.
+      let reason = doc.inputData.pdfMode ? '' : 'only a PDF text layer can match OCR pages to pages';
+      /** @type {?Int32Array} The OCR page of each page, -1 where none belongs. */
+      let pageMap = null;
+      /** @type {string[]} */
+      let ocrTexts = [];
+      if (!reason) {
+        await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways, supplemental: true });
+        pdfTextExtracted = true;
+        const normText = (/** @type {string} */ s) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+        const pdfTexts = Array.from({ length: pageCountImage }, (_, i) => (doc.ocr.pdf?.[i] ? normText(ocr.getPageText(doc.ocr.pdf[i])) : ''));
+        ocrTexts = ocrRawAll.map((str) => {
+          let text;
+          if (format === 'alto') {
+            text = (str.match(/CONTENT=(?:"[^"]*"|'[^']*')/g) || []).map((m) => m.slice(9, -1)).join(' ');
+          } else if (format === 'stext') {
+            text = (str.match(/\bc=(?:"[^"]*"|'[^']*')/g) || []).map((m) => m.slice(3, -1)).join('');
+          } else if (format === 'google_vision') {
+            try { text = JSON.parse(str).fullTextAnnotation?.text || ''; } catch { text = ''; }
+          } else {
+            text = str.replace(/<[^>]*>/g, ' ');
+          }
+          return normText(text.replace(/&[^;\s]{1,8};/g, ''));
+        });
+        const shinglesOf = (/** @type {string} */ t) => {
+          const set = new Set();
+          if (t.length < 16) return set;
+          for (let i = 0; i + 8 <= t.length; i++) {
+            let h = 2166136261;
+            for (let c = i; c < i + 8; c++) h = Math.imul(h ^ t.charCodeAt(c), 16777619);
+            set.add(h >>> 0);
+          }
+          return set;
+        };
+        const pdfSh = pdfTexts.map(shinglesOf);
+        const ocrSh = ocrTexts.map(shinglesOf);
+        const M = pageCountImage;
+        const N = ocrPageCount;
+        /** @type {Map<number, number[]>} */
+        const postings = new Map();
+        for (let j = 0; j < N; j++) {
+          for (const h of ocrSh[j]) {
+            const list = postings.get(h);
+            if (list) list.push(j); else postings.set(h, [j]);
+          }
+        }
+        const sim = new Float32Array(M * N);
+        const counts = new Int32Array(N);
+        for (let i = 0; i < M; i++) {
+          if (!pdfSh[i].size) continue;
+          counts.fill(0);
+          for (const h of pdfSh[i]) {
+            const list = postings.get(h);
+            if (list) for (const j of list) counts[j]++;
+          }
+          for (let j = 0; j < N; j++) {
+            // Dividing by the larger fingerprint stops a page whose text is only a fragment of another page's, such as a running head, from matching that page.
+            const s = counts[j] / Math.max(pdfSh[i].size, ocrSh[j].size);
+            if (s >= 0.5) sim[i * N + j] = s;
+          }
+        }
+        // Order-preserving matching that maximizes total similarity (a weighted longest common subsequence).
+        // Backpointers: 1 pairs the two pages, 2 skips the page, 3 skips the OCR page.
+        const W = N + 1;
+        const score = new Float64Array((M + 1) * W);
+        const step = new Uint8Array((M + 1) * W);
+        for (let i = 1; i <= M; i++) {
+          for (let j = 1; j <= N; j++) {
+            const s = sim[(i - 1) * N + (j - 1)];
+            let best = score[(i - 1) * W + j];
+            let from = 2;
+            if (score[i * W + (j - 1)] > best) {
+              best = score[i * W + (j - 1)];
+              from = 3;
+            }
+            if (s > 0 && score[(i - 1) * W + (j - 1)] + s > best) {
+              best = score[(i - 1) * W + (j - 1)] + s;
+              from = 1;
+            }
+            score[i * W + j] = best;
+            step[i * W + j] = from;
+          }
+        }
+        pageMap = new Int32Array(M).fill(-1);
+        let anchors = 0;
+        for (let i = M, j = N; i > 0 && j > 0;) {
+          const from = step[i * W + j];
+          if (from === 1) {
+            pageMap[i - 1] = j - 1;
+            anchors++;
+            i--;
+            j--;
+          } else if (from === 2) {
+            i--;
+          } else {
+            j--;
+          }
+        }
+        // The bar rejects another document's OCR file, which matches a page or two at most, and a partial file, which matches only its share of the pages.
+        const textPages = pdfTexts.filter((t) => t.length >= 16).length;
+        if (anchors < 2 || anchors < 0.9 * textPages) {
+          reason = `only ${anchors} of the ${textPages} PDF pages with text matched an OCR page`;
+          pageMap = null;
+        } else {
+          // Between two matched pairs, an equal number of unmatched pages on each side (blank leaves, plates) pair up in order.
+          let prevPage = -1;
+          let prevOcr = -1;
+          for (let i = 0; i <= M; i++) {
+            if (i < M && pageMap[i] < 0) continue;
+            const curOcr = i < M ? pageMap[i] : N;
+            if (i - prevPage === curOcr - prevOcr) for (let d = 1; d < i - prevPage; d++) pageMap[prevPage + d] = prevOcr + d;
+            prevPage = i;
+            prevOcr = curOcr;
+          }
+        }
+      }
+      if (!pageMap) {
+        const err = /** @type {Error & {ocrPages: number, pageCount: number}} */ (new Error(`${mismatch}, and the pages could not be matched (${reason}), so the OCR was not imported.`));
+        err.name = 'OcrPageMismatchError';
+        err.ocrPages = ocrPageCount;
+        err.pageCount = pageCountImage;
+        throw err;
+      }
+      const used = new Uint8Array(ocrPageCount);
+      for (let i = 0; i < pageCountImage; i++) if (pageMap[i] >= 0) used[pageMap[i]] = 1;
+      const droppedWithText = [];
+      for (let j = 0; j < ocrPageCount; j++) if (!used[j] && ocrTexts[j].length >= 16) droppedWithText.push(j);
+      const pagesWithoutOcr = [];
+      for (let i = 0; i < pageCountImage; i++) if (pageMap[i] < 0) pagesWithoutOcr.push(i);
+      const matched = pageCountImage - pagesWithoutOcr.length;
+      doc.inputData.ocrPageMatch = {
+        ocrPages: ocrPageCount, matched, droppedWithText, pagesWithoutOcr,
+      };
+      const listPages = (/** @type {number[]} */ arr) => arr.slice(0, 12).map((i) => i + 1).join(', ') + (arr.length > 12 ? ', …' : '');
+      const droppedNote = droppedWithText.length ? `, ${droppedWithText.length} of them carrying text (OCR pages ${listPages(droppedWithText)})` : '';
+      const withoutNote = pagesWithoutOcr.length ? `; ${pagesWithoutOcr.length} pages have no OCR page (pages ${listPages(pagesWithoutOcr)})` : '';
+      doc.warningHandler({ message: `${mismatch}. ${matched} OCR pages were matched to pages by their text; ${ocrPageCount - matched} were not used${droppedNote}${withoutNote}.` });
+      doc.ocrRaw.active = Array.from(pageMap, (j) => (j >= 0 ? ocrRawAll[j] : null));
     }
 
     format = /** @type {("hocr" | "abbyy" | "alto" | "stext" | "textract" | "text")} */ (ocrData.format);
@@ -812,25 +951,43 @@ export async function importFiles(doc, files, options = {}) {
 
   if (xmlModeImport) {
     // Process OCR using web worker, reading from file first if that has not been done already
-    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, reimportHocrMode, doc.pageMetrics, { docxLineSplitMode }).then(async () => {
-      // Skip this step if optimization info was already restored from a previous session,
-      // or if using stext/textract (which are character-level but not visually accurate).
-      if (!existingOpt && !skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
-        await checkCharWarn(doc, doc.convertPageWarn);
-        const charMetrics = calcCharMetricsFromPages(doc.ocr.active);
+    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, reimportHocrMode, doc.pageMetrics, { docxLineSplitMode });
 
-        if (Object.keys(charMetrics).length > 0) {
-          clearObjectProperties(doc.fonts.state.charMetrics);
-          Object.assign(doc.fonts.state.charMetrics, charMetrics);
-        }
-        await doc.runOptimization(doc.ocr.active);
+    // An OCR page carries its own pixel size into `pageMetrics`, so a page that got none is sized like its neighbors: its PDF size at the OCR file's scale.
+    const pagesWithoutOcr = doc.inputData.ocrPageMatch?.pagesWithoutOcr;
+    if (pagesWithoutOcr?.length && doc.images.pdfDims300) {
+      const ratios = [];
+      for (let n = 0; n < doc.inputData.pageCount; n++) {
+        if (doc.ocr.active[n]?.dims?.width && doc.images.pdfDims300[n]?.width) ratios.push(doc.ocr.active[n].dims.width / doc.images.pdfDims300[n].width);
       }
-    });
+      ratios.sort((a, b) => a - b);
+      const ratio = ratios[Math.floor(ratios.length / 2)] || 1;
+      for (const n of pagesWithoutOcr) {
+        if (doc.images.pdfDims300[n] && doc.pageMetrics[n]) {
+          doc.pageMetrics[n].dims = { width: doc.images.pdfDims300[n].width * ratio, height: doc.images.pdfDims300[n].height * ratio };
+        }
+        // Per-page consumers expect a page object at every index, so a page without an OCR page gets an empty one.
+        if (doc.pageMetrics[n]) doc.ocr[oemName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
+      }
+    }
+
+    // Skip this step if optimization info was already restored from a previous session,
+    // or if using stext/textract (which are character-level but not visually accurate).
+    if (!existingOpt && !skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
+      await checkCharWarn(doc, doc.convertPageWarn);
+      const charMetrics = calcCharMetricsFromPages(doc.ocr.active);
+
+      if (Object.keys(charMetrics).length > 0) {
+        clearObjectProperties(doc.fonts.state.charMetrics);
+        Object.assign(doc.fonts.state.charMetrics, charMetrics);
+      }
+      await doc.runOptimization(doc.ocr.active);
+    }
     assignPageLineNums(doc.ocr[oemName]);
   }
 
   // A PDF still needs parsing when an OCR file accompanies it.
-  if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
+  if (!scribeFiles[0] && !pdfTextExtracted && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
     const extractOptions = { usePDFText, keepPDFTextAlways, supplemental: xmlModeImport };
     if (deferText) {
       // `terminate()` and `clear()` resolve this still-pending promise to null via `_textReadySettle`, so waiters never hang when the worker pool is torn down mid-extraction.

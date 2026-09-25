@@ -1030,6 +1030,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ring: rgba(28, 98, 212, .30);
       --scribe-accent-wash: rgba(28, 98, 212, .14);
       --scribe-note: #f4d06a;
+      --scribe-warn-soft: #fbf1d3;
       --scribe-danger: #d1493d;
       --scribe-danger-soft: #fbe9e7;
       --scribe-scrollbar: rgba(28, 42, 68, .26);
@@ -1057,6 +1058,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ring: rgba(79, 139, 240, .38);
       --scribe-accent-wash: rgba(79, 139, 240, .22);
       --scribe-note: #f0cd68;
+      --scribe-warn-soft: #3a3117;
       --scribe-danger: #ef7a6c;
       --scribe-danger-soft: #33201d;
       --scribe-scrollbar: rgba(255, 255, 255, .26);
@@ -3946,7 +3948,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-danger-soft); border-bottom: 1px solid var(--scribe-line);
       color: var(--scribe-ink); font-size: 13px;
     }
-    .${r} .scribe-banner-text { flex: 1 1 auto; }
+    .${r} .scribe-banner.warn { background: var(--scribe-warn-soft); }
+    .${r} .scribe-banner-text { flex: 1 1 auto; line-height: 1.35; }
+    .${r} .scribe-banner-text b { font-weight: 650; }
     .${r} .scribe-banner-close {
       flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px;
       padding: 0; border: none; border-radius: 6px; background: transparent;

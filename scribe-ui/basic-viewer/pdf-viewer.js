@@ -26,7 +26,7 @@ import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
-  createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
+  createHighlightTool, createDropZone, openDocumentFromFile, filesNamedForPdf, createRedactTool, createEditTextTool,
   createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
@@ -101,8 +101,11 @@ const MESSAGE_BANNER_HEIGHT = 40;
 /** Close glyph for the message banner's dismiss button. */
 const BANNER_CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
 
-/** File extensions the viewer can open (PDF, images, OCR sidecars, and .scribe projects). */
-const SUPPORTED_OPEN_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'hocr', 'xml', 'html', 'htm', 'json', 'scribe']);
+/**
+ * File extensions the viewer can open.
+ * `gz` is for gzipped OCR files such as Archive.org's `_abbyy.gz`.
+ */
+const SUPPORTED_OPEN_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'hocr', 'xml', 'html', 'htm', 'stext', 'gz', 'json', 'scribe']);
 
 /**
  * Duration (ms) of the left-sidebar open/close/switch animation.
@@ -2114,10 +2117,25 @@ class ScribePDFViewer {
     }
     const supported = list.filter(isSupported);
     const pdfs = supported.filter(isPdf);
-    const others = supported.filter((f) => !isPdf(f));
+    let others = supported.filter((f) => !isPdf(f));
+    /** @type {Map<File, {ocrFiles: File[], scribeFiles: File[]}>} */
+    const filesByPdf = new Map();
+    for (const pdf of pdfs) {
+      const { ocrFiles, scribeFiles } = filesNamedForPdf(pdf.name || '', others.map((f) => f.name || ''));
+      if (ocrFiles.length > 1) console.info(`Opening ${pdf.name} with ${ocrFiles[0]}; not using ${ocrFiles.slice(1).join(', ')}.`);
+      // Only the first OCR file goes along, since the core reads several OCR files as one page per file.
+      filesByPdf.set(pdf, {
+        ocrFiles: others.filter((f) => f.name === ocrFiles[0]),
+        scribeFiles: others.filter((f) => scribeFiles.includes(f.name || '')),
+      });
+      const taken = new Set([...scribeFiles, ...ocrFiles]);
+      others = others.filter((f) => !taken.has(f.name || ''));
+    }
 
-    /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string }>} */
+    /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, notice?: ?{kind: 'danger'|'warn', lead: string, text: string} }>} */
     const opened = [];
+    /** @param {number} n */
+    const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
     for (const pdf of pdfs) {
       if (!this._roomForAnotherDoc(pdf.size || 0, opened)) {
         const openN = this._tabs.length + opened.length;
@@ -2126,8 +2144,22 @@ class ScribePDFViewer {
       }
       let doc = null;
       try {
+        const named = filesByPdf.get(pdf) || { ocrFiles: [], scribeFiles: [] };
+        // The notice says what the import did to the document, not the core's error message.
+        /** @type {?{kind: 'danger'|'warn', lead: string, text: string}} */
+        let notice = null;
         // deferText: the tab displays immediately. Extraction continues behind `doc.textReady`.
-        doc = await openDocumentFromFile(pdf, { deferText: true });
+        doc = await openDocumentFromFile(pdf, {
+          deferText: true,
+          ocrFiles: named.ocrFiles,
+          scribeFiles: named.scribeFiles,
+          onOcrFileRejected: (err) => {
+            const text = err.name === 'OcrPageMismatchError'
+              ? `PDF has ${pages(err.pageCount ?? 0)}, text data has ${pages(err.ocrPages ?? 0)}. Text data could not be aligned with PDF.`
+              : `${named.ocrFiles[0].name} could not be read as text data.`;
+            notice = { kind: 'danger', lead: 'Text data not used', text };
+          },
+        });
         // A readable PDF yields pages, so zero pages means the bytes were unusable and the open failed.
         if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
         if (doc.attachments.collection) {
@@ -2135,7 +2167,9 @@ class ScribePDFViewer {
           await this._openPortfolio(doc, pdf.name || 'Portfolio');
           continue;
         }
-        opened.push({ doc, name: pdf.name || 'Document' });
+        const match = doc.inputData.ocrPageMatch;
+        if (match) notice = { kind: 'warn', lead: 'Text misalignment repaired', text: `PDF has ${pages(doc.inputData.pageCount)}, text data has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.` };
+        opened.push({ doc, name: pdf.name || 'Document', notice });
       } catch (err) {
         // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
         console.error(`Failed to open ${pdf.name}:`, err);
@@ -2165,7 +2199,7 @@ class ScribePDFViewer {
     }
     if (opened.length === 0) return;
 
-    for (const t of opened) this._tabs.push(this._newTab(t.doc, t.name));
+    for (const t of opened) this._tabs.push({ ...this._newTab(t.doc, t.name), notice: t.notice || null });
     await this._activateTab(this._tabs.length - 1);
     // The active tab already painted. This await keeps the "openFiles resolved means all documents fully loaded" contract for callers.
     await Promise.all(opened.map((t) => t.doc.textReady));
@@ -2180,7 +2214,7 @@ class ScribePDFViewer {
    */
   _newTab(doc, name) {
     return {
-      doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false,
+      doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false, notice: null,
     };
   }
 
@@ -2439,6 +2473,7 @@ class ScribePDFViewer {
     tab.lastUse = ++this._tabUseCounter;
     if (tab.asleep) tab.waking = true;
     this._renderTabs();
+    this._syncTabNotice();
     // Respawn the suspended pool before attaching, so the tab chip's spinner covers the slow part and the attach renders against a warm pool.
     // Bounded by a timeout so the spinner always ends.
     // On timeout or failure the attach proceeds and renders retry lazily.
@@ -2473,6 +2508,7 @@ class ScribePDFViewer {
     if (this._tabs.length === 0) {
       this._activeTab = -1;
       this._renderTabs();
+      this._syncTabNotice();
       this.detachDoc({ terminate: false });
       // The pinned surface shown most recently takes the empty strip, else the first (the library's, when it is installed).
       (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
@@ -2689,13 +2725,25 @@ class ScribePDFViewer {
    * Use when the user may be away from the screen or the failure is not self-evident (e.g. recognition failed while they stepped away): it waits to be acknowledged rather than auto-dismissing.
    * Only one banner shows at a time, so a new message replaces the current one.
    * @param {string} message
+   * @param {Object} [options]
+   * @param {'danger'|'warn'} [options.kind] - Red for a failure (the default), yellow for something done to the document that the user should know about.
+   * @param {string} [options.lead] - Bold lead-in before the message.
+   * @param {Object} [options.owner] - The tab this banner belongs to, when it is that tab's notice rather than a viewer-wide message.
    */
-  _showBanner(message) {
+  _showBanner(message, { kind = 'danger', lead = '', owner = null } = {}) {
     this._ensureMessageLayer();
     this._banner.textContent = '';
+    this._banner.classList.toggle('warn', kind === 'warn');
+    this._bannerOwner = owner;
     const text = document.createElement('span');
     text.className = 'scribe-banner-text';
-    text.textContent = message;
+    if (lead) {
+      const b = document.createElement('b');
+      b.textContent = lead;
+      text.append(b, ` — ${message}`);
+    } else {
+      text.textContent = message;
+    }
     const close = document.createElement('button');
     close.className = 'scribe-banner-close';
     close.type = 'button';
@@ -2707,11 +2755,31 @@ class ScribePDFViewer {
     this._positionBanners();
   }
 
-  /** Hide the message banner and give back the space the banner stack reserved for it. */
+  /**
+   * Hide the message banner and give back the space the banner stack reserved for it.
+   * A tab's notice dismissed this way does not come back when the tab is next activated.
+   */
   _hideBanner() {
     if (!this._banner) return;
+    if (this._bannerOwner) this._bannerOwner.notice = null;
+    this._bannerOwner = null;
     this._banner.style.display = 'none';
     this._positionBanners();
+  }
+
+  /**
+   * Show the active tab's notice in the banner, or take down the banner if it was showing another tab's notice.
+   * A viewer-wide banner (one with no owning tab) stays up unless the active tab has a notice to show.
+   */
+  _syncTabNotice() {
+    const tab = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    if (tab?.notice) {
+      this._showBanner(tab.notice.text, { kind: tab.notice.kind, lead: tab.notice.lead, owner: tab });
+    } else if (this._bannerOwner) {
+      this._bannerOwner = null;
+      this._banner.style.display = 'none';
+      this._positionBanners();
+    }
   }
 
   /**

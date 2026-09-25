@@ -1281,11 +1281,42 @@ export function createDropZone({
 }
 
 /**
+ * The files among `names` that import together with the PDF named `pdfName`.
+ * @param {string} pdfName
+ * @param {string[]} names
+ * @returns {{ocrFiles: string[], scribeFiles: string[]}} The OCR files, most preferred first, and the `.scribe` sessions.
+ */
+export function filesNamedForPdf(pdfName, names) {
+  const stem = pdfName.replace(/\.pdf$/i, '').toLowerCase();
+  /** @type {string[]} */
+  const scribeFiles = [];
+  /** @type {Array<[number, string]>} */
+  const ranked = [];
+  if (stem) {
+    for (const name of names) {
+      const lower = name.toLowerCase();
+      if (!lower.startsWith(stem)) continue;
+      const rest = lower.slice(stem.length);
+      if (/^\.scribe(?:\.json)?$/.test(rest)) scribeFiles.push(name);
+      else if (/^\.(?:hocr|xml|html|htm|stext|json)(?:\.gz)?$/.test(rest)) ranked.push([0, name]);
+      else if (/^_abbyy\.(?:gz|xml)$/.test(rest)) ranked.push([1, name]);
+      else if (/^_hocr\.html?(?:\.gz)?$/.test(rest)) ranked.push([2, name]);
+    }
+  }
+  ranked.sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : 1));
+  return { ocrFiles: ranked.map(([, name]) => name), scribeFiles };
+}
+
+/**
  * Open a `ScribeDoc` from any supported input.
  * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-`File` `Blob`) are treated as PDFs.
  * `File` and path strings are sorted by extension.
  * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
  * @param {Object} [options]
+ * @param {File[]} [options.ocrFiles]
+ * @param {File[]} [options.scribeFiles]
+ * @param {(err: Error & {ocrPages?: number, pageCount?: number}) => void} [options.onOcrFileRejected] - Called with the error when an import that includes OCR files fails.
+ *    The document then opens without them.
  * @param {boolean} [options.deferText] - Resolve as soon as the document is renderable, leaving text extraction running behind `doc.textReady` (see `importFiles`).
  *    For open-and-display paths only.
  *    Callers that read the document's text right after opening must leave this unset.
@@ -1293,7 +1324,9 @@ export function createDropZone({
  *    Safe only for callers that read text and never render styled overlays.
  * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
  */
-export async function openDocumentFromFile(file, { deferText = false, skipFontOpt = false } = {}) {
+export async function openDocumentFromFile(file, {
+  deferText = false, skipFontOpt = false, ocrFiles = [], scribeFiles = [], onOcrFileRejected = undefined,
+} = {}) {
   /** @type {Parameters<typeof scribeLib.openDocument>[0]} */
   let input;
   if (file instanceof ArrayBuffer) {
@@ -1311,7 +1344,21 @@ export async function openDocumentFromFile(file, { deferText = false, skipFontOp
     throw new Error('openDocumentFromFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
   }
 
-  const doc = await scribeLib.openDocument(input, (deferText || skipFontOpt) ? { deferText, skipFontOpt } : undefined);
+  if (Array.isArray(input)) {
+    input.push(...ocrFiles, ...scribeFiles);
+  } else {
+    if (ocrFiles.length) input.ocrFiles = ocrFiles;
+    if (scribeFiles.length) input.scribeFiles = scribeFiles;
+  }
+
+  let doc;
+  try {
+    doc = await scribeLib.openDocument(input, (deferText || skipFontOpt) ? { deferText, skipFontOpt } : undefined);
+  } catch (err) {
+    if (!ocrFiles.length) throw err;
+    onOcrFileRejected?.(err instanceof Error ? err : new Error(String(err)));
+    return openDocumentFromFile(file, { deferText, skipFontOpt, scribeFiles });
+  }
 
   // A pure viewer never runs recognize(), so an image-based PDF's active (selectable) text layer would stay empty.
   // When nothing else has filled it, fall back to the PDF's own parsed text, copying each page's deskew angle so the text overlay aligns.

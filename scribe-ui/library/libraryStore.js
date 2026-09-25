@@ -52,6 +52,9 @@ export const folderNameProblem = (name) => {
  * @property {number} [recognizedAt] - Epoch ms when text recognition last completed for this document.
  * @property {boolean} [ocrQueued] - Waiting in the recognition queue, and stored so the queue resumes after a reload.
  * @property {string} [ocrError] - Why the last recognition attempt did not finish, cleared by the next request or completed run.
+ * @property {string} [ocrFile] - Name of the OCR file beside the source file that the import used.
+ * @property {string} [ocrFileNote] - What the import did to align that OCR file, when its page count differed from the PDF's.
+ * @property {string} [ocrFileError] - Why the OCR file beside the source file was not used, when there was one.
  * @property {string} [error] - Failure message when status is 'error'.
  * @property {'interrupted'|'parse'} [errorKind] - Failure class when status is 'error'.
  *    Interrupted failures get one automatic retry at the next scan.

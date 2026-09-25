@@ -518,7 +518,7 @@ async function convertPageCallback(doc, {
  * Currently supports .hocr (used by Tesseract), Abbyy .xml, and stext (an intermediate data format used by mupdf).
  *
  * @param {ScribeDoc} doc
- * @param {string[]} ocrRawArr - Array with raw OCR data, with an element for each page
+ * @param {Array<?string>} ocrRawArr - Array with raw OCR data, with an element for each page (null for a page that has none)
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the engine's results are flagged as the "main" data.
@@ -611,6 +611,7 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
   }
 
   for (let n = 0; n < ocrRawArr.length; n++) {
+    if (ocrRawArr[n] == null) continue;
     promiseArr.push(convertOCRPage(ocrRawArr[n], n, format, scribeMode)
       .then((res) => convertPageCallback(doc, res, n, mainData, engineName)));
   }

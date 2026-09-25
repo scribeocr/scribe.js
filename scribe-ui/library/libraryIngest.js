@@ -7,7 +7,7 @@ import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
  * @property {(recognized: boolean) => Promise<void>} [checkpoint] - Present when a viewer tab owns the copy.
  *    Persists the sidecar the way that tab's own checkpoint does, stamping the recognition when `recognized` is true.
  */
-import { openDocumentFromFile } from '../js/controls/tools.js';
+import { openDocumentFromFile, filesNamedForPdf } from '../js/controls/tools.js';
 
 const THUMB_WIDTH = 300;
 /** Stored page rasters stand in for the live preview, so they need its pane width rather than thumbnail width. */
@@ -434,9 +434,37 @@ export class LibraryIngest {
 
           const sidecar = resetSidecar ? null : await this.store.readSidecar(hash);
           // The hashed buffer doubles as the import input, so the file's bytes are read and held once.
-          doc = sidecar
-            ? await scribeLib.openDocument([new File([buf], relPath.split('/').pop() || relPath), new File([sidecar], `${hash}.scribe`)], { skipFontOpt: true })
-            : await openDocumentFromFile(buf, { skipFontOpt: true });
+          if (sidecar) {
+            doc = await scribeLib.openDocument([new File([buf], relPath.split('/').pop() || relPath), new File([sidecar], `${hash}.scribe`)], { skipFontOpt: true });
+          } else {
+            // The sidecar holds the document's text and edits, so the OCR file is read only without one.
+            const cut = relPath.lastIndexOf('/');
+            const dir = await this.store.dirAt(cut < 0 ? '' : relPath.slice(0, cut));
+            const names = [];
+            // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+            for await (const name of dir.keys()) names.push(name);
+            const ocrName = filesNamedForPdf(relPath.slice(cut + 1), names).ocrFiles[0];
+            const ocrFile = ocrName ? await (await dir.getFileHandle(ocrName)).getFile() : null;
+            delete entry.ocrFile;
+            delete entry.ocrFileNote;
+            delete entry.ocrFileError;
+            /** @param {number} n */
+            const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
+            doc = await openDocumentFromFile(buf, {
+              skipFontOpt: true,
+              ocrFiles: ocrFile ? [ocrFile] : [],
+              onOcrFileRejected: (err) => {
+                entry.ocrFileError = err.name === 'OcrPageMismatchError'
+                  ? `Text data not used — PDF has ${pages(err.pageCount ?? 0)}, text data (${ocrName}) has ${pages(err.ocrPages ?? 0)}. Text data could not be aligned with PDF.`
+                  : `Text data not used — ${ocrName} could not be read as text data.`;
+              },
+            });
+            if (ocrFile && !entry.ocrFileError) {
+              entry.ocrFile = ocrName;
+              const match = doc.inputData.ocrPageMatch;
+              if (match) entry.ocrFileNote = `Text misalignment repaired — PDF has ${pages(doc.inputData.pageCount)}, text data (${ocrName}) has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.`;
+            }
+          }
           entry.hash = hash;
           entry.pageCount = doc.inputData.pageCount;
           // A portfolio's own page is only a cover sheet, so the library opens the entry as a portfolio view instead.

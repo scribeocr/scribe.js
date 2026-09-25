@@ -5,6 +5,7 @@ import scribeLib from '../../scribe.js';
 import { saveAs } from '../../js/utils/miscUtils.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
+import { filesNamedForPdf } from '../js/controls/tools.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
 import { LibraryIndex } from './librarySearch.js';
@@ -1812,6 +1813,18 @@ export function createLibraryInstance(viewer, opts) {
       meta.appendChild(err);
       meta.title = entry.ocrError;
     }
+    if (entry.ocrFileError) {
+      const err = document.createElement('span');
+      err.className = 'err';
+      err.textContent = 'Text data not used';
+      meta.appendChild(err);
+      meta.title = entry.ocrFileError;
+    } else if (entry.ocrFile) {
+      const src = document.createElement('span');
+      src.textContent = entry.ocrFileNote ? '· Text data auto-aligned' : '· Text data attached';
+      meta.appendChild(src);
+      if (!meta.title) meta.title = entry.ocrFileNote || entry.ocrFile;
+    }
     if (entry.status === 'pending' || entry.status === 'changed' || entry.status === 'error') {
       const actions = document.createElement('div');
       actions.className = 'actions';
@@ -2134,8 +2147,9 @@ export function createLibraryInstance(viewer, opts) {
     const feedback = !!revertFeedback && revertFeedback.relPath === relPath;
     const badgeInfo = feedback ? null : badgeFor(relPath, entry);
     const failed = !feedback && !!entry.ocrError && !entry.ocrQueued && recognizingPath !== relPath;
-    const badge = (badgeInfo ? badgeInfo.html : '') + (failed ? '<span class="err">Recognition failed</span>' : '');
-    const badgeTitle = failed ? entry.ocrError : badgeInfo?.title;
+    const ocrFileHtml = entry.ocrFileError ? '<span class="err">Text data not used</span>' : entry.ocrFile ? `<span>${entry.ocrFileNote ? 'Text data auto-aligned' : 'Text data attached'}</span>` : '';
+    const badge = (badgeInfo ? badgeInfo.html : '') + (failed ? '<span class="err">Recognition failed</span>' : '') + (!feedback ? ocrFileHtml : '');
+    const badgeTitle = failed ? entry.ocrError : (badgeInfo?.title || entry.ocrFileError || entry.ocrFileNote || entry.ocrFile);
     // A portfolio's cover sheet is never shown, so its row carries the portfolio glyph where the thumbnail or page icon would sit.
     const nm = /** @type {HTMLElement} */ (row.querySelector(':scope > .nm'));
     if (!!entry.portfolio !== !!nm.querySelector(':scope > .pf')) {
@@ -3790,9 +3804,17 @@ export function createLibraryInstance(viewer, opts) {
       viewer._showToast('The library holds PDFs — none of the dropped files were PDFs.');
       return;
     }
+    const names = files.map((f) => f.name || '');
     for (const file of pdfs) {
       try {
         const relPath = await store.importSourceFile(file.name, file, currentDir);
+        // The OCR file is copied in under the PDF's final name, so a PDF renamed by a name collision still pairs with it.
+        const ocrName = filesNamedForPdf(file.name, names).ocrFiles[0];
+        const ocrFile = ocrName ? files.find((f) => f.name === ocrName) : null;
+        if (ocrFile) {
+          const finalStem = relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.pdf$/i, '');
+          await store.importSourceFile(finalStem + ocrName.slice(file.name.replace(/\.pdf$/i, '').length), ocrFile, currentDir);
+        }
         await ingest.enqueue(relPath, { size: file.size, mtime: file.lastModified });
       } catch (err) {
         viewer._showToast(`Couldn't add “${file.name}” — ${err instanceof Error ? err.message : 'the file could not be written'}.`);
@@ -4134,7 +4156,8 @@ export function createLibraryInstance(viewer, opts) {
       viewer._showToast('The library holds PDFs — none of the dropped files were PDFs or images.');
       return;
     }
-    if (pdfs.length) await startIngestFiles(pdfs);
+    // The whole drop goes along, so an OCR file dropped beside its PDF is copied in with it.
+    if (pdfs.length) await startIngestFiles(files);
     if (images.length) await createPdfFromImages(images);
   });
 

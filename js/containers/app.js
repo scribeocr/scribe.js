@@ -97,11 +97,20 @@ export class InputData {
 
   pageCount = 0;
 
+  /**
+   * How an OCR file whose page count differed from the PDF's was matched onto its pages by page text.
+   * `null` when the counts agreed or no OCR file was imported.
+   * `droppedWithText` lists the unused OCR pages that carried text, and `pagesWithoutOcr` the pages that received no OCR page, both as 0-based indexes.
+   * @type {?{ocrPages: number, matched: number, droppedWithText: number[], pagesWithoutOcr: number[]}}
+   */
+  ocrPageMatch = null;
+
   clear() {
     this.xmlMode.length = 0;
     this.pdfMode = false;
     this.pageStats = null;
     this.ocrApplied = null;
+    this.ocrPageMatch = null;
     this.requiresOCR = false;
     this.imageMode = false;
     this.resumeMode = false;
