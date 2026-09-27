@@ -38,10 +38,14 @@ const buildBootstrapViewer = () => {
 /** @type {ScribePDFViewer|null} */
 const pdfViewer = buildBootstrapViewer();
 
-pdfViewerContElem?.addEventListener('scribe-active-doc-change', (e) => {
-  const name = /** @type {CustomEvent} */ (e).detail?.name;
-  document.title = name ? `${name} — 21 Viewer` : '21 Viewer';
-});
+// Add file name to title in desktop app only.
+// For the web app, a document-specific title would be included in the browser history, despite being unable to open the file.
+if (inDesktopShell || /** @type {any} */ (window).__TAURI__) {
+  pdfViewerContElem?.addEventListener('scribe-active-doc-change', (e) => {
+    const name = /** @type {CustomEvent} */ (e).detail?.name;
+    document.title = name ? `${name} — 21 Viewer` : '21 Viewer';
+  });
+}
 
 // A deploy renames every chunk, so a page opened before it can no longer load the pieces it has not used yet.
 // Vite's preload helper reports that failure through this event, which the unbundled dev app never fires.
