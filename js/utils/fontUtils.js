@@ -106,9 +106,7 @@ export async function subsetFont(font, charArr = []) {
  * @param {opentype.Font} fontOpentype
  * @param {number} heightActual - Actual, measured height of text in pixels.
  * @param {string} text - Text to compare `heightActual` against.
- *
- * Note: When calculating font size from x-height, `text` should be set to "o" rather than "x".
- * Despite the name, what Tesseract (and this application) are actually calculating is closer to "o" than "x".
+ * @returns {?number} The size, or null when the text has no measurable glyph in the font.
  */
 function getFontSize(fontOpentype, heightActual, text) {
   const textArr = text.split('');
@@ -124,6 +122,8 @@ function getFontSize(fontOpentype, heightActual, text) {
 
   const textHeight = (yMax - yMin) * (1 / fontOpentype.unitsPerEm);
 
+  if (!(textHeight > 0)) return null;
+
   return Math.round(heightActual / textHeight);
 }
 
@@ -138,13 +138,13 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
   if (wordArr[0].chars && wordArr[0].chars.length > 0) {
     const charArr = wordArr.map((x) => x.chars).flat();
     const charArrFiltered = nonLatin ? charArr.filter((x) => x && (x.bbox.bottom - x.bbox.top) > 5) : charArr.filter((x) => x && /[A-Za-z0-9]/.test(x.text));
-    const fontSizeCharArr = charArrFiltered.map((x) => getFontSize(fontOpentype, x.bbox.bottom - x.bbox.top, x.text));
+    const fontSizeCharArr = charArrFiltered.map((x) => getFontSize(fontOpentype, x.bbox.bottom - x.bbox.top, x.text)).filter((size) => size !== null);
     const fontSizeCharMedian = quantile(fontSizeCharArr, 0.5);
     return fontSizeCharMedian;
   }
 
   const wordArrFiltered = nonLatin ? wordArr.filter((x) => x && (x.bbox.bottom - x.bbox.top) > 5) : wordArr.filter((x) => x && /[A-Za-z0-9]/.test(x.text));
-  const fontSizeWordArr = wordArrFiltered.map((x) => getFontSize(fontOpentype, x.bbox.bottom - x.bbox.top, x.text));
+  const fontSizeWordArr = wordArrFiltered.map((x) => getFontSize(fontOpentype, x.bbox.bottom - x.bbox.top, x.text)).filter((size) => size !== null);
   const fontSizeWordMedian = quantile(fontSizeWordArr, 0.5);
   return fontSizeWordMedian;
 }
@@ -369,7 +369,8 @@ export const calcWordFontSize = (word, docFonts) => {
   // This is because `size` is currently treated as the size of the main text, and does not vary between main text and superscripts.
   if (word.style.sup || word.style.dropcap) {
     if (word.visualCoords) {
-      return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
+      const sizeMeasured = getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
+      if (sizeMeasured) return sizeMeasured;
     }
     if (word.style.size) {
       return word.style.size;
@@ -430,10 +431,11 @@ export const calcLineFontSize = (line, docFonts) => {
     }
   }
 
+  const size1 = line.ascHeight ? getFontSize(fontOpentype, line.ascHeight, 'A') : null;
+  const size2 = line.xHeight ? getFontSize(fontOpentype, line.xHeight, 'o') : null;
+
   // If both ascender height and x-height height are known, calculate the font size using both and average them.
-  if (line.ascHeight && line.xHeight) {
-    const size1 = getFontSize(fontOpentype, line.ascHeight, 'A');
-    const size2 = getFontSize(fontOpentype, line.xHeight, 'o');
+  if (size1 && size2) {
     let sizeFinal = Math.floor((size1 + size2) / 2);
 
     // Averaging `size1` and `size2` is intended to smooth out small differences in calculation error.
@@ -458,14 +460,10 @@ export const calcLineFontSize = (line, docFonts) => {
   }
 
   // If only x-height is known, calculate font size using x-height.
-  if (!line.ascHeight && line.xHeight) {
-    return getFontSize(fontOpentype, line.xHeight, 'o');
-  }
+  if (!size1 && size2) return size2;
 
   // If only ascender height is known, calculate font size using ascender height.
-  if (line.ascHeight && !line.xHeight) {
-    return getFontSize(fontOpentype, line.ascHeight, 'A');
-  }
+  if (size1 && !size2) return size1;
 
   // If no font metrics are known, use the font size from the previous line.
   const linePrev = getPrevLine(line);

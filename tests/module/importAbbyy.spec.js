@@ -28,6 +28,19 @@ describe('Check Abbyy XML import function.', () => {
     expect(text3).toBe('we can');
   });
 
+  test('A drop-cap word of only an unrecognized-character mark does not abort the font evaluation', async () => {
+    const line = doc.ocr.active[0].lines[0];
+    const height = line.bbox.bottom - line.bbox.top;
+    const mark = new scribe.utils.ocr.OcrWord(line, 'word_mark', '■', {
+      left: line.bbox.left, top: line.bbox.top, right: line.bbox.left + height, bottom: line.bbox.bottom,
+    });
+    mark.style.dropcap = true;
+    mark.visualCoords = true;
+    line.words.push(mark);
+    await doc.runOptimization(doc.ocr.active);
+    expect(scribe.utils.calcWordMetrics(mark, doc.fonts).fontSize, 'a mark the font cannot measure is sized from its box height').toBeCloseTo(40.48, 2);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
