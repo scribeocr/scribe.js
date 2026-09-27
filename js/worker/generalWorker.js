@@ -322,8 +322,8 @@ const handleMessage = async (data) => {
   const args = data[1];
   const id = data[2];
 
-  // Point font lookups at the requesting document's fonts before the job runs.
-  if (fontDependentFuncs.has(func)) setActiveDocFonts(getWorkerFonts(args?.docId));
+  // Storing the default in `workerFonts` can leak it, because the main thread drops a document's worker entries only if it sent that document's fonts or font settings.
+  if (fontDependentFuncs.has(func)) setActiveDocFonts(workerFonts.get(args?.docId ?? 0) || new DocFonts());
 
   ({
     // Convert page functions
