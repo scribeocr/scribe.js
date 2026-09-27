@@ -3,7 +3,7 @@ import {
   getPageObjects, collectPageTreeObjNums, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import {
-  extractDict, parseDictEntries, bytesToLatin1,
+  extractDict, parseDictEntries, bytesToLatin1, decodePdfName,
 } from '../../pdf/pdfPrimitives.js';
 import { tokenizeContentStream } from '../../pdf/contentStream.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
@@ -86,8 +86,8 @@ function dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums) {
 }
 
 /**
- * Walk a page's content streams and collect the names actually invoked by Tf (fonts), Do (xobjects), and gs (ext-gstate) operators.
- * Other resource-name operators (cs/CS/scn/SCN/sh/BMC/BDC) are context-sensitive and deliberately not walked.
+ * Collect the /Font, /XObject, and /ExtGState resource names a page's content streams use.
+ * Returned names have their #xx escapes decoded, because a resource key and its use can spell the same name differently.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
  */
@@ -96,11 +96,7 @@ function collectUsedResourceNames(pageObjText, objCache) {
   const usedXObjects = new Set();
   const usedExtGStates = new Set();
 
-  /**
-   * Map a /XObject resource name on the page to the underlying object number.
-   * Returns null when the page's /XObject dict is absent or the name isn't defined.
-   * @param {string} name e.g. '/R12'
-   */
+  /** @param {string} name */
   const resolvePageXObjectName = (name) => {
     const resolvedRes = resolvePageResources(pageObjText, objCache);
     const xobjMatch = /\/XObject\s*(?:<<([\s\S]*?)>>|(\d+)\s+\d+\s+R)/.exec(resolvedRes);
@@ -112,9 +108,9 @@ function collectUsedResourceNames(pageObjText, objCache) {
       xobjBody = indirectText;
     }
     if (!xobjBody) return null;
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const re = new RegExp(`${escaped}\\s+(\\d+)\\s+\\d+\\s+R`);
-    const m = re.exec(xobjBody);
+    const wanted = decodePdfName(name);
+    const entry = parseDictEntries(xobjBody).find((e) => decodePdfName(e.name) === wanted);
+    const m = entry ? /^(\d+)\s+\d+\s+R/.exec(entry.valueText.trim()) : null;
     return m ? Number(m[1]) : null;
   };
 
@@ -126,11 +122,11 @@ function collectUsedResourceNames(pageObjText, objCache) {
       if (tok.type === 'name') { lastName = tok.value; continue; }
       if (tok.type === 'operator') {
         if (lastName !== null) {
-          if (tok.value === 'Tf') usedFonts.add(lastName);
+          if (tok.value === 'Tf') usedFonts.add(decodePdfName(lastName));
           else if (tok.value === 'Do') {
-            usedXObjects.add(lastName);
+            usedXObjects.add(decodePdfName(lastName));
             if (onXObject) onXObject(lastName);
-          } else if (tok.value === 'gs') usedExtGStates.add(lastName);
+          } else if (tok.value === 'gs') usedExtGStates.add(decodePdfName(lastName));
         }
         lastName = null;
         continue;
@@ -226,7 +222,7 @@ function pruneResourcesDict(resourcesDictText, used, objCache) {
     const loc = locateResourceSubdict(body, key, objCache);
     if (!loc) return;
     const entries = parseDictEntries(loc.body);
-    const kept = entries.filter((e) => usedSet.has(e.name));
+    const kept = entries.filter((e) => usedSet.has(decodePdfName(e.name)));
     let replacement;
     if (kept.length === 0) {
       replacement = '';
