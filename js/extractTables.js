@@ -1,5 +1,4 @@
 import ocr from './objects/ocrObjects.js';
-import { calcBoxOverlap } from './utils/miscUtils.js';
 import {
   LayoutDataColumn, LayoutDataTable, LayoutDataTablePage, layoutBoxIncludes, calcTableBbox,
 } from './objects/layoutObjects.js';
@@ -174,30 +173,26 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
     // This is necessary as a "line" in HOCR does not necessarily correspond to a visual line--
     // multiple HOCR "lines" may have the same visual baseline so belong in the same cell.
     while (!indexArr.every((x, index) => x === lengthArr[index])) {
-      // Identify highest unassigned word
-      const compArrBox = indexArr.map((x, index) => colArr[index][x]);
-      compArrBox.sort((a, b) => a.box.bottom - b.box.bottom);
-      const rowBox = {
-        left: 0, top: 0, right: 5000, bottom: compArrBox[0].box.bottom,
-      };
+      // The opening word skips the center test, which a zero-height box fails, so every pass advances.
+      let openCol = -1;
+      for (let i = 0; i < colArr.length; i++) {
+        if (indexArr[i] < lengthArr[i] && (openCol < 0 || colArr[i][indexArr[i]].box.bottom < colArr[openCol][indexArr[openCol]].box.bottom)) openCol = i;
+      }
+      const openBottom = colArr[openCol][indexArr[openCol]].box.bottom;
 
       /** @type {Array<Array<OcrWord>>} */
-      const colWordArr = [];
-      for (let i = 0; i < colArr.length; i++) {
-        colWordArr[i] = [];
-      }
-      let rowBottom;
+      const colWordArr = colArr.map(() => []);
+      colWordArr[openCol].push(colArr[openCol][indexArr[openCol]].word);
+      indexArr[openCol]++;
+      let rowBottom = openBottom;
 
       for (let i = 0; i < indexArr.length; i++) {
         for (let j = indexArr[i]; j < colArr[i].length; j++) {
-          const overlap = calcBoxOverlap(colArr[i][j].box, rowBox);
-          if (overlap > 0.5) {
-            colWordArr[i].push(colArr[i][j].word);
-            if (!rowBottom || colArr[i][j].box.bottom > rowBottom) rowBottom = colArr[i][j].box.bottom;
-            indexArr[i]++;
-          } else {
-            break;
-          }
+          const { box } = colArr[i][j];
+          if ((box.top + box.bottom) / 2 >= openBottom) break;
+          colWordArr[i].push(colArr[i][j].word);
+          if (box.bottom > rowBottom) rowBottom = box.bottom;
+          indexArr[i]++;
         }
       }
       rowWordArr.push(colWordArr);
