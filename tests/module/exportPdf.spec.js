@@ -668,7 +668,7 @@ describe('Check export for .pdf files.', () => {
     });
   });
 
-  test('PDF overlay with page subset exports only the requested pages and removes unreferenced objects', async () => {
+  test('PDF overlay with page subset exports only the requested pages and removes unreferenced objects, and a full-length pageArr reorder exports the pages in the requested order', async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
@@ -694,6 +694,7 @@ describe('Check export for .pdf files.', () => {
     const fullExportSize = fullExportPdf.byteLength;
 
     const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { minPage: 1, maxPage: 2 }));
+    const reorderedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { pageArr: [2, 1, 0] }));
     expect(exportedPdf.byteLength).toBeGreaterThan(1000);
     expect(exportedPdf.byteLength).toBeLessThan(fullExportSize);
 
@@ -734,6 +735,18 @@ describe('Check export for .pdf files.', () => {
 
     const exportedPage0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(exportedPage0Text).not.toContain('Iris (plant)');
+
+    // A full-length reorder of an unmodified document is the case where the export could wrongly pass the source bytes through with the reorder dropped.
+    await doc.clear();
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
+    doc = await scribe.openDocument({ pdfFiles: [reorderedPdf] });
+    doc.ocr.active = doc.ocr.pdf;
+    expect(doc.ocr.active.length, 'a full-length pageArr export keeps every page').toBe(3);
+    expect(doc.ocr.active[0].lines[0].words.map((w) => w.text).join(' '), 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s last page comes first')
+      .toBe('contact only with the non-receptive lower face of the stigma. Thus, an insect bearing pollen from one');
+    expect(doc.ocr.active[2].lines[0].words[0].text, 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s first page comes last').toBe('Iris');
+    expect(doc.ocr.active.map((p) => p.lines.reduce((n, l) => n + l.words.length, 0)), 'each reordered page carries its own text once').toEqual([452, 372, 240]);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();

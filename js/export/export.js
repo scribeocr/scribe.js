@@ -498,7 +498,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // doc.inputData.pageCount shrinks on page deletion, so comparing against it would read a kept leading prefix as identity and pass the deleted pages through.
           const sourcePageCount = doc.images.sources.get(doc.images.primarySourceId)?.sourcePageCount
             || doc.inputData.pageCount;
-          const composed = multiSource || sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < sourcePageCount;
+          // On an unmodified document `sourceArr` equals `pageArr`, so a reorder requested through `pageArr` is detected by comparing with the output index `k`.
+          const composed = multiSource || sourceArr.some((s, k) => s !== k) || pageArr.length < sourcePageCount;
           // [] (not null) makes the writers strip a source's existing /Outlines, but null would preserve them.
           const outlineForOutput = remapOutline(doc.outline || [], pageArrIndexMap(pageArr));
           if (composed) {
