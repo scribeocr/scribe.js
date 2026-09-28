@@ -39,7 +39,7 @@ import {
   buildReplacementPageDict,
   composePageRotation,
   overlayAnnotationBbox,
-  annotLinkTargetsDroppedPage,
+  annotLinkTargetsDroppedPage, writeInheritedPageAttrs,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { buildNameDests } from '../../pdf/parseOutline.js';
@@ -843,7 +843,8 @@ export async function rebuildPdfSubset({
     const pageInfo = pages[i];
     if (modifiedPageObjNums.has(pageInfo.objNum)) continue;
 
-    let pageText = pageInfo.objText;
+    // Must run before composePageRotation, which takes the base /Rotate from the page itself because the new root carries none.
+    let pageText = writeInheritedPageAttrs(pageInfo.objText, pageInfo);
 
     if (/\/Parent\s+\d+\s+\d+\s+R/.test(pageText)) {
       pageText = pageText.replace(/\/Parent\s+\d+\s+\d+\s+R/, `/Parent ${pagesRootObjNum} 0 R`);

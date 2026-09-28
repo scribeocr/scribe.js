@@ -133,9 +133,8 @@ function materializeSourceIds(doc) {
  * Call `materializeSourcePages(doc)` and `materializeSourceIds(doc)` first so the cloned `pageMetrics.sourcePageN`/`sourceId` are concrete.
  * @param {ScribeDoc} doc
  * @param {number} i - Source page index.
- * @returns An independent clone bundle for page `i`.
  */
-function clonePageBundle(doc, i) {
+function snapshotPage(doc, i) {
   // One clone per unique OCR array so aliased layers (e.g. `ocr.active === ocr.pdf`) share a single cloned page.
   const ocrCache = new Map();
   /** @type {Object<string, ?import('../objects/ocrObjects.js').OcrPage>} */
@@ -1007,11 +1006,11 @@ export class ScribeDoc {
   }
 
   /**
-   * Snapshot pages `indices` into independent clone bundles for a later `insertPages` (the clipboard payload of a page copy/cut).
+   * Snapshot pages `indices` for a later `insertPages`.
    * Pure: the document is not mutated apart from materializing `sourcePageN`/`sourceId`.
-   * Returned bundles are fully detached, so the source pages may be edited or deleted before the bundles are pasted.
+   * Returned snapshots are fully detached, so the source pages may be edited or deleted before they are pasted.
    * @param {Array<number>} indices - 0-based page indices to clone, in any order.
-   * @returns {Array<ReturnType<typeof clonePageBundle>>} One clone bundle per valid index, in ascending page order.
+   * @returns {Array<ReturnType<typeof snapshotPage>>} One snapshot per valid index, in ascending page order.
    */
   copyPages(indices) {
     // Copying while a deferred extraction is in flight would snapshot pages without their text,
@@ -1021,21 +1020,21 @@ export class ScribeDoc {
     if (sorted.length === 0) return [];
     materializeSourcePages(this);
     materializeSourceIds(this);
-    return sorted.map((i) => clonePageBundle(this, i));
+    return sorted.map((i) => snapshotPage(this, i));
   }
 
   /**
-   * Insert clone bundles (from `copyPages`) as a contiguous block starting at index `to`, in this document's live page model.
+   * Insert page snapshots as a contiguous block starting at index `to`.
    * Each full-length per-page array is spliced in lockstep.
    * Arrays that are not full-length for this document (e.g. `images.nativeSrc` for a PDF, whose rasters come from the worker via `sourcePageN`) are left untouched,
    * mirroring how delete/move guard on per-array length.
-   * @param {Array<ReturnType<typeof clonePageBundle>>} bundles - Clone bundles from `copyPages`.
+   * @param {Array<ReturnType<typeof snapshotPage>>} snapshots - Page snapshots from `copyPages`.
    * @param {number} to - Insertion index (0..pageMetrics.length).
    */
-  insertPages(bundles, to) {
+  insertPages(snapshots, to) {
     // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
     if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
-    if (!Array.isArray(bundles) || bundles.length === 0) return;
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return;
     this.history.record(() => {
       const prevLen = this.pageMetrics.length;
       const at = Math.max(0, Math.min(to, prevLen));
@@ -1051,40 +1050,40 @@ export class ScribeDoc {
       for (const [engine, arr] of Object.entries(this.ocr)) {
         if (!Array.isArray(arr) || ocrSeen.has(arr)) continue;
         ocrSeen.add(arr);
-        spliceFull(arr, bundles.map((b) => b.ocr[engine] ?? null));
+        spliceFull(arr, snapshots.map((b) => b.ocr[engine] ?? null));
       }
       const rawSeen = new Set();
       for (const [engine, arr] of Object.entries(this.ocrRaw)) {
         if (!Array.isArray(arr) || rawSeen.has(arr)) continue;
         rawSeen.add(arr);
-        spliceFull(arr, bundles.map((b) => b.ocrRaw[engine] ?? ''));
+        spliceFull(arr, snapshots.map((b) => b.ocrRaw[engine] ?? ''));
       }
-      spliceFull(this.pageMetrics, bundles.map((b) => b.pageMetrics));
-      spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
-      spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
-      spliceFull(this.annotations.pages, bundles.map((b) => {
+      spliceFull(this.pageMetrics, snapshots.map((b) => b.pageMetrics));
+      spliceFull(this.layoutRegions.pages, snapshots.map((b) => b.layoutRegions));
+      spliceFull(this.layoutDataTables.pages, snapshots.map((b) => b.layoutDataTables));
+      spliceFull(this.annotations.pages, snapshots.map((b) => {
         // A cross-document paste drops internal links, whose page targets are meaningless in the destination document.
         if (b.srcDocId === this.id || !Array.isArray(b.annotations)) return b.annotations;
         return b.annotations.filter((a) => !(a.type === 'link' && a.dest));
       }));
-      spliceFull(this.contentEdits.pages, bundles.map((b) => b.contentEdits ?? []));
-      spliceFull(this.nativeText.pages, bundles.map((b) => b.nativeText ?? {}));
-      spliceFull(this.fillShapes.pages, bundles.map((b) => b.fillShapes ?? null));
-      spliceFull(this.vis, bundles.map((b) => b.vis));
-      spliceFull(this.ocrTiming, bundles.map((b) => b.ocrTiming));
-      spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
-      spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
-      spliceFull(this.images.pdfDims300, bundles.map((b) => b.pdfDims300));
-      spliceFull(this.inputData.xmlMode, bundles.map((b) => b.xmlMode));
-      spliceFull(this.inputData.pageStats, bundles.map((b) => b.pageStats));
-      spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
-      spliceFull(tags, bundles.map(() => null));
+      spliceFull(this.contentEdits.pages, snapshots.map((b) => b.contentEdits ?? []));
+      spliceFull(this.nativeText.pages, snapshots.map((b) => b.nativeText ?? {}));
+      spliceFull(this.fillShapes.pages, snapshots.map((b) => b.fillShapes ?? null));
+      spliceFull(this.vis, snapshots.map((b) => b.vis));
+      spliceFull(this.ocrTiming, snapshots.map((b) => b.ocrTiming));
+      spliceFull(this.convertPageWarn, snapshots.map((b) => b.convertPageWarn));
+      spliceFull(this.images.nativeSrc, snapshots.map((b) => b.nativeSrc));
+      spliceFull(this.images.pdfDims300, snapshots.map((b) => b.pdfDims300));
+      spliceFull(this.inputData.xmlMode, snapshots.map((b) => b.xmlMode));
+      spliceFull(this.inputData.pageStats, snapshots.map((b) => b.pageStats));
+      spliceFull(this.inputData.ocrApplied, snapshots.map((b) => b.ocrApplied));
+      spliceFull(tags, snapshots.map(() => null));
       remapOutlineByTags(this, tags);
       remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
 
       // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
-      for (const b of bundles) {
+      for (const b of snapshots) {
         const src = b.renderSource;
         if (src && !this.images.sources.has(src.id)) {
           this.images.sources.set(src.id, src);
@@ -1096,7 +1095,7 @@ export class ScribeDoc {
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
       this.images.pageCount = this.pageMetrics.length;
-    }, `Inserted ${bundles.length === 1 ? 'page' : `${bundles.length} pages`}`);
+    }, `Inserted ${snapshots.length === 1 ? 'page' : `${snapshots.length} pages`}`);
   }
 
   /**

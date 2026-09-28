@@ -1286,18 +1286,18 @@ export class ScribeViewer {
   }
 
   /**
-   * Insert clone bundles (from `doc.copyPages`) as a contiguous block at `to`, then rebuild the view once, landing on the first inserted page.
+   * Insert page snapshots as a contiguous block at `to`, then rebuild the view once, landing on the first inserted page.
    * When `removeSourceIndices` is given (a cut), the original source pages are deleted after the insert, with their indices shifted for the pages inserted ahead of them.
-   * @param {Array<object>} bundles - Clone bundles from `doc.copyPages`.
+   * @param {Array<object>} snapshots - Page snapshots from `doc.copyPages`.
    * @param {number} to - Insertion index.
    * @param {{ removeSourceIndices?: Array<number>, keepCurrentPage?: boolean }} [options]
    * @returns {?{ start: number, count: number, cp: number }} The inserted range and the page landed on (`cp`), or `null` if nothing was pasted.
    *   Callers doing an in-place rail splice need `cp` because `state.cp.n` updates asynchronously (the rebuild's `displayPage` is not awaited), so it is stale right after this returns.
    */
-  pastePages(bundles, to, { removeSourceIndices, keepCurrentPage } = {}) {
+  pastePages(snapshots, to, { removeSourceIndices, keepCurrentPage } = {}) {
     if (!this.doc || !this.opt.enablePageEditing) return null;
-    if (!Array.isArray(bundles) || bundles.length === 0) return null;
-    const count = bundles.length;
+    if (!Array.isArray(snapshots) || snapshots.length === 0) return null;
+    const count = snapshots.length;
     const insertAt = Math.max(0, Math.min(to, this.doc.pageMetrics.length));
     // Remember the page in view before the insert shifts indices, so `keepCurrentPage` can stay on the same page.
     const prevCp = this.state.cp.n;
@@ -1311,7 +1311,7 @@ export class ScribeViewer {
     // The inner verbs fold into this outer record via PageHistory's re-entrancy guard.
     // A plain copy has no `shifted`, so this records exactly the one insert.
     this.doc.history.record(() => {
-      this.doc.insertPages(bundles, insertAt);
+      this.doc.insertPages(snapshots, insertAt);
       if (shifted) this.doc.deletePages(shifted);
     });
 

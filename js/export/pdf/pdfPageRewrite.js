@@ -342,6 +342,24 @@ function resolveInheritedNumArray(pageObjText, key, objCache) {
 }
 
 /**
+ * Write a page's inherited /MediaBox, /CropBox and /Rotate into its dictionary text where the dictionary lacks its own.
+ * @param {string} pageText
+ * @param {{ mediaBox?: number[]|null, cropBox?: number[]|null, rotate?: number }} page - Values already resolved up the source's page tree.
+ * @returns {string}
+ */
+export function writeInheritedPageAttrs(pageText, page) {
+  let out = pageText;
+  const add = (/** @type {string} */ key, /** @type {string} */ value) => {
+    if (new RegExp(`/${key}\\b`).test(out)) return;
+    out = out.replace(/<<\s*/, `<</${key}${value} `);
+  };
+  if (page.mediaBox) add('MediaBox', `[${page.mediaBox.join(' ')}]`);
+  if (page.cropBox) add('CropBox', `[${page.cropBox.join(' ')}]`);
+  if (page.rotate) add('Rotate', ` ${page.rotate}`);
+  return out;
+}
+
+/**
  * Resolve an inheritable integer page attribute (/Rotate) up the /Parent chain.
  * @param {string} pageObjText
  * @param {string} key

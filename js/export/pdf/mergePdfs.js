@@ -15,6 +15,7 @@ import {
   FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import { buildOutlineObjects } from './writeOutline.js';
+import { writeInheritedPageAttrs } from './pdfPageRewrite.js';
 
 /**
  * Extract the value of a dict key from PDF dict text.
@@ -184,6 +185,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
         pageText = page.objText;
       }
       pageText = rewriteIndirectRefs(pageText, map);
+      pageText = writeInheritedPageAttrs(pageText, page);
       if (/\/Parent\s+\d+\s+\d+\s+R/.test(pageText)) {
         pageText = pageText.replace(/\/Parent\s+\d+\s+\d+\s+R/, `/Parent ${pagesRootObjNum} 0 R`);
       } else {

@@ -67,6 +67,17 @@ describe('Trailing punctuation across italic/roman style boundaries (070823vanli
     expect(strayFields(doc).page, 'parse-time data was stamped onto OcrPage, so it serializes into every .scribe export').toEqual([]);
   });
 
+  test('A one-page export of the sparse cover re-imports with its text active', async () => {
+    // The cover alone has too little text to pass the verdict's volume thresholds, so the re-import is labeled image-based.
+    // Nothing in its parsed text is invisible, garbled or drawn by a broken font, so the text must still become the active layer.
+    const one = await doc.exportData('pdf', { minPage: 0, maxPage: 0 });
+    const re = await scribe.openDocument({ pdfFiles: [one] });
+    expect(re.ocr.active.length, 'the one-page export of a sparse cover must open with an active text layer').toBe(1);
+    expect(re.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' ')), 'the cover\'s two lines must re-import as the source draws them')
+      .toEqual(['Exhibit 4–Public Version of the', 'Expert Report of Kent Van Liere, Ph.D.']);
+    await re.close();
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -982,7 +993,8 @@ describe('Check that `keepPDFTextAlways` option works.', () => {
     // This PDF is an image-based court document but has a text-native header added by the court system.
     doc = await scribe.openDocument([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
     expect(doc.inputData.pdfType).toBe('image');
-    expect(!!doc.ocr.active[0]?.lines?.length).toBe(false);
+    // The header is the only native text and none of it is invisible, garbled or drawn by a broken font, so it becomes active text even though the document is image-based.
+    expect(doc.ocr.active[0].lines.length, 'the court header of an image-based document must be its active text').toBe(1);
     expect(doc.ocr.pdf[0].lines.length).toBe(1);
   });
 

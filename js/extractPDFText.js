@@ -3,7 +3,7 @@ import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType, applyDocParagraphLayout, promoteContinuationTables } from './pdf/parsePdfDoc.js';
 import { assignPageLineNums } from './import/assignPageLineNums.js';
-import { computeRequiresOCR } from './pdf/ocrPageSelection.js';
+import { computeRequiresOCR, hasBrokenFontRun } from './pdf/ocrPageSelection.js';
 import { findXrefOffset, parseXref, getPageObjects } from './pdf/parsePdfUtils.js';
 import { ObjectCache } from './pdf/objectCache.js';
 
@@ -131,9 +131,15 @@ export async function extractInternalPDFText(doc, options = {}) {
   }
   await Promise.all(fontPromiseArr);
 
+  // An image-based verdict can mean too little text rather than unreadable text.
+  const stats = doc.inputData.pageStats || [];
+  const parsedLayerTrusted = type === 'image'
+    && stats.some((s) => s && (s.printableVis || 0) > 0)
+    && stats.every((s) => !s || ((s.invisibleTextChars || 0) === 0 && (s.control || 0) === 0 && !hasBrokenFontRun(s)));
   const isMainData = !supplemental
     && ((type === 'text' && usePDFText.native.main)
-      || (type === 'ocr' && usePDFText.ocr.main));
+      || (type === 'ocr' && usePDFText.ocr.main)
+      || (parsedLayerTrusted && usePDFText.native.main));
 
   for (let n = 0; n < doc.ocr.pdf.length; n++) {
     if (isMainData && doc.ocr.pdf[n] && doc.pageMetrics[n]) {

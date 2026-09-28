@@ -88,7 +88,7 @@ const panelWidthForCols = (cols, cw) => cols * cw + (cols - 1) * GRID_GAP + PANE
 const pageClipboard = {
   /** @type {'cut'|'copy'|null} What the held pages should do when pasted. */
   mode: null,
-  /** @type {Array<object>} Clone bundles from `doc.copyPages`, detached from the source pages. */
+  /** @type {Array<object>} Page snapshots from `doc.copyPages`. */
   payloads: [],
   /** @type {?number} `doc.id` the pages were taken from. */
   sourceDocId: null,

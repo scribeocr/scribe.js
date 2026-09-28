@@ -47,6 +47,7 @@ import { nativeTextForPage } from '../../js/textEdits.js';
  * @property {Array<EditSnapshot>} undoStack
  * @property {Array<EditSnapshot>} redoStack
  * @property {boolean} composing
+ * @property {string} [fieldColor]
  * @property {?string} [previewInk]
  * @property {?Set<number>} [previewWords] - Word indices of `text` that `previewInk` draws on.
  */
@@ -116,7 +117,6 @@ export function createLineEditor(scribe, {
   let caretBlinkOn = true;
   /** @type {?number} */
   let blinkTimer = null;
-  // The editing field draws only while a session is live, never on the lingering post-close canvas.
   let fieldOn = false;
 
   /**
@@ -402,7 +402,7 @@ export function createLineEditor(scribe, {
     cx.clearRect(0, 0, canvas.width, canvas.height);
     cx.setTransform(st.scale, 0, 0, st.scale, -st.box.left * st.scale, -st.box.top * st.scale);
     cx.textBaseline = 'alphabetic';
-    if (fieldOn && xs.length > 0) {
+    if (xs.length > 0) {
       let left = Infinity;
       let right = -Infinity;
       let top = Infinity;
@@ -417,23 +417,33 @@ export function createLineEditor(scribe, {
       const dpr = window.devicePixelRatio || 1;
       // The band and 2-unit pad match the mode's line boxes, so the field lands exactly where the hairline sat.
       const pad = 2;
-      const radius = (3 * dpr) / st.scale;
+      const fieldColor = st.fieldColor || '#ffffff';
       cx.save();
       cx.beginPath();
-      if (cx.roundRect) cx.roundRect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad, radius);
-      else cx.rect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad);
-      // Canvas ignores the transform for shadow blur and offset, so these hold a constant screen size at any zoom.
-      cx.shadowColor = 'rgba(20, 30, 60, 0.22)';
-      cx.shadowBlur = 5 * dpr;
-      cx.shadowOffsetY = dpr;
-      cx.fillStyle = '#ffffff';
-      cx.fill();
-      cx.shadowColor = 'rgba(0, 0, 0, 0)';
-      cx.shadowBlur = 0;
-      cx.shadowOffsetY = 0;
-      cx.strokeStyle = '#c9d2de';
-      cx.lineWidth = dpr / st.scale;
-      cx.stroke();
+      if (fieldOn) {
+        const radius = (3 * dpr) / st.scale;
+        if (cx.roundRect) cx.roundRect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad, radius);
+        else cx.rect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad);
+        // Canvas ignores the transform for shadow blur and offset, so these hold a constant screen size at any zoom.
+        cx.shadowColor = 'rgba(20, 30, 60, 0.22)';
+        cx.shadowBlur = 5 * dpr;
+        cx.shadowOffsetY = dpr;
+        cx.fillStyle = fieldColor;
+        cx.fill();
+        cx.shadowColor = 'rgba(0, 0, 0, 0)';
+        cx.shadowBlur = 0;
+        cx.shadowOffsetY = 0;
+        const fieldLum = (parseInt(fieldColor.slice(1, 3), 16) * 299 + parseInt(fieldColor.slice(3, 5), 16) * 587 + parseInt(fieldColor.slice(5, 7), 16) * 114) / 1000;
+        cx.strokeStyle = fieldLum < 128 ? 'rgba(255, 255, 255, 0.35)' : '#c9d2de';
+        cx.lineWidth = dpr / st.scale;
+        cx.stroke();
+      } else {
+        // After close or commit this canvas lingers until the page's refreshed raster attaches.
+        // The fill covers the line's old text, which the raster beneath may still draw.
+        cx.rect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad);
+        cx.fillStyle = fieldColor;
+        cx.fill();
+      }
       cx.restore();
     }
     const sel = selRange();
@@ -1237,6 +1247,39 @@ export function createLineEditor(scribe, {
     group.appendChild(canvas);
     document.body.appendChild(hiddenInput);
 
+    // The median of the four sides ignores a rule or a glyph that one sample lands on.
+    let fieldColor = '#ffffff';
+    if (rasterEl && rasterEl.width > 0) {
+      const rctx = rasterEl.getContext('2d');
+      const rrect = rasterEl.getBoundingClientRect();
+      if (rctx && rrect.width > 0 && rrect.height > 0) {
+        const rkx = rasterEl.width / rrect.width;
+        const rky = rasterEl.height / rrect.height;
+        const midY = (line.bbox.top + line.bbox.bottom) / 2;
+        const midX = (line.bbox.left + line.bbox.right) / 2;
+        const m = Math.max(6, sfSize * 0.5);
+        /** @type {Array<[number, number, number]>} */
+        const samples = [];
+        for (const [lx, ly] of [[line.bbox.left - m, midY], [line.bbox.right + m, midY], [midX, line.bbox.top - m], [midX, line.bbox.bottom + m]]) {
+          const ax = rr.left + lx * guxR;
+          const ay = rr.top + ly * guyR;
+          const sx = q === 0 ? ax : q === 1 ? -ay : q === 2 ? -ax : ay;
+          const sy = q === 0 ? ay : q === 1 ? ax : q === 2 ? -ay : -ax;
+          const px = Math.round((sx - rrect.left) * rkx);
+          const py = Math.round((sy - rrect.top) * rky);
+          if (px < 0 || py < 0 || px >= rasterEl.width || py >= rasterEl.height) continue;
+          try {
+            const d = rctx.getImageData(px, py, 1, 1).data;
+            if (d[3] > 0) samples.push([d[0], d[1], d[2]]);
+          } catch { samples.length = 0; break; }
+        }
+        if (samples.length > 0) {
+          const med = (/** @type {number} */ i) => samples.map((s) => s[i]).sort((a, b) => a - b)[Math.floor(samples.length / 2)];
+          fieldColor = `#${[med(0), med(1), med(2)].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+        }
+      }
+    }
+
     st = {
       line,
       n,
@@ -1263,6 +1306,7 @@ export function createLineEditor(scribe, {
       undoStack: [],
       redoStack: [],
       composing: false,
+      fieldColor,
     };
 
     const pt = clientX != null && clientY != null ? scribe.textSel?.pointAt?.(clientX, clientY) : null;
