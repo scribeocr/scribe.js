@@ -2617,6 +2617,8 @@ export class ScribeViewer {
       for (const p of windowArr) {
         if (!inDoc(p)) continue;
         if (refresh || !this.textGroupsRenderIndices.includes(p)) {
+          // A refresh can follow an in-place edit of the page's words (a merge, a split), which the index's page-identity check cannot see.
+          if (refresh && this.useCustomSelection && this.textSel) this.textSel.invalidatePage(p);
           await this.renderWords(p);
         }
       }

@@ -1,5 +1,5 @@
 import scribe from '../../scribe.js';
-import { UiText } from './viewerWordObjects.js';
+import { UiText, UiOcrWord } from './viewerWordObjects.js';
 
 /**
  * Custom text selection for the read-only viewer, with no text in the DOM.
@@ -1178,13 +1178,15 @@ export class TextSelection {
         // A double-click captures the word to arm in-place editing, which `_onDragEnd` opens.
         const editWord = (UiText.enableEditing && this._lastDown.count === 2 && !event.altKey)
           ? this.wordAt(event.clientX, event.clientY) : null;
+        const clickWord = (UiText.enableEditing && this._lastDown.count === 1 && !event.altKey && !event.shiftKey)
+          ? this.wordAt(event.clientX, event.clientY) : null;
         // Shift-click extends from the far end of the existing selection rather than restarting it.
         let anchor = point;
         if (event.shiftKey && this.range && this.range.kind === 'linear') {
           anchor = cmpPoint(point, this.range.start) < 0 ? this.range.end : this.range.start;
         }
         this._drag = {
-          anchor, granularity, pointerId: event.pointerId, box: null, editWord, linkArm,
+          anchor, granularity, pointerId: event.pointerId, box: null, editWord, clickWord, linkArm,
         };
         this._setLinear(anchor, point, granularity);
       }
@@ -1272,9 +1274,22 @@ export class TextSelection {
   _onDragEnd(event) {
     if (!this._drag || event.pointerId !== this._drag.pointerId) return;
     const editWord = this._drag.editWord;
+    const clickWord = this._drag.clickWord;
     const linkArm = this._drag.linkArm;
     const wasTouch = !!this._drag.touch;
     this._endDrag();
+    // A click on a word in Proof mode selects the word, the unit the mode's editing verbs and readings list act on.
+    if (clickWord && !linkArm && event.type === 'pointerup' && this.isEmpty()) {
+      const kwUp = this.wordAt(event.clientX, event.clientY);
+      if (kwUp && kwUp.word === clickWord.word) {
+        this.clear();
+        this.viewer.destroyControls(true);
+        this.viewer.CanvasSelection.addWords(kwUp);
+        UiOcrWord.addControls(kwUp);
+        kwUp.select();
+        UiOcrWord.updateUI();
+      }
+    }
     // A touch drag ending on a non-empty selection opens its action callout.
     if (wasTouch && !this.isEmpty()) this.viewer._touchCalloutShow?.('selection');
     // A double-click's edit opens from the RELEASE, the moment a native `dblclick` fires and users are calibrated to.
