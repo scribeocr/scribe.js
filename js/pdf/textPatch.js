@@ -417,6 +417,7 @@ export function glyphVisible(op, src) {
 /**
  * Positions along and across the text axis of a glyph's operator, in the parse's pixels.
  * They place every glyph the streams drew on that one axis, including the glyphs the parse dropped and the rotated survivors it remapped into a frame of their own.
+ * `alongAt` and `perpAt` place a `drawnPen` point.
  * @param {GlyphOpMap} glyphOpMap
  * @param {PositionedChar} c0 - The glyph whose operator gives the axis.
  */
@@ -428,17 +429,27 @@ function penAxis(glyphOpMap, c0) {
   const ux = ax / len;
   const uy = ay / len;
   const px = glyphOpMap.scale;
+  const alongAt = (/** @type {number} */ x, /** @type {number} */ y) => (x * ux + y * uy) * px;
+  const perpAt = (/** @type {number} */ x, /** @type {number} */ y) => (y * ux - x * uy) * px;
   return {
+    alongAt,
+    perpAt,
     along: (/** @type {PositionedChar} */ c) => {
       const [x, y] = drawnPen(glyphOpMap.ops[c._src.op], c._src.tx, c._src.ty);
-      return (x * ux + y * uy) * px;
+      return alongAt(x, y);
     },
     perp: (/** @type {PositionedChar} */ c) => {
       const [x, y] = drawnPen(glyphOpMap.ops[c._src.op], c._src.tx, c._src.ty);
-      return (y * ux - x * uy) * px;
+      return perpAt(x, y);
     },
   };
 }
+
+/**
+ * Each map's stream-drawn glyphs by text, each with its `drawnPen` point.
+ * @type {WeakMap<GlyphOpMap, { count: number, byText: Map<string, Array<{ glyph: PositionedChar, x: number, y: number }>> }>}
+ */
+const glyphsByText = new WeakMap();
 
 /**
  * The glyphs the streams drew as copies of `c`, `c` itself among them.
@@ -449,22 +460,39 @@ function penAxis(glyphOpMap, c0) {
  */
 export const glyphCopies = (glyphOpMap, c) => {
   if (!c._src) return [c];
-  const { along, perp } = penAxis(glyphOpMap, c);
+  let index = glyphsByText.get(glyphOpMap);
+  if (!index || index.count !== glyphOpMap.glyphs.length) {
+    /** @type {Map<string, Array<{ glyph: PositionedChar, x: number, y: number }>>} */
+    const byText = new Map();
+    for (const g of glyphOpMap.glyphs) {
+      if (!g._src) continue;
+      const [x, y] = drawnPen(glyphOpMap.ops[g._src.op], g._src.tx, g._src.ty);
+      const entry = { glyph: g, x, y };
+      const list = byText.get(g.text);
+      if (list) list.push(entry);
+      else byText.set(g.text, [entry]);
+    }
+    index = { count: glyphOpMap.glyphs.length, byText };
+    glyphsByText.set(glyphOpMap, index);
+  }
+  const candidates = index.byText.get(c.text);
+  if (!candidates) return [];
+  const {
+    along, perp, alongAt, perpAt,
+  } = penAxis(glyphOpMap, c);
   const a0 = along(c);
   const p0 = perp(c);
-  return glyphOpMap.glyphs.filter((g) => {
-    if (!g._src) return false;
+  return candidates.filter(({ glyph: g, x, y }) => {
     if (g === c) return true;
-    if (g.text !== c.text) return false;
     const size = Math.max(c.fontSize, g.fontSize);
-    if (Math.abs(perp(g) - p0) > Math.max(3.5, 0.2 * size)) return false;
-    const d = along(g) - a0;
+    if (Math.abs(perpAt(x, y) - p0) > Math.max(3.5, 0.2 * size)) return false;
+    const d = alongAt(x, y) - a0;
     if (Math.abs(d) <= Math.max(3.5, 0.1 * size)) return true;
     // A stroke pass drawn at a wider, offset position under its fill also counts as a copy, as the page parse merges it.
     if (Math.abs(c.fontSize - g.fontSize) >= 0.05 * size) return false;
     const overlap = Math.min(c.width, d + g.width) - Math.max(0, d);
     return overlap > 0.5 * Math.min(c.width, g.width);
-  });
+  }).map((e) => e.glyph);
 };
 
 /**
@@ -485,26 +513,25 @@ export function fontCodeTable(fontObj, glyphOpMap, drawable) {
   };
   /** @type {Map<string, FontCode>} */
   const table = new Map();
-  /** @type {Map<string, number>} */
+  /** @type {Map<string, Map<number, number>>} */
   const counts = new Map();
   for (const g of glyphOpMap.glyphs) {
     if (g._font !== fontObj || !g._src || !g.text || g.invisible) continue;
-    const key = `${g.text}\u0000${g._charCode}`;
-    counts.set(key, (counts.get(key) || 0) + 1);
+    let byCode = counts.get(g.text);
+    if (!byCode) { byCode = new Map(); counts.set(g.text, byCode); }
+    byCode.set(g._charCode, (byCode.get(g._charCode) || 0) + 1);
   }
-  /** @type {Map<string, number>} */
-  const best = new Map();
-  for (const [key, n] of counts) {
-    const sep = key.lastIndexOf('\u0000');
-    const text = key.slice(0, sep);
-    const code = Number(key.slice(sep + 1));
-    if ((best.get(text) || 0) >= n) continue;
-    const advEm = advEmOf(code);
-    if (!(advEm >= 0)) continue;
-    best.set(text, n);
-    table.set(text, {
-      code, nBytes: codeBytes(fontObj, code), advEm, used: true,
-    });
+  for (const [text, byCode] of counts) {
+    let best = 0;
+    for (const [code, n] of byCode) {
+      if (best >= n) continue;
+      const advEm = advEmOf(code);
+      if (!(advEm >= 0)) continue;
+      best = n;
+      table.set(text, {
+        code, nBytes: codeBytes(fontObj, code), advEm, used: true,
+      });
+    }
   }
   // A zero declared width on a non-blank map-derived code means the subset never drew its glyph, so that text gets no code.
   const addMap = (/** @type {?Map<number, string>} */ map) => {
@@ -754,18 +781,26 @@ export function planTextEdit(glyphOpMap, req) {
         return a.length === 0;
       };
       const PAD = 40;
+      const perp0 = perp(visible[0]);
       for (const [id, chars] of glyphOpMap.words) {
         if (locatedIds.has(id) || twinIds.includes(id) || chars.length === 0) continue;
-        const wText = chars.map((c) => fold(c.text)).join('');
-        if (wText.length < 3) continue;
-        const a0 = Math.min(...chars.map((c) => along(c)));
-        const a1 = Math.max(...chars.map((c) => along(c) + (c.width || 0)));
+        let maxSize = -Infinity;
+        for (const c of chars) maxSize = Math.max(maxSize, c.fontSize);
+        const tol = Math.max(3, 0.5 * maxSize);
         const p0 = perp(chars[0]);
-        const tol = Math.max(3, 0.5 * Math.max(...chars.map((c) => c.fontSize)));
-        if (Math.abs(p0 - perp(visible[0])) > tol) continue;
+        if (Math.abs(p0 - perp0) > tol) continue;
+        let a0 = Infinity;
+        let a1 = -Infinity;
+        for (const c of chars) {
+          const v = along(c);
+          a0 = Math.min(a0, v);
+          a1 = Math.max(a1, v + (c.width || 0));
+        }
         let under = 0;
         for (const [s0, s1] of spans) under += Math.max(0, Math.min(a1, s1) - Math.max(a0, s0));
         if (!(a1 > a0) || under < 0.6 * (a1 - a0)) continue;
+        const wText = chars.map((c) => fold(c.text)).join('');
+        if (wText.length < 3) continue;
         const winText = delChars.filter((d) => d.a >= a0 - PAD && d.a <= a1 + PAD && Math.abs(d.p - p0) <= tol).map((d) => d.u).join('');
         if (winText.length === 0) continue;
         const [lo, hi] = wText.length <= winText.length ? [wText, winText] : [winText, wText];
@@ -800,24 +835,33 @@ export function planTextEdit(glyphOpMap, req) {
       const act = actionOf(c);
       if (act) act.drop = true;
     }
+    /** @type {Map<number, Map<number, [number, number]>>} */
+    const dropRanges = new Map();
     for (const [opIdx, p] of plans) {
       /** @type {Map<number, [number, number]>} */
       const byElem = new Map();
       for (const key of p.actions.keys()) {
-        const [e, bt] = key.split(':').map(Number);
-        const r = byElem.get(e) || [Infinity, -Infinity];
-        byElem.set(e, [Math.min(r[0], bt), Math.max(r[1], bt)]);
+        const sep = key.indexOf(':');
+        const e = Number(key.slice(0, sep));
+        const bt = Number(key.slice(sep + 1));
+        const r = byElem.get(e);
+        if (!r) byElem.set(e, [bt, bt]);
+        else { r[0] = Math.min(r[0], bt); r[1] = Math.max(r[1], bt); }
       }
-      for (const ch of glyphOpMap.glyphs) {
-        if (!ch._src || ch._src.op !== opIdx) continue;
-        const r = byElem.get(ch._src.elem);
-        if (!r || ch._src.byte < r[0] || ch._src.byte > r[1]) continue;
-        const key = keyOf(ch);
-        if (p.actions.has(key) || ch.text.trim() !== '') continue;
-        p.pens.set(key, [ch._src.tx, ch._src.ty, ch._src.adv]);
-        p.actions.set(key, { drop: true });
-        goneSet.add(ch);
-      }
+      dropRanges.set(opIdx, byElem);
+    }
+    for (const ch of glyphOpMap.glyphs) {
+      if (!ch._src) continue;
+      const byElem = dropRanges.get(ch._src.op);
+      if (!byElem) continue;
+      const r = byElem.get(ch._src.elem);
+      if (!r || ch._src.byte < r[0] || ch._src.byte > r[1]) continue;
+      const p = /** @type {OpPlan} */ (plans.get(ch._src.op));
+      const key = keyOf(ch);
+      if (p.actions.has(key) || ch.text.trim() !== '') continue;
+      p.pens.set(key, [ch._src.tx, ch._src.ty, ch._src.adv]);
+      p.actions.set(key, { drop: true });
+      goneSet.add(ch);
     }
     registerOps();
     return none;
@@ -1444,7 +1488,12 @@ export function editsFromPlans(glyphOpMap, plans) {
  * @param {PositionedChar} c
  */
 export function charStateKey(c) {
-  const col = c.textColor ? c.textColor.map((v) => Math.round(v * 1000)).join(',') : '';
-  const stroke = c.renderMode ? `${c.renderMode}:${Math.round((c.strokeWidthPx || 0) * 100)}:${(c.strokeColor || []).map((v) => Math.round(v * 1000)).join(',')}` : '';
-  return [c.text, c._font?.fontObjNum ?? '', col, stroke, typeof c.alpha === 'number' ? Math.round(c.alpha * 1000) : 1000, c.invisible ? 1 : 0].join('|');
+  let col = '';
+  if (c.textColor) for (let i = 0; i < c.textColor.length; i++) col += (i > 0 ? ',' : '') + Math.round(c.textColor[i] * 1000);
+  let stroke = '';
+  if (c.renderMode) {
+    stroke = `${c.renderMode}:${Math.round((c.strokeWidthPx || 0) * 100)}:`;
+    if (c.strokeColor) for (let i = 0; i < c.strokeColor.length; i++) stroke += (i > 0 ? ',' : '') + Math.round(c.strokeColor[i] * 1000);
+  }
+  return `${c.text}|${c._font?.fontObjNum ?? ''}|${col}|${stroke}|${typeof c.alpha === 'number' ? Math.round(c.alpha * 1000) : 1000}|${c.invisible ? 1 : 0}`;
 }
