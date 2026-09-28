@@ -1141,3 +1141,76 @@ export function scopeDictKeys(text) {
     has: (key) => byKey.has(key),
   };
 }
+
+/**
+ *
+ * @param {string} inner
+ * @param {string} key  e.g. '/Font' or '/ExtGState'
+ * @param {string} newEntries
+ * @param {?import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @param {?(dictBody: string) => string} [filterInner] - Applied to the existing dict's body before the merge.
+ *   A dict that cannot be resolved is left unfiltered, so its entries survive.
+ */
+function mergeResourceKey(inner, key, newEntries, objCache, filterInner = null) {
+  if (!newEntries && !filterInner) return inner;
+  const idx = findTopLevelKeyIndex(inner, key);
+  // Use a newline (not just a space) before any appended/spliced content so a trailing
+  // `%` line-comment in `inner` doesn't swallow our content.
+  // Same reason we put a newline before the closing `>>` we synthesise.
+  if (idx < 0) return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
+  let p = idx + key.length;
+  while (p < inner.length && /\s/.test(inner[p])) p++;
+  if (inner.startsWith('<<', p)) {
+    const dict = extractDict(inner, p);
+    const body = filterInner ? filterInner(dict.slice(2, -2)) : dict.slice(2, -2);
+    const merged = `<<${body}\n${newEntries}\n>>`;
+    return inner.slice(0, p) + merged + inner.slice(p + dict.length);
+  }
+  const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
+  if (refMatch && objCache) {
+    const resolved = objCache.getObjectText(Number(refMatch[1]));
+    if (resolved) {
+      // Resolved object text may be just the dict body or wrapped — strip
+      // any surrounding `<< >>` and splice into our inline dict.
+      const trimmed = resolved.trim();
+      let inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
+        ? trimmed.slice(2, -2).trim()
+        : trimmed;
+      if (filterInner) inner2 = filterInner(inner2);
+      const merged = `<<${inner2}\n${newEntries}\n>>`;
+      return inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length);
+    }
+  }
+  // Couldn't resolve — leave the original slot alone and append a duplicate
+  // key. PDF readers honor the last entry for duplicate keys, so the new
+  // (overlay) fonts/ExtGStates win.
+  return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
+}
+
+/**
+ * @param {string} existingDict
+ * @param {string} overlayFontsStr
+ * @param {string} overlayExtGStateStr
+ * @param {?import('../../pdf/objectCache.js').ObjectCache} [objCache=null]
+ * @param {string} [overlayXObjectsStr='']
+ * @param {?Set<string>} [dropXObjectNames=null] - Image names to remove from the /XObject dict.
+ *   A name still drawn by a surviving placement must not appear here.
+ */
+export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '', dropXObjectNames = null) {
+  let inner = existingDict.slice(2, -2).trim();
+  inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
+  inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
+  const dropFilter = dropXObjectNames && dropXObjectNames.size > 0
+    ? (/** @type {string} */ body) => {
+      let out = body;
+      for (const name of dropXObjectNames) {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(`/${escaped}\\s+\\d+\\s+\\d+\\s+R`, 'g'), '');
+      }
+      return out;
+    }
+    : null;
+  inner = mergeResourceKey(inner, '/XObject', overlayXObjectsStr, objCache, dropFilter);
+  // Newline before `>>` so any trailing `%` line-comment in `inner` ends before the close.
+  return `<<${inner}\n>>`;
+}

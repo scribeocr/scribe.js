@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { base14ToBundledFont, cssFamilyToBundledFont } from '../../js/pdf/fonts/base14Substitution.js';
+import { base14ToBuiltInFont, cssFamilyToBuiltInFont } from '../../js/pdf/fonts/base14Substitution.js';
 import { normalizeBase14Name } from '../../js/pdf/fonts/standardFontMetrics.js';
 import { ca } from '../../js/canvasAdapter.js';
 import { renderPdfPage } from '../_renderPdfPage.js';
@@ -67,9 +67,9 @@ describe('normalizeBase14Name', () => {
   });
 });
 
-describe('base14ToBundledFont', () => {
+describe('base14ToBuiltInFont', () => {
   test('maps Courier family to NimbusMono', () => {
-    const sub = base14ToBundledFont('Courier');
+    const sub = base14ToBuiltInFont('Courier');
     expect(sub.family).toBe('NimbusMono');
     expect(sub.variant).toBe('Regular');
     expect(sub.alias).toBe('_scribe_nimbusmono_regular');
@@ -78,7 +78,7 @@ describe('base14ToBundledFont', () => {
   });
 
   test('maps Courier-BoldOblique to NimbusMono-BoldItalic', () => {
-    const sub = base14ToBundledFont('Courier-BoldOblique');
+    const sub = base14ToBuiltInFont('Courier-BoldOblique');
     expect(sub.family).toBe('NimbusMono');
     expect(sub.variant).toBe('BoldItalic');
     expect(sub.alias).toBe('_scribe_nimbusmono_bolditalic');
@@ -87,66 +87,66 @@ describe('base14ToBundledFont', () => {
   });
 
   test('maps Helvetica family to NimbusSans', () => {
-    expect(base14ToBundledFont('Helvetica').family).toBe('NimbusSans');
-    expect(base14ToBundledFont('Helvetica-Bold').variant).toBe('Bold');
-    expect(base14ToBundledFont('Helvetica-Oblique').variant).toBe('Italic');
+    expect(base14ToBuiltInFont('Helvetica').family).toBe('NimbusSans');
+    expect(base14ToBuiltInFont('Helvetica-Bold').variant).toBe('Bold');
+    expect(base14ToBuiltInFont('Helvetica-Oblique').variant).toBe('Italic');
   });
 
   test('maps Times family to NimbusRoman', () => {
-    expect(base14ToBundledFont('Times-Roman').family).toBe('NimbusRoman');
-    expect(base14ToBundledFont('Times-Bold').variant).toBe('Bold');
-    expect(base14ToBundledFont('Times-Italic').variant).toBe('Italic');
-    expect(base14ToBundledFont('Times-BoldItalic').variant).toBe('BoldItalic');
+    expect(base14ToBuiltInFont('Times-Roman').family).toBe('NimbusRoman');
+    expect(base14ToBuiltInFont('Times-Bold').variant).toBe('Bold');
+    expect(base14ToBuiltInFont('Times-Italic').variant).toBe('Italic');
+    expect(base14ToBuiltInFont('Times-BoldItalic').variant).toBe('BoldItalic');
   });
 
   test('maps Symbol to StandardSymbolsPS without variant', () => {
-    const sub = base14ToBundledFont('Symbol');
+    const sub = base14ToBuiltInFont('Symbol');
     expect(sub.family).toBe('StandardSymbolsPS');
     expect(sub.variant).toBe(null);
     expect(sub.alias).toBe('_scribe_standardsymbolsps');
   });
 
   test('maps ZapfDingbats to Dingbats without variant', () => {
-    const sub = base14ToBundledFont('ZapfDingbats');
+    const sub = base14ToBuiltInFont('ZapfDingbats');
     expect(sub.family).toBe('Dingbats');
     expect(sub.variant).toBe(null);
     expect(sub.alias).toBe('_scribe_dingbats');
   });
 
   test('honors bold/italic hints for alias names with no style suffix', () => {
-    const sub = base14ToBundledFont('ArialMT', { bold: true });
+    const sub = base14ToBuiltInFont('ArialMT', { bold: true });
     expect(sub.variant).toBe('Bold');
     expect(sub.faceWeight).toBe('bold');
   });
 
   test('returns null for non-Base14 fonts', () => {
-    expect(base14ToBundledFont('Roboto')).toBe(null);
-    expect(base14ToBundledFont('Garamond')).toBe(null);
+    expect(base14ToBuiltInFont('Roboto')).toBe(null);
+    expect(base14ToBuiltInFont('Garamond')).toBe(null);
   });
 });
 
-describe('cssFamilyToBundledFont', () => {
+describe('cssFamilyToBuiltInFont', () => {
   test('maps sans-serif CSS family to NimbusSans', () => {
-    const sub = cssFamilyToBundledFont('Verdana, Tahoma, sans-serif');
+    const sub = cssFamilyToBuiltInFont('Verdana, Tahoma, sans-serif');
     expect(sub.family).toBe('NimbusSans');
     expect(sub.variant).toBe('Regular');
   });
 
   test('maps serif CSS family to NimbusRoman', () => {
-    const sub = cssFamilyToBundledFont('Garamond, "Liberation Serif", serif', { bold: true });
+    const sub = cssFamilyToBuiltInFont('Garamond, "Liberation Serif", serif', { bold: true });
     expect(sub.family).toBe('NimbusRoman');
     expect(sub.variant).toBe('Bold');
   });
 
   test('returns null for monospace/cursive/empty', () => {
-    expect(cssFamilyToBundledFont('Courier, monospace')).toBe(null);
-    expect(cssFamilyToBundledFont('cursive')).toBe(null);
-    expect(cssFamilyToBundledFont(null)).toBe(null);
-    expect(cssFamilyToBundledFont('')).toBe(null);
+    expect(cssFamilyToBuiltInFont('Courier, monospace')).toBe(null);
+    expect(cssFamilyToBuiltInFont('cursive')).toBe(null);
+    expect(cssFamilyToBuiltInFont(null)).toBe(null);
+    expect(cssFamilyToBuiltInFont('')).toBe(null);
   });
 });
 
-describe.runIf(isNode)('Non-embedded Base14 fonts register bundled substitutes when rendered', () => {
+describe.runIf(isNode)('Non-embedded Base14 fonts register built-in substitutes when rendered', () => {
   test('Courier (non-embedded) → NimbusMono-Regular', async () => {
     await renderPdfPage(buildHelloWorldPdf('Courier'), 0);
     const registered = new Set();

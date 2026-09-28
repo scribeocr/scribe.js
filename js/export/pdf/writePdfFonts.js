@@ -136,10 +136,22 @@ const generateFontFlags = (serif, italic, smallcap, symbolic) => {
  * @param {boolean} italic
  * @param {?number} embeddedObjIndex - Index for embedded font file PDF object.
  *  If not provided, the font will not be embedded in the PDF.
+ * @param {?{ascent: number, descent: number}} [metrics] - Ascent and descent to declare instead of the program's own, per 1000 em.
  * @returns {string} The font descriptor object string.
  */
-function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
-  let objOut = `${String(objIndex)} 0 obj\n<</Type/FontDescriptor`;
+function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null, metrics = null) {
+  return `${String(objIndex)} 0 obj\n${fontDescriptorDict(font, italic, embeddedObjIndex, metrics)}\nendobj\n\n`;
+}
+
+/**
+ * The font descriptor dictionary of a font, without the object wrapper.
+ * @param {opentypeFont} font
+ * @param {boolean} italic
+ * @param {?number} embeddedObjIndex - Object number of the embedded font file, or null for a font that is not embedded.
+ * @param {?{ascent: number, descent: number}} [metrics] - Ascent and descent to declare instead of the program's own, per 1000 em.
+ */
+function fontDescriptorDict(font, italic, embeddedObjIndex, metrics = null) {
+  let objOut = '<</Type/FontDescriptor';
 
   const namesTable = font.names.windows || font.names;
 
@@ -166,9 +178,9 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
     objOut += '/ItalicAngle 0';
   }
 
-  objOut += `/Ascent ${String(font.ascender)}`;
+  objOut += `/Ascent ${String(metrics ? metrics.ascent : font.ascender)}`;
 
-  objOut += `/Descent ${String(font.descender)}`;
+  objOut += `/Descent ${String(metrics ? metrics.descent : font.descender)}`;
 
   // StemV is a required field, however it is not already in the opentype font, and does not appear to matter.
   // Therefore, we set to 0.08 * em to mimic the behavior of other programs.
@@ -182,16 +194,11 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
 
   objOut += `/Flags ${String(generateFontFlags(serif, italic, false, symbolic))}`;
 
-  if (embeddedObjIndex === null || embeddedObjIndex === undefined) {
-    objOut += '>>\nendobj\n\n';
-    return objOut;
-  }
+  if (embeddedObjIndex === null || embeddedObjIndex === undefined) return `${objOut}>>`;
 
   objOut += `/FontFile3 ${String(embeddedObjIndex)} 0 R`;
 
-  objOut += '>>\nendobj\n\n';
-
-  return objOut;
+  return `${objOut}>>`;
 }
 
 /**
@@ -272,105 +279,99 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
 }
 
 /**
- * Converts an Opentype.js font object into an array of PDF objects representing a composite Type 0 font.
- *
+ * The six objects of an embedded composite Type 0 font, before encoding.
+ * They are, in object-number order from `firstObjIndex`: the Type0 dict, the FontDescriptor, the `/W` widths, the FontFile, the CIDFont dict and the ToUnicode CMap.
+ * A slot is null when the font shares that object with a base font.
  * @param {Object} options
  * @param {opentypeFont} options.font
  * @param {number} options.firstObjIndex
  * @param {boolean} [options.italic=false]
- * @param {boolean} [options.humanReadable=false] - If true, emit the font file as ASCII-hex and the ToUnicode CMap uncompressed, for debugging.
  * @param {Map<number, string>} [options.toUnicodeOverride] - Per-GID ToUnicode override.
  *   Values may be multi-codepoint strings (e.g. "fi" for a ligature).
  *   GIDs absent from the map fall back to `glyph.unicode`.
  * @param {number} [options.widthScale=1] - Advance-width multiplier for a width-scaled variant.
  * @param {number} [options.baseDescriptorObjN] - For a width-scaled variant, the object number of the base font's shared FontDescriptor.
- * @param {number} [options.baseToUnicodeObjN] - For a width-scaled variant, the object number of the base font's shared ToUnicode CMap.
+ * @param {number} [options.baseToUnicodeObjN] - The object number of a base font's shared ToUnicode CMap.
+ * @param {number} [options.baseWidthsObjN] - The object number of a base font's shared `/W` array.
+ * @param {number} [options.baseFontFileObjN] - The object number of a base font's shared FontFile.
  * @param {ArrayBuffer|Uint8Array} [options.rawFontBytes] - Embed these bytes verbatim as the font file instead of re-serializing `font`.
  *   Used for edited native text, where the embedded program must be byte-identical to the one the renderer rasterizes with.
- * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject | null>>}
+ * @param {?{ascent: number, descent: number}} [options.metrics] - Ascent and descent to declare in the descriptor instead of the program's own, per 1000 em.
+ * @returns {Array<?({ text: string } | { stream: string | Uint8Array, dictExtras: string })>}
+ *   `text` is a non-stream object's body.
+ *   A stream object carries its data and the dictionary entries that go beside the `/Length` and `/Filter` the encoder writes.
  */
-export async function createEmbeddedFontType0({
-  font, firstObjIndex, italic = false, humanReadable = false, toUnicodeOverride,
-  widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN, rawFontBytes,
+export function type0FontObjectParts({
+  font, firstObjIndex, italic = false, toUnicodeOverride,
+  widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN, baseWidthsObjN, baseFontFileObjN, rawFontBytes, metrics = null,
 }) {
-  // A width-scaled variant shares the base font's FontDescriptor (+1), FontFile (+3), and ToUnicode (+5) instead of re-embedding them.
-  // It emits only the Type0 dict (+0), the scaled `/W` (+2), and the CIDFont dict (+4),
-  // returning null for the three shared slots (callers write a free xref entry for each).
-  const variantMode = !!baseDescriptorObjN;
-  const descriptorObjN = variantMode ? baseDescriptorObjN : firstObjIndex + 1;
-  const toUnicodeObjN = variantMode ? baseToUnicodeObjN : firstObjIndex + 5;
-
-  // Start 1st object: Font Dictionary
-  let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type0`;
+  const descriptorObjN = baseDescriptorObjN || firstObjIndex + 1;
+  const widthsObjN = baseWidthsObjN || firstObjIndex + 2;
+  const fontFileObjN = baseFontFileObjN || firstObjIndex + 3;
+  const toUnicodeObjN = baseToUnicodeObjN || firstObjIndex + 5;
 
   // The relevant table is sometimes but not always in a property named `windows`.
   const namesTable = font.names.windows || font.names;
+  const postScriptName = namesTable.postScriptName.en;
 
-  // Add font name
-  fontDictObjStr += `/BaseFont/${namesTable.postScriptName.en}`;
+  const type0 = { text: `<</Type/Font/Subtype/Type0/BaseFont/${postScriptName}/Encoding/Identity-H/ToUnicode ${String(toUnicodeObjN)} 0 R/DescendantFonts[${String(firstObjIndex + 4)} 0 R]>>` };
 
-  fontDictObjStr += '/Encoding/Identity-H';
-
-  fontDictObjStr += `/ToUnicode ${String(toUnicodeObjN)} 0 R`;
-
-  fontDictObjStr += `/DescendantFonts[${String(firstObjIndex + 4)} 0 R]`;
-
-  fontDictObjStr += '>>\nendobj\n\n';
-
-  // 2nd object: ToUnicode CMap. 3rd: FontDescriptor.
-  // In variant mode both are shared from the base font (referenced by object number) and not re-emitted, so their slots come back null.
-  const toUnicodeObj = variantMode
-    ? null
-    : await encodeStreamObject(firstObjIndex + 5, createToUnicode(font, toUnicodeOverride), { humanReadable });
-  const fontDescObjStr = variantMode
-    ? null
-    : createFontDescriptor(font, firstObjIndex + 1, italic, firstObjIndex + 3);
-
-  // Start 4th object: widths
-  let widthsObjStr = `${String(firstObjIndex + 2)} 0 obj\n`;
+  const descriptor = baseDescriptorObjN ? null : { text: fontDescriptorDict(font, italic, fontFileObjN, metrics) };
 
   // Emit CIDFontType2 glyph widths as [firstGlyphIndex [w0 w1 ...]].
   // The widths must be present and accurate or glyphs render wrong, but need not be packed efficiently (no run grouping).
   // A width-scaled variant folds its inter-character stretch into these declared advances via `widthScale`.
-  widthsObjStr += '[ 0 [';
-  for (let i = 0; i < font.glyphs.length; i++) {
-    const advanceNorm = Math.round(font.glyphs.glyphs[String(i)].advanceWidth * widthScale * (1000 / font.unitsPerEm));
-    widthsObjStr += `${String(advanceNorm)} `;
+  /** @type {?{ text: string }} */
+  let widths = null;
+  if (!baseWidthsObjN) {
+    const advances = [];
+    for (let i = 0; i < font.glyphs.length; i++) {
+      advances.push(String(Math.round(font.glyphs.glyphs[String(i)].advanceWidth * widthScale * (1000 / font.unitsPerEm))));
+    }
+    widths = { text: `[ 0 [${advances.join(' ')} ] ]` };
   }
-  widthsObjStr += '] ]';
 
-  widthsObjStr += '\nendobj\n\n';
-
-  // Start 5th object: Font File. In variant mode the base font's copy is shared, so none is embedded.
-  /** @type {string | import('./writePdfStreams.js').PdfBinaryObject | null} */
-  let fontFileObj = null;
-  if (!variantMode) {
+  /** @type {?{ stream: Uint8Array, dictExtras: string }} */
+  let fontFile = null;
+  if (!baseFontFileObjN && !baseDescriptorObjN) {
     const fontBuffer = rawFontBytes
       ? (rawFontBytes instanceof Uint8Array ? rawFontBytes : new Uint8Array(rawFontBytes))
       : new Uint8Array(font.toArrayBuffer());
-    fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 3, fontBuffer, {
-      humanReadable,
-      dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
-    });
+    fontFile = { stream: fontBuffer, dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType` };
   }
 
-  // Start 6th object: Font
-  let fontObjStr = `${String(firstObjIndex + 4)} 0 obj\n`;
-
   const truetypeOutlines = font.outlinesFormat === 'truetype';
-  fontObjStr += `<</Type/Font/Subtype/${truetypeOutlines ? 'CIDFontType2' : 'CIDFontType0'}/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>`;
+  const cidFont = {
+    text: `<</Type/Font/Subtype/${truetypeOutlines ? 'CIDFontType2' : 'CIDFontType0'}/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>`
+      + `/BaseFont/${postScriptName}/FontDescriptor ${String(descriptorObjN)} 0 R/W ${String(widthsObjN)} 0 R${truetypeOutlines ? '/CIDToGIDMap/Identity' : ''}>>`,
+  };
 
-  fontObjStr += `/BaseFont/${namesTable.postScriptName.en}/FontDescriptor ${String(descriptorObjN)} 0 R`;
+  const toUnicode = baseToUnicodeObjN ? null : { stream: createToUnicode(font, toUnicodeOverride), dictExtras: '' };
 
-  fontObjStr += `/W ${String(firstObjIndex + 2)} 0 R`;
+  return [type0, descriptor, widths, fontFile, cidFont, toUnicode];
+}
 
-  if (truetypeOutlines) fontObjStr += '/CIDToGIDMap/Identity';
-
-  fontObjStr += '>>\nendobj\n\n';
-
-  // Object-number order: [+0 Type0 dict, +1 FontDescriptor, +2 /W, +3 FontFile, +4 CIDFont, +5 ToUnicode].
-  // Variant mode returns null at +1/+3/+5. Callers write a free xref entry for each.
-  return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObj, fontObjStr, toUnicodeObj];
+/**
+ * Converts an Opentype.js font object into an array of PDF objects representing a composite Type 0 font.
+ * @param {Parameters<typeof type0FontObjectParts>[0] & { humanReadable?: boolean }} options
+ * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject | null>>}
+ *   Object-number order: [+0 Type0 dict, +1 FontDescriptor, +2 /W, +3 FontFile, +4 CIDFont, +5 ToUnicode].
+ *   A shared slot is null, and callers write a free xref entry for it.
+ */
+export async function createEmbeddedFontType0(options) {
+  const { firstObjIndex, humanReadable = false } = options;
+  const parts = type0FontObjectParts(options);
+  /** @type {Array<string | import('./writePdfStreams.js').PdfBinaryObject | null>} */
+  const out = [];
+  for (let k = 0; k < parts.length; k++) {
+    const part = parts[k];
+    const objN = firstObjIndex + k;
+    if (!part) out.push(null);
+    else if (!('stream' in part)) out.push(`${String(objN)} 0 obj\n${part.text}\nendobj\n\n`);
+    else if (typeof part.stream === 'string') out.push(await encodeStreamObject(objN, part.stream, { humanReadable, dictExtras: part.dictExtras }));
+    else out.push(await encodeBinaryStreamObject(objN, part.stream, { humanReadable, dictExtras: part.dictExtras }));
+  }
+  return out;
 }
 
 /**

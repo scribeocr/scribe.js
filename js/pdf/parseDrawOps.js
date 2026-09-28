@@ -48,7 +48,7 @@ function hexToLatin1(hex) {
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[] }} ImageDrawOp
  * @typedef {{ type: 'type3glyph', charProcObjNum: number, transform: number[], ctm?: number[],
- *   advEm?: number, editTrm?: number[],
+ *   advEm?: number,
  *   fillColor: string, fillAlpha: number, strokeAlpha?: number,
  *   strokeColor?: string, type3XObjects?: { [name: string]: number },
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
@@ -67,7 +67,7 @@ function hexToLatin1(hex) {
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[],
  *   pdfGlyphWidth?: number,
- *   advEm?: number, vertical?: boolean, editTrm?: number[],
+ *   advEm?: number, vertical?: boolean,
  * }} Type0TextOp
  * @typedef {{
  *   type: 'path', commands: PathCommand[], ctm: number[],
@@ -106,7 +106,7 @@ function hexToLatin1(hex) {
  * Parse a content stream and extract image draw operations, Type3 glyph
  * draw operations, and vector path draw operations with their full transforms.
  *
- * @param {string|string[]} contentStream
+ * @param {string} contentStream - A page's /Contents entries joined with newlines, or one form, pattern or mask stream.
  * @param {Map<string, object>} fonts - Font map from parsePageFonts
  * @param {Map<string, ExtGStateEntry>} [extGStates] - ExtGState map
  * @param {Map<string, string>} [registeredFontNames]
@@ -119,43 +119,22 @@ function hexToLatin1(hex) {
  * @param {Map<string, Set<number>>} [cidCollisionMap]
  * @param {object|null} [inheritedTextState] - Text state carried in from an enclosing form XObject
  * @param {Set<string>} [hiddenOCMCNames] - Names in /Resources/Properties whose OCG is OFF; content inside `/OC /<name> BDC ... EMC` for these is not painted
- * @param {boolean[]} [recoveredStreamFlags] - Per-stream flags (index-aligned with `contentStream`).
- *    A stream that only decoded via partial-recovery inflate suppresses painting from its first syntactic anomaly onward.
+ * @param {boolean[]} [recoveredStreamFlags] - Per-entry flags, index-aligned with the page's /Contents entries.
+ *    An entry that only decoded via partial-recovery inflate suppresses painting from its first syntactic anomaly onward.
+ * @param {number[]} [streamBoundaryOffsets] - Offsets in `contentStream` at which each /Contents entry after the first begins.
+ *    Corruption suppression resets at each boundary, so a damaged entry cannot blank the intact entries after it.
  * @returns {Array<DrawOp>}
  */
 export function parseDrawOps(
   contentStream, fonts, extGStates, registeredFontNames, colorSpaces = new Map(),
   symbolFontTags = new Set(), cidPUATags = new Set(), rawCharCodeTags = new Set(),
   shadings = new Map(), patterns = new Map(), cidCollisionMap = new Map(),
-  inheritedTextState = null, hiddenOCMCNames = new Set(), recoveredStreamFlags = [],
+  inheritedTextState = null, hiddenOCMCNames = new Set(), recoveredStreamFlags = [], streamBoundaryOffsets = [],
 ) {
   /** @type {Array<DrawOp>} */
   const ops = [];
 
-  // Accept either a single content stream string or an array of stream strings
-  // (one per /Contents entry). Per PDF spec §7.8.2, streams in the /Contents
-  // array are equivalent to a single concatenated stream — the split between
-  // streams may fall between any pair of lexical tokens, including inside an
-  // open array (e.g. `[` at the end of one stream and `(text)] TJ` at the
-  // start of the next). Tokenizing each stream individually breaks such
-  // PDFs, dropping the entire spanning operator. Concatenate before tokenizing.
-  const streams = Array.isArray(contentStream) ? contentStream : [contentStream];
-  const STREAM_SEP = '\n';
-  const tokens = tokenizeContentStream(streams.join(STREAM_SEP));
-
-  // Start offset (in the joined string) of each /Contents entry after the first.
-  // A /Contents entry with a damaged FlateDecode tail emits garbled tokens that
-  // trip the corruption-suppression threshold. Resetting that state at each
-  // boundary keeps the damage from blanking later, intact entries.
-  /** @type {number[]} */
-  const streamBoundaryOffsets = [];
-  if (streams.length > 1) {
-    let acc = 0;
-    for (let i = 0; i < streams.length - 1; i++) {
-      acc += streams[i].length + STREAM_SEP.length;
-      streamBoundaryOffsets.push(acc);
-    }
-  }
+  const tokens = tokenizeContentStream(contentStream);
   let nextStreamBoundaryIdx = 0;
 
   // Graphics state
@@ -324,8 +303,6 @@ export function parseDrawOps(
           type: 'type3glyph', charProcObjNum, transform, fillColor, fillAlpha, type3XObjects,
         };
         type3Op.advEm = rawWidth / 1000;
-        // The export rewriter's glyph hit test uses the pre-FontMatrix matrix, so suppression must test the same one.
-        type3Op.editTrm = trm;
         if (!fillColorExplicit) type3Op.fillColorInherited = true;
         if (!fillAlphaExplicit) type3Op.fillAlphaInherited = true;
         ops.push(type3Op);
@@ -705,8 +682,6 @@ export function parseDrawOps(
           lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
         opObj.advEm = rawWidth / 1000;
-        // The export rewriter's glyph hit test uses the pre-FontMatrix matrix, so suppression must test the same one.
-        if (fm) opObj.editTrm = baseTrm;
         if (isNonEmbedded && !sc.applied && !currentFont.widthsUnreliable) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
         if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;

@@ -26,7 +26,7 @@ export class PdfScheduler {
   /**
    * Dispatch a single page for rendering via the scheduler.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
-   * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args
+   * edits?: ?RenderEdits }} args
    * @param {boolean} [forViewer=false] - Viewer renders are served ahead of background work.
    *   A superseded viewer render may be dropped, resolving to SKIPPED.
    */
@@ -44,6 +44,24 @@ export class PdfScheduler {
    * @param {{}} args
    */
   getPdfType3GlyphHashes = (args) => this.scheduler.addJob('getPdfType3GlyphHashes', args);
+
+  /**
+   * The glyphs of a page's words as the content stream draws them.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, words: Array<TextEditWordSpec> }} args
+   */
+  getPdfLineState = (args) => this.scheduler.addJob('getPdfLineState', args);
+
+  /**
+   * The glyphs of a line as a replacement would draw them, for the editor's preview.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('./pdf/textPatch.js').TextEditRequest }} args
+   */
+  previewPdfTextEdit = (args) => this.scheduler.addJob('previewPdfTextEdit', args);
+
+  /**
+   * A deletion, style change or replacement of a line's words as content-stream patch records, verified against a re-parse.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('./pdf/textPatch.js').TextEditRequest, groupId?: string }} args
+   */
+  applyPdfTextEdit = (args) => this.scheduler.addJob('applyPdfTextEdit', args);
 
   /**
    * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).
@@ -127,6 +145,25 @@ export class PdfSchedulerInProcess {
    */
   // eslint-disable-next-line no-unused-vars
   getPdfType3GlyphHashes = (args) => this.#core.getType3GlyphHashes();
+
+  /**
+   * The glyphs of a page's words as the content stream draws them.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, words: Array<TextEditWordSpec> }} args
+   */
+  getPdfLineState = (args) => this.#core.getLineState(args);
+
+  /**
+   * The glyphs of a line as a replacement would draw them, for the editor's preview.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('./pdf/textPatch.js').TextEditRequest }} args
+   */
+  previewPdfTextEdit = (args) => this.#core.previewTextEdit(args);
+
+  /**
+   * A deletion, style change or replacement of a line's words as content-stream patch records.
+   * The records are verified against a re-parse.
+   * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('./pdf/textPatch.js').TextEditRequest, groupId?: string }} args
+   */
+  applyPdfTextEdit = (args) => this.#core.applyTextEdit(args);
 
   /**
    * The decoded bytes of an embedded file stream (a portfolio member or a plain attachment).

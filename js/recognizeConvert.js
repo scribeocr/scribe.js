@@ -1155,7 +1155,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
  * The results of recognition can be exported by calling `exportData` after this function.
  * @param {ScribeDoc} doc
  * @param {Object} options
- * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode. `'quality'` runs the default engine set, both engines under the bundled model and the LSTM engine under `vanillaMode`.
+ * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode. `'quality'` runs the default engine set, both engines under the built-in model and the LSTM engine under `vanillaMode`.
  *    `'speed'` runs the LSTM engine alone.
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.

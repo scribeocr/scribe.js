@@ -5,8 +5,8 @@
 
 import opentype from '../font-parser/src/index.js';
 import {
-  base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont, cssGenericForFontObj,
-  extendedFamilyToBundledFont,
+  base14ToBuiltInFont, cssFamilyToBuiltInFont, genericToBuiltInFont, cssGenericForFontObj,
+  extendedFamilyToBuiltInFont,
 } from './fonts/base14Substitution.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
 import { GlobalFonts } from '../containers/fontContainer.js';
@@ -22,16 +22,15 @@ import { GlobalFonts } from '../containers/fontContainer.js';
  * @property {boolean} bold
  * @property {boolean} italic
  * @property {?boolean} serifFlag
- * @property {?number} [italicAngleDeg]
  * @property {?number} [capHeightPdf]
  * @property {?number} [xHeightPdf]
- * @property {?number} [stemV]
  * @property {Map<string, {sizeMult: number, stretch: number, monoAdvEm?: number}>} [fits]
  */
 
 /**
  * Parse a `getPdfFontBytes` payload into the resolver's per-font entry.
  * @param {?{ kind: string, bytes?: ArrayBuffer, allGlyphsEmpty?: boolean, baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: ?boolean,
+ *   capHeightPdf?: ?number, xHeightPdf?: ?number,
  *   glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }> }} payload
  * @returns {?EditFontProgram}
  */
@@ -41,7 +40,7 @@ export function parseEditFontPayload(payload) {
   if (payload.bytes && !payload.allGlyphsEmpty) {
     try {
       font = opentype.parse(payload.bytes);
-    } catch (_e) {
+    } catch {
       font = null;
     }
   }
@@ -55,10 +54,8 @@ export function parseEditFontPayload(payload) {
     bold: !!payload.bold,
     italic: !!payload.italic,
     serifFlag: payload.serifFlag ?? null,
-    italicAngleDeg: payload.italicAngleDeg ?? null,
     capHeightPdf: payload.capHeightPdf ?? null,
     xHeightPdf: payload.xHeightPdf ?? null,
-    stemV: payload.stemV ?? null,
   };
 }
 
@@ -100,13 +97,13 @@ function medianInkTop(font, chars) {
 }
 
 /**
- * Fit a bundled substitute to the word's original font.
+ * Fit a built-in substitute to the word's original font.
  * `sizeMult` matches the original's x-height, and `stretch` matches its advance widths.
  * @param {EditFontProgram} orig
  * @param {import('../font-parser/src/index.js').Font} subFont
  * @returns {{sizeMult: number, stretch: number, monoAdvEm?: number}}
  */
-function bundledFit(orig, subFont) {
+export function builtInFit(orig, subFont) {
   const f = /** @type {import('../font-parser/src/index.js').Font} */ (orig.font);
   const wd = [];
   const ws = [];
@@ -169,17 +166,39 @@ function bundledFit(orig, subFont) {
 }
 
 /**
+ * The built-in face that stands in for a page font.
+ * @param {?EditFontProgram} orig
+ * @param {{ bold: boolean, italic: boolean }} hints
+ * @returns {?{ family: string, styleKey: string }}
+ */
+export function substituteFaceFor(orig, hints) {
+  const baseName = orig?.baseName || '';
+  const font = orig?.kind === 'type3' ? null : orig?.font;
+  const sub = (font ? extendedFamilyToBuiltInFont(baseName, hints) : null)
+    || base14ToBuiltInFont(baseName, hints)
+    || cssFamilyToBuiltInFont(standardFontToCSS(baseName), hints)
+    || genericToBuiltInFont(cssGenericForFontObj({
+      baseName, familyName: orig?.familyName, serifFlag: orig?.serifFlag ?? undefined,
+    }), hints);
+  if (!sub || !sub.variant) return null;
+  const styleKey = sub.variant === 'Regular' ? 'normal'
+    : sub.variant === 'Bold' ? 'bold'
+      : sub.variant === 'Italic' ? 'italic' : 'boldItalic';
+  return { family: sub.family, styleKey };
+}
+
+/**
  * Resolve one replacement character against a word's original font and style.
  * @param {string} ch - One code point.
  * @param {?EditFontProgram} orig - The word's original font program, or null when the word has none (non-embedded source font).
  * @param {{ bold?: boolean, italic?: boolean }} style
  * @returns {{ kind: 'orig', codepoint: number, gid: number, advEm: number }
- *   | { kind: 'bundled', codepoint: number, gid: number, advEm: number,
+ *   | { kind: 'builtIn', codepoint: number, gid: number, advEm: number,
  *       sizeMult: number, stretch: number,
  *       family: string, styleKey: string, font: import('../font-parser/src/index.js').Font,
  *       fontFaceName: string, fontFaceStyle: string, fontFaceWeight: string }
  *   | { kind: 'tofu', advEm: number }}
- *   Bundled `advEm` is the fitted advance in em of the word's own size.
+ *   A built-in face's `advEm` is the fitted advance in em of the word's own size.
  *   `sizeMult` scales the drawn face size and `stretch` the glyph width, both already folded into `advEm`.
  */
 export function resolveReplacementChar(ch, orig, style) {
@@ -197,49 +216,40 @@ export function resolveReplacementChar(ch, orig, style) {
     }
   }
 
-  const hints = { bold: !!style?.bold, italic: !!style?.italic };
-  const baseName = orig?.baseName || '';
-  const sub = (font ? extendedFamilyToBundledFont(baseName, hints) : null)
-    || base14ToBundledFont(baseName, hints)
-    || cssFamilyToBundledFont(standardFontToCSS(baseName), hints)
-    || genericToBundledFont(cssGenericForFontObj({
-      baseName, familyName: orig?.familyName, serifFlag: orig?.serifFlag ?? undefined,
-    }), hints);
-  if (sub && sub.variant) {
-    const styleKey = sub.variant === 'Regular' ? 'normal'
-      : sub.variant === 'Bold' ? 'bold'
-        : sub.variant === 'Italic' ? 'italic' : 'boldItalic';
-    const bundled = GlobalFonts.raw?.[sub.family]?.[styleKey] || GlobalFonts.raw?.[sub.family]?.normal;
-    if (bundled?.opentype) {
-      const gid = bundled.opentype.charToGlyphIndex(ch);
+  const face = substituteFaceFor(orig, { bold: !!style?.bold, italic: !!style?.italic });
+  if (face) {
+    const { styleKey } = face;
+    const builtIn = GlobalFonts.raw?.[face.family]?.[styleKey] || GlobalFonts.raw?.[face.family]?.normal;
+    if (builtIn?.opentype) {
+      const gid = builtIn.opentype.charToGlyphIndex(ch);
       if (gid > 0) {
         let fit = null;
         if (font) {
-          const fitKey = `${bundled.family}/${styleKey}`;
+          const fitKey = `${builtIn.family}/${styleKey}`;
           if (!orig.fits) orig.fits = new Map();
           fit = orig.fits.get(fitKey);
           if (!fit) {
-            fit = bundledFit(orig, bundled.opentype);
+            fit = builtInFit(orig, builtIn.opentype);
             orig.fits.set(fitKey, fit);
           }
         }
         const sizeMult = fit?.sizeMult ?? 1;
         const stretch = fit?.stretch ?? 1;
-        const baseAdv = bundled.opentype.glyphs.get(gid).advanceWidth / bundled.opentype.unitsPerEm;
+        const baseAdv = builtIn.opentype.glyphs.get(gid).advanceWidth / builtIn.opentype.unitsPerEm;
         const advEm = fit?.monoAdvEm ?? baseAdv * sizeMult * stretch;
         return {
-          kind: 'bundled',
+          kind: 'builtIn',
           codepoint,
           gid,
           advEm,
           sizeMult,
           stretch,
-          family: bundled.family,
+          family: builtIn.family,
           styleKey,
-          font: bundled.opentype,
-          fontFaceName: bundled.fontFaceName,
-          fontFaceStyle: bundled.fontFaceStyle,
-          fontFaceWeight: bundled.fontFaceWeight,
+          font: builtIn.opentype,
+          fontFaceName: builtIn.fontFaceName,
+          fontFaceStyle: builtIn.fontFaceStyle,
+          fontFaceWeight: builtIn.fontFaceWeight,
         };
       }
     }

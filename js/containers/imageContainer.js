@@ -311,52 +311,35 @@ export class ImageStore {
   };
 
   /**
-   * Render-only suppression rects, keyed by display slot.
-   * The viewer's line editor sets them while it is open so the raster stops drawing the line being edited.
-   * @type {Map<number, {rects: Array<bbox>, glyphs: ?Array<TextEditGlyphWord>}>}
+   * The records the viewer's renders of a display slot apply in place of the document's while a line is open in the editor.
+   * They are the document's records with that line's operators deleted.
+   * Renders for OCR and export keep the document's records.
+   * @type {Map<number, Array<ContentEdit>>}
    */
-  #ephemeralEditRects = new Map();
+  #ephemeralRecords = new Map();
 
   /**
-   * Set the ephemeral suppression rects for display slot `n`.
-   * The caller re-renders the page raster to apply them.
-   * With `glyphs`, the rects suppress only the open line's own glyphs, so overlapping other-layer text keeps drawing while the editor is open.
+   * Set the records the viewer's renders of display slot `n` apply while a line is open, or clear them with null.
+   * The records apply from the page raster's next render.
    * @param {number} n - Page number
-   * @param {?Array<bbox>} rects
-   * @param {?Array<TextEditGlyphWord>} [glyphs]
+   * @param {?Array<ContentEdit>} records
    */
-  setEphemeralEditRects = (n, rects, glyphs = null) => {
-    if (rects && rects.length > 0) this.#ephemeralEditRects.set(n, { rects, glyphs: glyphs && glyphs.length > 0 ? glyphs : null });
-    else this.#ephemeralEditRects.delete(n);
+  setEphemeralRecords = (n, records) => {
+    if (records) this.#ephemeralRecords.set(n, records);
+    else this.#ephemeralRecords.delete(n);
   };
 
   /**
    * Content-edit payload for display slot `n`'s render jobs.
    * @param {number} n - Page number
+   * @param {boolean} forViewer - Whether the render serves the on-screen viewer, which shows the open line's ephemeral records.
+   * @returns {?RenderEdits}
    */
-  #editsForPage = (n) => {
-    const records = this.#doc.contentEdits?.pages?.[n] || [];
+  #editsForPage = (n, forViewer) => {
+    const records = (forViewer && this.#ephemeralRecords.get(n)) || this.#doc.contentEdits?.pages?.[n] || [];
     const dims = this.#pageMetrics[n]?.dims;
-    const ephemeral = this.#ephemeralEditRects.get(n);
-    if ((records.length === 0 && !ephemeral) || !dims) return null;
-    if (!ephemeral) return { records, dims: { width: dims.width, height: dims.height } };
-    // The editor draws the edited line's text live, so keeping an overlapping replacement's runs would draw it twice.
-    const all = records.map((rec) => {
-      if (rec.type !== 'replaceText') return rec;
-      const covered = (rec.rects || []).some((r) => ephemeral.rects.some((e) => r.left < e.right && r.right > e.left && r.top < e.bottom && r.bottom > e.top));
-      if (!covered) return rec;
-      /** @type {TextEditDelete} */
-      const asDelete = {
-        type: 'deleteText', id: rec.id, groupId: rec.groupId, rects: rec.rects,
-      };
-      if (rec.glyphs) asDelete.glyphs = rec.glyphs;
-      return asDelete;
-    });
-    /** @type {TextEditDelete} */
-    const ephemeralRec = { type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral.rects };
-    if (ephemeral.glyphs) ephemeralRec.glyphs = ephemeral.glyphs;
-    all.push(ephemeralRec);
-    return { records: all, dims: { width: dims.width, height: dims.height } };
+    if (records.length === 0 || !dims) return null;
+    return { records, dims: { width: dims.width, height: dims.height } };
   };
 
   /** @type {Map<string, Promise<?{ program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>>} */
@@ -381,7 +364,7 @@ export class ImageStore {
         // The source page index lets a pool worker that never parsed that page resolve the font.
         const payload = await scheduler.getPdfFontBytes({ fontObjNum, pageIndex: pm?.sourcePageN ?? n });
         // A null payload is a failed lookup, not a font without a program.
-        // Caching it would lock the editor to a fallback face for the session.
+        // Caching it would lock the editor to a substitute face for the session.
         if (!payload) this.#editFontCache.delete(key);
         const { parseEditFontPayload } = await import('../pdf/glyphResolve.js');
         const program = parseEditFontPayload(payload);
@@ -401,6 +384,65 @@ export class ImageStore {
       entry.catch(() => this.#editFontCache.delete(key));
     }
     return entry;
+  };
+
+  /**
+   * The resolution display slot `n`'s words were parsed at, or 0 when the slot is not backed by a PDF.
+   * @param {number} n - Page number
+   */
+  #parseDpi = (n) => {
+    const width300 = this.pdfDims300[n]?.width;
+    return width300 > 0 ? 300 * Math.min(width300, 3500) / width300 : 0;
+  };
+
+  /**
+   * The glyphs of the given words as display slot `n`'s source page draws them.
+   * @param {number} n - Page number
+   * @param {Array<TextEditWordSpec>} words
+   * @returns {Promise<?LineState>} Null when the page is not backed by a PDF.
+   */
+  getLineState = async (n, words) => {
+    const dpi = this.#parseDpi(n);
+    if (!dpi) return null;
+    const pm = this.#pageMetrics[n];
+    const scheduler = await this.resolveSource(pm).getScheduler();
+    return scheduler.getPdfLineState({
+      pageIndex: pm?.sourcePageN ?? n, dpi, records: this.#doc.contentEdits?.pages?.[n] || [], words,
+    });
+  };
+
+  /**
+   * The glyphs of a line of display slot `n` as a replacement would draw them, for the editor's preview.
+   * @param {number} n - Page number
+   * @param {import('../pdf/textPatch.js').TextEditRequest} req
+   * @returns {Promise<TextEditPreview>}
+   */
+  previewTextEdit = async (n, req) => {
+    const dpi = this.#parseDpi(n);
+    if (!dpi) return { refused: 'The page is not backed by a PDF.' };
+    const pm = this.#pageMetrics[n];
+    const scheduler = await this.resolveSource(pm).getScheduler();
+    return scheduler.previewPdfTextEdit({
+      pageIndex: pm?.sourcePageN ?? n, dpi, records: this.#doc.contentEdits?.pages?.[n] || [], req,
+    });
+  };
+
+  /**
+   * Ask the worker to turn an edit of display slot `n`'s words into patch records.
+   * The records are verified against a re-parse of the patched page.
+   * @param {number} n - Page number
+   * @param {import('../pdf/textPatch.js').TextEditRequest} req
+   * @param {string} [groupId]
+   * @returns {Promise<TextEditResult>}
+   */
+  applyTextEdit = async (n, req, groupId) => {
+    const dpi = this.#parseDpi(n);
+    if (!dpi) return { refused: 'The page is not backed by a PDF.' };
+    const pm = this.#pageMetrics[n];
+    const scheduler = await this.resolveSource(pm).getScheduler();
+    return scheduler.applyPdfTextEdit({
+      pageIndex: pm?.sourcePageN ?? n, dpi, records: this.#doc.contentEdits?.pages?.[n] || [], req, groupId,
+    });
   };
 
   /**
@@ -574,7 +616,7 @@ export class ImageStore {
       // Bitmap output needs OffscreenCanvas, so it is browser-only and Node always renders to PNG.
       const outputFormat = wantBitmap && typeof OffscreenCanvas !== 'undefined' ? 'bitmap' : 'png';
       const result = await pdfScheduler.renderPdfPage({
-        pageIndex: sourcePageN, colorMode, dpi, outputFormat, edits: this.#editsForPage(n),
+        pageIndex: sourcePageN, colorMode, dpi, outputFormat, edits: this.#editsForPage(n, forViewer),
       }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
@@ -604,7 +646,7 @@ export class ImageStore {
     // Display slot `n` may have been reordered. Raster its source page, not its position.
     const sourcePageN = pm.sourcePageN ?? n;
     const result = await pdfScheduler.renderPdfPage({
-      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n),
+      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n, forViewer),
     }, forViewer);
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);
@@ -819,7 +861,7 @@ export class ImageStore {
         // Display slot `n` may have been reordered, so raster its source page, not its position.
         const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits: this.#editsForPage(n),
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits: this.#editsForPage(n, false),
         }, false);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }
@@ -899,7 +941,7 @@ export class ImageStore {
       dpi: options.dpi ?? 300,
       outputFormat: options.format ?? 'png',
       quality: options.quality ?? 0.6,
-      edits: this.#editsForPage(n),
+      edits: this.#editsForPage(n, false),
     }, false);
     // Background-lane renders are never superseded, so a drop here means the scheduler is misbehaving.
     if (!result || result === SKIPPED) throw new Error(`renderPageImage: render for page ${n} was dropped.`);

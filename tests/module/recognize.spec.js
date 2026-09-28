@@ -55,8 +55,8 @@ describe('Check style detection.', () => {
     expect(doc.ocr.active[0].lines[0].words[6].style.italic).toBe(false);
   });
 
-  test('The page names the bundled engine as its text source', async () => {
-    expect(doc.ocr.active[0].textSource, 'a page recognized by the bundled engine does not name it as the text source').toBe('scribe.js');
+  test('The page names the built-in engine as its text source', async () => {
+    expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
   });
 
   afterAll(async () => {
@@ -152,7 +152,7 @@ describe('Check auto-rotate features.', () => {
 
     const words = lines.flatMap((line) => line.words);
     expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
-    expect(doc.ocr.active[0].textSource, 'a page recognized by the bundled engine does not name it as the text source').toBe('scribe.js');
+    expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
     expect(words.find((w) => w.text === 'Aragon’s')?.alt, 'a word with a classifier reading and a losing engine reading carries both, higher confidence first, each naming its origin in msg')
       .toEqual([{
         text: 'Aragons', conf: 68, span: 1, msg: 'c1',
@@ -334,8 +334,7 @@ describe('Check vanilla recognition engine.', () => {
       .rejects.toThrow("modeAdv 'combined' is not available with vanillaMode");
   });
 
-  test('The bundled engine comes back after a vanilla run in the same session', async () => {
-    // Regression guard: the worker treated a request for the bundled engine as "keep the current one", so every run after a vanilla run stayed vanilla.
+  test('The built-in engine comes back after a vanilla run in the same session', async () => {
     await doc.recognize({ mode: 'quality' });
     expect(doc.ocr.active[0].textSource, 'a run after a vanilla run in the same session still used the vanilla engine').toBe('scribe.js');
   });

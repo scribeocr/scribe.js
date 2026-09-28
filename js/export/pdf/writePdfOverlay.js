@@ -1,13 +1,12 @@
 import {
   findXrefOffset, parseXref, sourceXrefIsWellFormed, xrefSectionIsStream, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
-import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
+import { byteIndexOf, mergeResources } from '../../pdf/pdfPrimitives.js';
 import {
-  pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs, mapImageDelete, mapPathDelete,
+  pageRectToContentRect, mapImageDelete, mapPathDelete,
 } from '../../pdf/pageGeometry.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
-import { GlobalFonts } from '../../containers/fontContainer.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import { isFillTextRow, isFillTextLine } from '../../fillSign.js';
 import {
@@ -28,18 +27,13 @@ import {
   FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
-  parseExistingContents,
-  rewriteContentsStripAndConvert,
-  resolvePageResources,
-  mergeResources,
-  buildReplacementPageDict,
-  overlayAnnotationBbox,
-  pageHasLiftedSourceAnnots,
+  parseExistingContents, rewriteContentsStripAndConvert, resolvePageResources, buildReplacementPageDict, overlayAnnotationBbox, pageHasLiftedSourceAnnots,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
 import { buildOutlineObjects } from './writeOutline.js';
 import { buildNameDests } from '../../pdf/parseOutline.js';
+import { substituteFaceOutputObjects, recordFaceTag } from '../../pdf/substituteFaces.js';
 
 /**
  * Insert OCR text layers into an existing PDF.
@@ -62,9 +56,6 @@ import { buildNameDests } from '../../pdf/parseOutline.js';
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
  * @param {Array<Array<ContentEdit>>} [params.contentEditsPages=[]] - Text, image, and path edit records, applied destructively to the page content streams.
- * @param {?(pageIndex: number, fontObjNum: number) => Promise<?{program: ?import('../../pdf/glyphResolve.js').EditFontProgram, bytes: ?ArrayBuffer}>} [params.getEditFont=null]
- *   Resolves the font program a replaceText record's runs were resolved against, with `pageIndex` in the same page space as `contentEditsPages`.
- *   Required when any record carries replacement runs.
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  *   Source-PDF text whose glyph origin falls inside any of these user-space bboxes is converted to paths.
  *   Glyphs from non-embedded or unsupported fonts are left as text.
@@ -97,7 +88,6 @@ export async function overlayPdfText({
   humanReadable = false,
   annotationsPages = [],
   contentEditsPages = [],
-  getEditFont = null,
   convertRegionsToPaths = null,
   convertTextToPaths = false,
   convertFullPages = null,
@@ -167,51 +157,11 @@ export async function overlayPdfText({
     if (rects.length > 0) redactRegionsByPage.set(i, rects);
   }
 
-  // Unlike redact rects, text-edit rects erase glyphs only and do not force the rebuild path.
-  /** @type {Map<number, Array<[number, number, number, number]>>} */
-  const textEditRegionsByPage = new Map();
-  /** @type {Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} */
-  const textEditGatedByPage = new Map();
-  /** @type {Map<number, Array<[number, number, number, number]>>} */
-  const textEditWsByPage = new Map();
-  /** @type {Map<number, Array<TextEditReplace>>} */
-  const replaceRecordsByPage = new Map();
+  /** @type {Map<number, Array<TextPatch>>} */
+  const textPatchesByPage = new Map();
   for (const i of effectivePageArr) {
-    const records = (contentEditsPages[i] || []).filter((r) => r && (r.type === 'deleteText' || r.type === 'replaceText'));
-    if (records.length === 0) continue;
-    const dims = pageMetricsArr?.[i]?.dims;
-    if (!dims) throw new Error(`Cannot apply text edits on page ${i}: page dimensions are unknown.`);
-    const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
-    /** @type {Array<[number, number, number, number]>} */
-    const rects = [];
-    /** @type {Array<[number, number, number, number]>} */
-    const gatedRects = [];
-    /** @type {Array<[number, number, number, number]>} */
-    const wsRects = [];
-    /** @type {Array<TextEditGlyphWord>} */
-    const gatedGlyphWords = [];
-    for (const rec of records) {
-      const target = rec.glyphs ? gatedRects : rects;
-      for (const r of rec.rects || []) {
-        const mapped = pageRectToContentRect(r, dims, box, pages[i].rotate || 0);
-        if (mapped) target.push(mapped);
-      }
-      for (const r of rec.wsRects || []) {
-        const mapped = pageRectToContentRect(r, dims, box, pages[i].rotate || 0);
-        if (mapped) wsRects.push(mapped);
-      }
-      if (rec.glyphs) gatedGlyphWords.push(...rec.glyphs);
-      if (rec.type === 'replaceText' && rec.runs?.length) {
-        if (!replaceRecordsByPage.has(i)) replaceRecordsByPage.set(i, []);
-        replaceRecordsByPage.get(i).push(/** @type {TextEditReplace} */ (rec));
-      }
-    }
-    if (rects.length > 0) textEditRegionsByPage.set(i, rects);
-    if (gatedRects.length > 0) {
-      const { pts, tol } = mapTextEditGlyphs(gatedGlyphWords, dims, box, pages[i].rotate || 0);
-      textEditGatedByPage.set(i, { rects: gatedRects, pts, tol });
-    }
-    if (wsRects.length > 0) textEditWsByPage.set(i, wsRects);
+    const records = /** @type {Array<TextPatch>} */ ((contentEditsPages[i] || []).filter((r) => r && r.type === 'patchText'));
+    if (records.length > 0) textPatchesByPage.set(i, records);
   }
 
   /** @type {Map<number, Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>>} */
@@ -264,203 +214,18 @@ export async function overlayPdfText({
     nextObjNum = fontRefs.objectI;
   }
 
-  // Replacement-run fonts are embedded unsubsetted because the records' pre-resolved GIDs are written as-is and would not survive glyph renumbering.
-  /** @type {Map<number, Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>>} */
-  const textEditInsertsByPage = new Map();
+  // The export embeds the program bytes each substitute face was drawn with, from the object cache.
+  const faces = await substituteFaceOutputObjects(objCache, [...textPatchesByPage.values()].flat(), nextObjNum, humanReadable);
+  nextObjNum = faces.nextObjNum;
   /** @type {Map<number, Map<string, number>>} */
   const editFontRefsByPage = new Map();
-  /** @type {Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} */
-  const editFontObjects = [];
-  if (replaceRecordsByPage.size > 0) {
-    // Fail closed: silently dropping the runs would export the deletion without its replacement text.
-    if (!getEditFont) throw new Error('Cannot apply text edits: replacement text requires a font provider.');
-    const fmtN = (v) => {
-      const r = Math.round(v * 1e6) / 1e6;
-      return Object.is(r, -0) ? '0' : String(r);
-    };
-    /** @type {Map<any, {name: string, objN: number, font: any, rawBytes: ?ArrayBuffer}>} */
-    const editFontsByProgram = new Map();
-    for (const [i, records] of replaceRecordsByPage) {
-      const dims = pageMetricsArr?.[i]?.dims;
-      const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
-      const rot = pages[i].rotate || 0;
-      /** @type {Map<string, number>} */
-      const pageFontRefs = new Map();
-      /** @type {Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} */
-      const entries = [];
-      const redactMarks = (annotationsPages[i] || []).filter((a) => a.type === 'redact');
-      for (const rec of records) {
-        // An insert that touches a redaction mark is dropped, but its rects still erase the original text.
-        // Each run also gets a box in the overlap test because replacement text can overflow the rects it erased.
-        if (redactMarks.length > 0) {
-          const paintBoxes = (rec.rects || []).map((r) => ({
-            left: r.left, top: r.top, right: r.right, bottom: r.bottom,
-          }));
-          for (const run of rec.runs) {
-            const s = run.sizePx;
-            const o = run.orientation || 0;
-            const flow = o === 1 ? [0, 1] : o === 2 ? [-1, 0] : o === 3 ? [0, -1] : [1, 0];
-            const down = [-flow[1], flow[0]];
-            const advTotal = run.glyphs.reduce((acc, g) => acc + g.advEm, 0) * s;
-            const xs = [];
-            const ys = [];
-            for (const [along, cross] of [[0, -1.5 * s], [0, 0.75 * s], [advTotal, -1.5 * s], [advTotal, 0.75 * s]]) {
-              xs.push(run.x + flow[0] * along + down[0] * cross);
-              ys.push(run.y + flow[1] * along + down[1] * cross);
-            }
-            paintBoxes.push({
-              left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys),
-            });
-          }
-          const redacted = paintBoxes.some((b) => redactMarks.some((m) => b.left < m.bbox.right
-            && b.right > m.bbox.left && b.top < m.bbox.bottom && b.bottom > m.bbox.top));
-          if (redacted) continue;
-        }
-        /** @type {Array<[number, number, number, number]>} */
-        const rects = [];
-        for (const r of rec.rects || []) {
-          const mapped = pageRectToContentRect(r, dims, box, rot);
-          if (mapped) rects.push(mapped);
-        }
-        let tofuOps = '';
-        let textOps = '';
-        // Text state persists across the record's runs, so a stroked run must be reset before a following plain run.
-        let prevRenderMode = 0;
-        let prevTz = 100;
-        let anyStroked = false;
-        for (const run of rec.runs) {
-          let fontObj;
-          let rawBytes = null;
-          if (run.font.kind === 'orig') {
-            const ef = await getEditFont(i, run.font.fontObjNum);
-            fontObj = ef?.program?.font;
-            rawBytes = ef?.bytes || null;
-            if (!fontObj) throw new Error(`Cannot apply text edits: the font program for font ${run.font.fontObjNum} on page ${i} is unavailable.`);
-          } else {
-            const bundled = GlobalFonts.raw?.[run.font.family]?.[run.font.styleKey] || GlobalFonts.raw?.[run.font.family]?.normal;
-            fontObj = bundled?.opentype;
-            if (!fontObj) throw new Error(`Cannot apply text edits: the bundled face ${run.font.family}/${run.font.styleKey} is unavailable.`);
-          }
-          let fontEntry = editFontsByProgram.get(fontObj);
-          if (!fontEntry) {
-            // PDF name syntax bars whitespace and delimiters; guard odd original names before they reach /BaseFont.
-            const namesTable = fontObj.names?.windows || fontObj.names || {};
-            const rawName = namesTable.postScriptName?.en;
-            const safeName = (rawName || '').replace(/[^\x21-\x7e]/g, '').replace(/[()<>[\]{}/%#]/g, '');
-            if (safeName !== rawName || !safeName) {
-              namesTable.postScriptName = { ...namesTable.postScriptName, en: safeName || `ScribeEditFont${editFontsByProgram.size}` };
-            }
-            fontEntry = {
-              name: `/EDF${editFontsByProgram.size}`, objN: nextObjNum, font: fontObj, rawBytes,
-            };
-            nextObjNum += 6;
-            editFontsByProgram.set(fontObj, fontEntry);
-          }
-          pageFontRefs.set(fontEntry.name, fontEntry.objN);
-
-          const s = run.sizePx;
-          const o = run.orientation || 0;
-          const flow = o === 1 ? [0, 1] : o === 2 ? [-1, 0] : o === 3 ? [0, -1] : [1, 0];
-          const down = [-flow[1], flow[0]];
-          const origin = pagePointToContentPoint(run.x, run.y, dims, box, rot);
-          const flowPt = pagePointToContentPoint(run.x + flow[0], run.y + flow[1], dims, box, rot);
-          const upPt = pagePointToContentPoint(run.x - down[0], run.y - down[1], dims, box, rot);
-          const F = [flowPt[0] - origin[0], flowPt[1] - origin[1]];
-          const U = [upPt[0] - origin[0], upPt[1] - origin[1]];
-
-          const hexColor = /^#([0-9a-f]{6})$/i.exec(run.color || '');
-          const colorStr = hexColor
-            ? [0, 2, 4].map((p) => fmtN(parseInt(hexColor[1].slice(p, p + 2), 16) / 255)).join(' ')
-            : '0 0 0';
-
-          // The numeric corrections cancel the integer rounding of the /W widths, keeping the pen exactly on the record's advEm chain.
-          // The renderer steps the same chain, so drift here would shift the exported text off the rendered layout.
-          const st = run.stretch || 1;
-          const parts = [];
-          let hexRun = '';
-          let penPx = 0;
-          const upem = fontObj.unitsPerEm;
-          for (const g of run.glyphs) {
-            if (!g.tofu && g.gid > 0) {
-              hexRun += g.gid.toString(16).padStart(4, '0');
-              const gRec = fontObj.glyphs.glyphs[String(g.gid)];
-              const declaredW = gRec ? Math.round(gRec.advanceWidth * (1000 / upem)) : Math.round(g.advEm * 1000);
-              const corr = declaredW - (g.advEm * 1000) / st;
-              if (Math.abs(corr) > 0.001) {
-                parts.push(`<${hexRun}>`);
-                hexRun = '';
-                parts.push(fmtN(corr));
-              }
-            } else {
-              if (hexRun) {
-                parts.push(`<${hexRun}>`);
-                hexRun = '';
-              }
-              parts.push(fmtN(-(g.advEm * 1000) / st));
-              if (g.tofu) {
-                const bx0 = penPx + 0.07 * s;
-                const bx1 = penPx + g.advEm * s - 0.07 * s;
-                let pathStr = '';
-                [[bx0, 0], [bx1, 0], [bx1, -0.72 * s], [bx0, -0.72 * s]].forEach(([lx, ly], ci) => {
-                  const [ux, uy] = pagePointToContentPoint(
-                    run.x + lx * flow[0] + ly * down[0], run.y + lx * flow[1] + ly * down[1], dims, box, rot,
-                  );
-                  pathStr += `${fmtN(ux)} ${fmtN(uy)} ${ci === 0 ? 'm' : 'l'}\n`;
-                });
-                tofuOps += `${colorStr} RG\n${fmtN(0.06 * s * Math.hypot(F[0], F[1]))} w\n${pathStr}h S\n`;
-              }
-            }
-            penPx += g.advEm * s;
-          }
-          if (hexRun) parts.push(`<${hexRun}>`);
-          if (parts.some((p) => p.startsWith('<'))) {
-            // A faux-oblique run leans by adding the shear ratio of the flow vector to the up column, the same form producers emit.
-            const sk = run.skew || 0;
-            const tmStr = `${fmtN(F[0] * s)} ${fmtN(F[1] * s)} ${fmtN((U[0] + sk * F[0]) * s)} ${fmtN((U[1] + sk * F[1]) * s)} ${fmtN(origin[0])} ${fmtN(origin[1])}`;
-            // Faux-bold replacements restore the original's fill+stroke state; the pen width converts from page px like the tofu box above.
-            const strokedRun = (run.renderMode === 1 || run.renderMode === 2) && run.strokeWidthPx;
-            let strokeOps = '';
-            if (strokedRun) {
-              anyStroked = true;
-              const hexStroke = /^#([0-9a-f]{6})$/i.exec(run.strokeColor || '');
-              const strokeColorStr = hexStroke
-                ? [0, 2, 4].map((p) => fmtN(parseInt(hexStroke[1].slice(p, p + 2), 16) / 255)).join(' ')
-                : '0 0 0';
-              strokeOps = `${run.renderMode} Tr\n${strokeColorStr} RG\n${fmtN(run.strokeWidthPx * Math.hypot(F[0], F[1]))} w\n`;
-              prevRenderMode = run.renderMode;
-            } else if (prevRenderMode !== 0) {
-              strokeOps = '0 Tr\n';
-              prevRenderMode = 0;
-            }
-            let tzOps = '';
-            if (st * 100 !== prevTz) {
-              tzOps = `${fmtN(st * 100)} Tz\n`;
-              prevTz = st * 100;
-            }
-            textOps += `${colorStr} rg\n${strokeOps}${tzOps}${fontEntry.name} 1 Tf\n${tmStr} Tm\n[${parts.join(' ')}] TJ\n`;
-          }
-        }
-        let body = '';
-        if (tofuOps) body += `[] 0 d\n${tofuOps}`;
-        // The splice's q/Q means inherited text state only needs zeroing, never restoring.
-        // Stroked runs also reset the dash and join to the defaults their capture assumed.
-        if (textOps) body += `BT\n0 Tc 0 Tw 100 Tz 0 Tr 0 Ts\n${anyStroked ? '[] 0 d 0 j 0 J\n' : ''}${textOps}ET\n`;
-        if (body) entries.push({ rects, body, placed: false });
-      }
-      if (entries.length > 0) {
-        textEditInsertsByPage.set(i, entries);
-        editFontRefsByPage.set(i, pageFontRefs);
-      }
-    }
-    for (const fe of editFontsByProgram.values()) {
-      const objStrArr = await createEmbeddedFontType0({
-        font: fe.font, firstObjIndex: fe.objN, humanReadable, rawFontBytes: fe.rawBytes || undefined,
-      });
-      for (let j = 0; j < objStrArr.length; j++) {
-        if (objStrArr[j]) editFontObjects.push({ objNum: fe.objN + j, content: objStrArr[j] });
-      }
-    }
+  for (const [i, records] of textPatchesByPage) {
+    /** @type {Map<string, number>} */
+    const refs = new Map();
+    for (const rec of records) for (const f of rec.fonts || []) refs.set(`/${recordFaceTag(f)}`, /** @type {number} */ (faces.refs.get(recordFaceTag(f))));
+    if (refs.size > 0) editFontRefsByPage.set(i, refs);
   }
+  const editFontObjects = faces.objects;
 
   // Incremental update appends new objects but leaves the source's trailer chain in
   // place. For encrypted sources that means /Encrypt stays active and readers will
@@ -525,10 +290,7 @@ export async function overlayPdfText({
       warningHandler,
       scrub,
       redactRegionsByPage,
-      textEditRegionsByPage,
-      textEditGatedByPage,
-      textEditWsByPage,
-      textEditInsertsByPage,
+      textPatchesByPage,
       imageDeleteByPage,
       pathDeleteByPage,
       editFontRefsByPage,
@@ -549,8 +311,8 @@ export async function overlayPdfText({
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || imageDeleteByPage.size > 0 || pathDeleteByPage.size > 0 || textEditRegionsByPage.size > 0
-    || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || imageDeleteByPage.size > 0 || pathDeleteByPage.size > 0
+    || textPatchesByPage.size > 0)
     ? createConversionState() : null;
 
   // With no annotations supplied, nothing re-emits links, so both stay null and source /Link objects pass through untouched.
@@ -642,7 +404,7 @@ export async function overlayPdfText({
       && !(a.type === 'freetext' && isFillTextRow(a)));
     const hasFill = !!fillResult || !!fillTextObjStr;
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
-    const hasTextEdits = textEditRegionsByPage.has(i) || textEditGatedByPage.has(i) || textEditInsertsByPage.has(i);
+    const hasTextEdits = textPatchesByPage.has(i);
     // Deleting a page's last annotation leaves nothing to re-emit, so no condition above marks the page as changed.
     // Its source /Annots still holds the lifted copies, which a skip here would pass through and resurrect.
     const hasLiftedAnnotsToDrop = annotationsPages.length > 0 && pageHasLiftedSourceAnnots(pageInfo.objText, objCache, linkDestInfo);
@@ -669,12 +431,10 @@ export async function overlayPdfText({
         pushObj: pushNewObj,
         humanReadable,
         convertBrokenType3ToPaths,
-        textEditBboxes: textEditRegionsByPage.get(i) || null,
-        textEditGated: textEditGatedByPage.get(i) || null,
-        textEditWsRects: textEditWsByPage.get(i) || null,
-        textEditInserts: textEditInsertsByPage.get(i) || null,
         imageDeletes: imageDeleteByPage.get(i) || null,
         pathDeletes: pathDeleteByPage.get(i) || null,
+        textPatches: textPatchesByPage.get(i) || null,
+        editFontRefs: editFontRefsByPage.get(i) || null,
       });
       if (hasTextEdits || hasImageDeletes || hasPathDeletes) {
         for (const o of stripConvertResult.supersededContentObjNums || []) scrubObjNums.add(o);
@@ -823,7 +583,7 @@ export async function overlayPdfText({
   {
     const catalogObjNum = Number((/^(\d+)/.exec(rootRef) || [])[1]);
     const catalogText = catalogObjNum ? objCache.getObjectText(catalogObjNum) : null;
-    const editsApplied = textEditRegionsByPage.size > 0 || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0;
+    const editsApplied = textPatchesByPage.size > 0;
     const stripStruct = editsApplied && !!catalogText && /\/(StructTreeRoot|MarkInfo)\b/.test(catalogText);
     const wantOutline = !!(outline && catalogText && (outline.length || /\/Outlines\b/.test(catalogText)));
     if (catalogText && (wantOutline || stripStruct || formFieldUpdates.catalogInsertRef)) {

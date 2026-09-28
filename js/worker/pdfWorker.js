@@ -24,7 +24,7 @@ export async function parsePdfPage(args) {
 /**
  * Render a single page to an image data URL, a JPEG/WebP blob, or a transferable ImageBitmap.
  * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
- * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args
+ * edits?: ?RenderEdits }} args
  */
 export async function renderPdfPage(args) {
   return core.renderPage(args);
@@ -41,6 +41,30 @@ export async function getPdfFontBytes(args) {
 /** Every Type 3 font in the file with the outline hash of each glyph, keyed by character code. */
 export async function getPdfType3GlyphHashes() {
   return core.getType3GlyphHashes();
+}
+
+/**
+ * The glyphs of a page's words as the content stream draws them.
+ * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, words: Array<TextEditWordSpec> }} args
+ */
+export async function getPdfLineState(args) {
+  return core.getLineState(args);
+}
+
+/**
+ * The glyphs of a line as a replacement would draw them, for the editor's preview.
+ * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('../pdf/textPatch.js').TextEditRequest }} args
+ */
+export async function previewPdfTextEdit(args) {
+  return core.previewTextEdit(args);
+}
+
+/**
+ * A deletion, style change or replacement of a line's words as content-stream patch records, verified against a re-parse.
+ * @param {{ pageIndex: number, dpi: number, records: ?Array<ContentEdit>, req: import('../pdf/textPatch.js').TextEditRequest, groupId?: string }} args
+ */
+export async function applyPdfTextEdit(args) {
+  return core.applyTextEdit(args);
 }
 
 /**
@@ -75,6 +99,9 @@ if (parentPort) {
       renderPdfPage,
       getPdfFontBytes,
       getPdfType3GlyphHashes,
+      getPdfLineState,
+      previewPdfTextEdit,
+      applyPdfTextEdit,
       getPdfEmbeddedFileBytes,
       unloadPdf,
     })[func](args)

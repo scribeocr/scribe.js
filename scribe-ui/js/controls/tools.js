@@ -1380,14 +1380,14 @@ export async function openDocumentFromFile(file, {
 const EDIT_TEXT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
 
 /**
- * Whether every word of `line` is visible native PDF text, the precondition for editing or deleting it in place.
+ * Whether every word of `line` is visible native PDF text that can be edited or deleted in place.
  * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
  * @param {?import('../../../js/objects/ocrObjects.js').OcrLine} line
  */
 export function nativeLineEligible(doc, line) {
   if (!line || line.words.length === 0) return false;
   const nt = nativeTextForPage(doc, line.page);
-  return line.words.every((w) => !!nt[w.id]);
+  return line.words.every((w) => !!nt[w.id] && !nt[w.id].uneditable);
 }
 
 /**
@@ -1889,7 +1889,7 @@ export function createEditTextTool(scribe) {
             line.words.map((w) => w.text).join(' '),
             { wordStyles: line.words.map(() => ({ [prop]: target })) },
           );
-          if (res) for (const p of res.pages) pages.add(p);
+          if (res && res.pages) for (const p of res.pages) pages.add(p);
         }
         if (pages.size > 0) {
           refreshPages([...pages]);

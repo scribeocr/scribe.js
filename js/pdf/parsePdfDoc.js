@@ -3,13 +3,14 @@ import {
   calcLang, cleanFamilyName, mean50, round3, round6,
 } from '../utils/miscUtils.js';
 import {
-  findXrefOffset, parseXref, getPageObjects, getPageContentStream, findFormXObjects, parseFormMatrix, findRootObjNum,
+  findXrefOffset, parseXref, getPageObjects, getPageContentStream, getPageContentStreams, findFormXObjects, parseFormBBox, parseFormMatrix, findRootObjNum,
 } from './parsePdfUtils.js';
 import { resolveItemDest, buildNameDests, setDestYFrac } from './parseOutline.js';
 import {
   bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes, resolveNumValue, findTopLevelKeyIndex,
 } from './pdfPrimitives.js';
-import { tokenizeContentStream } from './contentStream.js';
+import { formatPdfNumber, serializeContentToken, tokenizeContentStream } from './contentStream.js';
+import { applyTextPatchRecords, patchPageContents } from './textPatch.js';
 import { isFullPageImage } from './ocrPageSelection.js';
 import { layoutFieldValue } from './formFieldLayout.js';
 import { ObjectCache } from './objectCache.js';
@@ -33,6 +34,7 @@ import {
   LayoutDataTable, LayoutDataColumn, LayoutDataTablePage, calcTableBbox,
 } from '../objects/layoutObjects.js';
 import { extractTextFromTables } from '../extractTables.js';
+import { substituteFaceResourceEntries } from './substituteFaces.js';
 
 // Above this size a page skips path parsing, which disables table detection, underline detection, and the path-edit inventory (the page reports path-ineligible).
 // Path rendering is unaffected.
@@ -54,7 +56,7 @@ const PATH_TEXT_H_MAX = 80;
  * Normalize a PDF color to [r,g,b] in 0-1 for cross-color-space comparison.
  * @param {number[]} c
  */
-function colorToRgb(c) {
+export function colorToRgb(c) {
   if (c.length === 1) return [c[0], c[0], c[0]];
   if (c.length === 3) return [c[0], c[1], c[2]];
   if (c.length === 4) {
@@ -68,7 +70,7 @@ function colorToRgb(c) {
  * Format an [r,g,b] (0..1) tuple as a lowercase '#rrggbb' hex string.
  * @param {number[]} rgb
  */
-function rgbToHex(rgb) {
+export function rgbToHex(rgb) {
   /** @param {number} x */
   const clamp = (x) => Math.max(0, Math.min(255, Math.round(x * 255)));
   /** @param {number} x */
@@ -336,6 +338,34 @@ function parseTextColorSpaces(containerObjText, objCache) {
 }
 
 /**
+ * The bounds of a rectangle after a matrix maps its corners, as `[x0, y0, x1, y1]`.
+ * @param {number[]} rect - `[x0, y0, x1, y1]`
+ * @param {number[]} m
+ * @returns {number[]}
+ */
+function transformedRectBounds(rect, m) {
+  const xs = [];
+  const ys = [];
+  for (const [x, y] of [[rect[0], rect[1]], [rect[2], rect[1]], [rect[2], rect[3]], [rect[0], rect[3]]]) {
+    xs.push(m[0] * x + m[2] * y + m[4]);
+    ys.push(m[1] * x + m[3] * y + m[5]);
+  }
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+}
+
+/**
+ * The intersection of two regions, where null stands for no bound.
+ * @param {?number[]} a
+ * @param {?number[]} b
+ * @returns {?number[]}
+ */
+function intersectRects(a, b) {
+  if (!a) return b ? b.slice() : null;
+  if (!b) return a.slice();
+  return [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])];
+}
+
+/**
  * Recursively extract text from Form XObjects referenced by Do operators.
  * @param {string} containerObjText
  * @param {Array<PDFToken>} containerTokens
@@ -348,15 +378,28 @@ function parseTextColorSpaces(containerObjText, objCache) {
  * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState]
  * @param {Map<string, {nInputs: number, tint: object}>} [parentColorSpaces]
+ * @param {?GlyphOpMap} [glyphOpMap]
+ * @param {?Array<ContentEdit>} [records] - The page's edit records.
+ * @param {string} [pathPrefix] - The name path of the enclosing form plus a slash, empty at page level.
+ * @param {?Array<{ name: string, visible: ?number[] }>} [containerDos] - With a glyph-op map, the container's `Do` operators in stream order with the region visible at each.
  */
 function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm,
-  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces) {
+  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces, glyphOpMap = null, records = null, pathPrefix = '', containerDos = null) {
   const chars = [];
   const formXObjects = findFormXObjects(containerObjText, objCache);
   if (formXObjects.size === 0) return chars;
 
   const doOps = findDoOperators(containerTokens, formXObjects, containerCtm, parentTextState);
+  // Both walks list the container's Do operators in stream order, so each form's visible region is the next record of its name.
+  let doCursor = 0;
   for (const doOp of doOps) {
+    /** @type {?number[]} */
+    let visibleAtDo = null;
+    if (containerDos) {
+      while (doCursor < containerDos.length && containerDos[doCursor].name !== doOp.name) doCursor += 1;
+      if (doCursor < containerDos.length) visibleAtDo = containerDos[doCursor].visible;
+      doCursor += 1;
+    }
     const form = formXObjects.get(doOp.name);
     if (visited.has(form.objNum)) continue;
     visited.add(form.objNum);
@@ -365,7 +408,10 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     if (!formObjText) continue;
     const formBytes = objCache.getStreamBytes(form.objNum);
     if (!formBytes) continue;
-    const formContentStream = bytesToLatin1(formBytes);
+    const formPath = `${pathPrefix}${doOp.name}`;
+    const formStream = { kind: /** @type {'form'} */ ('form'), path: formPath };
+    const formPatched = applyTextPatchRecords(bytesToLatin1(formBytes), records, formStream);
+    const formContentStream = formPatched.text;
     const formFonts = parsePageFonts(formObjText, objCache);
     const mergedFonts = new Map([...parentFonts, ...formFonts]);
     const formExtGStates = parseFillAlphaExtGStates(formObjText, objCache);
@@ -379,14 +425,33 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formMatrix = parseFormMatrix(formObjText, objCache);
     const formCtm = matMul(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
+    /** @type {?number[]} */
+    let formVisible = null;
+    if (glyphOpMap) {
+      const bbox = parseFormBBox(formObjText, objCache);
+      formVisible = bbox ? intersectRects(visibleAtDo, transformedRectBounds(bbox, formCtm)) : visibleAtDo;
+      glyphOpMap.stream = formStream;
+      glyphOpMap.streams.push({
+        stream: glyphOpMap.stream,
+        text: formContentStream,
+        tokens: formTokens,
+        segments: formPatched.segments,
+        fonts: mergedFonts,
+        extGStates: mergedExtGStates,
+        colorSpaces: mergedColorSpaces,
+        dos: [],
+      });
+    }
+    const formEntry = glyphOpMap ? glyphOpMap.streams[glyphOpMap.streams.length - 1] : null;
     const formChars = executeTextOperators(
-      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces,
+      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces, glyphOpMap, formVisible,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
     const nestedChars = extractFormXObjectText(
       formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState, mergedColorSpaces,
+      glyphOpMap, records, `${formPath}/`, formEntry ? formEntry.dos : null,
     );
     for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
   }
@@ -519,8 +584,10 @@ const brokenToUnicodeFont = (f) => {
  * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
  * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
  *   Without it only URI links are captured.
+ * @param {?GlyphOpMap} [glyphOpMap] - When given, receives the page's streams, show operators, glyphs and words.
+ * @param {?Array<ContentEdit>} [records] - The page's edit records, whose text patches are applied to its streams before they are parsed.
  */
-export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo) {
+export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo, glyphOpMap = null, records = null) {
   const {
     objText, mediaBox, cropBox, rotate,
   } = page;
@@ -558,8 +625,13 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const pageHeight = Math.round(visualHeightPts * scale);
 
   const fonts = parsePageFonts(objText, objCache, type3GlyphMappings);
+  // A patched stream can name a synthesized substitute face that the page's /Resources do not list.
+  const substituteEntries = substituteFaceResourceEntries(objCache, records);
+  if (substituteEntries) for (const [tag, f] of parsePageFonts(`<</Resources<</Font<<${substituteEntries}>>>>>>`, objCache, type3GlyphMappings)) fonts.set(tag, f);
 
-  const contentStreamText = getPageContentStream(objText, objCache);
+  const contentEntries = getPageContentStreams(objText, objCache);
+  const pagePatched = contentEntries && contentEntries.length > 0 ? patchPageContents(contentEntries, records) : null;
+  const contentStreamText = pagePatched ? pagePatched.text : null;
   if (!contentStreamText) {
     const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
     const pageStats = {
@@ -583,10 +655,27 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const tokens = tokenizeContentStream(contentStreamText);
   const extGStates = parseFillAlphaExtGStates(objText, objCache);
   const textColorSpaces = parseTextColorSpaces(objText, objCache);
-  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces);
+  if (glyphOpMap) {
+    glyphOpMap.stream = { kind: 'page' };
+    glyphOpMap.pageHeightPts = visualHeightPts;
+    glyphOpMap.scale = scale;
+    glyphOpMap.streams.push({
+      stream: glyphOpMap.stream,
+      text: contentStreamText,
+      tokens,
+      segments: pagePatched.segments,
+      fonts,
+      extGStates,
+      colorSpaces: textColorSpaces,
+      dos: [],
+    });
+  }
+  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces, glyphOpMap,
+    glyphOpMap ? [0, 0, visualWidthPts, visualHeightPts] : null);
 
   const formChars = extractFormXObjectText(
-    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces,
+    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces, glyphOpMap, records, '',
+    glyphOpMap ? glyphOpMap.streams[0].dos : null,
   );
   for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
@@ -605,7 +694,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
   const DEDUP_COORD_OFF = 33554432; // 2^25, biases bucket indices non-negative and sits above any index the 0.25 minimum bucket size can produce
   const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
-  /** @type {Map<string, Map<string, Map<number, Set<number>>>>} */
+  /** @type {Map<string, Map<string, Map<number, Map<number, PositionedChar>>>>} */
   const seenByText = new Map();
   const dedupedChars = [];
   for (let i = 0; i < chars.length; i++) {
@@ -619,15 +708,16 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     let byFlags = byFamily.get(ch.fontInfo.familyName);
     if (!byFlags) { byFlags = new Map(); byFamily.set(ch.fontInfo.familyName, byFlags); }
     let coords = byFlags.get(flagsSize);
-    if (!coords) { coords = new Set(); byFlags.set(flagsSize, coords); }
-    let isDup = false;
-    for (let dx = -1; dx <= 1 && !isDup; dx++) {
-      for (let dy = -1; dy <= 1 && !isDup; dy++) {
-        if (coords.has((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF))) isDup = true;
+    if (!coords) { coords = new Map(); byFlags.set(flagsSize, coords); }
+    /** @type {?PositionedChar} */
+    let dupOf = null;
+    for (let dx = -1; dx <= 1 && !dupOf; dx++) {
+      for (let dy = -1; dy <= 1 && !dupOf; dy++) {
+        dupOf = coords.get((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF)) || null;
       }
     }
-    if (isDup) continue;
-    coords.add((xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF));
+    if (dupOf) continue;
+    coords.set((xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF), ch);
     dedupedChars.push(ch);
   }
   chars.length = 0;
@@ -1085,7 +1175,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
 
   const {
     pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, provisionalTables, fillGlyphBoxes,
-  } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
+  } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath, glyphOpMap);
 
   // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
   // Rects consumed as text underlines are excluded: on a page where every line carries a hyperlink underline, treating them as separators would shatter each paragraph into single lines.
@@ -1622,9 +1712,112 @@ export function detectPdfType(pdfBytes) {
  *   artifact?: boolean,
  *   structTag?: string,
  *   mcid?: (number|null),
- *   _perpDist?: number
+ *   _perpDist?: number,
+ *   _src?: { op: number, elem: number, byte: number, nBytes: number, advPx: number, space: boolean, tx: number, ty: number, adv: number }
  * }} PositionedChar
  */
+
+/**
+ * A font of a page's resources as parsePageFonts builds it.
+ * Only the fields that text edits read are listed.
+ * @typedef {{
+ *   fontObjNum: ?number,
+ *   toUnicode: Map<number, string>,
+ *   encodingUnicode: Map<number, string>,
+ *   widths: Map<number, number>,
+ *   widthsUnreliable: boolean,
+ *   defaultWidth: number,
+ *   ascent: number,
+ *   descent: number,
+ *   bold: boolean,
+ *   italic: boolean,
+ *   type0: ?object,
+ *   type3: ?object,
+ *   isCIDFont: boolean,
+ *   validCIDs: ?Set<number>,
+ *   charCodeToCID: ?Map<number, number>,
+ *   codespaceRanges: ?Array<{ bytes: number, low: number, high: number }>,
+ *   verticalMode: boolean
+ * }} PageFont
+ */
+
+/**
+ * @typedef {{
+ *   stream: TextPatchStream,
+ *   streamIdx: number,
+ *   tokIdx: number,
+ *   start: number,
+ *   end: number,
+ *   op: string,
+ *   tm: number[], tlm: number[], ctm: number[],
+ *   tc: number, tw: number, tz: number, tl: number, trise: number, tr: number,
+ *   fontTag: ?string, fontObjNum: ?number, fontSize: number, font: ?PageFont,
+ *   textColor: number[], strokeColor: number[], lineWidth: number, fillAlpha: number,
+ *   fillColorSrc: string, strokeColorSrc: string,
+ *   tmAfter: number[], tlmAfter: number[],
+ *   visible: ?number[]
+ * }} ShowOp
+ *   One show operator as the executor ran it.
+ *   `start` and `end` span its operands and operator in its stream.
+ *   `fillColorSrc` and `strokeColorSrc` are the content-stream operators that set its fill and stroke colors.
+ *   `visible` is the region the operator paints into, in the page frame.
+ *   It is the page box cut down by the clips and form boxes in force.
+ *   A non-rectangular clip counts as its bounding box, so the region is never smaller than what the page shows.
+ */
+
+/**
+ * @typedef {{
+ *   stream: TextPatchStream,
+ *   streams: Array<{ stream: TextPatchStream, text: string, tokens: Array<PDFToken>, segments: Array<import('./textPatch.js').PatchSegment>,
+ *     fonts: Map<string, PageFont>, extGStates: Map<string, { fillAlpha: ?number }>, colorSpaces: Map<string, {nInputs: number, tint: object}>,
+ *     dos: Array<{ name: string, visible: ?number[] }> }>,
+ *   ops: Array<ShowOp>,
+ *   words: Map<string, Array<PositionedChar>>,
+ *   glyphs: Array<PositionedChar>,
+ *   pageHeightPts: number,
+ *   scale: number
+ * }} GlyphOpMap
+ *   Maps each glyph a page's streams drew to the show op and the bytes that drew it, and carries the ops' state and the streams they index.
+ *   `glyphs` lists every glyph the streams drew, in stream order and each once, before the parse merged duplicates.
+ *   `words` maps each word to the glyphs that survived the merge.
+ *   Each stream keeps the resource maps its operators ran with, so one of them can run again in a rewritten form.
+ */
+
+/**
+ * Run a rewritten show operator under the state its original ran in.
+ * The chars come out in the map's page-pixel frame, as the parser would place them once the rewrite is in the stream.
+ * @param {GlyphOpMap} glyphOpMap
+ * @param {ShowOp} op - The operator the rewrite replaces.
+ * @param {string} text - The content-stream text that replaces the operator.
+ * @param {Map<string, PageFont>} extraFonts - Faces the rewrite names that the stream's resources do not list.
+ * @param {number} scale - Page pixels per point, as the map was parsed at.
+ * @returns {{ chars: Array<PositionedChar>, ops: Array<ShowOp> }} The chars, each stamped with its place in one of `ops`, which carry the original's visible region.
+ */
+export function executeRewrittenOperator(glyphOpMap, op, text, extraFonts, scale) {
+  const stream = glyphOpMap.streams[op.streamIdx];
+  /** @type {GlyphOpMap} */
+  const run = {
+    stream: op.stream, streams: [{ ...stream, dos: [] }], ops: [], words: new Map(), glyphs: [], pageHeightPts: glyphOpMap.pageHeightPts,
+  };
+  const fonts = extraFonts.size > 0 ? new Map([...stream.fonts, ...extraFonts]) : stream.fonts;
+  const extGStates = new Map(stream.extGStates);
+  extGStates.set('GSpreview', { fillAlpha: op.fillAlpha });
+  // The line-advancing forms move the line matrix before drawing, so they start from the line matrix and its leading.
+  const lineOp = op.op === "'" || op.op === '"';
+  const preamble = [
+    'BT',
+    `${(lineOp ? op.tlm : op.tm).map(formatPdfNumber).join(' ')} Tm`,
+    lineOp ? `${formatPdfNumber(op.tl)} TL` : '',
+    `${formatPdfNumber(op.tc)} Tc ${formatPdfNumber(op.tw)} Tw ${formatPdfNumber(op.tz)} Tz ${formatPdfNumber(op.trise)} Ts ${op.tr} Tr`,
+    op.fontTag ? `/${op.fontTag} ${formatPdfNumber(op.fontSize)} Tf` : '',
+    op.fillColorSrc,
+    op.strokeColorSrc,
+    `${formatPdfNumber(op.lineWidth)} w /GSpreview gs`,
+  ].join('\n');
+  const tokens = tokenizeContentStream(`${preamble}\n${text}\nET`);
+  const chars = executeTextOperators(tokens, fonts, scale, glyphOpMap.pageHeightPts, op.ctm, extGStates, undefined, stream.colorSpaces, run, op.visible);
+  return { chars, ops: run.ops };
+}
 
 /**
  * Execute text operators from tokenized content stream and extract positioned characters.
@@ -1636,10 +1829,32 @@ export function detectPdfType(pdfBytes) {
  * @param {Map<string, { fillAlpha: ?number }>} [extGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
  * @param {Map<string, {nInputs: number, tint: object}>} [colorSpaces] - Separation/DeviceN color spaces from /Resources
+ * @param {?GlyphOpMap} [glyphOpMap] - When given, every show operator is recorded with the text state it ran in, and every emitted character is stamped with its place in that operator.
+ * @param {?number[]} [initialVisible] - With a glyph-op map, the region visible when the stream starts, in the page frame.
  * @returns {Array<PositionedChar>}
  */
-function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState, colorSpaces) {
+function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState, colorSpaces, glyphOpMap = null, initialVisible = null) {
   const chars = /** @type {Array<PositionedChar>} */ ([]);
+  const streamIdx = glyphOpMap ? glyphOpMap.streams.length - 1 : -1;
+  // The visible region and the path under construction, kept only for a glyph-op map, so an edit can tell a glyph it would push out of view.
+  /** @type {?number[]} */
+  let visible = initialVisible ? initialVisible.slice() : null;
+  /** @type {?number[]} */
+  let path = null;
+  let pendingClip = false;
+  const addPathPoint = (/** @type {number} */ x, /** @type {number} */ y) => {
+    const px = ctm[0] * x + ctm[2] * y + ctm[4];
+    const py = ctm[1] * x + ctm[3] * y + ctm[5];
+    if (!path) path = [px, py, px, py];
+    else {
+      path[0] = Math.min(path[0], px);
+      path[1] = Math.min(path[1], py);
+      path[2] = Math.max(path[2], px);
+      path[3] = Math.max(path[3], py);
+    }
+  };
+  /** @type {?string} */
+  let currentFontTag = null;
 
   // Graphics state
   let ctm = initialCtm ? initialCtm.slice() : [1, 0, 0, 1, 0, 0]; // current transformation matrix
@@ -1652,10 +1867,16 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   let strokeColor = [0];
   let strokeTintCS = null;
   let lineWidth = 1;
+  // The operators that last set each color, kept only for a glyph-op map, so an edit can restore the page's ink after its own.
+  let fillColorSrc = '0 g';
+  let strokeColorSrc = '0 G';
+  let fillCsSrc = '';
+  let strokeCsSrc = '';
   /**
    * @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number,
-   *   fontSize: number, currentFont: any, textColor: number[], fillAlpha: number, fillTintCS: ?{nInputs: number, tint: object},
-   *   strokeColor: number[], strokeTintCS: ?{nInputs: number, tint: object}, lineWidth: number }>}
+   *   fontSize: number, currentFont: any, currentFontTag: ?string, textColor: number[], fillAlpha: number, fillTintCS: ?{nInputs: number, tint: object},
+   *   strokeColor: number[], strokeTintCS: ?{nInputs: number, tint: object}, lineWidth: number,
+   *   fillColorSrc: string, strokeColorSrc: string, fillCsSrc: string, strokeCsSrc: string, visible: ?number[] }>}
    */
   const gsStack = [];
 
@@ -1702,12 +1923,18 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           trise,
           fontSize,
           currentFont,
+          currentFontTag,
           textColor: textColor.slice(),
           fillAlpha,
           fillTintCS,
           strokeColor: strokeColor.slice(),
           strokeTintCS,
           lineWidth,
+          fillColorSrc,
+          strokeColorSrc,
+          fillCsSrc,
+          strokeCsSrc,
+          visible: visible ? visible.slice() : null,
         });
         operandStack.length = 0;
         break;
@@ -1724,12 +1951,18 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           trise = saved.trise;
           fontSize = saved.fontSize;
           currentFont = saved.currentFont;
+          currentFontTag = saved.currentFontTag;
           textColor = saved.textColor;
           fillAlpha = saved.fillAlpha;
           fillTintCS = saved.fillTintCS;
           strokeColor = saved.strokeColor;
           strokeTintCS = saved.strokeTintCS;
           lineWidth = saved.lineWidth;
+          fillColorSrc = saved.fillColorSrc;
+          strokeColorSrc = saved.strokeColorSrc;
+          fillCsSrc = saved.fillCsSrc;
+          strokeCsSrc = saved.strokeCsSrc;
+          visible = saved.visible;
         }
         operandStack.length = 0;
         break;
@@ -1782,7 +2015,8 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         const size = operandStack.length >= 2 ? operandStack[operandStack.length - 1] : null;
         const name = operandStack.length >= 2 ? operandStack[operandStack.length - 2] : null;
         if (name && name.type === 'name' && size && size.type === 'number') {
-          currentFont = fonts.get(decodePdfName(name.value)) || null;
+          currentFontTag = decodePdfName(name.value);
+          currentFont = fonts.get(currentFontTag) || null;
           // Preserve the sign: PDFlib emits a negative font size with a Y-flip CTM and negative Tz that compose to a positive overall scale.
           // Taking abs() here flips the sign of the glyph advances and reverses the glyph order within each line.
           fontSize = size.value;
@@ -1868,77 +2102,76 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         break;
       }
 
-      case 'Tj': {
-        if (operandStack.length >= 1 && currentFont) {
-          const strTok = operandStack[operandStack.length - 1];
-          if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-          } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
+      case 'Tj':
+      case 'TJ':
+      case "'":
+      case '"': {
+        // The show op records the state the operator starts in, before the line-advancing forms move to the next line.
+        /** @type {?ShowOp} */
+        const showOp = glyphOpMap ? {
+          stream: glyphOpMap.stream,
+          streamIdx,
+          tokIdx: i,
+          start: operandStack.length > 0 && typeof operandStack[0].start === 'number' ? operandStack[0].start : tok.start,
+          end: tok.start + op.length,
+          op,
+          tm: tm.slice(),
+          tlm: tlm.slice(),
+          ctm: ctm.slice(),
+          tc,
+          tw,
+          tz,
+          tl,
+          trise,
+          tr,
+          fontTag: currentFontTag,
+          fontObjNum: currentFont && Number.isFinite(currentFont.fontObjNum) ? currentFont.fontObjNum : null,
+          fontSize,
+          font: currentFont,
+          textColor: textColor.slice(),
+          strokeColor: strokeColor.slice(),
+          lineWidth,
+          fillAlpha,
+          fillColorSrc,
+          strokeColorSrc,
+          tmAfter: tm,
+          tlmAfter: tlm,
+          visible: visible ? visible.slice() : null,
+        } : null;
+        const opIdx = glyphOpMap ? glyphOpMap.ops.length : -1;
+        if (op === "'" || op === '"') {
+          if (op === '"' && operandStack.length >= 3) {
+            tw = operandStack[operandStack.length - 3].value;
+            tc = operandStack[operandStack.length - 2].value;
+            // The glyphs are drawn with the operands' spacing, so the show op records that instead of the spacing the operator starts in.
+            if (showOp) {
+              showOp.tc = tc;
+              showOp.tw = tw;
+            }
           }
+          tlm = [tlm[0], tlm[1], tlm[2], tlm[3], -tl * tlm[2] + tlm[4], -tl * tlm[3] + tlm[5]];
+          tm = tlm.slice();
         }
-        operandStack.length = 0;
-        break;
-      }
-
-      case 'TJ': {
         if (operandStack.length >= 1 && currentFont) {
-          const arrTok = operandStack[operandStack.length - 1];
-          if (arrTok.type === 'array') {
-            for (const elem of arrTok.value) {
-              if (elem.type === 'hexstring') {
-                showHexString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-              } else if (elem.type === 'string') {
-                showLiteralString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-              } else if (elem.type === 'number') {
-                const adjustment = elem.value / 1000 * fontSize * tz / 100;
-                tm[4] -= adjustment * tm[0];
-                tm[5] -= adjustment * tm[1];
-              }
+          const operand = operandStack[operandStack.length - 1];
+          const elems = op === 'TJ' ? (operand.type === 'array' ? operand.value : []) : [operand];
+          for (let ei = 0; ei < elems.length; ei++) {
+            const elem = elems[ei];
+            if (elem.type === 'hexstring') {
+              showHexString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts, opIdx, ei);
+            } else if (elem.type === 'string') {
+              showLiteralString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts, opIdx, ei);
+            } else if (elem.type === 'number') {
+              const adjustment = elem.value / 1000 * fontSize * tz / 100;
+              tm[4] -= adjustment * tm[0];
+              tm[5] -= adjustment * tm[1];
             }
           }
         }
-        operandStack.length = 0;
-        break;
-      }
-
-      case "'": {
-        const txP = 0;
-        const tyP = -tl;
-        tlm = [tlm[0], tlm[1], tlm[2], tlm[3],
-          txP * tlm[0] + tyP * tlm[2] + tlm[4],
-          txP * tlm[1] + tyP * tlm[3] + tlm[5]];
-        tm = tlm.slice();
-        if (operandStack.length >= 1 && currentFont) {
-          const strTok = operandStack[operandStack.length - 1];
-          if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-          } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-          }
-        }
-        operandStack.length = 0;
-        break;
-      }
-
-      case '"': {
-        if (operandStack.length >= 3) {
-          tw = operandStack[operandStack.length - 3].value;
-          tc = operandStack[operandStack.length - 2].value;
-        }
-        const txQ = 0;
-        const tyQ = -tl;
-        tlm = [tlm[0], tlm[1], tlm[2], tlm[3],
-          txQ * tlm[0] + tyQ * tlm[2] + tlm[4],
-          txQ * tlm[1] + tyQ * tlm[3] + tlm[5]];
-        tm = tlm.slice();
-        if (operandStack.length >= 1 && currentFont) {
-          const strTok = operandStack[operandStack.length - 1];
-          if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-          } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
-          }
+        if (showOp) {
+          showOp.tmAfter = tm.slice();
+          showOp.tlmAfter = tlm.slice();
+          glyphOpMap.ops.push(showOp);
         }
         operandStack.length = 0;
         break;
@@ -1948,18 +2181,21 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       case 'g': case 'rg': case 'k':
         textColor = operandStack.map((t) => t.value);
         fillTintCS = null;
+        if (glyphOpMap) { fillColorSrc = `${operandStack.map(serializeContentToken).join(' ')} ${op}`; fillCsSrc = ''; }
         operandStack.length = 0;
         break;
 
       case 'G': case 'RG': case 'K':
         strokeColor = operandStack.map((t) => t.value);
         strokeTintCS = null;
+        if (glyphOpMap) { strokeColorSrc = `${operandStack.map(serializeContentToken).join(' ')} ${op}`; strokeCsSrc = ''; }
         operandStack.length = 0;
         break;
 
       case 'cs': {
         const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
         fillTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
+        if (glyphOpMap) { fillCsSrc = `${operandStack.map(serializeContentToken).join(' ')} cs`; fillColorSrc = fillCsSrc; }
         operandStack.length = 0;
         break;
       }
@@ -1967,6 +2203,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       case 'CS': {
         const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
         strokeTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
+        if (glyphOpMap) { strokeCsSrc = `${operandStack.map(serializeContentToken).join(' ')} CS`; strokeColorSrc = strokeCsSrc; }
         operandStack.length = 0;
         break;
       }
@@ -1982,6 +2219,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           }
         }
         textColor = resolved || operandStack.map((t) => t.value);
+        if (glyphOpMap) fillColorSrc = `${fillCsSrc ? `${fillCsSrc} ` : ''}${operandStack.map(serializeContentToken).join(' ')} ${op}`;
         operandStack.length = 0;
         break;
       }
@@ -1996,6 +2234,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           }
         }
         strokeColor = resolved || operandStack.map((t) => t.value);
+        if (glyphOpMap) strokeColorSrc = `${strokeCsSrc ? `${strokeCsSrc} ` : ''}${operandStack.map(serializeContentToken).join(' ')} ${op}`;
         operandStack.length = 0;
         break;
       }
@@ -2019,6 +2258,43 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         operandStack.length = 0;
         break;
       }
+
+      // Path construction, clipping and Do, kept only for a glyph-op map.
+      // The region an operator paints into is the page box cut down by the clips in force.
+      case 'm': case 'l':
+        if (visible && operandStack.length >= 2) addPathPoint(operandStack[operandStack.length - 2].value, operandStack[operandStack.length - 1].value);
+        operandStack.length = 0;
+        break;
+      case 'c': case 'v': case 'y':
+        if (visible) for (let k = 0; k + 1 < operandStack.length; k += 2) addPathPoint(operandStack[k].value, operandStack[k + 1].value);
+        operandStack.length = 0;
+        break;
+      case 're':
+        if (visible && operandStack.length >= 4) {
+          const [x, y, w, h] = operandStack.slice(operandStack.length - 4).map((t) => t.value);
+          addPathPoint(x, y);
+          addPathPoint(x + w, y);
+          addPathPoint(x + w, y + h);
+          addPathPoint(x, y + h);
+        }
+        operandStack.length = 0;
+        break;
+      case 'W': case 'W*':
+        pendingClip = true;
+        operandStack.length = 0;
+        break;
+      case 'n': case 'f': case 'F': case 'f*': case 'B': case 'B*': case 'b': case 'b*': case 'S': case 's':
+        if (pendingClip && visible) {
+          visible = path ? intersectRects(visible, path) : [0, 0, 0, 0];
+        }
+        pendingClip = false;
+        path = null;
+        operandStack.length = 0;
+        break;
+      case 'Do':
+        if (glyphOpMap && operandStack.length >= 1) glyphOpMap.streams[streamIdx].dos.push({ name: operandStack[operandStack.length - 1].value, visible: visible ? visible.slice() : null });
+        operandStack.length = 0;
+        break;
 
       default:
         operandStack.length = 0;
@@ -2049,6 +2325,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         }
         if (inArtifact) chars[ci].artifact = true;
         if (structTag) { chars[ci].structTag = structTag; chars[ci].mcid = mcid; }
+        if (glyphOpMap) glyphOpMap.glyphs.push(chars[ci]);
       }
     }
   }
@@ -2057,9 +2334,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
 }
 
 /**
- * Decode hex string to a latin1 byte string and delegate to showLiteralString,
- * which handles both CID (2-byte / mixed-width via codespace ranges) and simple
- * fonts uniformly.
+ * Decode a hex string operand and show its characters.
  * @param {string} hex
  * @param {object} font
  * @param {number} fontSize
@@ -2073,17 +2348,19 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
  * @param {Array<PositionedChar>} chars
  * @param {number} scale
  * @param {number} pageHeightPts - page height in PDF points
+ * @param {number} [opIdx] - Index of the show operator in the glyph-op map, or -1 without one.
+ * @param {number} [elemIdx] - Index of the string within a TJ array, 0 for the other show operators.
  */
-function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts) {
+function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts, opIdx = -1, elemIdx = 0) {
   let str = '';
   for (let i = 0; i + 1 <= hex.length; i += 2) {
     str += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16));
   }
-  showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
+  showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts, opIdx, elemIdx);
 }
 
 /**
- * Decode literal string and show characters (for simple encodings).
+ * Decode literal string and show characters.
  * @param {string} str
  * @param {any} font
  * @param {number} fontSize
@@ -2097,10 +2374,18 @@ function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, char
  * @param {Array<PositionedChar>} chars
  * @param {number} scale
  * @param {number} pageHeightPts
+ * @param {number} [opIdx] - Index of the show operator in the glyph-op map, or -1 without one.
+ * @param {number} [elemIdx] - Index of the string within a TJ array, 0 for the other show operators.
  */
-function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts) {
+function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts, opIdx = -1, elemIdx = 0) {
   const hScale = Math.hypot(tm[0] * ctm[0] + tm[1] * ctm[2], tm[0] * ctm[1] + tm[1] * ctm[3]);
-  const vScale = Math.hypot(tm[2] * ctm[0] + tm[3] * ctm[2], tm[2] * ctm[1] + tm[3] * ctm[3]);
+  // A faux-oblique shear lengthens the y axis without making the glyphs taller, so vScale is the y axis's extent perpendicular to the x axis.
+  const trmA = tm[0] * ctm[0] + tm[1] * ctm[2];
+  const trmB = tm[0] * ctm[1] + tm[1] * ctm[3];
+  const trmC = tm[2] * ctm[0] + tm[3] * ctm[2];
+  const trmD = tm[2] * ctm[1] + tm[3] * ctm[3];
+  const vScale = hScale > 0 ? Math.abs(trmA * trmD - trmB * trmC) / hScale : Math.hypot(trmC, trmD);
+  let byteOff = 0;
 
   const dirX = tm[0] * ctm[0] + tm[1] * ctm[2];
   const dirY = -(tm[0] * ctm[1] + tm[1] * ctm[3]);
@@ -2119,6 +2404,8 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
   const isCID = font.type0 || font.isCIDFont;
   const csRanges = font.codespaceRanges;
   for (const { charCode, numBytes } of decodeTextCodes(str, isCID ? csRanges : null, isCID ? 2 : 1)) {
+    const codeByte = byteOff;
+    byteOff += numBytes;
     const toUnicodeValue = font.toUnicode.get(charCode);
     const encodingValue = font.encodingUnicode?.get(charCode);
     let unicode = toUnicodeValue || encodingValue;
@@ -2179,11 +2466,16 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const pageX = ctm[0] * ox + ctm[2] * oy + ctm[4];
     const pageY = ctm[1] * ox + ctm[3] * oy + ctm[5];
 
+    const isWordSpace = numBytes === 1 && charCode === 0x20;
+    const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
+
     if (!dropFallbackControl && !dropNoTextMapping) {
       // Edit previews lean their glyphs by this ratio.
       // The italic flag alone cannot reproduce the lean.
-      const matrixShear = Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05
-        ? Math.round((tm[2] / tm[0]) * 1e4) / 1e4 : 0;
+      // Projecting the y axis onto the x axis keeps the ratio the same when the line is rotated.
+      const shearDen = tm[0] * tm[0] + tm[1] * tm[1];
+      const shearRaw = shearDen > 0 ? (tm[0] * tm[2] + tm[1] * tm[3]) / shearDen : 0;
+      const matrixShear = Math.abs(shearRaw) > 0.05 ? Math.round(shearRaw * 1e4) / 1e4 : 0;
       // The drawn glyph is this many times its normal width at the emitted fontSize.
       const matrixStretch = vScale > 0 ? Math.round(((hScale * tz) / (100 * vScale)) * 1e4) / 1e4 : 1;
       // OpenType superior figures (InDesign's sups feature) draw the superscript entirely in glyph ink.
@@ -2214,10 +2506,13 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         dirX,
         dirY,
       });
+      if (opIdx >= 0) {
+        chars[chars.length - 1]._src = {
+          op: opIdx, elem: elemIdx, byte: codeByte, nBytes: numBytes, advPx: advance * hScale * scale, space: isWordSpace, tx: tm[4], ty: tm[5], adv: advance,
+        };
+      }
     }
 
-    const isWordSpace = numBytes === 1 && charCode === 0x20;
-    const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
     tm[4] += advance * tm[0];
     tm[5] += advance * tm[1];
   }
@@ -2333,8 +2628,11 @@ function convertDetectedTable(dt, dataTablePage, pageObj) {
  * @param {number} [boxOriginX] - X origin of effective page box in points
  * @param {number} [boxOriginY] - Y origin of effective page box in points
  * @param {boolean} [pageHasMath] - page contains mathematics (enables the built-up-math line rule)
+ * @param {?GlyphOpMap} [glyphOpMap] - When given, receives each word's characters under the word's id.
  */
-export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0, pageHasMath = false) {
+export function groupCharsIntoPage(
+  chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0, pageHasMath = false, glyphOpMap = null,
+) {
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
   pageObj.textSource = 'pdf';
   const langSet = new Set();
@@ -3477,6 +3775,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       };
 
       const wordID = `word_${n + 1}_${pageObj.lines.length + 1}_${wi + 1}`;
+      if (glyphOpMap) glyphOpMap.words.set(wordID, wordChars);
 
       // Where a lone symbol glyph is actually drawn, for the fill detector's checkbox arm.
       // The bbox above is the descriptor's em box, which for symbol fonts describes the Latin face they were cut from, so a checkbox glyph's square can sit a quarter of its height below it.
@@ -3519,6 +3818,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         /** @type {NativeTextWord} */
         const ntEntry = { baselineY: round3(wordChars[0].y) };
         if (Number.isFinite(firstAlphaNum._font?.fontObjNum)) ntEntry.fontObjNum = firstAlphaNum._font.fontObjNum;
+        // The edit path re-typesets along a horizontal pen with the font's own codes, which a Type 3 font or vertical writing does not give it.
+        if (wordChars.some((c) => c._font && (c._font.type3 || c._font.verticalMode))) ntEntry.uneditable = true;
         // Faux-bold words are redrawn with the same stroke, or the edit visibly thins them.
         if ((firstAlphaNum.renderMode === 1 || firstAlphaNum.renderMode === 2) && firstAlphaNum.strokeWidthPx > 0) {
           ntEntry.renderMode = firstAlphaNum.renderMode;
@@ -3626,7 +3927,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       const ntEntry = nativeText[wordID];
       if (ntEntry) {
         ntEntry.penX = wordChars.map((c) => round3(c.x));
-        if (wordChars.some((c) => c.skew)) ntEntry.skew = wordChars.map((c) => c.skew || 0);
         if (wordChars.some((c) => c.stretch)) ntEntry.stretch = wordChars.map((c) => c.stretch || 0);
         // A character recorded later replaces a placeholder's U+E000 + code text in place, so the code is kept to find the glyph again.
         const placeholderCode = (c) => (c._font?.type3 && Number.isInteger(c._charCode) && c.text === String.fromCodePoint(0xE000 + c._charCode) ? c._charCode : -1);

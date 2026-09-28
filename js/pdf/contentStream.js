@@ -369,25 +369,22 @@ export function tokenizeContentStream(streamText) {
 
 /**
  * Format a JS number for emission into a PDF content stream.
+ * Fixed notation, since a PDF number cannot have an exponent.
  * @param {number} n
  */
 export function formatPdfNumber(n) {
   if (!Number.isFinite(n)) return '0';
   if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
-  const s = String(n);
-  if (!s.includes('e') && !s.includes('E')) return s;
-  const absN = Math.abs(n);
-  if (absN === 0) return '0';
-  const expDigits = Math.max(0, Math.ceil(-Math.log10(absN)));
-  const fixed = n.toFixed(Math.min(expDigits + 6, 20));
-  return fixed.replace(/\.?0+$/, '');
+  const decimals = Math.min(20, Math.max(8, Math.ceil(-Math.log10(Math.abs(n))) + 6));
+  const fixed = n.toFixed(decimals).replace(/\.?0+$/, '');
+  return fixed === '-0' ? '0' : fixed;
 }
 
 /**
  * Re-encode a tokenizer token as PDF content-stream syntax.
  * @param {PDFToken} t
  */
-function serializeContentToken(t) {
+export function serializeContentToken(t) {
   switch (t.type) {
     case 'name':
       return `/${t.value}`;

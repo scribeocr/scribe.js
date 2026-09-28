@@ -2,8 +2,9 @@ import {
   findXrefOffset, getPageContentStreams, getPageObjects, parseXref, xrefSectionIsStream,
 } from '../../pdf/parsePdfUtils.js';
 import {
-  formatPdfNumber, tokenizeContentStream,
+  formatPdfNumber, serializeContentToken, tokenizeContentStream,
 } from '../../pdf/contentStream.js';
+import { mergeResources } from '../../pdf/pdfPrimitives.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import {
   extractType3Fonts, extractType3DistinctGlyphs, parsePageFonts, parseType3Font,
@@ -11,39 +12,10 @@ import {
 import opentype from '../../font-parser/src/index.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { encodeStreamObject } from './writePdfStreams.js';
-import {
-  buildReplacementPageDict, mergeResources, resolvePageResources,
-} from './pdfPageRewrite.js';
+import { buildReplacementPageDict, resolvePageResources } from './pdfPageRewrite.js';
 import {
   buildIncrementalXrefAndTrailer, parseTrailerInfo,
 } from './pdfObjectGraph.js';
-
-/**
- * Re-serialize a tokenized PDF content-stream operand.
- * @param {{type: string, value: any}} t
- * @returns {string}
- */
-function serializeOperand(t) {
-  if (t.type === 'name') return `/${t.value}`;
-  if (t.type === 'number') return formatPdfNumber(t.value);
-  if (t.type === 'hexstring') return `<${t.value}>`;
-  if (t.type === 'dict') return t.value;
-  if (t.type === 'string') {
-    let out = '(';
-    for (let i = 0; i < t.value.length; i++) {
-      const c = t.value.charCodeAt(i);
-      if (c === 0x28 || c === 0x29 || c === 0x5C) out += `\\${t.value[i]}`;
-      else if (c < 0x20 || c > 0x7E) out += `\\${c.toString(8).padStart(3, '0')}`;
-      else out += t.value[i];
-    }
-    return `${out})`;
-  }
-  if (t.type === 'array') return `[${t.value.map(serializeOperand).join(' ')}]`;
-  if (t.type === 'boolean') return t.value ? 'true' : 'false';
-  if (t.type === 'null') return 'null';
-  if (t.type === 'inlineImage') return `BI\n${t.value.dictText}\nID\n${t.value.imageData}\nEI`;
-  return '';
-}
 
 /**
  * Recode a 1-byte text-show operand into a 2-byte CID hex string using the
@@ -166,7 +138,7 @@ function rewriteStreamForType3Replacement(streamText, charCodeToGidByTag, gidToA
 
   const flushOperandsVerbatim = () => {
     for (let i = 0; i < operandBuf.length; i++) {
-      out.push(serializeOperand(operandBuf[i]));
+      out.push(serializeContentToken(operandBuf[i]));
       out.push(i + 1 < operandBuf.length ? ' ' : '');
     }
     operandBuf.length = 0;
@@ -200,7 +172,7 @@ function rewriteStreamForType3Replacement(streamText, charCodeToGidByTag, gidToA
         const recoded = recodeOperand(operandBuf[opIdx], op, map, advMap);
         if (recoded !== null) {
           for (let i = 0; i < opIdx; i++) {
-            out.push(serializeOperand(operandBuf[i]));
+            out.push(serializeContentToken(operandBuf[i]));
             out.push(' ');
           }
           if (typeof recoded === 'string') {

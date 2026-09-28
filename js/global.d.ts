@@ -432,104 +432,6 @@ declare global {
 
     type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink | AnnotationField | AnnotationInk | AnnotationStamp;
 
-    /**
-     * One removed word's glyph identities.
-     * The arrays are index-aligned per glyph, with positions in the page-pixel frame.
-     */
-    type TextEditGlyphWord = {
-        /**
-         * Per-glyph unicode strings, where a ligature glyph is one entry.
-         * A null entry has no recoverable unicode and matches on origin and font alone.
-         */
-        chars: (string | null)[];
-        /** Per-glyph pen-origin x. */
-        x: number[];
-        /** Per-glyph pen-origin (baseline) y. */
-        y: number[];
-        fontObjNum?: number;
-    };
-
-    /**
-     * Visible source-PDF text slated for removal.
-     * Vector paths, images, and annotations under the rects are untouched.
-     */
-    type TextEditDelete = {
-        type: 'deleteText';
-        id: string;
-        /** Regions whose glyphs are removed, page coordinates (top-left origin, same frame as OCR words). */
-        rects: bbox[];
-        /**
-         * When present, a rect removes only the glyphs matching these identities, so visually-overlapping other text survives.
-         * Records without identities (legacy sessions) remove every glyph under their rects.
-         */
-        glyphs?: TextEditGlyphWord[];
-        /**
-         * Bands over the deleted lines in which non-marking whitespace glyphs are struck too, page coordinates.
-         * A line's space glyphs sit between its words rather than inside them, so without these bands they survive as selectable remnants.
-         */
-        wsRects?: bbox[];
-        /** Ties together the records of one user action. */
-        groupId?: string;
-    };
-
-    /**
-     * One same-font stretch of replacement glyphs, drawn from a fixed baseline origin.
-     * Geometry is in the page-pixel frame.
-     * Consumers draw the glyphs verbatim, so the raster, editor, and export cannot disagree.
-     */
-    type TextEditRun = {
-        x: number;
-        y: number;
-        /** Line orientation (quarter-turns), same convention as OCR lines. */
-        orientation: number;
-        sizePx: number;
-        /** Fill color, `#rrggbb`. */
-        color: string;
-        /** Text render mode of the replaced faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */
-        renderMode?: number;
-        /** Stroke pen width in page pixels, present with `renderMode`. */
-        strokeWidthPx?: number;
-        /** Stroke color, `#rrggbb`; black when absent. */
-        strokeColor?: string;
-        /** Shear ratio of faux-oblique text (x offset per unit above the baseline). Absent for upright text. */
-        skew?: number;
-        /**
-         * Horizontal glyph scale of a fitted substitute face.
-         * The run's `advEm` values already include it.
-         */
-        stretch?: number;
-        font: { kind: 'orig', fontObjNum: number } | { kind: 'bundled', family: string, styleKey: string };
-        /**
-         * Pre-resolved glyphs.
-         * Canvas drawing uses `cp`.
-         * The PDF export writes `gid` into Identity-H TJ runs.
-         * A tofu entry draws the missing-glyph box instead.
-         */
-        glyphs: Array<{ cp?: number, gid?: number, advEm: number, tofu?: boolean }>;
-    };
-
-    /**
-     * Visible source-PDF text replaced by the record's runs, with the originals suppressed exactly like a deletion.
-     * On export the runs are spliced at the removed glyphs' stream position, preserving reading order.
-     */
-    type TextEditReplace = {
-        type: 'replaceText';
-        id: string;
-        /** Page coordinates (top-left origin). */
-        rects: bbox[];
-        runs: TextEditRun[];
-        /** The replaced originals' glyph identities, gated at the strike exactly as on a deleteText record. */
-        glyphs?: TextEditGlyphWord[];
-        /**
-         * Bands over the replaced word range in which non-marking whitespace glyphs are struck too, page coordinates.
-         * The range's space glyphs sit between its words rather than inside them, so without these bands they survive under the replacement text.
-         */
-        wsRects?: bbox[];
-        /** Ids of the live OCR words this record draws, so a later edit of those words folds this record. */
-        wordIds?: string[];
-        groupId?: string;
-    };
-
     /** One image placement a `deleteImage` record removes. */
     type ImageDeleteSite = {
         left: number;
@@ -578,7 +480,53 @@ declare global {
         groupId?: string;
     };
 
-    type ContentEdit = TextEditDelete | TextEditReplace | ImageEditDelete | PathEditDelete;
+    /**
+     * The decoded content stream a text patch applies to.
+     * A form stream is named by its resource name path from the page, slash-joined when nested (`Fm1/Fm3`).
+     */
+    type TextPatchStream = { kind: 'page' } | { kind: 'form', path: string };
+
+    /**
+     * A native text edit as byte-range patches to one decoded content stream.
+     * Edit offsets index the stream as the source PDF has it, before any record is applied.
+     * Each edit's `text` is content-stream operator text.
+     */
+    type TextPatch = {
+        type: 'patchText';
+        id: string;
+        stream: TextPatchStream;
+        /** Non-overlapping, in ascending order of `start`. */
+        edits: Array<{ start: number, end: number, text: string }>;
+        /** Ties together the records of one user action. */
+        groupId?: string;
+        /**
+         * The substitute faces this record's edits draw with.
+         * The edits' `Tf` operators select each face by the resource name its fields derive.
+         */
+        fonts?: Array<{ family: string, styleKey: string, ascent?: number, descent?: number }>;
+    };
+
+    /**
+     * A live word identified by its glyph pens.
+     * The pens find the word again in a fresh parse, which can give it a different id.
+     */
+    type TextEditWordSpec = {
+        id: string;
+        text?: string;
+        penX: number[];
+        baselineY?: number;
+    };
+
+    type ContentEdit = ImageEditDelete | PathEditDelete | TextPatch;
+
+    /**
+     * The edits a page render applies.
+     * `dims` is the page's size in the records' page-pixel frame.
+     */
+    type RenderEdits = {
+        records: Array<ContentEdit>;
+        dims: { width: number, height: number };
+    };
 
     /**
      * Parse-derived metadata for one visibly-drawn native word.
@@ -590,9 +538,7 @@ declare global {
         baselineY: number;
         /** Per-glyph pen-origin x, unrounded. */
         penX?: number[];
-        /** Per-glyph shear ratio of faux-oblique text, 0 for unsheared glyphs. */
-        skew?: number[];
-        /** Per-glyph horizontal stretch ratio, 0 for unstretched glyphs. */
+        /** Per-glyph horizontal stretch of the drawn glyph against the emitted size, 0 for unstretched glyphs. */
         stretch?: number[];
         /** Text render mode of faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */
         renderMode?: number;
@@ -605,6 +551,102 @@ declare global {
          * Present only on a word drawn by a Type 3 font that has such a glyph.
          */
         codes?: number[];
+        /**
+         * Marks a word drawn by a Type 3 font or in vertical writing.
+         * The word's line is not editable.
+         */
+        uneditable?: true;
+    };
+
+    /**
+     * One glyph of a native line as the page's content stream draws it, in page pixels.
+     */
+    type LineGlyph = {
+        /**
+         * The text the parser gave the glyph.
+         * A ligature glyph's text can be more than one character.
+         */
+        text: string;
+        penX: number;
+        penY: number;
+        /** The declared width under horizontal scaling, where the glyph's box ends. */
+        widthPx: number;
+        sizePx: number;
+        fontObjNum: ?number;
+        /** The built-in face the glyph is drawn with, when its font is a substitute face synthesized for an edit. */
+        face?: { family: string, styleKey: string };
+        /** Fill color, `#rrggbb`. */
+        fillColor: string;
+        /** Text render mode of faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */
+        renderMode?: number;
+        /** Stroke pen width in page pixels, present with `renderMode`. */
+        strokeWidthPx?: number;
+        /** Stroke color, `#rrggbb`. */
+        strokeColor?: string;
+        /** Shear ratio of faux-oblique text, 0 when upright. */
+        skew: number;
+        /** Horizontal stretch ratio, 0 when unstretched. */
+        stretch: number;
+        /**
+         * Marks a glyph whose font's declared widths are unreliable.
+         * The raster draws such a glyph in a substitute face at its natural width instead of fitting it to the declared width.
+         */
+        widthsUnreliable?: boolean;
+    };
+
+    /**
+     * The glyphs of a page's words as its content stream draws them.
+     * `words` is aligned with the requested words, with null for a word not found on the page.
+     */
+    type LineState = {
+        words: Array<?{ id: string, glyphs: Array<LineGlyph> }>;
+        /**
+         * The page's records with the requested words' operators deleted, for the raster to apply while the editor draws the line.
+         * Null when a requested word was not found.
+         */
+        hide: ?Array<ContentEdit>;
+    };
+
+    /**
+     * The glyphs of a line as a replacement of it would draw them.
+     * `words` holds one entry per word of the replaced line, in reading order.
+     * `oldId` is the id of the request word a word continues, or null for a word the replacement inserted.
+     * A refused preview carries only `refused`.
+     */
+    type TextEditPreview = {
+        refused?: string;
+        words?: Array<{ text: string, oldId: ?string, glyphs: Array<LineGlyph> }>;
+    };
+
+    /**
+     * The worker's answer to a text edit.
+     * The new `records` replace the existing records named in `foldedIds`.
+     * A refused edit carries only `refused`.
+     * An edit that changes nothing the page draws carries only `unchanged`.
+     */
+    type TextEditResult = {
+        refused?: string;
+        unchanged?: true;
+        records?: Array<TextPatch>;
+        foldedIds?: string[];
+        /**
+         * Words drawn again under the deleted text, by their pens.
+         * The caller finds them on the live page by those pens and removes them too.
+         */
+        twins?: Array<{ penX: number[], baselineY: number }>;
+        /**
+         * A replacement's line as the patched page parses it, in reading order.
+         * `oldId` is the id of the request word a word continues, or null for an inserted word.
+         */
+        lineWords?: Array<{
+            oldId: ?string;
+            text: string;
+            bbox: bbox;
+            chars: Array<{ text: string, bbox: bbox }>;
+            style: Style;
+            lang: string;
+            entry: NativeTextWord;
+        }>;
     };
 
     /**

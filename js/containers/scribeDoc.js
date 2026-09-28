@@ -179,7 +179,6 @@ function clonePageBundle(doc, i) {
     for (const rec of contentEdits) {
       if (!rec) continue;
       rec.id = getRandomAlphanum(10);
-      if (rec.wordIds) rec.wordIds = rec.wordIds.map((/** @type {string} */ id) => wordIdMap.get(id) || id);
       // A record's font object numbers belong to the source document, and a composed export renumbers objects.
       // Keeping them would veto every glyph match on the pasted page, while unicode and origin still identify the text.
       if (rec.glyphs) for (const g of rec.glyphs) delete g.fontObjNum;

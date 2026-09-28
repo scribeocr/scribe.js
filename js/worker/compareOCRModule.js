@@ -471,7 +471,7 @@ async function penalizeWord(wordObjs) {
  * @param {boolean} [params.options.editConf] - Whether confidence metrics should be updated when `mode = 'stats'`,
  *    rather than simply setting `compTruth`/`matchTruth`. Enabled when using recognition to update confidence metrics, but not when comparing to ground truth.
  * @param {boolean} [params.options.useBboxB] - Use bounding boxes from `pageB` in combined output.
- * @param {boolean} [params.options.combinedA] - Whether `pageA` is a combined run of the bundled engine.
+ * @param {boolean} [params.options.combinedA] - Whether `pageA` is a combined run of the built-in engine.
  *    Its words keep their confidence where `pageB` has no counterpart.
  *    On a conflict, a word at confidence 100, which both engines agreed on, keeps its reading at confidence 80.
  * @param {string} [params.options.debugLabel]

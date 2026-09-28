@@ -1226,21 +1226,32 @@ describe('Redaction marks are applied destructively on export.', () => {
     redactDoc = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
     const res = redactDoc.addRedactions([{ page: 0, text: 'misrepresentation' }]);
     expect(res.marksAdded, 'quote-mode redaction marks the unique target word').toBe(1);
-    // A pending replacement is drawn text a mark must catch too, on a line the assertions below ignore.
-    // The mark sits past the record's erase rects, so it covers only the replacement's painted text.
+    // The replacement must end inside the page, because glyphs past the page edge parse as nothing and the replacement would be refused.
     const editLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
       .startsWith('latory enforcement action.'));
     const editBox = { ...editLine.bbox };
-    await redactDoc.replaceTextLine(editLine, 'Short text REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL');
+    // The replacement keeps the line's word count, because fewer words would leave a hole the re-import splits the line at, which the edit refuses.
+    const words = editLine.words.map((w) => w.text);
+    words[0] = 'Short'; words[1] = 'REDKEPT'; words[4] = 'REDKEPT'; words[9] = 'REDLEAK';
+    await redactDoc.replaceTextLine(editLine, words.join(' '));
+    const leakWord = editLine.words[editLine.words.length - 1];
+    expect(leakWord.text, 'the replacement must land with its last word running past the original line\'s end').toBe('REDLEAK');
+    expect(leakWord.bbox.right > editBox.right, 'the marked word must run past the original line\'s end').toBe(true);
     redactDoc.addRedactions([{
       page: 0,
       bbox: {
-        left: editBox.right + 20,
+        left: leakWord.bbox.left - 4,
         top: editBox.top - 8,
         right: redactDoc.ocr.active[0].dims.width - 10,
         bottom: editBox.bottom + 8,
       },
     }]);
+    const markLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+      === 'cial misrepresentation since the passage of the Sarbanes-Oxley Act of');
+    await redactDoc.replaceTextLine(markLine, markLine.words.map((w) => w.text).join(' '), { wordStyles: markLine.words.map(() => ({ color: '#ff0000' })) });
+    const deleteLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+      === 'whistleblower awards, raising questions about the usefulness of whistleblow-');
+    await redactDoc.deleteTextLines([deleteLine]);
     redactTxt = /** @type {string} */ (await redactDoc.exportData('txt'));
     const pdfBuf = /** @type {ArrayBuffer} */ (await redactDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true }));
     redactPdfBytes = new Uint8Array(pdfBuf);
@@ -1258,14 +1269,30 @@ describe('Redaction marks are applied destructively on export.', () => {
     for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
     expect(words.includes('misrepresentation'), 'redacted word must not be extractable from the exported PDF').toBe(false);
     expect(words.includes('passage'), 'neighboring word must survive in the exported PDF').toBe(true);
-    expect(words.length, 'exact word count of the redacted page on re-import').toBe(484);
+    expect(words.length, 'exact word count of the redacted page on re-import').toBe(483);
   });
 
-  test('replacement text drawn into a mark is dropped from the exported PDF', () => {
+  test('a line deleted and a line recolored beside the marks reach the exported PDF as edited, with the mark applied over the recolored line', () => {
+    const lineText = (line) => line.words.map((w) => w.text).join(' ');
+    expect(redactTxt.includes('whistleblower awards, raising questions'), 'the deleted line must not reach the txt export').toBe(false);
+    const lines = redactReimportDoc.ocr.active[0].lines.map(lineText);
+    expect(lines.includes('whistleblower awards, raising questions about the usefulness of whistleblow-'), 'the deleted line is still in the exported PDF').toBe(false);
+    expect(lines[1], 'the line above the deletion was damaged by the export').toBe('the cracks. 1 Further, regulators have historically conferred relatively few');
+    expect(lines[2], 'the line below the deletion was damaged by the export').toBe('ers in enforcement efforts. 2 Given that regulators have the power to sub-');
+    const before = redactReimportDoc.ocr.active[0].lines.find((line) => lineText(line) === 'cial');
+    const after = redactReimportDoc.ocr.active[0].lines.find((line) => lineText(line) === 'since the passage of the Sarbanes-Oxley Act of');
+    expect(!!before && !!after, 'the recolored line must re-import around the redacted word').toBe(true);
+    expect([...before.words, ...after.words].map((w) => w.style.color), 'every word of the recolored line must re-import in the new ink')
+      .toEqual(new Array(9).fill('#ff0000'));
+  });
+
+  test('changed text under a mark is dropped from the exported PDF, and the rest of the replacement survives', () => {
     const words = [];
     for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
-    expect(words.includes('REDLEAKSENTINEL'), 'a pending replacement painted into a redaction mark reached the exported PDF').toBe(false);
+    expect(words.includes('REDLEAK'), 'a changed word under a redaction mark reached the exported PDF').toBe(false);
+    expect(words.filter((w) => w === 'REDKEPT').length, 'the changed words outside the mark must survive the export').toBe(2);
     expect(words.includes('latory'), 'the replaced line\'s original text survived the export').toBe(false);
+    expect(redactTxt.includes('REDLEAK'), 'the marked word must not reach the txt export').toBe(false);
   });
 
   test('the exported PDF contains no /Redact annotation and no raw copy of the word', () => {
@@ -1480,7 +1507,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const srcDoc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
     const target = srcDoc.ocr.active[0].lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
     await srcDoc.replaceTextLine(target, 'Several Iris varieties are used in the Iris flower data set');
-    srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
+    await srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
     const photoA = pageImagePlacements(srcDoc, 1)[0];
     srcDoc.deleteImages([{
       n: 1,
@@ -1525,14 +1552,9 @@ describe('Check native text line deletion and replacement survive .scribe persis
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
-    // Library-mode sidecars strip char boxes, so their restored words carry no `chars`.
-    // Line A's record is then hand-collapsed to the whole-word identity shape a corrupt saved session holds, which the restore must repair.
+    // The library writes its sidecars without char boxes, so words restored from them carry no `chars`.
     const lineA = srcDoc.ocr.active[0].lines.find((line) => lineText(line).includes('junos'));
-    srcDoc.deleteTextLines([lineA]);
-    const recA = srcDoc.contentEdits.pages[0][srcDoc.contentEdits.pages[0].length - 1];
-    recA.glyphs = recA.glyphs.map((gw) => ({
-      chars: [gw.chars.join('')], x: [gw.x[0]], y: [gw.y[0]], fontObjNum: gw.fontObjNum,
-    }));
+    await srcDoc.deleteTextLines([lineA]);
     const noCharsScribeData = await srcDoc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false });
     await srcDoc.close();
     restoredDoc = await scribe.openDocument({ scribeFiles: [scribeData] });
@@ -1544,7 +1566,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     // The library opens a PDF beside its sidecar, so this leg models that pairing rather than the sidecar-only restore above.
     noCharsDoc = await scribe.openDocument({ pdfFiles: [`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`], scribeFiles: [noCharsScribeData] });
     const lineB = noCharsDoc.ocr.active[0].lines.find((line) => lineText(line).includes('horticulture'));
-    noCharsDoc.deleteTextLines([lineB]);
+    await noCharsDoc.deleteTextLines([lineB]);
     // The sidecar restore skips the PDF parse, so this deletion can only work off placements restored from the session block.
     noCharsDoc.deleteGraphics([{
       n: 1,
@@ -1598,14 +1620,12 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(lineText(page.lines[30]), 'the replaced line\'s corrected text was lost on .scribe restore')
       .toBe('Several Iris varieties are used in the Iris flower data set');
     expect(restoredDoc.contentEdits.pages[0].length, 'a pending edit record was lost on .scribe restore').toBe(3);
-    expect(restoredDoc.contentEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('replaceText');
-    expect(restoredDoc.contentEdits.pages[0][0].runs.length, 'the restored replacement record lost its draw-spec runs').toBe(11);
-    expect(restoredDoc.contentEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
-    expect(restoredDoc.contentEdits.pages[0][0].wsRects?.length, 'the restored replacement record lost its whitespace band, so residual space glyphs would survive under the replacement').toBe(1);
-    expect(restoredDoc.contentEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
-    expect(restoredDoc.contentEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
-    expect(restoredDoc.contentEdits.pages[0][1].wsRects?.length, 'the restored deletion record lost its whitespace band, so residual space glyphs would survive the strike').toBe(1);
-    expect(restoredDoc.contentEdits.pages[0][1].glyphs.length, 'the restored deletion record lost its glyph identities, so its rects would strike overlapping layers geometrically').toBe(12);
+    expect(restoredDoc.contentEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('patchText');
+    expect(restoredDoc.contentEdits.pages[0][0].edits.length, 'the restored replacement record lost operator rewrites, so part of the replaced line would revert on export')
+      .toBe(11);
+    expect(restoredDoc.contentEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('patchText');
+    expect(restoredDoc.contentEdits.pages[0][1].stream, 'the restored deletion record lost the stream it patches').toEqual({ kind: 'page' });
+    expect(restoredDoc.contentEdits.pages[0][1].edits.length, 'the restored deletion record lost operator rewrites, so part of the line would survive the export').toBe(14);
     expect(restoredDoc.contentEdits.pages[0][2].type, 'the restored path-delete record changed type').toBe('deletePath');
     expect(restoredDoc.contentEdits.pages[0][2].sites.length, 'the restored path-delete record lost its placement site').toBe(1);
     expect(restoredDoc.contentEdits.pages[0][2].sites[0].paint, 'the restored path-delete record lost its paint-kind identity, so its rect would strike coincident paths of any paint kind').toBe('f');
@@ -1643,8 +1663,8 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const tmAt = (/** @type {number} */ x0, /** @type {number} */ x1, /** @type {number} */ y0, /** @type {number} */ y1) => [...stream.matchAll(/(-?[\d.]+)\s+(-?[\d.]+)\s+Tm/g)]
       .filter((m) => Number(m[1]) >= x0 && Number(m[1]) <= x1 && Number(m[2]) >= y0 && Number(m[2]) <= y1).length;
     expect(tmAt(5, 50, 224, 230), 'the stream scan no longer sees the kept neighbor line\'s text object').toBe(1);
-    expect(tmAt(5, 370, 160, 166), 'the line deleted with restored glyph identities left text objects (residual space glyphs) at its position').toBe(0);
-    expect(tmAt(5, 440, 245, 251), 'the line deleted with a degraded (geometric) record left text objects (residual space glyphs) at its position').toBe(0);
+    expect(tmAt(5, 370, 160, 166), 'the line deleted before the session save left text objects (residual space glyphs) at its position').toBe(0);
+    expect(tmAt(5, 440, 245, 251), 'the line deleted before the chars-less save left text objects (residual space glyphs) at its position').toBe(0);
     expect(tmAt(5, 320, 267, 273), 'the line deleted after the chars-less restore left text objects (residual space glyphs) at its position').toBe(0);
   });
 
@@ -1662,7 +1682,8 @@ describe('Check native text line deletion and replacement survive .scribe persis
 
   test('A line deleted after a chars-less .scribe restore is struck from the exported PDF', () => {
     const recB = noCharsDoc.contentEdits.pages[0][noCharsDoc.contentEdits.pages[0].length - 1];
-    expect(recB.glyphs[0].chars.length, 'a chars-less word must rebuild per-glyph identities from its pen origins, not collapse to one whole-word entry').toBe(13);
+    expect(recB.type, 'a chars-less word must still be found in the page stream by the pen origins its restored entry carries').toBe('patchText');
+    expect(recB.edits.length, 'the deletion must rewrite both operators that draw the line').toBe(2);
     const page = noCharsReDoc.ocr.active[0];
     expect(page.lines.some((line) => lineText(line).includes('popular garden flower')),
       'the line deleted after a chars-less .scribe restore is still in the exported PDF').toBe(false);
@@ -1688,14 +1709,14 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(pageImagePlacements(noCharsReDoc, 1).length, 'an image deleted on the restored document still draws in the exported PDF').toBe(0);
   });
 
-  test('A saved delete record with collapsed whole-word identities is repaired to strike on restore', () => {
-    // Record order on the restored page: the replaceText, deleteText, and deletePath records above, then line A's.
+  test('A deletion saved into a chars-less sidecar strikes its line on export after the restore', () => {
+    // Line A's deletion record follows the replacement, deletion, and path-delete records saved before it.
     const recA = noCharsDoc.contentEdits.pages[0][3];
-    expect(recA.type, 'the degraded record was lost from the restored session').toBe('deleteText');
-    expect(recA.glyphs, 'a restored record with collapsed whole-word identities must drop them and strike geometrically').toBeUndefined();
+    expect(recA.type, 'the saved deletion record was lost from the restored session').toBe('patchText');
+    expect(recA.edits.length, 'the saved deletion record lost operator rewrites on the sidecar restore').toBe(12);
     const page = noCharsReDoc.ocr.active[0];
     expect(page.lines.some((line) => lineText(line).includes('known as junos')),
-      'the degraded record\'s line is still in the exported PDF').toBe(false);
+      'the saved deletion\'s line is still in the exported PDF').toBe(false);
   });
 
   afterAll(async () => {
@@ -1721,15 +1742,15 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
       return line;
     };
     // A plain line with no overlapping layer.
-    editDoc.deleteTextLines([find(1, 'Bais Naftoli honored Baca')]);
+    await editDoc.deleteTextLines([find(1, 'Bais Naftoli honored Baca')]);
     // The banner overprints two body lines in its own font, and the nav menu overprints one of those lines in a different font.
-    editDoc.deleteTextLines([find(1, 'SUPPORT THE JEWISH JOURNAL')]);
-    editDoc.deleteTextLines([find(1, 'HOME NEWS OPINION HOLLYWOOD CULTURE BLOG')]);
+    await editDoc.deleteTextLines([find(1, 'SUPPORT THE JEWISH JOURNAL')]);
+    await editDoc.deleteTextLines([find(1, 'HOME NEWS OPINION HOLLYWOOD CULTURE BLOG')]);
     // Both target lines have a coincident faux-bold second draw the deletion must fold.
-    editDoc.deleteTextLines([find(6, 'SFGate Screen Name:')]);
-    editDoc.deleteTextLines([find(6, 'Sign On to post your comment.')]);
+    await editDoc.deleteTextLines([find(6, 'SFGate Screen Name:')]);
+    await editDoc.deleteTextLines([find(6, 'Sign On to post your comment.')]);
     // The sentence carries six white halo copies of its bold phrase, all of which must fold.
-    editDoc.deleteTextLines([find(8, 'Justice made public this month')]);
+    await editDoc.deleteTextLines([find(8, 'Justice made public this month')]);
     // The page-3 masthead is the one placement that genuinely overlaps others, so deleting it exercises the site-identity gate rather than plain geometry.
     const masthead = pageImagePlacements(editDoc, 3)
       .find((e) => Math.round(e.left) === 167 && Math.round(e.top) === 192);
@@ -1749,6 +1770,9 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
       },
       kind: 'path',
     }]);
+    // Neither line's font has an X, and both fall back to the same built-in face under their own ascent and descent.
+    await editDoc.replaceTextLine(find(0, 'Twitter'), 'TwitterX');
+    await editDoc.replaceTextLine(find(0, 'Jewish community.'), 'Jewish communityX.');
     const pdfData = await editDoc.exportData('pdf');
     await editDoc.close();
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
@@ -1811,6 +1835,15 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     expect(p3.some((e) => Math.abs(e.left - 75) <= 2 && Math.abs(e.top - 485.8) <= 2
       && Math.abs(e.right - 2475) <= 2 && Math.abs(e.bottom - 611.9) <= 2),
     'a fill sharing the deleted rule\'s bottom edge was co-deleted, so the strike over-matched on geometry').toBe(true);
+  });
+
+  test('Two page fonts drawing with the same substitute face share one embedded copy of its program in the exported PDF', () => {
+    const lines = reDoc.ocr.active[0].lines.map(lineText);
+    expect(lines.includes('TwitterX'), 'the replacement in the first font must re-import from the exported PDF').toBe(true);
+    expect(lines.includes('Jewish communityX.'), 'the replacement in the second font must re-import from the exported PDF').toBe(true);
+    const faces = /** @type {NonNullable<ReturnType<typeof reDoc.getResourceInventory>>} */ (reDoc.getResourceInventory()).fonts.filter((f) => f.baseName === 'NimbusSans-Regular');
+    expect(faces.map((f) => [f.embedded, f.fontObjNums.length]), 'the exported PDF must embed the substitute face\'s program once, shared by both fonts that draw with it')
+      .toEqual([[true, 2]]);
   });
 
   test('White text-shadow halo copies fold with the deleted sentence', () => {
@@ -1891,7 +1924,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     await editDoc.replaceTextLine(italicLine, lineText(italicLine), { wordStyles: italicLine.words.map((w, i) => (i === 4 ? { italic: true } : null)) });
     // A word appended past the line's last word erases nothing, so its record carries no rects.
     const appendLine = page.lines[4];
-    await editDoc.replaceTextLine(appendLine, `${lineText(appendLine)} APPENDSENTINEL`);
+    await editDoc.replaceTextLine(appendLine, `${lineText(appendLine)} APPENDSENT`);
     if (isNode) {
       const img = await editDoc.images.getNative(0, { rotated: false, upscaled: false });
       inkOriginal = await inkInBox(img.src, line.words[13].bbox, page.dims);
@@ -1926,14 +1959,11 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     expect(ratio, 'the redrawn glyph renders heavier than the untouched copy of the same stroked glyph').toBeLessThan(1.15);
   });
 
-  test('Exported replacement draws with the original stroke state', () => {
-    const tfIdx = exportRaw.indexOf('/EDF0 1 Tf');
-    expect(tfIdx !== -1, 'the replacement splice is missing from the exported PDF').toBe(true);
-    const body = exportRaw.slice(exportRaw.lastIndexOf('0 Tc 0 Tw 100 Tz 0 Tr 0 Ts', tfIdx), tfIdx);
-    expect(body.includes('2 Tr'), 'the exported replacement must draw fill+stroke (2 Tr) like the stroked original').toBe(true);
-    // The source pen is 0.456; the page-pixel frame the runs live in quantizes it by <0.1%.
-    expect(body.includes('0.455908 w'), 'the original stroke width must round-trip into the exported replacement').toBe(true);
-    expect(body.includes('0 0 0 RG'), 'the original stroke color must round-trip into the exported replacement').toBe(true);
+  test('Replacements in the page\'s font patch the operators that drew the words, and the second replacement of a line folds the first', () => {
+    expect(editDoc.contentEdits.pages[0].map((r) => r.type), 'the replacements, the toggles and the substitute-face append must all be content-stream patches')
+      .toEqual(['patchText', 'patchText', 'patchText', 'patchText']);
+    expect(editDoc.contentEdits.pages[0].slice(0, 3).map((r) => r.fonts), 'a replacement the page font draws in full names no substitute face').toEqual([undefined, undefined, undefined]);
+    expect(editDoc.contentEdits.pages[0][0].edits.length, 'both replacements of the line rewrite its one show operator').toBe(1);
   });
 
   test('Bold toggle on a plain word re-imports as bold and draws heavier than its plain twin', () => {
@@ -1951,31 +1981,217 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
 
   test('Word appended past the end of a line survives export and draws in the raster', () => {
     expect(lineText(editReDoc.ocr.active[0].lines[4]), 'a pure-append replacement must extract in place from the exported PDF')
-      .toBe('and Right to Petition for Habeas Corpus Relief APPENDSENTINEL');
+      .toBe('and Right to Petition for Habeas Corpus Relief APPENDSENT');
     if (!isNode) return;
-    // The appended word measures ~13100 ink px when drawn; an exact count would pin antialiasing, and near zero means it was dropped.
-    expect(inkAppended, 'a pure-append replacement must draw in the rendered raster').toBeGreaterThan(6500);
+    // The appended word draws about 7550 ink px, and a dropped one draws near zero.
+    // An exact count would pin the renderer's antialiasing.
+    expect(inkAppended, 'a pure-append replacement must draw in the rendered raster').toBeGreaterThan(3800);
   });
 
-  test('Italic toggle on a plain word re-imports as italic with the synthesized shear', () => {
+  test('Italic toggle on a plain word re-imports as italic with the synthesized shear', async () => {
     const line = editReDoc.ocr.active[0].lines[17];
     expect(lineText(line), 'the italic-toggled line must keep its text in place')
       .toBe('the spread of the disease and protect the health and safety of your friends, family members and the');
     expect(line.words[4].style.italic, 'an italic toggle on plain native text must survive export and re-import').toBe(true);
     expect(line.words[3].style.italic, 'a neighbor of the italic-toggled word must stay upright').toBe(false);
-    const entry = editReDoc.nativeText.pages[0][line.words[4].id];
-    expect(entry && entry.skew && entry.skew[0], 'the synthesized shear ratio must round-trip through the exported text matrix').toBe(0.25);
+    const nt = editReDoc.nativeText.pages[0];
+    const state = await editReDoc.images.getLineState(0, line.words.map((w) => ({
+      id: w.id, text: w.text, penX: nt[w.id].penX, baselineY: nt[w.id].baselineY,
+    })));
+    expect(state?.words[4]?.glyphs[0].skew, 'the synthesized shear ratio must round-trip through the exported text matrix').toBe(0.25);
   });
 
-  test('Style-only toggles draw the synthesized stroke and shear in the export splice', () => {
-    // Synthesized pen: 0.025 em at the word's 50px size, converted to content units like the captured stroke above.
-    expect(exportRaw.includes('0.29994 w'), 'the synthesized faux-bold pen width is missing from the export splice').toBe(true);
-    // Sheared Tm: the up-column picks up 0.25 of the flow vector.
-    expect(exportRaw.includes('11.997582 0 2.999395 12 '), 'the synthesized shear is missing from the exported text matrix').toBe(true);
+  // A style-only edit must not re-typeset the word.
+  // Redrawing from the font's natural advances re-spaces a line set with character spacing, and tight glyph bounds shrink the selection box.
+  test('Style-only toggles leave the toggled word and its neighbors where the page drew them', () => {
+    const boldWords = editDoc.ocr.active[0].lines[18].words;
+    expect(boldWords[4].bbox, 'a bold toggle must not move or resize the word box').toEqual({
+      left: 813, top: 1484, right: 874, bottom: 1539,
+    });
+    expect(boldWords[4].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'a bold toggle must keep every glyph box')
+      .toEqual([[813, 827, 1484, 1539], [827, 852, 1484, 1539], [852, 874, 1484, 1539]]);
+    expect(boldWords[5].bbox, 'the word after a bold toggle must stay where the page drew it').toEqual({
+      left: 887, top: 1484, right: 1081, bottom: 1539,
+    });
+    const italicWords = editDoc.ocr.active[0].lines[17].words;
+    expect(italicWords[4].bbox, 'an italic toggle must not move or resize the word box').toEqual({
+      left: 614, top: 1400, right: 759, bottom: 1456,
+    });
+    expect(italicWords[5].bbox, 'the word after an italic toggle must stay where the page drew it').toEqual({
+      left: 774, top: 1400, right: 846, bottom: 1456,
+    });
+  });
+
+  // Every native word carries the font box its PDF font declares, and consumers read a word's height and side bearings by that convention.
+  // A word redrawn with a glyph-extent box shrinks the line box and misreports itself to every consumer, and a substitute face must not change the box either.
+  test('Changed, appended and substitute-drawn words carry the font box the parser gives their neighbors', () => {
+    const line = editDoc.ocr.active[0].lines[2];
+    expect(line.words[18].bbox, 'a changed word must keep the font box of its line').toEqual({
+      left: 1634, top: 270, right: 1701, bottom: 336,
+    });
+    expect(line.words[18].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'a changed glyph box must span the font box')
+      .toEqual([[1634, 1701, 270, 336]]);
+    expect(line.words[18].visualCoords, 'a changed word must keep its line\'s box convention').toBe(false);
+    expect(line.words[21].bbox, 'a second replacement of the same line must keep the font box').toEqual({
+      left: 1834, top: 270, right: 1901, bottom: 336,
+    });
+    expect(line.bbox, 'a replacement must not change the line box').toEqual({
+      left: 433, top: 270, right: 2101, bottom: 336,
+    });
+    expect(line.baseline, 'a replacement must not move the line baseline').toEqual([0, -13]);
+    const appendLine = editDoc.ocr.active[0].lines[4];
+    const appended = appendLine.words[appendLine.words.length - 1];
+    expect(appended.visualCoords, 'an appended word must carry its line\'s box convention').toBe(false);
+    // The page kerns the last pair of the word before the append, so the appended word starts after that word's true end pen, not after its substitute-face width.
+    expect(appended.bbox, 'an appended word drawn with a substitute face must get the PDF font\'s box').toEqual({
+      left: 1950, top: 518, right: 2393, bottom: 591,
+    });
+    expect(appended.chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'appended glyph boxes must span the declared widths at the drawn pens')
+      .toEqual([[1950, 1998, 518, 591], [1998, 2039, 518, 591], [2039, 2079, 518, 591], [2079, 2124, 518, 591], [2124, 2172, 518, 591],
+        [2172, 2220, 518, 591], [2220, 2257, 518, 591], [2257, 2301, 518, 591], [2301, 2349, 518, 591], [2349, 2393, 518, 591]]);
+    expect(appendLine.words[appendLine.words.length - 2].bbox, 'the unchanged word redrawn with a substitute face must keep its font box').toEqual({
+      left: 1767, top: 518, right: 1933, bottom: 591,
+    });
+    expect(appendLine.bbox, 'an append must extend the line box without changing its height').toEqual({
+      left: 599, top: 518, right: 2393, bottom: 591,
+    });
+  });
+
+  test('Style-only toggles set the synthesized stroke and shear around the word\'s own codes in the page stream', () => {
+    const flat = exportRaw.replace(/\s+/g, ' ');
+    // The synthesized pen is 0.025 em at the word's 50px size, which is 1.25 page pixels or 0.3 units in the page's content space.
+    expect(flat.includes('2 Tr 0.3 w 0 G [<0057004b0048>] TJ 0 Tr 1 w 0 G '),
+      'the bold toggle must stroke the word\'s own codes and restore the page\'s render mode, pen and stroke color after them').toBe(true);
+    expect(flat.includes('1 0 0.25 1 147.432 495.19 Tm [<0047004c005600480044> 5 <0056> -10 <0048>] TJ 1 0 0 1 62.424 495.19 Tm [-9977 -5 <0003>'),
+      'the italic toggle must shear the text matrix at the word\'s pen, draw its own codes, and carry the pen back to where the word ended').toBe(true);
   });
 
   afterAll(async () => {
     scribe.ScribeDoc.defaults.humanReadablePDF = false;
+    await scribe.terminate();
+  });
+});
+
+// A font with no program still declared the widths the page was laid out with.
+// A replacement drawn with a substitute face must advance by those widths, not the substitute's own, or it sits off the rhythm of the text around it.
+describe('Check a changed word in a non-embedded font takes the declared widths rather than the substitute face\'s.', () => {
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let subDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let subReDoc;
+
+  beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    subDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
+    const line = subDoc.ocr.active[0].lines[0];
+    await subDoc.replaceTextLine(line, line.words.map((w, i) => (i === 1 ? 'Status' : w.text)).join(' '));
+    const subPdf = /** @type {ArrayBuffer} */ (await subDoc.exportData('pdf'));
+    subReDoc = await scribe.openDocument({ pdfFiles: [subPdf] });
+  });
+
+  test('Changed glyphs advance by the declared widths and keep the line\'s spacing', () => {
+    const line = subDoc.ocr.active[0].lines[0];
+    expect(line.words.map((w) => w.text), 'the replaced line must keep its words').toEqual(['United', 'Status', 'and', 'Canada']);
+    expect(line.words[1].bbox, 'the changed word box must end at its last declared width').toEqual({
+      left: 193, top: 252, right: 275, bottom: 268,
+    });
+    expect(line.words[1].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'each changed glyph box must span its declared width from its pen')
+      .toEqual([[193, 210, 252, 268], [210, 220, 252, 268], [220, 235, 252, 268], [236, 245, 252, 268], [245, 260, 252, 268], [260, 275, 252, 268]]);
+    expect(subDoc.nativeText.pages[0][line.words[1].id].penX, 'the changed glyphs must sit at the page font\'s declared advances with the line\'s character spacing')
+      .toEqual([192.553, 210.053, 220.04, 235.914, 245.071, 260.273]);
+    expect(line.words[2].bbox, 'the word after the changed one must stay where the page drew it').toEqual({
+      left: 281, top: 252, right: 327, bottom: 268,
+    });
+    expect(line.words[3].bbox, 'the last word must stay where the page drew it').toEqual({
+      left: 336, top: 252, right: 430, bottom: 268,
+    });
+    expect(line.bbox, 'the line box must be unchanged by an equal-width replacement').toEqual({
+      left: 106, top: 252, right: 430, bottom: 268,
+    });
+  });
+
+  test('The replaced line re-imports from the export as the same four words with the editor\'s boxes and pens', () => {
+    const line = subReDoc.ocr.active[0].lines[0];
+    expect(line.words.map((w) => w.text), 'the changed word must re-import as one word').toEqual(['United', 'Status', 'and', 'Canada']);
+    expect(line.words.map((w) => w.bbox), 'the re-imported words must sit where the editor left them').toEqual([
+      {
+        left: 106, top: 252, right: 185, bottom: 268,
+      },
+      {
+        left: 193, top: 252, right: 275, bottom: 268,
+      },
+      {
+        left: 281, top: 252, right: 327, bottom: 268,
+      },
+      {
+        left: 336, top: 252, right: 430, bottom: 268,
+      },
+    ]);
+    expect(line.words[1].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'the re-imported glyph boxes must match the editor\'s')
+      .toEqual([[193, 210, 252, 268], [210, 220, 252, 268], [220, 235, 252, 268], [236, 245, 252, 268], [245, 260, 252, 268], [260, 275, 252, 268]]);
+    expect(subReDoc.nativeText.pages[0][line.words[1].id].penX, 'the re-imported pens must be the pens the replacement wrote')
+      .toEqual([192.553, 210.053, 220.04, 235.914, 245.071, 260.273]);
+  });
+
+  afterAll(async () => {
+    await subReDoc.close();
+    await scribe.terminate();
+  });
+});
+
+describe('Check replacements on the rotated superscript page and the transcript page re-import whole.', () => {
+  const lineText = (line) => line.words.map((x) => x.text).join(' ');
+  const rotateLongest = (line) => {
+    let wi = 0;
+    for (let i = 1; i < line.words.length; i++) if (line.words[i].text.length > line.words[wi].text.length) wi = i;
+    return line.words.map((x, i) => (i === wi ? x.text.slice(1) + x.text[0] : x.text)).join(' ');
+  };
+
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let rotDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let rotReDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let flaDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let flaReDoc;
+
+  beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    rotDoc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
+    for (const li of [17, 34]) {
+      const line = rotDoc.ocr.active[0].lines[li];
+      await rotDoc.replaceTextLine(line, rotateLongest(line));
+    }
+    const rotPdf = /** @type {ArrayBuffer} */ (await rotDoc.exportData('pdf'));
+    rotReDoc = await scribe.openDocument({ pdfFiles: [rotPdf] });
+    flaDoc = await scribe.openDocument([`${ASSETS_PATH}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
+    await flaDoc.replaceTextLine(flaDoc.ocr.active[0].lines[45], rotateLongest(flaDoc.ocr.active[0].lines[45]));
+    const flaPdf = /** @type {ArrayBuffer} */ (await flaDoc.exportData('pdf'));
+    flaReDoc = await scribe.openDocument({ pdfFiles: [flaPdf] });
+  });
+
+  test('The rotated page\'s replaced lines re-import with their first letters', () => {
+    expect(rotDoc.contentEdits.pages[0].map((r) => r.type), 'both replacements must patch the page stream').toEqual(['patchText', 'patchText']);
+    expect(lineText(rotReDoc.ocr.active[0].lines[17]), 'line 17 lost text on export after a replacement')
+      .toBe('ributest 8.1% to the rise in the skill premium, and accounts for 54.8% of the increase');
+    expect(lineText(rotReDoc.ocr.active[0].lines[34]), 'line 34 lost text on export after a replacement')
+      .toBe('American Meeting in June 2021, scheduled to be held at the niversitéU du Québec à Montréal and delivered');
+  });
+
+  test('The transcript page\'s replaced line re-imports without the margin line number', () => {
+    expect(flaDoc.contentEdits.pages[0].map((r) => r.type), 'the replacement must patch the page stream').toEqual(['patchText']);
+    expect(lineText(flaReDoc.ocr.active[0].lines[45]), 'line 45 did not re-import as the replaced line')
+      .toBe('A It was damage to the roof caused by ifferentd 15 A No. I just was saying that that\'s one of the');
+    expect(lineText(flaReDoc.ocr.active[0].lines[44]), 'the margin line number must stay its own line').toBe('15');
+    expect(flaReDoc.ocr.active[0].lines.length, 'the page must re-import with the same line count').toBe(139);
+  });
+
+  afterAll(async () => {
+    await rotDoc.close();
+    await rotReDoc.close();
+    await flaDoc.close();
+    await flaReDoc.close();
     await scribe.terminate();
   });
 });

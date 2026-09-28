@@ -12,8 +12,9 @@ import {
   matMul, bytesToLatin1, scopeDictKeys,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
+import { applyTextPatchRecords, patchPageContents, textPatchesTarget } from './textPatch.js';
 import {
-  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, mapImageDelete, imageDrawMatchesDelete, mapPathDelete, pathDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
+  mapImageDelete, imageDrawMatchesDelete, mapPathDelete, pathDrawMatchesDelete,
 } from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -29,7 +30,7 @@ import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '..
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS, applyStandardFontWidths } from './fonts/standardFontMetrics.js';
 import {
-  base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont, cssGenericForFontObj,
+  base14ToBuiltInFont, cssFamilyToBuiltInFont, genericToBuiltInFont, cssGenericForFontObj,
 } from './fonts/base14Substitution.js';
 import { FALLBACK_CHAIN } from '../fallbackFonts.js';
 import { loadFontFace } from '../containers/fontContainer.js';
@@ -38,6 +39,7 @@ import {
   rebuildFontFromGlyphs, buildFontFromCFF, convertType1ToOTFNew,
 } from './fonts/convertFontToOTF.js';
 import { ca } from '../canvasAdapter.js';
+import { ensureSubstituteFacesForRecords, substituteFaceResourceEntries } from './substituteFaces.js';
 
 // Helvetica AFM advances (1000-em units) for centering synthesized comb-field characters in their cells, matching the exported appearance and the viewer cover.
 const combHelvWidths = new Map();
@@ -144,7 +146,7 @@ function appendGenericFallbacks(registeredFontNames, fonts) {
 }
 
 /**
- * Register a non-embedded font using bundled substitution fonts.
+ * Register a non-embedded font using built-in substitution fonts.
  *
  * @param {{ baseName: string, bold?: boolean, italic?: boolean, serifFlag?: boolean }} fontObj
  * @param {string} _familyName - CSS font-family name to register
@@ -155,9 +157,9 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   // FontFaces are registered at the variant's actual weight/style.
   // Otherwise Firefox stacks an extra faux-bold or italic on top of an already-bold/italic file.
   const hints = { bold: fontObj.bold, italic: fontObj.italic };
-  const sub = base14ToBundledFont(fontObj.baseName, hints)
-    || cssFamilyToBundledFont(standardFontToCSS(fontObj.baseName), hints)
-    || genericToBundledFont(cssGenericForFontObj(fontObj), hints);
+  const sub = base14ToBuiltInFont(fontObj.baseName, hints)
+    || cssFamilyToBuiltInFont(standardFontToCSS(fontObj.baseName), hints)
+    || genericToBuiltInFont(cssGenericForFontObj(fontObj), hints);
   if (sub) {
     try {
       let fontBytes;
@@ -175,7 +177,7 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
     } catch (_e) {
       const fallback = standardFontToCSS(fontObj.baseName) || cssGenericForFontObj(fontObj);
       targetMap.set(fontTag, fallback);
-      console.warn(`[renderPdfPage] Bundled font ${sub.alias} failed to load for "${fontObj.baseName}", using ${fallback} fallback`);
+      console.warn(`[renderPdfPage] Built-in font ${sub.alias} failed to load for "${fontObj.baseName}", using ${fallback} fallback`);
       return;
     }
   }
@@ -183,50 +185,6 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   const fallback = cssFamily || cssGenericForFontObj(fontObj);
   targetMap.set(fontTag, fallback);
   if (!cssFamily) console.warn(`[renderPdfPage] No font data for "${fontObj.baseName}", using ${fallback} fallback`);
-}
-
-/** Bundled faces already fetched+registered for edit-text runs in this worker, by alias. */
-const bundledEditFacesEnsured = new Set();
-
-/**
- * The registry alias of a bundled face named by an edit run.
- * Matches the alias `registerNonEmbeddedFont` uses, so the two paths share one registration.
- * @param {string} family
- * @param {string} styleKey - 'normal'|'bold'|'italic'|'boldItalic'
- */
-function bundledEditFaceAlias(family, styleKey) {
-  const variant = styleKey === 'normal' ? 'Regular' : styleKey === 'bold' ? 'Bold' : styleKey === 'italic' ? 'Italic' : 'BoldItalic';
-  return `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`;
-}
-
-/**
- * Fetch and register a bundled face an edit run draws with.
- * @param {string} family
- * @param {string} styleKey
- */
-async function ensureBundledEditFace(family, styleKey) {
-  const alias = bundledEditFaceAlias(family, styleKey);
-  if (bundledEditFacesEnsured.has(alias)) return;
-  const variant = styleKey === 'normal' ? 'Regular' : styleKey === 'bold' ? 'Bold' : styleKey === 'italic' ? 'Italic' : 'BoldItalic';
-  // The Gothic family's font files keep their URW stem.
-  const stem = family === 'Gothic' ? 'URWGothicBook' : family;
-  const url = new URL(`../../fonts/all/${stem}-${variant}.woff`, import.meta.url);
-  let fontBytes;
-  if (typeof process !== 'undefined') {
-    const { fileURLToPath } = await import('node:url');
-    const { readFileSync } = await import('node:fs');
-    fontBytes = readFileSync(fileURLToPath(url));
-  } else {
-    fontBytes = await fetch(url).then((r) => r.arrayBuffer());
-  }
-  const face = loadFontFace(
-    alias,
-    styleKey === 'italic' || styleKey === 'boldItalic' ? 'italic' : 'normal',
-    styleKey === 'bold' || styleKey === 'boldItalic' ? 'bold' : 'normal',
-    fontBytes,
-  );
-  await face.loaded;
-  bundledEditFacesEnsured.add(alias);
 }
 
 /**
@@ -1846,7 +1804,6 @@ function applyFormTransform(op, composedBase) {
       const result = {
         ...op, a: trm[0], b: trm[1], c: trm[2], d: trm[3], x: trm[4], y: trm[5],
       };
-      if (op.editTrm) result.editTrm = matMul(op.editTrm, composedBase);
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
       composeFormRefs(result);
       return result;
@@ -1854,7 +1811,6 @@ function applyFormTransform(op, composedBase) {
     case 'type3glyph': {
       const newTransform = matMul(op.transform, composedBase);
       const result = { ...op, transform: newTransform };
-      if (op.editTrm) result.editTrm = matMul(op.editTrm, composedBase);
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
       composeFormRefs(result);
       return result;
@@ -1910,6 +1866,7 @@ function applyFormTransform(op, composedBase) {
  * @param {number} [inheritedStrokeAlpha=1]
  * @param {{nextId: number, registry: Map<number, TransparencyGroupAttrs>}|null} [groupContext]
  * @param {number|null} [currentGroupId]
+ * @param {?Array<TextPatch>} [textPatches]
  * @returns {Promise<Array<DrawOp>>}
  */
 async function flattenDrawOps(
@@ -1920,6 +1877,7 @@ async function flattenDrawOps(
   inheritedFillColor = 'black', inheritedStrokeColor = 'rgb(0,0,0)',
   inheritedFillAlpha = 1, inheritedStrokeAlpha = 1,
   groupContext = null, currentGroupId = null,
+  textPatches = null,
 ) {
   /** @type {Array<DrawOp>} */
   const flattened = [];
@@ -1994,7 +1952,11 @@ async function flattenDrawOps(
     const ts = op.textState || {
       tc: 0, tw: 0, tl: 0, tz: 100, trise: 0,
     };
-    const cacheKey = `${formInfo.objNum}_${ts.tc}_${ts.tw}_${ts.tl}_${ts.tz}_${ts.trise}`;
+    // A text edit patches a form by its resource name path, so a patched placement parses apart from other placements of the same object.
+    /** @type {TextPatchStream} */
+    const formStreamKey = { kind: 'form', path: fullName };
+    const formPatched = textPatchesTarget(textPatches, formStreamKey);
+    const cacheKey = `${formInfo.objNum}_${ts.tc}_${ts.tw}_${ts.tl}_${ts.tz}_${ts.trise}${formPatched ? `_patched_${fullName}` : ''}`;
     let cached = formResourceCache.get(cacheKey);
     if (!cached) {
       // Many Form XObjects share the same fonts, so cache the parse by the font reference set.
@@ -2084,7 +2046,8 @@ async function flattenDrawOps(
       const streamBytes = objCache.getStreamBytes(formInfo.objNum);
       let rawFormDrawOps = [];
       if (streamBytes) {
-        const formStream = bytesToLatin1(streamBytes);
+        let formStream = bytesToLatin1(streamBytes);
+        if (formPatched) formStream = applyTextPatchRecords(formStream, textPatches, formStreamKey).text;
         rawFormDrawOps = parseDrawOps(
           formStream, effectiveFonts2, effectiveExtGStates2, effectiveRegistered2,
           formColorSpaces.size > 0 ? formColorSpaces : undefined, effectiveSymbol2, effectiveCidPUA2, effectiveRaw2,
@@ -2195,6 +2158,7 @@ async function flattenDrawOps(
           formInheritedFill, formInheritedStroke,
           formInheritedFillAlpha, formInheritedStrokeAlpha,
           groupContext, innerGroupId,
+          textPatches,
         );
         // applyFormTransform below re-composes each returned content op with composedBase, but a group's SMask lives in the registry rather than on an op, so it never reaches one.
         if (groupContext) {
@@ -4899,7 +4863,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {number} [dpi=300] - Render resolution in dots per inch
  * @param {'png'|'jpeg'|'webp'|'bitmap'} [outputFormat='png']
  * @param {number} [quality=0.6] - JPEG/WebP quality 0-1. WebP quality 1.0 encodes losslessly in Chromium.
- * @param {?{records: Array<ContentEdit>, dims: {width: number, height: number}}} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
+ * @param {?RenderEdits} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
  *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
  * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
  *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
@@ -4959,7 +4923,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Nested resources are discovered lazily while flattening only the forms that are actually drawn.
   const { images, forms } = parsePageImages(pageObjText, objCache, { recurseForms: false });
 
+  // A substitute face a text patch draws with is synthesized into the cache on demand and joins the page's fonts under the tag the patched stream names.
+  await ensureSubstituteFacesForRecords(objCache, edits && edits.records);
   const fonts = parsePageFonts(pageObjText, objCache);
+  const substituteEntries = substituteFaceResourceEntries(objCache, edits && edits.records);
+  if (substituteEntries) for (const [tag, f] of parsePageFonts(`<</Resources<</Font<<${substituteEntries}>>>>>>`, objCache)) fonts.set(tag, f);
 
   const registeredFontNames = new Map();
   /** @type {Set<string>} Font tags with Symbol-only cmap (need PUA codepoints for canvas rendering) */
@@ -5016,18 +4984,22 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     break;
   }
 
-  // Keep the array rather than pre-joining it, because parseDrawOps needs the /Contents boundaries to stop one corrupt entry from suppressing the rest of the page.
   const contentStreams = getPageContentStreams(pageObjText, objCache);
+  const recoveredFlags = objCache.lastContentStreamsRecovered;
+  // Text patches address offsets in the newline-joined entries, the same text the parser and the PDF exporter patch.
+  // The entry boundaries go to parseDrawOps so a corrupt entry cannot suppress the rest of the page.
+  /** @type {?Array<TextPatch>} */
+  const textPatches = edits && edits.records ? /** @type {Array<TextPatch>} */ (edits.records.filter((r) => r && r.type === 'patchText')) : null;
+  const pageContents = contentStreams && contentStreams.length > 0 ? patchPageContents(contentStreams, textPatches) : null;
 
-  const rawDrawOps = contentStreams && contentStreams.length > 0
-    ? parseDrawOps(contentStreams, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags,
+  const rawDrawOps = pageContents
+    ? parseDrawOps(pageContents.text, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags,
       cidPUATags, rawCharCodeTags, pageShadings, pagePatterns, cidCollisionMap, null,
-      parseHiddenOCMCNames(pageObjText, objCache, offOCGs), objCache.lastContentStreamsRecovered)
+      parseHiddenOCMCNames(pageObjText, objCache, offOCGs), recoveredFlags, pageContents.boundaries)
     : [];
 
   // parseDrawOps tokenizes the whole page synchronously, so on a large page nothing else on the thread has run until this yield.
-  const totalContentLen = contentStreams ? contentStreams.reduce((acc, s) => acc + s.length, 0) : 0;
-  if (totalContentLen > 500000) {
+  if (pageContents && pageContents.text.length > 500000) {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
 
@@ -5046,6 +5018,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           'black', 'rgb(0,0,0)',
           1, 1,
           groupContext, null,
+          textPatches,
         );
         for (let fi = 0; fi < flattened.length; fi++) drawOps.push(flattened[fi]);
       } else {
@@ -5084,19 +5057,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
         continue;
       }
-      if (rec.type !== 'deleteText' && rec.type !== 'replaceText') continue;
-      /** @type {Array<[number, number, number, number]>} */
-      const rects = [];
-      for (const r of rec.rects || []) {
-        const mapped = pageRectToContentRect(r, edits.dims, mediaBox, rotate);
-        if (mapped) rects.push(mapped);
-      }
-      const gate = rec.glyphs ? mapTextEditGlyphs(rec.glyphs, edits.dims, mediaBox, rotate) : null;
-      // A pure append (a word added past the line's last word) erases nothing, so its record has no rects but must still draw.
-      if (rects.length > 0 || (rec.type === 'replaceText' && rec.runs?.length)) editEntries.push({ rec, rects, gate });
     }
     if (editEntries.length > 0) {
-      const placed = new Set();
       let keep = 0;
       for (let i = 0; i < drawOps.length; i++) {
         const op = drawOps[i];
@@ -5131,50 +5093,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
           if (pathHit) continue;
         }
-        if (op.type === 'type0text' || op.type === 'type3glyph') {
-          const trm = op.editTrm || (op.type === 'type0text' ? [op.a, op.b, op.c, op.d, op.x, op.y] : op.transform);
-          const vertical = op.type === 'type0text' && !!op.vertical;
-          const advEm = op.advEm ?? 0.5;
-          let hitEntry = null;
-          const opFontMatch = op.type === 'type0text' && typeof op.fontFamily === 'string' ? /_f(\d+)$/.exec(op.fontFamily) : null;
-          const opFontObjNum = opFontMatch ? Number(opFontMatch[1]) : null;
-          const opText = op.type === 'type0text' ? (op.text || null) : null;
-          for (const entry of editEntries) {
-            // A gated entry skips the size cap because its identity match is the precision guard.
-            if (!glyphEmBoxHitsRects(trm, advEm, vertical, entry.rects, entry.gate ? undefined : TEXT_EDIT_GLYPH_SIZE_CAP)) continue;
-            if (entry.gate && !glyphIdentityMatches(entry.gate, opText, opFontObjNum, trm[4], trm[5])) continue;
-            hitEntry = entry;
-            break;
-          }
-          if (hitEntry) {
-            const rec = /** @type {TextEditReplace} */ (hitEntry.rec);
-            if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
-              placed.add(rec);
-              drawOps[keep] = {
-                type: 'editText', runs: rec.runs, dims: edits.dims, clips: op.clips,
-              };
-              keep += 1;
-            }
-            continue;
-          }
-        }
         drawOps[keep] = op;
         keep += 1;
       }
       drawOps.length = keep;
-      // A replacement whose rects met no glyph still draws (fail toward showing the user's text).
-      for (const entry of editEntries) {
-        const rec = /** @type {TextEditReplace} */ (entry.rec);
-        if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
-          drawOps.push({ type: 'editText', runs: rec.runs, dims: edits.dims });
-        }
-      }
-      for (const op of drawOps) {
-        if (op.type !== 'editText') continue;
-        for (const run of op.runs) {
-          if (run.font.kind === 'bundled') await ensureBundledEditFace(run.font.family, run.font.styleKey);
-        }
-      }
     }
   }
 
@@ -7468,56 +7390,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           if (op.strokeAlpha < 1) rCtx.globalAlpha = op.strokeAlpha;
           rCtx.lineWidth = op.lineWidth / (Math.sqrt(op.a * op.a + op.b * op.b) || 1);
           rCtx.strokeText(op.text, 0, 0);
-        }
-        rCtx.restore();
-      } else if (op.type === 'editText') {
-        // Run coordinates are page pixels, not the PDF points the surrounding ops use.
-        // Handing the string to the browser to shape would re-space it away from the editor and the exported PDF.
-        rCtx.save();
-        applyClips(rCtx, op);
-        const dsx = rCtx.canvas.width / op.dims.width;
-        const dsy = rCtx.canvas.height / op.dims.height;
-        for (const run of op.runs) {
-          rCtx.save();
-          rCtx.setTransform(dsx, 0, 0, dsy, 0, 0);
-          rCtx.translate(run.x, run.y);
-          if (run.orientation === 1) rCtx.rotate(Math.PI / 2);
-          else if (run.orientation === 2) rCtx.rotate(Math.PI);
-          else if (run.orientation === 3) rCtx.rotate(-Math.PI / 2);
-          // Faux-oblique replacements lean like the original: the transform shears about the baseline the run draws on.
-          if (run.skew) rCtx.transform(1, 0, -run.skew, 1, 0, 0);
-          // Pen steps divide the scale back out so device spacing stays on the advEm chain.
-          const stretch = run.stretch || 1;
-          if (stretch !== 1) rCtx.transform(stretch, 0, 0, 1, 0, 0);
-          const family = run.font.kind === 'orig'
-            ? `_pdf_d${objCache.docId}_f${run.font.fontObjNum}`
-            : bundledEditFaceAlias(run.font.family, run.font.styleKey);
-          rCtx.font = `${run.sizePx}px "${family}"`;
-          rCtx.textBaseline = 'alphabetic';
-          rCtx.fillStyle = run.color || '#000000';
-          // Faux-bold replacements re-stroke the glyph outlines like the original (mode 2 fills then strokes; mode 1 strokes only).
-          const strokeW = (run.renderMode === 1 || run.renderMode === 2) && run.strokeWidthPx > 0 ? run.strokeWidthPx : 0;
-          let penX = 0;
-          for (const g of run.glyphs) {
-            const step = (g.advEm * run.sizePx) / stretch;
-            if (g.tofu) {
-              // Same proportions as the export's tofu box.
-              const s = run.sizePx;
-              rCtx.lineWidth = 0.06 * s;
-              rCtx.strokeStyle = run.color || '#000000';
-              rCtx.strokeRect(penX + 0.07 * s, -0.72 * s, step - 0.14 * s, 0.72 * s);
-            } else if (g.cp !== undefined && g.cp !== 0x20) {
-              const glyphStr = String.fromCodePoint(g.cp);
-              if (run.renderMode !== 1) rCtx.fillText(glyphStr, penX, 0);
-              if (strokeW > 0) {
-                rCtx.strokeStyle = run.strokeColor || '#000000';
-                rCtx.lineWidth = strokeW;
-                rCtx.strokeText(glyphStr, penX, 0);
-              }
-            }
-            penX += step;
-          }
-          rCtx.restore();
         }
         rCtx.restore();
       } else if (op.type === 'path') {

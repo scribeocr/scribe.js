@@ -1,8 +1,9 @@
 import {
-  extractDict, bytesToLatin1, findTopLevelKeyIndex,
+  extractDict, bytesToLatin1,
   resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue, resolveArrayValue, resolveDictValue,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
+import { patchPageContents, textPatchesTarget } from '../../pdf/textPatch.js';
 import { annotIsModelManaged, annotIsLiftedReply, linkAnnotIsLifted } from '../../pdf/parsePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
@@ -85,17 +86,12 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {boolean} params.humanReadable
  * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert all glyphs drawn by broken-ToUnicode Type3 fonts to paths.
  * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content (glyphs, paths, images) is destructively removed, independent of `bboxes`.
- * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
- *   Vector paths, images, and annotations under these rects are untouched, and no box is painted.
- * @param {?{rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} [params.textEditGated]
- *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
- * @param {?Array<[number, number, number, number]>} [params.textEditWsRects] - User-space bands in which non-marking whitespace glyphs are removed along with a text edit.
- * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
- *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
  *   An image draw is dropped when it falls inside an entry's rect and matches one of that entry's sites.
  * @param {?Array<{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>} [params.pathDeletes]
  *   A painted path is dropped when its hull falls inside an entry's rect and agrees with a site's extent, paint kind, and command count.
+ * @param {?Array<TextPatch>} [params.textPatches]
+ * @param {?Map<string, number>} [params.editFontRefs] - `/Tag` to font object of each substitute face the page's patches draw with.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
@@ -109,7 +105,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, textEditInserts = null, imageDeletes = null, pathDeletes = null,
+  redactBboxes = null, imageDeletes = null, pathDeletes = null, textPatches = null, editFontRefs = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -141,7 +137,7 @@ export async function rewriteContentsStripAndConvert({
     if (redactBboxes && redactBboxes.length > 0) {
       throw new Error('Cannot apply redactions: a page content stream could not be read.');
     }
-    if ((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) {
+    if (textPatches && textPatches.length > 0) {
       throw new Error('Cannot apply text edits: a page content stream could not be read.');
     }
     if (imageDeletes && imageDeletes.length > 0) {
@@ -155,14 +151,17 @@ export async function rewriteContentsStripAndConvert({
     };
   }
 
-  const merged = parts.join('\n');
+  // Text-edit patches address bytes of this joined text, the same text the parser and the renderer patch, so they go in before anything else rewrites it.
+  const pagePatched = textPatchesTarget(textPatches, { kind: 'page' });
+  const formPatchActive = !!textPatches && textPatches.some((r) => r.stream.kind === 'form');
+  const merged = patchPageContents(parts, textPatches).text;
   const { text: strippedText, dropped } = stripText(merged, { mode: 'invisible' });
 
   // Silently skipping the redaction or edit would ship the content the user removed.
   if (redactBboxes && redactBboxes.length > 0 && !conversionState) {
     throw new Error('Cannot apply redactions: no conversion state was created for this page.');
   }
-  if (((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) && !conversionState) {
+  if (formPatchActive && !conversionState) {
     throw new Error('Cannot apply text edits: no conversion state was created for this page.');
   }
   if (imageDeletes && imageDeletes.length > 0 && !conversionState) {
@@ -172,9 +171,7 @@ export async function rewriteContentsStripAndConvert({
     throw new Error('Cannot apply path deletions: no conversion state was created for this page.');
   }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
-  // Inserts count too: a pure append has no erase rects but still needs the splice pass to place or append its body.
-  const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0))
-    && !!conversionState;
+  const wantEdit = formPatchActive && !!conversionState;
   const wantImageDelete = !!(imageDeletes && imageDeletes.length > 0) && !!conversionState;
   const wantPathDelete = !!(pathDeletes && pathDeletes.length > 0) && !!conversionState;
   const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit || wantImageDelete || wantPathDelete;
@@ -205,12 +202,10 @@ export async function rewriteContentsStripAndConvert({
       humanReadable,
       convertBrokenType3ToPaths,
       redactBboxes,
-      textEditBboxes,
-      textEditGated,
-      textEditWsRects,
-      textEditInserts,
       imageDeletes,
       pathDeletes,
+      textPatches,
+      editFontRefs,
     });
     if (result.skipped) skipped = result.skipped;
     if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;
@@ -224,7 +219,7 @@ export async function rewriteContentsStripAndConvert({
     }
   }
 
-  if (!dropped && !converted) {
+  if (!dropped && !converted && !pagePatched) {
     return {
       refs: existingContentsRefs, xobjEntries, formClones, skipped, redactedFormNames, deletedImageObjNums, deletedImageNames, supersededContentObjNums: [],
     };
@@ -274,79 +269,6 @@ export function resolvePageResources(pageObjText, objCache) {
   }
 
   return '<<>>';
-}
-
-/**
- *
- * @param {string} inner
- * @param {string} key  e.g. '/Font' or '/ExtGState'
- * @param {string} newEntries
- * @param {?import('../../pdf/objectCache.js').ObjectCache} objCache
- * @param {?(dictBody: string) => string} [filterInner] - Applied to the existing dict's body before the merge.
- *   A dict that cannot be resolved is left unfiltered, so its entries survive.
- */
-function mergeResourceKey(inner, key, newEntries, objCache, filterInner = null) {
-  if (!newEntries && !filterInner) return inner;
-  const idx = findTopLevelKeyIndex(inner, key);
-  // Use a newline (not just a space) before any appended/spliced content so a trailing
-  // `%` line-comment in `inner` doesn't swallow our content.
-  // Same reason we put a newline before the closing `>>` we synthesise.
-  if (idx < 0) return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
-  let p = idx + key.length;
-  while (p < inner.length && /\s/.test(inner[p])) p++;
-  if (inner.startsWith('<<', p)) {
-    const dict = extractDict(inner, p);
-    const body = filterInner ? filterInner(dict.slice(2, -2)) : dict.slice(2, -2);
-    const merged = `<<${body}\n${newEntries}\n>>`;
-    return inner.slice(0, p) + merged + inner.slice(p + dict.length);
-  }
-  const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
-  if (refMatch && objCache) {
-    const resolved = objCache.getObjectText(Number(refMatch[1]));
-    if (resolved) {
-      // Resolved object text may be just the dict body or wrapped — strip
-      // any surrounding `<< >>` and splice into our inline dict.
-      const trimmed = resolved.trim();
-      let inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
-        ? trimmed.slice(2, -2).trim()
-        : trimmed;
-      if (filterInner) inner2 = filterInner(inner2);
-      const merged = `<<${inner2}\n${newEntries}\n>>`;
-      return inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length);
-    }
-  }
-  // Couldn't resolve — leave the original slot alone and append a duplicate
-  // key. PDF readers honor the last entry for duplicate keys, so the new
-  // (overlay) fonts/ExtGStates win.
-  return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
-}
-
-/**
- * @param {string} existingDict
- * @param {string} overlayFontsStr
- * @param {string} overlayExtGStateStr
- * @param {?import('../../pdf/objectCache.js').ObjectCache} [objCache=null]
- * @param {string} [overlayXObjectsStr='']
- * @param {?Set<string>} [dropXObjectNames=null] - Image names to remove from the /XObject dict.
- *   A name still drawn by a surviving placement must not appear here.
- */
-export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '', dropXObjectNames = null) {
-  let inner = existingDict.slice(2, -2).trim();
-  inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
-  inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
-  const dropFilter = dropXObjectNames && dropXObjectNames.size > 0
-    ? (/** @type {string} */ body) => {
-      let out = body;
-      for (const name of dropXObjectNames) {
-        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        out = out.replace(new RegExp(`/${escaped}\\s+\\d+\\s+\\d+\\s+R`, 'g'), '');
-      }
-      return out;
-    }
-    : null;
-  inner = mergeResourceKey(inner, '/XObject', overlayXObjectsStr, objCache, dropFilter);
-  // Newline before `>>` so any trailing `%` line-comment in `inner` ends before the close.
-  return `<<${inner}\n>>`;
 }
 
 /**

@@ -488,6 +488,7 @@ export const VERBS = [
       if (check.error) return { isError: true, result: { error: check.error } };
       await showWords(host.viewer, params.page, check.words, false);
       const out = await doc.deleteTextLines(check.lines);
+      if (out.refused) return { isError: true, result: { error: `The lines could not be deleted: ${out.refused[0].reason}` } };
       refreshEditedPages(host.viewer, out.pages);
       return {
         result: { page: params.page, deletedLines: check.lines.length },
@@ -520,6 +521,7 @@ export const VERBS = [
       await showWords(host.viewer, params.page, check.words, false);
       const out = await doc.replaceTextLine(check.lines[0], String(params.newText ?? ''));
       if (!out) return { result: { page: params.page, line: params.line, unchanged: true } };
+      if (out.refused) return { isError: true, result: { error: `The line could not be edited: ${out.refused}` } };
       refreshEditedPages(host.viewer, out.pages);
       return {
         result: { page: params.page, line: params.line },

@@ -3,7 +3,7 @@ import {
   getPageObjects, collectPageTreeObjNums, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import {
-  extractDict, parseDictEntries, bytesToLatin1, decodePdfName,
+  extractDict, parseDictEntries, bytesToLatin1, decodePdfName, mergeResources,
 } from '../../pdf/pdfPrimitives.js';
 import { tokenizeContentStream } from '../../pdf/contentStream.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
@@ -36,7 +36,6 @@ import {
   parseExistingContents,
   rewriteContentsStripAndConvert,
   resolvePageResources,
-  mergeResources,
   buildReplacementPageDict,
   composePageRotation,
   overlayAnnotationBbox,
@@ -302,22 +301,17 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?ScrubConfig} [params.scrub=null]
  * @param {?Map<number, Array<[number, number, number, number]>>} [params.redactRegionsByPage=null] - Per-page rects whose content is destructively removed and covered with an opaque black box.
  *    Rects are in the source page's user space.
- * @param {?Map<number, Array<[number, number, number, number]>>} [params.textEditRegionsByPage=null] - Per-page user-space rects whose glyphs are removed (native-text edits).
- *    Paths, images, and annotations under the rects are untouched, and no box is painted.
- * @param {?Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} [params.textEditGatedByPage=null]
- *    Per-page identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
- * @param {?Map<number, Array<[number, number, number, number]>>} [params.textEditWsByPage=null]
- *    Per-page user-space bands in which non-marking whitespace glyphs are removed along with a text edit.
- * @param {?Map<number, Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>>} [params.textEditInsertsByPage=null]
- *    Per-page replacement blocks for replaceText records, spliced in where their glyphs are dropped.
- * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page `/EDFn` font resource entries the inserts draw with.
+ * @param {?Map<number, Array<TextPatch>>} [params.textPatchesByPage=null] - Per-page native text edits as byte-range patches of the page's own streams.
+ * @param {?Map<number, Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>>} [params.imageDeleteByPage=null]
+ * @param {?Map<number, Array<{rect: [number, number, number, number],
+ *    sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>>} [params.pathDeleteByPage=null]
+ * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page font resource entries for the substitute faces the text patches draw with.
  * @param {?Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} [params.editFontObjects=null]
  *    Pre-embedded edit font objects (allocated by the caller before `startingNextObjNum`).
  * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
  * @param {?ReturnType<typeof import('./writePdfFormFields.js').buildFormFieldUpdates>} [params.formFieldUpdates=null]
  *    Replacement widget objects carrying edited form-field values, plus the catalog /AcroForm entry to synthesize when the source has none.
- * @param {boolean} [params.flattenFormFields=false] - Paint each visible widget's current appearance into page content,
- *    drop the widget annotations, and omit /AcroForm from the rebuilt catalog.
+ * @param {boolean} [params.flattenFormFields=false] - Paint each visible widget's current appearance into page content, drop the widget annotations, and omit /AcroForm from the rebuilt catalog.
  */
 export async function rebuildPdfSubset({
   pdfBytes, objCache, xrefEntries, pages,
@@ -335,10 +329,7 @@ export async function rebuildPdfSubset({
   outline = null,
   scrub = null,
   redactRegionsByPage = null,
-  textEditRegionsByPage = null,
-  textEditGatedByPage = null,
-  textEditWsByPage = null,
-  textEditInsertsByPage = null,
+  textPatchesByPage = null,
   imageDeleteByPage = null,
   pathDeleteByPage = null,
   editFontRefsByPage = null,
@@ -350,9 +341,7 @@ export async function rebuildPdfSubset({
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
   const redactByPage = redactRegionsByPage || new Map();
-  const textEditByPage = textEditRegionsByPage || new Map();
-  const textEditGated = textEditGatedByPage || new Map();
-  const textEditWs = textEditWsByPage || new Map();
+  const textPatches = textPatchesByPage || new Map();
   const imageDeletes = imageDeleteByPage || new Map();
   const pathDeletes = pathDeleteByPage || new Map();
   // The redaction and content-edit machinery lives in the overlay page loop below, so without overlay data the marked content would pass through verbatim.
@@ -365,7 +354,7 @@ export async function rebuildPdfSubset({
   if (pathDeletes.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply path deletions: rebuild was invoked without page overlay data.');
   }
-  if ((textEditByPage.size > 0 || textEditGated.size > 0) && !overlayEnabled) {
+  if (textPatches.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
   }
   if (flattenFormFields && !overlayEnabled) {
@@ -409,7 +398,7 @@ export async function rebuildPdfSubset({
   const { id0Hex: sourceId0Hex } = parseTrailerInfo(pdfBytes, findXrefOffset(pdfBytes));
 
   // The structure tree can duplicate page text in /ActualText, so carrying it over would expose redacted or pre-edit text.
-  if ((redactByPage.size > 0 || textEditByPage.size > 0 || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
+  if ((redactByPage.size > 0 || textPatches.size > 0)
     && catalogKeep.some((k) => k.name === 'StructTreeRoot' || k.name === 'MarkInfo')) {
     catalogKeep = catalogKeep.filter((k) => k.name !== 'StructTreeRoot' && k.name !== 'MarkInfo');
     if (typeof warningHandler === 'function') {
@@ -426,8 +415,8 @@ export async function rebuildPdfSubset({
   }
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0
-    || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0 || imageDeletes.size > 0 || pathDeletes.size > 0)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0
+    || textPatches.size > 0 || imageDeletes.size > 0 || pathDeletes.size > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -616,7 +605,7 @@ export async function rebuildPdfSubset({
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
-      const hasTextEdits = textEditByPage.has(i) || textEditGated.has(i) || !!textEditInsertsByPage?.has(i);
+      const hasTextEdits = textPatches.has(i);
       const hasImageDeletes = imageDeletes.has(i);
       const hasPathDeletes = pathDeletes.has(i);
       if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasWidgetBake) continue;
@@ -643,12 +632,10 @@ export async function rebuildPdfSubset({
           humanReadable,
           convertBrokenType3ToPaths,
           redactBboxes: redactByPage.get(i) || null,
-          textEditBboxes: textEditByPage.get(i) || null,
           imageDeletes: imageDeletes.get(i) || null,
           pathDeletes: pathDeletes.get(i) || null,
-          textEditGated: textEditGated.get(i) || null,
-          textEditWsRects: textEditWs.get(i) || null,
-          textEditInserts: textEditInsertsByPage?.get(i) || null,
+          textPatches: textPatches.get(i) || null,
+          editFontRefs: editFontRefsByPage?.get(i) || null,
         });
 
         // When broken-Type3 conversion is the only reason this page is here and nothing changed,

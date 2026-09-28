@@ -1,36 +1,20 @@
 /**
  * The Edit Text mode's live line editor.
  * A per-line canvas overlay draws the line being edited while the page raster re-renders with that line suppressed.
+ * The glyphs it draws come from the worker, which plans the edit as a commit would and reports where the rewritten operators put each glyph.
  */
 import { ensureGlyphSetForText } from '../../js/fontContainerMain.js';
+import { GlobalFonts } from '../../js/containers/fontContainer.js';
 import ocr from '../../js/objects/ocrObjects.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
-import {
-  wordBandRect, nativeTextForPage, glyphIdentitiesForWords, FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW,
-} from '../../js/textEdits.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
 
 /** @typedef {import('../../js/objects/ocrObjects.js').OcrLine} OcrLine */
 
 /**
- * One character of the line as the raster drew it.
- * @typedef {object} EditChar
- * @property {string} ch
- * @property {number} x0
- * @property {number} x1
- * @property {number} size
- * @property {number} baseY
- * @property {string} face
- * @property {string} color
- * @property {boolean} [tofu]
- * @property {string} [lig] - The ligature this character's cluster draws as, set on the cluster's first character.
- * @property {boolean} [ligMember] - A later character of a ligature cluster, which holds only a caret position.
- * @property {string} [fontStyle]
- * @property {string} [fontWeight]
- * @property {number} [skew]
- * @property {number} [stretch]
- * @property {number} [renderMode]
- * @property {number} [strokeWidthPx]
- * @property {string} [strokeColor]
+ * One word of the previewed line.
+ * `oldId` is the id of the page word it continues, or null for a word the edit inserted.
+ * @typedef {{ text: string, oldId: ?string, glyphs: Array<LineGlyph> }} PreviewWord
  */
 
 /**
@@ -43,32 +27,42 @@ import {
  * @property {number} scale - Canvas pixels per local unit.
  * @property {number} baselineY
  * @property {number} size
- * @property {string} text - The live text, which edits mutate.
+ * @property {number} lineStartX - The pen of the line's first glyph, where the caret of an empty line sits.
+ * @property {string} text
  * @property {string} origText
- * @property {Array<EditChar>} origChars
- * @property {WordMid} styleFromChar - The style newly typed characters take.
- * @property {Array<WordMid>} [wordMids] - Per-word typed-character styles, index-aligned with the line's words.
+ * @property {Array<PreviewWord>} words - The line as the worker last previewed it.
+ * @property {string} wordsText - The text `words` previews; `text` runs a keystroke ahead of it while a preview is in flight.
+ * @property {Array<PreviewWord>} origWords - The line as the page draws it, which a closed session shows again.
+ * @property {Map<number|undefined, {program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string}>} fonts - The page fonts the glyphs draw with, by font object number.
+ * @property {boolean} previewBusy
+ * @property {boolean} previewStale - The text or toggles changed while a preview was in flight.
+ * @property {?Promise<void>} [previewDone] - Settles when the preview in flight has been drawn.
  * @property {number} caret
  * @property {?number} selAnchor
  * @property {Float64Array} xs - Local x of each caret slot.
  * @property {Float64Array} ys - Baseline y of each caret slot.
  * @property {Float64Array} [szs] - Font size at each caret slot.
- * @property {Map<number, WordToggle>} styleOv - Live bold/italic toggles keyed by word index of `text`.
+ * @property {Map<number, WordToggle>} styleOv - Live style toggles keyed by word index of `text`.
  * @property {Map<number, WordBase>} wordBase - Each word's pre-edit style state, remapped alongside `styleOv`.
  * @property {Array<EditSnapshot>} undoStack
  * @property {Array<EditSnapshot>} redoStack
  * @property {boolean} composing
+ * @property {?string} [previewInk]
+ * @property {?Set<number>} [previewWords] - Word indices of `text` that `previewInk` draws on.
  */
+
+/** @typedef {{bold?: boolean, italic?: boolean, color?: string}} WordToggle */
+/** @typedef {{bold: boolean, italic: boolean, stroked: boolean, skewed: boolean, color: string}} WordBase */
+/** @typedef {{text: string, caret: number, styleOv: Map<number, WordToggle>, wordBase: Map<number, WordBase>}} EditSnapshot */
 
 /**
- * @typedef {{program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, style: Style, size: number,
- *   color: string, face: string, spaceAdvPx: number, renderMode?: number, strokeWidthPx?: number,
- *   strokeColor?: string, skew?: number}} WordMid
+ * The canvas font of a drawn glyph.
+ * @param {{ face: string, size: number, fontStyle?: string, fontWeight?: string }} d
  */
+const fontOf = (d) => `${d.fontStyle || 'normal'} ${d.fontWeight || 'normal'} ${d.size}px ${/[",]/.test(d.face) ? d.face : `"${d.face}"`}`;
 
-/** @typedef {{bold?: boolean, italic?: boolean}} WordToggle */
-/** @typedef {{bold: boolean, italic: boolean, stroked: boolean, skewed: boolean}} WordBase */
-/** @typedef {{text: string, caret: number, styleOv: Map<number, WordToggle>, wordBase: Map<number, WordBase>}} EditSnapshot */
+/** @type {?CanvasRenderingContext2D} */
+let measureCtx = null;
 
 /**
  * Character spans of `text`'s whitespace-split words, `[start, end)` per word.
@@ -88,9 +82,14 @@ const tokenSpans = (text) => {
 
 /**
  * @param {any} scribe - The viewer instance.
- * @param {{onCommitted?: (pages: Array<number>) => void, onOpenChanged?: (open: boolean) => void}} [hooks]
+ * @param {{onCommitted?: (pages: Array<number>) => void, onOpenChanged?: (open: boolean) => void,
+ *   onRangeSelected?: (clientX: number, clientY: number) => void, onCaretChanged?: () => void}} [hooks]
+ *   `onRangeSelected` fires when a pointer drag ends on a non-empty range.
+ *   `onCaretChanged` fires after every redraw.
  */
-export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
+export function createLineEditor(scribe, {
+  onCommitted, onOpenChanged, onRangeSelected, onCaretChanged,
+} = {}) {
   /** @type {?EditSession} */
   let st = null;
 
@@ -120,156 +119,266 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
   // The editing field draws only while a session is live, never on the lingering post-close canvas.
   let fieldOn = false;
 
-  /** @param {EditSession} session */
-  const layout = (session) => {
-    const {
-      text, origText, origChars, styleFromChar, baselineY, styleOv,
-    } = session;
-    const len = text.length;
-    const olen = origText.length;
-    // Word index at each character of the live text, for the per-word bold/italic toggles.
-    const tokOf = new Int32Array(len + 1).fill(-1);
-    if (styleOv.size > 0) {
-      for (const [s0, s1] of tokenSpans(text).entries()) {
-        for (let i = s1[0]; i < s1[1]; i++) tokOf[i] = s0;
+  /**
+   * The canvas face a glyph's character draws with.
+   * An embedded font draws with its own face, and a character its subset lacks takes a built-in face.
+   * Every glyph of a font the file does not embed takes a built-in face fitted to the declared width.
+   * @param {EditSession} s
+   * @param {LineGlyph} g
+   * @param {string} ch - The character drawn, one of the glyph's when a ligature is drawn letter by letter.
+   * @param {{ bold?: boolean, italic?: boolean }} hints
+   * @returns {{ face: string, fontStyle: string, fontWeight: string, tofu: boolean, fitted: boolean, stretch?: number }}
+   */
+  const faceOf = (s, g, ch, hints) => {
+    if (g.face) {
+      const raw = GlobalFonts.raw?.[g.face.family];
+      const f = raw?.[g.face.styleKey] || raw?.normal;
+      if (f) {
+        return {
+          face: f.fontFaceName, fontStyle: f.fontFaceStyle || '', fontWeight: f.fontFaceWeight || '', tofu: false, fitted: false,
+        };
       }
+      return {
+        face: g.face.family,
+        fontStyle: /talic/.test(g.face.styleKey) ? 'italic' : '',
+        fontWeight: /^bold/.test(g.face.styleKey) ? 'bold' : '',
+        tofu: false,
+        fitted: false,
+      };
     }
-
-    /**
-     * Restyle one draw descriptor per its word's live toggle.
-     * @template T
-     * @param {T} d
-     * @param {number} ti - The character's index in the live text.
-     * @returns {T}
-     */
-    const applyToggle = (d, ti) => {
-      const o = tokOf[ti] >= 0 ? styleOv.get(tokOf[ti]) : undefined;
-      if (!o) return d;
-      const dd = /** @type {{size: number, color: string, skew?: number, renderMode?: number, strokeWidthPx?: number, strokeColor?: string}} */ (d);
-      if (o.bold === true && !dd.renderMode) {
-        dd.renderMode = 2;
-        dd.strokeWidthPx = FAUX_BOLD_STROKE_EM * dd.size;
-        dd.strokeColor = dd.color;
-      } else if (o.bold === false) {
-        dd.renderMode = undefined;
-        dd.strokeWidthPx = undefined;
-        dd.strokeColor = undefined;
-      }
-      if (o.italic === true && !dd.skew) dd.skew = FAUX_OBLIQUE_SKEW;
-      else if (o.italic === false) dd.skew = 0;
-      return d;
+    const ef = s.fonts.get(g.fontObjNum ?? undefined);
+    // Some fonts map their visible hyphen glyph to a soft hyphen (U+00AD), which a canvas draws as nothing.
+    const drawn = ch === '­' ? '-' : ch;
+    if (ef?.faceName && ef.program && resolveReplacementChar(drawn, ef.program, hints).kind === 'orig') {
+      return {
+        face: ef.faceName, fontStyle: '', fontWeight: '', tofu: false, fitted: false,
+      };
+    }
+    const r = resolveReplacementChar(drawn, ef?.program || null, hints);
+    if (r.kind === 'tofu') {
+      return {
+        face: '', fontStyle: '', fontWeight: '', tofu: true, fitted: false,
+      };
+    }
+    const sub = r.kind === 'builtIn' ? r : null;
+    // The resolver's variant can differ from the hints when the font's name carries a weight or the hinted variant is not loaded.
+    // The canvas must name the variant the resolver measured.
+    return {
+      face: (sub ? sub.fontFaceName || sub.family : ef?.faceName) || '',
+      fontStyle: sub ? sub.fontFaceStyle : (hints.italic ? 'italic' : ''),
+      fontWeight: sub ? sub.fontFaceWeight : (hints.bold ? 'bold' : ''),
+      tofu: false,
+      fitted: !ef?.program?.font,
+      stretch: sub && sub.stretch !== 1 ? sub.stretch : undefined,
     };
-    let p = 0;
-    while (p < len && p < olen && text[p] === origText[p]) p += 1;
-    // A ligature draws as one glyph on its first letter, so a boundary landing inside one decomposes the whole cluster into the flow region.
-    while (p > 0 && p < olen && origChars[p].ligMember) p -= 1;
-    let sfx = 0;
-    while (sfx < len - p && sfx < olen - p && text[len - 1 - sfx] === origText[olen - 1 - sfx]) sfx += 1;
-    while (sfx > 0 && origChars[olen - sfx].ligMember) sfx -= 1;
+  };
 
-    /** @type {Array<{ch: string, x: number, w: number, size: number, baseY: number, face: string,
-     *   tofu?: boolean, color: string, fontStyle?: string, fontWeight?: string, skew?: number,
-     *   stretch?: number, renderMode?: number, strokeWidthPx?: number, strokeColor?: string}>} */
+  /**
+   * @typedef {{ch: string, x: number, w: number, size: number, baseY: number, face: string, tofu?: boolean, color: string, fontStyle?: string,
+   *   fontWeight?: string, skew?: number, stretch?: number, renderMode?: number, strokeWidthPx?: number, strokeColor?: string}} Draw
+   */
+
+  /**
+   * Caret slots and draws for the session's previewed words.
+   * @param {EditSession} s
+   */
+  const layout = (s) => {
+    const {
+      text, words, wordsText,
+    } = s;
+    const wlen = wordsText.length;
+    const xsW = new Float64Array(wlen + 1);
+    const ysW = new Float64Array(wlen + 1);
+    const szW = new Float64Array(wlen + 1);
+    /** @type {Array<Draw>} */
     const draws = [];
+    const gaps = [];
+    for (let k = 1; k < words.length; k++) {
+      const prev = words[k - 1].glyphs;
+      const cur = words[k].glyphs;
+      if (prev.length > 0 && cur.length > 0) gaps.push(cur[0].penX - (prev[prev.length - 1].penX + prev[prev.length - 1].widthPx));
+    }
+    gaps.sort((a, b) => a - b);
+    const gap = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : s.size * 0.25;
+    const spans = tokenSpans(wordsText);
+    let x = s.lineStartX;
+    let y = s.baselineY;
+    let size = s.size;
+    let i = 0;
+    for (let k = 0; k < spans.length && k < words.length; k++) {
+      const [a, b] = spans[k];
+      const w = words[k];
+      if (w.glyphs.length === 0) continue;
+      const first = w.glyphs[0];
+      const last = w.glyphs[w.glyphs.length - 1];
+      const pageWord = (w.oldId ? s.line.words.find((pw) => pw.id === w.oldId) : null) || s.line.words[0];
+      const style = pageWord ? pageWord.style : {};
+      // A word bold by a stroke rather than by its font takes the regular weight, since its glyphs already draw with the stroke.
+      const hints = first.renderMode && !s.fonts.get(first.fontObjNum ?? undefined)?.program?.bold && style.bold ? { ...style, bold: false } : style;
+      for (let j = 0, n = a - i; i < a; i++, j++) {
+        xsW[i] = x + ((first.penX - x) * j) / n;
+        ysW[i] = y;
+        szW[i] = size;
+      }
+      const cells = w.glyphs.map((g) => ({ g, n: Math.max(1, ocr.replaceLigatures(g.text).length) }));
+      if (cells.reduce((acc, c) => acc + c.n, 0) === b - a) {
+        for (const { g, n } of cells) {
+          for (let j = 0; j < n; j++, i++) {
+            xsW[i] = g.penX + (g.widthPx * j) / n;
+            ysW[i] = g.penY;
+            szW[i] = g.sizePx;
+          }
+        }
+      } else {
+        const end = last.penX + last.widthPx;
+        for (let j = 0; i < b; i++, j++) {
+          xsW[i] = first.penX + ((end - first.penX) * j) / (b - a);
+          ysW[i] = first.penY;
+          szW[i] = first.sizePx;
+        }
+      }
+      for (const g of w.glyphs) {
+        const letters = ocr.replaceLigatures(g.text);
+        const whole = faceOf(s, g, g.text, hints);
+        // A substitute face can lack the ligature glyph, so such a ligature draws letter by letter across its width.
+        const pieces = letters.length > 1 && (whole.tofu || whole.fitted || !whole.face)
+          ? [...letters].map((ch, j) => ({
+            ch, x: g.penX + (g.widthPx * j) / letters.length, w: g.widthPx / letters.length, f: faceOf(s, g, ch, hints),
+          }))
+          : [{
+            ch: g.text, x: g.penX, w: g.widthPx, f: whole,
+          }];
+        for (const p of pieces) {
+          let stretch = g.stretch || p.f.stretch;
+          // A substitute face for a font the file does not embed is fitted glyph by glyph to the declared width, as the raster draws it.
+          if (p.f.fitted && !g.widthsUnreliable) {
+            stretch = g.stretch || undefined;
+            if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
+            if (measureCtx && p.f.face && p.w > 0) {
+              measureCtx.font = fontOf({
+                face: p.f.face, size: g.sizePx, fontStyle: p.f.fontStyle, fontWeight: p.f.fontWeight,
+              });
+              const scale = p.w / measureCtx.measureText(p.ch).width;
+              // The raster draws a glyph unscaled when the fit would stretch it past double.
+              if (scale > 0 && scale <= 2 && Math.abs(scale - 1) >= 1e-3) stretch = scale;
+            }
+          }
+          draws.push({
+            ch: p.ch,
+            x: p.x,
+            w: p.w,
+            size: g.sizePx,
+            baseY: g.penY,
+            face: p.f.face,
+            tofu: p.f.tofu,
+            color: g.fillColor,
+            fontStyle: p.f.fontStyle,
+            fontWeight: p.f.fontWeight,
+            skew: g.skew || undefined,
+            stretch,
+            renderMode: g.renderMode,
+            strokeWidthPx: g.strokeWidthPx,
+            strokeColor: g.strokeColor,
+          });
+        }
+      }
+      x = last.penX + last.widthPx;
+      y = last.penY;
+      size = last.sizePx;
+    }
+    for (; i <= wlen; i++, x += gap) {
+      xsW[i] = x;
+      ysW[i] = y;
+      szW[i] = size;
+    }
+    // The live text can run a keystroke ahead of the preview; its extra characters share the last slot until the preview catches up.
+    const len = text.length;
     const xs = new Float64Array(len + 1);
-    /**
-     * Baseline y at each caret position.
-     * It lets the caret follow raised (sup) words.
-     */
     const ys = new Float64Array(len + 1);
     const szs = new Float64Array(len + 1);
-
-    const emitOriginal = (ti, oi, dx) => {
-      const c = origChars[oi];
-      xs[ti] = c.x0 + dx;
-      ys[ti] = c.baseY;
-      szs[ti] = c.size;
-      if (c.ch !== ' ' && !c.ligMember) {
-        draws.push(applyToggle({
-          ch: c.lig || c.ch,
-          x: c.x0 + dx,
-          w: c.x1 - c.x0,
-          size: c.size,
-          baseY: c.baseY,
-          face: c.face,
-          tofu: c.tofu,
-          color: c.color,
-          fontStyle: c.fontStyle,
-          fontWeight: c.fontWeight,
-          skew: c.skew,
-          stretch: c.stretch,
-          renderMode: c.renderMode,
-          strokeWidthPx: c.strokeWidthPx,
-          strokeColor: c.strokeColor,
-        }, ti));
-      }
-    };
-
-    for (let i = 0; i < p; i++) emitOriginal(i, i, 0);
-
-    let flowX = p < olen ? origChars[p].x0 : (olen > 0 ? origChars[olen - 1].x1 : 0);
-    const flowBaseY = p < olen ? origChars[p].baseY : (olen > 0 ? origChars[olen - 1].baseY : baselineY);
-    // Typed characters must resolve against the word they land in exactly as the commit does, or a multi-font line previews differently from what it commits as.
-    // Past the last original word, both sides fall back to that word's style.
-    const mids = session.wordMids && session.wordMids.length > 0 ? session.wordMids : [styleFromChar];
-    let flowWi = 0;
-    for (let i = 0; i < p; i++) if (text[i] === ' ') flowWi += 1;
-    for (let i = p; i < len - sfx; i++) {
-      const ch = text[i];
-      const mid = mids[Math.min(flowWi, mids.length - 1)];
-      xs[i] = flowX;
-      ys[i] = flowBaseY;
-      szs[i] = mid.size;
-      if (ch === ' ') {
-        flowWi += 1;
-        flowX += mid.spaceAdvPx;
-        continue;
-      }
-      const r = resolveReplacementChar(ch, mid.program, mid.style);
-      if (r.kind === 'tofu') {
-        draws.push({
-          ch, x: flowX, w: r.advEm * mid.size, size: mid.size, baseY: flowBaseY, face: '', tofu: true, color: mid.color,
-        });
-        flowX += r.advEm * mid.size;
-      } else {
-        const face = (r.kind === 'orig' ? mid.face : (r.fontFaceName || r.family)) || '';
-        const fitMult = (r.kind === 'bundled' ? r.sizeMult : 1) || 1;
-        draws.push(applyToggle({
-          ch,
-          x: flowX,
-          w: r.advEm * mid.size,
-          size: mid.size * fitMult,
-          baseY: flowBaseY,
-          face,
-          color: mid.color,
-          fontStyle: r.kind !== 'orig' && mid.style.italic ? 'italic' : '',
-          fontWeight: r.kind !== 'orig' && mid.style.bold ? 'bold' : '',
-          skew: mid.skew,
-          stretch: r.kind === 'bundled' && r.stretch !== 1 ? r.stretch : undefined,
-          renderMode: mid.renderMode,
-          strokeWidthPx: mid.strokeWidthPx,
-          strokeColor: mid.strokeColor,
-        }, i));
-        flowX += r.advEm * mid.size;
-      }
-    }
-
-    if (sfx > 0) {
-      const oStart = olen - sfx;
-      const rawDelta = flowX - origChars[oStart].x0;
-      const dx = Math.abs(rawDelta) < 0.5 ? 0 : rawDelta;
-      for (let i = 0; i < sfx; i++) emitOriginal(len - sfx + i, oStart + i, dx);
-      xs[len] = origChars[olen - 1].x1 + dx;
-      ys[len] = origChars[olen - 1].baseY;
-      szs[len] = origChars[olen - 1].size;
-    } else {
-      xs[len] = flowX;
-      ys[len] = flowBaseY;
-      szs[len] = mids[Math.min(flowWi, mids.length - 1)].size;
+    for (let j = 0; j <= len; j++) {
+      const k = Math.min(j, wlen);
+      xs[j] = xsW[k];
+      ys[j] = ysW[k];
+      szs[j] = szW[k];
     }
     return {
-      draws, xs, ys, szs, firstDiff: p,
+      draws, xs, ys, szs,
     };
+  };
+
+  /**
+   * Ask the worker where the line's glyphs land for the session's text and toggles, and redraw when it answers.
+   * A change made while a request is in flight is sent when the answer arrives.
+   */
+  const requestPreview = () => {
+    if (!st) return;
+    if (st.previewBusy) { st.previewStale = true; return; }
+    const s = st;
+    const { text } = s;
+    const newTexts = text.trim().split(/\s+/).filter((t) => t.length > 0);
+    if (newTexts.length === 0) {
+      s.words = [];
+      s.wordsText = text;
+      return;
+    }
+    s.previewBusy = true;
+    s.previewStale = false;
+    // The typing history's length when this text was captured; the entry below it is the state before the change that produced the text.
+    const depth = s.undoStack.length;
+    const nt = nativeTextForPage(scribe.doc, s.line.page);
+    const styles = newTexts.map((t, k) => {
+      const o = s.styleOv.get(k);
+      const ink = s.previewInk && s.previewWords?.has(k) ? s.previewInk : o?.color;
+      /** @type {{ color?: string, bold?: boolean, italic?: boolean }} */
+      const style = {};
+      if (ink) style.color = ink;
+      if (o?.bold !== undefined) style.bold = o.bold;
+      if (o?.italic !== undefined) style.italic = o.italic;
+      return Object.keys(style).length > 0 ? style : null;
+    });
+    /** @type {import('../../js/pdf/textPatch.js').TextEditRequest} */
+    const req = {
+      kind: 'replace',
+      words: s.line.words.map((w) => ({
+        id: w.id, text: w.text, penX: nt[w.id]?.penX || [], baselineY: nt[w.id]?.baselineY,
+      })),
+      newTexts,
+      styles,
+    };
+    s.previewDone = scribe.doc.images.previewTextEdit(s.n, req).then(async (/** @type {TextEditPreview} */ res) => {
+      if (st !== s) return;
+      if (res.words) {
+        for (const w of res.words) {
+          for (const g of w.glyphs) {
+            const f = g.fontObjNum ?? undefined;
+            if (g.face || s.fonts.has(f)) continue;
+            s.fonts.set(f, (await scribe.doc.images.getEditFont(s.n, f)) || { program: null, faceName: null });
+          }
+        }
+        if (st !== s) return;
+        s.words = res.words;
+        s.wordsText = text;
+        return;
+      }
+      // The commit would refuse this text too, so the change that produced it is undone along with any change typed on top of it.
+      const back = depth > 0 ? s.undoStack[depth - 1] : null;
+      if (back) {
+        s.text = back.text;
+        s.caret = back.caret;
+        s.selAnchor = null;
+        s.styleOv = new Map(back.styleOv);
+        s.wordBase = new Map(back.wordBase);
+        s.undoStack.length = depth - 1;
+        // The state typed back to may itself never have been previewed, when its keystrokes coalesced into the refused request.
+        s.previewStale = s.text !== s.wordsText;
+      }
+    }).catch((e) => console.error('Edit Text: preview failed:', e)).finally(() => {
+      if (st !== s) return;
+      s.previewBusy = false;
+      draw();
+      if (s.previewStale) requestPreview();
+    });
   };
 
   /** @returns {?[number, number]} */
@@ -280,6 +389,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
 
   const draw = () => {
     if (!st) return;
+    if (onCaretChanged) onCaretChanged();
     const {
       draws, xs, ys, szs,
     } = layout(st);
@@ -340,8 +450,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
         cx.strokeStyle = d.color;
         cx.strokeRect(d.x + 0.07 * d.size, d.baseY - 0.72 * d.size, d.w - 0.14 * d.size, 0.72 * d.size);
       } else {
-        // Style keywords and conditional family quoting mirror the raster's substituted-text path.
-        cx.font = `${d.fontStyle || 'normal'} ${d.fontWeight || 'normal'} ${d.size}px ${/[",]/.test(d.face) ? d.face : `"${d.face}"`}`;
+        cx.font = fontOf(d);
         cx.fillStyle = d.color;
         // Faux-bold chars re-stroke the outlines like the raster (mode 2 fills then strokes; mode 1 strokes only).
         const strokeW = (d.renderMode === 1 || d.renderMode === 2) && d.strokeWidthPx ? d.strokeWidthPx : 0;
@@ -351,11 +460,13 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
           if (d.skew) cx.transform(1, 0, -d.skew, 1, d.skew * d.baseY, 0);
           if (d.stretch && d.stretch !== 1) cx.transform(d.stretch, 0, 0, 1, d.x * (1 - d.stretch), 0);
         }
-        if (d.renderMode !== 1) cx.fillText(d.ch, d.x, d.baseY);
+        // Some fonts map their visible hyphen glyph to a soft hyphen (U+00AD), which a canvas draws as nothing.
+        const shown = d.ch === '\u00ad' ? '-' : d.ch;
+        if (d.renderMode !== 1) cx.fillText(shown, d.x, d.baseY);
         if (strokeW > 0) {
           cx.strokeStyle = d.strokeColor || d.color;
           cx.lineWidth = strokeW;
-          cx.strokeText(d.ch, d.x, d.baseY);
+          cx.strokeText(shown, d.x, d.baseY);
         }
         if (transformed) cx.restore();
       }
@@ -419,6 +530,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     st.wordBase = new Map(prev.wordBase);
     st.selAnchor = null;
     restartBlink();
+    requestPreview();
     draw();
     return true;
   };
@@ -468,15 +580,13 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
   };
 
   /**
-   * Toggle bold/italic on the words under the selection (or the caret's word), word-processor style.
-   * A style baked into the word's face cannot toggle off; such words are left unchanged.
-   * @param {'bold'|'italic'} prop
+   * The words a style action targets: those under the selection, else the caret's word.
+   * @param {EditSession} s
+   * @returns {Array<number>}
    */
-  const toggleWordStyle = (prop) => {
-    if (!st) return;
-    const s = st;
+  const targetWords = (s) => {
     const spans = tokenSpans(s.text);
-    if (spans.length === 0) return;
+    if (spans.length === 0) return [];
     const sel = selRange();
     /** @type {Array<number>} */
     const targets = [];
@@ -489,10 +599,117 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
       }
       targets.push(k === -1 ? 0 : k);
     }
-    /** @param {number} k */
-    const base = (k) => s.wordBase.get(k) || {
-      bold: false, italic: false, stroked: false, skewed: false,
+    return targets;
+  };
+  /**
+   * @param {EditSession} s
+   * @param {number} k
+   * @returns {WordBase}
+   */
+  const baseOf = (s, k) => s.wordBase.get(k) || {
+    bold: false, italic: false, stroked: false, skewed: false, color: '#000000',
+  };
+
+  /**
+   * The bold / italic state of the words a toggle would act on: on when every word has it, locked when the style is baked into every word's face.
+   * @param {'bold'|'italic'} prop
+   */
+  const wordStyleState = (prop) => {
+    if (!st) return { present: false, on: false, locked: false };
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return { present: false, on: false, locked: false };
+    const eff = (k) => {
+      const o = s.styleOv.get(k);
+      return o && o[prop] !== undefined ? !!o[prop] : !!baseOf(s, k)[prop];
     };
+    const on = targets.every(eff);
+    const locked = on && targets.every((k) => {
+      const b = baseOf(s, k);
+      const o = s.styleOv.get(k);
+      return b[prop] && (!o || o[prop] === undefined) && !(prop === 'bold' ? b.stroked : b.skewed);
+    });
+    return { present: true, on, locked };
+  };
+  /** The ink of the words a color action would act on. */
+  const wordColorState = () => {
+    if (!st) return { present: false, color: null, mixed: false };
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return { present: false, color: null, mixed: false };
+    const inks = [...new Set(targets.map((k) => s.styleOv.get(k)?.color || baseOf(s, k).color))];
+    return { present: true, color: inks[0], mixed: inks.length > 1 };
+  };
+  /**
+   * Set the ink of the words under the selection (or the caret's word); one typing-level undo step.
+   * @param {string} hex
+   */
+  const setWordColor = (hex) => {
+    if (!st) return;
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return;
+    s.previewInk = null;
+    s.previewWords = null;
+    pushUndo();
+    for (const k of targets) {
+      /** @type {WordToggle} */
+      const o = { ...(s.styleOv.get(k) || {}) };
+      if (hex === baseOf(s, k).color) delete o.color; else o.color = hex;
+      if (o.bold === undefined && o.italic === undefined && o.color === undefined) s.styleOv.delete(k);
+      else s.styleOv.set(k, o);
+    }
+    requestPreview();
+    draw();
+  };
+  /**
+   * Draw the target words in `hex` without committing anything; null lifts the preview.
+   * @param {?string} hex
+   */
+  const previewWordColor = (hex) => {
+    if (!st) return;
+    st.previewInk = hex || null;
+    st.previewWords = hex ? new Set(targetWords(st)) : null;
+    requestPreview();
+    draw();
+  };
+  /** The client rect of the open line's text band, where the floating style bar anchors. */
+  const bandClientRect = () => {
+    if (!st || !st.xs || st.xs.length === 0) return null;
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (let i = 0; i < st.xs.length; i++) {
+      const size = st.szs?.[i] ?? st.size;
+      left = Math.min(left, st.xs[i]);
+      right = Math.max(right, st.xs[i]);
+      top = Math.min(top, st.ys[i] - 0.75 * size);
+      bottom = Math.max(bottom, st.ys[i] + 0.25 * size);
+    }
+    const r = canvas.getBoundingClientRect();
+    const bw = st.box.right - st.box.left;
+    const bh = st.box.bottom - st.box.top;
+    if (!(bw > 0) || !(bh > 0) || !r.width) return null;
+    const cx = (x) => r.left + ((x - st.box.left) / bw) * r.width;
+    const cy = (y) => r.top + ((y - st.box.top) / bh) * r.height;
+    return {
+      left: cx(left), right: cx(right), top: cy(top), bottom: cy(bottom),
+    };
+  };
+
+  /**
+   * Toggle bold/italic on the words under the selection (or the caret's word), word-processor style.
+   * A style baked into the word's face cannot toggle off; such words are left unchanged.
+   * @param {'bold'|'italic'} prop
+   */
+  const toggleWordStyle = (prop) => {
+    if (!st) return;
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return;
+    /** @param {number} k */
+    const base = (k) => baseOf(s, k);
     /** @param {number} k */
     const eff = (k) => {
       const o = s.styleOv.get(k);
@@ -509,9 +726,10 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
       else if (target) o[prop] = true;
       else if (prop === 'bold' ? b.stroked : b.skewed) o[prop] = false;
       else delete o[prop];
-      if (o.bold === undefined && o.italic === undefined) s.styleOv.delete(k);
+      if (o.bold === undefined && o.italic === undefined && o.color === undefined) s.styleOv.delete(k);
       else s.styleOv.set(k, o);
     }
+    requestPreview();
     draw();
   };
 
@@ -534,6 +752,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
       st.caret += clean.length;
     }
     restartBlink();
+    requestPreview();
     draw();
     ensureGlyphSetForText(clean)
       .then((widened) => { if (widened) draw(); })
@@ -550,6 +769,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     st.selAnchor = null;
     remapWordMaps(before, st.text, sel[0], sel[1] - sel[0]);
     restartBlink();
+    requestPreview();
     draw();
   };
 
@@ -604,21 +824,27 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
   const close = () => {
     if (!st) return;
     const { n } = st;
-    // The lingering canvas keeps whatever detachInput's repaint drew, so st.text must hold the original line.
+    // The lingering canvas keeps whatever detachInput's repaint drew, so the session must hold the original line again.
     st.text = st.origText;
+    st.words = st.origWords;
+    st.wordsText = st.origText;
     detachInput();
     st = null;
-    scribe.doc.images.setEphemeralEditRects(n, null);
+    scribe.doc.images.setEphemeralRecords(n, null);
     scribe.refreshPageRaster(n);
     removeCanvasAfterRefresh(n);
   };
 
   const commit = async () => {
     if (!st) return;
+    // The lingering canvas shows the committed text until the page's raster catches up, so the preview of that text must have landed.
+    const session = st;
+    while (st === session && session.previewBusy) await session.previewDone;
+    if (st !== session) return;
     const {
       line, n, text, origText, styleOv,
     } = st;
-    const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined);
+    const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined || o.color !== undefined);
     if ((text.trim() === origText || text.trim() === origText.trim()) && !hasToggles) {
       close();
       return;
@@ -626,7 +852,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     const wordStyles = hasToggles
       ? tokenSpans(text).map((value, k) => {
         const o = styleOv.get(k);
-        return o && (o.bold !== undefined || o.italic !== undefined) ? o : null;
+        return o && (o.bold !== undefined || o.italic !== undefined || o.color !== undefined) ? o : null;
       })
       : null;
     detachInput();
@@ -636,12 +862,12 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     const ownedElsewhere = () => !!st && st.n === n;
     try {
       const res = await scribe.doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
-      if (!ownedElsewhere()) scribe.doc.images.setEphemeralEditRects(n, null);
-      if (res && onCommitted) onCommitted(res.pages);
+      if (!ownedElsewhere()) scribe.doc.images.setEphemeralRecords(n, null);
+      if (res && res.pages && onCommitted) onCommitted(res.pages);
       else scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
     } catch (e) {
-      if (!ownedElsewhere()) scribe.doc.images.setEphemeralEditRects(n, null);
+      if (!ownedElsewhere()) scribe.doc.images.setEphemeralRecords(n, null);
       scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
       throw e;
@@ -718,6 +944,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
         st.caret -= 1;
         remapWordMaps(before, st.text, st.caret, 1);
         restartBlink();
+        requestPreview();
         draw();
       }
       return;
@@ -732,6 +959,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
         st.text = st.text.slice(0, st.caret) + st.text.slice(st.caret + 1);
         remapWordMaps(before, st.text, st.caret, 1);
         restartBlink();
+        requestPreview();
         draw();
       }
     }
@@ -833,9 +1061,11 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
       select(slotAtClient(session, mv.clientX, mv.clientY));
       draw();
     };
-    const onUp = () => {
+    const onUp = (up) => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      // A drag that selected words summons the floating style bar; a plain click never does.
+      if (st === session && ev.pointerType !== 'touch' && selRange() && onRangeSelected) onRangeSelected(up.clientX, up.clientY);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -874,6 +1104,8 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     if (ev.target === hiddenInput || containsPoint(ev.clientX, ev.clientY)) return;
     // The phone's editing toolbar acts on the open session, so its presses must not read as clicking away.
     if (ev.target instanceof Element && ev.target.closest('.scribe-edit-text-tools')) return;
+    // The color plate's loupe is sampling the page: that press picks a color, it does not leave the line.
+    if (scribe.scrollContainer?.classList.contains('scribe-edit-text-sampling')) return;
     commitSafe();
   };
 
@@ -897,189 +1129,45 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     const dims = page.dims;
     const nt = nativeTextForPage(scribe.doc, page);
 
-    /** @type {Map<number|undefined, {program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string}>} */
+    const state = await scribe.doc.images.getLineState(n, line.words.map((w) => ({
+      id: w.id, text: w.text, penX: nt[w.id]?.penX || [], baselineY: nt[w.id]?.baselineY,
+    })));
+    if (!state || !state.hide || state.words.length !== line.words.length || !state.words.every((sw) => sw)) return;
+    /** @type {Array<PreviewWord>} */
+    const words = state.words.map((sw, wi) => ({ text: line.words[wi].text, oldId: /** @type {{id: string}} */ (sw).id, glyphs: /** @type {{glyphs: Array<LineGlyph>}} */ (sw).glyphs }));
+    // A word whose glyph texts do not spell its text has no slot per character to edit, so its line does not open.
+    for (const w of words) if (w.glyphs.map((g) => ocr.replaceLigatures(g.text)).join('').toLowerCase() !== w.text.toLowerCase()) return;
+    /** @type {EditSession['fonts']} */
     const fonts = new Map();
     for (const w of line.words) {
       const f = nt[w.id]?.fontObjNum;
       if (!fonts.has(f)) fonts.set(f, (await scribe.doc.images.getEditFont(n, f)) || { program: null, faceName: null });
     }
-
+    const origText = words.map((w) => w.text).join(' ');
     const baselineY = line.bbox.bottom + (line.baseline?.[1] || 0);
-    /**
-     * @type {Array<{ch: string, x0: number, x1: number, size: number, baseY: number, face: string,
-     *   color: string, tofu?: boolean, lig?: string, ligMember?: boolean, fontStyle?: string,
-     *   fontWeight?: string, skew?: number, stretch?: number, renderMode?: number,
-     *   strokeWidthPx?: number, strokeColor?: string}>}
-     */
-    const origChars = [];
-    let origText = '';
-    for (let wi = 0; wi < line.words.length; wi++) {
-      const w = line.words[wi];
-      const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
-      const wNt = nt[w.id];
-      const baseY = wNt?.baselineY ?? baselineY;
-      const color = w.style.color || '#000000';
-      const ef = fonts.get(wNt?.fontObjNum);
-      const wStroked = !!(wNt && (wNt.renderMode === 1 || wNt.renderMode === 2) && wNt.strokeWidthPx);
-      if (wi > 0) {
-        const prev = line.words[wi - 1];
-        origChars.push({
-          ch: ' ', x0: prev.bbox.right, x1: w.bbox.left, size, baseY, face: '', color,
-        });
-        origText += ' ';
-      }
-      // A faux-bold word's boldness is its stroke, so substitute faces pick weight from the font's own flag; a bold substitute plus the stroke would double-bold.
-      const wResolveStyle = wStroked && !ef?.program?.bold && w.style.bold ? { ...w.style, bold: false } : w.style;
-      const wStroke = wStroked && wNt
-        ? { renderMode: wNt.renderMode, strokeWidthPx: wNt.strokeWidthPx, strokeColor: wNt.strokeColor }
-        : {};
-      // An embedded face carries its style in its glyphs, so the italic/bold keywords go only on a fallback face.
-      const charFace = (ch) => {
-        let face = ef.faceName;
-        let tofu = false;
-        let fontStyle = '';
-        let fontWeight = '';
-        // A subset face has only the glyphs this document drew with it, so a character its program cannot map falls back to a substitute.
-        const prog = ef?.program;
-        if (face && prog && resolveReplacementChar(ch, prog, wResolveStyle).kind !== 'orig') face = null;
-        if (!face) {
-          const r = resolveReplacementChar(ch, ef.program, wResolveStyle);
-          if (r.kind === 'tofu') tofu = true;
-          else {
-            face = r.fontFaceName || r.family;
-            if (wResolveStyle.italic) fontStyle = 'italic';
-            if (wResolveStyle.bold) fontWeight = 'bold';
-          }
-        }
-        return {
-          face: face || '', tofu, fontStyle, fontWeight,
-        };
-      };
-      const entries = w.chars && w.chars.length > 0 ? w.chars : null;
-      const wPenX = nt[w.id]?.penX;
-      const wSkew = nt[w.id]?.skew;
-      const wStretch = nt[w.id]?.stretch;
-      let segs = entries ? entries.map((c) => ocr.replaceLigatures(c.text)) : null;
-      if (segs && segs.join('') !== w.text) segs = null;
-      if (segs) {
-        for (let ei = 0; ei < entries.length; ei++) {
-          const seg = segs[ei];
-          const eb = entries[ei].bbox;
-          // The bbox rounds the pen origin.
-          // Per-glyph rounding reads as wrong letter spacing against the raster.
-          const pen = wPenX?.[ei] ?? eb.left;
-          if (seg.length === 1) {
-            const f = charFace(seg);
-            origChars.push({
-              ch: seg,
-              x0: pen,
-              x1: eb.right,
-              size,
-              baseY,
-              face: f.face,
-              color,
-              tofu: f.tofu,
-              fontStyle: f.fontStyle,
-              fontWeight: f.fontWeight,
-              skew: wSkew?.[ei] || 0,
-              stretch: wStretch?.[ei] || 0,
-              ...wStroke,
-            });
-            origText += seg;
-            continue;
-          }
-          // A ligature the original font still maps draws as one glyph on the first letter's entry.
-          // The rest of its entries only hold caret positions.
-          const ligCh = ocr.ligatureForText(entries[ei].text);
-          const ligOk = !!(ligCh && ef.faceName
-            && resolveReplacementChar(ligCh, ef.program, wResolveStyle).kind === 'orig');
-          for (let j = 0; j < seg.length; j++) {
-            const x0 = pen + ((eb.right - pen) * j) / seg.length;
-            const x1 = pen + ((eb.right - pen) * (j + 1)) / seg.length;
-            const f = ligOk ? {
-              face: ef.faceName, tofu: false, fontStyle: '', fontWeight: '',
-            } : charFace(seg[j]);
-            /** @type {(typeof origChars)[number]} */
-            const entry = {
-              ch: seg[j],
-              x0,
-              x1,
-              size,
-              baseY,
-              face: f.face || '',
-              color,
-              tofu: f.tofu,
-              fontStyle: f.fontStyle,
-              fontWeight: f.fontWeight,
-              skew: wSkew?.[ei] || 0,
-              stretch: wStretch?.[ei] || 0,
-              ...wStroke,
-            };
-            if (ligOk && j === 0) entry.lig = ligCh;
-            if (ligOk && j > 0) entry.ligMember = true;
-            origChars.push(entry);
-            origText += seg[j];
-          }
-        }
-      } else {
-        let cxPos = w.bbox.left;
-        for (let ci = 0; ci < w.text.length; ci++) {
-          const ch = w.text[ci];
-          const r = resolveReplacementChar(ch, ef.program, wResolveStyle);
-          const x0 = cxPos;
-          const x1 = cxPos + r.advEm * size;
-          cxPos = x1;
-          const f = charFace(ch);
-          origChars.push({
-            ch, x0, x1, size, baseY, face: f.face, color, tofu: f.tofu, fontStyle: f.fontStyle, fontWeight: f.fontWeight, ...wStroke,
-          });
-          origText += ch;
-        }
-      }
-    }
-
-    /** @type {Array<WordMid>} */
-    const wordMids = line.words.map((w) => {
-      const wSize = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
-      const e = nt[w.id];
-      const wf = fonts.get(e?.fontObjNum);
-      const stroked = !!(e && (e.renderMode === 1 || e.renderMode === 2) && e.strokeWidthPx);
-      const wStyle = stroked && !wf?.program?.bold && w.style.bold ? { ...w.style, bold: false } : w.style;
-      const wsp = resolveReplacementChar(' ', wf?.program || null, wStyle);
-      return {
-        program: wf?.program || null,
-        style: wStyle,
-        size: wSize,
-        color: w.style.color || '#000000',
-        face: wf?.faceName || '',
-        spaceAdvPx: (wsp.kind === 'tofu' ? 0.25 : wsp.advEm) * wSize,
-        renderMode: stroked && e ? e.renderMode : undefined,
-        strokeWidthPx: stroked && e ? e.strokeWidthPx : undefined,
-        strokeColor: stroked && e ? e.strokeColor : undefined,
-        skew: e?.skew?.find((v) => v) || undefined,
-      };
-    });
-    const sfSize = wordMids[0].size;
+    const glyphs = words.flatMap((w) => w.glyphs);
+    const sfSize = glyphs[0]?.sizePx || line.words[0].style.size || Math.abs(line.bbox.bottom - line.bbox.top) / 0.75;
 
     // Base style state per word, so live toggles know each word's current state and what can toggle off.
     /** @type {Map<number, WordBase>} */
     const wordBase = new Map();
     line.words.forEach((w, k) => {
-      const e = nt[w.id];
+      const g0 = words[k].glyphs[0];
       wordBase.set(k, {
         bold: !!w.style.bold,
         italic: !!w.style.italic,
-        stroked: !!(e && (e.renderMode === 1 || e.renderMode === 2) && e.strokeWidthPx),
-        skewed: !!(e && e.skew && e.skew.some((v) => v)),
+        stroked: !!g0?.renderMode,
+        skewed: !!g0?.skew,
+        color: (w.style.color || '#000000').toLowerCase(),
       });
     });
 
     // A zero descriptor descent puts char bbox bottoms at the baseline, so a canvas sized from the bboxes would clip descenders.
     let inkTop = baselineY - 1.3 * sfSize;
     let inkBottom = baselineY + 0.5 * sfSize;
-    for (const c of origChars) {
-      inkTop = Math.min(inkTop, c.baseY - 1.3 * c.size);
-      inkBottom = Math.max(inkBottom, c.baseY + 0.5 * c.size);
+    for (const g of glyphs) {
+      inkTop = Math.min(inkTop, g.penY - 1.3 * g.sizePx);
+      inkBottom = Math.max(inkBottom, g.penY + 0.5 * g.sizePx);
     }
     const groupBox = {
       left: Math.min(line.bbox.left, 0) - 4,
@@ -1157,11 +1245,15 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
       scale,
       baselineY,
       size: sfSize,
+      lineStartX: glyphs[0]?.penX ?? line.bbox.left,
       text: origText,
       origText,
-      origChars,
-      styleFromChar: wordMids[0],
-      wordMids,
+      words,
+      wordsText: origText,
+      origWords: words,
+      fonts,
+      previewBusy: false,
+      previewStale: false,
       caret: 0,
       selAnchor: null,
       xs: new Float64Array(origText.length + 1),
@@ -1178,10 +1270,7 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     st.caret = Math.max(0, Math.min(origText.length, off));
     if (openOpts.caretEnd) st.caret = origText.length;
 
-    const rects = line.words.map((w) => wordBandRect(w.bbox, w.chars, orientation, dims, line.ascHeight));
-    // The open line's identities keep the ephemeral suppression from blanking visually-overlapping other text.
-    const glyphs = glyphIdentitiesForWords(nativeTextForPage(scribe.doc, line.page), line.words, orientation, dims);
-    scribe.doc.images.setEphemeralEditRects(n, rects, glyphs);
+    scribe.doc.images.setEphemeralRecords(n, state.hide);
     scribe.refreshPageRaster(n);
 
     document.addEventListener('pointerdown', onDocPointerdown, true);
@@ -1193,15 +1282,29 @@ export function createLineEditor(scribe, { onCommitted, onOpenChanged } = {}) {
     if (onOpenChanged) onOpenChanged(true);
   };
 
+  /** Settles once no preview is in flight for the open line, so a caller can read or capture what the text looks like. */
+  const previewSettled = async () => {
+    const session = st;
+    while (session && st === session && session.previewBusy) await session.previewDone;
+  };
+
   return {
     open,
     isOpen: () => !!st,
     lineOpen: () => st?.line || null,
+    previewSettled,
     containsPoint,
     commit,
     revert: close,
     teardown: close,
     toggleStyle: toggleWordStyle,
+    styleState: wordStyleState,
+    colorState: wordColorState,
+    setColor: setWordColor,
+    previewColor: previewWordColor,
+    bandClientRect,
+    // The plate takes focus while it is up; a pick or a close hands the keyboard back here.
+    focus: () => { if (st) hiddenInput.focus({ preventScroll: true }); },
     undo: () => stepHistory(false),
     redo: () => stepHistory(true),
     canUndo: () => !!st && st.undoStack.length > 0,

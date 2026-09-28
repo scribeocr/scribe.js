@@ -531,7 +531,7 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     cross = { start: snap() };
     doc.duplicatePages([0], 0);
     doc.addHighlights([{ page: 0, startLine: 0 }]);
-    doc.deleteTextLines([doc.ocr.active[0].lines[2]]);
+    await doc.deleteTextLines([doc.ocr.active[0].lines[2]]);
     cross.afterEdits = snap();
     doc.undo();
     cross.afterUndo1 = snap();

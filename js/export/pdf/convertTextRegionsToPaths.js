@@ -8,24 +8,25 @@ import { ca } from '../../canvasAdapter.js';
 import { base64ToBytes } from '../../utils/imageUtils.js';
 import {
   bytesToLatin1, extractDict,
-  resolveNumArray, resolveNumValue, parseDictEntries, matMul, decodeTextCodes,
+  resolveNumArray, resolveNumValue, parseDictEntries, matMul, decodeTextCodes, mergeResources,
 } from '../../pdf/pdfPrimitives.js';
 import {
-  tokenizeContentStream, formatPdfNumber,
+  tokenizeContentStream, serializeContentToken,
 } from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
 import {
-  glyphEmBoxHitsRects, glyphIdentityMatches, imageDrawMatchesDelete, pathDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
+  glyphEmBoxHitsRects, imageDrawMatchesDelete, pathDrawMatchesDelete,
 } from '../../pdf/pageGeometry.js';
 import { aglLookup } from '../../pdf/fonts/standardEncodings.js';
 import { encodeStreamObject } from './writePdfStreams.js';
+import { applyTextPatchRecords, textPatchesTarget } from '../../pdf/textPatch.js';
 import opentype from '../../font-parser/src/index.js';
 import { standardNames } from '../../font-parser/src/encoding.js';
 import { parseCFFSummary } from '../../font-parser/src/cff.js';
 import { loadBuiltInFontsRaw, loadDingbatsFont, loadSymbolFont } from '../../fontContainerMain.js';
 import { GlobalFonts } from '../../containers/fontContainer.js';
 import {
-  base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont, cssGenericForFontObj,
+  base14ToBuiltInFont, cssFamilyToBuiltInFont, genericToBuiltInFont, cssGenericForFontObj,
 } from '../../pdf/fonts/base14Substitution.js';
 import { standardFontToCSS } from '../../pdf/fonts/standardFontMetrics.js';
 
@@ -33,18 +34,19 @@ import { standardFontToCSS } from '../../pdf/fonts/standardFontMetrics.js';
 
 /**
  * Return the loaded supplemental opentype font backing a Base14 symbol family, or null.
- * The renderer substitutes ZapfDingbats with the bundled Dingbats face and Symbol with StandardSymbolsPS.
+ * The renderer substitutes ZapfDingbats with the built-in Dingbats face and Symbol with StandardSymbolsPS.
  * @param {string} family
  * @returns {opentypeFont | null}
  */
-function bundledSuppFontFor(family) {
+function builtInSuppFontFor(family) {
   if (family === 'Dingbats') return GlobalFonts.supp?.dingbats?.opentype || null;
   if (family === 'StandardSymbolsPS') return GlobalFonts.supp?.symbol?.opentype || null;
   return null;
 }
 
 /**
- * Preload the bundled symbol substitute faces a set of fonts will need, so the (synchronous) glyph resolver can read them from `GlobalFonts.supp`.
+ * Preload the built-in symbol substitute faces a set of fonts will need.
+ * The glyph resolver is synchronous, so it sees only faces already loaded into `GlobalFonts.supp`.
  * @param {Iterable<any>} fontInfos
  */
 async function preloadSymbolSubstituteFonts(fontInfos) {
@@ -53,7 +55,7 @@ async function preloadSymbolSubstituteFonts(fontInfos) {
   for (const fi of fontInfos) {
     if (!fi || (fi.type0?.fontFile || fi.type1?.fontFile)) continue; // embedded: not substituted
     if (!(fi.type1 || fi.type0)) continue;
-    const sub = base14ToBundledFont(fi.baseName, { bold: !!fi.bold, italic: !!fi.italic });
+    const sub = base14ToBuiltInFont(fi.baseName, { bold: !!fi.bold, italic: !!fi.italic });
     if (sub?.family === 'Dingbats') needDingbats = true;
     else if (sub?.family === 'StandardSymbolsPS') needSymbol = true;
   }
@@ -61,36 +63,6 @@ async function preloadSymbolSubstituteFonts(fontInfos) {
   if (needDingbats && !GlobalFonts.supp?.dingbats) jobs.push(loadDingbatsFont().catch(() => {}));
   if (needSymbol && !GlobalFonts.supp?.symbol) jobs.push(loadSymbolFont().catch(() => {}));
   if (jobs.length > 0) await Promise.all(jobs);
-}
-
-/**
- * Re-serialize a PDF content-stream operand token back to its source form.
- * @param {{type: string, value: any}} t
- */
-function serializeOperand(t) {
-  if (t.type === 'name') return `/${t.value}`;
-  if (t.type === 'number') return formatPdfNumber(t.value);
-  if (t.type === 'hexstring') return `<${t.value}>`;
-  if (t.type === 'dict') return t.value;
-  if (t.type === 'string') {
-    let out = '(';
-    for (let i = 0; i < t.value.length; i++) {
-      const c = t.value.charCodeAt(i);
-      if (c === 0x28 || c === 0x29 || c === 0x5C) {
-        out += `\\${t.value[i]}`;
-      } else if (c < 0x20 || c > 0x7E) {
-        out += `\\${c.toString(8).padStart(3, '0')}`;
-      } else {
-        out += t.value[i];
-      }
-    }
-    return `${out})`;
-  }
-  if (t.type === 'array') return `[${t.value.map(serializeOperand).join(' ')}]`;
-  if (t.type === 'boolean') return t.value ? 'true' : 'false';
-  if (t.type === 'null') return 'null';
-  if (t.type === 'inlineImage') return `BI\n${t.value.dictText}\nID\n${t.value.imageData}\nEI`;
-  return '';
 }
 
 // Ops that change how queued converted glyphs would paint (colour/alpha via gs, dash, miter, join/cap).
@@ -522,22 +494,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   // Where a glyph also falls inside `bboxes`, redaction wins.
   const redactBboxes = opts.redactBboxes || null;
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
-  // Text-edit rects share redaction's glyph-drop handling but are text-only.
-  // Paths and images under them stay, and no box or pixel scrub follows.
-  const editBboxes = opts.textEditBboxes || null;
-  // Identity-gated edit rects remove only the glyphs matching the deleted text's recorded identities.
-  const editGated = opts.textEditGated && opts.textEditGated.rects.length > 0 ? opts.textEditGated : null;
-  // A deleted line's space glyphs sit between its words, so neither the word bands nor the glyph identities can strike them.
-  // Without this band they survive as text a PDF viewer still selects and extracts.
-  const editWsRects = opts.textEditWsRects && opts.textEditWsRects.length > 0 ? opts.textEditWsRects : null;
-  const glyphUnicode = opts.glyphUnicode || null;
-  const editActive = !!(editBboxes && editBboxes.length > 0) || !!editGated || !!editWsRects;
-  // Replacement operator bodies (one per replaceText record), spliced in at each record's first dropped glyph.
-  // Entries are mutated (`placed`) so the page driver can append the leftovers.
-  const editInserts = opts.textEditInserts || null;
   const imageDeletes = opts.imageDeletes && opts.imageDeletes.length > 0 ? opts.imageDeletes : null;
   const pathDeletes = opts.pathDeletes && opts.pathDeletes.length > 0 ? opts.pathDeletes : null;
-  const textDropActive = redactActive || editActive;
+  // A text-edit patch targets a Form XObject below this stream, so every placement is aliased and recursed into like a redacted one.
+  const formPatchActive = !!opts.formPatchActive;
+  const textDropActive = redactActive;
   const markedContentProps = opts.markedContentProps || null;
   const commentGlyphs = !!opts.humanReadable;
   // Redaction and path deletion always tokenize, since they must see vector path ops, which this regex deliberately ignores.
@@ -633,7 +594,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
   function emitVerbatim(opVal) {
     for (let i = 0; i < operandBuf.length; i++) {
-      out.push(serializeOperand(operandBuf[i]));
+      out.push(serializeContentToken(operandBuf[i]));
       out.push(i + 1 < operandBuf.length ? ' ' : '\n');
     }
     if (operandBuf.length === 0 || !out[out.length - 1].endsWith('\n')) {
@@ -909,7 +870,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         } else {
           pathCmdCount += 1;
         }
-        const opnd = operandBuf.map(serializeOperand).join(' ');
+        const opnd = operandBuf.map(serializeContentToken).join(' ');
         pathBuf.push(opnd.length > 0 ? `${opnd} ${op}\n` : `${op}\n`);
         operandBuf.length = 0;
         continue;
@@ -917,7 +878,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (op === 'W' || op === 'W*') {
         // Never drop a clip-participating path: removing it would reveal content, not remove it.
         pathIsClip = true;
-        const opnd = operandBuf.map(serializeOperand).join(' ');
+        const opnd = operandBuf.map(serializeContentToken).join(' ');
         pathBuf.push(opnd.length > 0 ? `${opnd} ${op}\n` : `${op}\n`);
         operandBuf.length = 0;
         continue;
@@ -1235,7 +1196,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           if (typeof formObjNum === 'number') {
             // The same form placed at several CTMs may intersect a rect at only one placement, so recursing once per name would bake that placement's rewrite into all of them.
             let alias = null;
-            if (textDropActive || imageDeletes || pathDeletes) {
+            if (textDropActive || imageDeletes || pathDeletes || formPatchActive) {
               const key = `${nameTok.value}\u0000${ctm.join(' ')}`;
               alias = redactFormAliases.get(key);
               if (!alias) {
@@ -1405,23 +1366,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         const originMat = matMul(tm, ctm);
         const pad = currentFontSize > 0 ? currentFontSize * 2 : 24;
         let hitRedact = false;
-        let hitEdit = false;
         for (const b of redactBboxes || []) {
           if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hitRedact = true; break; }
         }
-        for (const b of editBboxes || []) {
-          if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hitEdit = true; break; }
-        }
-        if (!hitEdit && editGated) {
-          for (const b of editGated.rects) {
-            if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hitEdit = true; break; }
-          }
-          // No font or unicode resolves here, so gate the blind drop on identity origins instead of rects alone.
-          if (hitEdit) hitEdit = editGated.pts.some((pt) => Math.abs(originMat[4] - pt.x) <= pad && Math.abs(originMat[5] - pt.y) <= pad);
-        }
-        if (hitRedact || hitEdit) {
+        if (hitRedact) {
           // No advance can be replayed without widths, but later absolute positioning (Tm/Td/TD/T*) re-anchors, so only same-object relative text drifts.
-          skipped.push({ fontObjNum: -1, charCode: -1, reason: hitRedact ? 'redact-dropped-unresolved-font-show' : 'textedit-dropped-unresolved-font-show' });
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-dropped-unresolved-font-show' });
           changed = true;
           operandBuf.length = 0;
           continue;
@@ -1457,11 +1407,6 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
     /** @type {Array<{kind: 'glyph', code: number, numBytes: number} | {kind: 'spacer', value: number}>} */
     const outputElems = [];
-    /** @type {Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} */
-    const spliceNow = [];
-    let spliceElemIdx = 0;
-    /** @type {?number[]} */
-    let tmAtSplice = null;
     let anyConvert = false;
     // The 2x2 of trmPrefix * tm is translation-invariant across the run, so the pen width and anisotropy ratio computed on the first resolved glyph hold for every glyph.
     /** @type {number | null} */
@@ -1490,38 +1435,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           ? (binding.charCodeToCID.get(code) ?? code)
           : code;
         const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
-        // The rect and identity strikes never consult the resolver, so glyphs in unembedded or broken fonts still drop.
-        let dropHit = (redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes)))
-          || (editBboxes && editBboxes.length > 0 && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editBboxes, TEXT_EDIT_GLYPH_SIZE_CAP))
-          // The gated rects take no size cap because the identity match is the precision guard.
-          // A cap here spares any font whose em box dwarfs the word band, so deletion silently does nothing on those documents.
-          || (editGated && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editGated.rects)
-            && glyphIdentityMatches(editGated, glyphUnicode ? glyphUnicode(binding.fontObjNum, code) : null, binding.fontObjNum, trm[4], trm[5]));
-        if (!dropHit && editWsRects && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, editWsRects, TEXT_EDIT_GLYPH_SIZE_CAP)) {
-          const u = glyphUnicode ? glyphUnicode(binding.fontObjNum, code) : null;
-          if (u != null && u.trim().length === 0) {
-            // A broken font can map an inked glyph to U+0020, so the resolver gate keeps any glyph that actually paints.
-            // Code 32 in a simple font is the spec-defined word space, trusted when no outline is resolvable.
-            const res = resolver({ fontObjNum: binding.fontObjNum, charCode: code });
-            dropHit = 'error' in res ? (res.error === 'empty-path' || (!binding.isType0 && code === 32)) : false;
-          }
-        }
+        // The redaction hit test never consults the resolver, so glyphs in unembedded or broken fonts still drop.
+        const dropHit = redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes));
         if (dropHit) {
           didConvert = true;
           outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
           anyConvert = true;
-          if (editInserts) {
-            for (const e of editInserts) {
-              if (!e.placed && !spliceNow.includes(e) && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, e.rects, TEXT_EDIT_GLYPH_SIZE_CAP)) {
-                if (spliceNow.length === 0) {
-                  // Split before this dropped glyph's spacer, at this glyph's position.
-                  spliceElemIdx = outputElems.length - 1;
-                  tmAtSplice = tm.slice();
-                }
-                spliceNow.push(e);
-              }
-            }
-          }
         }
       }
 
@@ -1669,42 +1588,14 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
     };
 
-    // A non-invertible CTM leaves these entries unplaced, and the page driver appends the leftovers at the end of the page stream.
-    let spliced = false;
-    if (spliceNow.length > 0 && tmAtSplice) {
-      const det = ctm[0] * ctm[3] - ctm[1] * ctm[2];
-      if (Math.abs(det) > 1e-9) {
-        emitTJ(outputElems.slice(0, spliceElemIdx));
-        out.push('ET\n');
-        const identityCtm = Math.abs(ctm[0] - 1) < 1e-12 && Math.abs(ctm[1]) < 1e-12 && Math.abs(ctm[2]) < 1e-12
-          && Math.abs(ctm[3] - 1) < 1e-12 && Math.abs(ctm[4]) < 1e-12 && Math.abs(ctm[5]) < 1e-12;
-        for (const e of spliceNow) {
-          e.placed = true;
-          out.push('q\n');
-          if (!identityCtm) {
-            const inv = [ctm[3] / det, -ctm[1] / det, -ctm[2] / det, ctm[0] / det,
-              (ctm[2] * ctm[5] - ctm[3] * ctm[4]) / det, (ctm[1] * ctm[4] - ctm[0] * ctm[5]) / det];
-            out.push(`${fmt(inv[0], PDF_MATRIX_DECIMALS)} ${fmt(inv[1], PDF_MATRIX_DECIMALS)} ${fmt(inv[2], PDF_MATRIX_DECIMALS)} ${fmt(inv[3], PDF_MATRIX_DECIMALS)} ${fmt(inv[4], PDF_MATRIX_DECIMALS)} ${fmt(inv[5], PDF_MATRIX_DECIMALS)} cm\n`);
-          }
-          out.push(e.body);
-          out.push('Q\n');
-        }
-        out.push('BT\n');
-        restoreTextPosition(tmAtSplice);
-        emitTJ(outputElems.slice(spliceElemIdx));
-        btKept = true;
-        changed = true;
-        spliced = true;
-      }
-    }
-    if (!spliced) emitTJ(outputElems);
+    emitTJ(outputElems);
     operandBuf.length = 0;
   }
 
   flushPendingConverts();
   flushPathBufVerbatim();
   if (operandBuf.length > 0) {
-    for (const o of operandBuf) out.push(`${serializeOperand(o)} `);
+    for (const o of operandBuf) out.push(`${serializeContentToken(o)} `);
   }
 
   return {
@@ -1963,16 +1854,16 @@ function buildResolver(fontInfoByObjNum, state) {
       if (!loaded && !fontFile && (fi.type1 || fi.type0) && GlobalFonts.raw) {
         // Resolve the substitute family via the same cascade the renderer uses for non-embedded fonts (registerNonEmbeddedFont), so the outlines match the baseline render.
         const hints = { bold: !!fi.bold, italic: !!fi.italic };
-        const sub = base14ToBundledFont(fi.baseName, hints)
-          || cssFamilyToBundledFont(standardFontToCSS(fi.baseName || '') || '', hints)
-          || genericToBundledFont(cssGenericForFontObj(fi), hints);
+        const sub = base14ToBuiltInFont(fi.baseName, hints)
+          || cssFamilyToBuiltInFont(standardFontToCSS(fi.baseName || '') || '', hints)
+          || genericToBuiltInFont(cssGenericForFontObj(fi), hints);
         if (sub) {
           const styleKey = sub.variant === 'BoldItalic' ? 'boldItalic'
             : (sub.variant === 'Bold' ? 'bold' : (sub.variant === 'Italic' ? 'italic' : 'normal'));
           const fam = GlobalFonts.raw[sub.family];
-          // The Base14 symbol faces (Dingbats, StandardSymbolsPS) live in `supp`, not `raw`, so fall back to bundledSuppFontFor below.
+          // The Base14 symbol faces (Dingbats, StandardSymbolsPS) live in `supp`, not `raw`, so fall back to builtInSuppFontFor below.
           let subFont = (fam?.[styleKey] || fam?.normal)?.opentype;
-          if (!subFont) subFont = bundledSuppFontFor(sub.family) || undefined;
+          if (!subFont) subFont = builtInSuppFontFor(sub.family) || undefined;
           if (subFont?.glyphs && subFont.unitsPerEm > 0) {
             loaded = {
               glyphs: subFont.glyphs,
@@ -2131,47 +2022,6 @@ function makeCloneDedupKey(origObjNum, text, xobjEntries, formClonesByName) {
 }
 
 /**
- * Inline merger for the cloned form's /Resources/XObject dict.
- *
- * @param {string} resourcesDictText - The form's /Resources sub-dict as `<<...>>`.
- *   Empty string or null is treated as missing, and a fresh /Resources is built.
- * @param {string} entriesStr - Newline-separated `/Name N 0 R` entries to add to /XObject.
- * @param {import('../../pdf/objectCache.js').ObjectCache} objCache - Used to resolve an indirect /XObject sub-dict if the form's Resources references one.
- */
-function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
-  if (!entriesStr) return resourcesDictText || '<<\n>>';
-  let inner = resourcesDictText && resourcesDictText.startsWith('<<')
-    ? resourcesDictText.slice(2, -2).trim()
-    : '';
-  const xobjIdx = inner.indexOf('/XObject');
-  if (xobjIdx === -1) {
-    inner = `${inner}\n/XObject<<\n${entriesStr}>>`;
-    return `<<${inner}\n>>`;
-  }
-  let p = xobjIdx + '/XObject'.length;
-  while (p < inner.length && /\s/.test(inner[p])) p++;
-  if (inner.startsWith('<<', p)) {
-    const dict = extractDict(inner, p);
-    const merged = `${dict.slice(0, -2)}\n${entriesStr}\n>>`;
-    return `<<${inner.slice(0, p) + merged + inner.slice(p + dict.length)}\n>>`;
-  }
-  const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
-  if (refMatch && objCache) {
-    const resolved = objCache.getObjectText(Number(refMatch[1]));
-    if (resolved) {
-      const trimmed = resolved.trim();
-      const innerBody = trimmed.startsWith('<<') && trimmed.endsWith('>>')
-        ? trimmed.slice(2, -2).trim()
-        : trimmed;
-      const merged = `<<${innerBody}\n${entriesStr}\n>>`;
-      return `<<${inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length)}\n>>`;
-    }
-  }
-  // Fallback when /XObject is neither an inline dict nor resolvable: append a second one and rely on readers taking the last entry.
-  return `<<${inner}\n/XObject<<\n${entriesStr}>>\n>>`;
-}
-
-/**
  * Resolve an object's /Resources to its literal `<<...>>` dict text, following an indirect reference if present.
  * Returns null when the object has no /Resources of its own, which is legal: a Form XObject may omit it and inherit its parent's (PDF spec 7.8.3).
  *
@@ -2304,9 +2154,11 @@ function parseExtGStates(resourcesText, objCache) {
  * @param {Map<string, number>} perGlyphXobjEntries - tag -> objNum for per-glyph forms used inside.
  * @param {Map<string, number>} nestedFormRedirects - name -> cloneObjNum for nested forms invoked inside.
  * @param {string | null} inheritedResourcesText - The parent scope's /Resources dict text, used as the clone's /Resources base when the original form has none of its own.
+ * @param {?Set<string>} [dropXObjectNames] - Original form names the clone's /XObject subdict drops.
+ * @param {?Map<string, number>} [fontEntries] - `/Tag` to font object of the substitute faces a text patch of this form draws with.
  * @returns {string}
  */
-function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText, dropXObjectNames = null) {
+function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText, dropXObjectNames = null, fontEntries = null) {
   const dictStart = originalFormObjText.indexOf('<<');
   if (dictStart === -1) return '';
   const dictText = extractDict(originalFormObjText, dictStart);
@@ -2384,7 +2236,9 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
     }
   }
 
-  const mergedResources = mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache);
+  let fontsStr = '';
+  for (const [name, on] of fontEntries || []) fontsStr += `${name} ${on} 0 R\n`;
+  const mergedResources = mergeResources(resourcesDictText || '<<>>', fontsStr, '', objCache, entriesStr);
   body = `${beforeRes}\n/Resources ${mergedResources}\n${afterRes.trimStart()}`;
 
   return body.trim();
@@ -2575,18 +2429,28 @@ async function applyImageRedactions({
  * @param {{tc: number, tw: number, tz: number, tl: number, tr: number, ts: number} | null} [params.initialTextState]
  *   - Text state (incl. leading) inherited from the Do site,
  *     so the form's line breaks and glyph advances match the original.
+ * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content is destructively removed.
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>} [params.pathDeletes]
+ * @param {?Array<TextPatch>} [params.textPatches]
+ * @param {string} [params.formPath]
+ * @param {?Map<string, number>} [params.editFontRefs]
  * @returns {Promise<{ changed: boolean, cloneObjNum: number,
- *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}> }>}
+ *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>, deletedImageObjNums?: Set<number> }>}
  */
 async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, glyphUnicode = null, imageDeletes = null, pathDeletes = null,
+  initialTextState = null, redactBboxes = null, imageDeletes = null, pathDeletes = null,
+  textPatches = null, formPath = '', editFontRefs = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
-  const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
-    || !!(textEditWsRects && textEditWsRects.length > 0);
+  /** @type {TextPatchStream} */
+  const formStream = { kind: 'form', path: formPath };
+  const formPatched = textPatchesTarget(textPatches, formStream);
+  const formPatchActive = !!textPatches && textPatches.some((r) => r.stream.kind === 'form' && r.stream.path.startsWith(`${formPath}/`));
+  const editActive = formPatched || formPatchActive;
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   if (state.inProgress.has(formObjNum)) {
@@ -2625,7 +2489,7 @@ async function rewriteFormContentForRegions({
       if (pathDeleteActive) throw new Error('Cannot apply path deletions: a Form XObject stream could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
-    const streamText = bytesToLatin1(streamBytes);
+    const streamText = formPatched ? applyTextPatchRecords(bytesToLatin1(streamBytes), textPatches, formStream).text : bytesToLatin1(streamBytes);
 
     const fontsByTag = new Map(parentFontsByTag);
     let formFontInfos;
@@ -2638,7 +2502,7 @@ async function rewriteFormContentForRegions({
       mergeContainerFonts(formFontInfos, fontsByTag, fontInfoByObjNum);
       // Pick up any broken-Type3 fonts this form introduces (shared set).
       if (targetFontObjNums) collectBrokenType3FontObjNums(fontInfoByObjNum, targetFontObjNums);
-      // Load bundled symbol faces a form-local Dingbats/Symbol font needs.
+      // Load built-in symbol faces a form-local Dingbats/Symbol font needs.
       await preloadSymbolSubstituteFonts(formFontInfos.values());
     }
 
@@ -2664,12 +2528,9 @@ async function rewriteFormContentForRegions({
       parentImages: formImagesByName,
       targetFontObjNums,
       redactBboxes,
-      textEditBboxes,
-      textEditGated,
-      textEditWsRects,
-      glyphUnicode,
       imageDeletes,
       pathDeletes,
+      formPatchActive,
       initialLineWidth,
       initialDashActive,
       initialMiterLimit,
@@ -2710,12 +2571,11 @@ async function rewriteFormContentForRegions({
           bboxes,
           targetFontObjNums,
           redactBboxes,
-          textEditBboxes,
-          textEditGated,
-          textEditWsRects,
-          glyphUnicode,
           imageDeletes,
           pathDeletes,
+          textPatches,
+          formPath: `${formPath}/${inv.name}`,
+          editFontRefs,
           state,
           objCache,
           allocObjNum,
@@ -2792,7 +2652,7 @@ async function rewriteFormContentForRegions({
       }
     }
 
-    if (!smResult.changed && nestedFormClones.size === 0) {
+    if (!smResult.changed && nestedFormClones.size === 0 && !formPatched) {
       return {
         changed: false, cloneObjNum: formObjNum, skipped, deletedImageObjNums,
       };
@@ -2802,7 +2662,8 @@ async function rewriteFormContentForRegions({
     /** @type {Map<string, number>} */
     const perGlyphEntries = new Map();
 
-    const dedupKey = makeCloneDedupKey(formObjNum, smResult.text, perGlyphEntries, nestedFormClones);
+    const cloneText = smResult.changed ? smResult.text : streamText;
+    const dedupKey = makeCloneDedupKey(formObjNum, cloneText, perGlyphEntries, nestedFormClones);
     const cached = state.formCloneByKey.get(dedupKey);
     if (cached != null) {
       return {
@@ -2810,8 +2671,9 @@ async function rewriteFormContentForRegions({
       };
     }
     const cloneObjNum = allocObjNum();
-    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText, nestedRedactedNames);
-    const cloneContent = await encodeStreamObject(cloneObjNum, smResult.text, { humanReadable, dictExtras });
+    // A patched form's clone declares the faces its patch draws with, since a reader need not inherit the page's fonts into a form.
+    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText, nestedRedactedNames, formPatched ? editFontRefs : null);
+    const cloneContent = await encodeStreamObject(cloneObjNum, cloneText, { humanReadable, dictExtras });
     pushObj({ objNum: cloneObjNum, content: cloneContent });
     state.formCloneByKey.set(dedupKey, cloneObjNum);
     // The rebuild's reference trace never traces the original form dict for redacted content, since that would copy the unredacted original.
@@ -2840,14 +2702,10 @@ async function rewriteFormContentForRegions({
  * @param {boolean} params.humanReadable
  * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert every glyph drawn by a broken-ToUnicode Type3 font to paths.
  * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content is destructively removed.
- * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
- * @param {?{rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} [params.textEditGated]
- *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities (unicode + origin + font).
- * @param {?Array<[number, number, number, number]>} [params.textEditWsRects]
- *   User-space bands in which non-marking whitespace glyphs are removed along with a text edit.
- * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
- *   Replacement blocks (one per replaceText record) holding absolute user-space operator bodies.
- *   Each is spliced in at its record's first dropped glyph, or appended at the end of the page stream when unplaced.
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>} [params.pathDeletes]
+ * @param {?Array<TextPatch>} [params.textPatches] - The page's records, whose page-stream edits the caller has already applied to `streamText`.
+ * @param {?Map<string, number>} [params.editFontRefs]
  * @returns {Promise<{
  *   changed: boolean,
  *   text?: string,
@@ -2855,17 +2713,17 @@ async function rewriteFormContentForRegions({
  *   formClones?: Map<string, number>,
  *   skipped?: Array<{fontObjNum: number, charCode: number, reason: string}>,
  *   redactedFormNames?: Set<string> | null,
+ *   deletedImageObjNums?: Set<number>,
+ *   deletedImageNames?: Set<string>,
  * }>}
  */
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
-  convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditWsRects = null, textEditInserts = null,
-  imageDeletes = null, pathDeletes = null,
+  convertBrokenType3ToPaths = false, redactBboxes = null, imageDeletes = null, pathDeletes = null, textPatches = null, editFontRefs = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
-  // Inserts alone activate the edit pass: a pure append erases nothing but must still be spliced or appended.
-  const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
-    || !!(textEditWsRects && textEditWsRects.length > 0) || !!(textEditInserts && textEditInserts.length > 0);
+  const formPatchActive = !!textPatches && textPatches.some((r) => r.stream.kind === 'form');
+  const editActive = formPatchActive;
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   // Bbox-driven conversion needs at least one region.
@@ -2897,7 +2755,7 @@ export async function convertSinglePageForRegions({
   /** @type {Map<number, any>} */
   const fontInfoByObjNum = new Map();
   mergeContainerFonts(pageFontInfos, fontsByTag, fontInfoByObjNum);
-  // Bring in the bundled symbol faces (Dingbats/StandardSymbolsPS) this page needs before building the synchronous resolver.
+  // Bring in the built-in symbol faces (Dingbats/StandardSymbolsPS) this page needs before building the synchronous resolver.
   // Form-introduced symbol fonts are covered by the matching preload in rewriteFormContentForRegions.
   await preloadSymbolSubstituteFonts(fontInfoByObjNum.values());
 
@@ -2908,14 +2766,6 @@ export async function convertSinglePageForRegions({
   if (targetFontObjNums) collectBrokenType3FontObjNums(fontInfoByObjNum, targetFontObjNums);
 
   const resolver = buildResolver(fontInfoByObjNum, state);
-  // Unicode for the identity-gated strike, resolved in the renderer's order so screen and export strike the same glyphs.
-  const glyphUnicode = (/** @type {number} */ fontObjNum, /** @type {number} */ code) => {
-    const fi = fontInfoByObjNum.get(fontObjNum);
-    if (!fi) return null;
-    const u = fi.encodingUnicode?.get(code) || fi.toUnicode?.get(code);
-    if (u) return u;
-    return code >= 32 && code <= 126 ? String.fromCharCode(code) : null;
-  };
 
   /** @type {Map<string, number>} */
   const pageXobjectsByName = new Map();
@@ -2947,13 +2797,9 @@ export async function convertSinglePageForRegions({
     parentImages: pageImagesByName,
     targetFontObjNums,
     redactBboxes,
-    textEditBboxes,
-    textEditGated,
-    textEditWsRects,
-    glyphUnicode,
-    textEditInserts,
     imageDeletes,
     pathDeletes,
+    formPatchActive,
     extGStates: parseExtGStates(pageResourcesText, objCache),
     markedContentProps: parseMarkedContentProps(pageResourcesText, objCache),
     hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(pageObjText, objCache, offOCGs) : null,
@@ -2993,12 +2839,11 @@ export async function convertSinglePageForRegions({
         bboxes: safeBboxes,
         targetFontObjNums,
         redactBboxes,
-        textEditBboxes,
-        textEditGated,
-        textEditWsRects,
-        glyphUnicode,
         imageDeletes,
         pathDeletes,
+        textPatches,
+        formPath: inv.name,
+        editFontRefs,
         state,
         objCache,
         allocObjNum,
@@ -3078,36 +2923,9 @@ export async function convertSinglePageForRegions({
     }
   }
 
-  // The end-of-stream position matches the renderer's fallback append for unplaced replacements, so the export's z-order agrees with the raster.
-  let pageText = smResult.changed ? smResult.text : streamText;
-  let insertsAppended = false;
-  if (textEditInserts) {
-    const fc = smResult.finalCtm || [1, 0, 0, 1, 0, 0];
-    const det = fc[0] * fc[3] - fc[1] * fc[2];
-    let tail = '';
-    for (const e of textEditInserts) {
-      if (e.placed) continue;
-      if (Math.abs(det) <= 1e-9) {
-        skipped.push({ fontObjNum: -1, charCode: -1, reason: 'textedit-insert-degenerate-ctm' });
-        continue;
-      }
-      let cmStr = '';
-      if (!(Math.abs(fc[0] - 1) < 1e-12 && Math.abs(fc[1]) < 1e-12 && Math.abs(fc[2]) < 1e-12
-        && Math.abs(fc[3] - 1) < 1e-12 && Math.abs(fc[4]) < 1e-12 && Math.abs(fc[5]) < 1e-12)) {
-        const inv = [fc[3] / det, -fc[1] / det, -fc[2] / det, fc[0] / det,
-          (fc[2] * fc[5] - fc[3] * fc[4]) / det, (fc[1] * fc[4] - fc[0] * fc[5]) / det];
-        cmStr = `${inv.map((v) => String(Math.round(v * 1e8) / 1e8)).join(' ')} cm\n`;
-      }
-      tail += `q\n${cmStr}${e.body}Q\n`;
-      e.placed = true;
-    }
-    if (tail) {
-      pageText = `${pageText}\n${tail}`;
-      insertsAppended = true;
-    }
-  }
+  const pageText = smResult.changed ? smResult.text : streamText;
 
-  if (!smResult.changed && !insertsAppended && formClones.size === 0) {
+  if (!smResult.changed && formClones.size === 0) {
     return { changed: false, skipped };
   }
 

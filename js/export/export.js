@@ -594,8 +594,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
             humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
             contentEditsPages: overlayContentEditsPages,
-            // Overlay arrays are display-ordered on the composed path, so map back to doc pages for font resolution.
-            getEditFont: (i, fontObjNum) => doc.images.getEditFont(composed ? pageArr[i] : i, fontObjNum),
             convertTextToPaths: convertDupSourceTextToPaths,
             convertFullPages,
             convertBrokenType3ToPaths: convertBrokenType3,

@@ -29,7 +29,7 @@ export function cssGenericForFontObj(fontObj) {
 }
 
 /**
- * Resolve a Base14 PDF font name to its bundled substitute.
+ * Resolve a Base14 PDF font name to its built-in substitute.
  *
  * @param {string} baseName - PDF BaseFont name
  * @param {{ bold?: boolean, italic?: boolean }} [hints] - bold/italic flags
@@ -42,7 +42,7 @@ export function cssGenericForFontObj(fontObj) {
  *   faceStyle: 'normal'|'italic',
  * } | null}
  */
-export function base14ToBundledFont(baseName, { bold = false, italic = false } = {}) {
+export function base14ToBuiltInFont(baseName, { bold = false, italic = false } = {}) {
   const canonical = normalizeBase14Name(baseName);
   if (!canonical) return null;
   if (canonical === 'ZapfDingbats') {
@@ -85,13 +85,13 @@ export function base14ToBundledFont(baseName, { bold = false, italic = false } =
 }
 
 /**
- * Resolve a font name to a bundled family the Base14 mapping cannot reach.
+ * Resolve a font name to a built-in family the Base14 mapping cannot reach.
  * @param {string} baseName - PDF BaseFont name
  * @param {{ bold?: boolean, italic?: boolean }} [hints]
  * @returns {?{ family: string, variant: 'Regular'|'Bold'|'Italic'|'BoldItalic',
  *   url: URL, alias: string, faceWeight: 'normal'|'bold', faceStyle: 'normal'|'italic' }}
  */
-export function extendedFamilyToBundledFont(baseName, { bold = false, italic = false } = {}) {
+export function extendedFamilyToBuiltInFont(baseName, { bold = false, italic = false } = {}) {
   const name = (baseName || '').replace(/^[A-Z]{6}\+/, '');
   let family;
   let stem;
@@ -110,13 +110,13 @@ export function extendedFamilyToBundledFont(baseName, { bold = false, italic = f
 }
 
 /**
- * Build a bundled-font descriptor by CSS classification, for non-Base14 fonts
+ * Build a built-in-font descriptor by CSS classification, for non-Base14 fonts
  * whose names resemble standard families (e.g. Garamond, Bookman, Roboto).
  *
  * @param {string} cssFamily - return value of standardFontToCSS(baseName)
  * @param {{ bold?: boolean, italic?: boolean }} [hints]
  */
-export function cssFamilyToBundledFont(cssFamily, { bold = false, italic = false } = {}) {
+export function cssFamilyToBuiltInFont(cssFamily, { bold = false, italic = false } = {}) {
   if (!cssFamily) return null;
   let family;
   if (/sans-serif/i.test(cssFamily)) family = 'NimbusSans';
@@ -134,14 +134,14 @@ export function cssFamilyToBundledFont(cssFamily, { bold = false, italic = false
 }
 
 /**
- * Build a bundled-font descriptor from a CSS generic keyword. Used as the
+ * Build a built-in-font descriptor from a CSS generic keyword. Used as the
  * third-tier substitution when standardFontToCSS does not recognize the
  * font's name but a generic style can still be inferred.
  *
  * @param {'serif'|'sans-serif'|'monospace'|'cursive'|string|null} generic
  * @param {{ bold?: boolean, italic?: boolean }} [hints]
  */
-export function genericToBundledFont(generic, { bold = false, italic = false } = {}) {
+export function genericToBuiltInFont(generic, { bold = false, italic = false } = {}) {
   let family;
   if (generic === 'sans-serif') family = 'NimbusSans';
   else if (generic === 'serif') family = 'NimbusRoman';

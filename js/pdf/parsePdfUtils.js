@@ -813,13 +813,15 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
 }
 
 /**
- * Read a Form XObject's own /Matrix.
- * Matches only the dict's top-level /Matrix, not one nested in the form's /Resources (e.g. a shading pattern's matrix).
+ * Read a number array from the top level of a Form XObject dict.
+ * A value nested deeper, such as a shading pattern's /Matrix in its /Resources, is ignored.
  * @param {string} objText - the form or appearance dict text
- * @param {ObjectCache|null} [objCache] - resolves an indirect /Matrix value
- * @returns {number[]} the parsed matrix, or `[1, 0, 0, 1, 0, 0]` when absent
+ * @param {string} key - `Matrix` or `BBox`
+ * @param {number} length - the number of entries the key takes
+ * @param {ObjectCache|null} objCache - resolves an indirect value
+ * @returns {?number[]}
  */
-export function parseFormMatrix(objText, objCache = null) {
+function formTopLevelNumbers(objText, key, length, objCache) {
   for (let i = 0, depth = 0; i < objText.length - 1; i++) {
     const c2 = objText[i] + objText[i + 1];
     if (c2 === '<<') {
@@ -828,13 +830,33 @@ export function parseFormMatrix(objText, objCache = null) {
     } else if (c2 === '>>') {
       depth -= 1;
       i += 1;
-    } else if (depth === 1 && objText.startsWith('/Matrix', i)) {
-      const parsed = resolveNumArray(objText.slice(i), 'Matrix', objCache, null);
-      if (parsed && parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
-      break;
+    } else if (depth === 1 && objText.startsWith(`/${key}`, i)) {
+      const parsed = resolveNumArray(objText.slice(i), key, objCache, null);
+      return parsed && parsed.length === length && parsed.every((n) => Number.isFinite(n)) ? parsed : null;
     }
   }
-  return [1, 0, 0, 1, 0, 0];
+  return null;
+}
+
+/**
+ * Read a Form XObject's own /Matrix.
+ * @param {string} objText - the form or appearance dict text
+ * @param {ObjectCache|null} [objCache] - resolves an indirect /Matrix value
+ * @returns {number[]} the parsed matrix, or `[1, 0, 0, 1, 0, 0]` when absent
+ */
+export function parseFormMatrix(objText, objCache = null) {
+  return formTopLevelNumbers(objText, 'Matrix', 6, objCache) || [1, 0, 0, 1, 0, 0];
+}
+
+/**
+ * Read a Form XObject's own /BBox.
+ * @param {string} objText - the form dict text
+ * @param {ObjectCache|null} [objCache] - resolves an indirect /BBox value
+ * @returns {?[number, number, number, number]} `[x0, y0, x1, y1]` with `x0 <= x1` and `y0 <= y1`, or null when absent or unreadable
+ */
+export function parseFormBBox(objText, objCache = null) {
+  const v = formTopLevelNumbers(objText, 'BBox', 4, objCache);
+  return v ? [Math.min(v[0], v[2]), Math.min(v[1], v[3]), Math.max(v[0], v[2]), Math.max(v[1], v[3])] : null;
 }
 
 /**

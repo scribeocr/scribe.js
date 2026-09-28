@@ -69,7 +69,7 @@ export const SIGNATURE_FONTS = [
 let fontsLoaded = null;
 
 /**
- * Load the bundled signature fonts once, registering them on the document for both the preview text and canvas rasterization.
+ * Load the built-in signature fonts once, registering them on the document for both the preview text and canvas rasterization.
  * @returns {Promise<void[]>} Resolves once every font has loaded or failed to load.
  */
 function ensureSignatureFonts() {

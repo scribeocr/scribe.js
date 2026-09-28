@@ -324,16 +324,15 @@ async function restoreSessionFromFile(doc, scribeFile) {
     // `textEdits` is the pre-rename key, still present in older saved sessions.
     const sessionEdits = scribeRestoreObj.session.contentEdits || scribeRestoreObj.session.textEdits;
     if (sessionEdits) {
-      // A single multi-character entry with one origin is a whole-word identity, which strikes almost nothing at render and export.
-      // Dropping those identities leaves the record's rects to strike geometrically, like a legacy record.
-      for (const records of sessionEdits) {
-        for (const rec of records || []) {
-          if (!rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText') || !rec.glyphs) continue;
-          const degraded = rec.glyphs.some((gw) => gw && gw.chars?.length === 1 && gw.x?.length === 1
-            && typeof gw.chars[0] === 'string' && [...gw.chars[0]].length > 1);
-          if (degraded) delete rec.glyphs;
-        }
+      let legacy = 0;
+      for (let i = 0; i < sessionEdits.length; i++) {
+        const records = sessionEdits[i];
+        if (!Array.isArray(records)) continue;
+        const kept = records.filter((rec) => !rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText'));
+        legacy += records.length - kept.length;
+        if (kept.length !== records.length) sessionEdits[i] = kept;
       }
+      if (legacy > 0) console.warn(`${legacy} text edit${legacy === 1 ? '' : 's'} saved by an earlier version could not be restored; the edited text shows as the page drew it.`);
       doc.contentEdits.pages = sessionEdits;
     }
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
