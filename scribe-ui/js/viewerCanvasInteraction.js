@@ -210,7 +210,8 @@ const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 
 export const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
 export const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
-export const CM_BOLD_SVG = menuIcon('<path d="M8 4.5v15"/><path d="M8 4.5h5a3.4 3.4 0 0 1 0 6.8H8"/><path d="M8 11.3h5.7a3.6 3.6 0 0 1 0 7.2H8"/>');
+// Stem and both bowls share the 4.5 to 19.5 span, the lower bowl the larger, the letter centered on the 24-grid.
+export const CM_BOLD_SVG = menuIcon('<path d="M7.5 4.5v15"/><path d="M7.5 4.5h5.2a3.6 3.6 0 0 1 0 7.2H7.5"/><path d="M7.5 11.7h5.6a3.9 3.9 0 0 1 0 7.8H7.5"/>');
 export const CM_ITALIC_SVG = menuIcon('<path d="M10.5 4.5h7"/><path d="M6.5 19.5h7"/><path d="M14 4.5l-4 15"/>');
 const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
 const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
@@ -996,9 +997,12 @@ const clearInkEdge = () => {
 
 let dismissListenersActive = false;
 
+let menuViewer = null;
+
 const onMenuDismissPointerDown = (/** @type {Event} */ event) => {
   // A press on the menu activates a button, so leave closing to that button's own click handler.
   if (menuNode && menuNode.contains(/** @type {Node} */ (event.target))) return;
+  if (menuViewer && menuViewer._editTextMenuHolds?.(event.target)) return;
   hideContextMenu();
 };
 
@@ -1012,6 +1016,7 @@ const onMenuDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
 export const hideContextMenu = () => {
   clearInkEdge();
   if (!menuNode) return;
+  if (menuViewer) { menuViewer._editTextMenuHidden?.(); menuViewer = null; }
   contextMenuMergeWordsButtonElem.style.display = 'none';
   contextMenuSplitWordButtonElem.style.display = 'none';
   contextMenuDeleteWordsButtonElem.style.display = 'none';
@@ -1879,6 +1884,8 @@ const showMenuForEvent = (viewer, event, targetObj) => {
   const { width: menuW, height: menuH } = menuNode.getBoundingClientRect();
   menuNode.style.top = `${Math.max(4, Math.min(event.clientY + 4, window.innerHeight - menuH - 4))}px`;
   menuNode.style.left = `${Math.max(4, Math.min(event.clientX + 4, window.innerWidth - menuW - 4))}px`;
+  menuViewer = viewer;
+  viewer._editTextMenuShown?.(menuNode.getBoundingClientRect());
 
   // Capture phase is required for scroll because the viewer's inner scroll container's scroll event does not bubble to document.
   dismissListenersActive = true;

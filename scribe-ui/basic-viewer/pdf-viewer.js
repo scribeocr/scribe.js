@@ -24,6 +24,9 @@ import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPanel.js';
+import {
+  createColorPicker, docInkGroup, inkName, STANDARD_INKS, TEXT_COLOR_SVG,
+} from '../js/editTextStyle.js';
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, filesNamedForPdf, createRedactTool, createEditTextTool,
@@ -127,6 +130,9 @@ const ASSISTANT_MODEL_STORAGE_KEY = 'scribe-assistant-model';
 
 /** Chevron-down for the Recognize Text mode's pickers. */
 const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>';
+/** The verb bar's back chevron for the swatch row. */
+// eslint-disable-next-line max-len
+const VBAR_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
 /**
  * Wrap SVG path markup in a stroked 24x24 icon, matching the toolbar's line-icon style.
@@ -614,6 +620,11 @@ class ScribePDFViewer {
     this._dockEditBtn = null;
     /** @type {?HTMLDivElement} The sheet listing the tool modes, mirrored from their toolbar buttons. */
     this._modeSheetElem = null;
+    this._phoneColorRow = false;
+    /** @type {?HTMLDivElement} */
+    this._colorSheetElem = null;
+    /** @type {?HTMLDivElement} */
+    this._colorSheetHost = null;
     /** @type {?HTMLDivElement} The dock's mode bar, shown in place of the navigation row while a mode runs. */
     this._dockModeRow = null;
     /** @type {?{ic: HTMLSpanElement, nm: HTMLSpanElement, status: HTMLSpanElement}} */
@@ -2909,6 +2920,16 @@ class ScribePDFViewer {
       }
     }
 
+    // Edit Text's style cluster (bold, italic, text color) mounts before Save / Discard while its mode runs on the desktop; the phone's verb bar carries the same.
+    const tsTools = this._editTextTool ? this.scribe._editTextBannerTools : null;
+    if (tsTools) {
+      if (activeBtn === this._editTextTool.toolbarElem && !this._phoneUi) {
+        if (tsTools.parentElement !== this._modeBanner) this._modeBanner.insertBefore(tsTools, this._modeBannerParts.exit);
+      } else {
+        tsTools.remove();
+      }
+    }
+
     const xtSeg = this._extractTablesTool ? this._extractTablesTool.viewSegElem() : null;
     if (xtSeg) {
       if (activeBtn === this._extractTablesTool.toolbarElem) {
@@ -3361,9 +3382,103 @@ class ScribePDFViewer {
           btn.classList.toggle('active', !!s && s.on);
         }
       }
+      const targetLines = kind === 'text' ? (sv._editTextSelectedLines?.() || []) : [];
+      p.color.style.display = kind === 'text' ? '' : 'none';
+      p.color.disabled = !(sessionOn || targetLines.length > 0);
+      p.color.style.setProperty('--scribe-text-ink', sv._editTextInkState?.().cur || '#000000');
+      const colorRow = kind === 'text' && !!this._phoneColorRow && !p.color.disabled;
+      this._phoneColorRow = colorRow;
+      p.color.classList.toggle('active', colorRow);
+      for (const el of [p.back, p.strip, p.custom, p.rowDone]) el.style.display = colorRow ? '' : 'none';
+      if (colorRow) {
+        for (const el of [p.undo, p.redo, p.edit, p.bold, p.italic, p.color, p.copy, p.sep, p.del, p.deselect, p.hint, p.done]) el.style.display = 'none';
+        this._fillPhoneColorStrip();
+      } else if (this._colorSheetElem?.classList.contains('open')) {
+        this._closePhoneColorSheet(true);
+      }
+    } else {
+      this._phoneColorRow = false;
+      if (this._colorSheetElem?.classList.contains('open')) this._closePhoneColorSheet(true);
     }
     this._syncUndoState();
     if (was !== !!kind && this.scribe.scrollContainer) this._relayout();
+  }
+
+  /** Open or close the phone verb bar's swatch row (the text-color verb, Back and Done). */
+  _togglePhoneColorRow() {
+    this._phoneColorRow = !this._phoneColorRow;
+    if (!this._phoneColorRow) this._closePhoneColorSheet(true);
+    this._syncPhoneVerbBar();
+  }
+
+  /** Fill the swatch row: the document's inks (this session's first), a divider, then the standard set; the target's ink ringed. */
+  _fillPhoneColorStrip() {
+    const p = this._vbarParts;
+    const sv = this.scribe;
+    const cs = sv._editTextColorState?.() || { present: false, color: null, mixed: false };
+    const cur = cs.mixed ? null : cs.color;
+    const inks = docInkGroup(sv, sv._editTextInkState?.().applied || []);
+    p.strip.replaceChildren();
+    /**
+     * @param {string} hex
+     * @param {string} title
+     */
+    const sw = (hex, title) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'scribe-tc-sw';
+      b.style.setProperty('--c', hex);
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      if (hex === cur) b.classList.add('active');
+      b.addEventListener('click', () => sv._editTextSetColor?.(hex));
+      return b;
+    };
+    for (const i of inks) p.strip.appendChild(sw(i.hex, `${inkName(i.hex)} · ${i.count} word${i.count === 1 ? '' : 's'}`));
+    if (inks.length > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'scribe-vstrip-sep';
+      p.strip.appendChild(sep);
+    }
+    for (const [hex, name] of STANDARD_INKS) if (!inks.some((i) => i.hex === hex)) p.strip.appendChild(sw(hex, name));
+  }
+
+  /** The picker page as a sheet above the verb bar; no scrim, so the line under it shows the preview. */
+  _openPhoneColorSheet() {
+    const sv = this.scribe;
+    if (!this._colorSheetElem) {
+      const sheet = document.createElement('div');
+      sheet.className = 'scribe-sheet scribe-tc-sheet scribe-edit-text-tools';
+      const hd = document.createElement('div');
+      hd.className = 'scribe-sheet-hd';
+      const pill = document.createElement('div');
+      pill.className = 'scribe-sheet-pill';
+      hd.appendChild(pill);
+      const host = document.createElement('div');
+      sheet.append(hd, host);
+      this.pdfViewerElem.appendChild(sheet);
+      attachSheetDrag(sheet, hd, { host: this.pdfViewerElem, resizable: false, onDismiss: () => this._closePhoneColorSheet(true) });
+      this._colorSheetElem = sheet;
+      this._colorSheetHost = host;
+    }
+    const cs = sv._editTextColorState?.() || { color: null, mixed: false };
+    const start = (!cs.mixed && cs.color) || sv._editTextInkState?.().cur || '#000000';
+    createColorPicker(/** @type {HTMLDivElement} */ (this._colorSheetHost), {
+      preview: (hex) => sv._editTextPreviewColor?.(hex),
+      apply: (hex) => { this._closePhoneColorSheet(false); sv._editTextSetColor?.(hex); },
+      cancel: () => this._closePhoneColorSheet(true),
+      sample: (onPick, onMove, onCancel) => sv._editTextSample?.(onPick, { onMove, onCancel }),
+    }, start, { sampler: true, noFocus: true });
+    this._colorSheetElem.classList.add('open');
+  }
+
+  /** @param {boolean} revert - Lift the preview the picker left on the line. */
+  _closePhoneColorSheet(revert) {
+    if (revert) this.scribe._editTextPreviewColor?.(null);
+    const sheet = this._colorSheetElem;
+    if (!sheet) return;
+    sheet.classList.remove('open', 'dragging');
+    sheet.style.transform = '';
   }
 
   /**
@@ -4376,6 +4491,23 @@ class ScribePDFViewer {
     vBold.title = 'Bold';
     const vItalic = vb('', CM_ITALIC_SVG);
     vItalic.title = 'Italic';
+    const vColor = vb('', TEXT_COLOR_SVG);
+    vColor.title = 'Text color';
+    // The swatch row that takes the verbs' place while it is open.
+    const vBack = vb('', VBAR_BACK_SVG);
+    vBack.title = 'Back';
+    const vStrip = document.createElement('span');
+    vStrip.className = 'scribe-vstrip';
+    const vCustom = document.createElement('button');
+    vCustom.type = 'button';
+    vCustom.className = 'scribe-tc-sw scribe-tc-custom';
+    vCustom.title = 'Custom…';
+    vCustom.setAttribute('aria-label', 'Custom color');
+    const vRowDone = vb('Done', null, 'accent');
+    vColor.addEventListener('click', () => this._togglePhoneColorRow());
+    vBack.addEventListener('click', () => this._togglePhoneColorRow());
+    vRowDone.addEventListener('click', () => this._togglePhoneColorRow());
+    vCustom.addEventListener('click', () => this._openPhoneColorSheet());
     const vCopy = vb('', CM_COPY_SVG);
     vCopy.title = 'Copy';
     const vSep = document.createElement('span');
@@ -4427,11 +4559,26 @@ class ScribePDFViewer {
     vDone.addEventListener('click', () => {
       this.scribe._editTextLineEditor?.commit().catch((e) => console.error('Edit Text: commit failed:', e));
     });
-    vbar.append(vUndo, vRedo, vEdit, vBold, vItalic, vCopy, vSep, vDel, vDeselect, vHint, vDone);
+    vbar.append(vUndo, vRedo, vEdit, vBold, vItalic, vColor, vCopy, vSep, vDel, vDeselect, vHint, vDone, vBack, vStrip, vCustom, vRowDone);
     this.pdfViewerElem.appendChild(vbar);
     this._vbarElem = vbar;
     this._vbarParts = {
-      undo: vUndo, redo: vRedo, edit: vEdit, bold: vBold, italic: vItalic, copy: vCopy, sep: vSep, del: vDel, deselect: vDeselect, hint: vHint, done: vDone,
+      undo: vUndo,
+      redo: vRedo,
+      edit: vEdit,
+      bold: vBold,
+      italic: vItalic,
+      color: vColor,
+      copy: vCopy,
+      sep: vSep,
+      del: vDel,
+      deselect: vDeselect,
+      hint: vHint,
+      done: vDone,
+      back: vBack,
+      strip: vStrip,
+      custom: vCustom,
+      rowDone: vRowDone,
     };
     // The selection engine has no change seam, so the bar re-reads its target after every release while a mode runs.
     const onVbarSettle = () => {

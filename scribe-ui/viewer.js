@@ -208,6 +208,11 @@ export class ScribeViewer {
      * @type {?Object<number, ?HTMLCanvasElement>}
      */
     this._rasterGhosts = null;
+    /**
+     * Per-page callers of `refreshPageRaster` waiting for the fresh raster to attach.
+     * @type {?Object<number, Array<() => void>>}
+     */
+    this._rasterSwapWaiters = null;
 
     /**
      * The scrolling viewport. `overflow:auto`; its `scrollTop/Left` is the scroll position.
@@ -488,12 +493,43 @@ export class ScribeViewer {
     this._editTextSelectedLines = null;
     /** @type {?() => boolean} */
     this._editTextDeleteSelection = null;
-    /** @type {?(prop: 'bold'|'italic') => {present: boolean, on: boolean, locked: boolean}} Bold/italic state of the selected lines' words, for the context menu's check and locked rows. */
+    /**
+     * Bold/italic state of the selected lines' words, or of the open line editor's target.
+     * @type {?(prop: 'bold'|'italic') => {present: boolean, on: boolean, locked: boolean}}
+     */
     this._editTextStyleState = null;
-    /** @type {?(prop: 'bold'|'italic') => void} Toggle bold/italic on every word of the selected lines. */
+    /** @type {?(prop: 'bold'|'italic') => void} Toggle bold/italic on every word of the selected lines, or on the open line editor's target. */
     this._editTextToggleStyle = null;
+    /** @type {?() => {present: boolean, color: ?string, mixed: boolean}} Ink of the selected lines' words, or of the open line editor's target. */
+    this._editTextColorState = null;
+    /** @type {?(hex: string) => void} Set the ink of every word of the selected lines, or of the open line editor's target. */
+    this._editTextSetColor = null;
+    /**
+     * Draw the selected lines, or the open line editor's target, in `hex` without committing.
+     * Null lifts the preview.
+     * @type {?(hex: ?string) => void}
+     */
+    this._editTextPreviewColor = null;
+    /**
+     * Start the page sampler, a loupe over the page whose center pixel a release picks.
+     * @type {?(onPick: (hex: string) => void, opts?: {onMove?: (hex: string) => void, onCancel?: () => void}) => void}
+     */
+    this._editTextSample = null;
+    /** @type {?() => {cur: string, applied: Array<string>}} The ink the text-color button applies, and the inks applied this session, most recent first. */
+    this._editTextInkState = null;
+    /** @type {?HTMLSpanElement} The style controls the desktop mode banner mounts while the mode runs. */
+    this._editTextBannerTools = null;
+    /** @type {?(menuRect: DOMRect) => void} Dock the floating style bar above the edit-only context menu. */
+    this._editTextMenuShown = null;
+    /** @type {?() => void} Hide the floating style bar if it is docked to the edit-only context menu. */
+    this._editTextMenuHidden = null;
     /** @type {?(clientX: number, clientY: number) => ?Object} Aim the edit-only context menu by selecting the line under the point, or return null when no editable line is there. */
     this._editTextMenuTarget = null;
+    /**
+     * Whether a press on `target` keeps the edit-only context menu open.
+     * @type {?(target: ?EventTarget) => boolean}
+     */
+    this._editTextMenuHolds = null;
     /** @type {?() => void} Open the line editor on the last menu target. */
     this._editTextEditLine = null;
     /** @type {?() => void} */
@@ -671,6 +707,10 @@ export class ScribeViewer {
     if (this._rasterGhosts) {
       for (const k of Object.keys(this._rasterGhosts)) this._removeRasterGhost(Number(k));
       this._rasterGhosts = null;
+    }
+    if (this._rasterSwapWaiters) {
+      for (const waiters of Object.values(this._rasterSwapWaiters)) for (const resolve of waiters) resolve();
+      this._rasterSwapWaiters = null;
     }
     this.pageContainerArr.length = 0;
     this._textGroups.length = 0;
@@ -2434,9 +2474,8 @@ export class ScribeViewer {
 
     if (this._textGroups[n]) {
       for (const group of Object.values(this._textGroups[n])) {
-        const editCanvas = group.querySelector('.scribe-edit-text-editor');
-        group.replaceChildren();
-        if (editCanvas) group.appendChild(editCanvas);
+        // The Edit Text tool's line editor and ink-preview canvases outlive a word rebuild; the tool removes them itself.
+        group.replaceChildren(...group.querySelectorAll('.scribe-edit-text-editor, .scribe-edit-text-inkpreview'));
       }
     }
     // Clear the highlight layer here too, so a page that loses its text (no-data early return below) does not strand stale bands.
@@ -2512,6 +2551,7 @@ export class ScribeViewer {
   /**
    * Re-render page `n`'s raster after a content change, e.g. a native-text edit.
    * @param {number} n
+   * @returns {Promise<void>} Settles once the fresh raster is attached (at once when no render was started).
    */
   refreshPageRaster(n) {
     const pc = this.pageContainerArr[n];
@@ -2534,7 +2574,27 @@ export class ScribeViewer {
     this.imageCache.addPageCanvas(n);
     // The ghost comes off when a fresh canvas attaches (`addPageCanvas`), not when a render promise settles.
     // A superseded or failed render settles without attaching pixels, so removing the ghost on that settlement would blank the page until the surviving render lands.
-    if (!this.imageCache.pageCanvases[n]) this._removeRasterGhost(n);
+    if (!this.imageCache.pageCanvases[n]) {
+      this._removeRasterGhost(n);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      if (!this._rasterSwapWaiters) this._rasterSwapWaiters = {};
+      (this._rasterSwapWaiters[n] ||= []).push(resolve);
+    });
+  }
+
+  /**
+   * Drop page `n`'s swap ghost and release the `refreshPageRaster` callers waiting on it.
+   * Called once fresh pixels for the page are on screen.
+   * @param {number} n
+   */
+  _rasterAttached(n) {
+    this._removeRasterGhost(n);
+    const waiters = this._rasterSwapWaiters?.[n];
+    if (!waiters) return;
+    delete /** @type {Object<number, Array<() => void>>} */ (this._rasterSwapWaiters)[n];
+    for (const resolve of waiters) resolve();
   }
 
   /**

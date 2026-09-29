@@ -538,6 +538,11 @@ declare global {
         baselineY: number;
         /** Per-glyph pen-origin x, unrounded. */
         penX?: number[];
+        /**
+         * Per-glyph text-matrix shear, 0 for upright glyphs.
+         * Present only on a word with a sheared glyph.
+         */
+        skew?: number[];
         /** Per-glyph horizontal stretch of the drawn glyph against the emitted size, 0 for unstretched glyphs. */
         stretch?: number[];
         /** Text render mode of faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */

@@ -2265,6 +2265,97 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: inline-flex;
     }
 
+    /* Edit Text's text-color control, in the highlighter's split idiom: an A that applies the ink shown in its bar, and a caret that opens the plate. */
+    .${r} .scribe-edit-text-cluster { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
+    /* No native selection can start on the controls' labels or gaps; the hex field keeps its own. */
+    .${r} .scribe-edit-text-tools, .${r} .scribe-tc-pop { -webkit-user-select: none; user-select: none; }
+    .${r} .scribe-tc-hex { -webkit-user-select: text; user-select: text; }
+    .${r} .scribe-tc-split { position: relative; display: inline-flex; align-items: center; vertical-align: middle; }
+    .${r} .scribe-tc-split .scribe-tc-apply, .${r} .scribe-tc-split .scribe-tc-apply:hover { border-radius: 7px 0 0 7px; }
+    .${r} .scribe-tc-split .scribe-tc-caret, .${r} .scribe-tc-split .scribe-tc-caret:hover { border-radius: 0 7px 7px 0; }
+    .${r} .scribe-tc-split .scribe-tc-caret { width: 16px; align-items: center; justify-content: center; color: var(--scribe-ink-3); }
+    .${r}.scribe-coarse .scribe-tc-split .scribe-tc-caret { width: 44px; }
+    .${r} .scribe-tc-split .scribe-tc-caret::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 1px; height: 14px; background: var(--scribe-line-strong); pointer-events: none; }
+    .${r} .scribe-tc-split .scribe-tc-caret.active { color: var(--scribe-accent); }
+    .${r} .scribe-tc-bar-ink { fill: var(--scribe-text-ink, #000000); }
+    .${r} .scribe-tc-bar-edge { fill: none; stroke: rgba(127, 127, 127, .45); stroke-width: .8; }
+    /* The plate: "In this document", "Standard" and "Custom...", on a 202px swatch row that wraps for a colorful document. */
+    .${r} .scribe-tc-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; display: none; flex-direction: column; align-items: stretch; padding: 8px 10px 6px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px; box-shadow: var(--scribe-menu-shadow); }
+    .${r} .scribe-tc-pop.open { display: flex; }
+    .${r} .scribe-tc-pop.scribe-tc-right { left: auto; right: 0; }
+    .${r} .scribe-tc-hd { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--scribe-ink-3); margin: 2px 0 5px; white-space: nowrap; }
+    .${r} .scribe-tc-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; width: 202px; }
+    .${r} .scribe-tc-sw { position: relative; width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; box-sizing: border-box; background: var(--scribe-surface); cursor: pointer; flex: 0 0 auto; display: block; padding: 0; margin: 0; }
+    .${r} .scribe-tc-sw::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: var(--c); box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .3); }
+    .${r} .scribe-tc-sw:hover { border-color: var(--scribe-ink-3); }
+    .${r} .scribe-tc-sw.active { border-color: var(--scribe-ink); }
+    .${r} .scribe-tc-sw.active::after { inset: 1.5px; }
+    .${r} .scribe-tc-sw:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
+    .${r} .scribe-tc-sw.scribe-tc-custom::after { background: conic-gradient(#e02020, #f5a623, #f8e71c, #7ed321, #4a90e2, #9013fe, #e02020); }
+    .${r} .scribe-tc-sw.scribe-tc-custom::before { content: ''; position: absolute; inset: 5px; border-radius: 50%; background: var(--scribe-surface); z-index: 1; }
+    .${r} .scribe-tc-sep { height: 1px; background: var(--scribe-line); margin: 0 -10px 4px; }
+    .${r} .scribe-tc-crow { display: flex; align-items: center; gap: 8px; margin: 0 -6px; padding: 4px 6px; border-radius: 5px; font-size: 13px; color: var(--scribe-ink); cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-tc-crow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-tc-crow:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-tc-crow .scribe-tc-sw { width: 16px; height: 16px; pointer-events: none; }
+    .${r} .scribe-tc-crow .scribe-tc-sw.scribe-tc-custom::before { inset: 4px; }
+    .${r} .scribe-tc-crow .scribe-tc-chev { margin-left: auto; width: 12px; height: 12px; color: var(--scribe-ink-2); opacity: .75; }
+    /* The picker page the plate turns into: a saturation / value square, a hue strip, the hex field with the loupe and the wells. */
+    .${r} .scribe-tc-pk { display: flex; flex-direction: column; gap: 8px; width: 202px; }
+    .${r} .scribe-tc-pkhd { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--scribe-ink); margin: -2px 0 0; }
+    .${r} .scribe-tc-back { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; color: var(--scribe-ink-2); cursor: pointer; margin-left: -4px; }
+    .${r} .scribe-tc-back:hover { background: var(--scribe-hover); }
+    .${r} .scribe-tc-back:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-tc-sv { position: relative; width: 100%; height: 122px; border-radius: 6px; cursor: crosshair; background: linear-gradient(to top, #000, rgba(0, 0, 0, 0)), linear-gradient(to right, #fff, var(--h, #f00)); box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .35); touch-action: none; outline: none; box-sizing: border-box; }
+    .${r} .scribe-tc-sv:focus-visible { box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .35), 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-tc-svh { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(0, 0, 0, .35); pointer-events: none; box-sizing: border-box; }
+    .${r} .scribe-tc-hue { position: relative; width: 100%; height: 12px; border-radius: 6px; background: linear-gradient(to right, #f00, #ff0, #0f0, #0ff, #00f, #f0f, #f00); cursor: pointer; touch-action: none; outline: none; }
+    .${r} .scribe-tc-hue:focus-visible { box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-tc-hueh { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--h, #f00); border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .45); pointer-events: none; box-sizing: border-box; }
+    .${r} .scribe-tc-pkrow { display: flex; align-items: center; gap: 6px; }
+    .${r} .scribe-tc-pkrow .cr-icon-button { width: 24px; height: 24px; }
+    .${r} .scribe-tc-hexlbl { font-size: 12.5px; color: var(--scribe-ink-3); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .${r} .scribe-tc-hex { width: 76px; height: 24px; box-sizing: border-box; padding: 0 6px; border: 1px solid var(--scribe-line-strong); border-radius: 5px; background: var(--scribe-surface); color: var(--scribe-ink); font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase; }
+    .${r} .scribe-tc-hex:focus { outline: none; border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-tc-hex.bad { border-color: var(--scribe-danger); }
+    .${r} .scribe-tc-wells { display: inline-flex; margin-left: auto; border-radius: 5px; overflow: hidden; box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .45); }
+    .${r} .scribe-tc-wells span { width: 22px; height: 22px; display: block; }
+    .${r} .scribe-tc-pkbtns { display: flex; justify-content: flex-end; gap: 4px; margin-top: -2px; }
+    .${r} .scribe-tc-btn { appearance: none; border: none; background: none; height: 24px; padding: 0 10px; border-radius: 6px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--scribe-ink-2); cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-tc-btn:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-tc-btn.accent { color: var(--scribe-accent); }
+    .${r} .scribe-tc-btn:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    /* The floating style bar (Word's mini toolbar): the Fill & Sign plate, at the pointer above the selection, fading in and out. */
+    .${r} .scribe-edit-text-bar { position: fixed; z-index: 45; display: none; align-items: center; gap: 2px; padding: 4px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px; box-shadow: var(--scribe-menu-shadow); opacity: 0; transition: opacity .12s ease; }
+    .${r} .scribe-edit-text-bar.on { display: flex; }
+    .${r} .scribe-edit-text-bar.shown { opacity: 1; }
+    /* Docked above the body-level context menu (z-index 60): the plate hangs down over the menu, so the docked bar rides one layer above it. */
+    .${r} .scribe-edit-text-bar.docked { z-index: 61; }
+    /* The page sampler's loupe: the pixels under the pointer, the one at the center named beneath. */
+    .${r} .scribe-edit-text-loupe { position: fixed; z-index: 70; width: 76px; height: 76px; margin: -38px 0 0 -38px; border-radius: 50%; overflow: hidden; border: 2px solid #fff; box-shadow: 0 0 0 3px var(--c, #000), 0 3px 10px rgba(0, 0, 0, .3); pointer-events: none; background: #fff; box-sizing: border-box; display: none; }
+    .${r} .scribe-edit-text-loupe canvas { display: block; width: 72px; height: 72px; image-rendering: pixelated; }
+    .${r} .scribe-edit-text-loupe::after { content: ''; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -4px 0 0 -4px; border: 1px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .6); }
+    .${r} .scribe-edit-text-loupe-lbl { position: fixed; z-index: 70; transform: translate(-50%, 0); margin-top: 44px; padding: 2px 7px; border-radius: 5px; background: var(--scribe-surface); color: var(--scribe-ink); border: 1px solid var(--scribe-line); box-shadow: var(--scribe-menu-shadow); font: 11.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; display: none; align-items: center; gap: 5px; pointer-events: none; white-space: nowrap; }
+    .${r} .scribe-edit-text-loupe-lbl i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .45); }
+    .${r} .scribe-edit-text-sampling, .${r} .scribe-edit-text-sampling * { cursor: crosshair !important; }
+    /* The phone: the verb bar's swatch row (the strip scrolls under a pinned "Custom..." and "Done") and the picker sheet above the bar. */
+    .${r} .scribe-vstrip { display: flex; align-items: center; gap: 8px; overflow-x: auto; scrollbar-width: none; flex: 1 1 auto; min-width: 0; padding: 0 4px; }
+    .${r} .scribe-vstrip::-webkit-scrollbar { display: none; }
+    .${r} .scribe-vstrip .scribe-tc-sw { width: 24px; height: 24px; }
+    .${r} .scribe-vstrip .scribe-tc-sw.active::after { inset: 2px; }
+    .${r} .scribe-vstrip-sep { width: 1px; height: 18px; background: var(--scribe-line-strong); flex: none; }
+    .${r} .scribe-vbar > .scribe-tc-custom { width: 24px; height: 24px; flex: none; margin: 0 2px; }
+    .${r} .scribe-tc-sheet { height: auto; bottom: calc(108px + env(safe-area-inset-bottom, 0px)); padding: 0 18px 10px; box-sizing: border-box; }
+    .${r} .scribe-tc-sheet .scribe-sheet-hd { padding: 10px 0 4px; margin: 0 -18px; }
+    .${r} .scribe-tc-sheet .scribe-tc-pk { width: auto; gap: 12px; }
+    .${r} .scribe-tc-sheet .scribe-tc-pkhd { font-size: 15px; }
+    .${r} .scribe-tc-sheet .scribe-tc-sv { height: 170px; }
+    .${r} .scribe-tc-sheet .scribe-tc-hue { height: 16px; }
+    .${r} .scribe-tc-sheet .scribe-tc-hex { height: 32px; width: 104px; font-size: 15px; }
+    .${r} .scribe-tc-sheet .scribe-tc-wells span { width: 30px; height: 30px; }
+    .${r} .scribe-tc-sheet .scribe-tc-btn { height: 32px; font-size: 14px; padding: 0 14px; }
+    .${r} .scribe-tc-sheet .scribe-tc-pkrow .cr-icon-button { width: 32px; height: 32px; }
+
     .${r} .scribe-cmt-card {
       position: absolute;
       width: 210px;

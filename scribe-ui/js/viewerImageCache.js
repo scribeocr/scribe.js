@@ -624,7 +624,7 @@ export class ViewerImageCache {
       this._canvasLru.delete(n);
       this._canvasLru.add(n);
       // Fresh pixels are attached, so the swap ghost `refreshPageRaster` left covering the page comes off now.
-      viewer._removeRasterGhost(n);
+      viewer._rasterAttached(n);
     }).catch(() => {
       // pageCanvasProps[n] stayed null, so the reuse check would read the leftover rejected promise as a cache hit and never re-render the page.
       if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;

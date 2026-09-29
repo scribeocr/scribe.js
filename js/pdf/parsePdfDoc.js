@@ -3927,6 +3927,8 @@ export function groupCharsIntoPage(
       const ntEntry = nativeText[wordID];
       if (ntEntry) {
         ntEntry.penX = wordChars.map((c) => round3(c.x));
+        // The Edit Text controls read the shear to tell a sheared word from one whose font is italic; nothing in js/ does.
+        if (wordChars.some((c) => c.skew)) ntEntry.skew = wordChars.map((c) => c.skew || 0);
         if (wordChars.some((c) => c.stretch)) ntEntry.stretch = wordChars.map((c) => c.stretch || 0);
         // A character recorded later replaces a placeholder's U+E000 + code text in place, so the code is kept to find the glyph again.
         const placeholderCode = (c) => (c._font?.type3 && Number.isInteger(c._charCode) && c.text === String.fromCodePoint(0xE000 + c._charCode) ? c._charCode : -1);

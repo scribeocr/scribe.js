@@ -193,7 +193,7 @@ const spacerFor = (op, d) => -(d * 1000) / (op.fontSize * (op.tz / 100));
  * Rewrite one show operator with per-glyph actions.
  * Text after a dropped, replaced or inserted run keeps its position unless an action moves it.
  * @param {ShowOp} op
- * @param {Array<import('./contentStream.js').PDFToken>} tokens - The stream's tokens.
+ * @param {Array<PDFToken>} tokens - The stream's tokens.
  * @param {Map<string, GlyphAction>} actions - Keyed by `${elem}:${byte}`.
  * @param {Map<string, [number, number, number]>} pens - Text-space pen and advance of every glyph of the operator, same keys.
  * @returns {string} The operator's replacement text.

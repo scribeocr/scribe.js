@@ -10,6 +10,7 @@ import {
 import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
+import { createStyleCluster } from '../editTextStyle.js';
 import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
@@ -1442,8 +1443,11 @@ export function nativeLineHitAt(scribe, clientX, clientY, eligible) {
  * They rebuild through the normal lazy path when scrolled to.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {Array<number>} pages
+ * @returns {Promise<void>} Settles once every re-rendered page shows its fresh raster.
  */
 export function refreshEditedPages(scribe, pages) {
+  /** @type {Array<Promise<void>>} */
+  const swaps = [];
   for (const n of new Set(pages)) {
     // A document-wide edit would otherwise raster and rebuild word DOM for hundreds of pages the user never viewed.
     if (!scribe.textGroupsRenderIndices.includes(n)) {
@@ -1452,7 +1456,7 @@ export function refreshEditedPages(scribe, pages) {
       scribe.textSel?.invalidatePage(n);
       continue;
     }
-    scribe.refreshPageRaster(n);
+    swaps.push(scribe.refreshPageRaster(n));
     scribe.renderWords(n);
     scribe.renderHighlights?.(n);
     if (scribe.textSel) {
@@ -1461,6 +1465,7 @@ export function refreshEditedPages(scribe, pages) {
     }
   }
   if (scribe.onEditCallback) scribe.onEditCallback();
+  return Promise.all(swaps).then(() => {});
 }
 
 /**
@@ -1502,6 +1507,8 @@ export function createEditTextTool(scribe) {
     if (scribe.textSel) scribe.textSel.cursorOverride = editMode ? 'default' : null;
     if (editMode) {
       scribe.clearTextSelection?.();
+      // Nothing is selected yet, so the style controls start dimmed.
+      clearBoxSelection();
       renderModeBoxes();
     } else {
       hideHover();
@@ -1518,15 +1525,19 @@ export function createEditTextTool(scribe) {
   function installBehaviors() {
     /** @param {Array<number>} pages */
     const refreshPages = (pages) => {
-      refreshEditedPages(scribe, pages);
+      const swapped = refreshEditedPages(scribe, pages);
       validateSelection();
       renderFrames();
+      return swapped;
     };
 
     /** @type {Set<import('../../../js/objects/ocrObjects.js').OcrLine>} */
     const selected = new Set();
     /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
     const frames = new Map();
+    // Assigned once the style controls exist below; the frame renderer calls them on every selection change.
+    let syncStyleUi = () => {};
+    let hideBar = () => {};
 
     /**
      * The drawn box for a line, sized to its visible glyphs.
@@ -1682,6 +1693,8 @@ export function createEditTextTool(scribe) {
       scribe._modeStatus?.(selected.size === 0 ? '' : selected.size === 1 ? '1 line' : `${selected.size} lines`);
       // Every path that changes lines runs through here, so the mode's hairline boxes stay in sync by riding along.
       scheduleLineBoxes();
+      syncStyleUi();
+      if (selected.size === 0 && !editor?.isOpen()) hideBar();
       scribe._modeSelectionChanged?.();
     };
     const clearSelection = () => {
@@ -1897,8 +1910,352 @@ export function createEditTextTool(scribe) {
         }
       })().catch((e) => console.error('Edit Text: style toggle failed:', e));
     };
-    scribe._editTextStyleState = selectionStyleState;
-    scribe._editTextToggleStyle = toggleSelectionStyle;
+    let inkCur = '#000000';
+    /** @type {Array<string>} Inks applied this session, most recent first. */
+    let inksApplied = [];
+    // The open line editor owns the target while it is up (its caret's word or selected words); otherwise the selected lines do.
+    /** @param {'bold'|'italic'} prop */
+    const styleState = (prop) => (editor?.isOpen() ? editor.styleState(prop) : selectionStyleState(prop));
+    /** @param {'bold'|'italic'} prop */
+    const toggleStyle = (prop) => {
+      if (editor?.isOpen()) editor.toggleStyle(prop);
+      else toggleSelectionStyle(prop);
+      syncStyleUi();
+    };
+    const colorState = () => {
+      if (editor?.isOpen()) return editor.colorState();
+      const lines = eligibleSelectedLines();
+      const inks = new Set();
+      for (const line of lines) for (const w of line.words) inks.add((w.style.color || '#000000').toLowerCase());
+      const list = [...inks];
+      return { present: lines.length > 0, color: list[0] || null, mixed: list.length > 1 };
+    };
+    /** @type {Array<HTMLCanvasElement>} */
+    const previewEls = [];
+    // Bumped by every preview change, so a commit only lifts the preview it drew itself.
+    let previewSeq = 0;
+    const clearPreview = () => {
+      for (const el of previewEls) el.remove();
+      previewEls.length = 0;
+    };
+    /**
+     * Draw the target in `hex` without committing, or lift the preview when `hex` is null.
+     * Each word's raster pixels are re-inked by their darkness and laid over the word.
+     * This only has to look right on paper, because the commit re-renders exactly.
+     * @param {?string} hex
+     */
+    const previewColor = (hex) => {
+      previewSeq += 1;
+      if (editor?.isOpen()) { editor.previewColor(hex); return; }
+      clearPreview();
+      if (!hex) return;
+      const ir = parseInt(hex.slice(1, 3), 16);
+      const ig = parseInt(hex.slice(3, 5), 16);
+      const ib = parseInt(hex.slice(5, 7), 16);
+      for (const { line, n, e } of orderedSelection()) {
+        // A rotated group's boxes are not axis-aligned on screen; those lines wait for the commit.
+        if (e.orientation) continue;
+        const frame = frames.get(line);
+        const group = scribe.getTextGroup(n, 0);
+        const canvas = scribe.pageContainerArr?.[n]?.querySelector('canvas.scribe-layer-image');
+        if (!frame || !group || !(canvas instanceof HTMLCanvasElement) || !canvas.width) continue;
+        const fr = frame.getBoundingClientRect();
+        const cr = canvas.getBoundingClientRect();
+        if (!fr.width || !cr.width) continue;
+        const pad = 2;
+        const lb = lineDrawBox(line, e.lbox);
+        // The frame is the line's local box drawn on screen, so it gives the local-to-client mapping without the group's transform.
+        const sx = fr.width / (lb.right - lb.left + 2 * pad);
+        const sy = fr.height / (lb.bottom - lb.top + 2 * pad);
+        const ox = fr.left - (lb.left - pad) * sx;
+        const oy = fr.top - (lb.top - pad) * sy;
+        const kx = canvas.width / cr.width;
+        const ky = canvas.height / cr.height;
+        const src = canvas.getContext('2d');
+        if (!src) continue;
+        for (const w of line.words) {
+          const a = scribe.pageToLocal(n, 0, w.bbox.left, w.bbox.top);
+          const b = scribe.pageToLocal(n, 0, w.bbox.right, w.bbox.bottom);
+          const l = Math.min(a.x, b.x) - 1;
+          const t = Math.min(a.y, b.y) - 1;
+          const r = Math.max(a.x, b.x) + 1;
+          const bt = Math.max(a.y, b.y) + 1;
+          const px0 = Math.max(0, Math.floor((ox + l * sx - cr.left) * kx));
+          const py0 = Math.max(0, Math.floor((oy + t * sy - cr.top) * ky));
+          const px1 = Math.min(canvas.width, Math.ceil((ox + r * sx - cr.left) * kx));
+          const py1 = Math.min(canvas.height, Math.ceil((oy + bt * sy - cr.top) * ky));
+          const cw = px1 - px0;
+          const ch = py1 - py0;
+          if (cw <= 0 || ch <= 0) continue;
+          let img;
+          try { img = src.getImageData(px0, py0, cw, ch); } catch { continue; }
+          const d = img.data;
+          for (let i = 0; i < d.length; i += 4) {
+            // Darkness is the ink's coverage; the paper stays transparent, so the selection's wash shows through.
+            const k = 1 - (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+            d[i] = ir;
+            d[i + 1] = ig;
+            d[i + 2] = ib;
+            d[i + 3] = Math.round(255 * k);
+          }
+          const el = document.createElement('canvas');
+          el.width = cw;
+          el.height = ch;
+          el.getContext('2d')?.putImageData(img, 0, 0);
+          el.className = 'scribe-edit-text-inkpreview';
+          Object.assign(el.style, {
+            position: 'absolute', left: `${l}px`, top: `${t}px`, width: `${r - l}px`, height: `${bt - t}px`, pointerEvents: 'none',
+          });
+          group.appendChild(el);
+          previewEls.push(el);
+        }
+      }
+    };
+    /** @param {string} hex */
+    const setColor = (hex) => {
+      const ink = hex.toLowerCase();
+      inkCur = ink;
+      inksApplied = [ink, ...inksApplied.filter((h) => h !== ink)];
+      if (editor?.isOpen()) {
+        clearPreview();
+        editor.setColor(ink);
+        syncStyleUi();
+        return;
+      }
+      const lines = eligibleSelectedLines();
+      if (lines.length === 0) {
+        clearPreview();
+        syncStyleUi();
+        return;
+      }
+      // A keyboard pick never previewed, so the preview is redrawn in the picked ink.
+      // It covers the words until the fresh raster is on screen, so the old ink never shows in between.
+      previewColor(ink);
+      const seq = previewSeq;
+      (async () => {
+        const pages = new Set();
+        for (const line of lines) {
+          const res = await scribe.doc.replaceTextLine(
+            line,
+            line.words.map((w) => w.text).join(' '),
+            { wordStyles: line.words.map(() => ({ color: ink })) },
+          );
+          if (res && res.pages) for (const p of res.pages) pages.add(p);
+        }
+        let swapped = Promise.resolve();
+        if (pages.size > 0) {
+          swapped = refreshPages([...pages]);
+          renderFrames();
+        }
+        syncStyleUi();
+        await swapped;
+        if (previewSeq === seq) clearPreview();
+      })().catch((e) => {
+        if (previewSeq === seq) clearPreview();
+        console.error('Edit Text: text color failed:', e);
+      });
+    };
+
+    // The page sampler: a loupe over the page canvas whose center pixel a press commits.
+    /** @type {?{onPick: (hex: string) => void, onMove?: (hex: string) => void, onCancel?: () => void, hex: ?string}} */
+    let sampling = null;
+    const loupe = document.createElement('div');
+    loupe.className = 'scribe-edit-text-loupe';
+    const loupeCv = document.createElement('canvas');
+    loupeCv.width = 13;
+    loupeCv.height = 13;
+    loupe.appendChild(loupeCv);
+    const loupeLbl = document.createElement('span');
+    loupeLbl.className = 'scribe-edit-text-loupe-lbl';
+    loupeLbl.innerHTML = '<i></i><span></span>';
+    // On the viewer root, beside the scroll container, like Fill & Sign's palette: a press on these never reaches the selection engine or this mode's own press handler.
+    scribe.elem.append(loupe, loupeLbl);
+    const stopSampling = () => {
+      sampling = null;
+      scribe.scrollContainer.classList.remove('scribe-edit-text-sampling');
+      scribe.scrollContainer.style.touchAction = '';
+      loupe.style.display = 'none';
+      loupeLbl.style.display = 'none';
+    };
+    /**
+     * @param {number} clientX
+     * @param {number} clientY
+     * @param {boolean} touch - The loupe floats above a finger, which hides the point.
+     */
+    const sampleAt = (clientX, clientY, touch) => {
+      if (!sampling) return null;
+      const p = scribe.clientToPage(clientX, clientY);
+      const canvas = p.n >= 0 ? scribe.pageContainerArr?.[p.n]?.querySelector('canvas.scribe-layer-image') : null;
+      if (!(canvas instanceof HTMLCanvasElement) || !canvas.width) {
+        loupe.style.display = 'none';
+        loupeLbl.style.display = 'none';
+        return null;
+      }
+      const cr = canvas.getBoundingClientRect();
+      // A canvas pixel k spans [k, k + 1) on screen, so the point's pixel is the floor, not the nearest edge.
+      const px = Math.min(canvas.width - 1, Math.max(0, Math.floor(((clientX - cr.left) / cr.width) * canvas.width)));
+      const py = Math.min(canvas.height - 1, Math.max(0, Math.floor(((clientY - cr.top) / cr.height) * canvas.height)));
+      const src = canvas.getContext('2d');
+      if (!src) return null;
+      let hex;
+      try {
+        const win = src.getImageData(px - 6, py - 6, 13, 13);
+        loupeCv.getContext('2d')?.putImageData(win, 0, 0);
+        const c = win.data;
+        const i = (6 * 13 + 6) * 4;
+        hex = `#${[c[i], c[i + 1], c[i + 2]].map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+      } catch { return null; }
+      const ly = touch ? clientY - 78 : clientY;
+      loupe.style.left = `${clientX}px`;
+      loupe.style.top = `${ly}px`;
+      loupe.style.setProperty('--c', hex);
+      loupe.style.display = 'block';
+      loupeLbl.style.left = `${clientX}px`;
+      loupeLbl.style.top = `${ly}px`;
+      loupeLbl.style.setProperty('--c', hex);
+      loupeLbl.style.display = 'inline-flex';
+      const lblText = loupeLbl.querySelector('span');
+      if (lblText) lblText.textContent = hex.toUpperCase();
+      sampling.hex = hex;
+      sampling.onMove?.(hex);
+      return hex;
+    };
+    /**
+     * @param {(hex: string) => void} onPick
+     * @param {{onMove?: (hex: string) => void, onCancel?: () => void}} [o]
+     */
+    const startSampling = (onPick, o = {}) => {
+      sampling = {
+        onPick, onMove: o.onMove, onCancel: o.onCancel, hex: null,
+      };
+      scribe.scrollContainer.classList.add('scribe-edit-text-sampling');
+      // A finger drag aims the loupe; native panning would take it away.
+      scribe.scrollContainer.style.touchAction = 'none';
+    };
+    const cancelSampling = () => {
+      const sm = sampling;
+      stopSampling();
+      sm?.onCancel?.();
+    };
+    const samplerMove = (ev) => { if (sampling) sampleAt(ev.clientX, ev.clientY, ev.pointerType === 'touch'); };
+    const samplerDown = (ev) => {
+      if (!sampling) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.button === 2) { cancelSampling(); return; }
+      sampleAt(ev.clientX, ev.clientY, ev.pointerType === 'touch');
+    };
+    const samplerUp = (ev) => {
+      if (!sampling) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      // The release commits what the loupe shows, the last sample, as Chrome's eyedropper does; off the page it cancels.
+      const hex = sampleAt(ev.clientX, ev.clientY, ev.pointerType === 'touch');
+      const sm = sampling;
+      stopSampling();
+      if (hex) sm.onPick(hex);
+      else sm.onCancel?.();
+    };
+    const samplerContext = (ev) => {
+      if (!sampling) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      cancelSampling();
+    };
+    document.addEventListener('pointermove', samplerMove, true);
+    document.addEventListener('pointerdown', samplerDown, true);
+    document.addEventListener('pointerup', samplerUp, true);
+    document.addEventListener('contextmenu', samplerContext, true);
+
+    const bannerCluster = createStyleCluster(scribe, { align: 'right' });
+    const bannerTools = document.createElement('span');
+    bannerTools.className = 'scribe-mode-banner-tools scribe-edit-text-tools';
+    bannerTools.appendChild(bannerCluster.el);
+    scribe._editTextBannerTools = bannerTools;
+    const bar = document.createElement('div');
+    bar.className = 'scribe-edit-text-bar scribe-edit-text-tools';
+    const barCluster = createStyleCluster(scribe, { align: 'left' });
+    bar.appendChild(barCluster.el);
+    scribe.elem.appendChild(bar);
+    let barOn = false;
+    let barDocked = false;
+    let barHideT = 0;
+    syncStyleUi = () => {
+      bannerCluster.sync();
+      barCluster.sync();
+    };
+    hideBar = () => {
+      if (!barOn) return;
+      barOn = false;
+      barDocked = false;
+      barCluster.closePop();
+      bar.classList.remove('shown', 'docked');
+      clearTimeout(barHideT);
+      barHideT = window.setTimeout(() => bar.classList.remove('on'), 130);
+    };
+    /**
+     * Above the anchor, starting at `left`; below it when there is no room above.
+     * @param {{left: number, top: number, right: number, bottom: number}} anchor
+     * @param {number} left
+     */
+    const placeBar = (anchor, left) => {
+      clearTimeout(barHideT);
+      barOn = true;
+      bar.classList.add('on');
+      bar.classList.toggle('docked', barDocked);
+      barCluster.closePop();
+      barCluster.sync();
+      const bw = bar.offsetWidth;
+      const bh = bar.offsetHeight;
+      const sc = scribe.scrollContainer.getBoundingClientRect();
+      const x = Math.max(sc.left + 4, Math.min(left, sc.right - bw - 4));
+      let y = anchor.top - bh - 6;
+      if (y < sc.top + 4) y = anchor.bottom + 6;
+      bar.style.left = `${x}px`;
+      bar.style.top = `${y}px`;
+      requestAnimationFrame(() => { if (barOn) bar.classList.add('shown'); });
+    };
+    /**
+     * @param {number} clientX - The pointer, where the bar starts.
+     */
+    const showBarAt = (clientX) => {
+      if (scribe._phoneUi) return;
+      let anchor = null;
+      if (editor?.isOpen()) {
+        anchor = editor.bandClientRect();
+      } else {
+        const first = orderedSelection()[0];
+        const fr = first ? frames.get(first.line) : null;
+        if (fr && fr.isConnected) anchor = fr.getBoundingClientRect();
+      }
+      if (!anchor) return;
+      barDocked = false;
+      placeBar(anchor, clientX - 8);
+    };
+    scribe._editTextMenuShown = (menuRect) => {
+      if (scribe._phoneUi || editor?.isOpen() || eligibleSelectedLines().length === 0) return;
+      barDocked = true;
+      placeBar({
+        left: menuRect.left, top: menuRect.top, right: menuRect.right, bottom: menuRect.bottom,
+      }, menuRect.left);
+    };
+    scribe._editTextMenuHidden = () => { if (barDocked) hideBar(); };
+    scribe._editTextMenuHolds = (target) => barOn && barDocked && (!!sampling || (target instanceof Node && bar.contains(target)));
+    // The bar stays put until a press lands outside it (or Esc, typing, or the selection going away).
+    const barDownHandler = (ev) => {
+      if (!barOn || barDocked || sampling) return;
+      if (ev.target instanceof Node && bar.contains(ev.target)) return;
+      hideBar();
+    };
+    document.addEventListener('pointerdown', barDownHandler, true);
+
+    scribe._editTextStyleState = styleState;
+    scribe._editTextToggleStyle = toggleStyle;
+    scribe._editTextColorState = colorState;
+    scribe._editTextSetColor = setColor;
+    scribe._editTextPreviewColor = previewColor;
+    scribe._editTextSample = startSampling;
+    scribe._editTextInkState = () => ({ cur: inkCur, applied: inksApplied });
 
     /** @type {?{info: NonNullable<ReturnType<import('../viewerTextSelection.js').TextSelection['lineInfoAt']>>, x: number, y: number}} */
     let menuTarget = null;
@@ -1934,7 +2291,15 @@ export function createEditTextTool(scribe) {
 
     editor = createLineEditor(scribe, {
       onCommitted: refreshPages,
-      onOpenChanged: (open) => scribe._editTextEditorOpenChanged?.(open),
+      onOpenChanged: (open) => {
+        if (open) hideBar();
+        clearPreview();
+        syncStyleUi();
+        scribe._editTextEditorOpenChanged?.(open);
+      },
+      // A drag across words summons the bar; keyboard selections never do.
+      onRangeSelected: (x) => showBarAt(x),
+      onCaretChanged: () => syncStyleUi(),
     });
     scribe._editTextLineEditor = editor;
 
@@ -2170,6 +2535,8 @@ export function createEditTextTool(scribe) {
       if (ev.pointerType === 'touch') { armTouchTap(ev); return; }
       const t = ev.target;
       if (t instanceof Element && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-redact-tab, [contenteditable]')) return;
+      // The sampler owns the press: its own capture handlers pick or cancel.
+      if (sampling) return;
       // The open editor owns only its text band, not its full-width canvas element.
       if (editor?.isOpen() && editor.containsPoint(ev.clientX, ev.clientY)) return;
       ev.stopPropagation();
@@ -2215,17 +2582,21 @@ export function createEditTextTool(scribe) {
         window.removeEventListener('pointerup', onUp);
         if (moved) {
           removeMarquee();
+          if (selected.size > 0) showBarAt(uv.clientX);
           return;
         }
         // If an editor was open, its own click-away hook has already committed.
         if (!info) {
           clearSelection();
+          // The engine never sees a press in this mode, so a selection it is somehow holding is cleared here on its behalf.
+          scribe.clearTextSelection();
           return;
         }
         if (shift) {
           if (selected.has(info.line)) selected.delete(info.line);
           else selected.add(info.line);
           renderFrames();
+          if (selected.size > 0) showBarAt(uv.clientX);
           return;
         }
         // A double-click needs no timing window because its second click is already a click on the sole selected line.
@@ -2239,6 +2610,7 @@ export function createEditTextTool(scribe) {
         selected.clear();
         selected.add(info.line);
         renderFrames();
+        showBarAt(uv.clientX);
       };
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
@@ -2246,6 +2618,30 @@ export function createEditTextTool(scribe) {
 
     const keydownHandler = (ev) => {
       if (!editMode) return;
+      if (ev.key === 'Escape') {
+        if (sampling) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          cancelSampling();
+          return;
+        }
+        if (bannerCluster.escape() || barCluster.escape()) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        if (barOn) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          hideBar();
+          return;
+        }
+      } else if (barOn && !ev.ctrlKey && !ev.metaKey && !ev.altKey
+        && (ev.key.length === 1 || ev.key === 'Backspace' || ev.key === 'Delete' || ev.key === 'Enter')
+        && !(ev.target instanceof Element && ev.target.closest('.scribe-edit-text-tools'))) {
+        // The key itself is not consumed, so it still lands on whoever owns it.
+        hideBar();
+      }
       if (ev.key === 'Escape' && editor?.isOpen()) {
         // The editor reverts and closes itself.
         const line = editor.lineOpen();
@@ -2262,7 +2658,14 @@ export function createEditTextTool(scribe) {
       const t = ev.target;
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (ev.key === 'Escape') {
-        if (selected.size === 0) return;
+        if (selected.size === 0) {
+          if (scribe.getWordsUnderTextSelection().length > 0) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            scribe.clearTextSelection();
+          }
+          return;
+        }
         ev.preventDefault();
         ev.stopPropagation();
         clearSelection();
@@ -2295,6 +2698,9 @@ export function createEditTextTool(scribe) {
         toggleSelectionStyle(ev.key === 'b' || ev.key === 'B' ? 'bold' : 'italic');
         return;
       }
+      // A focused style control owns the keys below.
+      // Enter and Space pick a swatch or apply the picker, and Delete must never reach the page from inside a picker.
+      if (t instanceof Element && t.closest('.scribe-edit-text-tools')) return;
       if (ev.key === 'Enter' || ev.key === 'F2') {
         validateSelection();
         if (selected.size !== 1) return;
@@ -2325,6 +2731,7 @@ export function createEditTextTool(scribe) {
     let scrollRaf = 0;
     const scrollHandler = () => {
       if (hintElem) hideEditHint();
+      hideBar();
       if (scrollRaf || !editMode) return;
       // Page virtualization rebuilds text groups; re-rendering re-parents any dropped frame.
       scrollRaf = requestAnimationFrame(() => {
@@ -2353,6 +2760,29 @@ export function createEditTextTool(scribe) {
       hideHover();
       editor?.teardown();
       editor = null;
+      hideBar();
+      bar.remove();
+      stopSampling();
+      loupe.remove();
+      loupeLbl.remove();
+      clearPreview();
+      bannerTools.remove();
+      bannerCluster.destroy();
+      barCluster.destroy();
+      document.removeEventListener('pointermove', samplerMove, true);
+      document.removeEventListener('pointerdown', samplerDown, true);
+      document.removeEventListener('pointerup', samplerUp, true);
+      document.removeEventListener('contextmenu', samplerContext, true);
+      document.removeEventListener('pointerdown', barDownHandler, true);
+      scribe._editTextBannerTools = null;
+      scribe._editTextColorState = null;
+      scribe._editTextSetColor = null;
+      scribe._editTextPreviewColor = null;
+      scribe._editTextSample = null;
+      scribe._editTextInkState = null;
+      scribe._editTextMenuShown = null;
+      scribe._editTextMenuHidden = null;
+      scribe._editTextMenuHolds = null;
       scribe._editTextActive = false;
       scribe._editTextLineDrag = false;
       scribe._editTextSelectedLines = null;

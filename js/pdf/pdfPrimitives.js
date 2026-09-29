@@ -1147,7 +1147,7 @@ export function scopeDictKeys(text) {
  * @param {string} inner
  * @param {string} key  e.g. '/Font' or '/ExtGState'
  * @param {string} newEntries
- * @param {?import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @param {?import('./objectCache.js').ObjectCache} objCache
  * @param {?(dictBody: string) => string} [filterInner] - Applied to the existing dict's body before the merge.
  *   A dict that cannot be resolved is left unfiltered, so its entries survive.
  */
@@ -1191,7 +1191,7 @@ function mergeResourceKey(inner, key, newEntries, objCache, filterInner = null) 
  * @param {string} existingDict
  * @param {string} overlayFontsStr
  * @param {string} overlayExtGStateStr
- * @param {?import('../../pdf/objectCache.js').ObjectCache} [objCache=null]
+ * @param {?import('./objectCache.js').ObjectCache} [objCache=null]
  * @param {string} [overlayXObjectsStr='']
  * @param {?Set<string>} [dropXObjectNames=null] - Image names to remove from the /XObject dict.
  *   A name still drawn by a surviving placement must not appear here.
