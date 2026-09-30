@@ -81,10 +81,12 @@ export const importImageFileToBase64 = async (file) => new Promise((resolve, rej
   }
 
   if (typeof process !== 'undefined') {
-    if (!file?.name) reject(new Error('Invalid input. Must be a FileNode or ArrayBuffer.'));
+    if (!file?.name || typeof file.arrayBuffer !== 'function') {
+      reject(new Error('Invalid input. Must be a FileNode or ArrayBuffer.'));
+      return;
+    }
     const format = file.name.match(/jpe?g$/i) ? 'jpeg' : 'png';
-    // @ts-ignore
-    resolve(`data:image/${format};base64,${file.fileData.toString('base64')}`);
+    file.arrayBuffer().then((imageBuffer) => resolve(`data:image/${format};base64,${Buffer.from(imageBuffer).toString('base64')}`), reject);
     return;
   }
 

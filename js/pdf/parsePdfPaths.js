@@ -86,7 +86,9 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
   const result = [];
   const operandStack = [];
 
-  for (const tok of tokens) {
+  // Indexed because for...of can allocate an iterator result object per token, and a page can hold millions of tokens.
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const tok = tokens[ti];
     if (tok.type !== 'operator') {
       operandStack.push(tok);
       result.push(tok);
@@ -99,7 +101,7 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
       if (imageObjNum !== undefined) {
         // The caller's prefetched tokens are shared with other walks, so the identity goes on a fresh token instead of onto `tok`.
         result.push({ type: 'operator', value: 'Do', imageObjNum });
-        operandStack.length = 0;
+        clearStack(operandStack);
         continue;
       }
       const form = forms.get(name);
@@ -117,18 +119,18 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
           const expanded = inlineFormXObjects(formTokens, formObjText, objCache, visited);
 
           result.push({ type: 'operator', value: 'q' });
-          for (const v of formMatrix) result.push({ type: 'number', value: v });
+          for (let mi = 0; mi < formMatrix.length; mi++) result.push({ type: 'number', value: formMatrix[mi] });
           result.push({ type: 'operator', value: 'cm' });
-          for (const t of expanded) result.push(t);
+          for (let ei = 0; ei < expanded.length; ei++) result.push(expanded[ei]);
           result.push({ type: 'operator', value: 'Q' });
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         continue;
       }
     }
 
     result.push(tok);
-    operandStack.length = 0;
+    clearStack(operandStack);
   }
 
   return result;
@@ -152,6 +154,15 @@ export function extractAllPaths(pdfBytes) {
   }
 
   return result;
+}
+
+/**
+ * Empty a reusable operand stack in place.
+ * `stack.length = 0` would make V8 drop the backing store and reallocate it on the next push.
+ * @param {Array<any>} stack
+ */
+function clearStack(stack) {
+  while (stack.length > 0) stack.pop();
 }
 
 /**
@@ -212,8 +223,9 @@ function executePathOperators(tokens, collect) {
 
   function popNums(n) {
     const start = operandStack.length - n;
-    const vals = operandStack.slice(start).map((t) => t.value);
-    operandStack.length = 0;
+    const vals = new Array(n);
+    for (let k = 0; k < n; k++) vals[k] = operandStack[start + k].value;
+    clearStack(operandStack);
     return vals;
   }
 
@@ -248,19 +260,24 @@ function executePathOperators(tokens, collect) {
     if (currentPath.length === 0) return;
 
     const cmds = /** @type {PathCommand[]} */ ([]);
-    for (const cmd of currentPath) {
+    // The transform is written out because transformPoint allocates an object per point.
+    const [ca, cb, cc, cd, ce, cf] = ctm;
+    for (let cmdI = 0; cmdI < currentPath.length; cmdI++) {
+      const cmd = currentPath[cmdI];
       switch (cmd.type) {
         case 'M': case 'L': {
-          const p = transformPoint(cmd.x, cmd.y, ctm);
-          cmds.push({ type: cmd.type, x: p.x, y: p.y });
+          cmds.push({ type: cmd.type, x: ca * cmd.x + cc * cmd.y + ce, y: cb * cmd.x + cd * cmd.y + cf });
           break;
         }
         case 'C': {
-          const p1 = transformPoint(cmd.x1, cmd.y1, ctm);
-          const p2 = transformPoint(cmd.x2, cmd.y2, ctm);
-          const p3 = transformPoint(cmd.x, cmd.y, ctm);
           cmds.push({
-            type: 'C', x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, x: p3.x, y: p3.y,
+            type: 'C',
+            x1: ca * cmd.x1 + cc * cmd.y1 + ce,
+            y1: cb * cmd.x1 + cd * cmd.y1 + cf,
+            x2: ca * cmd.x2 + cc * cmd.y2 + ce,
+            y2: cb * cmd.x2 + cd * cmd.y2 + cf,
+            x: ca * cmd.x + cc * cmd.y + ce,
+            y: cb * cmd.x + cd * cmd.y + cf,
           });
           break;
         }
@@ -292,7 +309,8 @@ function executePathOperators(tokens, collect) {
     if (collect && collect.pathPlacements && cmds.length >= 2) {
       let minX = Infinity; let maxX = -Infinity;
       let minY = Infinity; let maxY = -Infinity;
-      for (const cmd of cmds) {
+      for (let cmdI = 0; cmdI < cmds.length; cmdI++) {
+        const cmd = cmds[cmdI];
         if (cmd.type === 'Z') continue;
         if (cmd.type === 'C') {
           if (cmd.x1 < minX) minX = cmd.x1; if (cmd.x1 > maxX) maxX = cmd.x1;
@@ -336,7 +354,7 @@ function executePathOperators(tokens, collect) {
 
     if (tok.type === 'inlineImage') {
       recordImagePlacement();
-      operandStack.length = 0;
+      clearStack(operandStack);
       continue;
     }
 
@@ -352,7 +370,7 @@ function executePathOperators(tokens, collect) {
       case 'Do':
         // Form XObjects were inlined before this walk (parsePagePaths), so a surviving `Do` is an image or a form that could not be inlined.
         recordImagePlacement(tok.imageObjNum);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // ── Graphics state ────────────────────────────────────────────
@@ -370,7 +388,7 @@ function executePathOperators(tokens, collect) {
           dashArray: dashArray.slice(),
           dashPhase,
         });
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Q':
@@ -388,7 +406,7 @@ function executePathOperators(tokens, collect) {
           dashArray = s.dashArray;
           dashPhase = s.dashPhase;
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'cm':
@@ -396,28 +414,28 @@ function executePathOperators(tokens, collect) {
           const m = popNums(6);
           ctm = matMul(m, ctm);
         } else {
-          operandStack.length = 0;
+          clearStack(operandStack);
         }
         break;
 
       case 'w': // line width
         if (operandStack.length >= 1) lineWidth = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'J': // line cap
         if (operandStack.length >= 1) lineCap = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'j': // line join
         if (operandStack.length >= 1) lineJoin = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'M': // miter limit
         if (operandStack.length >= 1) miterLimit = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'd': // dash pattern  [array] phase d
@@ -427,7 +445,7 @@ function executePathOperators(tokens, collect) {
           dashPhase = phase.value;
           dashArray = arr.type === 'array' ? arr.value.map((v) => v.value) : [];
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // ── Color operators ───────────────────────────────────────────
@@ -435,129 +453,153 @@ function executePathOperators(tokens, collect) {
         if (operandStack.length >= 1) {
           fillColor = popNums(1);
           fillColorSpace = 'gray';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'G': // gray stroke
         if (operandStack.length >= 1) {
           strokeColor = popNums(1);
           strokeColorSpace = 'gray';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'rg': // RGB fill
         if (operandStack.length >= 3) {
           fillColor = popNums(3);
           fillColorSpace = 'rgb';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'RG': // RGB stroke
         if (operandStack.length >= 3) {
           strokeColor = popNums(3);
           strokeColorSpace = 'rgb';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'k': // CMYK fill
         if (operandStack.length >= 4) {
           fillColor = popNums(4);
           fillColorSpace = 'cmyk';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'K': // CMYK stroke
         if (operandStack.length >= 4) {
           strokeColor = popNums(4);
           strokeColorSpace = 'cmyk';
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
 
       case 'cs': // set fill color space (name)
         if (operandStack.length >= 1) {
           fillColorSpace = operandStack[operandStack.length - 1].value;
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'CS': // set stroke color space (name)
         if (operandStack.length >= 1) {
           strokeColorSpace = operandStack[operandStack.length - 1].value;
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'sc': case 'scn': // set fill color (operand count depends on color space)
         if (operandStack.length >= 1) {
           fillColor = operandStack.map((t) => t.value);
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'SC': case 'SCN': // set stroke color
         if (operandStack.length >= 1) {
           strokeColor = operandStack.map((t) => t.value);
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // ── Path construction ─────────────────────────────────────────
+      // In-place operand reads avoid a `popNums` array per operator, which adds up on vector pages.
       case 'm': { // moveto
-        if (operandStack.length >= 2) {
-          const vals = popNums(2);
-          curX = vals[0]; curY = vals[1];
+        const len = operandStack.length;
+        if (len >= 2) {
+          curX = operandStack[len - 2].value; curY = operandStack[len - 1].value;
           pathStartX = curX; pathStartY = curY;
           currentPath.push({ type: 'M', x: curX, y: curY });
-        } else { operandStack.length = 0; }
+        }
+        clearStack(operandStack);
         break;
       }
 
       case 'l': { // lineto
-        if (operandStack.length >= 2) {
-          const vals = popNums(2);
-          curX = vals[0]; curY = vals[1];
+        const len = operandStack.length;
+        if (len >= 2) {
+          curX = operandStack[len - 2].value; curY = operandStack[len - 1].value;
           currentPath.push({ type: 'L', x: curX, y: curY });
-        } else { operandStack.length = 0; }
+        }
+        clearStack(operandStack);
         break;
       }
 
       case 'c': { // curveto (x1 y1 x2 y2 x3 y3)
-        if (operandStack.length >= 6) {
-          const vals = popNums(6);
+        const len = operandStack.length;
+        if (len >= 6) {
           currentPath.push({
-            type: 'C', x1: vals[0], y1: vals[1], x2: vals[2], y2: vals[3], x: vals[4], y: vals[5],
+            type: 'C',
+            x1: operandStack[len - 6].value,
+            y1: operandStack[len - 5].value,
+            x2: operandStack[len - 4].value,
+            y2: operandStack[len - 3].value,
+            x: operandStack[len - 2].value,
+            y: operandStack[len - 1].value,
           });
-          curX = vals[4]; curY = vals[5];
-        } else { operandStack.length = 0; }
+          curX = operandStack[len - 2].value; curY = operandStack[len - 1].value;
+        }
+        clearStack(operandStack);
         break;
       }
 
       case 'v': { // curveto: first control point = current point (x2 y2 x3 y3)
-        if (operandStack.length >= 4) {
-          const vals = popNums(4);
+        const len = operandStack.length;
+        if (len >= 4) {
           currentPath.push({
-            type: 'C', x1: curX, y1: curY, x2: vals[0], y2: vals[1], x: vals[2], y: vals[3],
+            type: 'C',
+            x1: curX,
+            y1: curY,
+            x2: operandStack[len - 4].value,
+            y2: operandStack[len - 3].value,
+            x: operandStack[len - 2].value,
+            y: operandStack[len - 1].value,
           });
-          curX = vals[2]; curY = vals[3];
-        } else { operandStack.length = 0; }
+          curX = operandStack[len - 2].value; curY = operandStack[len - 1].value;
+        }
+        clearStack(operandStack);
         break;
       }
 
       case 'y': { // curveto: last control point = endpoint (x1 y1 x3 y3)
-        if (operandStack.length >= 4) {
-          const vals = popNums(4);
+        const len = operandStack.length;
+        if (len >= 4) {
           currentPath.push({
-            type: 'C', x1: vals[0], y1: vals[1], x2: vals[2], y2: vals[3], x: vals[2], y: vals[3],
+            type: 'C',
+            x1: operandStack[len - 4].value,
+            y1: operandStack[len - 3].value,
+            x2: operandStack[len - 2].value,
+            y2: operandStack[len - 1].value,
+            x: operandStack[len - 2].value,
+            y: operandStack[len - 1].value,
           });
-          curX = vals[2]; curY = vals[3];
-        } else { operandStack.length = 0; }
+          curX = operandStack[len - 2].value; curY = operandStack[len - 1].value;
+        }
+        clearStack(operandStack);
         break;
       }
 
       case 'h': // closepath
         currentPath.push({ type: 'Z' });
         curX = pathStartX; curY = pathStartY;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 're': { // rectangle (x y w h)
@@ -571,68 +613,68 @@ function executePathOperators(tokens, collect) {
           currentPath.push({ type: 'Z' });
           curX = rx; curY = ry;
           pathStartX = rx; pathStartY = ry;
-        } else { operandStack.length = 0; }
+        } else { clearStack(operandStack); }
         break;
       }
 
       // ── Path painting ─────────────────────────────────────────────
       case 'S': // stroke
         emitPath(false, true, false);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 's': // close + stroke
         currentPath.push({ type: 'Z' });
         emitPath(false, true, false);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'f': case 'F': // fill (non-zero winding)
         emitPath(true, false, false);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'f*': // fill (even-odd)
         emitPath(true, false, true);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'B': // fill + stroke (non-zero)
         emitPath(true, true, false);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'B*': // fill + stroke (even-odd)
         emitPath(true, true, true);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'b': // close + fill + stroke (non-zero)
         currentPath.push({ type: 'Z' });
         emitPath(true, true, false);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'b*': // close + fill + stroke (even-odd)
         currentPath.push({ type: 'Z' });
         emitPath(true, true, true);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'n': // end path (no paint — used for clipping)
         currentPath = [];
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // ── Clipping (modifies clip, then path is consumed by next paint/n) ──
       case 'W': case 'W*':
         // Clipping is applied implicitly; the path stays for the next paint op.
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // ── Skip text/image/other operators ───────────────────────────
       default:
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
     }
   }

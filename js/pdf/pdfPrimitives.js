@@ -804,6 +804,8 @@ export function resolveDictValue(dictText, key, objCache) {
  */
 export function bytesToLatin1(bytes, start = 0, end) {
   const stop = end === undefined ? bytes.length : end;
+  // TextDecoder's 'latin1' is windows-1252, so it cannot replace this function.
+  if (typeof Buffer !== 'undefined' && stop - start > 8192) return Buffer.from(bytes.buffer, bytes.byteOffset + start, stop - start).toString('latin1');
   const chunkSize = 8192;
   let result = '';
   for (let i = start; i < stop; i += chunkSize) {

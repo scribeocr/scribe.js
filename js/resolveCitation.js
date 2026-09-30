@@ -1,4 +1,5 @@
 import { bboxToPageSpace } from './addHighlights.js';
+import { median } from './utils/miscUtils.js';
 
 /**
  * @typedef {Object} CitationSpan
@@ -188,11 +189,4 @@ export function resolveCitation(pages, text) {
     });
   }
   return spans;
-}
-
-/** @param {Array<number>} arr */
-function median(arr) {
-  const s = arr.slice().sort((a, b) => a - b);
-  if (!s.length) return 0;
-  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 }

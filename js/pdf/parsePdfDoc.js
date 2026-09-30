@@ -40,6 +40,79 @@ import { substituteFaceResourceEntries } from './substituteFaces.js';
 // Path rendering is unaffected.
 const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
 
+// A glyph-op map tracks clips, so it needs the path and clip operators textOnly drops.
+/**
+ * @param {string} streamText
+ * @param {?GlyphOpMap} glyphOpMap
+ */
+const textPassTokenizerOpts = (streamText, glyphOpMap) => (!glyphOpMap && streamText.length > GRAPHICS_HEAVY_STREAM_BYTES ? { textOnly: true } : null);
+
+// A filter miss means the exact map or ring lookup behind it would also miss.
+// A filter hit can be a false positive, so it must fall through to that lookup.
+const DEDUP_FILTER_BITS = 20;
+const DEDUP_FILTER_MASK = (1 << DEDUP_FILTER_BITS) - 1;
+class PresenceFilter {
+  constructor() {
+    this.slots = new Uint16Array(1 << DEDUP_FILTER_BITS);
+    this.gen = 0;
+  }
+
+  next() {
+    this.gen++;
+    if (this.gen > 65535) { this.slots.fill(0); this.gen = 1; }
+  }
+
+  /** @param {number} h */
+  has(h) { return this.slots[h] === this.gen; }
+
+  /** @param {number} h */
+  add(h) { this.slots[h] = this.gen; }
+}
+/** @type {?PresenceFilter} */
+let dedupBucketFilter = null;
+/** @type {?PresenceFilter} */
+let dedupTmFilter = null;
+const dedupHash = (a, b, c) => (Math.imul(a, 73856093) ^ Math.imul(b, 19349663) ^ Math.imul(c, 83492791)) & DEDUP_FILTER_MASK;
+const SAME_TM_LOOKBACK = 500;
+const sameTmRing = new Float64Array(SAME_TM_LOOKBACK);
+let anchorBaselineScratch = new Float64Array(512);
+
+// Glyphs of one font share these fontInfo objects, so never mutate a glyph's fontInfo.
+/** @type {WeakMap<object, Array<object|undefined>>} */
+const fontInfoVariants = new WeakMap();
+/**
+ * @param {any} font
+ * @param {boolean} boldExtra
+ * @param {boolean} italicExtra
+ */
+function fontInfoFor(font, boldExtra, italicExtra) {
+  const build = () => ({
+    baseName: font.baseName,
+    bold: font.bold || boldExtra,
+    italic: font.italic || italicExtra,
+    smallCaps: font.smallCaps,
+    familyName: font.familyName,
+    ascent: font.ascent,
+    descent: font.descent,
+  });
+  if (!font || typeof font !== 'object') return build();
+  let variants = fontInfoVariants.get(font);
+  if (!variants) { variants = [undefined, undefined, undefined, undefined]; fontInfoVariants.set(font, variants); }
+  const slot = (boldExtra ? 2 : 0) + (italicExtra ? 1 : 0);
+  let info = variants[slot];
+  if (!info) { info = build(); variants[slot] = info; }
+  return info;
+}
+
+/**
+ * Empty a reusable operand stack in place.
+ * Use this instead of `stack.length = 0`, which makes V8 drop the backing store and reallocate it on the next push.
+ * @param {Array<any>} stack
+ */
+function clearStack(stack) {
+  while (stack.length > 0) stack.pop();
+}
+
 // A page whose grouped path placements exceed this cap reports path-ineligible instead of exposing a partial inventory.
 // Designed reports measure ~650 placements per page and chart pages ~1,250, so real documents fit under it.
 const PATH_PLACEMENT_CAP = 2000;
@@ -164,6 +237,44 @@ const MATH_FONT_RE = /^(?:CM(?:MI|SY|EX)|lm(?:mi|sy|ex)|MS[AB]M|EUF[MB]|EUS[MB]|
 // Prose-common symbols (plus-minus, degree, section, dashes, primes) and Greek are deliberately excluded, since both are routine in ordinary text.
 const MATH_CHAR_RE = /[ℂℏℑℕ℘ℚℜℝℤℵ∀-⋿⟀-⟯⦀-⧿⨀-⫿\u{1D400}-\u{1D7FF}]/u;
 
+/** @type {WeakMap<object, boolean>} */
+const mathFontCache = new WeakMap();
+/** @type {WeakMap<object, boolean>} */
+const symbolFontCache = new WeakMap();
+
+/** @param {PositionedChar} ch */
+function isMathFontChar(ch) {
+  const font = ch._font;
+  if (!font || typeof font !== 'object') return MATH_FONT_RE.test(ch.fontInfo.baseName || '');
+  let hit = mathFontCache.get(font);
+  if (hit === undefined) {
+    hit = MATH_FONT_RE.test(ch.fontInfo.baseName || '');
+    mathFontCache.set(font, hit);
+  }
+  return hit;
+}
+
+/** @param {PositionedChar} ch */
+function isSymbolFontChar(ch) {
+  const font = ch._font;
+  if (!font || typeof font !== 'object') return isSymbolFont(ch.fontInfo);
+  let hit = symbolFontCache.get(font);
+  if (hit === undefined) {
+    hit = isSymbolFont(ch.fontInfo);
+    symbolFontCache.set(font, hit);
+  }
+  return hit;
+}
+
+/**
+ * @param {string} text
+ */
+function isRadicalText(text) {
+  if (text.length !== 1) return false;
+  const cc = text.charCodeAt(0);
+  return cc === 0x221A || cc === 0x221B || cc === 0x221C;
+}
+
 const BULLET_CHAR_RE = /[·•‣⁃∙■-◿・]/;
 
 function isBulletChar(text = '') {
@@ -193,7 +304,9 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
   /** @type {Array<{ ctm: number[], tc: number, tw: number, tl: number, tz: number, trise: number }>} */
   const gsStack = [];
 
-  for (const tok of tokens) {
+  // for...of can allocate an iterator result object per token, which adds up on pages with millions of tokens.
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const tok = tokens[ti];
     if (tok.type !== 'operator') {
       operandStack.push(tok);
       continue;
@@ -227,8 +340,8 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
         break;
       case 'cm':
         if (operandStack.length >= 6) {
-          const m = operandStack.slice(operandStack.length - 6).map((t) => t.value);
-          ctm = matMul(m, ctm);
+          const n = operandStack.length;
+          ctm = matMul([operandStack[n - 6].value, operandStack[n - 5].value, operandStack[n - 4].value, operandStack[n - 3].value, operandStack[n - 2].value, operandStack[n - 1].value], ctm);
         }
         break;
       case 'Tc':
@@ -267,7 +380,7 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
       default:
         break;
     }
-    operandStack.length = 0;
+    clearStack(operandStack);
   }
 
   return doOps;
@@ -424,7 +537,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
       : parentColorSpaces;
     const formMatrix = parseFormMatrix(formObjText, objCache);
     const formCtm = matMul(formMatrix, doOp.ctm);
-    const formTokens = tokenizeContentStream(formContentStream);
+    const formTokens = tokenizeContentStream(formContentStream, textPassTokenizerOpts(formContentStream, glyphOpMap));
     /** @type {?number[]} */
     let formVisible = null;
     if (glyphOpMap) {
@@ -475,7 +588,8 @@ function scorePageChars(chars) {
   let control = 0;
   let controlVis = 0;
   let visibleAll = 0;
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     const codePoint = ch.text.codePointAt(0);
     if (codePoint === undefined) continue;
     if (codePoint >= 33 && codePoint <= 127) {
@@ -652,7 +766,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     };
   }
 
-  const tokens = tokenizeContentStream(contentStreamText);
+  const tokens = tokenizeContentStream(contentStreamText, textPassTokenizerOpts(contentStreamText, glyphOpMap));
   const extGStates = parseFillAlphaExtGStates(objText, objCache);
   const textColorSpaces = parseTextColorSpaces(objText, objCache);
   if (glyphOpMap) {
@@ -670,7 +784,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       dos: [],
     });
   }
-  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces, glyphOpMap,
+  let chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces, glyphOpMap,
     glyphOpMap ? [0, 0, visualWidthPts, visualHeightPts] : null);
 
   const formChars = extractFormXObjectText(
@@ -694,34 +808,53 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
   const DEDUP_COORD_OFF = 33554432; // 2^25, biases bucket indices non-negative and sits above any index the 0.25 minimum bucket size can produce
   const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
-  /** @type {Map<string, Map<string, Map<number, Map<number, PositionedChar>>>>} */
-  const seenByText = new Map();
+  /** @type {Map<number, PositionedChar | PositionedChar[]>} */
+  const seenByBucket = new Map();
+  if (!dedupBucketFilter) dedupBucketFilter = new PresenceFilter();
+  const bucketFilter = dedupBucketFilter;
+  bucketFilter.next();
   const dedupedChars = [];
+  const classOf = (/** @type {PositionedChar} */ g) => Math.round(g.fontSize * 10) * 4 + (g.fontInfo.bold ? 2 : 0) + (g.fontInfo.italic ? 1 : 0);
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
-    const flagsSize = Math.round(ch.fontSize * 10) * 4 + (ch.fontInfo.bold ? 2 : 0) + (ch.fontInfo.italic ? 1 : 0);
+    const flagsSize = classOf(ch);
     const bucketSize = Math.max(0.25, ch.fontSize * 0.05);
     const xb = Math.round(ch.x / bucketSize);
     const yb = Math.round(ch.y / bucketSize);
-    let byFamily = seenByText.get(ch.text);
-    if (!byFamily) { byFamily = new Map(); seenByText.set(ch.text, byFamily); }
-    let byFlags = byFamily.get(ch.fontInfo.familyName);
-    if (!byFlags) { byFlags = new Map(); byFamily.set(ch.fontInfo.familyName, byFlags); }
-    let coords = byFlags.get(flagsSize);
-    if (!coords) { coords = new Map(); byFlags.set(flagsSize, coords); }
+    let occupied = false;
+    for (let dx = -1; dx <= 1 && !occupied; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (bucketFilter.has(dedupHash(xb + dx, yb + dy, 0))) { occupied = true; break; }
+      }
+    }
     /** @type {?PositionedChar} */
     let dupOf = null;
-    for (let dx = -1; dx <= 1 && !dupOf; dx++) {
-      for (let dy = -1; dy <= 1 && !dupOf; dy++) {
-        dupOf = coords.get((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF)) || null;
+    if (occupied) {
+      for (let dx = -1; dx <= 1 && !dupOf; dx++) {
+        for (let dy = -1; dy <= 1 && !dupOf; dy++) {
+          const placed = seenByBucket.get((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF));
+          if (!placed) continue;
+          if (Array.isArray(placed)) {
+            for (let k = 0; k < placed.length; k++) {
+              const g = placed[k];
+              if (g.text === ch.text && g.fontInfo.familyName === ch.fontInfo.familyName && classOf(g) === flagsSize) { dupOf = g; break; }
+            }
+          } else if (placed.text === ch.text && placed.fontInfo.familyName === ch.fontInfo.familyName && classOf(placed) === flagsSize) {
+            dupOf = placed;
+          }
+        }
       }
     }
     if (dupOf) continue;
-    coords.set((xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF), ch);
+    const bucketKey = (xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF);
+    const placed = seenByBucket.get(bucketKey);
+    if (!placed) seenByBucket.set(bucketKey, ch);
+    else if (Array.isArray(placed)) placed.push(ch);
+    else seenByBucket.set(bucketKey, [placed, ch]);
+    bucketFilter.add(dedupHash(xb, yb, 0));
     dedupedChars.push(ch);
   }
-  chars.length = 0;
-  for (let i = 0; i < dedupedChars.length; i++) chars.push(dedupedChars[i]);
+  chars = dedupedChars;
 
   const charStats = scorePageChars(chars);
 
@@ -734,7 +867,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const bodyBottom = pageHeight * 0.9;
   let mathFontGlyphs = 0;
   let mathCharGlyphs = 0;
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     if (brokenToUnicodeFont(ch._font)) {
       brokenRun++;
       if (brokenRun > longestBrokenRun) longestBrokenRun = brokenRun;
@@ -744,7 +878,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     if (ch.invisible) continue;
     const cp = ch.text.codePointAt(0);
     if (cp === undefined) continue;
-    if (MATH_FONT_RE.test(ch.fontInfo.baseName || '')) mathFontGlyphs++;
+    if (isMathFontChar(ch)) mathFontGlyphs++;
     if (MATH_CHAR_RE.test(ch.text)) mathCharGlyphs++;
     if (!((cp >= 33 && cp <= 127) || (cp >= 161 && !(cp >= 0xE000 && cp <= 0xF8FF)))) continue;
     printableVisNonBroken++;
@@ -767,8 +901,10 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // Consumers subtract the box origin themselves, so it is added back here.
   if (rotate === 90 || rotate === 180 || rotate === 270) {
     const [a, b, c, d, e, f] = initialCtm;
-    for (const path of paths) {
-      for (const cmd of path.commands) {
+    for (let pathI = 0; pathI < paths.length; pathI++) {
+      const path = paths[pathI];
+      for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
+        const cmd = path.commands[cmdI];
         if (cmd.type === 'Z') continue;
         if (cmd.type === 'C') {
           const x1 = a * cmd.x1 + c * cmd.y1 + e + boxOriginX;
@@ -794,9 +930,10 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     const imageObjNumsH = new Map();
     findFormXObjects(objText, objCache, imageObjNumsH);
     let lastNameH = null;
-    for (const t of tokens) {
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const t = tokens[ti];
       if (t.type === 'number') { numsH.push(t.value); continue; }
-      if (t.type === 'name') { lastNameH = t.value; numsH.length = 0; continue; }
+      if (t.type === 'name') { lastNameH = t.value; clearStack(numsH); continue; }
       if (t.type === 'inlineImage' || (t.type === 'operator' && t.value === 'Do')) {
         const corners = [
           [ctmH[4], ctmH[5]],
@@ -818,10 +955,10 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
         if (t.type === 'operator' && lastNameH !== null && imageObjNumsH.has(lastNameH)) placementH.objNum = imageObjNumsH.get(lastNameH);
         imagePlacements.push(placementH);
         lastNameH = null;
-        numsH.length = 0;
+        clearStack(numsH);
         continue;
       }
-      if (t.type !== 'operator') { lastNameH = null; numsH.length = 0; continue; }
+      if (t.type !== 'operator') { lastNameH = null; clearStack(numsH); continue; }
       if (t.value === 'q') ctmStackH.push(ctmH.slice());
       else if (t.value === 'Q') { if (ctmStackH.length > 0) ctmH = ctmStackH.pop(); } else if (t.value === 'cm' && numsH.length >= 6) {
         const nh = numsH.length;
@@ -835,7 +972,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
         ];
       }
       lastNameH = null;
-      numsH.length = 0;
+      clearStack(numsH);
     }
   }
 
@@ -900,7 +1037,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     const pxTop = (visualHeightPts - p.top) * scale;
     const pxBottom = (visualHeightPts - p.bottom) * scale;
     let coveredWidth = 0;
-    for (const ch of chars) {
+    for (let chI = 0; chI < chars.length; chI++) {
+      const ch = chars[chI];
       const cx = ch.x + ch.width / 2;
       if (cx < pxLeft || cx > pxRight) continue;
       // Approximate glyph box from the baseline: ascent above, ~20% below.
@@ -917,12 +1055,14 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // Criterion 2: filled, non-rectangular, glyph-height vector paths.
   // Perfect rectangles (layout rules, table borders, fill boxes) are excluded.
   let pathTextCandidates = 0;
-  for (const path of paths) {
+  for (let pathI = 0; pathI < paths.length; pathI++) {
+    const path = paths[pathI];
     if (!path.fill) continue;
     let minX = Infinity; let maxX = -Infinity;
     let minY = Infinity; let maxY = -Infinity;
     let hasCurve = false;
-    for (const cmd of path.commands) {
+    for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
+      const cmd = path.commands[cmdI];
       if (cmd.type === 'C') {
         hasCurve = true;
         if (cmd.x1 < minX) minX = cmd.x1; if (cmd.x1 > maxX) maxX = cmd.x1;
@@ -942,7 +1082,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       // Split into subpaths at M, then check each is a 4 or 5-point polygon with all sides axis-parallel.
       let sub = [];
       const subpaths = [];
-      for (const cmd of path.commands) {
+      for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
+        const cmd = path.commands[cmdI];
         if (cmd.type === 'M') { if (sub.length > 0) subpaths.push(sub); sub = [[cmd.x, cmd.y]]; } else if (cmd.type === 'L') sub.push([cmd.x, cmd.y]);
       }
       if (sub.length > 0) subpaths.push(sub);
@@ -1002,7 +1143,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       bottom: (visualHeightPts - (y0 - boxOriginY)) * scale,
     });
   };
-  for (const path of paths) {
+  for (let pathI = 0; pathI < paths.length; pathI++) {
+    const path = paths[pathI];
     if (!path.fill && !path.stroke) continue;
     const lineColor = path.stroke ? path.strokeColor : path.fillColor;
     const fc = path.fill ? path.fillColor : null;
@@ -1024,7 +1166,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     // The thin-bar separator test below keeps its M/L-only extents.
     let fMinX = Infinity; let fMaxX = -Infinity;
     let fMinY = Infinity; let fMaxY = -Infinity;
-    for (const cmd of path.commands) {
+    for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
+      const cmd = path.commands[cmdI];
       if (cmd.type === 'C') {
         hasCurve = true;
         for (const [cx, cy] of [[cmd.x1, cmd.y1], [cmd.x2, cmd.y2], [cmd.x, cmd.y]]) {
@@ -1066,7 +1209,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     }
     /** @type {Array<Array<[number, number]>>} */
     const subpaths = [];
-    for (const cmd of path.commands) {
+    for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
+      const cmd = path.commands[cmdI];
       if (cmd.type === 'M') subpaths.push([[cmd.x, cmd.y]]);
       else if (cmd.type === 'L' && subpaths.length) subpaths[subpaths.length - 1].push([cmd.x, cmd.y]);
     }
@@ -1424,9 +1568,14 @@ export function promoteContinuationTables(results) {
     xs.push(Math.max(...t.boxes.map((b) => b.coords.right)));
     return xs;
   };
+  /** @type {Map<LayoutDataTable, ?string>} */
+  const row0Cache = new Map();
   const row0Text = (pageObj, t) => {
-    const rows = extractTextFromTables(pageObj, /** @type {LayoutDataTablePage} */ ({ tables: [t] }))[0]?.rows;
-    return rows?.length ? norm(rows[0].join(' ')) : null;
+    if (row0Cache.has(t)) return row0Cache.get(t) ?? null;
+    const rows = extractTextFromTables(pageObj, /** @type {LayoutDataTablePage} */ ({ tables: [t] }), { maxRows: 1 })[0]?.rows;
+    const text = rows?.length ? norm(rows[0].join(' ')) : null;
+    row0Cache.set(t, text);
+    return text;
   };
   /** @type {?{headerRow: ?string, title: ?string}} */
   let chain = null;
@@ -1936,7 +2085,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           strokeCsSrc,
           visible: visible ? visible.slice() : null,
         });
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Q':
@@ -1964,15 +2113,15 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           strokeCsSrc = saved.strokeCsSrc;
           visible = saved.visible;
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'cm': {
         if (operandStack.length >= 6) {
-          const m = operandStack.slice(operandStack.length - 6).map((t) => t.value);
-          ctm = matMul(m, ctm);
+          const n = operandStack.length;
+          ctm = matMul([operandStack[n - 6].value, operandStack[n - 5].value, operandStack[n - 4].value, operandStack[n - 3].value, operandStack[n - 2].value, operandStack[n - 1].value], ctm);
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -1980,11 +2129,11 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       case 'BT':
         tm = [1, 0, 0, 1, 0, 0];
         tlm = [1, 0, 0, 1, 0, 0];
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'ET':
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'BDC':
@@ -2000,14 +2149,14 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         const art = tag === 'Artifact';
         mcStack.push({ tag, mcid, art });
         if (art) artifactDepth++;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
       case 'EMC': {
         const popped = mcStack.pop();
         if (popped && popped.art && artifactDepth > 0) artifactDepth--;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2021,46 +2170,47 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           // Taking abs() here flips the sign of the glyph advances and reverses the glyph order within each line.
           fontSize = size.value;
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
       case 'Tc':
         if (operandStack.length >= 1) tc = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Tw':
         if (operandStack.length >= 1) tw = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Tz':
         if (operandStack.length >= 1) tz = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'TL':
         if (operandStack.length >= 1) tl = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Tr':
         if (operandStack.length >= 1) tr = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Ts':
         if (operandStack.length >= 1) trise = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'Tm': {
         if (operandStack.length >= 6) {
-          tm = operandStack.slice(operandStack.length - 6).map((t) => t.value);
+          const n = operandStack.length;
+          tm = [operandStack[n - 6].value, operandStack[n - 5].value, operandStack[n - 4].value, operandStack[n - 3].value, operandStack[n - 2].value, operandStack[n - 1].value];
           tlm = tm.slice();
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2073,7 +2223,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
             tx * tlm[1] + ty * tlm[3] + tlm[5]];
           tm = tlm.slice();
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2087,7 +2237,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
             tx * tlm[1] + ty * tlm[3] + tlm[5]];
           tm = tlm.slice();
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2098,7 +2248,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           tx * tlm[0] + ty * tlm[2] + tlm[4],
           tx * tlm[1] + ty * tlm[3] + tlm[5]];
         tm = tlm.slice();
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2173,7 +2323,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           showOp.tlmAfter = tlm.slice();
           glyphOpMap.ops.push(showOp);
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2182,21 +2332,21 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         textColor = operandStack.map((t) => t.value);
         fillTintCS = null;
         if (glyphOpMap) { fillColorSrc = `${operandStack.map(serializeContentToken).join(' ')} ${op}`; fillCsSrc = ''; }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'G': case 'RG': case 'K':
         strokeColor = operandStack.map((t) => t.value);
         strokeTintCS = null;
         if (glyphOpMap) { strokeColorSrc = `${operandStack.map(serializeContentToken).join(' ')} ${op}`; strokeCsSrc = ''; }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       case 'cs': {
         const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
         fillTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
         if (glyphOpMap) { fillCsSrc = `${operandStack.map(serializeContentToken).join(' ')} cs`; fillColorSrc = fillCsSrc; }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2204,7 +2354,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
         strokeTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
         if (glyphOpMap) { strokeCsSrc = `${operandStack.map(serializeContentToken).join(' ')} CS`; strokeColorSrc = strokeCsSrc; }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2220,7 +2370,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         }
         textColor = resolved || operandStack.map((t) => t.value);
         if (glyphOpMap) fillColorSrc = `${fillCsSrc ? `${fillCsSrc} ` : ''}${operandStack.map(serializeContentToken).join(' ')} ${op}`;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2235,13 +2385,13 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         }
         strokeColor = resolved || operandStack.map((t) => t.value);
         if (glyphOpMap) strokeColorSrc = `${strokeCsSrc ? `${strokeCsSrc} ` : ''}${operandStack.map(serializeContentToken).join(' ')} ${op}`;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
       case 'w':
         if (operandStack.length >= 1) lineWidth = operandStack[operandStack.length - 1].value;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       // Graphics state parameters (sets non-stroking alpha via /ca).
@@ -2255,7 +2405,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
             }
           }
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       }
 
@@ -2263,25 +2413,26 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       // The region an operator paints into is the page box cut down by the clips in force.
       case 'm': case 'l':
         if (visible && operandStack.length >= 2) addPathPoint(operandStack[operandStack.length - 2].value, operandStack[operandStack.length - 1].value);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       case 'c': case 'v': case 'y':
         if (visible) for (let k = 0; k + 1 < operandStack.length; k += 2) addPathPoint(operandStack[k].value, operandStack[k + 1].value);
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       case 're':
         if (visible && operandStack.length >= 4) {
-          const [x, y, w, h] = operandStack.slice(operandStack.length - 4).map((t) => t.value);
+          const n = operandStack.length;
+          const x = operandStack[n - 4].value; const y = operandStack[n - 3].value; const w = operandStack[n - 2].value; const h = operandStack[n - 1].value;
           addPathPoint(x, y);
           addPathPoint(x + w, y);
           addPathPoint(x + w, y + h);
           addPathPoint(x, y + h);
         }
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       case 'W': case 'W*':
         pendingClip = true;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       case 'n': case 'f': case 'F': case 'f*': case 'B': case 'B*': case 'b': case 'b*': case 'S': case 's':
         if (pendingClip && visible) {
@@ -2289,15 +2440,15 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         }
         pendingClip = false;
         path = null;
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
       case 'Do':
         if (glyphOpMap && operandStack.length >= 1) glyphOpMap.streams[streamIdx].dos.push({ name: operandStack[operandStack.length - 1].value, visible: visible ? visible.slice() : null });
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
 
       default:
-        operandStack.length = 0;
+        clearStack(operandStack);
         break;
     }
 
@@ -2488,15 +2639,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         y: (pageHeightPts - pageY) * scale,
         width: Math.abs(visualGlyphWidth * tz / 100) * hScale * scale,
         fontSize: Math.abs(fontSize * vScale * scale),
-        fontInfo: {
-          baseName: font.baseName,
-          bold: font.bold || tr === 1 || tr === 2,
-          italic: font.italic || matrixShear !== 0,
-          smallCaps: font.smallCaps,
-          familyName: font.familyName,
-          ascent: font.ascent,
-          descent: font.descent,
-        },
+        fontInfo: fontInfoFor(font, tr === 1 || tr === 2, matrixShear !== 0),
         skew: matrixShear,
         stretch: Math.abs(matrixStretch - 1) > 0.01 ? matrixStretch : 0,
         _font: font,
@@ -2651,7 +2794,8 @@ export function groupCharsIntoPage(
     };
   }
 
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     if (/^\s$/.test(ch.text)) ch.text = ' ';
   }
 
@@ -2659,26 +2803,28 @@ export function groupCharsIntoPage(
   //   1. Identical Tm: the same Tj re-emitted at the same position (Tr 1 stroke, then Tr 0 fill).
   //   2. Slightly-offset overlap: the same glyph drawn again 1-5 pt away for a fake-bold outline.
   // Both copies are emitted adjacently, so a bounded lookback catches them.
-  const SAME_TM_LOOKBACK = 500;
-
   chars = (() => {
     const result = [];
-    // posNum packs (x, y, orientation) into one integer Map key rather than a per-char string, avoiding that allocation.
     const POS_OFF = 4194304; // 2^22, biases the rounded coordinates non-negative (above any |round(px*100)| on a real page)
     const POS_MUL = 67108864; // 2^26, spaces the x field above the packed (y, orientation) so the fields never overlap
-    /** @type {Map<string, Map<string, Map<number, number>>>} */
-    const positionByText = new Map();
+    if (!dedupTmFilter) dedupTmFilter = new PresenceFilter();
+    const tmFilter = dedupTmFilter;
+    tmFilter.next();
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
-      const posNum = (Math.round(ch.x * 100) + POS_OFF) * POS_MUL
-        + (Math.round(ch.y * 100) + POS_OFF) * 4 + ch.orientation;
-      let byBase = positionByText.get(ch.text);
-      if (!byBase) { byBase = new Map(); positionByText.set(ch.text, byBase); }
-      let posMap = byBase.get(ch.fontInfo.baseName);
-      if (!posMap) { posMap = new Map(); byBase.set(ch.fontInfo.baseName, posMap); }
-      const mapped = posMap.get(posNum);
-      let dupeIdx = mapped === undefined || (result.length - mapped) > SAME_TM_LOOKBACK ? -1 : mapped;
-      let dupeKind = dupeIdx >= 0 ? 'sameTm' : '';
+      const xr = Math.round(ch.x * 100);
+      const yr = Math.round(ch.y * 100);
+      const posNum = (xr + POS_OFF) * POS_MUL + (yr + POS_OFF) * 4 + ch.orientation;
+      const tmHash = dedupHash(xr, yr, ch.orientation);
+      let dupeIdx = -1;
+      let dupeKind = '';
+      if (tmFilter.has(tmHash)) {
+        for (let idx = result.length - 1; idx >= Math.max(0, result.length - SAME_TM_LOOKBACK); idx--) {
+          if (sameTmRing[idx % SAME_TM_LOOKBACK] !== posNum) continue;
+          const g = result[idx];
+          if (g.text === ch.text && g.fontInfo.baseName === ch.fontInfo.baseName) { dupeIdx = idx; dupeKind = 'sameTm'; break; }
+        }
+      }
       if (dupeIdx < 0) {
         for (let j = result.length - 1; j >= Math.max(0, result.length - 8); j--) {
           const prev = result[j];
@@ -2698,7 +2844,8 @@ export function groupCharsIntoPage(
       }
       if (dupeIdx >= 0) {
         const prev = result[dupeIdx];
-        if (ch.fontInfo.bold) prev.fontInfo.bold = true;
+        // fontInfo objects are shared per font, so copy rather than mutate.
+        if (ch.fontInfo.bold && !prev.fontInfo.bold) prev.fontInfo = { ...prev.fontInfo, bold: true };
         if (!ch.invisible) prev.invisible = false;
         // The stroke is emitted first at a wider, offset position and the fill drawn on top where the glyph visually belongs, so the later position is the correct one.
         // Keeping the stroke's geometry would skew the x-gaps that word splitting reads later.
@@ -2710,7 +2857,8 @@ export function groupCharsIntoPage(
         }
         continue;
       }
-      posMap.set(posNum, result.length);
+      sameTmRing[result.length % SAME_TM_LOOKBACK] = posNum;
+      tmFilter.add(tmHash);
       result.push(ch);
     }
     return result;
@@ -2718,7 +2866,8 @@ export function groupCharsIntoPage(
 
   // Orientations 1, 2 and 3 are quarter turns: text reads downward, leftward and upward on screen.
   // Remapping them into a virtual horizontal system lets the line grouping and word splitting below assume horizontal text.
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     if (ch.orientation === 1) {
       const vx = ch.y;
       const vy = pageWidth - ch.x;
@@ -2739,7 +2888,8 @@ export function groupCharsIntoPage(
   let avgDirX = 0;
   let avgDirY = 0;
   let orient0Count = 0;
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     if (ch.orientation === 0) {
       avgDirX += ch.dirX;
       avgDirY += ch.dirY;
@@ -2754,7 +2904,8 @@ export function groupCharsIntoPage(
     avgDirX = 1; avgDirY = 0;
   }
 
-  for (const ch of chars) {
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
     if (ch.orientation === 0) {
       ch._perpDist = -ch.x * avgDirY + ch.y * avgDirX;
     }
@@ -2824,8 +2975,8 @@ export function groupCharsIntoPage(
     // The ratio compares Tf directly rather than the floored sizes, so natural advance variation ("i" vs "M") cannot read as a size change.
     const fontRatio = ch.fontSize / compPrev.fontSize;
     // Symbol glyphs set inline, such as Webdings arrows between words, can report a different orientation and font size while still belonging to the same visual line.
-    const symbolBoundary = isSymbolFont(ch.fontInfo)
-      || isSymbolFont(compPrev.fontInfo);
+    const symbolBoundary = isSymbolFontChar(ch)
+      || isSymbolFontChar(compPrev);
     const inlineSymbolBoundary = symbolBoundary
       && yGap < maxFont * 0.5
       && xGap > -maxFont * 0.2
@@ -2836,18 +2987,18 @@ export function groupCharsIntoPage(
     const reducedScript = ch.fontSize < anchorFontSize * 0.85
       && chY - ch.fontSize * 0.8 < anchorY + anchorFontSize * 0.2
       && chY + ch.fontSize * 0.2 > anchorY - anchorFontSize * 0.8;
-    const radicalRadicand = (/^[√∛∜]$/.test(compPrev.text) || /^[√∛∜]$/.test(ch.text))
+    const radicalRadicand = (isRadicalText(compPrev.text) || isRadicalText(ch.text))
       && fontRatio > 0.8 && fontRatio < 1.25
       && xGap > -maxFont * 0.2 && xGap < maxFont * 0.5
       && yGap < maxFont * 1.1;
     // builtUpMath: built-up expressions (a fraction under a radical, nested scripts) stack glyphs at several vertical offsets within one line, beyond what reducedScript tolerates.
     // This broader exemption is safe only because pageHasMath gates it: on pages with no mathematics it is dead code and grouping is unchanged.
     // The envelope is measured from anchorY rather than the previous char, which may itself be a displaced numerator or radicand.
-    const mathContext = MATH_FONT_RE.test(ch.fontInfo.baseName || '')
-      || MATH_FONT_RE.test(compPrev.fontInfo.baseName || '')
-      || /^[√∛∜]$/.test(compPrev.text) || /^[√∛∜]$/.test(ch.text)
+    const mathContext = pageHasMath && (isMathFontChar(ch)
+      || isMathFontChar(compPrev)
+      || isRadicalText(compPrev.text) || isRadicalText(ch.text)
       || ch.fontSize < anchorFontSize * 0.85 || compPrev.fontSize < anchorFontSize * 0.85
-      || (fontRatio > 0.8 && fontRatio < 1.25 && Math.abs(chY - anchorY) < anchorFontSize * 0.35);
+      || (fontRatio > 0.8 && fontRatio < 1.25 && Math.abs(chY - anchorY) < anchorFontSize * 0.35));
     // 1.3 em covers built-up stacking yet stays below one line-pitch, so the first glyph of a true next line falls outside and still cuts.
     const withinEnvelope = Math.abs(chY - anchorY) < anchorFontSize * 1.3;
     // Horizontal continuity: a stacked script steps backward under the body glyph it modifies by up to ~1.5 body em, while a true line return travels many body em back to the margin and still cuts.
@@ -2945,7 +3096,8 @@ export function groupCharsIntoPage(
     let minX = Infinity;
     let maxRight = -Infinity;
     let maxFontSize = 0;
-    for (const ch of lineChars) {
+    for (let chI = 0; chI < lineChars.length; chI++) {
+      const ch = lineChars[chI];
       if (ch.x < minX) minX = ch.x;
       const r = ch.x + ch.width;
       if (r > maxRight) maxRight = r;
@@ -3018,33 +3170,39 @@ export function groupCharsIntoPage(
   const lineAnchorOf = (lineChars) => {
     let maxSize = 0;
     let anchorFamily = null;
-    for (const ch of lineChars) {
+    for (let chI = 0; chI < lineChars.length; chI++) {
+      const ch = lineChars[chI];
       if (ch.text !== ' ' && ch.fontSize > maxSize) { maxSize = ch.fontSize; anchorFamily = ch.fontInfo.familyName; }
     }
     if (maxSize === 0) return null;
-    const ys = [];
+    let nBase = 0;
     let leftX = Infinity;
     let rightX = -Infinity;
-    for (const ch of lineChars) {
+    for (let chI = 0; chI < lineChars.length; chI++) {
+      const ch = lineChars[chI];
       if (ch.text === ' ') continue;
-      if (ch.fontSize >= maxSize * 0.8) ys.push(ch._perpDist ?? ch.y);
+      if (ch.fontSize >= maxSize * 0.8) {
+        if (nBase === anchorBaselineScratch.length) { const grown = new Float64Array(nBase * 2); grown.set(anchorBaselineScratch); anchorBaselineScratch = grown; }
+        anchorBaselineScratch[nBase++] = ch._perpDist ?? ch.y;
+      }
       if (ch.x < leftX) leftX = ch.x;
       const r = ch.x + ch.width;
       if (r > rightX) rightX = r;
     }
-    if (ys.length === 0) return null;
-    ys.sort((a, b) => a - b);
+    if (nBase === 0) return null;
+    const ys = anchorBaselineScratch.subarray(0, nBase).sort();
     return {
       anchorFontSize: maxSize,
       anchorFamily,
-      baselineY: ys[Math.floor(ys.length / 2)],
+      baselineY: ys[Math.floor(nBase / 2)],
       leftX,
       rightX,
     };
   };
+  const anchors = lines.map(lineAnchorOf);
   for (let li = lines.length - 2; li >= 0; li--) {
-    const a = lineAnchorOf(lines[li]);
-    const b = lineAnchorOf(lines[li + 1]);
+    const a = anchors[li];
+    const b = anchors[li + 1];
     if (!a || !b) continue;
     const anchorSize = Math.max(a.anchorFontSize, b.anchorFontSize);
     const gap = b.leftX - a.rightX;
@@ -3071,11 +3229,12 @@ export function groupCharsIntoPage(
     if (!supBoundary) continue;
     lines[li] = [...lines[li], ...lines[li + 1]];
     lines.splice(li + 1, 1);
+    anchors[li] = lineAnchorOf(lines[li]);
+    anchors.splice(li + 1, 1);
   }
 
-  // The reattach pass below tests every candidate fragment against every other line, so each line's anchor is computed once here and kept in step with the splices.
+  // The reattach pass below tests every candidate fragment against every other line, so it reads the anchors computed above.
   // A page of numeric table cells makes thousands of lines candidates, and recomputing anchors per pair dominates the page's extraction cost.
-  const anchors = lines.map(lineAnchorOf);
 
   // Reattach out-of-order inline reference markers to the line they belong to.
   // Some generators (web print-to-PDF among them) emit a page's superscript markers, footnote numerals and reference symbols, as a trailing block at the end of the content stream.
@@ -3136,14 +3295,24 @@ export function groupCharsIntoPage(
   // Some producers emit no space glyphs and justify so tightly that word gaps fall under the 0.15 em fallback, so whole sentences would extract as one token.
   // For each such font on this page, find the empty band separating its intra-word gap cluster from its word-gap cluster and split at that per-font threshold instead.
   // The guards are what keep kerned faces (small gaps forming a continuum, not two clusters) and letter-spaced faces (all gaps wide) at the 0.15 rule.
-  /** @type {Map<string, number>} */
+  /** @type {Map<number|string, number>} */
   const wordGapThresholds = new Map();
+  /** @type {Map<string, number>} */
+  const gapFamilyIds = new Map();
+  const keyOf = (/** @type {PositionedChar} */ c) => {
+    const fam = (c.fontInfo && c.fontInfo.familyName) || '?';
+    const sz = Math.round(c.fontSize);
+    if (Number.isNaN(sz)) return `${fam}|NaN`;
+    let id = gapFamilyIds.get(fam);
+    if (id === undefined) { id = gapFamilyIds.size; gapFamilyIds.set(fam, id); }
+    return id * 4294967296 + sz;
+  };
   {
-    const keyOf = (c) => `${(c.fontInfo && c.fontInfo.familyName) || '?'}|${Math.round(c.fontSize)}`;
     const fontStats = new Map();
     for (const lineChars of lines) {
       let prevNS = null;
-      for (const c of lineChars) {
+      for (let cI = 0; cI < lineChars.length; cI++) {
+        const c = lineChars[cI];
         const k = keyOf(c);
         let st = fontStats.get(k);
         if (!st) { st = { chars: 0, spaces: 0, ratios: [] }; fontStats.set(k, st); }
@@ -3207,7 +3376,8 @@ export function groupCharsIntoPage(
           if (piece === 1) st.single++;
           piece = 0;
         };
-        for (const c of lineChars) {
+        for (let cI = 0; cI < lineChars.length; cI++) {
+          const c = lineChars[cI];
           if (c.text === ' ') { closePiece(runKey); prevNS = null; runKey = null; continue; }
           const k = keyOf(c);
           const th = wordGapThresholds.get(k);
@@ -3296,8 +3466,8 @@ export function groupCharsIntoPage(
         // Symbol fonts and symbol-block codepoints split regardless of gap: an icon or marker glued to text is still not part of the word.
         } else if (ch.fontInfo.familyName !== prevCh.fontInfo.familyName
           && (gap > fontSizeMin * 0.15
-            || isSymbolFont(ch.fontInfo)
-            || isSymbolFont(prevCh.fontInfo)
+            || isSymbolFontChar(ch)
+            || isSymbolFontChar(prevCh)
             || isSymbolChar(ch.text)
             || isSymbolChar(prevCh.text))) {
           wordsInitial.push(currentWord);
@@ -3343,7 +3513,7 @@ export function groupCharsIntoPage(
           && ch.fontInfo.familyName === prevCh.fontInfo.familyName
           && !/[-\u2010\u2011\u2013\u2014]/.test(ch.text)
           && !WORDGAP_MARK_RE.test(ch.text) && !WORDGAP_MARK_RE.test(prevCh.text)) {
-          const th = wordGapThresholds.get(`${ch.fontInfo.familyName || '?'}|${Math.round(ch.fontSize)}`);
+          const th = wordGapThresholds.get(keyOf(ch));
           if (th !== undefined && gap > ch.fontSize * th) {
             adaptiveSplitAfter.add(prevCh);
             wordsInitial.push(currentWord);
@@ -3358,7 +3528,8 @@ export function groupCharsIntoPage(
     // A line whose adaptive splits leave it mostly one-letter tokens is letter-spaced or stretch-justified, so undo exactly those splits.
     if (adaptiveSplitAfter.size > 0) {
       let single = 0;
-      for (const w of wordsInitial) {
+      for (let wI = 0; wI < wordsInitial.length; wI++) {
+        const w = wordsInitial[wI];
         if (w.length === 1 && /[A-Za-z]/.test(w[0].text)) single++;
       }
       if (single / wordsInitial.length > 0.4) {
@@ -3406,10 +3577,12 @@ export function groupCharsIntoPage(
 
     // CJK word splitting: each CJK character becomes its own word.
     const wordsAfterCJK = [];
-    for (const wordChars of wordsMerged) {
+    for (let wmI = 0; wmI < wordsMerged.length; wmI++) {
+      const wordChars = wordsMerged[wmI];
       const wordText = wordChars.map((c) => c.text).join('');
       if (calcLang(wordText) === 'chi_sim') {
-        for (const ch of wordChars) {
+        for (let chI = 0; chI < wordChars.length; chI++) {
+          const ch = wordChars[chI];
           wordsAfterCJK.push([ch]);
         }
       } else {
@@ -3624,7 +3797,8 @@ export function groupCharsIntoPage(
     // Recalculate normalBaselineY after word-level superscript detection.
     // This prevents baseline from being set based on a line-leading superscript.
     normalBaselineY = null;
-    for (const w of words) {
+    for (let wI = 0; wI < words.length; wI++) {
+      const w = words[wI];
       if (!w.sup && !w.dropcap && w.chars.length > 0) {
         normalBaselineY = w.chars[0].y;
         break;
@@ -3634,7 +3808,8 @@ export function groupCharsIntoPage(
     // A full-size "FN"+number reference (the Westlaw footnote-marker convention) never drops in size, so the size-delta tests above miss it.
     // The unambiguous "FN"+digits content plus a baseline raised above the line's normal baseline (y grows downward) marks it as a superscript reference.
     if (normalBaselineY !== null) {
-      for (const w of words) {
+      for (let wI = 0; wI < words.length; wI++) {
+        const w = words[wI];
         if (w.sup || w.dropcap || w.chars.length === 0) continue;
         if (!/^FN\d{1,3}$/.test(w.chars.map((c) => c.text).join(''))) continue;
         if (w.chars[0].y < normalBaselineY - w.chars[0].fontSize * 0.2) w.sup = true;
@@ -3651,7 +3826,8 @@ export function groupCharsIntoPage(
       if (wc.length < 2) continue;
       let maxFontSize = 0;
       let minFontSize = Infinity;
-      for (const c of wc) {
+      for (let cI = 0; cI < wc.length; cI++) {
+        const c = wc[cI];
         if (c.fontSize > maxFontSize) maxFontSize = c.fontSize;
         if (c.fontSize < minFontSize) minFontSize = c.fontSize;
       }
@@ -3690,8 +3866,10 @@ export function groupCharsIntoPage(
     // Compute line bbox from all non-superscript chars (or all chars if none are non-sup)
     const allLineChars = [];
     const nonSupChars = [];
-    for (const w of words) {
-      for (const c of w.chars) {
+    for (let wI = 0; wI < words.length; wI++) {
+      const w = words[wI];
+      for (let cI = 0; cI < w.chars.length; cI++) {
+        const c = w.chars[cI];
         allLineChars.push(c);
         if (!w.sup) nonSupChars.push(c);
       }
@@ -3702,7 +3880,8 @@ export function groupCharsIntoPage(
     let lineRight = -Infinity;
     let lineTop = Infinity;
     let lineBottom = -Infinity;
-    for (const c of bboxChars) {
+    for (let cI = 0; cI < bboxChars.length; cI++) {
+      const c = bboxChars[cI];
       const l = Math.round(c.x);
       const r = Math.round(c.x + c.width);
       const t = Math.round(c.y - (c.fontInfo.ascent / 1000) * c.fontSize);
@@ -3724,9 +3903,9 @@ export function groupCharsIntoPage(
     const lineOrientation = allLineChars[0].orientation;
     let sumDirX = 0;
     let sumDirY = 0;
-    for (const ch of bboxChars) {
-      sumDirX += ch.dirX;
-      sumDirY += ch.dirY;
+    for (let cI = 0; cI < bboxChars.length; cI++) {
+      sumDirX += bboxChars[cI].dirX;
+      sumDirY += bboxChars[cI].dirY;
     }
     const lineDirMag = Math.hypot(sumDirX, sumDirY);
     if (lineDirMag > 0) {
@@ -3878,7 +4057,8 @@ export function groupCharsIntoPage(
         // A rect extending well past the line's text on either side is a table-row divider or section rule passing under the word, not an underline.
         // The tolerance absorbs the slight overshoot real underlines get from stroke caps and trailing spaces.
         const ruleOverhangLimit = wordChars[0].fontSize * 0.5;
-        for (const rect of underlineRects) {
+        for (let rectI = 0; rectI < underlineRects.length; rectI++) {
+          const rect = underlineRects[rectI];
           if (rect.right > wordLeft && rect.left < wordRight
             && rect.y >= baselineYWord - wordChars[0].fontSize * 0.1
             && rect.y <= baselineYWord + wordChars[0].fontSize * 0.35
@@ -3890,7 +4070,7 @@ export function groupCharsIntoPage(
             if (rect.color && charColor) {
               const rectRgb = colorToRgb(rect.color);
               const charRgb = colorToRgb(charColor);
-              const rectGray = rectRgb && Math.max(...rectRgb) - Math.min(...rectRgb) < 0.1;
+              const rectGray = rectRgb && Math.max(rectRgb[0], rectRgb[1], rectRgb[2]) - Math.min(rectRgb[0], rectRgb[1], rectRgb[2]) < 0.1;
               const bothDark = rectRgb && charRgb
                 && rectRgb.every((v) => v < 0.3) && charRgb.every((v) => v < 0.3);
               if (rectRgb && charRgb && !bothDark && !rectGray

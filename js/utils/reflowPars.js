@@ -1,5 +1,5 @@
 import { OcrPar } from '../objects/ocrObjects.js';
-import { calcBboxUnion, quantile, range } from './miscUtils.js';
+import { calcBboxUnion, quantile } from './miscUtils.js';
 
 /**
  * Assigns paragraphs based on our own heuristics.
@@ -54,6 +54,32 @@ export function assignParagraphs(page, angle) {
     y2Prev = line.bbox.bottom;
   }
 
+  // Ideally, we compare the current line to the next 5 lines.
+  // When there are fewer than 5 lines after the current line, we add previous lines to the window.
+  // Previous lines must be above the current line, and next lines must be below the current line.
+  // This avoids comparing lines that are not in the same column.
+  const windowSize = 5;
+  const medianScratch = /** @type {number[]} */ ([]);
+  /**
+   * Median of `arr` over the indices [lo1, hi1] and [lo2, hi2].
+   * @param {number[]} arr
+   * @param {number} lo1
+   * @param {number} hi1
+   * @param {number} lo2
+   * @param {number} hi2
+   */
+  const windowMedian = (arr, lo1, hi1, lo2, hi2) => {
+    let n = 0;
+    const insert = (v) => {
+      let k = n++;
+      while (k > 0 && medianScratch[k - 1] > v) { medianScratch[k] = medianScratch[k - 1]; k--; }
+      medianScratch[k] = v;
+    };
+    for (let x = lo1; x <= hi1; x++) insert(arr[x]);
+    for (let x = lo2; x <= hi2; x++) insert(arr[x]);
+    return medianScratch[Math.floor(n / 2)];
+  };
+
   /**
    * Calculates expected line start and end positions based on surrounding lines.
    * If this line varies from those values, it may be the first or last line of a paragraph.
@@ -61,31 +87,24 @@ export function assignParagraphs(page, angle) {
    * @returns
    */
   const calcExpected = (lineIndex) => {
-    // Ideally, we compare the current line to the next 5 lines.
-    // When there are fewer than 5 lines after the current line, we add previous lines to the window.
-    // Previous lines must be above the current line, and next lines must be below the current line.
-    // This avoids comparing lines that are not in the same column.
-    const windowSize = 5;
-    const linesPrev = page.lines.slice(Math.max(0, lineIndex - windowSize), lineIndex).filter((x) => x.bbox.bottom <= page.lines[lineIndex].bbox.bottom);
-    const linesNext = page.lines.slice(lineIndex + 1, lineIndex + windowSize + 1).filter((x) => x.bbox.bottom >= page.lines[lineIndex].bbox.bottom);
-    const linesNextN = linesNext.length;
-    const linesPrevN = Math.min(windowSize - linesNextN, linesPrev.length);
+    const bottom = page.lines[lineIndex].bbox.bottom;
+    // These checks only size the window, so it can include lines that fail them.
+    let prevQualifying = 0;
+    for (let x = Math.max(0, lineIndex - windowSize); x < lineIndex; x++) if (page.lines[x].bbox.bottom <= bottom) prevQualifying++;
+    let linesNextN = 0;
+    for (let x = lineIndex + 1; x <= lineIndex + windowSize && x < page.lines.length; x++) if (page.lines[x].bbox.bottom >= bottom) linesNextN++;
+    const linesPrevN = Math.min(windowSize - linesNextN, prevQualifying);
+    if (!linesPrevN && !linesNextN) return null;
 
-    /** @type {Array<number>} */
-    const compIndices = [];
-    if (linesPrevN) compIndices.push(...range(lineIndex - linesPrevN, lineIndex - 1));
-    if (linesNextN) compIndices.push(...range(lineIndex + 1, lineIndex + linesNextN));
-    if (!compIndices.length) return null;
-
-    const lineLeftMedian = quantile(compIndices.map((x) => lineLeftArr[x]), 0.5);
-    const lineRightMedian = quantile(compIndices.map((x) => lineRightArr[x]), 0.5);
-    const lineWidthMedian = quantile(compIndices.map((x) => lineWidthArr[x]), 0.5);
-    const lineSpaceMedian = quantile(compIndices.map((x) => lineSpaceArr[x]), 0.5);
-
-    if (lineLeftMedian === null || lineRightMedian === null || lineWidthMedian === null || lineSpaceMedian === null) return null;
-
+    const lo1 = lineIndex - linesPrevN;
+    const hi1 = lineIndex - 1;
+    const lo2 = lineIndex + 1;
+    const hi2 = lineIndex + linesNextN;
     return {
-      lineLeftMedian, lineRightMedian, lineWidthMedian, lineSpaceMedian,
+      lineLeftMedian: windowMedian(lineLeftArr, lo1, hi1, lo2, hi2),
+      lineRightMedian: windowMedian(lineRightArr, lo1, hi1, lo2, hi2),
+      lineWidthMedian: windowMedian(lineWidthArr, lo1, hi1, lo2, hi2),
+      lineSpaceMedian: windowMedian(lineSpaceArr, lo1, hi1, lo2, hi2),
     };
   };
 

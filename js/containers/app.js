@@ -34,9 +34,9 @@ export class opt {
 
   /**
    * Share the loaded PDF across PDF workers via `SharedArrayBuffer` instead of giving each worker its own clone.
-   * Only supported within specific environments (e.g. Chrome with COOP/COEP headers, Node with worker threads and shared memory enabled).
+   * In browsers it takes effect only on a cross-origin-isolated page.
    */
-  static usePdfSharedBuffer = false;
+  static usePdfSharedBuffer = typeof process !== 'undefined' && !!process.versions?.node;
 
   static dev = { disableGPU: false, forceGPU: false };
 

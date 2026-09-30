@@ -29,8 +29,10 @@ export function extractTableContent(pageObj, layoutObj) {
  * @param {OcrPage} pageObj
  * @param {Array<import('./objects/layoutObjects.js').LayoutBoxBase>} boxes
  * @param {?Array<number>} [rowBounds=null] - Bottom y-coordinate of each row. When provided, used for row assignment instead of spatial derivation.
+ * @param {{maxRows?: number}} [opts] - `maxRows` limits the result to that many leading rows of a full extraction.
  */
-export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
+export function extractSingleTableContent(pageObj, boxes, rowBounds = null, opts = {}) {
+  const maxRows = opts.maxRows ?? Infinity;
   /** @type {Array<OcrWord>} */
   const wordArr = [];
   /** @type {Array<bbox>} */
@@ -51,12 +53,17 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
   // Unlike when exporting to text, anything not in a rectangle is excluded by default
   // priorityArr.fill(boxesArr.length+1);
 
+  // When the page angle is within 0.05 degrees of zero, `rotateLine` is a no-op, so the original bbox can be tested before cloning.
+  const unrotated = Math.abs(pageObj.angle) <= 0.05;
+  const outsideTable = (/** @type {bbox} */ b) => b.left > tableBox.right || b.right < tableBox.left || b.top > tableBox.bottom || b.bottom < tableBox.top;
+
   for (let i = 0; i < pageObj.lines.length; i++) {
+    if (unrotated && outsideTable(pageObj.lines[i].bbox)) continue;
     const lineObj = ocr.cloneLine(pageObj.lines[i]);
     ocr.rotateLine(lineObj, pageObj.angle * -1, pageObj.dims);
 
     // Skip lines that are entirely outside the table
-    if (lineObj.bbox.left > tableBox.right || lineObj.bbox.right < tableBox.left || lineObj.bbox.top > tableBox.bottom || lineObj.bbox.bottom < tableBox.top) continue;
+    if (outsideTable(lineObj.bbox)) continue;
 
     // First, check for overlap with line-level boxes.
     let boxFoundLine = false;
@@ -140,7 +147,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
   const rowBottomArr = [];
 
   if (rowBounds) {
-    for (let r = 0; r < rowBounds.length; r++) {
+    for (let r = 0; r < rowBounds.length && r < maxRows; r++) {
       /** @type {Array<Array<OcrWord>>} */
       const colWordArr = [];
       for (let i = 0; i < colArr.length; i++) {
@@ -172,7 +179,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null) {
     // Next, the first unassigned line in each column is checked for whether it belongs in the new row.
     // This is necessary as a "line" in HOCR does not necessarily correspond to a visual line--
     // multiple HOCR "lines" may have the same visual baseline so belong in the same cell.
-    while (!indexArr.every((x, index) => x === lengthArr[index])) {
+    while (rowWordArr.length < maxRows && !indexArr.every((x, index) => x === lengthArr[index])) {
       // The opening word skips the center test, which a zero-height box fails, so every pass advances.
       let openCol = -1;
       for (let i = 0; i < colArr.length; i++) {
@@ -291,13 +298,14 @@ export function createTablesFromText(pageNum, tables, ocrPage) {
  * @param {import('./objects/layoutObjects.js').LayoutDataTablePage} layoutPage
  * @param {Object} [opts]
  * @param {boolean} [opts.cellFormats=false] - Return rich `TableCellRich` cells carrying word formatting instead of plain strings.
+ * @param {number} [opts.maxRows] - Return only this many rows from the top of each table.
  */
 export function extractTextFromTables(ocrPage, layoutPage, opts = {}) {
   if (!layoutPage?.tables?.length) return [];
   if (!ocrPage) return [];
 
   return layoutPage.tables.map((table) => {
-    const result = extractSingleTableContent(ocrPage, Object.values(table.boxes), table.rowBounds);
+    const result = extractSingleTableContent(ocrPage, Object.values(table.boxes), table.rowBounds, { maxRows: opts.maxRows });
     const rows = result.rowWordArr.map((row) => row.map((col) => {
       if (!col || col.length === 0) return opts.cellFormats ? { text: '', runs: [] } : '';
       col.sort((a, b) => a.bbox.left - b.bbox.left);

@@ -172,9 +172,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
   /** @type {?Uint8Array} */
   let scribeBytes = null;
   if (scribeFile instanceof ArrayBuffer) scribeBytes = new Uint8Array(scribeFile);
-  // @ts-ignore - `fileData` is not on the parameter's declared union.
-  else if (scribeFile?.fileData instanceof Uint8Array) scribeBytes = scribeFile.fileData;
-  else if (typeof File !== 'undefined' && scribeFile instanceof File) scribeBytes = new Uint8Array(await scribeFile.arrayBuffer());
+  else if (typeof scribeFile !== 'string' && typeof scribeFile.arrayBuffer === 'function') scribeBytes = new Uint8Array(await scribeFile.arrayBuffer());
 
   /** @type {ScribeSaveData} */
   let scribeRestoreObj;

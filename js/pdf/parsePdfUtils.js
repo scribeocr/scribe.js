@@ -924,11 +924,28 @@ export function findFormXObjects(containerObjText, objCache, imagesOut) {
   return forms;
 }
 
+// These caches go stale if a PDF's bytes are modified in place.
+/** @type {WeakMap<Uint8Array, ?number>} */
+const rootObjNumCache = new WeakMap();
+/** @type {WeakMap<Uint8Array, ?number>} */
+const infoObjNumCache = new WeakMap();
+
 /**
  * Find the /Root (Catalog) object number from the PDF trailer.
  * @param {Uint8Array} pdfBytes
  */
 export function findRootObjNum(pdfBytes) {
+  const hit = rootObjNumCache.get(pdfBytes);
+  if (hit !== undefined || rootObjNumCache.has(pdfBytes)) return hit ?? null;
+  const found = findRootObjNumUncached(pdfBytes);
+  rootObjNumCache.set(pdfBytes, found);
+  return found;
+}
+
+/**
+ * @param {Uint8Array} pdfBytes
+ */
+function findRootObjNumUncached(pdfBytes) {
   const len = pdfBytes.length;
   const startxrefIdx = byteLastIndexOf(pdfBytes, 'startxref');
   if (startxrefIdx === -1) return null;
@@ -984,6 +1001,18 @@ export function findRootObjNum(pdfBytes) {
  * @returns {number|null}
  */
 export function findInfoObjNum(pdfBytes) {
+  const hit = infoObjNumCache.get(pdfBytes);
+  if (hit !== undefined || infoObjNumCache.has(pdfBytes)) return hit ?? null;
+  const found = findInfoObjNumUncached(pdfBytes);
+  infoObjNumCache.set(pdfBytes, found);
+  return found;
+}
+
+/**
+ * @param {Uint8Array} pdfBytes
+ * @returns {number|null}
+ */
+function findInfoObjNumUncached(pdfBytes) {
   const len = pdfBytes.length;
   const startxrefIdx = byteLastIndexOf(pdfBytes, 'startxref');
   if (startxrefIdx === -1) return null;

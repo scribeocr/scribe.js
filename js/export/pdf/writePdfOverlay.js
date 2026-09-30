@@ -40,7 +40,7 @@ import { substituteFaceOutputObjects, recordFaceTag } from '../../pdf/substitute
  * The output is an incremental update when possible, and a full rebuild when the source or the requested output demands it.
  *
  * @param {Object} params
- * @param {ArrayBuffer} params.basePdfData
+ * @param {ArrayBuffer | Uint8Array} params.basePdfData - Read in place, never written to.
  * @param {Array<OcrPage>} params.ocrArr - OCR data for each page (indexed to match `basePdfData`).
  * @param {?Array<OcrPage>} [params.annotationOcrArr=null] - OCR geometry used for highlight consolidation, since `ocrArr` can be emptied for clean text-native pages.
  *   Falls back to `ocrArr` when null.
@@ -99,7 +99,7 @@ export async function overlayPdfText({
   docInfo = null,
   flattenFormFields = false,
 }) {
-  const pdfBytes = new Uint8Array(basePdfData);
+  const pdfBytes = basePdfData instanceof Uint8Array ? basePdfData : new Uint8Array(basePdfData);
 
   // Step 1: Parse the base PDF structure
   const xrefOffset = findXrefOffset(pdfBytes);
@@ -619,7 +619,11 @@ export async function overlayPdfText({
     }
   }
 
-  if (allNewObjects.length === 0) return basePdfData;
+  if (allNewObjects.length === 0) {
+    // The returned PDF must not alias the worker pool's shared memory.
+    if (typeof SharedArrayBuffer !== 'undefined' && pdfBytes.buffer instanceof SharedArrayBuffer) return pdfBytes.slice();
+    return basePdfData;
+  }
 
   /** @type {(string | Uint8Array)[]} */
   const appendParts = [];

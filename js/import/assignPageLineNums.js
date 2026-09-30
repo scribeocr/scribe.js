@@ -1,4 +1,5 @@
 import { leadingLineNumber, clusterPeaks } from './analyzeLayout.js';
+import { median } from '../utils/miscUtils.js';
 
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
 /** @typedef {import('../objects/ocrObjects.js').OcrLine} OcrLine */
@@ -603,11 +604,4 @@ function bandOf(home, single, docFoot) {
   // Otherwise a foot band is read only on a single-region page, so a sheet's own footer never labels a mini-page.
   if (home.foot && single) return { region: home.foot, band: 'foot' };
   return null;
-}
-
-/** @param {Array<number>} arr */
-function median(arr) {
-  const s = arr.slice().sort((a, b) => a - b);
-  if (!s.length) return 0;
-  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
 }

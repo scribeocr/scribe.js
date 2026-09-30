@@ -1,7 +1,7 @@
 // Resolves the test-asset and Tesseract trained-data paths for whichever
 // environment the test is running in. In the browser, scribe.importFiles
 // fetches URLs relative to the dev-server origin; in Node, scribe's
-// wrapFilesNode uses fs.readFileSync against absolute filesystem paths.
+// wrapFilesNode takes absolute filesystem paths.
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /** @type {string} */

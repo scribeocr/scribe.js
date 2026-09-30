@@ -8,7 +8,7 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
-import { initPdfScheduler } from '../pdfWorkerMain.js';
+import { initPdfScheduler, PdfScheduler } from '../pdfWorkerMain.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { SKIPPED } from '../../tess/TessScheduler.js';
 import { ca } from '../canvasAdapter.js';
@@ -50,6 +50,31 @@ function canUseSharedArrayBuffer() {
 }
 
 /**
+ * @param {import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess} scheduler
+ */
+function poolCanShare(scheduler) {
+  return scheduler instanceof PdfScheduler && scheduler.workers.length > 0 && canUseSharedArrayBuffer();
+}
+
+/**
+ * The bytes to hand a scheduler's `loadPdfInAllWorkers`.
+ * @param {ArrayBuffer | Uint8Array} pdfData
+ * @param {boolean} usePdfSharedBuffer
+ * @param {import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess} scheduler
+ * @returns {Uint8Array}
+ */
+function pdfBytesForScheduler(pdfData, usePdfSharedBuffer, scheduler) {
+  const bytes = pdfData instanceof Uint8Array ? pdfData : new Uint8Array(pdfData);
+  if (typeof SharedArrayBuffer !== 'undefined' && bytes.buffer instanceof SharedArrayBuffer) return bytes;
+  if (usePdfSharedBuffer && poolCanShare(scheduler)) {
+    const shared = new Uint8Array(new SharedArrayBuffer(bytes.byteLength));
+    shared.set(bytes);
+    return shared;
+  }
+  return bytes;
+}
+
+/**
  * @typedef {Object} ImageProperties
  * @property {boolean} [rotated]
  * @property {boolean} [upscaled]
@@ -79,7 +104,11 @@ export class RenderSource {
   /** @type {'pdf'} Kind of origin. Image-input pages are self-contained (their blob rides in `nativeSrc`) and never use a source. */
   kind = 'pdf';
 
-  /** @type {?ArrayBuffer} Original PDF bytes; used to (re)load the pool and, on export, to subset this source's pages. */
+  /**
+   * Original PDF bytes.
+   * It can alias the worker pool's shared memory, so it must never be written to.
+   * @type {?(ArrayBuffer | Uint8Array)}
+   */
   pdfData = null;
 
   /**
@@ -126,16 +155,7 @@ export class RenderSource {
     if (!this.#schedulerReady) {
       const spawn = initPdfScheduler(this.workerN ?? undefined).then(async (s) => {
         if (this.#reloadOnWake && this.pdfData) {
-          // Mirrors openMainPDF's buffer choice so an SAB-enabled embedder keeps sharing after a wake.
-          let pdfBytes;
-          if (opt.usePdfSharedBuffer && canUseSharedArrayBuffer()) {
-            const sab = new SharedArrayBuffer(this.pdfData.byteLength);
-            pdfBytes = new Uint8Array(sab);
-            pdfBytes.set(new Uint8Array(this.pdfData));
-          } else {
-            pdfBytes = new Uint8Array(this.pdfData);
-          }
-          await s.loadPdfInAllWorkers(pdfBytes);
+          await s.loadPdfInAllWorkers(pdfBytesForScheduler(this.pdfData, opt.usePdfSharedBuffer, s));
           this.#reloadOnWake = false;
         }
         this.scheduler = s;
@@ -1033,7 +1053,7 @@ export class ImageStore {
   };
 
   /**
-   * @param {ArrayBuffer | Uint8Array | Blob} fileData
+   * @param {ArrayBuffer | Uint8Array | Blob | import('../import/nodeAdapter.js').FileNode} fileData
    * @param {Object} [options]
    * @param {boolean} [options.usePdfSharedBuffer] - Share the loaded PDF across PDF workers via
    *    SharedArrayBuffer instead of cloning per worker. Defaults to `opt.usePdfSharedBuffer`.
@@ -1043,35 +1063,24 @@ export class ImageStore {
     const usePdfSharedBuffer = options.usePdfSharedBuffer ?? opt.usePdfSharedBuffer;
     if (options.pdfWorkerN) this.#ensurePrimarySource().workerN = options.pdfWorkerN;
 
-    /** @type {ArrayBuffer} */
-    let arrayBuffer;
-    if (fileData instanceof ArrayBuffer) {
-      arrayBuffer = fileData;
-    } else if (typeof fileData.arrayBuffer === 'function') {
-      arrayBuffer = await fileData.arrayBuffer();
-    } else {
-      arrayBuffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
-    }
-    this.pdfData = arrayBuffer;
-
-    /** @type {Uint8Array} */
-    let pdfBytes;
-    if (usePdfSharedBuffer && canUseSharedArrayBuffer()) {
-      // Allocate a SharedArrayBuffer once; all workers will receive a view
-      // over this same buffer via postMessage (SAB is shared, not cloned).
-      const sab = new SharedArrayBuffer(arrayBuffer.byteLength);
-      pdfBytes = new Uint8Array(sab);
-      pdfBytes.set(new Uint8Array(arrayBuffer));
-    } else {
-      pdfBytes = new Uint8Array(arrayBuffer);
-    }
-
-    // Initialize dedicated PDF workers and load the PDF into all of them.
-    // Each worker creates its own ObjectCache and page tree.
     const pdfScheduler = await this.getPdfScheduler();
+
+    /** @type {ArrayBuffer | Uint8Array} */
+    let pdfData;
+    if (usePdfSharedBuffer && poolCanShare(pdfScheduler) && 'sharedBytes' in fileData && typeof fileData.sharedBytes === 'function') {
+      pdfData = await fileData.sharedBytes();
+    } else if (fileData instanceof ArrayBuffer) {
+      pdfData = fileData;
+    } else if (typeof fileData.arrayBuffer === 'function') {
+      pdfData = await fileData.arrayBuffer();
+    } else {
+      pdfData = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
+    }
+    this.pdfData = pdfData;
+
     const {
       pageCount, pages, outline, attachments,
-    } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
+    } = await pdfScheduler.loadPdfInAllWorkers(pdfBytesForScheduler(pdfData, usePdfSharedBuffer, pdfScheduler));
 
     this.pageCount = pageCount;
     this.#ensurePrimarySource().sourcePageCount = pageCount;

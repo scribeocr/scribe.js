@@ -17,6 +17,149 @@ import { getCIDToUnicodeMap } from './cidToUnicode.js';
 import { cffStandardEncoding, standardNames } from '../../font-parser/src/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
+const identityShiftChecked = new WeakSet();
+
+const LAZY_BFRANGE_MIN = 4096;
+
+const TOUNICODE_CMAP_CACHE_MAX = 64;
+
+/**
+ * A font's code-to-text map.
+ * Reads match a plain `Map` holding one entry per code, iteration order included.
+ * A long single-destination `bfrange` run stays an arithmetic range rather than one entry per code.
+ * `delete` does not remove a code a range defines.
+ * @extends {Map<number, string>}
+ */
+export class ToUnicodeMap extends Map {
+  /** @type {Array<{ start: number, end: number, valueAt: (code: number) => (string|undefined), definedCount: number, keysBefore: number, values: Array<string|null|undefined> }>} */
+  #ranges = [];
+
+  /**
+   * @param {number} start
+   * @param {number} end
+   * @param {(code: number) => (string|undefined)} valueAt
+   * @param {number} definedCount
+   * @returns {boolean} False means it was not added, so the caller must expand it.
+   */
+  addRange(start, end, valueAt, definedCount) {
+    // Reads prefer explicit entries and earlier ranges over this one, but eager expansion would let this range overwrite them, so an overlapping range must be expanded instead.
+    for (const k of super.keys()) if (k >= start && k <= end) return false;
+    for (const r of this.#ranges) if (start <= r.end && end >= r.start) return false;
+    this.#ranges.push({
+      start, end, valueAt, definedCount, keysBefore: super.size, values: new Array(end - start + 1),
+    });
+    return true;
+  }
+
+  /**
+   * @param {{ start: number, valueAt: (code: number) => (string|undefined), values: Array<string|null|undefined> }} r
+   * @param {number} code
+   * @returns {string|null}
+   */
+  static #valueOf(r, code) {
+    let v = r.values[code - r.start];
+    if (v === undefined) {
+      v = r.valueAt(code) ?? null;
+      r.values[code - r.start] = v;
+    }
+    return v;
+  }
+
+  /**
+   * @param {number} code
+   * @returns {string|null|undefined} The range value, null where the expansion stored nothing, undefined outside every range.
+   */
+  #rangeValue(code) {
+    for (let i = 0; i < this.#ranges.length; i++) {
+      const r = this.#ranges[i];
+      if (code >= r.start && code <= r.end) return ToUnicodeMap.#valueOf(r, code);
+    }
+    return undefined;
+  }
+
+  /** @param {number} code */
+  get(code) {
+    const own = super.get(code);
+    return own !== undefined ? own : (this.#rangeValue(code) ?? undefined);
+  }
+
+  /** @param {number} code */
+  has(code) {
+    return super.has(code) || typeof this.#rangeValue(code) === 'string';
+  }
+
+  get size() {
+    if (this.#ranges.length === 0) return super.size;
+    let n = super.size;
+    for (const r of this.#ranges) n += r.definedCount;
+    for (const k of super.keys()) if (typeof this.#rangeValue(k) === 'string') n--;
+    return n;
+  }
+
+  /** Entries in first-insertion order. */
+  * entries() {
+    if (this.#ranges.length === 0) { yield* super.entries(); return; }
+    const explicit = [...super.entries()];
+    let ei = 0;
+    const overridden = explicit.length > 0;
+    for (const r of this.#ranges) {
+      for (; ei < r.keysBefore; ei++) if (typeof this.#rangeValue(explicit[ei][0]) !== 'string') yield explicit[ei];
+      for (let code = r.start; code <= r.end; code++) {
+        const v = ToUnicodeMap.#valueOf(r, code);
+        if (v === null) continue;
+        const own = overridden ? super.get(code) : undefined;
+        yield /** @type {[number, string]} */ ([code, own !== undefined ? own : v]);
+      }
+    }
+    for (; ei < explicit.length; ei++) if (typeof this.#rangeValue(explicit[ei][0]) !== 'string') yield explicit[ei];
+  }
+
+  * keys() {
+    if (this.#ranges.length === 0) { yield* super.keys(); return; }
+    for (const [k] of this.entries()) yield k;
+  }
+
+  * values() { for (const [, v] of this.entries()) yield v; }
+
+  [Symbol.iterator]() { return this.entries(); }
+
+  /**
+   * @param {(value: string, key: number, map: Map<number, string>) => void} cb
+   * @param {any} [thisArg]
+   */
+  forEach(cb, thisArg) { for (const [k, v] of this.entries()) cb.call(thisArg, v, k, this); }
+
+  /** A copy with its own explicit entries that shares this map's ranges and their value caches. */
+  clone() {
+    const copy = new ToUnicodeMap();
+    copy.#ranges = this.#ranges.slice();
+    for (const [k, v] of super.entries()) copy.set(k, v);
+    return copy;
+  }
+
+  clear() {
+    super.clear(); this.#ranges = [];
+  }
+}
+
+/**
+ * The parsed form of a ToUnicode CMap, cached per document.
+ * @param {string} cmapText
+ * @param {import('../objectCache.js').ObjectCache} objCache
+ * @returns {ToUnicodeMap} Shared by every font using this CMap, so a caller takes a `clone()` and never writes to it.
+ */
+function parsedToUnicodeCMap(cmapText, objCache) {
+  const cache = objCache.toUnicodeCMapCache;
+  let parsed = cache.get(cmapText);
+  if (parsed === undefined) {
+    parsed = new ToUnicodeMap();
+    parseToUnicodeCMap(cmapText, parsed);
+    if (cache.size >= TOUNICODE_CMAP_CACHE_MAX) cache.delete(cache.keys().next().value);
+    cache.set(cmapText, parsed);
+  }
+  return parsed;
+}
+
 // Half-font-unit lattices in em, for the unitsPerEm values fonts use (2048, 1000, 256, 1024, 512, 4096).
 // Their least common multiple makes a coordinate snapped to any of them an integer count of 1/1024000 em.
 const GLYPH_LATTICES = [4096, 2000, 512, 2048, 1024, 8192];
@@ -879,7 +1022,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     let stemV = null;
 
     // Parse ToUnicode CMap — can be an indirect reference (N 0 R) or a name (/Identity-H)
-    const toUnicode = new Map();
+    let toUnicode = new ToUnicodeMap();
     let toUnicodeIsIdentity = false;
     const touRefMatch = /\/ToUnicode\s+(\d+)\s+\d+\s+R/.exec(fontObj);
     const touNameMatch = !touRefMatch && /\/ToUnicode\s*\/Identity-H/.exec(fontObj);
@@ -887,7 +1030,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const cmapBytes = objCache.getStreamBytes(Number(touRefMatch[1]));
       if (cmapBytes) {
         const cmapText = new TextDecoder('latin1').decode(cmapBytes);
-        parseToUnicodeCMap(cmapText, toUnicode);
+        toUnicode = parsedToUnicodeCMap(cmapText, objCache).clone();
       }
     } else if (touNameMatch) {
       // /ToUnicode /Identity-H means charCodes are Unicode codepoints directly.
@@ -2409,7 +2552,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   };
 
   // Some producers write identity-mapped ToUnicode entries where glyph-name lookup failed, even when the rest of the CMap follows a consistent non-zero shift.
+  // Rescanning a 65,536-entry OCR font shared by every page would dominate font parsing.
   for (const [, font] of fonts) {
+    if (identityShiftChecked.has(font)) continue;
+    identityShiftChecked.add(font);
     if (font.toUnicode.size < 10) continue;
     if (font.type1 || font.type3) continue;
     /** @type {Array<[number, number]>} sorted [charCode, codepoint] */
@@ -2534,7 +2680,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
  * @param {string} cmapText
  * @param {Map<number, string>} map
  */
-function parseToUnicodeCMap(cmapText, map) {
+export function parseToUnicodeCMap(cmapText, map) {
   const isOnlyReplacementChars = (s) => {
     if (s.length === 0) return false;
     for (let i = 0; i < s.length; i++) {
@@ -2580,6 +2726,43 @@ function parseToUnicodeCMap(cmapText, map) {
     }
   }
 
+  /**
+   * Add one run of `<start> <end> <dst>` entries to `map`.
+   * @param {number} cidStart
+   * @param {number} cidEnd
+   * @param {string} prefix
+   * @param {number} firstCp
+   */
+  const emitRun = (cidStart, cidEnd, prefix, firstCp) => {
+    const rangeLen = cidEnd - cidStart + 1;
+    if (rangeLen > LAZY_BFRANGE_MIN && map instanceof ToUnicodeMap) {
+      const valueAt = (/** @type {number} */ cid) => {
+        const cp = firstCp + (cid - cidStart);
+        if (cp > 0x10FFFF || cp === 0xFFFD) return undefined;
+        return decodeC1(prefix + String.fromCodePoint(cp));
+      };
+      const lastValid = Math.min(firstCp + rangeLen - 1, 0x10FFFF);
+      let definedCount = Math.max(0, lastValid - firstCp + 1);
+      if (firstCp <= 0xFFFD && lastValid >= 0xFFFD) definedCount--;
+      if (map.addRange(cidStart, cidEnd, valueAt, definedCount)) return;
+    }
+    let lastCp = firstCp;
+    for (let cid = cidStart; cid <= cidEnd; cid++) {
+      if (lastCp <= 0x10FFFF && lastCp !== 0xFFFD) {
+        map.set(cid, decodeC1(prefix + String.fromCodePoint(lastCp)));
+      }
+      lastCp++;
+    }
+  };
+
+  // Entries that continue the previous one merge into one run because Acrobat writes an identity map as 256 ranges of 256 codes, each too short to be kept as a range on its own.
+  /** @type {?{ start: number, end: number, prefix: string, firstCp: number }} */
+  let run = null;
+  const flushRun = () => {
+    if (run) emitRun(run.start, run.end, run.prefix, run.firstCp);
+    run = null;
+  };
+
   const bfrangeRegex = /beginbfrange\s*([\s\S]*?)endbfrange/g;
   const bfrangeMatches = [...cmapText.matchAll(bfrangeRegex)];
   for (const bfm of bfrangeMatches) {
@@ -2597,15 +2780,20 @@ function parseToUnicodeCMap(cmapText, map) {
         if (dstStr.length > 0 && !isOnlyReplacementChars(dstStr)) {
           const dstCps = [...dstStr];
           const prefix = dstCps.slice(0, -1).join('');
-          let lastCp = dstCps[dstCps.length - 1].codePointAt(0) ?? 0;
-          for (let cid = cidStart; cid <= cidEnd; cid++) {
-            if (lastCp <= 0x10FFFF && lastCp !== 0xFFFD) {
-              map.set(cid, decodeC1(prefix + String.fromCodePoint(lastCp)));
-            }
-            lastCp++;
+          const firstCp = dstCps[dstCps.length - 1].codePointAt(0) ?? 0;
+          if (run && run.prefix === prefix && cidStart === run.end + 1 && firstCp === run.firstCp + (run.end - run.start + 1)) {
+            run.end = cidEnd;
+            continue;
           }
+          flushRun();
+          run = {
+            start: cidStart, end: cidEnd, prefix, firstCp,
+          };
+        } else {
+          flushRun();
         }
       } else if (entry[3] !== undefined) {
+        flushRun();
         // Array form: <start> <end> [<u1> <u2> ...]
         const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f]+)>/g)];
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
@@ -2616,6 +2804,7 @@ function parseToUnicodeCMap(cmapText, map) {
       }
     }
   }
+  flushRun();
 }
 
 /**

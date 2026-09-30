@@ -1221,7 +1221,8 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     let rMaxX = -Infinity;
     let rMinY = Infinity;
     let rMaxY = -Infinity;
-    for (const c of cmds) {
+    for (let cI = 0; cI < cmds.length; cI++) {
+      const c = cmds[cI];
       if (c.type === 'Z') continue;
       if (c.x < rMinX) rMinX = c.x; if (c.x > rMaxX) rMaxX = c.x;
       if (c.y < rMinY) rMinY = c.y; if (c.y > rMaxY) rMaxY = c.y;
@@ -1783,9 +1784,11 @@ function mergeCollinearSegments(segments, posKey, startKey, endKey, tolerance, g
 
   // Group by position
   const groups = [];
-  for (const seg of segments) {
+  for (let segI = 0; segI < segments.length; segI++) {
+    const seg = segments[segI];
     let added = false;
-    for (const group of groups) {
+    for (let groupI = 0; groupI < groups.length; groupI++) {
+      const group = groups[groupI];
       if (Math.abs(seg[posKey] - group.pos) <= tolerance) {
         group.segs.push(seg);
         added = true;
@@ -1798,7 +1801,8 @@ function mergeCollinearSegments(segments, posKey, startKey, endKey, tolerance, g
   }
 
   const result = [];
-  for (const group of groups) {
+  for (let groupI = 0; groupI < groups.length; groupI++) {
+    const group = groups[groupI];
     // Sort by start position
     group.segs.sort((a, b) => a[startKey] - b[startKey]);
 
@@ -1867,7 +1871,8 @@ function reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, 
   // Process vertical candidates
   if (vCandidates.length >= 5) {
     const groups = groupByPosition(vCandidates, 'x', 2);
-    for (const group of groups) {
+    for (let groupI = 0; groupI < groups.length; groupI++) {
+      const group = groups[groupI];
       if (group.length < 5) continue;
       group.sort((a, b) => a.y1 - b.y1);
       const gaps = [];
@@ -1893,7 +1898,8 @@ function reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, 
   // Process horizontal candidates
   if (hCandidates.length >= 5) {
     const groups = groupByPosition(hCandidates, 'y', 2);
-    for (const group of groups) {
+    for (let groupI = 0; groupI < groups.length; groupI++) {
+      const group = groups[groupI];
       if (group.length < 5) continue;
       group.sort((a, b) => a.x1 - b.x1);
       const gaps = [];
@@ -1921,7 +1927,8 @@ function groupByPosition(items, posKey, tolerance) {
   const groups = [];
   for (const item of items) {
     let added = false;
-    for (const group of groups) {
+    for (let groupI = 0; groupI < groups.length; groupI++) {
+      const group = groups[groupI];
       if (Math.abs(item[posKey] - group[0][posKey]) <= tolerance) {
         group.push(item);
         added = true;
@@ -2174,7 +2181,8 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
 
     /** @type {Array<{x0: number, x1: number, y0: number, y1: number, curved: boolean}>} */
     const subBoxes = [];
-    for (const c of cmds) {
+    for (let cI = 0; cI < cmds.length; cI++) {
+      const c = cmds[cI];
       if (c.type === 'Z') continue;
       if (c.type === 'M') {
         subBoxes.push({
@@ -2184,13 +2192,16 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       }
       const b = subBoxes[subBoxes.length - 1];
       if (!b) continue;
-      if (c.type === 'C') b.curved = true;
-      for (const [px, py] of c.type === 'C' ? [[c.x1, c.y1], [c.x2, c.y2], [c.x, c.y]] : [[c.x, c.y]]) {
-        if (px < b.x0) b.x0 = px;
-        if (px > b.x1) b.x1 = px;
-        if (py < b.y0) b.y0 = py;
-        if (py > b.y1) b.y1 = py;
+      // Unrolled because a point array per command would be this pass's largest allocation on vector pages.
+      if (c.type === 'C') {
+        b.curved = true;
+        if (c.x1 < b.x0) b.x0 = c.x1; if (c.x1 > b.x1) b.x1 = c.x1;
+        if (c.y1 < b.y0) b.y0 = c.y1; if (c.y1 > b.y1) b.y1 = c.y1;
+        if (c.x2 < b.x0) b.x0 = c.x2; if (c.x2 > b.x1) b.x1 = c.x2;
+        if (c.y2 < b.y0) b.y0 = c.y2; if (c.y2 > b.y1) b.y1 = c.y2;
       }
+      if (c.x < b.x0) b.x0 = c.x; if (c.x > b.x1) b.x1 = c.x;
+      if (c.y < b.y0) b.y0 = c.y; if (c.y > b.y1) b.y1 = c.y;
     }
     const thinH = subBoxes.length >= 2 && subBoxes.every((b) => !b.curved && b.y1 - b.y0 < 2)
       && Math.max(...subBoxes.map((b) => (b.y0 + b.y1) / 2)) - Math.min(...subBoxes.map((b) => (b.y0 + b.y1) / 2)) <= 1;
@@ -2290,7 +2301,8 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
         pts = [];
         minX = Infinity; maxX = -Infinity; minY = Infinity; maxY = -Infinity;
       };
-      for (const c of cmds) {
+      for (let cI = 0; cI < cmds.length; cI++) {
+        const c = cmds[cI];
         if (c.type === 'Z') continue;
         if (c.type === 'M') emitSubpath();
         pts.push({ x: c.x, y: c.y });
@@ -2307,9 +2319,11 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
   const mergeAbutting = (pieces) => {
     /** @type {Array<{pos: number, segs: typeof pieces}>} */
     const groups = [];
-    for (const piece of pieces) {
+    for (let pieceI = 0; pieceI < pieces.length; pieceI++) {
+      const piece = pieces[pieceI];
       let group = null;
-      for (const g of groups) {
+      for (let gI = 0; gI < groups.length; gI++) {
+        const g = groups[gI];
         if (Math.abs(piece.pos - g.pos) <= 0.5) { group = g; break; }
       }
       if (!group) { group = { pos: piece.pos, segs: [] }; groups.push(group); }
@@ -2317,7 +2331,8 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     }
     /** @type {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKeys: Set<number>}>} */
     const runs = [];
-    for (const g of groups) {
+    for (let gI = 0; gI < groups.length; gI++) {
+      const g = groups[gI];
       g.segs.sort((a, b) => a.start - b.start);
       /** @type {typeof runs} */
       const groupRuns = [];

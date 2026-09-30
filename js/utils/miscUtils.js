@@ -118,6 +118,17 @@ export function quantile(arr, ntile) {
 }
 
 /**
+ * Statistical median of `arr`.
+ * Not interchangeable with `quantile(arr, 0.5)`, which returns the upper of the two middle values when the count is even and `null` when empty.
+ * @param {Array<number>} arr
+ */
+export function median(arr) {
+  const s = arr.slice().sort((a, b) => a - b);
+  if (!s.length) return 0;
+  return s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2;
+}
+
+/**
  * Normalize a heading line for an exact equality test against an outline bookmark title.
  * @param {string} s
  * @returns {string}
@@ -233,26 +244,14 @@ export async function readOcrFile(file) {
   // Any string is assumed to be the file contents.
   if (typeof file === 'string') return file;
 
-  // The `globalThis.File` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
-  if (globalThis.File && file instanceof File) {
+  if (file && typeof file.arrayBuffer === 'function') {
     // Check for gzip magic bytes instead of relying on filename
-    const arrayBuffer = await file.arrayBuffer();
-    const fileUint8Array = new Uint8Array(arrayBuffer);
+    const fileUint8Array = new Uint8Array(await file.arrayBuffer());
     const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
-    if (isGzipped) return new TextDecoder('utf-8').decode(await gunzipBytes(fileUint8Array));
-    const decoder = new TextDecoder('utf-8');
-    return decoder.decode(arrayBuffer);
+    return new TextDecoder('utf-8').decode(isGzipped ? await gunzipBytes(fileUint8Array) : fileUint8Array);
   }
 
-  if (typeof process !== 'undefined') {
-    if (!file?.fileData?.toString) throw new Error('Invalid input. Must be a FileNode, ArrayBuffer, or string.');
-    const buf = file.fileData;
-    // Decompress gzipped data (e.g. a compressed `.scribe`), detected by magic bytes as in the branches above.
-    if (buf[0] === 0x1F && buf[1] === 0x8B) return new TextDecoder('utf-8').decode(await gunzipBytes(buf));
-    // @ts-ignore
-    return buf.toString();
-  }
-  throw new Error('Invalid input. Must be a File, ArrayBuffer, or string.');
+  throw new Error('Invalid input. Must be a File, FileNode, ArrayBuffer, or string.');
 }
 
 /**
@@ -601,12 +600,24 @@ export const getStyleLookup = (style) => {
   return styleStr;
 };
 
+/** @type {Map<string, string>} */
+const cleanFamilyNameCache = new Map();
+
 /**
  * Identify specific font families and return a standardized name.
  * This function is not intended to map names to fonts supported by this program,
  * but rather simply to normalize the names of common fonts to a single name.
  */
 export const cleanFamilyName = (family) => {
+  const cached = cleanFamilyNameCache.get(family);
+  if (cached !== undefined) return cached;
+  const result = cleanFamilyNameInner(family);
+  if (cleanFamilyNameCache.size < 4096) cleanFamilyNameCache.set(family, result);
+  return result;
+};
+
+/** @param {string} family */
+const cleanFamilyNameInner = (family) => {
   let familyClean = family;
   if (/NimbusRom/i.test(family)) {
     familyClean = 'NimbusRoman';

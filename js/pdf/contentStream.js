@@ -40,11 +40,21 @@ for (let c = 0x61; c <= 0x7A; c++) TOK_OP_CHAR[c] = 1;
 TOK_OP_CHAR[0x27] = 1; TOK_OP_CHAR[0x22] = 1; TOK_OP_CHAR[0x2A] = 1;
 
 /**
+ * Operators a `textOnly` tokenization drops.
+ * The text walk reads `w` for stroked text and `gs` for fill alpha, so neither belongs here.
+ */
+const TEXT_ONLY_DROP_OPS = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're', 'S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n', 'W', 'W*', 'J', 'j', 'M', 'd', 'ri', 'i', 'sh']);
+
+/**
  * Tokenize a PDF content stream into tokens.
  * @param {string} streamText
+ * @param {{ textOnly?: boolean }} [opts] - `textOnly` drops the operators in `TEXT_ONLY_DROP_OPS` along with their operands.
  * @returns {Array<PDFToken>}
  */
-export function tokenizeContentStream(streamText) {
+export function tokenizeContentStream(streamText, opts = null) {
+  const textOnly = !!(opts && opts.textOnly);
+  // Token index just past the last kept operator or inline image.
+  let runStart = 0;
   const tokens = /** @type {Array<PDFToken>} */ ([]);
   let i = 0;
   const len = streamText.length;
@@ -312,6 +322,7 @@ export function tokenizeContentStream(streamText) {
             const imageData = streamText.substring(dataStart, dataEnd);
             i = dataEnd + 2;
             tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
+            runStart = tokens.length;
             continue;
           }
         }
@@ -327,6 +338,7 @@ export function tokenizeContentStream(streamText) {
         const imageData = streamText.substring(dataStart, i > dataStart ? i - 1 : i);
         i += 2;
         tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
+        runStart = tokens.length;
         continue;
       }
 
@@ -337,8 +349,11 @@ export function tokenizeContentStream(streamText) {
         if (TOK_OP_CHAR[c2] && TOK_OP_CHAR[c3]) {
           const op3 = streamText.slice(i, i + 3);
           if (PDF_CONTENT_OPERATORS.has(op3)) {
-            tokens.push({ type: 'operator', value: op3, start: tokStart });
             i += 3;
+            // Popping keeps the array's backing store, which truncating `length` can drop.
+            if (textOnly && TEXT_ONLY_DROP_OPS.has(op3)) { while (tokens.length > runStart) tokens.pop(); continue; }
+            tokens.push({ type: 'operator', value: op3, start: tokStart });
+            runStart = tokens.length;
             continue;
           }
         }
@@ -349,15 +364,20 @@ export function tokenizeContentStream(streamText) {
         if (TOK_OP_CHAR[c2] || TOK_DIGIT[c2]) {
           const op2 = streamText.slice(i, i + 2);
           if (PDF_CONTENT_OPERATORS.has(op2)) {
-            tokens.push({ type: 'operator', value: op2, start: tokStart });
             i += 2;
+            if (textOnly && TEXT_ONLY_DROP_OPS.has(op2)) { while (tokens.length > runStart) tokens.pop(); continue; }
+            tokens.push({ type: 'operator', value: op2, start: tokStart });
+            runStart = tokens.length;
             continue;
           }
         }
       }
       // 1-char operator
-      tokens.push({ type: 'operator', value: streamText[i], start: tokStart });
+      const op1 = streamText[i];
       i++;
+      if (textOnly && TEXT_ONLY_DROP_OPS.has(op1)) { while (tokens.length > runStart) tokens.pop(); continue; }
+      tokens.push({ type: 'operator', value: op1, start: tokStart });
+      runStart = tokens.length;
       continue;
     }
 

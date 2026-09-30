@@ -90,6 +90,11 @@ export class ObjectCache {
      */
     this.fontConversionCache = new Map();
     /**
+     * Parsed ToUnicode CMaps keyed by CMap text.
+     * @type {Map<string, import('./fonts/parsePdfFonts.js').ToUnicodeMap>}
+     */
+    this.toUnicodeCMapCache = new Map();
+    /**
      * The font program bytes the renderer actually draws with, keyed by fontObjNum.
      * Native-text editing reads these so edited glyphs come from the same outlines as the raster.
      * Never evicted.
