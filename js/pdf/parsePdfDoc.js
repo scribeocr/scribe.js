@@ -1079,22 +1079,22 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     if (!(h >= PATH_TEXT_H_MIN && h <= PATH_TEXT_H_MAX)) continue;
     let allRect = !hasCurve;
     if (allRect) {
-      // Split into subpaths at M, then check each is a 4 or 5-point polygon with all sides axis-parallel.
-      let sub = [];
-      const subpaths = [];
-      for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
-        const cmd = path.commands[cmdI];
-        if (cmd.type === 'M') { if (sub.length > 0) subpaths.push(sub); sub = [[cmd.x, cmd.y]]; } else if (cmd.type === 'L') sub.push([cmd.x, cmd.y]);
-      }
-      if (sub.length > 0) subpaths.push(sub);
-      for (const pts of subpaths) {
-        if (pts.length < 4 || pts.length > 5) { allRect = false; break; }
-        for (let si = 0; si < pts.length; si++) {
-          const [x1, y1] = pts[si];
-          const [x2, y2] = pts[(si + 1) % pts.length];
-          if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { allRect = false; break; }
+      // Each subpath (split at M) must be a 4- or 5-point polygon with axis-parallel sides, the closing side included.
+      const cmds = path.commands;
+      let ptCount = 0; let firstX = 0; let firstY = 0; let prevX = 0; let prevY = 0;
+      for (let cmdI = 0; cmdI <= cmds.length; cmdI++) {
+        const cmd = cmdI < cmds.length ? cmds[cmdI] : null;
+        if ((cmd === null || cmd.type === 'M') && ptCount > 0) {
+          if (ptCount < 4 || ptCount > 5 || (Math.abs(firstX - prevX) > 0.01 && Math.abs(firstY - prevY) > 0.01)) { allRect = false; break; }
+          ptCount = 0;
         }
-        if (!allRect) break;
+        if (cmd === null) break;
+        if (cmd.type !== 'M' && cmd.type !== 'L') continue;
+        if (ptCount > 0) {
+          if (Math.abs(cmd.x - prevX) > 0.01 && Math.abs(cmd.y - prevY) > 0.01) { allRect = false; break; }
+        } else { firstX = cmd.x; firstY = cmd.y; }
+        prevX = cmd.x; prevY = cmd.y;
+        ptCount++;
       }
     }
     if (allRect) continue;
@@ -1170,12 +1170,12 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       const cmd = path.commands[cmdI];
       if (cmd.type === 'C') {
         hasCurve = true;
-        for (const [cx, cy] of [[cmd.x1, cmd.y1], [cmd.x2, cmd.y2], [cmd.x, cmd.y]]) {
-          if (cx < fMinX) fMinX = cx;
-          if (cx > fMaxX) fMaxX = cx;
-          if (cy < fMinY) fMinY = cy;
-          if (cy > fMaxY) fMaxY = cy;
-        }
+        if (cmd.x1 < fMinX) fMinX = cmd.x1; if (cmd.x1 > fMaxX) fMaxX = cmd.x1;
+        if (cmd.y1 < fMinY) fMinY = cmd.y1; if (cmd.y1 > fMaxY) fMaxY = cmd.y1;
+        if (cmd.x2 < fMinX) fMinX = cmd.x2; if (cmd.x2 > fMaxX) fMaxX = cmd.x2;
+        if (cmd.y2 < fMinY) fMinY = cmd.y2; if (cmd.y2 > fMaxY) fMaxY = cmd.y2;
+        if (cmd.x < fMinX) fMinX = cmd.x; if (cmd.x > fMaxX) fMaxX = cmd.x;
+        if (cmd.y < fMinY) fMinY = cmd.y; if (cmd.y > fMaxY) fMaxY = cmd.y;
       }
       if (cmd.type === 'M' || cmd.type === 'L') {
         if (cmd.x < minX) minX = cmd.x;
@@ -1207,56 +1207,55 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       if (drawsInk) pushFillMark(fMinX, fMinY, fMaxX, fMaxY);
       continue;
     }
-    /** @type {Array<Array<[number, number]>>} */
-    const subpaths = [];
-    for (let cmdI = 0; cmdI < path.commands.length; cmdI++) {
-      const cmd = path.commands[cmdI];
-      if (cmd.type === 'M') subpaths.push([[cmd.x, cmd.y]]);
-      else if (cmd.type === 'L' && subpaths.length) subpaths[subpaths.length - 1].push([cmd.x, cmd.y]);
-    }
-    for (const pts of subpaths) {
-      let sMinX = Infinity; let sMaxX = -Infinity; let sMinY = Infinity; let sMaxY = -Infinity;
-      for (const [px, py] of pts) {
-        if (px < sMinX) sMinX = px;
-        if (px > sMaxX) sMaxX = px;
-        if (py < sMinY) sMinY = py;
-        if (py > sMaxY) sMaxY = py;
-      }
-      let rect = pts.length >= 4 && pts.length <= 5;
-      if (rect) {
-        for (let si = 0; si < pts.length; si++) {
-          const [x1, y1] = pts[si];
-          const [x2, y2] = pts[(si + 1) % pts.length];
-          if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { rect = false; break; }
-        }
-      }
-      if (!rect) {
-        // Bare line and polyline subpaths are the check and X strokes themselves.
-        if (drawsInk) pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
+    const cmds = path.commands;
+    let open = false; let ptCount = 0; let diag = false;
+    let firstX = 0; let firstY = 0; let prevX = 0; let prevY = 0;
+    let sMinX = Infinity; let sMaxX = -Infinity; let sMinY = Infinity; let sMaxY = -Infinity;
+    for (let cmdI = 0; cmdI <= cmds.length; cmdI++) {
+      const cmd = cmdI < cmds.length ? cmds[cmdI] : null;
+      if (cmd !== null && cmd.type === 'L') {
+        if (!open) continue;
+        if (Math.abs(cmd.x - prevX) > 0.01 && Math.abs(cmd.y - prevY) > 0.01) diag = true;
+        prevX = cmd.x; prevY = cmd.y; ptCount++;
+        if (cmd.x < sMinX) sMinX = cmd.x; if (cmd.x > sMaxX) sMaxX = cmd.x;
+        if (cmd.y < sMinY) sMinY = cmd.y; if (cmd.y > sMaxY) sMaxY = cmd.y;
         continue;
       }
-      const sw = sMaxX - sMinX;
-      const sh = sMaxY - sMinY;
-      if (sh < 2 && sw > 10) {
-        underlineRects.push({
-          left: (sMinX - boxOriginX) * scale,
-          right: (sMaxX - boxOriginX) * scale,
-          y: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
-          color: lineColor,
-        });
-      } else if (sw >= 5 && sw <= 24 && sh >= 5 && sh <= 24 && sw / sh > 0.7 && sw / sh < 1.43
-        && fillSquares.length < 200 && !inkFill) {
-        fillSquares.push({
-          left: (sMinX - boxOriginX) * scale,
-          top: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
-          right: (sMaxX - boxOriginX) * scale,
-          bottom: (visualHeightPts - (sMinY - boxOriginY)) * scale,
-          stroke: !!path.stroke,
-        });
-      } else if (inkFill) {
-        // A colored filled rectangle can cover a stroked twin that did qualify as a candidate.
-        pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
+      if (cmd !== null && cmd.type !== 'M') continue;
+      if (open) {
+        const rect = ptCount >= 4 && ptCount <= 5 && !diag && !(Math.abs(firstX - prevX) > 0.01 && Math.abs(firstY - prevY) > 0.01);
+        if (!rect) {
+          // Bare line and polyline subpaths are the check and X strokes themselves.
+          if (drawsInk) pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
+        } else {
+          const sw = sMaxX - sMinX;
+          const sh = sMaxY - sMinY;
+          if (sh < 2 && sw > 10) {
+            underlineRects.push({
+              left: (sMinX - boxOriginX) * scale,
+              right: (sMaxX - boxOriginX) * scale,
+              y: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
+              color: lineColor,
+            });
+          } else if (sw >= 5 && sw <= 24 && sh >= 5 && sh <= 24 && sw / sh > 0.7 && sw / sh < 1.43
+            && fillSquares.length < 200 && !inkFill) {
+            fillSquares.push({
+              left: (sMinX - boxOriginX) * scale,
+              top: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
+              right: (sMaxX - boxOriginX) * scale,
+              bottom: (visualHeightPts - (sMinY - boxOriginY)) * scale,
+              stroke: !!path.stroke,
+            });
+          } else if (inkFill) {
+            // A colored filled rectangle can cover a stroked twin that did qualify as a candidate.
+            pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
+          }
+        }
       }
+      if (cmd === null) break;
+      open = true; ptCount = 1; diag = false;
+      firstX = cmd.x; prevX = cmd.x; sMinX = cmd.x; sMaxX = cmd.x;
+      firstY = cmd.y; prevY = cmd.y; sMinY = cmd.y; sMaxY = cmd.y;
     }
   }
   // Producers draw one visible checkbox as a white-filled path plus a stroked path with identical geometry.
