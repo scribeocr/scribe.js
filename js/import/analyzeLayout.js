@@ -338,7 +338,9 @@ export function analyzeLayout(pages, opts = {}) {
       const rights = bestRun.map((c) => c.f.right).sort((a, b) => a - b);
       const medRightFrac = rights[Math.floor(rights.length / 2)] / pageW;
       const spanTop = tops[0]; const spanBot = tops[tops.length - 1];
-      const linesInSpan = pf.filter((f) => f.top >= spanTop - 1 && f.top <= spanBot + 1).length;
+      // The medRight bound drops the lines of a page printed beside this one on a multi-up sheet.
+      const medRight = rights[Math.floor(rights.length / 2)];
+      const linesInSpan = pf.filter((f) => f.top >= spanTop - 1 && f.top <= spanBot + 1 && f.left <= medRight).length;
       const density = linesInSpan ? bestRun.length / linesInSpan : 1;
       lnLikeCore = numericFirstFrac < LN_MAX_NUMFIRST && pitchReg >= LN_MIN_PITCHREG
         && medRightFrac >= LN_CASEB_MIN_RIGHTFRAC && density >= LN_CASEB_MIN_DENSITY;
@@ -2573,6 +2575,7 @@ export function analyzeLayout(pages, opts = {}) {
         const lnWords = ws.slice(0, j);
         const lnLine = new OcrLine(f.line.page, calcBboxUnion(lnWords.map((w) => w.bbox)), f.line.baseline, f.line.ascHeight, f.line.xHeight);
         lnLine.words = lnWords;
+        for (const w of lnWords) w.line = lnLine;
         lnLine.orientation = f.line.orientation;
         out.push({
           ...f,

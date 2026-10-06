@@ -2044,16 +2044,16 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     expect(appended.visualCoords, 'an appended word must carry its line\'s box convention').toBe(false);
     // The page kerns the last pair of the word before the append, so the appended word starts after that word's true end pen, not after its substitute-face width.
     expect(appended.bbox, 'an appended word drawn with a substitute face must get the PDF font\'s box').toEqual({
-      left: 1950, top: 518, right: 2393, bottom: 591,
+      left: 1955, top: 518, right: 2398, bottom: 591,
     });
     expect(appended.chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'appended glyph boxes must span the declared widths at the drawn pens')
-      .toEqual([[1950, 1998, 518, 591], [1998, 2039, 518, 591], [2039, 2079, 518, 591], [2079, 2124, 518, 591], [2124, 2172, 518, 591],
-        [2172, 2220, 518, 591], [2220, 2257, 518, 591], [2257, 2301, 518, 591], [2301, 2349, 518, 591], [2349, 2393, 518, 591]]);
+      .toEqual([[1955, 2003, 518, 591], [2003, 2043, 518, 591], [2043, 2084, 518, 591], [2084, 2128, 518, 591], [2128, 2176, 518, 591],
+        [2176, 2224, 518, 591], [2224, 2261, 518, 591], [2261, 2306, 518, 591], [2306, 2354, 518, 591], [2354, 2398, 518, 591]]);
     expect(appendLine.words[appendLine.words.length - 2].bbox, 'the unchanged word redrawn with a substitute face must keep its font box').toEqual({
       left: 1767, top: 518, right: 1933, bottom: 591,
     });
     expect(appendLine.bbox, 'an append must extend the line box without changing its height').toEqual({
-      left: 599, top: 518, right: 2393, bottom: 591,
+      left: 599, top: 518, right: 2398, bottom: 591,
     });
   });
 
@@ -2166,7 +2166,8 @@ describe('Check replacements on the rotated superscript page and the transcript 
     const rotPdf = /** @type {ArrayBuffer} */ (await rotDoc.exportData('pdf'));
     rotReDoc = await scribe.openDocument({ pdfFiles: [rotPdf] });
     flaDoc = await scribe.openDocument([`${ASSETS_PATH}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
-    await flaDoc.replaceTextLine(flaDoc.ocr.active[0].lines[45], rotateLongest(flaDoc.ocr.active[0].lines[45]));
+    const flaLine = /** @type {OcrLine} */ (flaDoc.ocr.active[0].lines.find((line) => lineText(line) === 'A It was damage to the roof caused by different'));
+    await flaDoc.replaceTextLine(flaLine, rotateLongest(flaLine));
     const flaPdf = /** @type {ArrayBuffer} */ (await flaDoc.exportData('pdf'));
     flaReDoc = await scribe.openDocument({ pdfFiles: [flaPdf] });
   });
@@ -2179,12 +2180,14 @@ describe('Check replacements on the rotated superscript page and the transcript 
       .toBe('American Meeting in June 2021, scheduled to be held at the niversitéU du Québec à Montréal and delivered');
   });
 
-  test('The transcript page\'s replaced line re-imports without the margin line number', () => {
+  test('The transcript page\'s replaced row re-imports on its own, apart from its margin line number and the row printed beside it', () => {
     expect(flaDoc.contentEdits.pages[0].map((r) => r.type), 'the replacement must patch the page stream').toEqual(['patchText']);
-    expect(lineText(flaReDoc.ocr.active[0].lines[45]), 'line 45 did not re-import as the replaced line')
-      .toBe('A It was damage to the roof caused by ifferentd 15 A No. I just was saying that that\'s one of the');
-    expect(lineText(flaReDoc.ocr.active[0].lines[44]), 'the margin line number must stay its own line').toBe('15');
-    expect(flaReDoc.ocr.active[0].lines.length, 'the page must re-import with the same line count').toBe(139);
+    const reLines = flaReDoc.ocr.active[0].lines.map(lineText);
+    const at = reLines.indexOf('A It was damage to the roof caused by ifferentd');
+    expect(at, 'the replaced row must re-import as a line of its own').toBe(52);
+    expect(reLines[at - 1], 'the margin line number must stay its own line').toBe('15');
+    expect(reLines[at + 1], 'the right-hand row printed beside the replaced one must stay its own line').toBe('15 A No. I just was saying that that\'s one of the');
+    expect(reLines.length, 'the page must re-import with the same line count').toBe(169);
   });
 
   afterAll(async () => {

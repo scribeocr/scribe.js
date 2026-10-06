@@ -847,8 +847,9 @@ export function createLineEditor(scribe, {
 
   const commit = async () => {
     if (!st) return;
-    // The lingering canvas shows the committed text until the page's raster catches up, so the preview of that text must have landed.
     const session = st;
+    if (session.committing) return;
+    // The lingering canvas shows the last preview, which must be of the committed text.
     while (st === session && session.previewBusy) await session.previewDone;
     if (st !== session) return;
     const {
@@ -865,23 +866,35 @@ export function createLineEditor(scribe, {
         return o && (o.bold !== undefined || o.italic !== undefined || o.color !== undefined) ? o : null;
       })
       : null;
-    detachInput();
-    st = null;
-    // A newer session may have opened on this page while replaceTextLine ran and now owns the rects.
-    // Clearing them would redraw that session's original text under its editor.
-    const ownedElsewhere = () => !!st && st.n === n;
+    session.committing = true;
+    let res;
     try {
-      const res = await scribe.doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
-      if (!ownedElsewhere()) scribe.doc.images.setEphemeralRecords(n, null);
-      if (res && res.pages && onCommitted) onCommitted(res.pages);
-      else scribe.refreshPageRaster(n);
-      removeCanvasAfterRefresh(n);
+      res = await scribe.doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
     } catch (e) {
-      if (!ownedElsewhere()) scribe.doc.images.setEphemeralRecords(n, null);
+      session.committing = false;
+      if (st === session) {
+        detachInput();
+        st = null;
+      }
+      if (!(st && st.n === n)) scribe.doc.images.setEphemeralRecords(n, null);
       scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
       throw e;
     }
+    session.committing = false;
+    if (res && 'refused' in res && res.refused) {
+      if (st === session) draw();
+      return;
+    }
+    if (st === session) {
+      detachInput();
+      st = null;
+    }
+    // A session that opened on this page while replaceTextLine ran relies on the page's ephemeral records to hide its line's original text.
+    if (!(st && st.n === n)) scribe.doc.images.setEphemeralRecords(n, null);
+    if (res && res.pages && onCommitted) onCommitted(res.pages);
+    else scribe.refreshPageRaster(n);
+    removeCanvasAfterRefresh(n);
   };
 
   const commitSafe = () => {
@@ -891,6 +904,10 @@ export function createLineEditor(scribe, {
   const onKeydown = (ev) => {
     if (!st) return;
     ev.stopPropagation();
+    if (st.committing) {
+      ev.preventDefault();
+      return;
+    }
     if (ev.key === 'Escape') {
       ev.preventDefault();
       close();
@@ -976,7 +993,7 @@ export function createLineEditor(scribe, {
   };
 
   const onInput = () => {
-    if (!st || st.composing) return;
+    if (!st || st.composing || st.committing) return;
     const v = hiddenInput.value;
     if (v) {
       hiddenInput.value = '';
@@ -1297,6 +1314,7 @@ export function createLineEditor(scribe, {
       fonts,
       previewBusy: false,
       previewStale: false,
+      committing: false,
       caret: 0,
       selAnchor: null,
       xs: new Float64Array(origText.length + 1),

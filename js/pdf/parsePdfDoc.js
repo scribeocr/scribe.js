@@ -1,6 +1,6 @@
 import ocr, { parIsFurniture } from '../objects/ocrObjects.js';
 import {
-  calcLang, cleanFamilyName, mean50, round3, round6,
+  calcBboxUnion, calcLang, cleanFamilyName, mean50, round3, round6,
 } from '../utils/miscUtils.js';
 import {
   findXrefOffset, parseXref, getPageObjects, getPageContentStream, getPageContentStreams, findFormXObjects, parseFormBBox, parseFormMatrix, findRootObjNum,
@@ -3580,10 +3580,28 @@ export function groupCharsIntoPage(
       const wordChars = wordsMerged[wmI];
       const wordText = wordChars.map((c) => c.text).join('');
       if (calcLang(wordText) === 'chi_sim') {
+        const cjkLike = (/** @type {string} */ t) => {
+          const code = t.codePointAt(0) || 0;
+          return calcLang(t) === 'chi_sim'
+            || (code >= 0x3000 && code <= 0x30FF) // CJK symbols and punctuation, hiragana, katakana
+            || (code >= 0x31F0 && code <= 0x31FF) // katakana phonetic extensions
+            || (code >= 0x1100 && code <= 0x11FF) || (code >= 0x3130 && code <= 0x318F) || (code >= 0xAC00 && code <= 0xD7AF) // hangul
+            || (code >= 0xFF00 && code <= 0xFFEF); // halfwidth and fullwidth forms
+        };
+        let run = [];
         for (let chI = 0; chI < wordChars.length; chI++) {
           const ch = wordChars[chI];
-          wordsAfterCJK.push([ch]);
+          if (cjkLike(ch.text)) {
+            if (run.length > 0) {
+              wordsAfterCJK.push(run);
+              run = [];
+            }
+            wordsAfterCJK.push([ch]);
+          } else {
+            run.push(ch);
+          }
         }
+        if (run.length > 0) wordsAfterCJK.push(run);
       } else {
         wordsAfterCJK.push(wordChars);
       }
@@ -4184,6 +4202,68 @@ export function groupCharsIntoPage(
   for (const dt of detectedTables) {
     if (dt.provisionalTopOpen) continue;
     dataTablePage.tables.push(convertDetectedTable(dt, dataTablePage, pageObj));
+  }
+
+  // Split rows that the stream draws across side-by-side pages, since line grouping keeps such a row as one line when the gutter is under four em.
+  for (const dt of dataTablePage.tables) {
+    if (dt.boxes.length < 2) continue;
+    const cols = dt.boxes.map((c) => c.coords);
+    const regionLeft = Math.min(...cols.map((c) => c.left));
+    const regionRight = Math.max(...cols.map((c) => c.right));
+    const regionTop = Math.min(...cols.map((c) => c.top));
+    const regionBottom = Math.max(...cols.map((c) => c.bottom));
+    if (regionBottom - regionTop < 0.5 * pageHeight) continue;
+    /** @type {Set<OcrLine>} */
+    const rows = new Set();
+    for (const l of pageObj.lines) {
+      const cy = (l.bbox.top + l.bbox.bottom) / 2;
+      if (cy >= regionTop && cy <= regionBottom && l.bbox.right > regionLeft && l.bbox.left < regionRight) rows.add(l);
+    }
+    if (rows.size < 8) continue;
+    let numeric = 0;
+    let total = 0;
+    const colRows = cols.map(() => 0);
+    const colWords = cols.map(() => 0);
+    for (const l of rows) {
+      const seen = cols.map(() => false);
+      for (const w of l.words) {
+        const cx = (w.bbox.left + w.bbox.right) / 2;
+        if (cx < regionLeft || cx > regionRight) continue;
+        total++;
+        const wt = w.text.trim();
+        if (/\d/.test(wt) && /^[\d.,%()$/-]+$/.test(wt)) numeric++;
+        const ci = cols.findIndex((c) => cx >= c.left && cx <= c.right);
+        if (ci >= 0) {
+          colWords[ci]++;
+          seen[ci] = true;
+        }
+      }
+      seen.forEach((v, ci) => { if (v) colRows[ci]++; });
+    }
+    if (total === 0 || numeric / total >= 0.5) continue;
+    if (cols.some((c, ci) => colRows[ci] > 0 && colWords[ci] / colRows[ci] < 3)) continue;
+    for (let ci = 1; ci < cols.length; ci++) {
+      const x = (cols[ci - 1].right + cols[ci].left) / 2;
+      for (let li = 0; li < pageObj.lines.length; li++) {
+        const l = pageObj.lines[li];
+        if (!rows.has(l) || l.orientation !== 0 || l.words.length < 2 || !(l.bbox.left < x && l.bbox.right > x)) continue;
+        const size = l.words[0].style.size || (l.bbox.bottom - l.bbox.top);
+        // Cutting by word centers lets a row that an edit grew past the gutter's middle still part from the row beside it.
+        const at = l.words.findIndex((w) => (w.bbox.left + w.bbox.right) / 2 > x);
+        if (at < 1 || l.words[at].bbox.left - l.words[at - 1].bbox.right < 0.5 * size) continue;
+        const tail = l.words.splice(at);
+        const baselineY = l.bbox.bottom + l.baseline[1];
+        const tailBbox = calcBboxUnion(tail.map((w) => w.bbox));
+        const lineNew = new ocr.OcrLine(pageObj, tailBbox, [l.baseline[0], baselineY - tailBbox.bottom], l.ascHeight, l.xHeight);
+        lineNew.words = tail;
+        for (const w of tail) w.line = lineNew;
+        lineNew.orientation = l.orientation;
+        l.bbox = calcBboxUnion(l.words.map((w) => w.bbox));
+        l.baseline = [l.baseline[0], baselineY - l.bbox.bottom];
+        rows.add(lineNew);
+        pageObj.lines.splice(li + 1, 0, lineNew);
+      }
+    }
   }
 
   if (pageObj.lines.length > 0) {

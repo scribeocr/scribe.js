@@ -325,7 +325,14 @@ export class PdfCore {
         }
         const c = pool[i];
         i += 1;
-        if (c.text.trim() === '') { if (glyphs.length === 0) continue; break; }
+        if (c.text.trim() === '') {
+          if (glyphs.length === 0) continue;
+          // The parser does not end a word at a space glyph that leaves no word gap between its neighbors.
+          const last = glyphs[glyphs.length - 1];
+          const next = pool.slice(i).find((d) => d.text.trim() !== '');
+          if (next && next.x - (last.x + last.width) <= 0.15 * last.fontSize) continue;
+          break;
+        }
         glyphs.push(c);
         opsOf.push(ops);
         spelled += ocr.replaceLigatures(c.text).toLowerCase();

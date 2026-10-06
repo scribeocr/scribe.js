@@ -163,13 +163,16 @@ const spacerFor = (op, d) => -(d * 1000) / (op.fontSize * (op.tz / 100));
 /**
  * Codes to draw, as an insertion into a show operator.
  * @typedef {Object} CodeInsert
- * @property {string} hex - The codes, in hex.
+ * @property {string} hex
  * @property {number} adv - The codes' advance, in text space.
  * @property {number} [gap] - A spacer drawn before the codes, in text space.
- * @property {number} [shift] - A user-space shift along the line from the anchor glyph's pen. Applies only to `insertBefore`.
- * @property {Array<{ hex: string, adv: number, gap?: number }>} [glyphs] - The codes one glyph at a time, each after its own spacer,
- *   for an operator whose character spacing is not the word's letter spacing.
- * @property {Array<CodeInsert>} [segments] - Inserts emitted in order, for a word drawn in more than one font.
+ * @property {number} [shift] - A shift along the line from the anchor glyph's pen, in the pen's frame.
+ *   Applies only to `insertBefore`.
+ * @property {Array<{ hex: string, adv: number, gap?: number }>} [glyphs] - The codes one glyph at a time, each after its own spacer.
+ * @property {number} [size] - The font size `wrap` sets, when it differs from the operator's.
+ * @property {number} [tz] - The horizontal scaling likewise.
+ * @property {number} [trailing] - The spacing beyond the letter spacing that the last code trails, in text space.
+ * @property {Array<CodeInsert>} [segments]
  * @property {Object} [wrap]
  * @property {Array<string>} wrap.before - Operators that set the codes' style or font.
  * @property {Array<string>} wrap.after - Operators that restore the style or font.
@@ -177,14 +180,19 @@ const spacerFor = (op, d) => -(d * 1000) / (op.fontSize * (op.tz / 100));
  */
 
 /**
+ * A run of codes in one font.
+ * @typedef {CodeInsert & { codes: Array<FontCode & { text: string, canon?: string }> }} CodeSegment
+ */
+
+/**
  * @typedef {Object} GlyphAction
- * @property {boolean} [drop] - Remove the glyph.
- * @property {CodeInsert} [replace] - Codes drawn in place of this glyph and of the dropped glyphs after it.
- * @property {CodeInsert} [insertBefore] - Codes drawn before this glyph.
- * @property {CodeInsert} [insertAfter] - Codes drawn after this glyph.
- * @property {number} [shift] - Moves the glyph, or its replacement, this far from its own pen, in user space along the line.
- * @property {Array<string>} [before] - Operators emitted before the glyph, outside any TJ.
- * @property {Array<string>} [after] - Operators emitted after the glyph, outside any TJ.
+ * @property {boolean} [drop]
+ * @property {CodeInsert} [replace]
+ * @property {CodeInsert} [insertBefore]
+ * @property {CodeInsert} [insertAfter]
+ * @property {number} [shift] - Moves the glyph, or its replacement, this far along the line from its own pen, in the operator's space before its CTM.
+ * @property {Array<string>} [before]
+ * @property {Array<string>} [after]
  * @property {boolean} [setsPen] - `before` ends with a text matrix at the glyph's target.
  * @property {boolean} [resetsPen] - `after` restores the line matrix.
  */
@@ -258,8 +266,9 @@ export function rewriteShowOperator(op, tokens, actions, pens) {
     if (ins.segments) {
       for (const seg of ins.segments) emitInsert(seg);
     } else if (ins.glyphs) {
+      const state = ins.size !== undefined ? { fontSize: ins.size, tz: ins.tz ?? op.tz } : op;
       for (const g of ins.glyphs) {
-        if (g.gap) { flushHex(); parts.push(formatPdfNumber(spacerFor(op, g.gap))); advanceBy(g.gap); }
+        if (g.gap) { flushHex(); parts.push(formatPdfNumber(spacerFor(state, g.gap))); advanceBy(g.gap); }
         flushHex();
         hex = g.hex;
         flushHex();
@@ -596,14 +605,22 @@ export function typedAdvance(codes, state) {
 
 /**
  * How far the words after an edited word move.
- * They stay put while the edited word ends at least `minGap` before the next word, and otherwise move by the word's whole growth.
- * @param {number} newEnd - Where the edited content ends.
- * @param {number} oldEnd - Where it ended before the edit.
- * @param {number} nextStart - Where the next word starts, before any shift.
- * @param {number} [minGap] - The smallest gap that still reads as a word break, in the units of the other three.
- *   Pass 0.16 of the font size, just over the parser's 0.15 word-split threshold, or the grown word reads back merged with its neighbor.
+ * @param {number} newEnd
+ * @param {number} oldEnd
+ * @param {number} nextStart
+ * @param {number} [minGap] - The smallest gap that still reads as a word break.
+ * @param {number} [stopGap] - The smallest gap that marks a table cell or the next column.
  */
-export const tailShift = (newEnd, oldEnd, nextStart, minGap = 0) => (newEnd + minGap > nextStart ? Math.max(0, newEnd - oldEnd) : 0);
+export const tailShift = (newEnd, oldEnd, nextStart, minGap = 0, stopGap = Infinity) => {
+  if (newEnd > oldEnd) return newEnd + minGap > nextStart ? newEnd - oldEnd : 0;
+  const shrink = oldEnd - newEnd;
+  if (shrink < minGap) return 0;
+  const gap = nextStart - oldEnd;
+  if (gap >= stopGap) return 0;
+  // The floor is twice the margin because the re-parse measures gaps differently and could join words across a gap just over the margin.
+  const kept = gap >= minGap ? Math.max(gap, 2 * minGap) : gap;
+  return Math.min(0, newEnd + kept - nextStart);
+};
 
 /**
  * @typedef {Object} TextEditRequest
@@ -874,28 +891,69 @@ export function planTextEdit(glyphOpMap, req) {
   const first = words[0].chars.find((c) => c._src) || null;
   if (!first || !req.codeTable) return { ...none, refused: 'The line has no glyph in the page stream.' };
   const op0 = glyphOpMap.ops[first._src.op];
-  const axisLen0 = Math.hypot(op0.tm[0], op0.tm[1]) || 1;
-  const ux = op0.tm[0] / axisLen0;
-  const uy = op0.tm[1] / axisLen0;
+  // One line's words may be drawn under different CTMs, so positions are measured with each operator's CTM applied.
+  const dirX0 = op0.ctm[0] * op0.tm[0] + op0.ctm[2] * op0.tm[1];
+  const dirY0 = op0.ctm[1] * op0.tm[0] + op0.ctm[3] * op0.tm[1];
+  const dirLen0 = Math.hypot(dirX0, dirY0) || 1;
+  const ux = dirX0 / dirLen0;
+  const uy = dirY0 / dirLen0;
   const alongPen = (/** @type {number} */ x, /** @type {number} */ y) => x * ux + y * uy;
-  const glyphStart = (/** @type {PositionedChar} */ c) => alongPen(c._src.tx, c._src.ty);
+  /** User units per unit of an operator's text space along the line. */
+  const kOf = (/** @type {ShowOp} */ op) => Math.hypot(op.ctm[0] * op.tm[0] + op.ctm[2] * op.tm[1], op.ctm[1] * op.tm[0] + op.ctm[3] * op.tm[1]) || 1;
+  /** Converts a shift of `s` user units along the line to the operator's space before its CTM. */
+  const shiftOf = (/** @type {ShowOp} */ op, /** @type {number} */ s) => (s * (Math.hypot(op.tm[0], op.tm[1]) || 1)) / kOf(op);
+  /**
+   * A glyph's text-space pen moved by `s` user units along the line.
+   * @returns {[number, number]}
+   */
+  const penAt = (/** @type {ShowOp} */ op, /** @type {number} */ tx, /** @type {number} */ ty, /** @type {number} */ s) => {
+    const h = Math.hypot(op.tm[0], op.tm[1]) || 1;
+    const d = shiftOf(op, s);
+    return [tx + (d * op.tm[0]) / h, ty + (d * op.tm[1]) / h];
+  };
+  /** Whether word `j` may be shifted `sUser` user units along the line from where the page drew it. */
+  const mayCloseUp = (/** @type {number} */ j, /** @type {number} */ sUser) => words[j].chars.every((c) => {
+    if (!c._src) return true;
+    const op = glyphOpMap.ops[c._src.op];
+    if (!op.visible) return true;
+    // A clip cell this narrow holds its word at a set place, so the word must not slide even within the cell.
+    if (op.visible[2] - op.visible[0] < 4 * Math.abs(op.fontSize) * kOf(op)) return false;
+    const [tx, ty] = penAt(op, c._src.tx, c._src.ty, sUser);
+    return glyphVisible(op, { ...c._src, tx, ty });
+  });
+  const glyphStart = (/** @type {PositionedChar} */ c) => {
+    const op = glyphOpMap.ops[c._src.op];
+    const p = drawnPen(op, c._src.tx, c._src.ty);
+    return alongPen(p[0], p[1]);
+  };
   const glyphEnd = (/** @type {PositionedChar} */ c) => {
     const op = glyphOpMap.ops[c._src.op];
-    return alongPen(c._src.tx + c._src.adv * op.tm[0], c._src.ty + c._src.adv * op.tm[1]);
+    const p = drawnPen(op, c._src.tx + c._src.adv * op.tm[0], c._src.ty + c._src.adv * op.tm[1]);
+    return alongPen(p[0], p[1]);
   };
   const wordStart = (/** @type {number} */ j) => glyphStart(words[j].chars[0]);
-  const wordEnd = (/** @type {number} */ j) => glyphEnd(words[j].chars[words[j].chars.length - 1]);
   // Stops at the glyph's drawn width, before the operator's character and word spacing, since some producers draw no space glyphs and set a word's gap as the character spacing of its last glyph.
   const glyphWidthEnd = (/** @type {PositionedChar} */ c) => {
     const cop = glyphOpMap.ops[c._src.op];
     const widthTs = c._src.adv - (cop.tc + (c._src.space ? cop.tw : 0)) * (cop.tz / 100);
-    return alongPen(c._src.tx + widthTs * cop.tm[0], c._src.ty + widthTs * cop.tm[1]);
+    const p = drawnPen(cop, c._src.tx + widthTs * cop.tm[0], c._src.ty + widthTs * cop.tm[1]);
+    return alongPen(p[0], p[1]);
   };
   const letterSpacingOf = (/** @type {Array<PositionedChar>} */ cs) => {
     const steps = [];
     for (let gi = 1; gi < cs.length; gi++) steps.push(glyphStart(cs[gi]) - glyphWidthEnd(cs[gi - 1]));
     steps.sort((x, y) => x - y);
     return steps.length > 0 ? steps[Math.floor(steps.length / 2)] : null;
+  };
+  const wordLetterSpacings = words.map((w) => letterSpacingOf(w.chars));
+  const knownLetterSpacings = wordLetterSpacings.filter((v) => v !== null).sort((x, y) => x - y);
+  const lineLetterSpacing = knownLetterSpacings.length > 0 ? knownLetterSpacings[Math.floor(knownLetterSpacings.length / 2)] : 0;
+  const lsOf = (/** @type {number} */ j) => wordLetterSpacings[j] ?? lineLetterSpacing;
+  const excessOf = (/** @type {ShowOp} */ dop, /** @type {number} */ ls, tz = dop.tz) => Math.max(0, dop.tc * (tz / 100) - ls / kOf(dop));
+  const wordEnd = (/** @type {number} */ j) => {
+    const c = words[j].chars[words[j].chars.length - 1];
+    const cop = glyphOpMap.ops[c._src.op];
+    return glyphEnd(c) - excessOf(cop, lsOf(j)) * kOf(cop);
   };
   const olen = words.length;
   const nlen = newTexts.length;
@@ -933,9 +991,11 @@ export function planTextEdit(glyphOpMap, req) {
   const gaps = [];
   for (let j = 1; j < olen; j++) gaps.push(wordStart(j) - wordEnd(j - 1));
   gaps.sort((x, y) => x - y);
-  const lineGap = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : (op0.fontSize * 0.25 * axisLen0);
-  const lineLetterSpacings = words.map((w) => letterSpacingOf(w.chars)).filter((v) => v !== null).sort((x, y) => x - y);
-  const lineLetterSpacing = lineLetterSpacings.length > 0 ? lineLetterSpacings[Math.floor(lineLetterSpacings.length / 2)] : 0;
+  const lineGap = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)] : (op0.fontSize * 0.25 * kOf(op0));
+  const stopGap = Math.max(2 * op0.fontSize * kOf(op0), 3 * lineGap);
+  // Just over the parser's word-split threshold of 0.15 em.
+  const lineMinGap = 0.16 * op0.fontSize * kOf(op0);
+  const insertGap = Math.max(lineGap, 2 * lineMinGap);
 
   /** @type {Array<PositionedChar>} */
   const visible = [];
@@ -953,11 +1013,11 @@ export function planTextEdit(glyphOpMap, req) {
   }
   /**
    * Codes for a text in the font and state of an operator.
-   * A character the operator's font lacks is typed in another font the line draws with, else in a substitute face.
+   * A character the font lacks is typed in another font.
    * Such a text is returned in segments.
    * @param {ShowOp} op
    * @param {string} text
-   * @returns {{ hex: string, adv: number, codes: Array<FontCode & { text: string, canon?: string }>, segments?: Array<CodeInsert>, faces?: Array<SubstituteGlyph> } | { error: string }}
+   * @returns {{ hex: string, adv: number, codes: Array<FontCode & { text: string, canon?: string }>, segments?: Array<CodeSegment>, faces?: Array<SubstituteGlyph> } | { error: string }}
    */
   const codesIn = (op, text) => {
     if (!op.font) return { error: 'The word has no font.' };
@@ -1023,7 +1083,7 @@ export function planTextEdit(glyphOpMap, req) {
       }
       if (!placed) return { error: `The font has no glyph for "${ch}".` };
     }
-    /** @type {Array<CodeInsert>} */
+    /** @type {Array<CodeSegment>} */
     const segments = [];
     /** @type {Array<FontCode & { text: string, canon?: string }>} */
     const all = [];
@@ -1033,9 +1093,12 @@ export function planTextEdit(glyphOpMap, req) {
     for (const r of runs) {
       const hex = r.codes.map((c) => c.code.toString(16).padStart(c.nBytes * 2, '0')).join('');
       // A face code's advEm is already scaled by sizeMult to the page font's size, so divide that back out before measuring at the fitted size.
-      const segAdv = typedAdvance(r.codes.map((c) => (r.kind === 'face' ? { ...c, advEm: c.advEm / (r.size / op.fontSize) } : c)), { ...state, size: r.size, tz: r.tz });
-      /** @type {CodeInsert} */
-      const seg = { hex, adv: segAdv };
+      const segCodes = r.codes.map((c) => (r.kind === 'face' ? { ...c, advEm: c.advEm / (r.size / op.fontSize) } : c));
+      const segAdv = typedAdvance(segCodes, { ...state, size: r.size, tz: r.tz });
+      /** @type {CodeSegment} */
+      const seg = {
+        hex, adv: segAdv, codes: segCodes, size: r.size, tz: r.tz,
+      };
       if (r.kind !== 'page') {
         const sizeBack = `${formatPdfNumber(op.fontSize)}`;
         seg.wrap = {
@@ -1054,6 +1117,47 @@ export function planTextEdit(glyphOpMap, req) {
     };
   };
   /**
+   * The codes of a text as an insert whose glyphs are spaced by at most `ls`.
+   * @param {{ hex: string, adv: number, codes: Array<FontCode & { text: string }>, segments?: Array<CodeSegment> }} r
+   * @param {ShowOp} dop
+   * @param {number} ls - In user space along the line.
+   * @param {boolean} firstToo - Cap the spacing before the first glyph at `ls` too.
+   * @returns {{ ins: CodeInsert, adv: number, trailing: number }} `trailing` is the last glyph's spacing beyond `ls`.
+   *   `adv` and `trailing` are in the operator's text space.
+   */
+  const spacedInsert = (r, dop, ls, firstToo) => {
+    const runs = r.segments || [{
+      hex: r.hex, adv: r.adv, codes: r.codes, size: dop.fontSize, tz: dop.tz,
+    }];
+    let trailing = firstToo ? excessOf(dop, ls) : 0;
+    let adv = 0;
+    /** @type {Array<CodeInsert>} */
+    const out = [];
+    for (const seg of runs) {
+      /** @type {CodeInsert} */
+      const ins = { hex: seg.hex, adv: seg.adv };
+      if (seg.wrap) ins.wrap = seg.wrap;
+      if (seg.size !== dop.fontSize || seg.tz !== dop.tz) { ins.size = seg.size; ins.tz = seg.tz; }
+      if (seg.codes.length > 0) {
+        if (trailing > 1e-9) { ins.gap = -trailing; adv -= trailing; }
+        const excess = excessOf(dop, ls, seg.tz);
+        if (excess > 1e-9) {
+          const state = {
+            size: seg.size ?? dop.fontSize, tc: dop.tc, tw: dop.tw, tz: seg.tz ?? dop.tz,
+          };
+          ins.glyphs = seg.codes.map((fc, i) => ({ hex: fc.code.toString(16).padStart(fc.nBytes * 2, '0'), adv: typedAdvance([fc], state), gap: i > 0 ? -excess : 0 }));
+          ins.adv = seg.adv - (seg.codes.length - 1) * excess;
+        }
+        trailing = excess;
+      }
+      adv += ins.adv;
+      out.push(ins);
+    }
+    const ins = out.length === 1 ? out[0] : { hex: '', adv, segments: out };
+    ins.trailing = trailing;
+    return { ins, adv, trailing };
+  };
+  /**
    * Add codes beside a glyph that may already have codes inserted on that side, so both are emitted in order.
    * The first insert's shift places the pair.
    * @type {(act: GlyphAction, how: 'insertBefore'|'insertAfter', ins: CodeInsert) => void}
@@ -1061,7 +1165,7 @@ export function planTextEdit(glyphOpMap, req) {
   const chainInsert = (act, how, ins) => {
     const have = act[how];
     act[how] = have ? {
-      hex: '', adv: have.adv + ins.adv, shift: have.shift, segments: [have, ins],
+      hex: '', adv: have.adv + ins.adv, shift: have.shift, segments: [have, ins], trailing: ins.trailing,
     } : ins;
   };
 
@@ -1097,22 +1201,41 @@ export function planTextEdit(glyphOpMap, req) {
         if (act) { act.drop = true; goneSet.add(c); }
       }
     }
+    if (it.deletedBefore.length > 0 && it.kind !== 'insert' && it.old > it.deletedBefore[0]) {
+      // Keeping the wider gap lets an indent before or after the deleted words survive, including one that typing them pushed along.
+      const j1 = it.deletedBefore[0];
+      const j2 = it.deletedBefore[it.deletedBefore.length - 1];
+      const gapBefore = j1 > 0 ? wordStart(j1) - wordEnd(j1 - 1) : Infinity;
+      const gapAfter = wordStart(it.old) - wordEnd(j2);
+      const wider = Math.max(gapBefore, gapAfter);
+      const target = j1 > 0 ? wordEnd(j1 - 1) + (wider >= lineMinGap ? Math.max(wider, 2 * lineMinGap) : wider) : wordStart(j1);
+      const move = Math.min(0, target - wordStart(it.old));
+      const cellLike = gapBefore >= stopGap && gapAfter >= stopGap;
+      if (move < 0 && !cellLike && mayCloseUp(it.old, s + move)) s += move;
+    }
     let nextOldStart = Infinity;
-    for (let jj = ii + 1; jj < items.length; jj++) if (items[jj].kind !== 'insert') { nextOldStart = wordStart(items[jj].old); break; }
+    let nextOld = -1;
+    for (let jj = ii + 1; jj < items.length; jj++) {
+      if (items[jj].kind !== 'insert') {
+        nextOld = items[jj].old;
+        nextOldStart = wordStart(nextOld);
+        break;
+      }
+    }
     if (it.kind === 'keep') {
       const j = it.old;
       if (s) {
         for (const c of words[j].chars) {
           for (const d of copiesOf(c)) {
             const act = actionOf(d);
-            if (act) act.shift = s;
+            if (act) act.shift = shiftOf(glyphOpMap.ops[d._src.op], s);
           }
         }
       }
       if (it.style) applyStyle(words[j].chars, { ...words[j].spec, ...it.style }, s);
       const c0 = words[j].chars[0];
       predictedWords.push({
-        oldId: words[j].spec.id, text: it.text, pen: [c0._src.tx + s * ux, c0._src.ty + s * uy], op: c0._src.op,
+        oldId: words[j].spec.id, text: it.text, pen: penAt(glyphOpMap.ops[c0._src.op], c0._src.tx, c0._src.ty, s), op: c0._src.op,
       });
       prevEndNew = wordEnd(j) + s;
       prevOld = j;
@@ -1125,11 +1248,11 @@ export function planTextEdit(glyphOpMap, req) {
       if (!anchorChar || !anchorChar._src) return { ...none, refused: 'An inserted word has no neighbor to type beside.' };
       const how = prevTail ? 'insertAfter' : 'insertBefore';
       const op = glyphOpMap.ops[anchorChar._src.op];
-      const axisLen = Math.hypot(op.tm[0], op.tm[1]) || 1;
       const r = codesIn(op, it.text);
       if ('error' in r) return { ...none, refused: r.error };
-      const advUser = r.adv * axisLen;
-      const start = prevTail ? prevEndNew + lineGap : wordStart(/** @type {{old: number}} */ (nextItem).old) + s;
+      const sp = spacedInsert(r, op, lineLetterSpacing, false);
+      const advUser = (sp.adv - sp.trailing) * kOf(op);
+      const start = prevTail ? prevEndNew + insertGap : wordStart(/** @type {{old: number}} */ (nextItem).old) + s;
       for (const d of copiesOf(anchorChar)) {
         const act = actionOf(d);
         if (!act) continue;
@@ -1137,13 +1260,13 @@ export function planTextEdit(glyphOpMap, req) {
         const rd = d === anchorChar ? r : codesIn(dop, it.text);
         if ('error' in rd) return { ...none, refused: rd.error };
         if (rd.faces) for (const f of rd.faces) facesUsed.set(f.tag, f);
-        // The word is spaced by the line's gap from the glyph or the insert it follows.
-        // The first word inserted before a glyph starts at that glyph's pen.
+        const spd = d === anchorChar ? sp : spacedInsert(rd, dop, lineLetterSpacing, false);
+        const before = how === 'insertAfter' ? (act.insertAfter || act.replace) : act.insertBefore;
+        let lead = before ? before.trailing || 0 : null;
+        if (lead === null && how === 'insertAfter') lead = excessOf(dop, lsOf(prevOld));
         /** @type {CodeInsert} */
-        const ins = {
-          hex: rd.hex, adv: rd.adv, gap: how === 'insertAfter' || act.insertBefore ? lineGap / (Math.hypot(dop.tm[0], dop.tm[1]) || 1) : 0, segments: rd.segments,
-        };
-        if (how === 'insertBefore') ins.shift = s;
+        const ins = { ...spd.ins, gap: lead === null ? 0 : insertGap / kOf(dop) - lead };
+        if (how === 'insertBefore') ins.shift = shiftOf(dop, s);
         if (it.style) {
           const ops = styleOps(dop, { id: '', penX: [], ...it.style }, null);
           // The lean is written as a text matrix at the insertion's pen when its codes are emitted, so styleOps gets no target here.
@@ -1155,18 +1278,18 @@ export function planTextEdit(glyphOpMap, req) {
         }
         chainInsert(act, how, ins);
       }
-      if (!prevTail) s += advUser + lineGap;
+      if (!prevTail) s += advUser + insertGap;
       const end = start + advUser;
-      const dAlong = start - alongPen(anchorChar._src.tx, anchorChar._src.ty);
+      const dAlong = start - glyphStart(anchorChar);
       predictedWords.push({
         oldId: null,
         text: 'codes' in r ? r.codes.map((fc) => fc.canon ?? fc.text).join('') : it.text,
-        pen: [anchorChar._src.tx + dAlong * ux, anchorChar._src.ty + dAlong * uy],
+        pen: penAt(op, anchorChar._src.tx, anchorChar._src.ty, dAlong),
         op: anchorChar._src.op,
       });
       prevEndNew = end;
       // The words after move by the line's growth past the previous word's old end, not by the whole inserted word, since a changed word before the insert may have shrunk.
-      if (prevTail && nextOldStart < Infinity && end + lineGap > nextOldStart + s) s += Math.max(0, end - (wordEnd(prevOld) + s));
+      if (prevTail && nextOldStart < Infinity && end + insertGap > nextOldStart + s) s += Math.max(0, end - (wordEnd(prevOld) + s));
       continue;
     }
     // A changed word that is also toggled is redrawn whole, with no kept prefix or suffix, so the toggle's operators around its first glyph wrap all of its codes.
@@ -1193,32 +1316,26 @@ export function planTextEdit(glyphOpMap, req) {
     const dropped = chars.slice(pre, chars.length - suf);
     const anchor = dropped[0] || chars[pre] || chars[pre - 1];
     const op = glyphOpMap.ops[anchor._src.op];
-    const axisLen = Math.hypot(op.tm[0], op.tm[1]) || 1;
-    const r = middle.length > 0 ? codesIn(op, middle) : { hex: '', adv: 0 };
+    const kU = kOf(op);
+    const r = middle.length > 0 ? codesIn(op, middle) : { hex: '', adv: 0, codes: [] };
     if ('error' in r) return { ...none, refused: r.error };
     const appendAfter = dropped.length === 0 && suf === 0 && pre > 0 ? chars[pre - 1] : null;
-    const ownSpacing = letterSpacingOf(chars);
-    const lsU = ownSpacing !== null ? ownSpacing : lineLetterSpacing;
-    // The operator's character spacing beyond the word's own letter spacing, in its text space.
+    const lsU = lsOf(j);
     // New codes are spaced by the word's letter spacing in every edit, since on some producers the operator's spacing is the word gap.
-    const excessOf = (/** @type {ShowOp} */ dop) => Math.max(0, dop.tc * (dop.tz / 100) - lsU / (Math.hypot(dop.tm[0], dop.tm[1]) || 1));
-    // Must match the advance `placeCodes` emits for the appended codes, since the words after are placed from it.
-    const growthU = appendAfter && 'codes' in r ? (!r.segments && excessOf(op) > 1e-9 ? r.adv - r.codes.length * excessOf(op) : r.adv) * axisLen : 0;
-    const spanStart = dropped.length > 0 ? glyphStart(dropped[0]) : (appendAfter ? glyphWidthEnd(appendAfter) : (pre > 0 ? glyphEnd(chars[pre - 1]) : glyphStart(chars[pre])));
-    const oldSpanEnd = suf > 0 ? glyphStart(chars[chars.length - suf]) : (dropped.length > 0 ? glyphEnd(dropped[dropped.length - 1]) : spanStart);
-    // Must match the advance `placeCodes` emits for the replacement, since the kept suffix and the words after are placed from it.
-    const rAdv = 'codes' in r && !r.segments && excessOf(op) > 1e-9 ? r.adv - (r.codes.length - 1) * excessOf(op) : r.adv;
-    const delta = appendAfter ? growthU : (spanStart + rAdv * axisLen) - oldSpanEnd;
+    const sp = spacedInsert(r, op, lsU, !!appendAfter);
+    const spanStart = dropped.length > 0 ? glyphStart(dropped[0]) : (appendAfter ? glyphEnd(appendAfter) : glyphStart(chars[pre]));
+    const oldSpanEnd = suf > 0 ? glyphStart(chars[chars.length - suf]) : wordEnd(j);
+    const delta = spanStart + (sp.adv - sp.trailing) * kU - oldSpanEnd;
     for (let gi = 0; gi < pre; gi++) {
       for (const d of copiesOf(chars[gi])) {
         const act = actionOf(d);
-        if (act) act.shift = s;
+        if (act) act.shift = shiftOf(glyphOpMap.ops[d._src.op], s);
       }
     }
     for (let gi = chars.length - suf; gi < chars.length; gi++) {
       for (const d of copiesOf(chars[gi])) {
         const act = actionOf(d);
-        if (act) act.shift = s + delta;
+        if (act) act.shift = shiftOf(glyphOpMap.ops[d._src.op], s + delta);
       }
     }
     const shiftAt = s;
@@ -1227,44 +1344,17 @@ export function planTextEdit(glyphOpMap, req) {
         const act = actionOf(d);
         if (!act) continue;
         const dop = glyphOpMap.ops[d._src.op];
-        const rd = d === c ? r : (middle.length > 0 ? codesIn(dop, middle) : { hex: '', adv: 0 });
+        const rd = d === c ? r : (middle.length > 0 ? codesIn(dop, middle) : { hex: '', adv: 0, codes: [] });
         if ('error' in rd) return rd.error;
         if ('faces' in rd && rd.faces) for (const f of rd.faces) facesUsed.set(f.tag, f);
-        const excess = 'codes' in rd && !rd.segments ? excessOf(dop) : 0;
-        const dstate = {
-          size: dop.fontSize, tc: dop.tc, tw: dop.tw, tz: dop.tz,
-        };
-        /**
-         * The codes' placement, with the operator's excess spacing taken back before each glyph after the first.
-         * Pass `firstToo` when the preceding glyph also trails that spacing, as in an append after the word's last glyph, so the first glyph takes it back too.
-         * @param {boolean} firstToo
-         */
-        const spaced = (firstToo) => (excess > 1e-9 && 'codes' in rd
-          ? {
-            glyphs: rd.codes.map((fc, i) => ({ hex: fc.code.toString(16).padStart(fc.nBytes * 2, '0'), adv: typedAdvance([fc], dstate), gap: i > 0 || firstToo ? -excess : 0 })),
-            adv: rd.adv - (firstToo ? rd.codes.length : rd.codes.length - 1) * excess,
-          }
-          : { glyphs: undefined, adv: rd.adv });
+        const spd = d === c ? sp : spacedInsert(rd, dop, lsU, how === 'insertAfter');
         if (how === 'replace') {
-          const sp = spaced(false);
-          act.replace = {
-            hex: rd.hex, adv: sp.adv, glyphs: sp.glyphs, segments: rd.segments,
-          };
-          act.shift = shiftAt;
+          act.replace = spd.ins;
+          act.shift = shiftOf(dop, shiftAt);
         } else if (how === 'insertBefore') {
-          const sp = spaced(false);
-          chainInsert(act, 'insertBefore', {
-            hex: rd.hex, adv: sp.adv, glyphs: sp.glyphs, gap: act.insertBefore ? lineGap / (Math.hypot(dop.tm[0], dop.tm[1]) || 1) : 0, shift: shiftAt, segments: rd.segments,
-          });
-        } else if (appendAfter) {
-          const sp = spaced(true);
-          act.insertAfter = {
-            hex: rd.hex, adv: sp.adv, glyphs: sp.glyphs, gap: 0, segments: rd.segments,
-          };
+          chainInsert(act, 'insertBefore', { ...spd.ins, gap: act.insertBefore ? insertGap / kOf(dop) - (act.insertBefore.trailing || 0) : 0, shift: shiftOf(dop, shiftAt) });
         } else {
-          act.insertAfter = {
-            hex: rd.hex, adv: rd.adv, gap: 0, segments: rd.segments,
-          };
+          act.insertAfter = spd.ins;
         }
       }
       return null;
@@ -1293,11 +1383,10 @@ export function planTextEdit(glyphOpMap, req) {
         const act = actionOf(d);
         if (!act) continue;
         const dop = glyphOpMap.ops[d._src.op];
-        const target = /** @type {[number, number]} */ ([d._src.tx + s * ux, d._src.ty + s * uy]);
-        const ops = styleOps(dop, { ...words[j].spec, ...it.style }, target);
+        const ops = styleOps(dop, { ...words[j].spec, ...it.style }, penAt(dop, d._src.tx, d._src.ty, s));
         act.before = [...(act.before || []), ...ops.before];
         act.after = [...(act.after || []), ...ops.after];
-        act.shift = s;
+        act.shift = shiftOf(dop, s);
         if (ops.setsPen) act.setsPen = true;
         if (ops.resetsPen) act.resetsPen = true;
       }
@@ -1307,21 +1396,18 @@ export function planTextEdit(glyphOpMap, req) {
     predictedWords.push({
       oldId: words[j].spec.id,
       text: it.text.slice(0, preLen) + middleRecorded + it.text.slice(it.text.length - sufLen),
-      pen: [chars[0]._src.tx + s * ux, chars[0]._src.ty + s * uy],
+      pen: penAt(glyphOpMap.ops[chars[0]._src.op], chars[0]._src.tx, chars[0]._src.ty, s),
       op: chars[0]._src.op,
     });
     // A margin over the parser's word-split threshold of 0.15 of the font size, which a gap must exceed to read as a word break.
-    const minGap = 0.16 * op.fontSize * axisLen;
+    const minGap = 0.16 * op.fontSize * kU;
     prevOld = j;
     prevTail = suf > 0 ? chars[chars.length - 1] : (dropped.length > 0 ? dropped[0] : chars[pre - 1]);
-    if (appendAfter) {
-      const endW = spanStart + s + growthU;
-      prevEndNew = endW + (glyphEnd(appendAfter) - spanStart);
-      if (nextOldStart < Infinity) s += tailShift(endW, spanStart + s, nextOldStart + s, minGap);
-    } else {
-      const end = wordEnd(j) + s + delta;
-      prevEndNew = end;
-      if (nextOldStart < Infinity) s += tailShift(end, wordEnd(j) + s, nextOldStart + s, minGap);
+    const end = wordEnd(j) + s + delta;
+    prevEndNew = end;
+    if (nextOldStart < Infinity) {
+      const move = tailShift(end, wordEnd(j) + s, nextOldStart + s, minGap, stopGap);
+      if (move >= 0 || mayCloseUp(nextOld, s + move)) s += move;
     }
   }
   registerOps();
@@ -1355,11 +1441,9 @@ export function planTextEdit(glyphOpMap, req) {
       const p = planFor(opIdx);
       const aC = inOp[0];
       const zC = inOp[inOp.length - 1];
-      const dirLen = Math.hypot(p.op.tm[0], p.op.tm[1]) || 1;
-      const target = /** @type {[number, number]} */ ([aC._src.tx + shift * (p.op.tm[0] / dirLen), aC._src.ty + shift * (p.op.tm[1] / dirLen)]);
       const {
         before, after, setsPen, resetsPen,
-      } = styleOps(p.op, spec, target);
+      } = styleOps(p.op, spec, penAt(p.op, aC._src.tx, aC._src.ty, shift));
       const actA = /** @type {GlyphAction} */ (actionOf(aC));
       actA.before = [...(actA.before || []), ...before];
       if (setsPen) actA.setsPen = true;
