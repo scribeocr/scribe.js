@@ -974,20 +974,36 @@ export function createSearchBar(scribe, rootElem) {
   searchCloseElem.addEventListener('click', () => closeSearch());
 
   /**
-   * Install the document-level Ctrl/Cmd+F shortcut that opens the bar (scoped by keyboardScope).
+   * @param {boolean} backwards
+   * @returns {Promise<void>}
+   */
+  async function stepMatch(backwards) {
+    if (!scribe.state.searchMode || !searchInputElem.value) {
+      openSearch();
+      return;
+    }
+    await (backwards ? prevMatch(scribe) : nextMatch(scribe));
+    updateSearchCounter();
+  }
+
+  /**
    * @returns {() => void} A cleanup function that removes the listener.
    */
   function installFindShortcut() {
     const handler = (event) => {
-      if (!((event.key === 'f' || event.key === 'F') && (event.ctrlKey || event.metaKey) && !event.altKey)) return;
-      if (scribe.opt.keyboardScope === 'off') return;
+      if (event.altKey || scribe.opt.keyboardScope === 'off') return;
+      const mod = event.ctrlKey || event.metaKey;
+      const isFind = mod && (event.key === 'f' || event.key === 'F');
+      const isStep = (mod && (event.key === 'g' || event.key === 'G')) || (!mod && event.key === 'F3');
+      if (!isFind && !isStep) return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
       const isActive = ScribeViewer.getActiveViewer() === scribe;
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
-      openSearch();
+      if (isFind) openSearch();
+      else stepMatch(event.shiftKey);
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
@@ -1003,6 +1019,7 @@ export function createSearchBar(scribe, rootElem) {
     runSearch,
     updateSearchCounter,
     resetSearch,
+    stepMatch,
     installFindShortcut,
   };
 }
@@ -2611,7 +2628,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       bottom: 0;
       opacity: 0;
       pointer-events: none;
-      z-index: 9;
+      /* Above a pinned surface (30), so a drop onto the library home is labeled too. */
+      z-index: 31;
       background: var(--scribe-accent-soft);
       transition: opacity .06s ease-out;
     }

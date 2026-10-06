@@ -1,4 +1,5 @@
 import { makeIconButton } from './controls/toolbar.js';
+import { shortcutLabel } from './platform.js';
 
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 /**
@@ -280,8 +281,8 @@ export function createStyleCluster(scribe, opts = {}) {
     b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); b.click(); } });
     return { el: b, label, hint };
   };
-  const bold = toggle('bold', 'Bold', BOLD_SVG, 'Ctrl+B');
-  const italic = toggle('italic', 'Italic', ITALIC_SVG, 'Ctrl+I');
+  const bold = toggle('bold', 'Bold', BOLD_SVG, shortcutLabel('B'));
+  const italic = toggle('italic', 'Italic', ITALIC_SVG, shortcutLabel('I'));
   const split = document.createElement('span');
   split.className = 'scribe-tc-split';
   const apply = makeIconButton('Text color', TEXT_COLOR_SVG);

@@ -35,6 +35,7 @@ import {
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
+import { IS_MAC, shortcutLabel } from '../js/platform.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { readingsListDestroy } from '../js/viewerReadings.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
@@ -763,6 +764,12 @@ class ScribePDFViewer {
     this._libraryInstances = [];
     /** @type {?import('../library/libraryView.js').LibraryInstance} The pinned surface shown most recently, which an emptied tab strip returns to. */
     this._lastPinned = null;
+    /** @type {?((event: DragEvent) => ?string)} */
+    this._dragOverlayLabelFor = null;
+    /** @type {?(() => void)} */
+    this._hideDragOverlay = null;
+    /** @type {Array<{label: string, open: () => void, dir?: string}>} */
+    this._recentFiles = [];
     /**
      * Fired when a document's assistant history changes, so the embedder can mark that document's session dirty.
      * The document is passed rather than assumed active, because a turn can settle after the user switches tabs.
@@ -894,6 +901,12 @@ class ScribePDFViewer {
       open.openControls.style.display = 'none';
       print.printControls.style.display = 'none';
       appMenu.menuWrap.append(open.openControls, print.printControls);
+      // The Edit Text line editor types into a hidden input but keeps its own history, which `_doUndo` steps.
+      const fieldOwnsUndo = () => {
+        if (this.scribe._editTextLineEditor?.isOpen()) return false;
+        const el = document.activeElement;
+        return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName));
+      };
       /**
        * The app's command handlers by id, shared between the in-window app menu and a desktop shell's native menus.
        * @type {Object<string, () => (void | Promise<void>)>}
@@ -903,12 +916,19 @@ class ScribePDFViewer {
         print: () => print.printElem.click(),
         'rotate-left': () => this.scribe.rotatePage(this.scribe.state.cp.n, -90),
         'rotate-right': () => this.scribe.rotatePage(this.scribe.state.cp.n, 90),
+        undo: () => { if (fieldOwnsUndo()) document.execCommand('undo'); else this._doUndo(false); },
+        redo: () => { if (fieldOwnsUndo()) document.execCommand('redo'); else this._doUndo(true); },
+        find: () => {
+          const front = this._libraryInstances.find((inst) => inst.visible());
+          if (front) front.focusSearch(); else this._searchBar?.openSearch();
+        },
+        'find-next': () => this._searchBar?.stepMatch(false),
+        'find-prev': () => this._searchBar?.stepMatch(true),
       };
-      const accelMod = navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl+';
-      appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, `${accelMod}O`);
+      appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, shortcutLabel('O'));
       // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
       this._recentFilesSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
-      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, `${accelMod}P`);
+      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, shortcutLabel('P'));
       this._menuCommands.inspect = () => this._enterInspectFromMenu();
       this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
@@ -979,10 +999,10 @@ class ScribePDFViewer {
       }
 
       if (this._editEnabled) {
-        const undoBtn = makeIconButton('Undo (Ctrl+Z)', UNDO_SVG);
+        const undoBtn = makeIconButton(`Undo (${shortcutLabel('Z')})`, UNDO_SVG);
         undoBtn.classList.add('disabled');
         undoBtn.addEventListener('click', () => { if (!undoBtn.classList.contains('disabled')) this._doUndo(false); });
-        const redoBtn = makeIconButton('Redo (Ctrl+Y)', REDO_SVG);
+        const redoBtn = makeIconButton(`Redo (${IS_MAC ? shortcutLabel('Z', { shift: true }) : shortcutLabel('Y')})`, REDO_SVG);
         redoBtn.classList.add('disabled');
         redoBtn.addEventListener('click', () => { if (!redoBtn.classList.contains('disabled')) this._doUndo(true); });
         this._undoBtnElem = undoBtn;
@@ -1189,6 +1209,19 @@ class ScribePDFViewer {
       this._teardownCallbacks.push(this._print.installPrintShortcut());
     }
 
+    // Control-click is the Mac's right-click.
+    // It also arrives as a button-0 press, which every primary-button handler would take for a left click.
+    if (IS_MAC) {
+      /** @param {PointerEvent | MouseEvent} event */
+      const swallowControlPress = (event) => { if (event.button === 0 && event.ctrlKey) event.stopPropagation(); };
+      this.pdfViewerElem.addEventListener('pointerdown', swallowControlPress, true);
+      this.pdfViewerElem.addEventListener('mousedown', swallowControlPress, true);
+      this._teardownCallbacks.push(() => {
+        this.pdfViewerElem.removeEventListener('pointerdown', swallowControlPress, true);
+        this.pdfViewerElem.removeEventListener('mousedown', swallowControlPress, true);
+      });
+    }
+
     // Ctrl/Cmd+O opens the file picker (scoped by keyboardScope), replacing the browser's open default.
     if (this._open) {
       this._teardownCallbacks.push(this._open.installOpenShortcut());
@@ -1201,8 +1234,9 @@ class ScribePDFViewer {
       dragOverlay.className = 'scribe-drag-overlay';
       dragOverlay.innerHTML = '<div class="scribe-drag-frame"></div><div class="scribe-drag-pill">'
         + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>'
-        + '<span>Drop to open in a new tab</span></div>';
+        + '<span>Drop to open</span></div>';
       this.pdfViewerElem.appendChild(dragOverlay);
+      const dragPillText = /** @type {HTMLElement} */ (dragOverlay.querySelector('.scribe-drag-pill span'));
 
       // `dragenter`/`dragleave` bubble per descendant, so a bare `dragleave` fires mid-drag.
       // The depth counter instead reaches 0 only when the cursor truly leaves the component.
@@ -1216,6 +1250,7 @@ class ScribePDFViewer {
       /** @param {DragEvent} event */
       const overDropZone = (event) => !!this.dropZone && event.target instanceof Node && this.dropZone.contains(event.target);
       const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.opacity = '0'; };
+      this._hideDragOverlay = hideDragOverlay;
       // A file dragged over the (visible, editable) thumbnail rail drops into the document at the hovered gap rather than opening a new tab.
       /** @param {number} clientX @param {number} clientY @returns {boolean} */
       const overThumbnailRail = (clientX, clientY) => {
@@ -1228,6 +1263,8 @@ class ScribePDFViewer {
         if (overDropZone(event) || !isFileDrag(event)) return;
         this._fileDragDepth++;
         if (this._fileDragDepth !== 1) return;
+        dragPillText.textContent = this._dragOverlayLabelFor?.(event)
+          ?? (this._tabs.length ? 'Drop to open in a new tab' : 'Drop to open');
         dragOverlay.style.top = `${this._topBarsHeight()}px`; // sit below the toolbar and tab strip, leaving them visible
         // Keep the "open in a new tab" overlay clear of the thumbnail rail: dropping over the rail inserts pages there instead, so covering it would mislabel that region.
         const railW = (this._activeSidebar === 'thumbnails' && this._thumbnailPanel)
@@ -2134,7 +2171,7 @@ class ScribePDFViewer {
 
     // Reject unsupported types up front so a `.py`/`.docx`/... does not open as an empty tab.
     for (const f of list.filter((x) => !isSupported(x))) {
-      this._showToast(`Can't open “${f.name || 'this file'}” — Scribe opens PDFs, images, and scanned-text files.`);
+      this._showToast(`Can't open “${f.name || 'this file'}”: only PDFs, images, and scanned-text files can be opened.`);
     }
     const supported = list.filter(isSupported);
     const pdfs = supported.filter(isPdf);
@@ -3948,10 +3985,12 @@ class ScribePDFViewer {
   /**
    * Populate the app menu's "Open recent" submenu, for a desktop shell that can reopen files by path.
    * The row stays hidden while the list is empty, so surfaces that never call this never show it.
-   * @param {Array<{label: string, open: () => void}>} files - Most recent first.
+   * @param {Array<{label: string, open: () => void, dir?: string}>} files
    * @param {() => void} [onClear] - Invoked by the submenu's "Clear list" row.
    */
   setRecentFiles(files, onClear) {
+    this._recentFiles = files;
+    this.pdfViewerElem.dispatchEvent(new CustomEvent('scribe-recent-files-change'));
     if (!this._recentFilesSubmenu) return;
     /** @type {Array<'sep' | {label: string, onClick: () => void}>} */
     const rows = files.map((f) => ({ label: f.label, onClick: f.open }));
@@ -5567,24 +5606,35 @@ class ScribePDFViewer {
   }
 
   /**
-   * Wire a toggle element to open/close a menu, closing it on any outside click.
    * @param {HTMLElement} toggleEl
    * @param {HTMLElement} menuEl
    */
   _wireDropdown(toggleEl, menuEl) {
-    toggleEl.addEventListener('click', (e) => {
-      e.stopPropagation();
+    const close = () => {
+      menuEl.style.display = 'none';
+      toggleEl.classList.remove('active');
+    };
+    toggleEl.addEventListener('click', () => {
       const open = menuEl.style.display !== 'none';
       menuEl.style.display = open ? 'none' : 'block';
       toggleEl.classList.toggle('active', !open);
     });
-    const onDocClick = (e) => {
-      if (menuEl.style.display === 'none' || menuEl.contains(/** @type {Node} */ (e.target))) return;
-      menuEl.style.display = 'none';
-      toggleEl.classList.remove('active');
+    const onDocPress = (e) => {
+      const target = /** @type {Node} */ (e.target);
+      if (menuEl.style.display === 'none' || menuEl.contains(target) || toggleEl.contains(target)) return;
+      close();
     };
-    document.addEventListener('click', onDocClick);
-    this._teardownCallbacks.push(() => document.removeEventListener('click', onDocClick));
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || menuEl.style.display === 'none') return;
+      e.preventDefault();
+      close();
+    };
+    document.addEventListener('pointerdown', onDocPress, true);
+    document.addEventListener('keydown', onKey, true);
+    this._teardownCallbacks.push(() => {
+      document.removeEventListener('pointerdown', onDocPress, true);
+      document.removeEventListener('keydown', onKey, true);
+    });
   }
 
   /**

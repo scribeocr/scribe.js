@@ -41,7 +41,11 @@ const overlayColors = (dark) => (dark
 
 function pushRecentFiles() {
   if (!mainWindow) return;
-  mainWindow.webContents.send('recent-files', shellState.recentFiles.map((f) => ({ label: path.basename(f) })));
+  const home = app.getPath('home');
+  mainWindow.webContents.send('recent-files', shellState.recentFiles.map((f) => {
+    const dir = path.dirname(f);
+    return { label: path.basename(f), dir: dir === home || dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir };
+  }));
 }
 
 // Feeds the macOS Open Recent menu, the Windows jump list, and the in-window menu's Open recent submenu.
@@ -270,6 +274,8 @@ ipcMain.on('menu-state', (_event, state) => {
     if (item) Object.assign(item, props);
   };
   set('print', { enabled: state.docOpen });
+  set('find-next', { enabled: state.docOpen });
+  set('find-prev', { enabled: state.docOpen });
   set('export-pdf', { enabled: state.docOpen });
   set('rotate-left', { enabled: state.docOpen });
   set('rotate-right', { enabled: state.docOpen });
@@ -355,7 +361,8 @@ if (!gotTheLock) {
             { id: 'open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('open') },
             { label: 'Open Recent', role: 'recentDocuments', submenu: [{ label: 'Clear Menu', role: 'clearRecentDocuments' }] },
             { type: 'separator' },
-            { role: 'close' },
+            { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
+            { role: 'close', label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
             { type: 'separator' },
             { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
             { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
@@ -367,9 +374,15 @@ if (!gotTheLock) {
         {
           label: 'Edit',
           submenu: [
-            { role: 'undo' }, { role: 'redo' },
+            // The undo and redo roles act only on text fields, which would leave the document's history unreachable from the menu.
+            { id: 'undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('undo') },
+            { id: 'redo', label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: send('redo') },
             { type: 'separator' },
             { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+            { type: 'separator' },
+            { id: 'find', label: 'Find…', accelerator: 'CmdOrCtrl+F', click: send('find') },
+            { id: 'find-next', label: 'Find Next', accelerator: 'CmdOrCtrl+G', enabled: false, click: send('find-next') },
+            { id: 'find-prev', label: 'Find Previous', accelerator: 'Shift+CmdOrCtrl+G', enabled: false, click: send('find-prev') },
           ],
         },
         {

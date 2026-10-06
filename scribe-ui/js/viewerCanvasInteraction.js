@@ -1,5 +1,6 @@
 /* eslint-disable import/no-cycle */
 import scribe from '../../scribe.js';
+import { shortcutLabel } from './platform.js';
 import {
   ScribeViewer,
 } from '../viewer.js';
@@ -299,8 +300,8 @@ const createContextMenuHTML = () => {
       item('contextMenuCopyLayoutTableContentsButton', 'Copy Table Contents', CM_COPY_SVG, copyTableContentsClick),
     ],
     [
-      withHint(item('contextMenuBoldButton', 'Bold', CM_BOLD_SVG, boldToggleClick), 'Ctrl+B'),
-      withHint(item('contextMenuItalicButton', 'Italic', CM_ITALIC_SVG, italicToggleClick), 'Ctrl+I'),
+      withHint(item('contextMenuBoldButton', 'Bold', CM_BOLD_SVG, boldToggleClick), shortcutLabel('B')),
+      withHint(item('contextMenuItalicButton', 'Italic', CM_ITALIC_SVG, italicToggleClick), shortcutLabel('I')),
     ],
     [
       item('contextMenuHighlightButton', 'Highlight', CM_HIGHLIGHT_SVG, highlightSelectionClick),

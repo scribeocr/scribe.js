@@ -349,11 +349,8 @@ window.addEventListener('blur', () => {
   for (const v of _allViewers) v.stopAutoScroll();
 });
 
-// The pointer can also leave the window without the window losing focus, e.g. the middle button is released outside it.
-// Then neither a mouseup nor a blur fires, so the session would otherwise linger: a stuck indicator, plus the rAF tick scrolling on at its last speed.
-// relatedTarget is null only when the pointer leaves the document entirely.
-document.addEventListener('mouseout', (event) => {
-  if (event.relatedTarget === null) {
+document.addEventListener('mouseover', (event) => {
+  if (event.relatedTarget === null && !(event.buttons & 4)) {
     for (const v of _allViewers) v.stopAutoScroll();
   }
 });
@@ -378,7 +375,8 @@ const handleWheel = (viewer, event) => {
   event.preventDefault();
   event.stopPropagation();
 
-  if (event.ctrlKey) {
+  // A trackpad pinch arrives as a Ctrl+wheel event.
+  if (event.ctrlKey || event.metaKey) {
     const trackPadMode = checkTrackPad(event);
 
     let delta = event.deltaY;

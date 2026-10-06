@@ -4,6 +4,7 @@
 import scribeLib from '../../scribe.js';
 import { saveAs } from '../../js/utils/miscUtils.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
+import { OPEN_SVG } from '../js/controls/toolbar.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
@@ -22,6 +23,8 @@ const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" style="pointer
 const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>';
 // eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
+// eslint-disable-next-line max-len
+const DOOR_FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
 // eslint-disable-next-line max-len
 const FIELD_SEARCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
@@ -100,6 +103,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {?string} libraryHash
  * @property {?number} libraryOwner
  * @property {() => boolean} visible
+ * @property {() => void} focusSearch
  * @property {() => void} show
  * @property {() => void} hide
  * @property {() => void} docOpened
@@ -267,9 +271,26 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row .dt { font-variant-numeric: tabular-nums; color: var(--scribe-ink-2); font-size: 12.5px; }
 .scribe-pdf-viewer .scribe-library-row .none { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-empty { text-align: center; opacity: 0.7; padding: 60px 20px; }
-.scribe-pdf-viewer .scribe-library-card-wall { max-width: 520px; margin: 60px auto; text-align: center; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 36px 32px; }
+.scribe-pdf-viewer .scribe-library-card-wall { max-width: 520px; margin: 60px auto; text-align: center; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 36px 32px; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-card-wall h3 { margin: 0 0 10px; font-size: 17px; }
 .scribe-pdf-viewer .scribe-library-card-wall p { margin: 0 0 20px; opacity: 0.75; line-height: 1.5; }
+.scribe-pdf-viewer .scribe-library-doors { display: flex; flex-wrap: wrap; gap: 24px; justify-content: center; align-items: stretch; padding: 40px 22px 0; -webkit-user-select: text; user-select: text; }
+.scribe-pdf-viewer .scribe-library-door { width: 370px; max-width: 100%; box-sizing: border-box; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 30px 28px 26px; display: flex; flex-direction: column; align-items: center; text-align: center; }
+.scribe-pdf-viewer .scribe-library-door .ic { width: 38px; height: 38px; color: var(--scribe-ink-3); margin-bottom: 14px; }
+.scribe-pdf-viewer .scribe-library-door .ic svg { width: 100%; height: 100%; display: block; }
+.scribe-pdf-viewer .scribe-library-door h3 { margin: 0 0 8px; font-size: 17px; font-weight: 700; }
+.scribe-pdf-viewer .scribe-library-door p { margin: 0 0 18px; opacity: 0.75; line-height: 1.5; }
+.scribe-pdf-viewer .scribe-library-door .grow { flex: 1; }
+.scribe-pdf-viewer .scribe-library-door .hint { font-size: 12.5px; color: var(--scribe-ink-3); margin-top: 10px; }
+.scribe-pdf-viewer .scribe-library-btn .bi { display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 7px; }
+.scribe-pdf-viewer .scribe-library-recent { width: 100%; text-align: left; margin: 0 0 16px; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-recent .h { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--scribe-ink-3); margin: 12px 0 4px; }
+.scribe-pdf-viewer .scribe-library-recent button { display: flex; align-items: center; gap: 9px; width: calc(100% + 12px); margin: 0 -6px; padding: 5px 6px; border: none; border-radius: 6px; background: none; color: var(--scribe-ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-library-recent button:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-recent button:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-recent .fi { width: 16px; height: 16px; flex: none; display: inline-flex; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-recent .n { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
 .scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; }
 .scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
 /* Columns the layout dropped to keep the name readable.
@@ -338,9 +359,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
 @keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
-.scribe-pdf-viewer .scribe-library-surface.drag-over { outline: 2px dashed var(--scribe-accent); outline-offset: -8px; }
-.scribe-pdf-viewer .scribe-library-drop-hint { position: absolute; left: 50%; top: 54%; transform: translate(-50%, -50%); z-index: 5; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 9px; box-shadow: var(--scribe-shadow-pop); padding: 10px 16px; font-size: 13px; color: var(--scribe-ink); pointer-events: none; display: flex; align-items: center; gap: 9px; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-drop-hint svg { width: 17px; height: 17px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-crumbs { display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-crumb:first-child { margin-left: -7px; }
@@ -830,6 +848,11 @@ export function createLibraryInstance(viewer, opts) {
    */
   const api = /** @type {LibraryInstance} */ ({});
 
+  const syncBarForStore = () => {
+    if (!barSwapped || !barTitle || !barControls) return;
+    barTitle.style.display = store || pendingHandle ? '' : 'none';
+    barControls.style.display = store ? '' : 'none';
+  };
   /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu and any shell window controls in place. */
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
@@ -845,8 +868,7 @@ export function createLibraryInstance(viewer, opts) {
     for (const el of [...viewer.toolbarElemEnd.children]) {
       if (el !== barControls && !el.classList.contains('scribe-shell-corner')) hide(/** @type {HTMLElement} */ (el));
     }
-    barTitle.style.display = '';
-    barControls.style.display = '';
+    syncBarForStore();
     // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the library's controls off the edge.
     priorEndZoneFlex = viewer.toolbarElemEnd.style.flex;
     viewer.toolbarElemEnd.style.flex = '0 1 auto';
@@ -1301,12 +1323,12 @@ export function createLibraryInstance(viewer, opts) {
       // Only the library can be store-less, waiting at its folder wall.
       // Every other instance has its store from birth and waits only for its scan.
       if (!isLibrary) return;
-      const card = document.createElement('div');
-      card.className = 'scribe-library-card-wall';
-      const connectBtn = document.createElement('button');
-      connectBtn.className = 'scribe-library-btn primary';
       if (pendingHandle) {
+        const card = document.createElement('div');
+        card.className = 'scribe-library-card-wall';
         card.innerHTML = `<h3>Reconnect your library</h3><p>Your browser needs permission again to read “${pendingHandle.name}”. Nothing is lost — one click restores access.</p>`;
+        const connectBtn = document.createElement('button');
+        connectBtn.className = 'scribe-library-btn primary';
         connectBtn.textContent = `Reconnect “${pendingHandle.name}”`;
         connectBtn.addEventListener('click', async () => {
           try {
@@ -1316,18 +1338,70 @@ export function createLibraryInstance(viewer, opts) {
             await openLibrary(s);
           } catch { /* Permission denied or dismissed. */ }
         });
-      } else {
-        card.innerHTML = '<h3>Set up your library</h3><p>Pick a folder of PDFs. Scribe reads your documents in place and keeps annotations, '
-          + 'bookmarks, and text corrections in its own files inside that folder — your PDFs are never modified.</p>';
-        connectBtn.textContent = 'Choose a folder…';
-        connectBtn.addEventListener('click', async () => {
-          try {
-            await openLibrary(await LibraryStore.connectNew());
-          } catch { /* Picker dismissed. */ }
-        });
+        card.appendChild(connectBtn);
+        body.appendChild(card);
+        return;
       }
-      card.appendChild(connectBtn);
-      body.appendChild(card);
+      const doors = document.createElement('div');
+      doors.className = 'scribe-library-doors';
+      const openDoor = document.createElement('div');
+      openDoor.className = 'scribe-library-door';
+      openDoor.innerHTML = `<div class="ic">${DOOR_FILE_SVG}</div><h3>Open a document</h3>`
+        + '<p>A PDF or a scanned document. Text in scans is recognized, so you can search and copy it.</p>';
+      const recents = viewer._recentFiles ?? [];
+      if (recents.length) {
+        const list = document.createElement('div');
+        list.className = 'scribe-library-recent';
+        list.innerHTML = '<div class="h">Recent</div>';
+        for (const f of recents.slice(0, 5)) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.innerHTML = `<span class="fi">${FILE_SVG}</span><span class="n"></span><span class="p"></span>`;
+          /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = f.label;
+          /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = f.dir ?? '';
+          row.title = f.dir ? `${f.dir}/${f.label}` : f.label;
+          row.addEventListener('click', () => f.open());
+          list.appendChild(row);
+        }
+        openDoor.appendChild(list);
+      }
+      const openGrow = document.createElement('div');
+      openGrow.className = 'grow';
+      openDoor.appendChild(openGrow);
+      const openBtn = document.createElement('button');
+      openBtn.type = 'button';
+      openBtn.className = 'scribe-library-btn';
+      openBtn.innerHTML = `<span class="bi">${OPEN_SVG}</span>Open…`;
+      openBtn.addEventListener('click', () => viewer.runMenuCommand('open'));
+      openDoor.appendChild(openBtn);
+      const openHint = document.createElement('div');
+      openHint.className = 'hint';
+      openHint.textContent = 'or drop a file here';
+      openDoor.appendChild(openHint);
+      const libDoor = document.createElement('div');
+      libDoor.className = 'scribe-library-door';
+      libDoor.innerHTML = `<div class="ic">${LIBRARY_SVG}</div><h3>Build a library</h3>`
+        + '<p>Choose a folder and every PDF in it becomes searchable from one place, scanned pages included. '
+        + 'Your notes and bookmarks are saved beside each file. The PDFs themselves are never changed.</p><div class="grow"></div>';
+      const folderBtn = document.createElement('button');
+      folderBtn.type = 'button';
+      folderBtn.className = 'scribe-library-btn';
+      folderBtn.innerHTML = `<span class="bi">${FOLDER_SVG}</span>Choose a folder…`;
+      folderBtn.addEventListener('click', async () => {
+        try {
+          await openLibrary(await LibraryStore.connectNew());
+        } catch { /* Picker dismissed. */ }
+      });
+      libDoor.appendChild(folderBtn);
+      const libHint = document.createElement('div');
+      libHint.className = 'hint';
+      libHint.textContent = 'Search every PDF in the folder from one place';
+      libDoor.appendChild(libHint);
+      doors.append(openDoor, libDoor);
+      body.appendChild(doors);
+      if (!document.activeElement || document.activeElement === document.body) {
+        openBtn.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
+      }
       return;
     }
 
@@ -3691,6 +3765,7 @@ export function createLibraryInstance(viewer, opts) {
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
     render();
+    syncBarForStore();
     // Restore before the folder scan, so restore latency does not scale with library size.
     const record = resumeRecord;
     resumeRecord = null;
@@ -4079,73 +4154,63 @@ export function createLibraryInstance(viewer, opts) {
     render();
   });
 
-  const dropHint = document.createElement('div');
-  dropHint.className = 'scribe-library-drop-hint';
-  dropHint.innerHTML = IMAGE_SVG;
-  const dropHintText = document.createElement('span');
-  dropHint.appendChild(dropHintText);
-  dropHint.style.display = 'none';
-  surface.appendChild(dropHint);
-
   // `dataTransfer.files` stays empty until the drop, so `types` is the only way to spot a file drag while it is still moving.
   /** @param {DragEvent} e */
   const isFileDrag = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
 
+  const priorDragLabel = viewer._dragOverlayLabelFor;
+  if (!readOnly) {
+    viewer._dragOverlayLabelFor = (e) => {
+      if (!visible || !store) return priorDragLabel ? priorDragLabel(e) : null;
+      // Mid-drag the payload exposes MIME types but never file names, so the count has to go by type.
+      let imageN = 0;
+      let otherN = 0;
+      for (const item of e.dataTransfer?.items ?? []) {
+        if (item.kind !== 'file') continue;
+        if (item.type === 'image/png' || item.type === 'image/jpeg') imageN += 1;
+        else otherN += 1;
+      }
+      if (imageN && !otherN) return `Drop to create a PDF from ${imageN === 1 ? '1 image' : `${imageN} images`}`;
+      return `Drop to add to ${store.root.name}`;
+    };
+  }
   /** @type {?number} */
   let dragClearTimer = null;
-  const clearDragState = () => {
-    if (dragClearTimer !== null) {
-      window.clearTimeout(dragClearTimer);
-      dragClearTimer = null;
-    }
-    surface.classList.remove('drag-over');
-    dropHint.style.display = 'none';
-  };
-
-  surface.addEventListener('dragover', (e) => {
-    // preventDefault on dragover is what marks the surface as a drop target, so it has to stay behind this guard.
-    // A read-only surface leaves the drag to the viewer root, which opens the drop as a new tab.
-    if (readOnly || !isFileDrag(e)) return;
-    e.preventDefault();
-    if (dragClearTimer !== null) {
-      window.clearTimeout(dragClearTimer);
-      dragClearTimer = null;
-    }
-    surface.classList.add('drag-over');
-    // Mid-drag the payload exposes MIME types but never file names, so the count has to go by type.
-    let imageN = 0;
-    let otherN = 0;
-    for (const item of e.dataTransfer?.items ?? []) {
-      if (item.kind !== 'file') continue;
-      if (item.type === 'image/png' || item.type === 'image/jpeg') imageN += 1;
-      else otherN += 1;
-    }
-    if (imageN && !otherN) {
-      const label = `${imageN === 1 ? '1 image' : `${imageN} images`} — drop to create a PDF`;
-      if (dropHintText.textContent !== label) dropHintText.textContent = label;
-      dropHint.style.display = '';
-    } else {
-      dropHint.style.display = 'none';
-    }
+  surface.addEventListener('dragover', () => {
+    if (dragClearTimer === null) return;
+    window.clearTimeout(dragClearTimer);
+    dragClearTimer = null;
   });
   surface.addEventListener('dragleave', (e) => {
-    // dragleave bubbles from every descendant, so crossing between two cards fires one here with the cursor still inside.
-    // A depth counter like the viewer root's would strand its count when a finished ingest rebuilds the cards mid-drag, losing a leave.
+    if (readOnly || !store || !isFileDrag(e)) return;
+    // A finished ingest that rebuilds the cards mid-drag loses a dragleave, which would strand the viewer's overlay over the library.
     const r = surface.getBoundingClientRect();
     if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) {
-      clearDragState();
+      viewer._hideDragOverlay?.();
       return;
     }
     // A drag can end without ever leaving (Esc, or a drop another handler claims), reporting a last position inside and then going quiet.
     // The drag model repeats dragover at least every 350ms, so 600ms cannot fire during a live drag.
-    if (dragClearTimer === null) dragClearTimer = window.setTimeout(clearDragState, 600);
+    if (dragClearTimer === null) {
+      dragClearTimer = window.setTimeout(() => {
+        dragClearTimer = null;
+        viewer._hideDragOverlay?.();
+      }, 600);
+    }
   });
   surface.addEventListener('drop', async (e) => {
     if (readOnly || !isFileDrag(e)) return;
+    if (!store) {
+      // A dropped folder is refused, since the viewer would open its files as tabs.
+      const items = [...(e.dataTransfer?.items ?? [])];
+      if (!items.some((item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      viewer._showToast('Drop PDF files here, or choose a folder to set up a library.');
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
-    clearDragState();
-    if (!store) return;
     const files = await filesFromDropEvent(e);
     // A drag can name 'Files' and still resolve to nothing, e.g. an empty folder.
     // There is no unsupported file to name, so there is nothing worth saying.
@@ -4167,6 +4232,8 @@ export function createLibraryInstance(viewer, opts) {
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
   viewer.pdfViewerElem.addEventListener('input', onInput, true);
+  const onRecentsChange = () => { if (visible && !store && !pendingHandle) render(); };
+  viewer.pdfViewerElem.addEventListener('scribe-recent-files-change', onRecentsChange);
   // Two single-slot hooks on the viewer: the first instance sets them, and they mark any instance's tab dirty.
   const ownsEditHooks = !viewer.scribe.onAnnotationsEdited;
   if (ownsEditHooks) {
@@ -4201,12 +4268,7 @@ export function createLibraryInstance(viewer, opts) {
   surface.addEventListener('pointerdown', trackEngagement, true);
   surface.addEventListener('focusin', trackEngagement, true);
 
-  // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
-  const onFindShortcut = (e) => {
-    if (!visible) return;
-    if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
-    e.preventDefault();
-    e.stopPropagation();
+  const focusSearch = () => {
     const pane = panes.mounted();
     const paneFind = paneEngaged && pane
       ? /** @type {?HTMLInputElement} */ (pane.pane.querySelector('.scribe-library-pv-find input'))
@@ -4214,6 +4276,14 @@ export function createLibraryInstance(viewer, opts) {
     const findTarget = paneFind || searchInput;
     findTarget.focus();
     findTarget.select();
+  };
+  // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
+  const onFindShortcut = (e) => {
+    if (!visible) return;
+    if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    focusSearch();
   };
   document.addEventListener('keydown', onFindShortcut, true);
 
@@ -4240,6 +4310,7 @@ export function createLibraryInstance(viewer, opts) {
     libraryHash: opts.libraryHash ?? null,
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
+    focusSearch,
     show: () => {
       if (visible) return;
       showSurface();
@@ -4344,6 +4415,8 @@ export function createLibraryInstance(viewer, opts) {
       document.removeEventListener('keydown', onFindShortcut, true);
       document.removeEventListener('keydown', onSelectAll, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
+      viewer.pdfViewerElem.removeEventListener('scribe-recent-files-change', onRecentsChange);
+      if (!readOnly) viewer._dragOverlayLabelFor = priorDragLabel;
       // Flush, don't drop: a cancelled debounce would lose the last manifest/index update.
       if (manifestTimer !== null) {
         window.clearTimeout(manifestTimer);

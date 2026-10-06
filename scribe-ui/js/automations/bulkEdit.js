@@ -1,6 +1,7 @@
 // The Bulk Edit workspace: select lines of native PDF text by their properties, review the matches, and delete them together.
 // The rules and exclusions are view state that never serializes into the document.
 import { getLineText } from '../../../js/objects/ocrObjects.js';
+import { shortcutLabel } from '../platform.js';
 import { cleanFamilyName } from '../../../js/utils/miscUtils.js';
 import {
   nativeLineEligible, nativeLineDrawBox, nativeLineHitAt, refreshEditedPages,
@@ -1052,7 +1053,7 @@ export function buildBulkEditWorkspace(host, container) {
       const stack = doc.docHistory.undoStack;
       const isTop = stack.length > 0 && stack[stack.length - 1] === d.entry;
       undo.disabled = !isTop;
-      if (!isTop) undo.title = 'Later edits come first — use the edit history (Ctrl+Z).';
+      if (!isTop) undo.title = `Later edits come first — use the edit history (${shortcutLabel('Z')}).`;
       undo.addEventListener('click', () => {
         if (!viewer.undo()) return;
         lastDelete = null;
@@ -1071,7 +1072,7 @@ export function buildBulkEditWorkspace(host, container) {
       });
       acts.append(undo, again);
       body.appendChild(acts);
-      body.appendChild(smallNote(`Also in the edit history — Ctrl+Z restores all ${d.count} ${d.count === 1 ? 'line' : 'lines'} as one step.`));
+      body.appendChild(smallNote(`Also in the edit history — ${shortcutLabel('Z')} restores all ${d.count} ${d.count === 1 ? 'line' : 'lines'} as one step.`));
       renderFoot();
       return;
     }

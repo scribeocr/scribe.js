@@ -9,6 +9,7 @@ import { nativeTextForPage } from '../js/textEdits.js';
 import { loadBuiltInFontsRaw } from '../js/fontContainerMain.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
 import { ViewerImageCache, IOS_WEBKIT } from './js/viewerImageCache.js';
+import { IS_MAC } from './js/platform.js';
 import {
   contextMenuFunc, mouseupFunc2, showTouchCallout, hideTouchCallout,
 } from './js/viewerCanvasInteraction.js';
@@ -2789,7 +2790,6 @@ export class ScribeViewer {
   /**
    * Route an activated link annotation.
    * Internal destinations navigate at once, external targets ask first.
-   * Holding Ctrl/Cmd during the click skips the ask.
    * @param {AnnotationLink} entry
    * @param {{clientX: number, clientY: number, ctrlKey: boolean, metaKey: boolean}} event - The confirming pointer or click event.
    */
@@ -2800,7 +2800,8 @@ export class ScribeViewer {
     }
     // The same scheme allowlist `_followLink` enforces, applied up front so blocked URIs get no ask either.
     if (!entry.uri || !/^(https?:|mailto:)/i.test(entry.uri.trim())) return;
-    if (event.ctrlKey || event.metaKey) {
+    // Ctrl-click is the Mac's right-click.
+    if (event.metaKey || (event.ctrlKey && !IS_MAC)) {
       this._followLink(entry);
       return;
     }

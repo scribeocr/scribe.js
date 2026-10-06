@@ -3,6 +3,7 @@ import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { readingsListKey } from './viewerReadings.js';
+import { IS_MAC } from './platform.js';
 import {
   deleteSelectedWord, modifySelectedWordBbox, modifySelectedWordStyle,
 } from './viewerModifySelectedWords.js';
@@ -314,7 +315,7 @@ export function handleKeyboardEvent(viewer, event) {
 
   // The modifier keys change what `event.key` is for the same button.
   // `+` becomes `=` when shift is pressed, and `×` when control and alt are pressed.
-  if (event.ctrlKey && !event.altKey && ['+', '=', '×'].includes(event.key)) {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && ['+', '=', '×'].includes(event.key)) {
     _viewer.zoom(1.1);
     event.preventDefault();
     event.stopPropagation();
@@ -322,7 +323,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.ctrlKey && !event.altKey && ['-', '_', '–'].includes(event.key)) {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && ['-', '_', '–'].includes(event.key)) {
     _viewer.zoom(0.9);
     event.preventDefault();
     event.stopPropagation();
@@ -396,7 +397,7 @@ export function handleKeyboardEvent(viewer, event) {
   }
 
   if (event.key === 'ArrowRight' && !UiText.input && selectedWords.length > 0) {
-    if (event.ctrlKey) {
+    if (event.ctrlKey || event.metaKey) {
       if (event.altKey) {
         modifySelectedWordBbox(_viewer, 'right', 1);
       } else {
@@ -436,7 +437,7 @@ export function handleKeyboardEvent(viewer, event) {
   }
 
   if (event.key === 'ArrowLeft' && !UiText.input && selectedWords.length > 0) {
-    if (event.ctrlKey) {
+    if (event.ctrlKey || event.metaKey) {
       if (event.altKey) {
         modifySelectedWordBbox(_viewer, 'right', -1);
       } else {
@@ -478,7 +479,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'i' && event.ctrlKey && selectedWords.length > 0) {
+  if (event.key === 'i' && (event.ctrlKey || event.metaKey) && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       italic: !selectedWords[0].word.style.italic,
     });
@@ -488,7 +489,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'b' && event.ctrlKey && selectedWords.length > 0) {
+  if (event.key === 'b' && (event.ctrlKey || event.metaKey) && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       bold: !selectedWords[0].word.style.bold,
     });
@@ -498,7 +499,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'u' && event.ctrlKey && selectedWords.length > 0) {
+  if (event.key === 'u' && (event.ctrlKey || event.metaKey) && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       underline: !selectedWords[0].word.style.underline,
     });
@@ -508,7 +509,9 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'Delete' && event.ctrlKey) {
+  // A Mac keyboard's Delete key reports Backspace.
+  // On other platforms Backspace is excluded because the deletion cannot be undone.
+  if ((event.key === 'Delete' || (IS_MAC && event.key === 'Backspace')) && selectedWords.length > 0) {
     deleteSelectedWord(_viewer);
     event.preventDefault();
     event.stopPropagation();

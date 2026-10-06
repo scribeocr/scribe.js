@@ -118,7 +118,13 @@ window.electronAPI.onNavigate(({ page }) => enqueue(() => ScribeViewer.displayPa
 window.electronAPI.onHighlight(({ highlights }) => enqueue(() => handleHighlights(highlights)));
 
 if (platform === 'darwin') {
-  window.electronAPI.onMenuAction((id) => enqueue(() => pdfViewer.runMenuCommand(id)));
+  window.electronAPI.onMenuAction((id) => enqueue(() => {
+    if (id === 'close-tab') {
+      if (!pdfViewer.closeActiveDocument()) window.close();
+      return undefined;
+    }
+    return pdfViewer.runMenuCommand(id);
+  }));
 }
 
 // Pushed on every platform, not just the one with native menus, because Windows tints its caption-button overlay from this state.
@@ -129,7 +135,7 @@ pushMenuState();
 // The shell owns the recent-files list, since the web build cannot reopen paths.
 // Reopening routes through the main process so the list re-orders and the OS recents stay in step.
 window.electronAPI.onRecentFiles((files) => pdfViewer.setRecentFiles(
-  files.map((f, i) => ({ label: f.label, open: () => window.electronAPI.openRecent(i) })),
+  files.map((f, i) => ({ label: f.label, dir: f.dir, open: () => window.electronAPI.openRecent(i) })),
   () => window.electronAPI.clearRecent(),
 ));
 
