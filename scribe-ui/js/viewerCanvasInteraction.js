@@ -205,7 +205,6 @@ async function addWordManual(viewer, n, box) {
   viewer._wordObjs[n].push(wordCanvas);
 }
 
-// Local copy of controls/toolbar.js's lineIcon, not imported because that would cycle (toolbar.js imports viewer.js, which imports this module).
 const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 export const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
@@ -230,10 +229,10 @@ const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><pat
 const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 // Color swatch for the touch callout's Highlight button.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
-// Local copy of controls/tools.js's HIGHLIGHT_SVG (filled Material glyph), not imported because tools.js imports this module.
-const CM_HIGHLIGHT_SVG = '<svg viewBox="0 -960 960 960" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">'
-  + '<path class="scribe-hl-tip" d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Z"/>'
-  + '<path d="M160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Z"/></svg>';
+// Local copy of controls/tools.js's HIGHLIGHT_SVG, not imported because tools.js imports this module.
+const CM_HIGHLIGHT_SVG = '<svg viewBox="0 0 20 20" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">'
+  + '<path class="scribe-hl-tip" d="M6 13V4.5A2 2 0 0 1 8.9 2.7L13 4.8a2 2 0 0 1 1 1.7V13Z"/>'
+  + '<path d="M3 18l.6-1.8A1.7 1.7 0 0 1 5.2 15h9.6a1.7 1.7 0 0 1 1.6 1.2L17 18Z"/></svg>';
 const CM_AUTOMATE_SVG = menuIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 
 /* The one treatment for a toggled-on menu row, so a new toggle never invents its own indication. */

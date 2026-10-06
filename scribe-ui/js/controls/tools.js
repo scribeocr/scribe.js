@@ -11,7 +11,7 @@ import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
 import { createStyleCluster } from '../editTextStyle.js';
-import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
+import { createFillSignPalette } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
 import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.js';
@@ -20,20 +20,25 @@ import {
 } from '../viewerTablePreview.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
-// Filled highlighter-marker glyph (Material).
 // The head path (`.scribe-hl-tip`) is filled with the selected highlight color to preview the active swatch (see `setTipColor`), while the base bar underneath stays the default ink color.
-const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path class="scribe-hl-tip" d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Z"/>
-<path d="M160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Z"/>
+const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 20 20" fill="currentColor">
+<path class="scribe-hl-tip" d="M6 13V4.5A2 2 0 0 1 8.9 2.7L13 4.8a2 2 0 0 1 1 1.7V13Z"/>
+<path d="M3 18l.6-1.8A1.7 1.7 0 0 1 5.2 15h9.6a1.7 1.7 0 0 1 1.6 1.2L17 18Z"/>
 </svg>`;
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
-// Placed raw at 11px without a `.cr-icon` wrapper, so it needs its own inline size and a heavier 2.2 stroke to stay crisp that small.
 // eslint-disable-next-line max-len
-const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M2.5 4.5l3 3 3-3"/></svg>';
+
+/**
+ * Wrap SVG shape markup in a stroked icon for the mode control's 17px slots.
+ * One unit of its 17-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 // Comment-card verb glyphs, sized by the `.scribe-cmt-vb svg` rule.
-// Drawn in the product's icon language (see `lineIcon` in toolbar.js): 24-grid, 1.6px stroke, round caps and joins.
 // eslint-disable-next-line max-len
 const TB_DELETE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6 6.5l.9 11.2a2 2 0 0 0 2 1.8h6.2a2 2 0 0 0 2-1.8L18 6.5"/></svg>';
 // eslint-disable-next-line max-len
@@ -1377,8 +1382,7 @@ export async function openDocumentFromFile(file, {
   return doc;
 }
 
-// eslint-disable-next-line max-len
-const EDIT_TEXT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
+const EDIT_TEXT_SVG = modeIcon('<path d="M2.5 4.5h12M2.5 7.5h7M2.5 10.5h4"/><path d="M12.5 7.5l2 2-5 5h-2v-2z"/>');
 
 /**
  * Whether every word of `line` is visible native PDF text that can be edited or deleted in place.
@@ -2801,8 +2805,7 @@ export function createEditTextTool(scribe) {
   return { toolbarElem, installBehaviors };
 }
 
-// eslint-disable-next-line max-len
-const IMAGE_EDIT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M3.5 16.5l4.8-4.3 3.4 3 3.6-3.4 5.2 4.7"/></svg>';
+const IMAGE_EDIT_SVG = modeIcon('<rect x="2.5" y="3.5" width="12" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2.5 12.5l3-3 2 2 3-3 4 4"/>');
 
 /**
  * Toolbar control that toggles the Edit Graphics mode for selecting and deleting a page's image and path placements.
@@ -3233,13 +3236,16 @@ export function createGraphicsEditTool(scribe) {
   return { toolbarElem, installBehaviors };
 }
 
+const FILL_SIGN_SVG = modeIcon('<path d="M2.5 12C4.3 8.1 5.7 6.4 6.4 7.1S4.8 11.9 5.7 12.4C6.5 12.9 7.8 10.6 8.5 10.8C9.2 11 8.7 12.4 9.6 12.4C10.3 12.4 10.9 11.7 11.7 11.7"/>'
+  + '<path d="M2.5 14.5h12"/>');
+
 /**
  * Toolbar control that toggles the Fill & Sign palette for placing checks, crosses, and signatures.
  * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
  * @returns {{ toolbarElem: HTMLElement, installBehaviors: () => (() => void), isOpen: () => boolean, close: () => void, paletteElem: () => ?HTMLElement }}
  */
 export function createFillSignTool(app) {
-  const toolbarElem = makeIconButton('Fill & Sign', ICON_FILLSIGN);
+  const toolbarElem = makeIconButton('Fill & Sign', FILL_SIGN_SVG);
   toolbarElem.classList.add('cr-labeled-button');
   const toolbarLabelElem = document.createElement('span');
   toolbarLabelElem.className = 'cr-btn-label';
@@ -3315,9 +3321,7 @@ export function createEditPagesTool(app) {
   return { toolbarElem, isActive: () => active, close: () => setActive(false) };
 }
 
-const EXTRACT_TABLES_MODE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"'
-  + ' stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<rect x="4" y="4.5" width="16" height="15" rx="1.5"/><path d="M4 9.5h16M4 14.5h16M9.5 9.5v10"/></svg>';
+const EXTRACT_TABLES_MODE_SVG = modeIcon('<rect x="2.5" y="2.5" width="12" height="12" rx="1"/><path d="M2.5 6.5h12M2.5 10.5h12M6.5 6.5v8"/>');
 
 /**
  * The Extract Tables mode tool: the surface for reviewing and exporting the document's tables.
@@ -3495,8 +3499,7 @@ export function createExtractTablesTool(app) {
   };
 }
 
-// eslint-disable-next-line max-len
-const INSPECT_MODE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/></svg>';
+const INSPECT_MODE_SVG = modeIcon('<circle cx="8.5" cy="8.5" r="6"/><path d="M8.5 7.5v4M8.5 5.5v.01"/>');
 const INSPECT_ARMED_HINT = 'Click a word on the page to identify its font · Esc cancels';
 
 /**

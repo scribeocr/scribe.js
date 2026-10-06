@@ -127,23 +127,38 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
 }
 
 /**
- * Wrap SVG shape markup in a 24x24 stroked line-icon (the toolbar's shared stroked-icon style) sized to fill its icon button.
- * The sidebar-toggle glyphs stay filled by design.
+ * Wrap SVG shape markup in a stroked icon for the mode control's 17px slots.
+ * One unit of its 17-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
  */
-const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
-export const EDIT_PAGES_SVG = lineIcon('<rect x="3.5" y="3.5" width="8" height="10.5" rx="1"/><rect x="12.5" y="10" width="8" height="10.5" rx="1"/>'
-  + '<path d="M14 5.5h4"/><path d="M18 3.9 21 5.5 18 7.1Z" fill="currentColor" stroke="none"/>'
-  + '<path d="M10 18.5H6"/><path d="M6 16.9 3 18.5 6 20.1Z" fill="currentColor" stroke="none"/>');
+/**
+ * Wrap SVG shape markup in a stroked icon for icon buttons at the default toolbar height, where they are 28px.
+ * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
+/**
+ * Wrap SVG shape markup in a stroked icon for the app menu's 16px slots.
+ * One unit of its 16-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const appMenuIcon = (inner) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
+export const EDIT_PAGES_SVG = modeIcon('<rect x="2.5" y="2.5" width="5" height="7"/><rect x="9.5" y="7.5" width="5" height="7"/>'
+  + '<path d="M9.5 3.5H13M7.5 13.5H4"/><path d="M13 2l2 1.5-2 1.5zM4 12l-2 1.5 2 1.5z" fill="currentColor" stroke="none"/>');
 
 /** Scan corners around a letterform, for the Recognize Text mode. */
-export const RECOGNIZE_SVG = lineIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/>'
-  + '<path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
+export const RECOGNIZE_SVG = modeIcon('<path d="M2.5 5.5v-2a1 1 0 0 1 1-1h2M11.5 2.5h2a1 1 0 0 1 1 1v2M14.5 11.5v2a1 1 0 0 1-1 1h-2M5.5 14.5h-2a1 1 0 0 1-1-1v-2"/>'
+  + '<path d="M6.5 10.5v-4h4v4M6.5 8.5h4"/>');
 
-const NAV_PREV_SVG = lineIcon('<path d="M15 6l-6 6 6 6"/>');
-const NAV_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
+const NAV_PREV_SVG = barIcon('<path d="M17 7l-7 7 7 7"/>');
+const NAV_NEXT_SVG = barIcon('<path d="M11 7l7 7-7 7"/>');
 
 /**
  * Build prev/next buttons and the page-number input group, wired to `scribe.displayPage`.
@@ -211,8 +226,8 @@ export function createPageNav(scribe) {
   };
 }
 
-export const ZOOM_OUT_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5"/>');
-export const ZOOM_IN_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.5v5M8.5 11h5"/>');
+export const ZOOM_OUT_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5M10 13h6"/>');
+export const ZOOM_IN_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5M13 10v6M10 13h6"/>');
 
 /**
  * Build the zoom-out/zoom-in control group, wired to `scribe.zoom` about the stage center.
@@ -235,11 +250,11 @@ export function createZoomControls(scribe) {
   return { zoomControls, zoomInElem, zoomOutElem };
 }
 
-export const ROTATE_LEFT_SVG = lineIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
-export const ROTATE_RIGHT_SVG = lineIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
+export const ROTATE_LEFT_SVG = barIcon('<path d="M6.2 9.5A9 9 0 1 0 14 5"/><path d="M10 5l4-2v4Z" fill="currentColor" stroke="none"/>');
+export const ROTATE_RIGHT_SVG = barIcon('<path d="M21.8 9.5A9 9 0 1 1 14 5"/><path d="M18 5l-4-2v4Z" fill="currentColor" stroke="none"/>');
 
-export const UNDO_SVG = lineIcon('<path d="M8.2 5.8 4.5 9.5l3.7 3.7"/><path d="M4.5 9.5H14a5 5 0 0 1 0 10H9.5"/>');
-export const REDO_SVG = lineIcon('<path d="M15.8 5.8 19.5 9.5l-3.7 3.7"/><path d="M19.5 9.5H10a5 5 0 0 0 0 10h4.5"/>');
+export const UNDO_SVG = barIcon('<path d="M9 7 5 11l4 4"/><path d="M5 11h11a6 6 0 0 1 0 12h-5"/>');
+export const REDO_SVG = barIcon('<path d="M19 7l4 4-4 4"/><path d="M23 11H12a6 6 0 0 0 0 12h5"/>');
 
 /**
  * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
@@ -352,7 +367,8 @@ async function printDocument(scribe, { pageArr = null } = {}) {
   }
 }
 
-export const PRINT_SVG = lineIcon('<path d="M6 9V4h12v5M6 18H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1M7 15h10v5H7z"/>');
+// Drawn for the app menu's 16px slots, since pdf-viewer.js hides the bar's Print button.
+export const PRINT_SVG = appMenuIcon('<path d="M4.5 5.5v-3h7v3M4.5 11.5h-1a1 1 0 0 1-1-1v-2a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1h-1M4.5 9.5h7v4h-7z"/>');
 
 /**
  * Build the print control and its Ctrl/Cmd+P shortcut, wired to export the current document and open the browser print dialog.
@@ -402,9 +418,10 @@ export function createPrintControls(scribe, rootElem) {
   return { printControls, printElem, installPrintShortcut };
 }
 
-export const OPEN_SVG = lineIcon('<path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>');
+// Drawn for the app menu's 16px slots, since pdf-viewer.js hides the bar's Open button.
+export const OPEN_SVG = appMenuIcon('<path d="M2.5 4.5a1 1 0 0 1 1-1h2l1 1h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1Z"/>');
 
-export const RECENT_SVG = lineIcon('<circle cx="12" cy="12" r="7.5"/><path d="M12 8.6v3.9l2.7 2"/>');
+export const RECENT_SVG = appMenuIcon('<circle cx="7.5" cy="7.5" r="5"/><path d="M7.5 4.5v3l2 2"/>');
 
 /**
  * Build the "Open" control: a button (and a hidden multi-file input) that hands the chosen files to `onFiles`,
@@ -456,7 +473,7 @@ export function createOpenControls(scribe, rootElem, onFiles) {
   return { openControls, openElem, installOpenShortcut };
 }
 
-const MENU_SVG = lineIcon('<path d="M4 7h16M4 12h16M4 17h16"/>');
+const MENU_SVG = barIcon('<path d="M5 8h18M5 14h18M5 20h18"/>');
 
 /**
  * Build the far-left app menu: a hamburger button whose dropdown collects document- and app-level actions.
@@ -825,10 +842,10 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   };
 }
 
-const SEARCH_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>');
-const SEARCH_PREV_SVG = lineIcon('<path d="M6 15l6-6 6 6"/>');
-const SEARCH_NEXT_SVG = lineIcon('<path d="M6 9l6 6 6-6"/>');
-const CLOSE_SVG = lineIcon('<path d="M6 6l12 12M18 6L6 18"/>');
+const SEARCH_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5"/>');
+const SEARCH_PREV_SVG = barIcon('<path d="M7 17l7-7 7 7"/>');
+const SEARCH_NEXT_SVG = barIcon('<path d="M7 11l7 7 7-7"/>');
+const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
 
 /**
  * Build the find/search bar and its behaviors.
@@ -2002,7 +2019,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}.scribe-coarse .scribe-drop-title-touch { display: inline; }
     .${r}.scribe-coarse .scribe-drop-title-full { display: none; }
     .${r}.scribe-coarse .scribe-drop-hint { display: none; }
-    /* Size the container, not the svg: the Open/Print lineIcons carry inline width:100% that would override a width set on the svg. */
     .${r} .scribe-app-menu-ic { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; color: var(--scribe-ink-2); }
     .${r} .scribe-app-menu-ic svg { width: 100%; height: 100%; display: block; }
     .${r} .scribe-app-menu-sep {
@@ -2278,7 +2294,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tc-split .scribe-tc-caret::before { content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%); width: 1px; height: 14px; background: var(--scribe-line-strong); pointer-events: none; }
     .${r} .scribe-tc-split .scribe-tc-caret.active { color: var(--scribe-accent); }
     .${r} .scribe-tc-bar-ink { fill: var(--scribe-text-ink, #000000); }
-    .${r} .scribe-tc-bar-edge { fill: none; stroke: rgba(127, 127, 127, .45); stroke-width: .8; }
+    .${r} .scribe-tc-bar-edge { fill: none; stroke: rgba(127, 127, 127, .45); stroke-width: 1; }
     /* The plate: "In this document", "Standard" and "Custom...", on a 202px swatch row that wraps for a colorful document. */
     .${r} .scribe-tc-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 30; display: none; flex-direction: column; align-items: stretch; padding: 8px 10px 6px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px; box-shadow: var(--scribe-menu-shadow); }
     .${r} .scribe-tc-pop.open { display: flex; }
@@ -4145,6 +4161,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-surface); color: var(--scribe-accent);
       box-shadow: 0 1px 2px rgba(20, 30, 60, .14);
     }
+    /* The mode control's glyphs (modeIcon's, TRACK_VIEW_SVG and TRACK_MENU_SVG) are drawn on a 17-unit pixel grid, so any other size blurs their strokes at 1x. */
     .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; }
     .${r} .scribe-mode-track-el .cr-btn-label { font-size: 13px; }
     .${r} .scribe-mode-track-chev { padding: 0 6px; }

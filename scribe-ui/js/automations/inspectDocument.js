@@ -1,7 +1,5 @@
 import { ensureType3GlyphCodes } from '../../../js/type3GlyphMappings.js';
 
-// Local copy of the toolbar's lineIcon.
-// Importing toolbar.js from here would pull the whole viewer into this lazy module.
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const CHEVRON_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 const PICK_SVG = lineIcon('<circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/>');

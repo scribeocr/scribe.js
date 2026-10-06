@@ -17,7 +17,7 @@ import {
 } from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
-  createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG, UNDO_SVG, REDO_SVG,
+  createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, UNDO_SVG, REDO_SVG,
 } from '../js/controls/toolbar.js';
 import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
@@ -54,22 +54,22 @@ const TAB_STRIP_HEIGHT = 30;
 
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 const SHEET_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>';
-const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+const DOCK_PANELS_SVG = '<svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
+  + '<path d="M15.5 10.5h21M15.5 21.5h21M15.5 32.5h13M7.5 10.5h2M7.5 21.5h2M7.5 32.5h2"/></svg>';
 // Broken selection corners, for the verb bar's Deselect.
 const DOCK_DESELECT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M5 8V6.5A1.5 1.5 0 0 1 6.5 5H8M16 5h1.5A1.5 1.5 0 0 1 19 6.5V8M19 16v1.5a1.5 1.5 0 0 1-1.5 1.5H16M8 19H6.5A1.5 1.5 0 0 1 5 17.5V16"/>'
   + '<path d="M9.6 9.6l4.8 4.8M14.4 9.6l-4.8 4.8"/></svg>';
 // Lines with a pencil, for the dock's Edit slot.
-const DOCK_EDIT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+const DOCK_EDIT_SVG = '<svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
+  + '<path d="M6.5 9.5h31M6.5 17.5h18M6.5 25.5h10"/><path d="M32.5 17.5l5 5-13 13h-5v-5z"/></svg>';
 
-const SIDEBAR_TOGGLE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+const SIDEBAR_TOGGLE_SVG = '<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block" aria-hidden="true">'
-  + '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>';
+  + '<rect x="2.5" y="3.5" width="15" height="13" rx="2"/><path d="M7.5 3.5v13"/></svg>';
 
 /** Contact-sheet grid for the sidebar's thumbnails tab. */
 const SIDEBAR_PAGES_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor">'
@@ -86,17 +86,15 @@ const MODE_BANNER_HEIGHT = 40;
 const ROTATE_MIN_AIR = 80;
 
 // The up/down pair is the macOS marker for a pop-up showing the current choice, where a single chevron would mean a pull-down menu of actions.
-const TRACK_MENU_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+const TRACK_MENU_SVG = '<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M8.4 9.7 12 6.1l3.6 3.6M8.4 14.3 12 17.9l3.6-3.6"/></svg>';
+  + '<path d="M6.5 6.5l2-2 2 2M6.5 10.5l2 2 2-2"/></svg>';
 
-/**
- * Pointer glyph for the mode drop-down's View item.
- * The path sits off the box's geometric center so the arrow's ink centroid lands on the optical center.
- */
-const TRACK_VIEW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
-  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M8.4 4.4v12.6l3.2-2.9 2.1 4.9 2.5-1.1-2.1-4.8h4.3z"/></svg>';
+/** Pointer glyph for the mode drop-down's View item. */
+// Its tail steps along the pixel grid in 45-degree and vertical runs, because a straight edge at the tail's slope blurs every other row.
+const TRACK_VIEW_SVG = '<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"'
+  + ' stroke-linejoin="miter" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M5.5 2.5v10l2-2 1 1v1l1 1v1h1l1-1-1-1v-1l-1-1v-1h3z"/></svg>';
 
 /** Height of the dismissible message banner, in px, matching its CSS. */
 const MESSAGE_BANNER_HEIGHT = 40;
@@ -135,7 +133,7 @@ const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="
 const VBAR_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
 /**
- * Wrap SVG path markup in a stroked 24x24 icon, matching the toolbar's line-icon style.
+ * Wrap SVG path markup in a stroked icon drawn on a 24-unit grid.
  * @param {string} inner - Inner SVG markup (paths, shapes) placed inside the icon.
  * @param {number} [w] - Stroke width.
  * @returns {string}
@@ -144,19 +142,31 @@ const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" strok
 /** Ringed stop square, the cancel control for a recognition run. */
 const STOP_SVG = editIcon('<circle cx="12" cy="12" r="8.5"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>');
 const RECOGNIZE_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']];
-const ICON_EXPORT = editIcon('<path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M5 19h14"/>');
-const ICON_COMBINE = editIcon('<path d="M4 8h9v9H4zM11 5h9v9"/>');
-const ICON_SPLIT = editIcon('<circle cx="6" cy="7" r="2.1"/><circle cx="6" cy="17" r="2.1"/><path d="M8 8l11 8M8 16L19 8"/>');
+/**
+ * Wrap SVG shape markup in a stroked icon for the app menu's 16px slots.
+ * One unit of its 16-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const appMenuIcon = (inner) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+const ICON_EXPORT = appMenuIcon('<path d="M7.5 2.5v7m-3-3 3 3 3-3M3.5 12.5h8"/>');
+const ICON_COMBINE = appMenuIcon('<path d="M2.5 5.5h6v6h-6zM7.5 3.5h6v6"/>');
+const ICON_SPLIT = appMenuIcon('<circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><path d="M5.5 5.5l7 7M5.5 10.5l7-7"/>');
 /** Crescent moon for the app menu's Dark mode toggle. */
+// Its curves render no sharper on the 16px grid, so it keeps its 24-unit drawing.
 const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.5 13.5Z"/>');
-const ICON_FIELDS = editIcon('<rect x="3.5" y="7.5" width="17" height="9" rx="1.2"/><path d="M7 12h5"/>');
+const ICON_FIELDS = appMenuIcon('<rect x="2.5" y="5.5" width="11" height="6" rx="1"/><path d="M4.5 8.5h3"/>');
 /** Open book for the toolbar's two-page (side-by-side) view toggle. */
-const ICON_TWO_PAGE = editIcon('<path d="M12 6.1C10.4 4.8 7.9 4.3 4.5 4.5v13.7c3.4-.2 5.9.3 7.5 1.7 1.6-1.4 4.1-1.9 7.5-1.7V4.5c-3.4-.2-5.9.3-7.5 1.6Z"/><path d="M12 6.1v13.8"/>');
+const ICON_TWO_PAGE = '<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M14 7C12.1 5.5 9 4.8 5 5v16c4-.2 7.1.4 9 2 1.9-1.6 5-2.2 9-2V5c-4-.2-7.1.5-9 2Z"/><path d="M14 7v16"/></svg>';
 /** Facing-page pair for the app menu's cover-page row. */
-const ICON_COVER_ALONE = editIcon('<rect x="3.5" y="5" width="7.6" height="14" rx="1"/><rect x="12.9" y="5" width="7.6" height="14" rx="1"/>');
-// The Automate glyph, duplicated here (like the other app-menu icons) so the menu row needs no import from the flag-gated panel module.
-const ICON_AUTOMATE = editIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
-const ICON_INSPECT = editIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
+const ICON_COVER_ALONE = appMenuIcon('<rect x="2.5" y="3.5" width="5" height="9"/><rect x="9.5" y="3.5" width="5" height="9"/>');
+const ICON_AUTOMATE = appMenuIcon('<path d="M3.5 4.5l3 3-3 3z"/><path d="M9.5 4.5h4M9.5 7.5h4M9.5 10.5h2"/>');
+const ICON_INSPECT = appMenuIcon('<circle cx="8" cy="8" r="5.5"/><path d="M8.5 7.5v3M8.5 5.5v.01"/>');
+// The bar's rotate glyphs, redrawn for the menu's 16px slots.
+// A stroked arrowhead stays legible at this size, where a filled one blurs.
+const ICON_ROTATE_LEFT = appMenuIcon('<path d="M3.2 6A5 5 0 1 0 7.5 3.5H5.5M7.5 1.5l-2 2 2 2"/>');
+const ICON_ROTATE_RIGHT = appMenuIcon('<path d="M11.8 6A5 5 0 1 1 7.5 3.5h2M7.5 1.5l2 2-2 2"/>');
 
 /**
  * @typedef {object} FitResult
@@ -902,9 +912,9 @@ class ScribePDFViewer {
       this._menuCommands.inspect = () => this._enterInspectFromMenu();
       this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
-      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, this._menuCommands['rotate-left'])
+      appMenu.addAction('Rotate left', ICON_ROTATE_LEFT, this._menuCommands['rotate-left'])
         .classList.add('scribe-touch-row');
-      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, this._menuCommands['rotate-right'])
+      appMenu.addAction('Rotate right', ICON_ROTATE_RIGHT, this._menuCommands['rotate-right'])
         .classList.add('scribe-touch-row');
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')

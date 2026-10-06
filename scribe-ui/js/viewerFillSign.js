@@ -6,8 +6,15 @@ const SIG_STORE_KEY = 'scribeSignatures';
 const SIG_STORE_MAX_BYTES = 3_000_000;
 
 const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
-export const ICON_FILLSIGN = editIcon('<path d="M4 16.5c2.5-5.5 4.5-8 5.5-7s-2.2 6.8-1 7.5c1.2.7 3-2.5 4-2.2 1 .3.3 2.2 1.5 2.2 1 0 1.8-1 3-1"/>'
-  + '<path d="M4 20h16"/>');
+
+/**
+ * Wrap SVG shape markup in a stroked icon for the palette's desktop buttons at the default toolbar height, where they are 28px.
+ * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+// The svg carries no inline size, since one would override the phone layout's CSS sizing.
+const paletteIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
 
 /**
  * A palette icon button with the app's toolbar-button classes.
@@ -25,15 +32,15 @@ function iconButton(label, iconSvg) {
   btn.innerHTML = iconSvg;
   return btn;
 }
-const ICON_TEXT = editIcon('<path d="M5.5 6h13M12 6v13"/>');
-const ICON_CHECK = editIcon('<path d="M5 12.5l5 5L19.5 6.5"/>');
-const ICON_CROSS = editIcon('<path d="M6 6l12 12M18 6L6 18"/>');
-const ICON_SIGN = editIcon('<path d="M3.5 17c3-6.5 5.5-9.5 6.8-8.5 1.4 1-2.7 8.2-1.2 9 1.4.8 3.6-3 4.8-2.6 1.2.4.4 2.6 1.8 2.6 1.2 0 2.1-1.2 3.6-1.2"/>');
+const ICON_TEXT = paletteIcon('<path d="M6 7h16M14 7v15"/>');
+const ICON_CHECK = paletteIcon('<path d="M6 15l6 6L23 8"/>');
+const ICON_CROSS = paletteIcon('<path d="M7 7l14 14M21 7 7 21"/>');
+const ICON_SIGN = paletteIcon('<path d="M4 20c3.5-7.6 6.4-11.1 7.9-9.9 1.6 1.2-3.2 9.6-1.4 10.5 1.6.9 4.2-3.5 5.6-3 1.4.5.5 3 2.1 3 1.4 0 2.5-1.4 4.2-1.4"/>');
 const ICON_PLUS = editIcon('<path d="M12 5v14M5 12h14"/>');
 const ICON_GRIP = editIcon('<circle cx="9" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/><circle cx="9" cy="12" r="1.2"/>'
   + '<circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="17" r="1.2"/><circle cx="15" cy="17" r="1.2"/>', 0);
 // Same geometry as the toolbar's UNDO_SVG, redrawn here because importing toolbar.js would close an import cycle.
-const ICON_UNDO = editIcon('<path d="M8.2 5.8 4.5 9.5l3.7 3.7"/><path d="M4.5 9.5H14a5 5 0 0 1 0 10H9.5"/>');
+const ICON_UNDO = paletteIcon('<path d="M9 7 5 11l4 4"/><path d="M5 11h11a6 6 0 0 1 0 12h-5"/>');
 
 // Check/cross mark strokes in a unit box, scaled to the placement box.
 const CHECK_STROKES = [[[0.1, 0.55], [0.38, 0.85], [0.9, 0.15]]];

@@ -1,16 +1,25 @@
 import { makeIconButton } from './controls/toolbar.js';
-import { CM_BOLD_SVG, CM_ITALIC_SVG } from './viewerCanvasInteraction.js';
 
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+/**
+ * Wrap SVG shape markup in a stroked icon for icon buttons at the default toolbar height, where they are 28px.
+ * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 /**
  * The text-color icon.
  * Set `--scribe-text-ink` on an ancestor to color its bar.
  */
-// eslint-disable-next-line max-len
-export const TEXT_COLOR_SVG = lineIcon('<path d="M6.6 16.2 12 4.4l5.4 11.8"/><path d="M8.7 11.6h6.6"/><rect class="scribe-tc-bar-ink" x="5" y="18.4" width="14" height="2.6" rx=".6"/><rect class="scribe-tc-bar-edge" x="5" y="18.4" width="14" height="2.6" rx=".6"/>');
+export const TEXT_COLOR_SVG = barIcon('<path d="M8 19 14 5l6 14"/><path d="M10 14h8"/><rect class="scribe-tc-bar-ink" x="6" y="21" width="16" height="3"/>'
+  // The edge is inset half a pixel, so its one-pixel outline covers the bar's border pixels exactly.
+  + '<rect class="scribe-tc-bar-edge" x="6.5" y="21.5" width="15" height="2"/>');
+const BOLD_SVG = barIcon('<path d="M9 5v18"/><path d="M9 5h6a4 4 0 0 1 0 8H9"/><path d="M9 13h6a5 5 0 0 1 0 10H9"/>');
+const ITALIC_SVG = barIcon('<path d="M12 5h8M8 23h8M16 5l-4 18"/>');
 const EYEDROPPER_SVG = lineIcon('<g transform="rotate(45 12 12)"><path d="M10 7.5V5.5a2 2 0 0 1 4 0v2"/><path d="M9 7.5h6"/><path d="M10.2 7.5 12 20.5l1.8-13"/></g>');
 // eslint-disable-next-line max-len
-const CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
+const CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M2.5 4.5l3 3 3-3"/></svg>';
 // eslint-disable-next-line max-len
 const CHEV_R_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:12px;height:12px;" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 // eslint-disable-next-line max-len
@@ -271,8 +280,8 @@ export function createStyleCluster(scribe, opts = {}) {
     b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); b.click(); } });
     return { el: b, label, hint };
   };
-  const bold = toggle('bold', 'Bold', CM_BOLD_SVG, 'Ctrl+B');
-  const italic = toggle('italic', 'Italic', CM_ITALIC_SVG, 'Ctrl+I');
+  const bold = toggle('bold', 'Bold', BOLD_SVG, 'Ctrl+B');
+  const italic = toggle('italic', 'Italic', ITALIC_SVG, 'Ctrl+I');
   const split = document.createElement('span');
   split.className = 'scribe-tc-split';
   const apply = makeIconButton('Text color', TEXT_COLOR_SVG);
