@@ -842,9 +842,19 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   };
 }
 
+/**
+ * Wrap SVG shape markup in a stroked icon matching the app's 24-grid line icons, for 24px buttons.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
 const SEARCH_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5"/>');
-const SEARCH_PREV_SVG = barIcon('<path d="M7 17l7-7 7 7"/>');
-const SEARCH_NEXT_SVG = barIcon('<path d="M7 11l7 7 7-7"/>');
+// Each stepper carries two chevrons, and CSS shows the 24-grid one in the desktop find bar and the 28-grid one in the phone find bar.
+const SEARCH_PREV_GLYPHS = `<span class="scribe-search-glyph">${lineIcon('<path d="M7 14.5l5-5 5 5"/>')}</span>`
+  + `<span class="scribe-search-glyph-phone">${barIcon('<path d="M7 17l7-7 7 7"/>')}</span>`;
+const SEARCH_NEXT_GLYPHS = `<span class="scribe-search-glyph">${lineIcon('<path d="M7 9.5l5 5 5-5"/>')}</span>`
+  + `<span class="scribe-search-glyph-phone">${barIcon('<path d="M7 11l7 7 7-7"/>')}</span>`;
 const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
 
 /**
@@ -854,7 +864,7 @@ const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
  * @returns {{
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
- *   openSearch: () => void, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
+ *   openSearch: () => Promise<void>, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
  *   updateSearchCounter: () => void, resetSearch: () => void,
  *   installFindShortcut: () => (() => void)
  * }}
@@ -866,6 +876,9 @@ export function createSearchBar(scribe, rootElem) {
   findGroupElem.className = 'scribe-search-group';
   findGroupElem.style.display = 'none';
 
+  const searchFieldElem = document.createElement('span');
+  searchFieldElem.className = 'scribe-search-field';
+
   const searchInputElem = document.createElement('input');
   searchInputElem.type = 'text';
   searchInputElem.className = 'scribe-search-input';
@@ -875,22 +888,35 @@ export function createSearchBar(scribe, rootElem) {
 
   const searchCounterElem = document.createElement('span');
   searchCounterElem.className = 'scribe-search-count';
+  searchFieldElem.append(searchInputElem, searchCounterElem);
 
-  const searchPrevElem = makeIconButton('Previous match', SEARCH_PREV_SVG);
-  const searchNextElem = makeIconButton('Next match', SEARCH_NEXT_SVG);
+  const searchSepElem = document.createElement('span');
+  searchSepElem.className = 'scribe-search-sep';
+
+  const searchPrevElem = makeIconButton('Previous match', SEARCH_PREV_GLYPHS);
+  const searchNextElem = makeIconButton('Next match', SEARCH_NEXT_GLYPHS);
+  searchPrevElem.classList.add('scribe-search-step');
+  searchNextElem.classList.add('scribe-search-step');
+  // The desktop find bar closes from the Find button or Esc, so only the phone find bar, with no Esc key, shows this control.
   const searchCloseElem = makeIconButton('Close', CLOSE_SVG);
+  searchCloseElem.classList.add('scribe-search-close');
 
-  findGroupElem.appendChild(searchInputElem);
-  findGroupElem.appendChild(searchCounterElem);
-  findGroupElem.appendChild(searchPrevElem);
-  findGroupElem.appendChild(searchNextElem);
-  findGroupElem.appendChild(searchCloseElem);
+  findGroupElem.append(searchFieldElem, searchSepElem, searchPrevElem, searchNextElem, searchCloseElem);
 
   function updateSearchCounter() {
     const s = scribe._searchState;
     if (!s.search) searchCounterElem.textContent = '';
     else if (!s.matchList.length) searchCounterElem.textContent = 'No results';
     else searchCounterElem.textContent = `${s.activeMatch + 1}/${s.matchList.length}`;
+    const none = !s.matchList.length;
+    for (const el of [searchPrevElem, searchNextElem]) {
+      el.classList.toggle('disabled', none);
+      el.ariaDisabled = String(none);
+      el.tabIndex = none ? -1 : 0;
+    }
+    // The toolbar field keeps typed text clear of the count drawn inside it.
+    const countW = searchCounterElem.offsetWidth;
+    searchFieldElem.style.setProperty('--scribe-search-count-w', `${countW ? countW + 8 : 0}px`);
   }
 
   /**
@@ -920,18 +946,31 @@ export function createSearchBar(scribe, rootElem) {
     }
   }
 
-  function openSearch() {
+  // Restored on reopen, since re-running the search leaves no match active and the count would read 0/N.
+  let lastActive = -1;
+
+  async function openSearch() {
     if (!scribe.doc || !scribe.doc.pageMetrics || scribe.doc.pageMetrics.length === 0) return;
     findGroupElem.style.display = 'inline-flex';
+    // The desktop find bar hangs from the Find button's right edge, which a desktop shell's window controls can push in from the toolbar's.
+    const bar = findGroupElem.parentElement;
+    if (bar) findGroupElem.style.setProperty('--scribe-search-right', `${bar.getBoundingClientRect().right - searchElem.getBoundingClientRect().right}px`);
+    updateSearchCounter();
     searchElem.classList.add('active');
     scribe.state.searchMode = true;
     searchInputElem.focus();
     searchInputElem.select();
-    // A retained query gets its highlights back, but the view must not move until the user types or steps through matches.
-    if (searchInputElem.value.trim()) runSearch(searchInputElem.value, undefined, false);
+    // A retained query gets its highlights and its active match back, but the view must not move until the user types or steps through matches.
+    if (!searchInputElem.value.trim()) return;
+    await runSearch(searchInputElem.value, undefined, false);
+    const { matchList } = scribe._searchState;
+    if (lastActive < 0 || !matchList.length || !scribe.state.searchMode) return;
+    await goToMatch(scribe, Math.min(lastActive, matchList.length - 1), { navigate: false });
+    updateSearchCounter();
   }
 
   function closeSearch() {
+    lastActive = scribe._searchState.activeMatch;
     findGroupElem.style.display = 'none';
     searchElem.classList.remove('active');
     scribe.state.searchMode = false;
@@ -940,6 +979,7 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   function resetSearch() {
+    lastActive = -1;
     findGroupElem.style.display = 'none';
     searchElem.classList.remove('active');
     searchInputElem.value = '';
@@ -959,14 +999,15 @@ export function createSearchBar(scribe, rootElem) {
     searchDebounce = setTimeout(() => runSearch(value), 150);
   });
   searchInputElem.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault();
-      if (event.shiftKey) prevMatch(scribe).then(() => updateSearchCounter());
-      else nextMatch(scribe).then(() => updateSearchCounter());
-    } else if (event.key === 'Escape') {
-      event.preventDefault();
-      closeSearch();
-    }
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    if (event.shiftKey) prevMatch(scribe).then(() => updateSearchCounter());
+    else nextMatch(scribe).then(() => updateSearchCounter());
+  });
+  findGroupElem.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeSearch();
   });
 
   searchPrevElem.addEventListener('click', () => prevMatch(scribe).then(() => updateSearchCounter()));
@@ -2706,24 +2747,19 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-search-group {
       position: absolute;
       top: calc(100% + 6px);
-      right: 10px;
+      right: var(--scribe-search-right, 8px);
       z-index: 20;
       align-items: center;
-      gap: 2px;
-      padding: 5px 6px;
+      gap: 4px;
+      padding: 4px;
       background: var(--scribe-surface);
       border: 1px solid var(--scribe-line);
       border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow);
     }
 
-    .${r}-toolbar input.scribe-search-input {
-      width: 16ch;
-      text-align: left;
-      height: 26px;
-      border-radius: 4px;
-    }
-
+    /* These rules style the phone find bar, which sits outside the toolbar.
+       The toolbar rules below restyle the same parts for the desktop find bar. */
     .${r} .scribe-search-count {
       font-size: 13px;
       min-width: 6ch;
@@ -2731,6 +2767,61 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       text-align: center;
       white-space: nowrap;
     }
+    /* The wrapper dissolves, so the field and the count are the phone find bar's own flex items. */
+    .${r} .scribe-search-field { display: contents; }
+    .${r} .scribe-search-sep,
+    .${r} .scribe-search-glyph { display: none; }
+    .${r} .scribe-search-glyph,
+    .${r} .scribe-search-glyph-phone { width: 100%; height: 100%; }
+
+    .${r}-toolbar .scribe-search-field {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      width: 220px;
+      height: 28px;
+      flex: none;
+    }
+    .${r}-toolbar input.scribe-search-input {
+      width: 100%;
+      margin: 0;
+      padding: 2px calc(var(--scribe-search-count-w, 0px) + 8px) 2px 8px;
+      text-align: left;
+    }
+    .${r}-toolbar input.scribe-search-input:focus { border-color: var(--scribe-accent); }
+    .${r}-toolbar .scribe-search-count {
+      position: absolute;
+      right: 8px;
+      top: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      min-width: 0;
+      padding: 0;
+      font-size: 12.5px;
+      color: var(--scribe-ink-3);
+      font-variant-numeric: tabular-nums;
+      pointer-events: none;
+    }
+    .${r}-toolbar .scribe-search-count:empty { display: none; }
+    .${r}-toolbar .scribe-search-sep {
+      display: block;
+      width: 1px;
+      height: 18px;
+      margin: 0 2px;
+      background: var(--scribe-line-strong);
+      flex: none;
+    }
+    .${r}-toolbar .scribe-search-step,
+    .${r}-toolbar .scribe-search-step:hover {
+      width: calc(var(--scribe-icon-size, 32px) - 4px);
+      height: calc(var(--scribe-icon-size, 32px) - 4px);
+      border-radius: 6px;
+    }
+    .${r}-toolbar .scribe-search-step .cr-icon { width: 100%; height: 100%; }
+    .${r}-toolbar .scribe-search-glyph { display: block; }
+    .${r}-toolbar .scribe-search-glyph-phone,
+    .${r}-toolbar .scribe-search-close { display: none; }
 
     .${r} .scribe-scrollbar {
       position: absolute;

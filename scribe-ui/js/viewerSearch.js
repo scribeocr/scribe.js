@@ -66,9 +66,11 @@ export function findText(viewer, text) {
  * Focus `viewer` on search match at `index`.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} index
+ * @param {object} [options]
+ * @param {boolean} [options.navigate=true] - Pass false to make the match active without moving the view.
  * @returns {Promise<void>}
  */
-export async function goToMatch(viewer, index) {
+export async function goToMatch(viewer, index, { navigate = true } = {}) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const s = _viewer._searchState;
   if (!s.matchList.length) {
@@ -83,7 +85,7 @@ export async function goToMatch(viewer, index) {
   // refresh=false: pages already rendered are left intact,
   // so advancing to an on-screen page just moves the image rather than rebuilding every word shape.
   // Pages drawn fresh here already pick up the correct highlights from the renderer.
-  await _viewer.displayPage(match.pageN, false, false);
+  if (navigate) await _viewer.displayPage(match.pageN, false, false);
 
   // Move the active (orange) highlight without re-rendering.
   // The blue match highlights on already-rendered pages are unchanged,
@@ -100,6 +102,7 @@ export async function goToMatch(viewer, index) {
     }
   }
 
+  if (!navigate) return;
   const uiWord = uiWords.find((kw) => kw.word.id === match.wordIds[0]);
   if (uiWord) _viewer.scrollToWord(uiWord);
 }
