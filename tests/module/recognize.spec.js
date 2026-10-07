@@ -301,6 +301,17 @@ describe('Check monospace font detection and optimization (M.D.Fla.).', () => {
     expect(advances.size).toBe(1);
   });
 
+  test('Each row of the four-up transcript sheet imports as its own line', () => {
+    const page = doc.ocr.pdf[0];
+    const texts = page.lines.map((line) => line.words.map((w) => w.text).join(' '));
+    expect(page.lines.length, 'the native line count of the four-up sheet').toBe(119);
+    expect(texts.slice(15, 17), 'row 4 of the left page and row 4 of the page printed beside it must each import as a line of their own').toEqual([
+      '4 Q When you say "second one," I\'m going to -- I\'ll',
+      '4 Q I take it that you, Mr. Welsh, and Mr. McConnell',
+    ]);
+    expect(doc.ocr.active[0].lines.length, 'the combined layer after recognition keeps every row of the sheet as its own line').toBe(119);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

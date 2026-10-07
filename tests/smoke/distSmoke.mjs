@@ -11,10 +11,8 @@ const DIST = path.join(ROOT, 'dist');
 const browserArg = process.argv.indexOf('--browser');
 const browserName = browserArg === -1 ? 'chrome' : process.argv[browserArg + 1];
 const PDF = '/tests/test-assets/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p6.pdf';
-// The count this document yields today.
-// A different value means extraction or recognition changed, not that the build is broken.
-const NATIVE_LINES = 90;
-const OCR_LINES = 90;
+const NATIVE_LINES = 119;
+const OCR_LINES = 119;
 // Page rasters differ slightly between browsers, so recognition can land a line or two apart.
 // A band rather than an exact count keeps the Firefox run from going flaky.
 const OCR_LINES_TOLERANCE = 10;
