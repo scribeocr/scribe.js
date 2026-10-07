@@ -56,19 +56,27 @@ window.addEventListener('vite:preloadError', () => {
   pdfViewer._showToast('This page is out of date — reload to keep using it.', { actionLabel: 'Reload', onAction: () => window.location.reload() });
 });
 
-let currentFile = null;
+const tabsByPath = new Map();
 async function handleLoadFile(file, page, readFileFn) {
-  if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + importFile directly when embedding.');
+  if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + openFiles directly when embedding.');
   if (pdfViewer.dropZone) pdfViewer.dropZone.style.display = 'none';
 
-  if (currentFile === file) {
+  const openTab = tabsByPath.get(file);
+  const openIdx = openTab ? pdfViewer._tabs.indexOf(openTab) : -1;
+  if (openIdx >= 0) {
+    if (openIdx !== pdfViewer._activeTab) await pdfViewer._activateTab(openIdx);
     await pdfViewer.scribe.displayPage(page, true, false);
     return;
   }
   const { buffer, name } = await readFileFn(file);
-  const fileObj = new File([buffer], name, { type: 'application/pdf' });
-  await pdfViewer.importFile(fileObj, page || 0);
-  currentFile = file;
+  // The type decides how the viewer opens the file, so a .scribe session file must not be labeled a PDF.
+  const fileObj = new File([buffer], name, { type: /\.pdf$/i.test(name) ? 'application/pdf' : '' });
+  const before = pdfViewer._tabs.length;
+  await pdfViewer.openFiles([fileObj]);
+  if (pdfViewer._tabs.length > before) {
+    tabsByPath.set(file, pdfViewer._tabs[pdfViewer._tabs.length - 1]);
+    if (page) await pdfViewer.scribe.displayPage(page, true, false);
+  }
 }
 
 async function handleHighlights(highlights) {

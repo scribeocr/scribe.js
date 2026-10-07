@@ -4,7 +4,7 @@
 import scribeLib from '../../scribe.js';
 import { saveAs } from '../../js/utils/miscUtils.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
-import { OPEN_SVG } from '../js/controls/toolbar.js';
+import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
@@ -24,7 +24,6 @@ const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 // eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
 // eslint-disable-next-line max-len
-const DOOR_FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
 // eslint-disable-next-line max-len
 const FIELD_SEARCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
@@ -49,6 +48,10 @@ const PORTFOLIO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const PORTFOLIO_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="5.5" y="2" width="8" height="9" rx="1" opacity=".55"/><rect x="2.5" y="5" width="8" height="9.5" rx="1"/></svg>';
 // eslint-disable-next-line max-len
 const IMAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="8.8" cy="9.3" r="1.6"/><path d="M3.5 16.5l5.2-4.6 3.9 3.4 3.1-2.6 4.8 4"/></svg>';
+const REVEAL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 4.5v5"/></svg>';
+const CLOSE_X_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">'
+  + '<path d="M7 7l10 10M17 7L7 17"/></svg>';
 // eslint-disable-next-line max-len
 const MENU_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
 // eslint-disable-next-line max-len
@@ -75,7 +78,8 @@ const PREVIEW_STORAGE_KEY = 'scribe-library-preview';
 const VIEW_STORAGE_KEY = 'scribe-library-view';
 const OTHERS_STORAGE_KEY = 'scribe-library-others';
 const COLS_STORAGE_KEY = 'scribe-library-cols';
-/** sessionStorage rather than localStorage, so each browser tab restores only the documents it had open. */
+/** Storage key for the name of the folder that was open when the app last ran. */
+const OPEN_FOLDER_KEY = 'scribe-library-open-folder';
 const RESUME_STORAGE_KEY = 'scribe-library-resume';
 
 /**
@@ -104,6 +108,12 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {?number} libraryOwner
  * @property {() => boolean} visible
  * @property {() => void} focusSearch
+ * @property {() => boolean} [connected] Document library only: whether a folder is connected.
+ * @property {() => Promise<void>} [openFolder] Document library only: pick a folder and open it as the library.
+ * @property {() => Promise<void>} [rebuildIndex] Document library only: re-index every document in the connected folder.
+ * @property {() => Promise<void>} [closeFolder] Document library only: close the folder and the documents open from it.
+ * @property {(tab: ?Object) => boolean} [ownsTab] Document library only: whether a tab holds a document from the open folder.
+ * @property {() => string} [closeFolderLabel] Document library only: the Close Folder command's label, counting the folder's open documents.
  * @property {() => void} show
  * @property {() => void} hide
  * @property {() => void} docOpened
@@ -456,6 +466,39 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-confirm .foot button:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-confirm .foot button.danger { background: var(--scribe-danger); border-color: var(--scribe-danger); color: #fff; font-weight: 650; }
 .scribe-pdf-viewer .scribe-library-confirm .foot button.danger:hover { filter: brightness(.94); }
+/* Start screen: one sheet with the two ways in, and one Recent list of folders and files. */
+.scribe-pdf-viewer .scribe-library-sheet { width: 560px; max-width: calc(100% - 44px); margin: 44px auto 0; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 26px 28px 22px; box-sizing: border-box; -webkit-user-select: text; user-select: text; }
+.scribe-pdf-viewer .scribe-library-sheet-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.scribe-pdf-viewer .scribe-library-sheet-act { border: 1px solid var(--scribe-line-strong); border-radius: 8px; padding: 14px 14px 12px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; cursor: pointer; background: var(--scribe-surface); color: var(--scribe-ink); font: inherit; text-align: left; }
+.scribe-pdf-viewer .scribe-library-sheet-act:hover { border-color: var(--scribe-accent); background: color-mix(in srgb, var(--scribe-accent) 4%, var(--scribe-surface)); }
+.scribe-pdf-viewer .scribe-library-sheet-act:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
+.scribe-pdf-viewer .scribe-library-sheet-act .t { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 14px; }
+.scribe-pdf-viewer .scribe-library-sheet-act .t .ic { display: inline-flex; width: 18px; height: 18px; color: var(--scribe-ink-2); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-sheet-act .kbd { margin-left: auto; font-size: 11.5px; font-weight: 400; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-sheet-act .d { font-size: 12.5px; color: var(--scribe-ink-2); line-height: 1.45; }
+.scribe-pdf-viewer .scribe-library-sheet .scribe-library-recent { margin: 16px 0 0; }
+.scribe-pdf-viewer .scribe-library-sheet-hint { text-align: center; font-size: 12.5px; color: var(--scribe-ink-3); margin-top: 14px; }
+@media (max-width: 640px) { .scribe-pdf-viewer .scribe-library-sheet-acts { grid-template-columns: 1fr; } }
+/* Just added: the row a drop or Add PDFs… lands in, with a way to take each copy back, until the user is done with it. */
+.scribe-pdf-viewer .scribe-library-shelf-label { display: flex; align-items: center; gap: 12px; margin: 4px 0 10px; font-size: 12px; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-shelf-label .h { font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--scribe-ink-2); white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-shelf-label .note { color: var(--scribe-ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-shelf-label .done { margin-left: auto; font: inherit; font-size: 13px; font-weight: 600; color: var(--scribe-accent); background: none; border: none; cursor: pointer; padding: 2px 6px; border-radius: 5px; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-shelf-label .done:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-grid.shelf .scribe-library-card { border-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-card .shelf-act { margin-top: 6px; padding: 0; border: none; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-accent); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-card .shelf-act:hover { text-decoration: underline; }
+/* The folder's own menu, reached from its name in the bar and from the chevron on its tab. */
+.scribe-pdf-viewer .scribe-library-folder-menu { left: 0; right: auto; min-width: 230px; z-index: 60; }
+.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
+.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled svg { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-crumb-root { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; margin-left: -6px; border-radius: 6px; border: none; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-crumb-root:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-crumb-root .fi { display: inline-flex; width: 16px; height: 16px; color: var(--scribe-ink-2); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-crumb-root .chev { width: 12px; height: 12px; color: var(--scribe-ink-3); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-crumb-root .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
   document.head.appendChild(style);
 };
@@ -476,6 +519,9 @@ export function createLibraryInstance(viewer, opts) {
   /** @param {?{libraryOwner?: number}} tab */
   const ownsTab = (tab) => !!tab && tab.libraryOwner === instanceId;
 
+  const shell = /** @type {any} */ (window).electronAPI;
+  // The desktop app's record must survive a relaunch, while each browser tab restores only the documents it had open.
+  const resumeStorage = shell ? window.localStorage : window.sessionStorage;
   /** @type {?LibraryStore} */
   let store = null;
   /** @type {?import('./libraryStore.js').LibraryManifest} */
@@ -558,10 +604,10 @@ export function createLibraryInstance(viewer, opts) {
   let resumeRecord = null;
   if (isLibrary) {
     try {
-      const rawResume = window.sessionStorage.getItem(RESUME_STORAGE_KEY);
+      const rawResume = resumeStorage.getItem(RESUME_STORAGE_KEY);
       const parsedResume = rawResume ? JSON.parse(rawResume) : null;
       if (parsedResume?.v === 1 && Array.isArray(parsedResume.tabs)) resumeRecord = parsedResume;
-    } catch { /* sessionStorage unavailable, or the record is not JSON. */ }
+    } catch { /* Storage unavailable, or the record is not JSON. */ }
   }
   /** Set while `openLibrary` is reopening recorded tabs, so interim writes cannot clobber the record mid-restore. */
   let restoringTabs = false;
@@ -734,7 +780,7 @@ export function createLibraryInstance(viewer, opts) {
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'scribe-library-hicon';
   refreshBtn.innerHTML = REFRESH_SVG;
-  refreshBtn.title = 'Re-scan the library folder for new, changed, or removed files';
+  refreshBtn.title = 'Re-scan the folder for new, changed, or removed files';
   refreshBtn.setAttribute('aria-label', 'Refresh folder');
   if (!readOnly) header.appendChild(refreshBtn);
 
@@ -822,7 +868,20 @@ export function createLibraryInstance(viewer, opts) {
     });
     homeTab.appendChild(close);
   }
-  if (viewer._tabStrip) {
+  if (isLibrary) {
+    const chev = document.createElement('span');
+    chev.className = 'scribe-tab-chev';
+    chev.innerHTML = CHEVRON_SVG;
+    chev.title = 'Folder actions';
+    chev.role = 'button';
+    chev.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFolderMenu(chev);
+    });
+    homeTab.appendChild(chev);
+  }
+  // The library mounts its tab when a folder opens.
+  if (viewer._tabStrip && !isLibrary) {
     viewer._tabStrip.addPinnedTab(homeTab);
     viewer._tabStripMinTabs = 1;
     viewer._renderTabs();
@@ -850,7 +909,7 @@ export function createLibraryInstance(viewer, opts) {
 
   const syncBarForStore = () => {
     if (!barSwapped || !barTitle || !barControls) return;
-    barTitle.style.display = store || pendingHandle ? '' : 'none';
+    barTitle.style.display = store ? '' : 'none';
     barControls.style.display = store ? '' : 'none';
   };
   /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu and any shell window controls in place. */
@@ -936,39 +995,43 @@ export function createLibraryInstance(viewer, opts) {
     }, 2000);
   };
 
+  const buildResumeRecord = () => {
+    const activeT = viewer._tabs[viewer._activeTab];
+    const libTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
+    if (!libTabs.length) return null;
+    return {
+      v: 1,
+      // The folder name pins the record to its library, so it cannot replay into a different one.
+      dir: store?.root?.name ?? '',
+      tabs: libTabs.map((t) => ({
+        hash: t.libraryHash || '',
+        relPath: t.libraryRelPath || '',
+        page: t === activeT ? viewer.scribe.state.cp.n : (t.lastPage ?? 0),
+      })),
+      active: activeT ? libTabs.indexOf(activeT) : -1,
+      view: activeT && libTabs.includes(activeT) ? {
+        zoom: viewer.scribe.zoomLevel,
+        sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
+        sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
+      } : null,
+      lib: visible ? 1 : 0,
+    };
+  };
   /**
-   * Write the sessionStorage record a refresh restores from.
-   * The `pagehide` call is the authoritative one, since sessionStorage is synchronous and so completes as the page unloads.
+   * Write the record a reload or relaunch restores from.
+   * The `pagehide` call is the authoritative one, since web storage is synchronous and so completes as the page unloads.
    */
   const writeResumeRecord = () => {
     // Only the library's tabs come back after a reload, because a portfolio's members are gone with it.
     if (!isLibrary || restoringTabs) return;
     try {
-      const activeT = viewer._tabs[viewer._activeTab];
-      const libTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
-      if (!libTabs.length) {
-        window.sessionStorage.removeItem(RESUME_STORAGE_KEY);
+      const record = buildResumeRecord();
+      if (!record) {
+        resumeStorage.removeItem(RESUME_STORAGE_KEY);
         return;
       }
-      const record = {
-        v: 1,
-        // The folder name pins the record to its library, so it cannot replay into a different one.
-        dir: store?.root?.name ?? '',
-        tabs: libTabs.map((t) => ({
-          hash: t.libraryHash || '',
-          relPath: t.libraryRelPath || '',
-          page: t === activeT ? viewer.scribe.state.cp.n : (t.lastPage ?? 0),
-        })),
-        active: activeT ? libTabs.indexOf(activeT) : -1,
-        view: activeT && libTabs.includes(activeT) ? {
-          zoom: viewer.scribe.zoomLevel,
-          sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
-          sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
-        } : null,
-        lib: visible ? 1 : 0,
-      };
-      window.sessionStorage.setItem(RESUME_STORAGE_KEY, JSON.stringify(record));
-    } catch { /* sessionStorage unavailable. */ }
+      resumeStorage.setItem(RESUME_STORAGE_KEY, JSON.stringify(record));
+    } catch { /* Storage unavailable. */ }
   };
 
   /** @type {?string} */
@@ -1061,15 +1124,28 @@ export function createLibraryInstance(viewer, opts) {
   const syncCrumbs = () => {
     crumbsElem.replaceChildren();
     const segs = currentDir ? currentDir.split('/') : [];
+    const rootLabel = isLibrary && store ? store.root.name : opts.name;
     if (!segs.length) {
       crumbsElem.textContent = '';
+      if (isLibrary) {
+        const rootMenuBtn = document.createElement('button');
+        rootMenuBtn.type = 'button';
+        rootMenuBtn.className = 'scribe-library-crumb-root';
+        rootMenuBtn.setAttribute('aria-haspopup', 'menu');
+        rootMenuBtn.title = rootLabel;
+        rootMenuBtn.innerHTML = `<span class="fi">${FOLDER_SVG}</span><span class="nm"></span>${CHEVRON_SVG}`;
+        /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
+        rootMenuBtn.addEventListener('click', () => toggleFolderMenu(rootMenuBtn));
+        crumbsElem.appendChild(rootMenuBtn);
+        return;
+      }
       if (opts.crumbGlyph) crumbsElem.insertAdjacentHTML('beforeend', `<span class="fi">${opts.crumbGlyph}</span>`);
-      crumbsElem.appendChild(document.createTextNode(opts.name));
+      crumbsElem.appendChild(document.createTextNode(rootLabel));
       return;
     }
     const rootBtn = document.createElement('button');
     rootBtn.className = 'scribe-library-crumb';
-    rootBtn.textContent = opts.name;
+    rootBtn.textContent = rootLabel;
     rootBtn.dataset.dirTarget = '';
     rootBtn.addEventListener('click', () => openDir(''));
     crumbsElem.appendChild(rootBtn);
@@ -1237,17 +1313,18 @@ export function createLibraryInstance(viewer, opts) {
     const recent = viewMode === 'grid' && currentDir === '' && !filter && sortMode !== 'opened'
       ? entries.filter(([, e]) => e.lastOpened > 0).sort(([, a], [, b]) => b.lastOpened - a.lastOpened).slice(0, 5)
       : [];
+    justAdded = manifest ? justAdded.filter((a) => manifest.docs[a.relPath]) : [];
     const emptyLib = !!manifest && !entries.length && !dirSet.size && !shownOthers.length;
     let emptyNote = '';
     if (!shown.length && !shownOthers.length && filter) emptyNote = 'filter';
     else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) emptyNote = 'dir';
 
     let renderKey;
-    if (!store || !manifest) renderKey = `wall|${pendingHandle ? pendingHandle.name : ''}`;
+    if (!store || !manifest) renderKey = 'wall';
     else if (fullTextResults) renderKey = 'results';
     else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
     const renderSig = emptyLib ? 'empty-lib'
-      : `r${recent.length ? 1 : 0}d${shownDirs.length ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}`;
+      : `r${recent.length ? 1 : 0}d${shownDirs.length ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
     // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
     if (store && manifest && !fullTextResults && !emptyLib
@@ -1320,39 +1397,44 @@ export function createLibraryInstance(viewer, opts) {
     if (pane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) pane.destroy();
     if (!fullTextResults) results.dispose();
     if (!store || !manifest) {
-      // Only the library can be store-less, waiting at its folder wall.
+      // Only the library can be store-less, waiting at its start screen.
       // Every other instance has its store from birth and waits only for its scan.
       if (!isLibrary) return;
-      if (pendingHandle) {
-        const card = document.createElement('div');
-        card.className = 'scribe-library-card-wall';
-        card.innerHTML = `<h3>Reconnect your library</h3><p>Your browser needs permission again to read “${pendingHandle.name}”. Nothing is lost — one click restores access.</p>`;
-        const connectBtn = document.createElement('button');
-        connectBtn.className = 'scribe-library-btn primary';
-        connectBtn.textContent = `Reconnect “${pendingHandle.name}”`;
-        connectBtn.addEventListener('click', async () => {
-          try {
-            const s = new LibraryStore(/** @type {FileSystemDirectoryHandle} */ (pendingHandle));
-            if ((await s.requestPermission()) !== 'granted') return;
-            pendingHandle = null;
-            await openLibrary(s);
-          } catch { /* Permission denied or dismissed. */ }
-        });
-        card.appendChild(connectBtn);
-        body.appendChild(card);
-        return;
-      }
-      const doors = document.createElement('div');
-      doors.className = 'scribe-library-doors';
-      const openDoor = document.createElement('div');
-      openDoor.className = 'scribe-library-door';
-      openDoor.innerHTML = `<div class="ic">${DOOR_FILE_SVG}</div><h3>Open a document</h3>`
-        + '<p>A PDF or a scanned document. Text in scans is recognized, so you can search and copy it.</p>';
+      const sheet = document.createElement('div');
+      sheet.className = 'scribe-library-sheet';
+      const acts = document.createElement('div');
+      acts.className = 'scribe-library-sheet-acts';
+      const openAct = document.createElement('button');
+      openAct.type = 'button';
+      openAct.className = 'scribe-library-sheet-act';
+      openAct.innerHTML = `<div class="t"><span class="ic">${FILE_SVG}</span><span>Open…</span><span class="kbd"></span></div>`
+        + '<div class="d">A PDF or a scanned document. Text in scans is recognized, so you can search and copy it.</div>';
+      /** @type {HTMLElement} */ (openAct.querySelector('.kbd')).textContent = shortcutLabel('O');
+      openAct.addEventListener('click', () => viewer.runMenuCommand('open'));
+      const folderAct = document.createElement('button');
+      folderAct.type = 'button';
+      folderAct.className = 'scribe-library-sheet-act';
+      folderAct.innerHTML = `<div class="t"><span class="ic">${FOLDER_SVG}</span><span>Open Folder…</span></div>`
+        + '<div class="d">Browse and search every PDF in a folder on this computer. Nothing is copied or moved.</div>';
+      folderAct.addEventListener('click', () => openFolder());
+      acts.append(openAct, folderAct);
+      sheet.appendChild(acts);
       const recents = viewer._recentFiles ?? [];
-      if (recents.length) {
+      if (recentFolders.length || recents.length) {
         const list = document.createElement('div');
         list.className = 'scribe-library-recent';
         list.innerHTML = '<div class="h">Recent</div>';
+        for (const handle of recentFolders.slice(0, 3)) {
+          const row = document.createElement('button');
+          row.type = 'button';
+          row.innerHTML = `<span class="fi">${FOLDER_SVG}</span><span class="n"></span><span class="p"></span>`;
+          /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = handle.name;
+          const dir = folderDirs.get(handle.name);
+          /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = dir ?? '';
+          row.title = dir ? `${dir}/${handle.name}` : handle.name;
+          row.addEventListener('click', () => openRecentFolder(handle));
+          list.appendChild(row);
+        }
         for (const f of recents.slice(0, 5)) {
           const row = document.createElement('button');
           row.type = 'button';
@@ -1363,44 +1445,15 @@ export function createLibraryInstance(viewer, opts) {
           row.addEventListener('click', () => f.open());
           list.appendChild(row);
         }
-        openDoor.appendChild(list);
+        sheet.appendChild(list);
       }
-      const openGrow = document.createElement('div');
-      openGrow.className = 'grow';
-      openDoor.appendChild(openGrow);
-      const openBtn = document.createElement('button');
-      openBtn.type = 'button';
-      openBtn.className = 'scribe-library-btn';
-      openBtn.innerHTML = `<span class="bi">${OPEN_SVG}</span>Open…`;
-      openBtn.addEventListener('click', () => viewer.runMenuCommand('open'));
-      openDoor.appendChild(openBtn);
-      const openHint = document.createElement('div');
-      openHint.className = 'hint';
-      openHint.textContent = 'or drop a file here';
-      openDoor.appendChild(openHint);
-      const libDoor = document.createElement('div');
-      libDoor.className = 'scribe-library-door';
-      libDoor.innerHTML = `<div class="ic">${LIBRARY_SVG}</div><h3>Build a library</h3>`
-        + '<p>Choose a folder and every PDF in it becomes searchable from one place, scanned pages included. '
-        + 'Your notes and bookmarks are saved beside each file. The PDFs themselves are never changed.</p><div class="grow"></div>';
-      const folderBtn = document.createElement('button');
-      folderBtn.type = 'button';
-      folderBtn.className = 'scribe-library-btn';
-      folderBtn.innerHTML = `<span class="bi">${FOLDER_SVG}</span>Choose a folder…`;
-      folderBtn.addEventListener('click', async () => {
-        try {
-          await openLibrary(await LibraryStore.connectNew());
-        } catch { /* Picker dismissed. */ }
-      });
-      libDoor.appendChild(folderBtn);
-      const libHint = document.createElement('div');
-      libHint.className = 'hint';
-      libHint.textContent = 'Search every PDF in the folder from one place';
-      libDoor.appendChild(libHint);
-      doors.append(openDoor, libDoor);
-      body.appendChild(doors);
+      const hint = document.createElement('div');
+      hint.className = 'scribe-library-sheet-hint';
+      hint.textContent = 'or drop a file here';
+      sheet.appendChild(hint);
+      body.appendChild(sheet);
       if (!document.activeElement || document.activeElement === document.body) {
-        openBtn.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
+        openAct.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
       }
       return;
     }
@@ -1416,6 +1469,44 @@ export function createLibraryInstance(viewer, opts) {
       empty.textContent = opts.emptyText ?? 'No PDFs in this folder yet. Drop files here or use “New › Add PDFs”.';
       body.appendChild(empty);
       return;
+    }
+
+    if (justAdded.length) {
+      const shelfLabel = document.createElement('div');
+      shelfLabel.className = 'scribe-library-shelf-label';
+      const shelfHead = document.createElement('span');
+      shelfHead.className = 'h';
+      shelfHead.textContent = `Just added · ${justAdded.length}`;
+      const shelfNote = document.createElement('span');
+      shelfNote.className = 'note';
+      const froms = [...new Set(justAdded.map((a) => a.from).filter(Boolean))];
+      shelfNote.textContent = `Copied into this folder${froms.length === 1 ? ` from ${froms[0]}` : ''}. ${justAdded.length === 1 ? 'The original stays where it was.' : 'The originals stay where they were.'}`;
+      const shelfDone = document.createElement('button');
+      shelfDone.type = 'button';
+      shelfDone.className = 'done';
+      shelfDone.textContent = 'Done';
+      shelfDone.addEventListener('click', () => {
+        justAdded = [];
+        render();
+      });
+      shelfLabel.append(shelfHead, shelfNote, shelfDone);
+      body.appendChild(shelfLabel);
+      const shelfGrid = document.createElement('div');
+      shelfGrid.className = 'scribe-library-grid shelf';
+      for (const { relPath } of justAdded) {
+        const card = buildCard(relPath, manifest.docs[relPath], false);
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'shelf-act';
+        removeBtn.textContent = 'Remove from folder';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          removeJustAdded(relPath);
+        });
+        card.querySelector('.body')?.appendChild(removeBtn);
+        shelfGrid.appendChild(card);
+      }
+      body.appendChild(shelfGrid);
     }
 
     if (viewMode === 'list' || viewMode === 'compact') {
@@ -1756,29 +1847,13 @@ export function createLibraryInstance(viewer, opts) {
       if (revertPath || canRemove) menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
       if (revertPath) addItem('Revert to original…', true, () => openRevertDialog(revertPath));
       if (canRemove) {
-        addItem('Remove from library', true, async () => {
+        addItem('Delete notes and edits…', true, async () => {
           if (!store || !manifest) return;
           const msg = paths.length === 1
-            ? `Remove “${titleOf(paths[0])}” from the library?\n\nIts saved annotations and edits are deleted. The document file itself is not touched.`
-            : `Remove ${paths.length} documents from the library?\n\nTheir saved annotations and edits are deleted. The document files themselves are not touched.`;
+            ? `Delete the notes and edits saved for “${titleOf(paths[0])}”?\n\nThe document file itself is not touched.`
+            : `Delete the notes and edits saved for ${paths.length} documents?\n\nThe document files themselves are not touched.`;
           if (!window.confirm(msg)) return;
-          for (const p of paths) {
-            const entry = manifest.docs[p];
-            if (!entry) continue;
-            delete manifest.docs[p];
-            // Identical files share a hash and therefore a sidecar, so the data files go only with the last reference to it.
-            const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
-            if (entry.hash && !shared) {
-              index.removeDoc(entry.hash);
-              await Promise.all([
-                store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
-                store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
-              ]).catch(() => {});
-              sessions.invalidate(entry.hash);
-              saveIndexSoon();
-            }
-          }
-          await store.writeManifest(manifest);
+          await forgetDocs(paths);
           render();
         });
       }
@@ -1923,6 +1998,54 @@ export function createLibraryInstance(viewer, opts) {
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {boolean} [draggable] - False for derived views (the Recent strip, a filtered grid).
    */
+  /**
+   * Drop the index entries and derived data of `paths`.
+   * The files themselves stay where they are.
+   * @param {string[]} paths
+   */
+  const forgetDocs = async (paths) => {
+    if (!store || !manifest) return;
+    for (const p of paths) {
+      const entry = manifest.docs[p];
+      if (!entry) continue;
+      delete manifest.docs[p];
+      // Identical files share a hash and therefore a sidecar, so the data files go only with the last reference to it.
+      const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
+      if (entry.hash && !shared) {
+        index.removeDoc(entry.hash);
+        await Promise.all([
+          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
+          store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
+        ]).catch(() => {});
+        sessions.invalidate(entry.hash);
+        saveIndexSoon();
+      }
+    }
+    await store.writeManifest(manifest);
+  };
+
+  /**
+   * Delete a copy the app made in the folder, with its tab and saved data.
+   * @param {string} relPath
+   */
+  const removeJustAdded = async (relPath) => {
+    if (!store || !manifest) return;
+    const name = titleOf(relPath);
+    const folderName = store.root.name;
+    const entry = manifest.docs[relPath];
+    const openIdx = viewer._tabs.findIndex((t) => ownsTab(t) && (t.libraryRelPath === relPath || (entry?.hash && t.libraryHash === entry.hash)));
+    if (openIdx >= 0) viewer._closeTab(openIdx);
+    await forgetDocs([relPath]);
+    try {
+      await store.deleteSourceFile(relPath);
+    } catch (err) {
+      viewer._showToast(`Couldn't remove “${name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the file could not be deleted'}.`);
+    }
+    justAdded = justAdded.filter((a) => a.relPath !== relPath);
+    render();
+    viewer._showToast(`Removed “${name}” from ${folderName}. The original is untouched.`);
+  };
+
   const buildCard = (relPath, entry, draggable = true) => {
     const card = document.createElement('div');
     card.className = 'scribe-library-card';
@@ -3510,7 +3633,7 @@ export function createLibraryInstance(viewer, opts) {
     const note = document.createElement('div');
     note.className = 'note';
     const openTab = viewer._tabs.some((tab) => tab.libraryHash === entry.hash && ownsTab(tab));
-    note.textContent = `The PDF file in your library folder is not changed. You can undo this right afterward.${openTab ? ' Its open tab will close.' : ''}`;
+    note.textContent = `The PDF file in your folder is not changed. You can undo this right afterward.${openTab ? ' Its open tab will close.' : ''}`;
     const foot = document.createElement('div');
     foot.className = 'foot';
     const cancel = document.createElement('button');
@@ -3626,8 +3749,12 @@ export function createLibraryInstance(viewer, opts) {
 
   // --- Ingest wiring ------------------------------------------------------
 
-  /** @type {?FileSystemDirectoryHandle} */
-  let pendingHandle = null;
+  /** @type {FileSystemDirectoryHandle[]} */
+  let recentFolders = [];
+  /** Each folder's parent directory, keyed by the folder's name, as the desktop shell reports it. @type {Map<string, string>} */
+  const folderDirs = new Map();
+  /** The copies the Just added row lists, newest first, each with the name of the directory it came from. @type {Array<{relPath: string, from: string}>} */
+  let justAdded = [];
 
   /** @type {?number} Trailing debounce for grid rebuilds during bulk indexing. */
   let ingestRenderTimer = null;
@@ -3641,7 +3768,6 @@ export function createLibraryInstance(viewer, opts) {
   document.addEventListener('wheel', noteInteraction, { capture: true, passive: true });
   /** @type {?boolean} */
   let onBattery = null;
-  const shell = /** @type {any} */ (window).electronAPI;
   shell?.getPowerState?.().then((/** @type {any} */ s) => { onBattery = !!s?.onBattery; }).catch(() => {});
   shell?.onPowerChanged?.((/** @type {any} */ s) => {
     onBattery = !!s?.onBattery;
@@ -3657,16 +3783,29 @@ export function createLibraryInstance(viewer, opts) {
     store = s;
     sessions.connect(s);
     currentDir = '';
-    await store.init();
-    manifest = await store.readManifest();
-    index = LibraryIndex.deserialize(await store.readSearchIndex());
-    if (!index.docs.length) {
-      for (const entry of Object.values(manifest.docs)) {
-        if (entry.status !== 'indexed' || !entry.hash) continue;
-        const text = await store.readTextCache(entry.hash);
-        if (text !== null) index.addDoc(entry.hash, text.split('\f'));
+    try {
+      await store.init();
+      manifest = await store.readManifest();
+      index = LibraryIndex.deserialize(await store.readSearchIndex());
+      if (!index.docs.length) {
+        for (const entry of Object.values(manifest.docs)) {
+          if (entry.status !== 'indexed' || !entry.hash) continue;
+          const text = await store.readTextCache(entry.hash);
+          if (text !== null) index.addDoc(entry.hash, text.split('\f'));
+        }
+        if (index.docs.length) saveIndexSoon();
       }
-      if (index.docs.length) saveIndexSoon();
+    } catch (err) {
+      // A folder that cannot be read must not stay half-open, with the bar and menus acting as if it were open.
+      store = null;
+      manifest = null;
+      index = new LibraryIndex();
+      sessions.reset();
+      viewer._showToast(`Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      render();
+      syncBarForStore();
+      viewer._notifyMenuState();
+      return;
     }
     ingest = new LibraryIngest(store, manifest, index, {
       onProgress: ({
@@ -3764,8 +3903,25 @@ export function createLibraryInstance(viewer, opts) {
       },
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
+    homeTab.title = store.root.name;
+    /** @type {HTMLElement} */ (homeTab.querySelector('.scribe-tab-name')).textContent = store.root.name;
+    if (viewer._tabStrip && !homeTab.parentElement) viewer._tabStrip.addPinnedTab(homeTab);
+    viewer._tabStripMinTabs = 0;
+    if (visible) {
+      viewer._tabStrip?.setPinnedActive(true);
+      homeTab.classList.add('active');
+    }
+    viewer._renderTabs();
+    positionSurface();
+    recentFolders = await LibraryStore.recentFolders();
+    try { resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name); } catch { /* Storage unavailable. */ }
+    shell?.getFolderPath?.(store.root.name).then((/** @type {any} */ r) => {
+      if (r?.dir && store) folderDirs.set(store.root.name, r.dir);
+    }).catch(() => {});
     render();
     syncBarForStore();
+    syncFolderRows();
+    viewer._notifyMenuState();
     // Restore before the folder scan, so restore latency does not scale with library size.
     const record = resumeRecord;
     resumeRecord = null;
@@ -3876,7 +4032,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!store || !ingest) return;
     const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
     if (!pdfs.length) {
-      viewer._showToast('The library holds PDFs — none of the dropped files were PDFs.');
+      viewer._showToast('This folder holds PDFs — none of the dropped files were PDFs.');
       return;
     }
     const names = files.map((f) => f.name || '');
@@ -3891,6 +4047,9 @@ export function createLibraryInstance(viewer, opts) {
           await store.importSourceFile(finalStem + ocrName.slice(file.name.replace(/\.pdf$/i, '').length), ocrFile, currentDir);
         }
         await ingest.enqueue(relPath, { size: file.size, mtime: file.lastModified });
+        const sourcePath = String(shell?.pathForFile?.(file) || '').replace(/\\/g, '/');
+        const sourceDir = sourcePath.slice(0, sourcePath.lastIndexOf('/'));
+        justAdded.unshift({ relPath, from: sourceDir.slice(sourceDir.lastIndexOf('/') + 1) });
       } catch (err) {
         viewer._showToast(`Couldn't add “${file.name}” — ${err instanceof Error ? err.message : 'the file could not be written'}.`);
       }
@@ -3907,59 +4066,250 @@ export function createLibraryInstance(viewer, opts) {
     render({ revealSelection: true });
   });
 
+  /**
+   * Prompt for a library folder.
+   * @returns {Promise<?LibraryStore>} Null when the picker was dismissed, or when the folder could not be connected, which is shown.
+   */
+  const pickFolder = async () => {
+    try {
+      const s = await LibraryStore.connectNew();
+      if ((await s.permissionState()) === 'granted') return s;
+      viewer._showToast("Couldn't connect the folder — write access to it was refused.");
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return null;
+      viewer._showToast(`Couldn't connect the folder — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'something went wrong'}.`);
+    }
+    return null;
+  };
+  /**
+   * Leave the open folder, saving and closing the documents open from it.
+   * @returns {Promise<number>} How many of the folder's documents were closed.
+   */
+  const disconnectFolder = async () => {
+    if (!store) return 0;
+    const folderTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
+    for (const tab of folderTabs) await saveTabIfDirty(tab);
+    ingest?.cancel();
+    if (manifestTimer !== null) {
+      window.clearTimeout(manifestTimer);
+      manifestTimer = null;
+      if (manifest) store.writeManifest(manifest).catch(() => {});
+    }
+    if (indexTimer !== null) {
+      window.clearTimeout(indexTimer);
+      indexTimer = null;
+      store.writeSearchIndex(index.serialize()).catch(() => {});
+    }
+    panes.mounted()?.destroy();
+    sessions.reset();
+    results.dispose();
+    selectedPaths.clear();
+    selAnchor = null;
+    filterText = '';
+    searchInput.value = '';
+    searchField.classList.remove('has-text');
+    fullTextResults = null;
+    justAdded = [];
+    currentDir = '';
+    store = null;
+    manifest = null;
+    ingest = null;
+    index = new LibraryIndex();
+    // A folder's documents save their notes inside it, so they cannot stay open once it closes.
+    // The active one closes last, so no document in between is attached only to be closed in turn.
+    const activeTab = viewer._tabs[viewer._activeTab];
+    for (let i = viewer._tabs.length - 1; i >= 0; i--) {
+      if (folderTabs.includes(viewer._tabs[i]) && viewer._tabs[i] !== activeTab) viewer._closeTab(i);
+    }
+    if (folderTabs.includes(activeTab)) viewer._closeTab(viewer._tabs.indexOf(activeTab));
+    if (viewer._tabStrip && homeTab.parentElement) viewer._tabStrip.removePinnedTab(homeTab);
+    viewer._tabStripMinTabs = viewer._tabStrip?.pinnedCount() ? 1 : 2;
+    viewer._renderTabs();
+    positionSurface();
+    syncBarForStore();
+    syncFolderRows();
+    viewer._notifyMenuState();
+    writeResumeRecord();
+    try { resumeStorage.removeItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
+    if (visible) render();
+    return folderTabs.length;
+  };
+  const closeFolder = async () => {
+    if (!store) return;
+    const handle = store.root;
+    const folderName = handle.name;
+    // Captured before the folder's tabs close, so Undo can reopen them through the restore path.
+    const record = buildResumeRecord();
+    const n = await disconnectFolder();
+    viewer._showToast(`Closed ${folderName}${n ? ` and ${n} document${n === 1 ? '' : 's'}` : ''}`, {
+      actionLabel: 'Undo',
+      onAction: async () => {
+        if (store) return;
+        resumeRecord = record;
+        await openLibrary(new LibraryStore(handle));
+      },
+    });
+  };
+  const openFolder = async () => {
+    const s = await pickFolder();
+    if (!s) return;
+    await disconnectFolder();
+    showSurface();
+    await openLibrary(s);
+  };
+  /**
+   * Open a folder from the start screen's Recent list.
+   * The click is the user gesture a stored handle may need to regain its permission.
+   * @param {FileSystemDirectoryHandle} handle
+   */
+  const openRecentFolder = async (handle) => {
+    const s = new LibraryStore(handle);
+    try {
+      if ((await s.permissionState()) !== 'granted' && (await s.requestPermission()) !== 'granted') {
+        viewer._showToast(`Couldn't open “${handle.name}” — access to the folder was refused.`);
+        return;
+      }
+    } catch (err) {
+      viewer._showToast(`Couldn't open “${handle.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      return;
+    }
+    await disconnectFolder();
+    await LibraryStore.persistHandle(handle);
+    showSurface();
+    await openLibrary(s);
+  };
+  // Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
+  const rebuildIndex = async () => {
+    if (!store || !manifest || !ingest) return;
+    for (const [p, e] of Object.entries(manifest.docs)) {
+      if (e.status === 'indexed' && e.hash) await ingest.enqueue(p, {}, { writeManifest: false });
+    }
+    await store.writeManifest(manifest);
+    render();
+    ingest.start();
+  };
+  // --- Folder menu --------------------------------------------------------
+  const folderMenu = document.createElement('div');
+  folderMenu.className = 'scribe-library-menu scribe-library-folder-menu';
+  folderMenu.setAttribute('role', 'menu');
+  folderMenu.style.display = 'none';
+  const previewClose = (/** @type {boolean} */ on) => viewer._tabStripElem?.classList.toggle('scribe-tab-close-preview', on);
+  /** @param {PointerEvent} e */
+  const onFolderMenuOutside = (e) => {
+    if (!folderMenu.contains(/** @type {Node} */ (e.target))) closeFolderMenu();
+  };
+  /** @param {KeyboardEvent} e */
+  const onFolderMenuKey = (e) => {
+    if (e.key === 'Escape') closeFolderMenu();
+  };
+  const closeFolderMenu = () => {
+    folderMenu.style.display = 'none';
+    previewClose(false);
+    document.removeEventListener('pointerdown', onFolderMenuOutside);
+    document.removeEventListener('keydown', onFolderMenuKey);
+  };
+  /** @param {string} svg @param {string} label @param {() => void} onPick */
+  const addFolderMenuItem = (svg, label, onPick) => {
+    const item = document.createElement('div');
+    item.className = 'scribe-library-menu-item';
+    item.setAttribute('role', 'menuitem');
+    item.innerHTML = svg;
+    const glyph = item.querySelector('svg');
+    if (glyph) glyph.style.cssText = 'width:15px;height:15px;';
+    item.appendChild(document.createTextNode(label));
+    item.addEventListener('click', () => {
+      closeFolderMenu();
+      onPick();
+    });
+    folderMenu.appendChild(item);
+    return item;
+  };
+  const addFolderMenuSep = () => {
+    const sep = document.createElement('div');
+    sep.className = 'scribe-library-menu-sep';
+    folderMenu.appendChild(sep);
+  };
+  /** @type {?HTMLElement} */
+  let revealItem = null;
+  if (isLibrary && shell?.revealFolder) {
+    revealItem = addFolderMenuItem(REVEAL_SVG, shell.platform === 'darwin' ? 'Reveal in Finder' : shell.platform === 'win32' ? 'Show in Explorer' : 'Show in file manager', () => {
+      if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name);
+    });
+  }
+  if (isLibrary) {
+    addFolderMenuItem(FOLDER_SVG, 'Open Another Folder…', () => openFolder());
+    addFolderMenuSep();
+    addFolderMenuItem(REFRESH_SVG, 'Refresh Folder', () => refreshBtn.click());
+    addFolderMenuItem(LIBRARY_SVG, 'Rebuild Search Index', () => rebuildIndex());
+    addFolderMenuSep();
+  }
+  const folderMenuCloseItem = isLibrary ? addFolderMenuItem(CLOSE_X_SVG, 'Close Folder', () => closeFolder()) : null;
+  folderMenuCloseItem?.addEventListener('mouseenter', () => previewClose(true));
+  folderMenuCloseItem?.addEventListener('mouseleave', () => previewClose(false));
+  /** @param {HTMLElement} anchor */
+  const toggleFolderMenu = (anchor) => {
+    if (folderMenu.style.display !== 'none') {
+      closeFolderMenu();
+      return;
+    }
+    if (!store) return;
+    // The shell learns a folder's location only from the picker, so a folder picked under an earlier version has none.
+    if (revealItem) {
+      const known = folderDirs.has(store.root.name);
+      revealItem.classList.toggle('disabled', !known);
+      revealItem.title = known ? '' : 'Available after the folder is picked again with Open Folder…';
+    }
+    const host = viewer.pdfViewerElem;
+    if (folderMenu.parentElement !== host) host.appendChild(folderMenu);
+    const hostRect = host.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    folderMenu.style.left = `${Math.max(4, anchorRect.left - hostRect.left)}px`;
+    folderMenu.style.top = `${anchorRect.bottom - hostRect.top + 4}px`;
+    folderMenu.style.display = '';
+    setTimeout(() => document.addEventListener('pointerdown', onFolderMenuOutside), 0);
+    document.addEventListener('keydown', onFolderMenuKey);
+  };
+
   /** @type {?HTMLElement} */
   let openFolderItem = null;
+  /** @type {?HTMLElement} */
+  let closeFolderItem = null;
+  /** @type {?HTMLElement} */
+  let rebuildItem = null;
   if (viewer._appMenu && isLibrary) {
-    openFolderItem = viewer._appMenu.addAction('Open folder', FOLDER_SVG, async () => {
-      /** @type {LibraryStore} */
-      let s;
-      try {
-        s = await LibraryStore.connectNew();
-      } catch {
-        return; // Picker dismissed.
-      }
-      for (const tab of viewer._tabs) await saveTabIfDirty(tab);
-      ingest?.cancel();
-      if (manifestTimer !== null) {
-        window.clearTimeout(manifestTimer);
-        manifestTimer = null;
-        if (store && manifest) store.writeManifest(manifest).catch(() => {});
-      }
-      if (indexTimer !== null) {
-        window.clearTimeout(indexTimer);
-        indexTimer = null;
-        if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
-      }
-      // Checkpoint saves write through the current store; tabs from the old folder must not save into the new one.
-      for (const tab of viewer._tabs) {
-        if (tab.libraryHash) tab.libraryHash = undefined;
-      }
-      sessions.reset();
-      results.dispose();
-      selectedPaths.clear();
-      selAnchor = null;
-      filterText = '';
-      searchInput.value = '';
-      searchField.classList.remove('has-text');
-      fullTextResults = null;
-      pendingHandle = null;
-      showSurface();
-      await openLibrary(s);
-    });
+    openFolderItem = viewer._appMenu.addAction('Open folder', FOLDER_SVG, openFolder);
     // Sits directly under "Open file".
     viewer._appMenu.menuElem.insertBefore(openFolderItem, viewer._appMenu.menuElem.children[1] ?? null);
-    // Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
-    const rebuildItem = viewer._appMenu.addAction('Rebuild search index', LIBRARY_SVG, async () => {
-      if (!store || !manifest || !ingest) return;
-      for (const [p, e] of Object.entries(manifest.docs)) {
-        if (e.status === 'indexed' && e.hash) await ingest.enqueue(p, {}, { writeManifest: false });
-      }
-      await store.writeManifest(manifest);
-      render();
-      ingest.start();
-    });
-    viewer._appMenu.menuElem.insertBefore(rebuildItem, openFolderItem.nextSibling);
+    closeFolderItem = viewer._appMenu.addAction('Close folder', CLOSE_X_SVG, () => { if (store) closeFolder(); });
+    viewer._appMenu.menuElem.insertBefore(closeFolderItem, openFolderItem.nextSibling);
+    closeFolderItem.addEventListener('mouseenter', () => { if (store) previewClose(true); });
+    closeFolderItem.addEventListener('mouseleave', () => previewClose(false));
+    rebuildItem = viewer._appMenu.addAction('Rebuild search index', LIBRARY_SVG, () => { if (store) rebuildIndex(); });
+    viewer._appMenu.menuElem.insertBefore(rebuildItem, closeFolderItem.nextSibling);
   }
+  const folderDocCount = () => viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath)).length;
+  const closeFolderLabel = () => {
+    const n = store ? folderDocCount() : 0;
+    return n ? `Close Folder and ${n} Document${n === 1 ? '' : 's'}` : 'Close Folder';
+  };
+  const syncFolderRows = () => {
+    const n = store ? folderDocCount() : 0;
+    const relabel = (/** @type {?HTMLElement} */ item, /** @type {string} */ text) => {
+      const node = item && [...item.childNodes].find((c) => c.nodeType === Node.TEXT_NODE);
+      if (node) node.textContent = text;
+    };
+    relabel(folderMenuCloseItem, closeFolderLabel());
+    relabel(closeFolderItem, n ? `Close folder and ${n} document${n === 1 ? '' : 's'}` : 'Close folder');
+    for (const item of [closeFolderItem, rebuildItem]) {
+      if (!item) continue;
+      item.classList.toggle('disabled', !store);
+      item.ariaDisabled = store ? 'false' : 'true';
+      item.tabIndex = store ? 0 : -1;
+    }
+  };
+  syncFolderRows();
+  // Tab opens and closes change the count, and every strip change pushes menu state.
+  viewer.pdfViewerElem.addEventListener('scribe-menu-state-change', syncFolderRows);
 
   searchInput.addEventListener('input', () => {
     filterText = searchInput.value;
@@ -4171,7 +4521,7 @@ export function createLibraryInstance(viewer, opts) {
         else otherN += 1;
       }
       if (imageN && !otherN) return `Drop to create a PDF from ${imageN === 1 ? '1 image' : `${imageN} images`}`;
-      return `Drop to add to ${store.root.name}`;
+      return `Copy into ${store.root.name}`;
     };
   }
   /** @type {?number} */
@@ -4206,7 +4556,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!items.some((item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory)) return;
       e.preventDefault();
       e.stopPropagation();
-      viewer._showToast('Drop PDF files here, or choose a folder to set up a library.');
+      viewer._showToast('Drop a PDF to open it, or use Open Folder… to browse a whole folder.');
       return;
     }
     e.preventDefault();
@@ -4218,11 +4568,26 @@ export function createLibraryInstance(viewer, opts) {
     const images = files.filter((f) => isImageName(f.name));
     const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
     if (!images.length && !pdfs.length) {
-      viewer._showToast('The library holds PDFs — none of the dropped files were PDFs or images.');
+      viewer._showToast('This folder holds PDFs — none of the dropped files were PDFs or images.');
       return;
     }
+    // A PDF that already lives in this folder opens rather than being copied beside itself.
+    const folderPath = String((await shell?.getFolderPath?.(store.root.name).catch(() => null))?.path || '').replace(/\\/g, '/');
+    const inside = new Set();
+    if (folderPath && ingest) {
+      for (const f of pdfs) {
+        const p = String(shell.pathForFile(f) || '').replace(/\\/g, '/');
+        if (!p.startsWith(`${folderPath}/`)) continue;
+        inside.add(f);
+        const relPath = p.slice(folderPath.length + 1);
+        if (!manifest.docs[relPath]) await ingest.enqueue(relPath, { size: f.size, mtime: f.lastModified });
+        await openEntry(relPath, manifest.docs[relPath]);
+      }
+      if (inside.size) ingest.start();
+    }
+    const outside = files.filter((f) => !inside.has(f));
     // The whole drop goes along, so an OCR file dropped beside its PDF is copied in with it.
-    if (pdfs.length) await startIngestFiles(files);
+    if (pdfs.some((f) => !inside.has(f))) await startIngestFiles(outside);
     if (images.length) await createPdfFromImages(images);
   });
 
@@ -4232,7 +4597,7 @@ export function createLibraryInstance(viewer, opts) {
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
   viewer.pdfViewerElem.addEventListener('input', onInput, true);
-  const onRecentsChange = () => { if (visible && !store && !pendingHandle) render(); };
+  const onRecentsChange = () => { if (visible && !store) render(); };
   viewer.pdfViewerElem.addEventListener('scribe-recent-files-change', onRecentsChange);
   // Two single-slot hooks on the viewer: the first instance sets them, and they mark any instance's tab dirty.
   const ownsEditHooks = !viewer.scribe.onAnnotationsEdited;
@@ -4311,6 +4676,14 @@ export function createLibraryInstance(viewer, opts) {
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
     focusSearch,
+    ...(isLibrary ? {
+      connected: () => !!store,
+      openFolder,
+      rebuildIndex,
+      closeFolder,
+      ownsTab: (/** @type {?{libraryHash?: string, libraryRelPath?: string}} */ tab) => ownsTab(tab) && !!(tab?.libraryHash || tab?.libraryRelPath),
+      closeFolderLabel,
+    } : {}),
     show: () => {
       if (visible) return;
       showSurface();
@@ -4332,6 +4705,8 @@ export function createLibraryInstance(viewer, opts) {
     },
     saveTabIfDirty,
     saveAllDirty: async () => {
+      // The desktop shell destroys its window without a pagehide, so teardown is the last chance to record the open tabs.
+      writeResumeRecord();
       for (const tab of viewer._tabs) await saveTabIfDirty(tab);
     },
   });
@@ -4359,8 +4734,19 @@ export function createLibraryInstance(viewer, opts) {
       if (first && firstEntry) showListPreview(first, firstEntry, 0);
       return;
     }
-    const handle = await LibraryStore.restoreHandle();
+    recentFolders = await LibraryStore.recentFolders();
     if (destroyed) return;
+    recentFolders.forEach((h) => {
+      shell?.getFolderPath?.(h.name).then((/** @type {any} */ r) => {
+        if (!r?.dir || destroyed) return;
+        folderDirs.set(h.name, r.dir);
+        if (visible && !store) render();
+      }).catch(() => {});
+    });
+    // A launch by file opens only that file, and a folder closed before quitting stays closed.
+    let openName = null;
+    try { openName = resumeStorage.getItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
+    const handle = shell?.launchedWithFile || !openName ? null : (recentFolders.find((h) => h.name === openName) ?? null);
     if (handle) {
       const s = new LibraryStore(handle);
       if ((await s.permissionState()) === 'granted') {
@@ -4379,7 +4765,6 @@ export function createLibraryInstance(viewer, opts) {
         }
         return;
       }
-      pendingHandle = handle;
     }
     if (viewer._tabs.length === 0) {
       // No library opens on this path, so the restore never runs and the drop-zone hold is released here.
@@ -4440,6 +4825,11 @@ export function createLibraryInstance(viewer, opts) {
         viewer._renderTabs();
       }
       openFolderItem?.remove();
+      closeFolderItem?.remove();
+      rebuildItem?.remove();
+      closeFolderMenu();
+      folderMenu.remove();
+      viewer.pdfViewerElem.removeEventListener('scribe-menu-state-change', syncFolderRows);
       if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;
       const at = viewer._libraryInstances.indexOf(api);
       if (at >= 0) viewer._libraryInstances.splice(at, 1);
@@ -4455,7 +4845,7 @@ export function createLibraryInstance(viewer, opts) {
  */
 export function installLibrary(viewer) {
   return createLibraryInstance(viewer, {
-    kind: 'library', name: 'Library', glyph: LIBRARY_SVG, persistPrefs: true,
+    kind: 'library', name: 'Library', glyph: FOLDER_SVG, persistPrefs: true,
   });
 }
 

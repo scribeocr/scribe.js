@@ -1,6 +1,8 @@
 const IDB_NAME = 'scribe-library';
 const IDB_STORE = 'handles';
 const HANDLE_KEY = 'library-root';
+const RECENTS_KEY = 'recent-folders';
+const RECENTS_MAX = 8;
 const DATA_DIR = '.scribe';
 
 const MANIFEST_VERSION = 1;
@@ -215,9 +217,40 @@ export class LibraryStore {
     }
   }
 
-  /** @param {FileSystemDirectoryHandle} handle */
+  /**
+   * Folders opened before, newest first.
+   * @returns {Promise<FileSystemDirectoryHandle[]>}
+   */
+  static async recentFolders() {
+    try {
+      /** @type {?Array<{handle: FileSystemDirectoryHandle, lastOpened: number}>} */
+      const list = await idbOp('readonly', (s) => s.get(RECENTS_KEY));
+      if (Array.isArray(list) && list.length) return list.map((r) => r.handle).filter(Boolean);
+      // A profile from before the recents list holds its one folder under the old key.
+      const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
+      return legacy ? [legacy] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Record `handle` as the folder opened most recently.
+   * @param {FileSystemDirectoryHandle} handle
+   */
   static async persistHandle(handle) {
     try {
+      const recents = await LibraryStore.recentFolders();
+      const kept = [];
+      for (const h of recents) {
+        // Two handles to the same directory can be distinct objects.
+        // @ts-ignore
+        const same = h === handle || (typeof h.isSameEntry === 'function' && await h.isSameEntry(handle).catch(() => false));
+        if (!same) kept.push(h);
+      }
+      const now = Date.now();
+      const list = [handle, ...kept].slice(0, RECENTS_MAX).map((h, i) => ({ handle: h, lastOpened: now - i }));
+      await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
       await idbOp('readwrite', (s) => s.put(handle, HANDLE_KEY));
     } catch { /* Private mode or blocked storage. */ }
   }
@@ -339,6 +372,17 @@ export class LibraryStore {
     const candidate = await freeNameIn(dir, name);
     await writeFileIn(dir, candidate, data);
     return destDir ? `${destDir}/${candidate}` : candidate;
+  }
+
+  /**
+   * Delete a source document from the folder.
+   * Only copies the app itself made may be deleted this way.
+   * @param {string} relPath
+   */
+  async deleteSourceFile(relPath) {
+    const cut = relPath.lastIndexOf('/');
+    const dir = await this.dirAt(cut < 0 ? '' : relPath.slice(0, cut));
+    await dir.removeEntry(relPath.slice(cut + 1));
   }
 
   /**

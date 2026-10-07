@@ -1,8 +1,12 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isPackaged: process.argv.includes('--scribe-packaged'),
+  launchedWithFile: process.argv.includes('--scribe-launch-file'),
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
+  getFolderPath: (name) => ipcRenderer.invoke('folder-path', name),
+  revealFolder: (name) => ipcRenderer.send('reveal-folder', name),
   onLoadFile: (callback) => ipcRenderer.on('load-file', (_event, data) => callback(data)),
   onNavigate: (callback) => ipcRenderer.on('viewer-navigate', (_event, data) => callback(data)),
   onHighlight: (callback) => ipcRenderer.on('viewer-highlight', (_event, data) => callback(data)),

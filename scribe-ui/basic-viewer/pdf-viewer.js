@@ -510,7 +510,7 @@ class ScribePDFViewer {
     this._tabStripVisible = false;
     /**
      * Open-tab count at which the strip appears.
-     * The library lowers it to 1 so its pinned Library tab has a home.
+     * A pinned surface lowers it so its tab has a home.
      */
     this._tabStripMinTabs = 2;
     this._modeTrackOpen = false;
@@ -753,7 +753,7 @@ class ScribePDFViewer {
 
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
-    /** @type {?{destroy: () => void}} Handle from the dynamically imported library feature. */
+    /** @type {?import('../library/libraryView.js').LibraryInstance} */
     this._library = null;
     this._destroyed = false;
     /**
@@ -924,6 +924,9 @@ class ScribePDFViewer {
         },
         'find-next': () => this._searchBar?.stepMatch(false),
         'find-prev': () => this._searchBar?.stepMatch(true),
+        'open-folder': () => this._library?.openFolder?.(),
+        'close-folder': () => this._library?.closeFolder?.(),
+        'rebuild-index': () => this._library?.rebuildIndex?.(),
       };
       appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, shortcutLabel('O'));
       // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
@@ -1673,7 +1676,9 @@ class ScribePDFViewer {
     if (library && typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
       import('../library/libraryView.js')
         .then(({ installLibrary }) => {
-          if (!this._destroyed) this._library = installLibrary(this);
+          if (this._destroyed) return;
+          this._library = installLibrary(this);
+          this._notifyMenuState();
         })
         .catch((err) => console.error('Failed to load the document library.', err));
     }
@@ -2585,7 +2590,8 @@ class ScribePDFViewer {
   /** Re-render the tab strip and toggle its visibility. */
   _renderTabs() {
     this._setTabStripVisible(this._tabs.length >= this._tabStripMinTabs);
-    if (this._tabStrip) this._tabStrip.render(this._tabs, this._activeTab);
+    const folder = this._library?.connected?.() ? this._library : null;
+    if (this._tabStrip) this._tabStrip.render(this._tabs, this._activeTab, { grouped: !!folder, inGroup: (t) => !!folder?.ownsTab?.(t) });
     // Combine needs 2+ tabs and Split tracks the active document, so refresh both when the strip changes.
     if (this._editEnabled) {
       this._updateCombineButton();
@@ -2593,6 +2599,8 @@ class ScribePDFViewer {
     }
     // Every tab mutation passes through here, so this is where the embedding page learns which document is active.
     this._announceActiveDoc();
+    // The Close Folder commands count the folder's open documents in their labels, so a desktop shell relearns the count on every strip change.
+    this._notifyMenuState();
   }
 
   /** Tell the embedding page which document is active. */
@@ -4095,7 +4103,7 @@ class ScribePDFViewer {
    * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
    * @returns {{docOpen: boolean, combine: boolean, split: boolean,
    *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
-   *   fieldsEnabled: boolean, fieldsChecked: boolean}}
+   *   fieldsEnabled: boolean, fieldsChecked: boolean, library: boolean, libraryConnected: boolean, closeFolderLabel: string}}
    */
   getMenuState() {
     const doc = this.doc;
@@ -4108,6 +4116,9 @@ class ScribePDFViewer {
       darkChecked: this._effectiveTheme() === 'dark',
       fieldsEnabled: !!doc && docHasFormFields(doc),
       fieldsChecked: !!getHighlightFields(),
+      library: !!this._library,
+      libraryConnected: !!this._library?.connected?.(),
+      closeFolderLabel: this._library?.closeFolderLabel?.() ?? 'Close Folder',
     };
   }
 

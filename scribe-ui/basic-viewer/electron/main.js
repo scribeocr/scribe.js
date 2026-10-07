@@ -25,7 +25,12 @@ if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transpare
 
 // Window bounds, the maximize flag, and the recent-files list survive relaunches here.
 const shellStatePath = path.join(app.getPath('userData'), 'shell-state.json');
-let shellState = { bounds: null, isMaximized: false, recentFiles: [] };
+let shellState = {
+  bounds: null,
+  isMaximized: false,
+  recentFiles: [],
+  recentFolders: [],
+};
 try {
   shellState = { ...shellState, ...JSON.parse(fs.readFileSync(shellStatePath, 'utf8')) };
 } catch { /* First run, or an unreadable state file: start from the defaults. */ }
@@ -124,7 +129,10 @@ function createWindow() {
       // The preload only uses ipcRenderer and contextBridge, which sandboxed preloads keep.
       sandbox: true,
       // Lets the preload tell the renderer whether it runs from a packaged app, which carries its own OCR language data.
-      additionalArguments: app.isPackaged ? ['--scribe-packaged'] : [],
+      additionalArguments: [
+        ...(app.isPackaged ? ['--scribe-packaged'] : []),
+        ...(pendingOpenFile || parseArgs(process.argv).file ? ['--scribe-launch-file'] : []),
+      ],
     },
   });
   if (shellState.isMaximized) mainWindow.maximize();
@@ -263,10 +271,77 @@ function sendArgsToRenderer(args) {
   }).catch((err) => console.error(`Could not read ${file}: ${err.message}`));
 }
 
+let closeFolderLabel = 'Close Folder';
+/**
+ * Build the macOS application menu.
+ * @param {string} closeLabel
+ */
+function buildAppMenu(closeLabel) {
+  const send = (id) => () => mainWindow?.webContents.send('menu-action', id);
+  return Menu.buildFromTemplate([
+    { role: 'appMenu' },
+    {
+      label: 'File',
+      submenu: [
+        { id: 'open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('open') },
+        { label: 'Open Recent', role: 'recentDocuments', submenu: [{ label: 'Clear Menu', role: 'clearRecentDocuments' }] },
+        { id: 'open-folder', label: 'Open Folder…', enabled: false, click: send('open-folder') },
+        { id: 'close-folder', label: closeLabel, enabled: false, click: send('close-folder') },
+        { id: 'rebuild-index', label: 'Rebuild Search Index', enabled: false, click: send('rebuild-index') },
+        { type: 'separator' },
+        { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
+        { role: 'close', label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
+        { type: 'separator' },
+        { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
+        { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
+        { id: 'split', label: 'Split at Bookmarks', enabled: false, click: send('split') },
+        { type: 'separator' },
+        { id: 'print', label: 'Print…', accelerator: 'CmdOrCtrl+P', enabled: false, click: send('print') },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        // The undo and redo roles act only on text fields, which would leave the document's history unreachable from the menu.
+        { id: 'undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('undo') },
+        { id: 'redo', label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: send('redo') },
+        { type: 'separator' },
+        { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+        { type: 'separator' },
+        { id: 'find', label: 'Find…', accelerator: 'CmdOrCtrl+F', click: send('find') },
+        { id: 'find-next', label: 'Find Next', accelerator: 'CmdOrCtrl+G', enabled: false, click: send('find-next') },
+        { id: 'find-prev', label: 'Find Previous', accelerator: 'Shift+CmdOrCtrl+G', enabled: false, click: send('find-prev') },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { id: 'rotate-left', label: 'Rotate Left', accelerator: 'Shift+CmdOrCtrl+L', enabled: false, click: send('rotate-left') },
+        { id: 'rotate-right', label: 'Rotate Right', accelerator: 'Shift+CmdOrCtrl+R', enabled: false, click: send('rotate-right') },
+        { type: 'separator' },
+        { id: 'cover-alone', label: 'Separate Cover Page', type: 'checkbox', enabled: false, click: send('cover-alone') },
+        { id: 'highlight-fields', label: 'Highlight Fields', type: 'checkbox', enabled: false, click: send('highlight-fields') },
+        { id: 'dark-mode', label: 'Dark Mode', type: 'checkbox', click: send('dark-mode') },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [{ label: '21 Viewer Website', click: () => shell.openExternal('https://viewer.21.ai') }],
+    },
+  ]);
+}
+
 // The renderer pushes menu state whenever it changes, so the macOS menu items grey and check to match the app.
 // The Windows overlay follows the app's own dark-mode setting, which the OS theme does not track.
 ipcMain.on('menu-state', (_event, state) => {
   if (process.platform === 'win32' && mainWindow) mainWindow.setTitleBarOverlay(overlayColors(!!state.darkChecked));
+  if (process.platform === 'darwin' && typeof state.closeFolderLabel === 'string' && state.closeFolderLabel !== closeFolderLabel) {
+    closeFolderLabel = state.closeFolderLabel;
+    Menu.setApplicationMenu(buildAppMenu(closeFolderLabel));
+  }
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
   const set = (id, props) => {
@@ -284,6 +359,24 @@ ipcMain.on('menu-state', (_event, state) => {
   set('cover-alone', { enabled: state.coverEnabled, checked: state.coverChecked });
   set('highlight-fields', { enabled: state.fieldsEnabled, checked: state.fieldsChecked });
   set('dark-mode', { checked: state.darkChecked });
+  set('open-folder', { enabled: state.library });
+  set('rebuild-index', { enabled: state.libraryConnected });
+  set('close-folder', { enabled: state.libraryConnected });
+});
+
+// These channels take a folder's name, never a path, so the renderer cannot point the shell at arbitrary files.
+/** @param {string} name */
+const folderPathFor = (name) => (typeof name === 'string' && name ? shellState.recentFolders.find((p) => path.basename(p) === name) ?? null : null);
+ipcMain.handle('folder-path', (_event, name) => {
+  const p = folderPathFor(name);
+  if (!p) return null;
+  const home = app.getPath('home');
+  const dir = path.dirname(p);
+  return { path: p, dir: dir === home || dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir };
+});
+ipcMain.on('reveal-folder', (_event, name) => {
+  const p = folderPathFor(name);
+  if (p) shell.showItemInFolder(p);
 });
 
 // Power state feeds the library's warm-lane gate, so speculative rendering never runs on battery.
@@ -352,68 +445,28 @@ if (!gotTheLock) {
     // macOS gets a real application menu carrying the app's commands; the in-window menu button is hidden there.
     // Other platforms keep the in-window menu, and their window styling is unchanged.
     if (process.platform === 'darwin') {
-      const send = (id) => () => mainWindow?.webContents.send('menu-action', id);
-      Menu.setApplicationMenu(Menu.buildFromTemplate([
-        { role: 'appMenu' },
-        {
-          label: 'File',
-          submenu: [
-            { id: 'open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('open') },
-            { label: 'Open Recent', role: 'recentDocuments', submenu: [{ label: 'Clear Menu', role: 'clearRecentDocuments' }] },
-            { type: 'separator' },
-            { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
-            { role: 'close', label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
-            { type: 'separator' },
-            { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
-            { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
-            { id: 'split', label: 'Split at Bookmarks', enabled: false, click: send('split') },
-            { type: 'separator' },
-            { id: 'print', label: 'Print…', accelerator: 'CmdOrCtrl+P', enabled: false, click: send('print') },
-          ],
-        },
-        {
-          label: 'Edit',
-          submenu: [
-            // The undo and redo roles act only on text fields, which would leave the document's history unreachable from the menu.
-            { id: 'undo', label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: send('undo') },
-            { id: 'redo', label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: send('redo') },
-            { type: 'separator' },
-            { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
-            { type: 'separator' },
-            { id: 'find', label: 'Find…', accelerator: 'CmdOrCtrl+F', click: send('find') },
-            { id: 'find-next', label: 'Find Next', accelerator: 'CmdOrCtrl+G', enabled: false, click: send('find-next') },
-            { id: 'find-prev', label: 'Find Previous', accelerator: 'Shift+CmdOrCtrl+G', enabled: false, click: send('find-prev') },
-          ],
-        },
-        {
-          label: 'View',
-          submenu: [
-            { id: 'rotate-left', label: 'Rotate Left', accelerator: 'Shift+CmdOrCtrl+L', enabled: false, click: send('rotate-left') },
-            { id: 'rotate-right', label: 'Rotate Right', accelerator: 'Shift+CmdOrCtrl+R', enabled: false, click: send('rotate-right') },
-            { type: 'separator' },
-            { id: 'cover-alone', label: 'Separate Cover Page', type: 'checkbox', enabled: false, click: send('cover-alone') },
-            { id: 'highlight-fields', label: 'Highlight Fields', type: 'checkbox', enabled: false, click: send('highlight-fields') },
-            { id: 'dark-mode', label: 'Dark Mode', type: 'checkbox', click: send('dark-mode') },
-            { type: 'separator' },
-            { role: 'togglefullscreen' },
-          ],
-        },
-        { role: 'windowMenu' },
-        {
-          role: 'help',
-          submenu: [{ label: '21 Viewer Website', click: () => shell.openExternal('https://viewer.21.ai') }],
-        },
-      ]));
+      Menu.setApplicationMenu(buildAppMenu(closeFolderLabel));
     } else {
       // Electron otherwise installs its default menu, whose accelerators fire even though a frameless window never draws it.
       // Ctrl+W quits, Ctrl+R reloads and loses the session, and Ctrl+0 and Ctrl+plus/minus drive Chromium page zoom over the app's own.
       Menu.setApplicationMenu(null);
     }
-    // Electron grants renderer permission requests by default when no handler is installed.
-    // The app's only permission-gated API is clipboard writes, so everything else is denied.
-    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-      callback(permission === 'clipboard-sanitized-write');
+    // Electron grants renderer permission requests by default when no handler is installed, so everything but the two APIs the app uses is denied here.
+    // The File System Access API arrives as `fileSystem` when the library's folder picker asks for write access to the chosen folder; denying it leaves the picker failing silently.
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
+      // File System Access handles carry no path, so the picker's write request is the only place the shell learns where a folder is.
+      const req = /** @type {{filePath?: string, isDirectory?: boolean}} */ (details);
+      if (permission === 'fileSystem' && req.isDirectory && req.filePath) {
+        shellState.recentFolders = [req.filePath, ...shellState.recentFolders.filter((p) => p !== req.filePath)].slice(0, 10);
+        saveShellState();
+      }
+      callback(permission === 'clipboard-sanitized-write' || permission === 'fileSystem');
     });
+    // Without a check handler a folder handle restored from storage reports 'prompt' after a relaunch, and reopening the folder costs a click.
+    // A check answered false makes the handle 'denied' for good, with no request to fall back on, so the check cannot be narrowed to recorded paths.
+    // Granting every file-system check is safe because the renderer runs only this app's code, which stores handles only from the folder picker.
+    // Other checks pass as they do with no handler installed, except the deprecated synchronous clipboard read, which nothing in the app uses.
+    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission !== 'deprecated-sync-clipboard-read');
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
     // The isolation headers must be set only here: adding a webRequest hook as well stacks duplicate values ("require-corp, require-corp"), which silently voids the policies.
     // A webRequest hook cannot replace this either, since it never decorates worker-script responses, which must carry COEP themselves to spawn.
