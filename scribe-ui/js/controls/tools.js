@@ -12,7 +12,7 @@ import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
 import { createStyleCluster } from '../editTextStyle.js';
 import { createFillSignPalette } from '../viewerFillSign.js';
-import { nativeTextForPage } from '../../../js/textEdits.js';
+import { nativeTextForPage, wordDrawBox } from '../../../js/textEdits.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
 import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.js';
 import {
@@ -3560,18 +3560,6 @@ export function createInspectDocumentTool(app) {
     if (!doc || !page || page.textSource !== 'pdf') return false;
     return doc.nativeText.pages[page.n]?.[kw.word.id]?.fontObjNum != null;
   };
-  /**
-   * A word's drawn box in page space: its glyph band off the native baseline, as the Edit Text line box is sized.
-   * @param {import('../../../js/objects/ocrObjects.js').OcrWord} word
-   */
-  const wordDrawBox = (word) => {
-    const nt = nativeTextForPage(app.scribe.doc, word.line.page);
-    const base = nt[word.id]?.baselineY ?? (word.line.bbox.bottom + (word.line.baseline?.[1] || 0));
-    const size = word.style.size || Math.abs(word.bbox.bottom - word.bbox.top) / 0.75;
-    return {
-      left: word.bbox.left, right: word.bbox.right, top: base - 0.75 * size, bottom: base + 0.25 * size,
-    };
-  };
   /** Mount `el` over `word` in its page's text group, `pad` px out from the drawn box; off-window pages get nothing. */
   const placeBox = (el, word, pad) => {
     const sv = app.scribe;
@@ -3579,7 +3567,7 @@ export function createInspectDocumentTool(app) {
     if (!sv.doc || !sv.windowPages(sv.state.cp.n).includes(n)) { el.remove(); return; }
     const group = sv.getTextGroup(n, word.line.orientation || 0);
     if (!group) { el.remove(); return; }
-    const box = wordDrawBox(word);
+    const box = wordDrawBox(app.scribe.doc, word);
     el.style.left = `${box.left - pad}px`;
     el.style.top = `${box.top - pad}px`;
     el.style.width = `${box.right - box.left + 2 * pad}px`;
@@ -3600,7 +3588,10 @@ export function createInspectDocumentTool(app) {
     sv._modeStatus?.(on ? 'Tap a word on the page' : '');
     workspace()?.armedChanged?.(on);
   };
-  /** Drop the pinned font, its wash and the ring; returns whether there was one. */
+  /**
+   * Drop the pinned font, its mask and the ring.
+   * Returns whether a font was pinned.
+   */
   const clearPin = () => {
     const had = !!pinned || !!workspace()?.hasPin?.();
     pinned = null;
@@ -3610,7 +3601,7 @@ export function createInspectDocumentTool(app) {
   };
   /**
    * Pin the font that drew `kw`.
-   * The panel opens its row and washes its words, the word keeps a ring, and an armed pick disarms.
+   * The panel opens its row and masks the pages around its words, the word keeps a ring, and an armed pick disarms.
    * @returns {boolean} Whether the word maps to a font in the inventory.
    */
   const pickWord = (kw) => {

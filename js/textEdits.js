@@ -74,6 +74,21 @@ export function nativeTextForPage(doc, page) {
 }
 
 /**
+ * A word's drawn box in page space.
+ * @param {ScribeDoc} doc
+ * @param {OcrWord} word
+ * @returns {{left: number, right: number, top: number, bottom: number}}
+ */
+export function wordDrawBox(doc, word) {
+  const nt = nativeTextForPage(doc, word.line.page);
+  const base = nt[word.id]?.baselineY ?? (word.line.bbox.bottom + (word.line.baseline?.[1] || 0));
+  const size = word.style.size || Math.abs(word.bbox.bottom - word.bbox.top) / 0.75;
+  return {
+    left: word.bbox.left, right: word.bbox.right, top: base - 0.75 * size, bottom: base + 0.25 * size,
+  };
+}
+
+/**
  * The line of `doc` that holds a line handle's words.
  * The handle need not sit in the doc's page, e.g. a line of another document parsed from the same file, or one an undo replaced with a restored copy.
  * @param {ScribeDoc} doc
