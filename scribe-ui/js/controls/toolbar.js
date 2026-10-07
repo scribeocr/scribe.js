@@ -1088,6 +1088,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
          Engaged page zoom re-rasters the content-sized layer tree at gesture scale and jetsams the tab on iPhones.
          The document viewer's own pinch runs on touch events, which touch-action does not suppress. */
       touch-action: pan-x pan-y;
+      font-synthesis-weight: none;
       --scribe-surface: #ffffff;
       --scribe-canvas: #f4f6fa;
       --scribe-sunken: #eef1f6;
@@ -1143,6 +1144,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-lift-shadow: 0 12px 28px rgba(0, 0, 0, .7);
       --scribe-plate: rgba(255, 255, 255, .09);
     }
+
+    .${r} .scribe-viewport { font-synthesis-weight: auto; }
 
     .${r} .cr-icon {
       align-items: center;
@@ -2621,7 +2624,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-accent);
       color: var(--scribe-accent-ink);
       font-size: 13.5px;
-      font-weight: 550;
+      font-weight: 600;
       cursor: pointer;
       transition: background-color .15s ease-out;
     }

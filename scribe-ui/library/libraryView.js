@@ -260,7 +260,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
 .scribe-pdf-viewer .scribe-library-row:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-row .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.scribe-pdf-viewer .scribe-library-row .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm { gap: 12px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm img { width: 40px; height: 52px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 3px; background: #fff; flex-shrink: 0; }
@@ -289,7 +289,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-recent button:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-recent button:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-recent .fi { width: 16px; height: 16px; flex: none; display: inline-flex; color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-recent .n { font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-recent .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
 .scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; }
 .scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
