@@ -324,6 +324,43 @@ function addAutomateStyles(rootClass) {
     .${r}[data-theme="dark"] .scribe-am-ins-emb.no { color: #f0b35a; }
     .${r} .scribe-am-ins-tw { display: inline-block; width: 12px; height: 12px; vertical-align: -2px; margin-right: 3px; color: var(--scribe-ink-3); transition: transform .12s; }
     .${r} .scribe-am-ins-tbl tr.open .scribe-am-ins-tw { transform: rotate(90deg); }
+    .${r} .scribe-am-ins { container-type: inline-size; container-name: scribe-ins; }
+    .${r} .scribe-am-ins-fonts { display: grid; grid-auto-flow: row dense; grid-template-columns: minmax(90px, 1fr) minmax(0, max-content) minmax(0, max-content) minmax(0, max-content) minmax(0, max-content); }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-type { grid-column: 2; }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-emb { grid-column: 3; }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-bytes { grid-column: 4; }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-pages { grid-column: 5; }
+    .${r} .scribe-am-ins-fonts.page { grid-template-columns: minmax(90px, 1fr) minmax(0, max-content) minmax(0, max-content) minmax(0, max-content); }
+    .${r} .scribe-am-ins-fonts thead, .${r} .scribe-am-ins-fonts tbody, .${r} .scribe-am-ins-fonts tr, .${r} .scribe-am-ins-fonts .scribe-am-ins-meta { display: contents; }
+    .${r} .scribe-am-ins-fonts tr[hidden] { display: none; }
+    .${r} .scribe-am-ins-fonts th, .${r} .scribe-am-ins-fonts td, .${r} .scribe-am-ins-fonts .scribe-am-ins-meta > span {
+      display: block; min-width: 0; padding: 4px; border-bottom: 1px solid var(--scribe-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 14px;
+    }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-clip { display: inline-block; max-width: min(100px, 100%); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-narrow { display: none; }
+    .${r} .scribe-am-ins-fonts tr.x:hover .scribe-am-ins-meta > span { background: var(--scribe-hover); }
+    .${r} .scribe-am-ins-fonts tr.sel .scribe-am-ins-meta > span { background: var(--scribe-active); color: var(--scribe-accent); }
+    .${r} .scribe-am-ins-fonts tr.sel .scribe-am-ins-emb.no { color: #b45309; }
+    .${r}[data-theme="dark"] .scribe-am-ins-fonts tr.sel .scribe-am-ins-emb.no { color: #f0b35a; }
+    .${r} .scribe-am-ins-fonts .scribe-am-ins-det td { grid-column: 1 / -1; padding: 4px 5px 8px 20px; white-space: normal; overflow: visible; line-height: normal; }
+    /* A 460px panel leaves 435px inside the workspace padding, so this folds the list into two-line rows below a 460px panel. */
+    @container scribe-ins (max-width: 434px) {
+      .${r} .scribe-am-ins-fonts, .${r} .scribe-am-ins-fonts.page { grid-template-columns: minmax(0, 1fr) minmax(0, max-content); }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-h-fact { display: none; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-name { border-bottom: 0; padding-bottom: 0; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-bytes { grid-column: 2; border-bottom: 0; padding-bottom: 0; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-meta {
+        display: flex; align-items: baseline; min-width: 0; grid-column: 1 / -1; padding: 1px 4px 5px 19px; border-bottom: 1px solid var(--scribe-line);
+        font-size: 11px; line-height: 14px; color: var(--scribe-ink-2); white-space: nowrap; overflow: hidden;
+      }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-meta > span { flex: none; display: inline; padding: 0; border: 0; overflow: visible; background: none; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-meta .scribe-am-ins-clip { display: inline; max-width: none; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-emb::before { content: '·'; padding: 0 4px; color: var(--scribe-ink-3); font-weight: 400; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-pages { flex: 0 1 auto; min-width: 0; margin-left: auto; padding-left: 8px; overflow: hidden; text-overflow: ellipsis; }
+      .${r} .scribe-am-ins-fonts tr.sel .scribe-am-ins-meta { color: var(--scribe-accent); }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-wide { display: none; }
+      .${r} .scribe-am-ins-fonts .scribe-am-ins-narrow { display: inline; }
+    }
     .${r} .scribe-am-ins-det td { white-space: normal; padding: 4px 5px 8px 20px; background: var(--scribe-canvas); }
     .${r} .scribe-am-ins-det .scribe-am-ins-kv { font-size: 11.5px; grid-template-columns: 100px minmax(0, 1fr); }
     .${r} .scribe-am-ins-sample { font-size: 18px; line-height: 1.25; color: var(--scribe-ink); margin: 2px 0 6px; overflow-wrap: anywhere; }
@@ -419,6 +456,8 @@ function addAutomateStyles(rootClass) {
     .${r}.scribe-phone .scribe-am-ins { padding: 2px 14px 14px; }
     .${r}.scribe-phone .scribe-am-ins-kv { font-size: 14px; grid-template-columns: 120px minmax(0, 1fr); padding: 5px 0; }
     .${r}.scribe-phone .scribe-am-ins-tbl { font-size: 13px; }
+    .${r}.scribe-phone .scribe-am-ins-fonts th, .${r}.scribe-phone .scribe-am-ins-fonts td, .${r}.scribe-phone .scribe-am-ins-fonts .scribe-am-ins-meta > span { line-height: 17px; }
+    .${r}.scribe-phone .scribe-am-ins-fonts .scribe-am-ins-meta { font-size: 12.5px; line-height: 16px; }
     .${r}.scribe-phone .scribe-am-ins-pick { font-size: 13px; padding: 6px 10px 6px 8px; margin-right: -10px; }
     .${r}.scribe-phone .scribe-am-ins-pick-ic { width: 15px; height: 15px; }
     .${r}.scribe-phone .scribe-am-ins-more { font-size: 13px; }

@@ -69,14 +69,16 @@ function imageFormat(im) {
 }
 
 /**
+ * The font's type.
  * @param {import('../../../js/pdf/resourceInventory.js').InventoryFont} f
+ * @param {boolean} [withSubset] - Append "(subset)" for a subset program.
  */
-function fontTypeLabel(f) {
+function fontTypeLabel(f, withSubset = true) {
   const labels = {
-    Type1: 'Type 1', TrueType: 'TrueType', Type0: f.cidSubtype === 'CIDFontType0' ? 'Type 0 (CFF)' : 'Type 0 (TrueType)', Type3: 'Type 3', MMType1: 'Type 1 (MM)',
+    Type1: 'Type 1', TrueType: 'TrueType', Type0: f.cidSubtype === 'CIDFontType0' ? 'Type 1 (CID)' : 'TrueType (CID)', Type3: 'Type 3', MMType1: 'Type 1 (MM)',
   };
   const base = labels[f.subtype] || f.subtype || '?';
-  return `${base}${f.subset ? ' (subset)' : ''}`;
+  return `${base}${withSubset && f.subset ? ' (subset)' : ''}`;
 }
 
 /**
@@ -823,13 +825,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
     frag.append(fontsHead);
     if (!fonts.length) frag.append(el('div', 'scribe-am-empty scribe-am-ins-empty', docScope ? 'No fonts in this document.' : `No fonts on page ${curPage + 1}.`));
     else {
-      const table = el('table', 'scribe-am-ins-tbl scribe-am-ins-fonts');
-      const widths = docScope ? [34, 21, 13, 16, 16] : [40, 24, 16, 20];
-      const cols = el('colgroup');
-      for (const w of widths) { const col = el('col'); col.style.width = `${w}%`; cols.append(col); }
+      const table = el('table', `scribe-am-ins-tbl scribe-am-ins-fonts ${docScope ? 'doc' : 'page'}`);
       const head = el('thead'); const hr = el('tr');
-      hr.append(el('th', '', 'Name'), el('th', '', 'Type'), el('th', '', 'Emb.'), el('th', 'num', 'Size'));
-      if (docScope) hr.append(el('th', 'num', 'Pages'));
+      hr.append(el('th', '', 'Name'), el('th', 'scribe-am-ins-h-fact', 'Type'), el('th', 'scribe-am-ins-h-fact', 'Emb.'), el('th', 'num', 'Size'));
+      if (docScope) hr.append(el('th', 'num scribe-am-ins-h-fact', 'Pages'));
       head.append(hr);
       const tbody = el('tbody');
       const shown = fonts.slice(0, shownFonts);
@@ -842,9 +841,21 @@ export function buildInspectWorkspace(host, container, nav = null) {
         const nameCell = el('td', 'scribe-am-ins-name');
         const tw = el('span', 'scribe-am-ins-tw'); tw.innerHTML = CHEVRON_SVG;
         nameCell.append(tw, document.createTextNode(f.baseName));
-        const emb = el('td', `scribe-am-ins-emb ${f.embedded ? 'yes' : 'no'}`, f.embedded ? 'Yes' : 'No');
-        tr.append(nameCell, el('td', '', fontTypeLabel(f)), emb, el('td', 'num', f.embedded ? fmtBytes(f.bytes) : '—'));
-        if (docScope) tr.append(el('td', 'num', pagesLabel(f.pages, pageCount)));
+        nameCell.title = f.baseName;
+        // Type, embedding and pages share one cell, which the stylesheet spreads into columns in a wide panel and turns into the line under the name in a narrow one.
+        const meta = el('td', 'scribe-am-ins-meta');
+        const type = el('span', 'scribe-am-ins-type');
+        type.append(el('span', 'scribe-am-ins-clip', fontTypeLabel(f, false)));
+        const emb = el('span', `scribe-am-ins-emb ${f.embedded ? 'yes' : 'no'}`);
+        emb.append(el('span', 'scribe-am-ins-wide', f.embedded ? (f.subset ? 'Subset' : 'Yes') : 'No'), el('span', 'scribe-am-ins-narrow', f.embedded ? (f.subset ? 'Embedded subset' : 'Embedded') : 'Not embedded'));
+        meta.append(type, emb);
+        if (docScope) {
+          const label = pagesLabel(f.pages, pageCount);
+          const pages = el('span', 'num scribe-am-ins-pages');
+          pages.append(el('span', 'scribe-am-ins-wide', label), el('span', 'scribe-am-ins-narrow', label === 'all' ? 'all pages' : /pages$/.test(label) ? label : `${f.pages.length === 1 ? 'page' : 'pages'} ${label}`));
+          meta.append(pages);
+        }
+        tr.append(nameCell, el('td', 'num scribe-am-ins-bytes', f.embedded ? fmtBytes(f.bytes) : '—'), meta);
         const det = el('tr', 'scribe-am-ins-det');
         det.hidden = !openFonts.has(key);
         const cell = el('td'); cell.colSpan = docScope ? 5 : 4;
@@ -901,7 +912,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
         tr.addEventListener('mouseleave', () => { if (hoverFont === f) hoverFont = null; if (!pinnedFont) applyMask(null); });
         tbody.append(tr, det);
       });
-      table.append(cols, head, tbody);
+      table.append(head, tbody);
       frag.append(table, showMoreLine(fonts.length, shownFonts, ROW_STEP, (n) => { shownFonts = n; }, paintInventory));
     }
     return frag;
