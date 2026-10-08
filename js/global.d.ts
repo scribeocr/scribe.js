@@ -686,6 +686,7 @@ declare global {
         redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
         /** Characters recorded against Type 3 glyph outlines, as `[pathHash, text]` pairs. */
         type3GlyphMappings?: Array<[string, string]>;
+        tableExport?: { excluded?: Record<string, true>; names?: Record<string, string> };
     };
 
     /**

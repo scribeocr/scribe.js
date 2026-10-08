@@ -100,7 +100,7 @@ export function applyTablePreview(viewer, n) {
   let chainName = null;
   const fragIdx = pageFrag && activeChain ? activeChain.indexOf(pageFrag) : 0;
   if (pageFrag && activeChain) {
-    chainName = scribe.tableChainName(viewer.doc.layoutDataTables.pages, activeChain);
+    chainName = viewer.doc.tableExport.names[activeChain[0].table.id] || scribe.tableChainName(viewer.doc.layoutDataTables.pages, activeChain);
     const fragRows = (f) => scribe.extractTextFromTables(viewer.doc.ocr.active[f.n], /** @type {any} */ ({ tables: [f.table] }))[0]?.rows || [];
     const headRows = fragRows(activeChain[0]);
     const headRow0 = headRows.length ? headRows[0].join(' ').toLowerCase().replace(/\s+/g, ' ').trim() : null;

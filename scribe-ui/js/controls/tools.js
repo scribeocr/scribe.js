@@ -18,6 +18,7 @@ import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.j
 import {
   resolveActiveSheet, copyTablePreviewSelection, selectAllTablePreviewCells, moveTablePreviewSelection,
 } from '../viewerTablePreview.js';
+import { pulseTable, setActiveTable } from '../viewerLayout.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // The head path (`.scribe-hl-tip`) is filled with the selected highlight color to preview the active swatch (see `setTipColor`), while the base bar underneath stays the default ink color.
@@ -3340,6 +3341,54 @@ export function createExtractTablesTool(app) {
   /** @type {?string} */
   let priorDisplayMode = null;
 
+  let armed = false;
+  let priorCanvasSelection = false;
+  /** @type {?Set<string>} */
+  let beforeIds = null;
+  const hintText = () => (armed ? 'Drag a box around the table \u00b7 Esc cancels' : null);
+  const armPointerDown = () => { beforeIds = new Set(app.scribe.doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).map((t) => t.id))); };
+  const armPointerUp = () => {
+    const sv = app.scribe;
+    const before = beforeIds;
+    beforeIds = null;
+    const added = before ? sv.doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).filter((t) => !before.has(t.id)).map((t) => ({ table: t, n: p.n }))) : [];
+    // The viewer's release handler resets the mode after every press, so a click that drew nothing has to re-arm it.
+    if (added.length === 0) { sv.mode = 'addLayoutBoxDataTable'; return; }
+    disarm();
+    setActiveTable(sv, added[0].table.id);
+    // Refreshed again so the list selects the table just made active.
+    sv.layoutTablesEdited(added[0].n);
+    pulseTable(sv, added[0].table);
+  };
+  const disarm = () => {
+    if (!armed) return;
+    armed = false;
+    const sv = app.scribe;
+    sv.mode = 'select';
+    sv.enableCanvasSelection = priorCanvasSelection;
+    sv.elem.classList.remove('scribe-xt-armed');
+    sv.scrollContainer.removeEventListener('pointerdown', armPointerDown);
+    sv.scrollContainer.removeEventListener('pointerup', armPointerUp);
+    beforeIds = null;
+    app._setToolHint?.(tool);
+  };
+  const armAddTable = () => {
+    const sv = app.scribe;
+    if (!sv.doc || !active) return;
+    if (previewOn) setPreview(false);
+    if (armed) return;
+    armed = true;
+    priorCanvasSelection = sv.enableCanvasSelection;
+    sv.enableCanvasSelection = true;
+    sv.mode = 'addLayoutBoxDataTable';
+    sv.CanvasSelection.deselectAll();
+    sv.elem.classList.add('scribe-xt-armed');
+    // Registered after the viewer's own handlers on the same element, so the release runs once the table exists and the mode has been reset.
+    sv.scrollContainer.addEventListener('pointerdown', armPointerDown);
+    sv.scrollContainer.addEventListener('pointerup', armPointerUp);
+    app._setToolHint?.(tool);
+  };
+
   // The Page and Preview export view toggle, mounted into the mode banner while this mode is active.
   const viewSeg = document.createElement('span');
   viewSeg.className = 'scribe-mode-banner-viewseg';
@@ -3375,6 +3424,11 @@ export function createExtractTablesTool(app) {
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     const sv = app.scribe;
+    if (armed) {
+      e.preventDefault();
+      disarm();
+      return;
+    }
     if (sv.state.tablePreview) return;
     if (sv.CanvasSelection.getUiDataColumns().length > 1) {
       e.preventDefault();
@@ -3456,7 +3510,10 @@ export function createExtractTablesTool(app) {
       // Re-displayed so that displayPage's layout branch paints the window pages' overlays now that the flag is on.
       sv.displayPage(sv.state.cp.n, false, false);
       app._automatePanel?.openTablesWorkspace();
+      sv._armAddLayoutTable = armAddTable;
     } else {
+      disarm();
+      delete sv._armAddLayoutTable;
       document.removeEventListener('keydown', pageEscKey, true);
       sv.destroyControls();
       sv.destroyOverlay(false);
@@ -3478,6 +3535,7 @@ export function createExtractTablesTool(app) {
      The shell has to call this after the new document's first displayPage, or the navigation below is overridden. */
   const docChanged = () => {
     if (!active) return;
+    disarm();
     const sv = app.scribe;
     if (previewOn) {
       const sheet = resolveActiveSheet(sv);
@@ -3494,9 +3552,10 @@ export function createExtractTablesTool(app) {
     else setActive(true);
   };
 
-  return {
-    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, docChanged,
+  const tool = {
+    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, docChanged, armAddTable, hintText,
   };
+  return tool;
 }
 
 const INSPECT_MODE_SVG = modeIcon('<circle cx="8.5" cy="8.5" r="6"/><path d="M8.5 7.5v4M8.5 5.5v.01"/>');
@@ -3583,7 +3642,7 @@ export function createInspectDocumentTool(app) {
     // The Edit Text convention: the arrow while a pick is armed, since the hover box marks what a click takes.
     if (sv.textSel) sv.textSel.cursorOverride = on ? 'default' : null;
     if (!on) hideHover();
-    app._setInspectHint?.();
+    app._setToolHint?.(app._inspectTool);
     if (on) app._lowerInspectSheet?.();
     sv._modeStatus?.(on ? 'Tap a word on the page' : '');
     workspace()?.armedChanged?.(on);

@@ -333,6 +333,12 @@ export class ScribeViewer {
      */
     this.onLayoutTablesEdited = null;
     /**
+     * Called by the shell with the current page index after each page display.
+     * The Extract Tables workspace sets it so its list follows the page.
+     * @type {?((n: number) => void)}
+     */
+    this.onTablesPageChanged = null;
+    /**
      * Called with a highlight group id when the pointer enters a highlight, and null when it leaves.
      * The comments panel registers here to light the hovered highlight's row.
      * @type {?(groupId: ?string) => void}

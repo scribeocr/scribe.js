@@ -1,4 +1,5 @@
 import { makeIconButton, formatTimestamp } from './toolbar.js';
+import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from './menuStyles.js';
 import {
   AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS, SIDEBAR_GROUPS,
 } from '../automations/registry.js';
@@ -219,6 +220,24 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-xtsum.open svg { transform: rotate(180deg); }
     .${r} .scribe-am-xtreceipt { display: grid; gap: 6px; border: 1px solid var(--scribe-line); border-radius: 7px; background: var(--scribe-canvas); padding: 9px 10px; }
     .${r} .scribe-am-xtexport { display: flex; justify-content: flex-end; }
+    .${r} .scribe-am-xtnote { display: grid; gap: 6px; }
+    .${r} .scribe-am-xtadd { display: flex; align-items: center; gap: 6px; }
+    .${r} .scribe-am-xtaddbtn { display: inline-flex; align-items: center; padding: 3px 8px 3px 6px; }
+    .${r} .scribe-am-xtaddic { display: inline-flex; width: 13px; height: 13px; margin-right: 5px; }
+    .${r} .scribe-am-xtpagehd { display: flex; align-items: center; gap: 8px; padding: 10px 7px 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--scribe-ink-3); }
+    .${r} .scribe-am-xtpagehd::after { content: ''; flex: 1; border-top: 1px solid var(--scribe-line); }
+    .${r} .scribe-am-xtpagehd.cur { color: var(--scribe-accent); }
+    .${r} .scribe-am-xtlist > .scribe-am-xtpagehd:first-child { padding-top: 2px; }
+    .${r} .scribe-am-xtrow.out .scribe-am-xtrow-tx { color: var(--scribe-ink-3); }
+    /* The library's rename field, restated because the library's stylesheet loads only when the library mounts. */
+    .${r} .scribe-am-xtrename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px 0; min-width: 0; flex: 1 1 auto; width: 100%; }
+    .${r} .scribe-am-xtmenu { position: absolute; z-index: 12; width: max-content; min-width: 176px; ${MENU_PLATE_CSS} }
+    .${r} .scribe-am-xtmenu-row { display: flex; align-items: center; gap: 9px; width: 100%; background: none; border: none; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; ${MENU_ROW_CSS} }
+    .${r} .scribe-am-xtmenu-row:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-xtmenu-slot { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; color: var(--scribe-ink-2); }
+    .${r} .scribe-am-xtmenu-row.danger .scribe-am-xtmenu-slot { color: var(--scribe-danger); }
+    .${r} .scribe-am-xtmenu-row.danger:hover { background: var(--scribe-danger-soft); color: var(--scribe-danger); }
+    .${r} .scribe-am-xtmenu-sep { ${MENU_SEP_CSS} }
     .${r} .scribe-am-catalog::-webkit-scrollbar, .${r} .scribe-am-thread::-webkit-scrollbar, .${r} .scribe-am-rdbody::-webkit-scrollbar { width: 5px; }
     .${r} .scribe-am-catalog::-webkit-scrollbar-track, .${r} .scribe-am-thread::-webkit-scrollbar-track, .${r} .scribe-am-rdbody::-webkit-scrollbar-track { background: transparent; }
     .${r} .scribe-am-catalog::-webkit-scrollbar-thumb, .${r} .scribe-am-thread::-webkit-scrollbar-thumb, .${r} .scribe-am-rdbody::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
@@ -2386,11 +2405,13 @@ export function createAutomatePanel(app, rootClass, hooks) {
     tablesElem.textContent = '';
     wsHandle = module.buildTablesWorkspace(host, tablesElem);
     app.scribe.onLayoutTablesEdited = () => wsHandle?.refresh();
+    app.scribe.onTablesPageChanged = (n) => wsHandle?.pageChanged(n);
   }
 
   function closeTablesWorkspace() {
     if (!wsHandle && view !== 'tables') return;
     app.scribe.onLayoutTablesEdited = null;
+    app.scribe.onTablesPageChanged = null;
     wsHandle = null;
     tablesElem.textContent = '';
     if (view === 'tables') setView(wsPriorView === 'tables' ? 'rest' : wsPriorView);

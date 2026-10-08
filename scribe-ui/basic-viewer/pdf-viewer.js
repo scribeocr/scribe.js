@@ -1349,6 +1349,7 @@ class ScribePDFViewer {
       if (this._bookmarksPanel) this._bookmarksPanel.setActive();
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
       if (this._companionStrip) this._companionStrip.setActive(this.scribe.state.cp.n);
+      if (this.scribe.onTablesPageChanged) this.scribe.onTablesPageChanged(this.scribe.state.cp.n);
     };
 
     // The thumbnail panel must fully rebuild after an undo/redo, or stale rows send a later click or delete to the wrong page.
@@ -2991,8 +2992,9 @@ class ScribePDFViewer {
     this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
     this._modeBannerParts.hint.classList.remove('scribe-mode-banner-hint-armed');
 
-    // The lines above just wrote the mode's own hint, so an armed pick's instruction has to be put back.
-    if (this._inspectTool && activeBtn === this._inspectTool.toolbarElem) this._setInspectHint();
+    // The lines above just wrote the mode's own hint, so an armed tool's instruction has to be put back.
+    if (this._inspectTool && activeBtn === this._inspectTool.toolbarElem) this._setToolHint(this._inspectTool);
+    if (this._extractTablesTool && activeBtn === this._extractTablesTool.toolbarElem) this._setToolHint(this._extractTablesTool);
 
     // Fill & Sign's placement palette belongs to the bar: it mounts before Done while its mode is active.
     // The phone layout has no bar, so there the palette keeps its floating pill above the dock.
@@ -5147,9 +5149,11 @@ class ScribePDFViewer {
     else if (this._inspectSheetElem) this._inspectSheetElem.textContent = '';
   }
 
-  /** The Inspect banner's hint: the arming instruction while a pick is armed, the mode's own hint otherwise. */
-  _setInspectHint() {
-    const tool = this._inspectTool;
+  /**
+   * Show the tool's arming instruction in the mode banner while it is armed, and the mode's own hint otherwise.
+   * @param {?{toolbarElem: HTMLElement, hintText: () => ?string}} tool
+   */
+  _setToolHint(tool) {
     if (!tool || !this._modeBannerParts || this._modeBannerBtn !== tool.toolbarElem) return;
     const armed = tool.hintText();
     this._modeBannerParts.hint.textContent = armed ?? tool.toolbarElem.dataset.modeHint ?? '';

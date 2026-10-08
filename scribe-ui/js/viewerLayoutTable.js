@@ -257,6 +257,35 @@ export function linkTables(viewer, table) {
 }
 
 /**
+ * Leave the chains headed by `heads` out of the exported workbook, or bring them back, as one undoable step.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {Array<LayoutDataTable>} heads
+ * @param {boolean} excluded
+ */
+export function setChainsExcluded(viewer, heads, excluded) {
+  const doc = viewer.doc;
+  const targets = heads.filter((t) => !!doc.tableExport.excluded[t.id] !== excluded);
+  if (targets.length === 0) return;
+  const ns = [...new Set(targets.map((t) => t.page.n))].sort((a, b) => a - b);
+  const apply = (on) => {
+    for (const t of targets) {
+      if (on) doc.tableExport.excluded[t.id] = true;
+      else delete doc.tableExport.excluded[t.id];
+    }
+    viewer.layoutTablesEdited(ns[0]);
+    return ns;
+  };
+  apply(excluded);
+  const what = targets.length === 1 ? 'table' : `${targets.length} tables`;
+  doc.docHistory.record({
+    surface: 'layout',
+    label: excluded ? `Left ${what} out of workbook` : `Included ${what} in workbook`,
+    undo: () => apply(!excluded),
+    redo: () => apply(excluded),
+  });
+}
+
+/**
  * Break the chain at `table`, so it no longer continues the previous table.
  * Records undo, and returns the boundary to the suggestion queue so re-linking stays one click.
  * @param {import('../viewer.js').ScribeViewer} viewer

@@ -171,7 +171,8 @@ export function ensureLayerStyleSheet() {
     + '.scribe-item-freetext{position:absolute;pointer-events:none;font-family:Helvetica,Arial,sans-serif;'
     + 'line-height:1.2;white-space:pre-wrap;overflow:hidden;box-sizing:border-box;padding:2px}'
     + '.scribe-item-shape{position:absolute;pointer-events:none;overflow:visible}'
-    + '.scribe-fs-armed .scribe-viewport{cursor:crosshair}'
+    + '.scribe-fs-armed .scribe-viewport,.scribe-xt-armed .scribe-viewport{cursor:crosshair}'
+    + '.scribe-xt-armed .scribe-layer-overlay{pointer-events:none}'
     + '.scribe-field-sig{cursor:pointer}';
   document.head.appendChild(styleEl);
 }

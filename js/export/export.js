@@ -893,6 +893,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
       if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
       if (doc.type3GlyphMappings.size) envelope.session.type3GlyphMappings = [...doc.type3GlyphMappings];
+      if (Object.keys(doc.tableExport.excluded).length || Object.keys(doc.tableExport.names).length) envelope.session.tableExport = doc.tableExport;
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {

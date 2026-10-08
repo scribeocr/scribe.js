@@ -236,6 +236,12 @@ const CM_HIGHLIGHT_SVG = '<svg viewBox="0 0 20 20" fill="currentColor" style="po
   + '<path d="M3 18l.6-1.8A1.7 1.7 0 0 1 5.2 15h9.6a1.7 1.7 0 0 1 1.6 1.2L17 18Z"/></svg>';
 const CM_AUTOMATE_SVG = menuIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 
+const addLayoutTableClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  viewer._armAddLayoutTable?.();
+};
+
 /* The one treatment for a toggled-on menu row, so a new toggle never invents its own indication. */
 const setMenuToggled = (btn, on) => { btn.querySelector('.scribe-cm-slot')?.classList.toggle('scribe-cm-on', !!on); };
 
@@ -321,6 +327,7 @@ const createContextMenuHTML = () => {
       item('contextMenuDeleteWordsButton', 'Delete Words', CM_TRASH_SVG, deleteWordsClick),
     ],
     [
+      item('contextMenuAddLayoutTableButton', 'Add Table', CM_TABLE_SVG, addLayoutTableClick),
       item('contextMenuSplitColumnButton', 'Split Column', CM_SPLIT_SVG, splitDataColumnClick),
       item('contextMenuCaptureLinesButton', 'Capture whole lines', CM_TABLE_SVG, captureLinesClick),
       item('contextMenuMergeColumnsButton', 'Merge Columns', CM_MERGE_SVG, mergeDataColumnsClick),
@@ -773,6 +780,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuLinkTablesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuUnlinkTablesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuAddLayoutTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRedactButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteRedactionButtonElem;
@@ -845,6 +853,7 @@ function ensureContextMenu() {
   contextMenuLinkTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuLinkTablesButton'));
   contextMenuUnlinkTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnlinkTablesButton'));
   contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
+  contextMenuAddLayoutTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuAddLayoutTableButton'));
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuRedactButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactButton'));
   contextMenuDeleteRedactionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteRedactionButton'));
@@ -1031,6 +1040,7 @@ export const hideContextMenu = () => {
   contextMenuLinkTablesButtonElem.style.display = 'none';
   contextMenuUnlinkTablesButtonElem.style.display = 'none';
   contextMenuSplitTableButtonElem.style.display = 'none';
+  contextMenuAddLayoutTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   contextMenuRedactButtonElem.style.display = 'none';
   contextMenuDeleteRedactionButtonElem.style.display = 'none';
@@ -1630,6 +1640,10 @@ export const contextMenuFunc = (viewer, event) => {
     // so a click on blank space still gets a useful menu instead of the browser's default.
     const hasDoc = !!(viewer.doc && viewer.doc.pageMetrics && viewer.doc.pageMetrics.length);
     const editingEnabled = !!(viewer.opt && viewer.opt.enablePageEditing);
+    const addTableOffered = hasDoc && viewer.state.layoutMode && !viewer.state.tablePreview
+      && !!viewer._armAddLayoutTable && !(targetObj instanceof UiDataColumn);
+    const addTablePoint = addTableOffered ? viewer.clientToPage(event.clientX, event.clientY) : null;
+    const enableAddTable = !!addTablePoint && addTablePoint.n >= 0;
     // The page point under the cursor, shared by the freestanding-note and add-bookmark actions.
     // null past the last page (clientToPage returns n = -1 there), so the void below the pages offers neither.
     const rawPoint = (hasDoc && !viewer.state.layoutMode) ? viewer.clientToPage(event.clientX, event.clientY) : null;
@@ -1746,7 +1760,8 @@ export const contextMenuFunc = (viewer, event) => {
       previewMergeLabel = `Merge Columns ${letter(Math.min(sel.c, sel.c2))}–${letter(Math.max(sel.c, sel.c2))}`;
     }
 
-    if (!(enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
+    if (!(enableAddTable || enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines
+      || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
       || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere || enableIdentifyFont)) return;
 
@@ -1797,6 +1812,7 @@ export const contextMenuFunc = (viewer, event) => {
       setMenuLabel(contextMenuMergeColumnsButtonElem, previewMergeLabel || 'Merge Columns');
       contextMenuMergeColumnsButtonElem.style.display = 'initial';
     }
+    if (enableAddTable) contextMenuAddLayoutTableButtonElem.style.display = 'initial';
     if (enableSplit) contextMenuSplitColumnButtonElem.style.display = 'initial';
     if (enableCaptureLines) {
       const allLine = viewer.CanvasSelection.getUiDataColumns().every((x) => x.layoutBox.inclusionLevel === 'line');
@@ -1971,7 +1987,9 @@ export const mouseupFunc2 = (viewer, event) => {
   // Read whether a marquee was drawn, then hide it here. The `pointerup` caller leaves it visible for this read,
   // so hiding it any earlier would force the single-word click path below for every selection.
   viewer.selectingRectangle.style.display = 'none';
-  if (!marqueeShown || (marquee.width < 5 && marquee.height < 5)) {
+  // The click slop is 5 screen pixels, converted to the content space the marquee is measured in.
+  const slop = 5 / viewer.zoomLevel;
+  if (!marqueeShown || (marquee.width < slop && marquee.height < slop)) {
     const ptr = viewer.clientToContent(event.clientX, event.clientY);
     const box = {
       x: ptr.x, y: ptr.y, width: 1, height: 1,

@@ -797,6 +797,14 @@ export class ScribeDoc {
     this.tableLinkSuggestions = [];
 
     /**
+     * Workbook export preferences, keyed by the id of a chain's head table.
+     * `names` holds only the sheet names the user typed.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{excluded: Record<string, true>, names: Record<string, string>}}
+     */
+    this.tableExport = { excluded: {}, names: {} };
+
+    /**
      * Assistant conversations, in creation order.
      * Serialized only into the `.scribe` `session` block, so a default export omits it.
      * @type {{chats: Array<AssistantChatRecord>}}
@@ -1259,6 +1267,8 @@ export class ScribeDoc {
     this.redactions.scannedAt = null;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
+    this.tableExport.excluded = {};
+    this.tableExport.names = {};
     this.pageMetrics.length = 0;
     this.outline.length = 0;
     this.attachments.collection = null;

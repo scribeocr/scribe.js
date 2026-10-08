@@ -1,6 +1,6 @@
 import scribe from '../../../scribe.js';
 import {
-  pulseTable, linkTables, linkTableSet, unlinkTable, unlinkTableSet, unlinkChain,
+  pulseTable, linkTables, linkTableSet, unlinkTable, unlinkTableSet, unlinkChain, renderLayoutBoxes, applyTablePreview, setChainsExcluded,
 } from '../viewerLayout.js';
 
 /** @typedef {import('../../../js/extractTables.js').TableCellRich} TableCellRich */
@@ -16,6 +16,12 @@ const LINK_SVG = lineIcon('<path d="M14.5 7.5H17a4.5 4.5 0 0 1 0 9h-2.5" stroke-
 const UNLINK_SVG = lineIcon('<path d="M14.5 7.5H17a4.5 4.5 0 0 1 0 9h-2.5" stroke-width="2"/>'
   + '<path d="M9.5 16.5H7a4.5 4.5 0 0 1 0-9h2.5" stroke-width="2"/><path d="M5 5l14 14" stroke-width="2"/>');
 const CHEV_R_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
+const PLUS_SVG = lineIcon('<path d="M12 5.5v13M5.5 12h13"/>');
+const EYE_SVG = lineIcon('<path d="M3 12c2-4.5 5.3-7 9-7s7 2.5 9 7c-2 4.5-5.3 7-9 7s-7-2.5-9-7z"/><circle cx="12" cy="12" r="2.6"/>');
+const EYE_OFF_SVG = lineIcon('<path d="M3 3l18 18"/><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8"/>'
+  + '<path d="M6.5 6.6C4.3 8 3 10 3 12c2 3.5 5.3 6 9 6 1.6 0 3.1-.4 4.5-1.2M9.9 5.3A9.6 9.6 0 0 1 12 5c3.7 0 7 2.5 9 7a13 13 0 0 1-2.2 3.1"/>');
+const TAG_SVG = lineIcon('<path d="M12 3H5a2 2 0 0 0-2 2v7l9 9 7-7z"/><circle cx="7.5" cy="7.5" r=".5"/>');
+const TRASH_SVG = lineIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
 const CHECK_MINI_SVG = lineIcon('<path d="M4.5 12.5 10 18 19.5 7"/>');
 const X_MINI_SVG = lineIcon('<path d="M6 6l12 12M18 6 6 18"/>');
 
@@ -153,8 +159,14 @@ function buildOptions(host, onChange) {
       if (currentPage.input.checked) pagesPart = 'Current page';
       else if (rangePages.input.checked) pagesPart = rangeInput.value.trim() ? `Pages ${rangeInput.value.trim()}` : 'Range \u2014 set pages';
       const wbPart = flatSheet.input.checked ? 'single flat sheet' : 'one sheet per table';
-      const sheets = flatSheet.input.checked ? 1 : scribe.tableChains(host.viewer.doc.layoutDataTables.pages).length;
+      const chains = scribe.tableChains(host.viewer.doc.layoutDataTables.pages);
+      const included = chains.filter((c) => !host.viewer.doc.tableExport.excluded[c[0].table.id]).length;
       const fmtPart = formattingInput.checked ? '' : ' \u00b7 plain';
+      if (included < chains.length) {
+        const scopePart = pagesPart === 'All pages' ? '' : ` \u00b7 ${pagesPart.toLowerCase()}`;
+        return `${included} of ${chains.length} tables \u00b7 ${wbPart}${scopePart}${fmtPart}`;
+      }
+      const sheets = flatSheet.input.checked ? 1 : included;
       return `${pagesPart} \u00b7 ${wbPart}${sheets > 0 ? ` \u00b7 ${sheets} sheet${sheets === 1 ? '' : 's'}` : ''}${fmtPart}`;
     },
     getParams: () => {
@@ -182,9 +194,14 @@ export function buildTablesWorkspace(host, container) {
   // `viewer.doc` changes on a tab switch, so everything except the settle wiring below reads it live.
   const doc = viewer.doc;
 
+  const docHasText = () => (viewer.doc.ocr.active || []).some((p) => p?.lines?.length > 0);
   const noteText = () => {
     const chains = scribe.tableChains(viewer.doc.layoutDataTables.pages);
-    if (chains.length === 0) return 'No tables detected in this document.';
+    if (chains.length === 0) {
+      return docHasText()
+        ? 'No tables detected in this document. Add one by drawing a box around it.'
+        : 'This document has no text yet \u2014 tables need recognized text. Recognize text, then add a table.';
+    }
     const spanning = chains.filter((c) => c.length > 1);
     const count = `${chains.length} table${chains.length === 1 ? '' : 's'}`;
     let spanPart = '';
@@ -196,20 +213,45 @@ export function buildTablesWorkspace(host, container) {
     }
     return `${count}${spanPart} \u2014 click a table to review it on the page; drag its lines to fix it.`;
   };
-  let note;
+  const noteWrap = document.createElement('div');
+  noteWrap.className = 'scribe-am-xtnote';
+  const renderNote = () => {
+    noteWrap.textContent = '';
+    if (viewer.doc._textReadySettle) {
+      const busy = noteBlock(SPIN_SVG, 'Detecting tables\u2026');
+      busy.querySelector('.scribe-am-note-ic').style.color = 'var(--scribe-accent)';
+      noteWrap.appendChild(busy);
+      return;
+    }
+    noteWrap.appendChild(noteBlock(INFO_SVG, noteText()));
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    if (!docHasText()) {
+      if (!host.app._recognizeTool) return;
+      btn.className = 'scribe-am-run';
+      btn.textContent = 'Recognize text';
+      btn.addEventListener('click', () => {
+        host.app._recognizeTool.toolbarElem.click();
+        host.app._flashModeTrack?.();
+      });
+    } else {
+      btn.className = 'scribe-am-quiet scribe-am-xtaddbtn';
+      btn.innerHTML = `<span class="scribe-am-xtaddic">${PLUS_SVG}</span>Add table`;
+      btn.addEventListener('click', () => host.app._extractTablesTool?.armAddTable());
+    }
+    const act = document.createElement('div');
+    act.className = 'scribe-am-xtadd';
+    act.appendChild(btn);
+    noteWrap.appendChild(act);
+  };
+  renderNote();
   if (doc._textReadySettle) {
-    note = noteBlock(SPIN_SVG, 'Detecting tables\u2026');
-    note.querySelector('.scribe-am-note-ic').style.color = 'var(--scribe-accent)';
     doc.textReady.then(() => {
-      if (viewer.doc !== doc || !note.isConnected) return;
-      const settled = noteBlock(INFO_SVG, noteText());
-      note.replaceWith(settled);
-      note = settled;
+      if (viewer.doc !== doc || !noteWrap.isConnected) return;
+      renderNote();
     }).catch(() => {});
-  } else {
-    note = noteBlock(INFO_SVG, noteText());
   }
-  container.appendChild(note);
+  container.appendChild(noteWrap);
 
   const listElem = document.createElement('div');
   listElem.className = 'scribe-am-xtlist';
@@ -330,7 +372,7 @@ export function buildTablesWorkspace(host, container) {
   };
   listElem.addEventListener('pointerdown', (ev) => {
     if (ev.button !== 0 || ev.pointerType === 'touch') return;
-    if (ev.target.closest('button, .scribe-am-xtglyph.chev')) return;
+    if (ev.target.closest('button, input, .scribe-am-xtglyph.chev')) return;
     const rowEl = ev.target.closest('[data-row-key]');
     if (!rowEl) return;
     sweep = { startKey: rowEl.dataset.rowKey, lastKey: rowEl.dataset.rowKey, moved: false };
@@ -392,9 +434,10 @@ export function buildTablesWorkspace(host, container) {
     const m = pageTables.indexOf(head.table) + 1;
     const last = chain[chain.length - 1].n;
     const pagesPart = chain.length > 1 ? `Pages ${head.n + 1}\u2013${last + 1}` : `Page ${head.n + 1}`;
-    // This fallback has to match the sheet name `run` writes.
-    const name = head.table.title?.text || `${pagesPart} Table ${m}`;
-    const meta = head.table.title?.text ? ` \u00b7 ${pagesPart}` : '';
+    // These names have to match the sheet names `run` writes.
+    const ownName = viewer.doc.tableExport.names[head.table.id] || head.table.title?.text;
+    const name = ownName || `${pagesPart} Table ${m}`;
+    const meta = ownName ? ` \u00b7 ${pagesPart}` : '';
     return {
       chain, head: head.table, n: head.n, name, meta,
     };
@@ -407,6 +450,155 @@ export function buildTablesWorkspace(host, container) {
     if (!visible) g.style.visibility = 'hidden';
     return g;
   };
+  let curPage = viewer.state.cp.n;
+  let followedPage = -1;
+  const pageChanged = (n) => {
+    curPage = n;
+    const headers = [...listElem.querySelectorAll('.scribe-am-xtpagehd')];
+    for (const hd of headers) hd.classList.toggle('cur', Number(hd.dataset.page) === n);
+    if (n === followedPage) return;
+    followedPage = n;
+    let target = null;
+    for (const hd of headers) {
+      if (Number(hd.dataset.page) > n) break;
+      target = hd;
+    }
+    if (target) listElem.scrollTop += target.getBoundingClientRect().top - listElem.getBoundingClientRect().top - 6;
+  };
+
+  const selectedHeads = (entries) => entries
+    .filter((e) => multiSel.has(`c:${e.head.id}`) || e.chain.some((f) => multiSel.has(`p:${f.table.id}`)))
+    .map((e) => e.head);
+  const startRename = (entry) => {
+    const row = listElem.querySelector(`[data-row-key="c:${entry.head.id}"]`);
+    const tx = row?.querySelector('.scribe-am-xtrow-tx');
+    if (!tx || row.querySelector('input')) return;
+    const input = document.createElement('input');
+    input.className = 'scribe-am-xtrename';
+    input.value = entry.name;
+    input.setAttribute('aria-label', 'Sheet name');
+    tx.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = (save) => {
+      if (done) return;
+      done = true;
+      input.replaceWith(tx);
+      if (!save) return;
+      const typed = input.value.trim();
+      // Typing the automatic name back clears the custom name, so the sheet keeps following the chain's pages and title.
+      const next = typed === scribe.tableChainName(viewer.doc.layoutDataTables.pages, entry.chain) ? '' : typed;
+      const d = viewer.doc;
+      const prev = d.tableExport.names[entry.head.id] || '';
+      if (next === prev) return;
+      const n = entry.head.page.n;
+      const apply = (value) => {
+        if (value) d.tableExport.names[entry.head.id] = value;
+        else delete d.tableExport.names[entry.head.id];
+        // Preview Export's name chip shows the sheet name.
+        if (viewer.state.tablePreview) for (const pageN of viewer.overlayGroupsRenderIndices) applyTablePreview(viewer, pageN);
+        viewer.layoutTablesEdited(n);
+        return [n];
+      };
+      apply(next);
+      d.docHistory.record({
+        surface: 'layout', label: 'Renamed sheet', undo: () => apply(prev), redo: () => apply(next),
+      });
+    };
+    input.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') finish(true);
+      else if (ev.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+    for (const type of ['pointerdown', 'click', 'dblclick']) input.addEventListener(type, (ev) => ev.stopPropagation());
+  };
+
+  /** @type {?HTMLElement} */
+  let menuElem = null;
+  const closeMenu = () => {
+    if (!menuElem) return;
+    menuElem.remove();
+    menuElem = null;
+    document.removeEventListener('pointerdown', onMenuPointerDown, true);
+    document.removeEventListener('keydown', onMenuKey, true);
+    listElem.removeEventListener('scroll', closeMenu);
+  };
+  function onMenuPointerDown(ev) {
+    if (menuElem && !menuElem.contains(/** @type {Node} */ (ev.target))) closeMenu();
+  }
+  function onMenuKey(ev) {
+    if (ev.key !== 'Escape') return;
+    // preventDefault marks the Escape used, so the mode-exit handler does not also fire.
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeMenu();
+  }
+  /**
+   * Open a list row's right-click menu.
+   * @param {MouseEvent} ev
+   * @param {string} rowKey
+   * @param {ReturnType<typeof chainEntries>[number]} entry
+   * @param {?LayoutDataTable} fragTable - The page fragment a sub-row stands for, null for a chain row.
+   */
+  const openRowMenu = (ev, rowKey, entry, fragTable) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    closeMenu();
+    if (!multiSel.has(rowKey)) {
+      multiSel.clear();
+      multiSel.add(rowKey);
+      multiAnchor = rowKey;
+      renderList();
+    }
+    const heads = selectedHeads(chainEntries());
+    const allOut = heads.length > 0 && heads.every((h) => !!viewer.doc.tableExport.excluded[h.id]);
+    const menu = document.createElement('div');
+    menu.className = 'scribe-am-xtmenu';
+    menu.setAttribute('role', 'menu');
+    const mkRow = (svg, label, onPick, danger = false) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `scribe-am-xtmenu-row${danger ? ' danger' : ''}`;
+      b.setAttribute('role', 'menuitem');
+      b.innerHTML = `<span class="scribe-am-xtmenu-slot">${svg}</span><span>${label}</span>`;
+      b.addEventListener('click', (e2) => {
+        e2.stopPropagation();
+        closeMenu();
+        onPick();
+      });
+      return b;
+    };
+    menu.appendChild(mkRow(allOut ? EYE_SVG : EYE_OFF_SVG, allOut ? 'Include in workbook' : 'Leave out of workbook', () => setChainsExcluded(viewer, heads, !allOut)));
+    if (heads.length === 1) menu.appendChild(mkRow(TAG_SVG, 'Rename sheet', () => startRename(entry)));
+    const single = fragTable || (entry.chain.length === 1 ? entry.head : null);
+    if (single && heads.length === 1) {
+      const sep = document.createElement('div');
+      sep.className = 'scribe-am-xtmenu-sep';
+      menu.appendChild(sep);
+      menu.appendChild(mkRow(TRASH_SVG, 'Delete Table', () => {
+        const n = single.page.n;
+        viewer.doc.deleteLayoutDataTable(single);
+        viewer.destroyControls();
+        // A deletion can break a chain whose page-break tabs sit on other pages, so every rendered page redraws its overlay.
+        for (const pageN of viewer.overlayGroupsRenderIndices) renderLayoutBoxes(viewer, pageN);
+        viewer.layoutTablesEdited(n);
+      }, true));
+    }
+    const panel = /** @type {HTMLElement} */ (container.closest('.scribe-am-panel') || container);
+    const pr = panel.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(Math.round(ev.clientX - pr.left), pr.width - 196))}px`;
+    menu.style.top = `${Math.round(ev.clientY - pr.top) + 2}px`;
+    panel.appendChild(menu);
+    const mr = menu.getBoundingClientRect();
+    if (mr.bottom > pr.bottom - 8) menu.style.top = `${Math.max(8, Math.round(ev.clientY - pr.top) - mr.height - 2)}px`;
+    menuElem = menu;
+    document.addEventListener('pointerdown', onMenuPointerDown, true);
+    document.addEventListener('keydown', onMenuKey, true);
+    listElem.addEventListener('scroll', closeMenu);
+  };
+
   const selectFragment = async (table, n) => {
     selectedId = table.id;
     viewer.state.activeTableId = table.id;
@@ -417,11 +609,28 @@ export function buildTablesWorkspace(host, container) {
   };
 
   const renderList = () => {
+    const scrollTop = listElem.scrollTop;
     listElem.textContent = '';
     rowKeys = [];
     const res = resolveSelection();
     const entries = chainEntries();
+    const selHeads = selectedHeads(entries);
+    const selAllOut = selHeads.length > 0 && selHeads.every((h) => !!viewer.doc.tableExport.excluded[h.id]);
+    const perPage = new Map();
+    entries.forEach((e) => perPage.set(e.n, (perPage.get(e.n) || 0) + 1));
+    let headerPage = -1;
     entries.forEach((e) => {
+      if (e.n !== headerPage) {
+        headerPage = e.n;
+        const hd = document.createElement('div');
+        hd.className = `scribe-am-xtpagehd${e.n === curPage ? ' cur' : ''}`;
+        hd.dataset.page = String(e.n);
+        const count = perPage.get(e.n);
+        const hdTx = document.createElement('span');
+        hdTx.textContent = `Page ${e.n + 1} \u00b7 ${count} table${count === 1 ? '' : 's'}`;
+        hd.appendChild(hdTx);
+        listElem.appendChild(hd);
+      }
       const row = document.createElement('div');
       const holdsSelected = e.chain.some((f) => f.table.id === selectedId);
       const rowKey = `c:${e.head.id}`;
@@ -441,19 +650,28 @@ export function buildTablesWorkspace(host, container) {
         });
       }
       row.appendChild(chev);
-      row.appendChild(glyphSpan(LINK_SVG, multi, 'link'));
+      const isOut = !!viewer.doc.tableExport.excluded[e.head.id];
+      if (isOut) row.classList.add('out');
+      const stateGlyph = isOut ? glyphSpan(EYE_OFF_SVG, true, 'link muted') : glyphSpan(LINK_SVG, multi, 'link');
+      if (isOut) stateGlyph.title = 'Left out of the workbook';
+      row.appendChild(stateGlyph);
       const tx = document.createElement('span');
       tx.className = 'scribe-am-xtrow-tx';
       const cols = e.head.boxes.length;
       tx.textContent = `${e.name}${e.meta} \u00b7 ${cols} column${cols === 1 ? '' : 's'}`;
       tx.title = tx.textContent;
       row.appendChild(tx);
+      tx.addEventListener('dblclick', (ev) => {
+        ev.stopPropagation();
+        startRename(e);
+      });
       // A selected row whose selection resolves to no action keeps its own verb, so clicking a row never costs it its unlink.
+      let rowActs = null;
       if (inSel && res) {
-        row.appendChild(verbAct(res));
+        rowActs = verbAct(res);
       } else if (multi) {
-        const acts = document.createElement('span');
-        acts.className = 'scribe-am-xtsubacts';
+        rowActs = document.createElement('span');
+        rowActs.className = 'scribe-am-xtsubacts';
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'scribe-am-xtsugact muted';
@@ -463,11 +681,29 @@ export function buildTablesWorkspace(host, container) {
           ev.stopPropagation();
           unlinkChain(viewer, e.head);
         });
-        acts.appendChild(b);
-        row.appendChild(acts);
+        rowActs.appendChild(b);
       }
+      if (inSel) {
+        if (!rowActs) {
+          rowActs = document.createElement('span');
+          rowActs.className = 'scribe-am-xtsubacts';
+        }
+        const outBtn = document.createElement('button');
+        outBtn.type = 'button';
+        outBtn.className = 'scribe-am-xtsugact muted';
+        outBtn.title = selAllOut ? 'Include in workbook' : 'Leave out of workbook';
+        outBtn.innerHTML = selAllOut ? EYE_SVG : EYE_OFF_SVG;
+        outBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          setChainsExcluded(viewer, selHeads, !selAllOut);
+        });
+        rowActs.appendChild(outBtn);
+      }
+      if (rowActs) row.appendChild(rowActs);
+      row.addEventListener('contextmenu', (ev) => openRowMenu(ev, rowKey, e, null));
       const select = () => selectFragment(e.head, e.n);
       const onAct = (ev) => {
+        if (ev.target instanceof Element && ev.target.closest('input')) return;
         if (ev.shiftKey) {
           extendRange(rowKey);
           return;
@@ -512,6 +748,7 @@ export function buildTablesWorkspace(host, container) {
             acts.appendChild(b);
             sub.appendChild(acts);
           }
+          sub.addEventListener('contextmenu', (ev) => openRowMenu(ev, subKey, e, frag.table));
           const subSelect = () => selectFragment(frag.table, frag.n);
           const onSubAct = (ev) => {
             if (ev.shiftKey) {
@@ -618,6 +855,7 @@ export function buildTablesWorkspace(host, container) {
       else if (!prevSel) el.classList.add('cap-top');
       else if (!nextSel) el.classList.add('cap-bot');
     });
+    listElem.scrollTop = scrollTop;
   };
 
   const foot = document.createElement('div');
@@ -732,10 +970,13 @@ export function buildTablesWorkspace(host, container) {
 
   selectedId = chainEntries()[0]?.head.id ?? null;
   renderList();
+  pageChanged(viewer.state.cp.n);
   sumTx.textContent = options.summarize();
 
   return {
+    pageChanged,
     refresh: () => {
+      closeMenu();
       const entries = chainEntries();
       const allIds = new Set(entries.flatMap((e) => e.chain.map((f) => f.table.id)));
       const liveSugIds = new Set((viewer.doc.tableLinkSuggestions || []).map((s) => s.tableId));
@@ -749,11 +990,7 @@ export function buildTablesWorkspace(host, container) {
       if (!selectedId || !allIds.has(selectedId)) selectedId = entries[0]?.head.id ?? null;
       renderList();
       sumTx.textContent = options.summarize();
-      if (!viewer.doc._textReadySettle && note.isConnected) {
-        const settled = noteBlock(INFO_SVG, noteText());
-        note.replaceWith(settled);
-        note = settled;
-      }
+      renderNote();
     },
   };
 }
@@ -782,6 +1019,7 @@ export async function run(host, params, progress) {
   progress(0.2, 'Extracting tables\u2026');
   const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: params?.formatting });
   for (const chain of chains) {
+    if (doc.tableExport.excluded[chain.fragments[0].table.id]) continue;
     const frags = chain.fragments.filter((f) => scopeSet.has(f.n));
     if (frags.length === 0) continue;
     const head = chain.fragments[0];
@@ -810,7 +1048,7 @@ export async function run(host, params, progress) {
       }
     }
     harvested.push({
-      name: head.table.title?.text || `${pagesPart} Table ${m}`,
+      name: doc.tableExport.names[head.table.id] || head.table.title?.text || `${pagesPart} Table ${m}`,
       rows: chainRows,
       range,
       columnWidths,
