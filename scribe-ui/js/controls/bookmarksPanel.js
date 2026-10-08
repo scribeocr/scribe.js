@@ -25,6 +25,9 @@ const DOTS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const LIFT_HOLD_MS = 250;
 const MENU_HOLD_MS = 350;
 const INDENT_PX = 21;
+const DRAG_THRESHOLD = 5;
+const AUTOSCROLL_EDGE = 24;
+const AUTOSCROLL_SPEED = 14;
 
 /** @typedef {import('../../../js/objects/outlineObjects.js').OutlineNode} OutlineNode */
 
@@ -34,8 +37,8 @@ const INDENT_PX = 21;
  * @property {number} id - The pressed node's id.
  * @property {OutlineNode} node
  * @property {HTMLElement} row - The pressed row, which the drag lifts from.
- * @property {number} x - Pointer clientX at the press.
- * @property {number} y - Pointer clientY at the press.
+ * @property {number} startX - Pointer clientX at the press.
+ * @property {number} startY - Pointer clientY at the press.
  * @property {?ReturnType<typeof setTimeout>} holdT - Hold-to-lift timer, null on a mouse press and once the hold has fired.
  * @property {boolean} touch - Whether the press came from touch.
  */
@@ -74,7 +77,7 @@ const INDENT_PX = 21;
  * @property {?HTMLElement} adoptElem - That node's row.
  * @property {number} lastX - Last pointer clientX, so edge auto-scroll can re-derive the drop under a still pointer.
  * @property {number} lastY
- * @property {number} scrollRaf - Edge auto-scroll animation-frame handle.
+ * @property {number} rafId - Edge auto-scroll animation-frame handle.
  * @property {HTMLElement} srcWrapper - The source row's wrapper, which spans its subtree.
  * @property {number} srcTop - The wrapper's offsetTop before the lift.
  * @property {number} srcH - The wrapper's height, the span the lift removes.
@@ -88,7 +91,7 @@ const INDENT_PX = 21;
  * @property {HTMLElement} ghostElem - The floating card tracking the pointer.
  * @property {HTMLElement} railsElem - Container for the legal-depth rails.
  * @property {string} railsKey - The depth range the rails were last built for.
- * @property {HTMLElement} plateElem - Marker for the slot the card will settle into.
+ * @property {HTMLElement} slotElem - Marker for the slot the card will settle into.
  * @property {boolean} armed - True while the card is parked over its own slot awaiting a grab.
  */
 
@@ -202,7 +205,7 @@ export function createBookmarksPanel(scribe, {
   function endMoveSession() {
     if (!moveSession) return;
     moveSession = false;
-    if (drag) onDragEnd(new PointerEvent('pointerup'));
+    if (drag) endDrag(true);
     if (onMoveSession) onMoveSession(false);
   }
 
@@ -632,7 +635,7 @@ export function createBookmarksPanel(scribe, {
   const armedPress = (e) => {
     if (!drag || !drag.armed || drag.ghostElem.contains(/** @type {Node} */ (e.target))) return;
     e.stopPropagation();
-    onDragEnd(new PointerEvent('pointerup'));
+    endDrag(true);
   };
   document.addEventListener('pointerdown', armedPress, true);
   // preventDefault on the pointer events alone does not stop native scrolling once a lifted row owns the touch, so this listener is non-passive.
@@ -668,13 +671,13 @@ export function createBookmarksPanel(scribe, {
   let dragPress = null;
   /** @type {?BookmarkDrag} */
   let drag = null;
-  let dragClickGuard = false;
+  let suppressClick = false;
   const lastTap = { id: null, t: 0 };
 
   /** Swallow the click that follows a completed drag so the drop does not also navigate. */
   function consumeDragClick() {
-    const was = dragClickGuard;
-    dragClickGuard = false;
+    const was = suppressClick;
+    suppressClick = false;
     return was;
   }
 
@@ -758,13 +761,13 @@ export function createBookmarksPanel(scribe, {
   }
 
   /**
-   * Lift the pressed row: build the floating card, depth rails, and drop plate, and capture the pre-drag geometry the hit tests run against.
+   * Lift the pressed row: build the floating card, depth rails, and slot marker, and capture the pre-drag geometry the hit tests run against.
    * @param {BookmarkDragPress} press
    * @returns {BookmarkDrag}
    */
   function startDrag(press) {
     const {
-      id, node, row, x, y,
+      id, node, row, startX, startY,
     } = press;
     const dragState = /** @type {BookmarkDrag} */ ({
       id,
@@ -774,21 +777,21 @@ export function createBookmarksPanel(scribe, {
       srcRow: row,
       adoptNode: null,
       adoptElem: null,
-      lastX: x,
-      lastY: y,
+      lastX: startX,
+      lastY: startY,
       armed: false,
     });
     closeMenu();
-    panelElem.classList.add('scribe-bm-dragging');
+    panelElem.classList.add('scribe-bm-row-drag');
     // Pointermove stops firing while the finger parks in the edge zone, so auto-scroll runs per frame instead.
-    dragState.scrollRaf = requestAnimationFrame(dragScrollTick);
+    dragState.rafId = requestAnimationFrame(autoScrollTick);
     const wrapper = /** @type {HTMLElement} */ (row.parentElement);
     dragState.srcWrapper = wrapper;
     dragState.srcTop = wrapper.offsetTop;
     dragState.srcH = wrapper.offsetHeight;
     dragState.srcRowH = row.offsetHeight;
-    dragState.grabDY = y - row.getBoundingClientRect().top;
-    dragState.pressX = x;
+    dragState.grabDY = startY - row.getBoundingClientRect().top;
+    dragState.pressX = startX;
     // Inverse of renderNode's indent (8 + depth * INDENT_PX).
     dragState.ownDepth = Math.round((parseFloat(row.style.paddingLeft) - 8) / INDENT_PX);
     const lift = document.createElement('div');
@@ -825,15 +828,14 @@ export function createBookmarksPanel(scribe, {
     treeElem.appendChild(rails);
     dragState.railsElem = rails;
     dragState.railsKey = '';
-    // The plate marks the slot the card will settle into.
-    const plate = document.createElement('div');
-    plate.className = 'scribe-bm-plate';
-    plate.style.width = lift.style.width;
-    plate.style.height = `${dragState.srcRowH}px`;
-    plate.style.top = `${dragState.srcTop}px`;
-    plate.style.left = `${22 + dragState.ownDepth * INDENT_PX}px`;
-    treeElem.appendChild(plate);
-    dragState.plateElem = plate;
+    const slot = document.createElement('div');
+    slot.className = 'scribe-bm-slot';
+    slot.style.width = lift.style.width;
+    slot.style.height = `${dragState.srcRowH}px`;
+    slot.style.top = `${dragState.srcTop}px`;
+    slot.style.left = `${22 + dragState.ownDepth * INDENT_PX}px`;
+    treeElem.appendChild(slot);
+    dragState.slotElem = slot;
     wrapper.classList.add('scribe-bm-lift-src');
     treeElem.classList.add('scribe-bm-sliding');
     return dragState;
@@ -849,7 +851,7 @@ export function createBookmarksPanel(scribe, {
     const panelRect = panelElem.getBoundingClientRect();
     drag.drop = computeDrop(drag, { clientX: x, clientY: y });
     drag.ghostElem.style.top = `${y - panelRect.top - drag.grabDY}px`;
-    // The 22px base puts the card edge, the rails, and the plate 6px left of each depth's text.
+    // The 22px base puts the card edge, the rails, and the slot 6px left of each depth's text.
     const desired = drag.treeLeft + 22 + drag.ownDepth * INDENT_PX + (x - drag.pressX);
     const legal = Math.max(
       drag.treeLeft + 22 + drag.drop.minDepth * INDENT_PX,
@@ -859,8 +861,8 @@ export function createBookmarksPanel(scribe, {
     drag.ghostElem.style.left = `${legal + give}px`;
     // The gap's visual top: rows above the source slot keep their place, rows below have slid up.
     const gapVisTop = drag.drop.lineTop > drag.srcTop ? drag.drop.lineTop - drag.srcH : drag.drop.lineTop;
-    drag.plateElem.style.top = `${gapVisTop}px`;
-    drag.plateElem.style.left = `${22 + drag.drop.depth * INDENT_PX}px`;
+    drag.slotElem.style.top = `${gapVisTop}px`;
+    drag.slotElem.style.left = `${22 + drag.drop.depth * INDENT_PX}px`;
     const railsKey = `${drag.drop.minDepth}:${drag.drop.maxDepth}:${drag.drop.depth}`;
     if (railsKey !== drag.railsKey) {
       drag.railsKey = railsKey;
@@ -902,10 +904,10 @@ export function createBookmarksPanel(scribe, {
       if (!dragPress) return;
       if (dragPress.holdT) {
         // Still inside the hold: real movement means the finger is scrolling the list, so stand down.
-        if (Math.abs(e.clientX - dragPress.x) + Math.abs(e.clientY - dragPress.y) > 10) onDragEnd(e);
+        if (Math.hypot(e.clientX - dragPress.startX, e.clientY - dragPress.startY) > 10) endDrag(false);
         return;
       }
-      if (Math.abs(e.clientX - dragPress.x) + Math.abs(e.clientY - dragPress.y) < 5) return;
+      if (Math.hypot(e.clientX - dragPress.startX, e.clientY - dragPress.startY) < DRAG_THRESHOLD) return;
       drag = startDrag(dragPress);
     }
     e.preventDefault();
@@ -915,50 +917,62 @@ export function createBookmarksPanel(scribe, {
   }
 
   /** Frame-driven edge auto-scroll while a drag is live. */
-  function dragScrollTick() {
+  function autoScrollTick() {
     if (!drag) return;
     const rect = treeElem.getBoundingClientRect();
     let v = 0;
-    if (drag.lastY < rect.top + 24) v = -Math.min(14, (rect.top + 24 - drag.lastY) * 0.5);
-    else if (drag.lastY > rect.bottom - 24) v = Math.min(14, (drag.lastY - (rect.bottom - 24)) * 0.5);
+    if (drag.lastY < rect.top + AUTOSCROLL_EDGE) v = -Math.min(AUTOSCROLL_SPEED, (rect.top + AUTOSCROLL_EDGE - drag.lastY) * 0.5);
+    else if (drag.lastY > rect.bottom - AUTOSCROLL_EDGE) v = Math.min(AUTOSCROLL_SPEED, (drag.lastY - (rect.bottom - AUTOSCROLL_EDGE)) * 0.5);
     if (v) {
       const before = treeElem.scrollTop;
       treeElem.scrollTop = before + v;
       if (treeElem.scrollTop !== before) updateDragVisuals(drag.lastX, drag.lastY);
     }
-    drag.scrollRaf = requestAnimationFrame(dragScrollTick);
+    drag.rafId = requestAnimationFrame(autoScrollTick);
   }
 
-  function onDragEnd(e) {
+  function onDragUp() {
+    endDrag(true);
+  }
+
+  function onDragCancel() {
+    endDrag(false);
+  }
+
+  /**
+   * End the press or drag, moving the bookmark when `commit` is set and the drop is somewhere new.
+   * @param {boolean} commit
+   */
+  function endDrag(commit) {
     window.removeEventListener('pointermove', onDragMove);
-    window.removeEventListener('pointerup', onDragEnd);
-    window.removeEventListener('pointercancel', onDragEnd);
+    window.removeEventListener('pointerup', onDragUp);
+    window.removeEventListener('pointercancel', onDragCancel);
     if (dragPress && dragPress.holdT) clearTimeout(dragPress.holdT);
     dragPress = null;
     if (!drag) return;
-    cancelAnimationFrame(drag.scrollRaf);
+    cancelAnimationFrame(drag.rafId);
     if (drag.armed) {
       drag.armed = false;
       drag.ghostElem.classList.remove('scribe-bm-lift-armed');
       treeElem.removeEventListener('scroll', setDownArmed);
     }
     const {
-      id, node, drop, srcRow, srcWrapper, ghostElem, cloneElem, railsElem, plateElem, entries, treeLeft, adoptElem,
+      id, node, drop, srcRow, srcWrapper, ghostElem, cloneElem, railsElem, slotElem, entries, treeLeft, adoptElem,
     } = drag;
     drag = null;
-    panelElem.classList.remove('scribe-bm-dragging');
+    panelElem.classList.remove('scribe-bm-row-drag');
     if (adoptElem) adoptElem.classList.remove('scribe-bm-adopt');
-    dragClickGuard = true;
+    suppressClick = true;
     const ctx = context(id);
     const parentId = drop && drop.parent ? drop.parent.id : null;
     // Dropping back into the row's own slot is not an edit, so it must not record an undo step.
-    const commit = !!drop && e.type !== 'pointercancel'
+    const moved = commit && !!drop
       && !(ctx && parentId === ctx.parentId && drop.atIndex === ctx.index);
     railsElem.remove();
-    plateElem.remove();
+    slotElem.remove();
     let landed;
     let landedWrapper;
-    if (commit) {
+    if (moved) {
       const before = new Map();
       for (const rowEl of treeElem.querySelectorAll('.scribe-bm-row')) {
         before.set(String(rowEl.dataset.id), rowEl.getBoundingClientRect().top);
@@ -1003,13 +1017,13 @@ export function createBookmarksPanel(scribe, {
       landed = srcRow;
       landedWrapper = srcWrapper;
     }
-    const plate = document.createElement('div');
-    plate.className = 'scribe-bm-plate';
-    plate.style.width = ghostElem.style.width;
-    plate.style.height = `${landed.offsetHeight}px`;
-    plate.style.top = `${landed.getBoundingClientRect().top - treeElem.getBoundingClientRect().top + treeElem.scrollTop}px`;
-    plate.style.left = `${parseFloat(landed.style.paddingLeft) + 14}px`;
-    treeElem.appendChild(plate);
+    const slot = document.createElement('div');
+    slot.className = 'scribe-bm-slot';
+    slot.style.width = ghostElem.style.width;
+    slot.style.height = `${landed.offsetHeight}px`;
+    slot.style.top = `${landed.getBoundingClientRect().top - treeElem.getBoundingClientRect().top + treeElem.scrollTop}px`;
+    slot.style.left = `${parseFloat(landed.style.paddingLeft) + 14}px`;
+    treeElem.appendChild(slot);
     cloneElem.style.transition = 'box-shadow 140ms ease, border-radius 140ms ease';
     cloneElem.style.boxShadow = 'none';
     cloneElem.style.borderRadius = '4px';
@@ -1023,7 +1037,7 @@ export function createBookmarksPanel(scribe, {
     }
     setTimeout(() => {
       ghostElem.remove();
-      plate.remove();
+      slot.remove();
       treeElem.classList.remove('scribe-bm-sliding');
       landedWrapper.classList.remove('scribe-bm-lift-src');
       landed.classList.add('scribe-bm-drop-in');
@@ -1044,13 +1058,13 @@ export function createBookmarksPanel(scribe, {
    */
   function beginRowDrag(e, node, row) {
     // A drag whose release produced no click leaves the guard armed, so a fresh press clears it.
-    dragClickGuard = false;
+    suppressClick = false;
     if (!editing() || e.button !== 0) return;
     if (e.target instanceof Element && e.target.closest('.scribe-bm-twisty, .scribe-bm-rename, .scribe-bm-dots')) return;
     // Moving on the phone sheet is reached only through the row menu's Move entry, so no press here lifts a row.
     if (phoneMode && e.pointerType !== 'touch') return;
     dragPress = {
-      id: node.id, node, row, x: e.clientX, y: e.clientY, holdT: null, touch: e.pointerType === 'touch',
+      id: node.id, node, row, startX: e.clientX, startY: e.clientY, holdT: null, touch: e.pointerType === 'touch',
     };
     if (dragPress.touch) {
       const { pointerId } = e;
@@ -1060,11 +1074,11 @@ export function createBookmarksPanel(scribe, {
         if (!dragPress || drag) return;
         if (holdOpensMenu) {
           window.removeEventListener('pointermove', onDragMove);
-          window.removeEventListener('pointerup', onDragEnd);
-          window.removeEventListener('pointercancel', onDragEnd);
+          window.removeEventListener('pointerup', onDragUp);
+          window.removeEventListener('pointercancel', onDragCancel);
           dragPress = null;
           // The finger is still down, so swallow the click that composes at release.
-          dragClickGuard = true;
+          suppressClick = true;
           openPhoneRowMenu(node, row, 'hold');
           return;
         }
@@ -1072,12 +1086,12 @@ export function createBookmarksPanel(scribe, {
         // Capturing on the tree keeps the browser routing the held touch to us.
         try { treeElem.setPointerCapture(pointerId); } catch { /* pointer already released or untrusted */ }
         drag = startDrag(dragPress);
-        updateDragVisuals(dragPress.x, dragPress.y);
+        updateDragVisuals(dragPress.startX, dragPress.startY);
       }, holdOpensMenu ? MENU_HOLD_MS : LIFT_HOLD_MS);
     }
     window.addEventListener('pointermove', onDragMove);
-    window.addEventListener('pointerup', onDragEnd);
-    window.addEventListener('pointercancel', onDragEnd);
+    window.addEventListener('pointerup', onDragUp);
+    window.addEventListener('pointercancel', onDragCancel);
   }
 
   /**
@@ -1091,12 +1105,12 @@ export function createBookmarksPanel(scribe, {
     if (!row) return;
     const rect = row.getBoundingClientRect();
     drag = startDrag({
-      id: node.id, node, row, x: rect.left + 120, y: rect.top + rect.height / 2, holdT: null, touch: true,
+      id: node.id, node, row, startX: rect.left + 120, startY: rect.top + rect.height / 2, holdT: null, touch: true,
     });
     updateDragVisuals(rect.left + 120, rect.top + rect.height / 2);
     // No pointer is down while the card is parked, so the grabbing cursor and edge auto-scroll stay off until the grab.
-    panelElem.classList.remove('scribe-bm-dragging');
-    cancelAnimationFrame(drag.scrollRaf);
+    panelElem.classList.remove('scribe-bm-row-drag');
+    cancelAnimationFrame(drag.rafId);
     drag.armed = true;
     drag.ghostElem.classList.add('scribe-bm-lift-armed');
     drag.ghostElem.addEventListener('pointerdown', grabArmed);
@@ -1114,16 +1128,16 @@ export function createBookmarksPanel(scribe, {
     drag.armed = false;
     drag.ghostElem.classList.remove('scribe-bm-lift-armed');
     treeElem.removeEventListener('scroll', setDownArmed);
-    panelElem.classList.add('scribe-bm-dragging');
+    panelElem.classList.add('scribe-bm-row-drag');
     drag.grabDY = e.clientY - drag.ghostElem.getBoundingClientRect().top;
     drag.pressX = e.clientX - (drag.drop.depth - drag.ownDepth) * INDENT_PX;
     drag.lastX = e.clientX;
     drag.lastY = e.clientY;
-    drag.scrollRaf = requestAnimationFrame(dragScrollTick);
+    drag.rafId = requestAnimationFrame(autoScrollTick);
     try { treeElem.setPointerCapture(e.pointerId); } catch { /* pointer already released or untrusted */ }
     window.addEventListener('pointermove', onDragMove);
-    window.addEventListener('pointerup', onDragEnd);
-    window.addEventListener('pointercancel', onDragEnd);
+    window.addEventListener('pointerup', onDragUp);
+    window.addEventListener('pointercancel', onDragCancel);
   }
 
   /**
@@ -1132,7 +1146,7 @@ export function createBookmarksPanel(scribe, {
    */
   function setDownArmed() {
     if (!drag || !drag.armed) return;
-    onDragEnd(new PointerEvent('pointerup'));
+    endDrag(true);
   }
 
   /**

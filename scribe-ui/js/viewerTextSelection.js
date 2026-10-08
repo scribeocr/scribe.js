@@ -219,7 +219,7 @@ export class PageTextIndex {
    * @param {number} localH
    */
   _computeBands(indices, localW, localH) {
-    // Left/right edges come first, from each line's column extent rather than its own box, so a drag past a short last line's final word still lands on it, not in a hole.
+    // Left/right edges come first, from each line's column extent rather than its own box, so a drag past a short last line's final word still lands on it, not in a gap.
     // Adjacent columns meet at the midpoint of their extents, so neither overhangs.
     // The vertical pass then runs against those narrowed side spans, so an isolated line is bounded by the columns its span reaches over, not a page-wide slab.
     // Text can run past the page box, so the partition covers the union of the page and its content.

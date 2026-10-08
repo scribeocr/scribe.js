@@ -8,7 +8,7 @@ const SIG_STORE_MAX_BYTES = 3_000_000;
 const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
 
 /**
- * Wrap SVG shape markup in a stroked icon for the palette's desktop buttons at the default toolbar height, where they are 28px.
+ * Wrap SVG in a stroked icon for the palette's desktop buttons at the default toolbar height, where they are 28px.
  * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.

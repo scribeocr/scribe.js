@@ -127,7 +127,7 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
 }
 
 /**
- * Wrap SVG shape markup in a stroked icon for the mode control's 17px slots.
+ * Wrap SVG in a stroked icon for the mode control's 17px slots.
  * One unit of its 17-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
@@ -135,7 +135,7 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
 const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 /**
- * Wrap SVG shape markup in a stroked icon for icon buttons at the default toolbar height, where they are 28px.
+ * Wrap SVG in a stroked icon for icon buttons at the default toolbar height, where they are 28px.
  * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
@@ -143,7 +143,7 @@ const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="curren
 const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 /**
- * Wrap SVG shape markup in a stroked icon for the app menu's 16px slots.
+ * Wrap SVG in a stroked icon for the app menu's 16px slots.
  * One unit of its 16-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
@@ -615,17 +615,73 @@ export function createAppMenu(rootClass) {
   };
 }
 
+const DRAG_THRESHOLD = 5;
+const AUTOSCROLL_EDGE = 24;
+const AUTOSCROLL_SPEED = 6;
+
 /**
- * Build the document tab strip: one chip per open document, each with a close button, for switching between them.
+ * Where a dragged tab would land: a region of the strip and a position among that region's other tabs.
+ * @typedef {{region: 'group'|'loose', atIndex: number}} TabDrop
+ */
+
+/**
+ * Another tab during a tab drag: its element, its lane position and width before the drag, and its index in the tab list.
+ * @typedef {{tabElem: HTMLElement, x: number, w: number, index: number}} TabPlace
+ */
+
+/**
+ * The lane positions of one arrangement during a tab drag.
+ * @typedef {Object} TabPositions
+ * @property {Map<HTMLElement, number>} pos - Each other tab's left edge in lane coordinates.
+ * @property {?number} slotX - The opened slot's left edge, null when no slot is open.
+ * @property {number} groupW - The folder group's width.
+ * @property {number} gapW - The spacer's width, 0 when either side of it is empty.
+ * @property {number} looseX - Where the freestanding tabs start.
+ * @property {number} looseW - The freestanding tabs' total width.
+ */
+
+/**
+ * A press on a tab in the strip, from the press through the drag it may become.
+ * @typedef {Object} TabDrag
+ * @property {HTMLElement} tabElem - The pressed tab.
+ * @property {number} from - The pressed tab's index in the tab list.
+ * @property {number} startX - Pointer clientX at the press.
+ * @property {number} startY - Pointer clientY at the press.
+ * @property {number} lastX - Last pointer clientX, so edge auto-scroll can re-derive the drop under a still pointer.
+ * @property {number} lastY
+ * @property {boolean} started - Whether the press has crossed the threshold into a drag.
+ * @property {boolean} inGroup - Whether the tab is one of the folder's.
+ * @property {number} w - The tab's width.
+ * @property {number} grabDX - Offset of the grab point within the tab.
+ * @property {{group: Array<TabPlace>, loose: Array<TabPlace>}} statics - Every other tab, by region.
+ * @property {boolean} grouped - Whether the strip shows a folder group.
+ * @property {number} groupX - The group's left edge in lane coordinates.
+ * @property {number} gapW - The spacer's width before the drag.
+ * @property {number} contentW - The lane's scroll width before the drag.
+ * @property {?TabDrop} drop - Where the tab would land, null until the first move.
+ * @property {boolean} crossing - Whether a freestanding tab is over the folder group, where dropping copies it into the folder.
+ * @property {?TabPositions} positions - The arrangement last applied.
+ * @property {number} autoDir - Edge auto-scroll direction (-1, 0, 1).
+ * @property {number} rafId - Auto-scroll animation-frame handle.
+ */
+
+/**
+ * Build the document tab strip: one tab per open document, each with a close button, for switching between them.
  * @param {object} cfg
  * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
  * @param {(index: number) => void} cfg.onCloseOthers - Called when the context menu's "Close Others" is picked, with the tab to keep.
+ * @param {(from: number, to: number) => void} [cfg.onMove] - Called when a drag reorders a tab: remove it at `from`, then insert it at `to`.
+ * @param {(from: number, to: number) => void} [cfg.onCopyInto] - Called when a freestanding tab is dropped into the folder group, with the same indices as `onMove`.
+ * @param {(index: number) => Array<{label: string, onPick: () => void}>} [cfg.extraMenuItems] - Rows appended to a tab's context menu after a separator.
  * @returns {{ tabStripElem: HTMLDivElement,
  *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
- *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void }}
+ *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void,
+ *   showTabNote: (index: number, message: string, options?: {actionLabel?: string, onAction?: () => void}) => void }}
  */
-export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
+export function createTabStrip({
+  onSelect, onClose, onCloseOthers, onMove, onCopyInto, extraMenuItems,
+}) {
   const tabStripElem = document.createElement('div');
   tabStripElem.className = 'scribe-tab-strip';
 
@@ -673,6 +729,10 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
 
   /** @type {?HTMLSpanElement} */
   let pinnedWrap = null;
+  /** @type {?HTMLSpanElement} */
+  let groupElem = null;
+  /** @type {?HTMLSpanElement} */
+  let gapElem = null;
 
   const syncOverflow = () => {
     tabStripElem.classList.toggle('overflowing', laneElem.scrollWidth > laneElem.clientWidth + 1);
@@ -682,8 +742,8 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncOverflow).observe(laneElem);
 
   /**
-   * Mount `elem` as a pinned tab ahead of the scroll lane, after any chips already pinned.
-   * The caller owns the chip's `active` class, and the strip lights only pinned chips that carry it.
+   * Mount `elem` as a pinned tab ahead of the scroll lane, after any tabs already pinned.
+   * The caller owns the tab's `active` class, and the strip lights only pinned tabs that carry it.
    * @param {HTMLElement} elem
    */
   function addPinnedTab(elem) {
@@ -700,8 +760,8 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
   }
 
   /**
-   * Unmount a pinned chip.
-   * The pin slot goes with its last chip.
+   * Unmount a pinned tab.
+   * The pinned wrapper goes with its last tab.
    * @param {HTMLElement} elem
    */
   function removePinnedTab(elem) {
@@ -715,14 +775,14 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
     syncOverflow();
   }
 
-  /** How many chips are pinned ahead of the lane. */
+  /** How many tabs are pinned ahead of the lane. */
   function pinnedCount() {
     return pinnedWrap ? pinnedWrap.children.length - 1 : 0;
   }
 
   /**
    * Light the pinned tab as the active one.
-   * While on, the lane's active chip renders inactive, since the pinned tab's surface covers the document.
+   * While on, the lane's active tab renders inactive, since the pinned tab's surface covers the document.
    * @param {boolean} on
    */
   function setPinnedActive(on) {
@@ -751,7 +811,8 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
 
   /**
    * Open the tab context menu at the cursor.
-   * @param {number} clientX @param {number} clientY
+   * @param {number} clientX
+   * @param {number} clientY
    * @param {number} index
    * @param {string} name - The tab's document name.
    * @param {number} tabCount
@@ -761,7 +822,10 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
     if (!host) return;
     if (menuElem.parentElement !== host) host.appendChild(menuElem);
     menuElem.replaceChildren();
-    /** @param {string} label @param {() => void} onPick */
+    /**
+     * @param {string} label
+     * @param {() => void} onPick
+     */
     const addItem = (label, onPick) => {
       const item = document.createElement('div');
       item.className = 'scribe-tab-menu-item';
@@ -775,6 +839,13 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
     addItem('Copy Name', () => navigator.clipboard?.writeText(name));
     addItem('Close', () => onClose(index));
     if (tabCount > 1) addItem('Close Others', () => onCloseOthers(index));
+    const extras = extraMenuItems ? extraMenuItems(index) : [];
+    if (extras.length) {
+      const sep = document.createElement('div');
+      sep.className = 'scribe-tab-menu-sep';
+      menuElem.appendChild(sep);
+      for (const extra of extras) addItem(extra.label, extra.onPick);
+    }
     // Show first so the menu has measurable dimensions, then clamp it inside the host.
     menuElem.style.display = '';
     const hostRect = host.getBoundingClientRect();
@@ -789,30 +860,96 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
     }, 0);
   }
 
+  const noteElem = document.createElement('div');
+  noteElem.className = 'scribe-tab-note';
+  noteElem.setAttribute('role', 'status');
+  noteElem.style.display = 'none';
+  let noteTimer = 0;
+
+  function closeTabNote() {
+    noteElem.style.display = 'none';
+    window.clearTimeout(noteTimer);
+    document.removeEventListener('pointerdown', onTabNoteOutside, true);
+  }
+  /** @param {PointerEvent} e */
+  function onTabNoteOutside(e) {
+    if (noteElem.contains(/** @type {Node} */ (e.target))) return;
+    closeTabNote();
+  }
+
   /**
-   * Rebuild the chips from the current tab list.
-   * With `group`, the chips of the tabs `inGroup` admits sit first, inside an enclosure that continues the pinned folder tab, and the rest follow after a gap.
+   * Show a note under the tab at `index`, with an optional action button.
+   * It closes after eight seconds, when its action is taken, or on a press anywhere else.
+   * @param {number} index
+   * @param {string} message
+   * @param {{actionLabel?: string, onAction?: () => void}} [options]
+   */
+  function showTabNote(index, message, { actionLabel, onAction } = {}) {
+    const host = tabStripElem.parentElement;
+    const tabElem = laneElem.querySelector(`[data-tab-index="${index}"]`);
+    if (!host || !tabElem) return;
+    closeTabNote();
+    if (noteElem.parentElement !== host) host.appendChild(noteElem);
+    noteElem.replaceChildren();
+    const text = document.createElement('span');
+    text.textContent = message;
+    noteElem.appendChild(text);
+    if (actionLabel && onAction) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'scribe-tab-note-action';
+      button.textContent = actionLabel;
+      button.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeTabNote();
+        onAction();
+      });
+      noteElem.appendChild(button);
+    }
+    noteElem.style.display = '';
+    const hostRect = host.getBoundingClientRect();
+    const tabRect = tabElem.getBoundingClientRect();
+    const stripRect = tabStripElem.getBoundingClientRect();
+    noteElem.style.left = `${Math.max(4, Math.min(tabRect.left - hostRect.left + 4, hostRect.width - noteElem.offsetWidth - 6))}px`;
+    noteElem.style.top = `${stripRect.bottom - hostRect.top + 6}px`;
+    noteTimer = window.setTimeout(closeTabNote, 8000);
+    setTimeout(() => document.addEventListener('pointerdown', onTabNoteOutside, true), 0);
+  }
+
+  /** @type {?{tabs: Array<Object>, activeIndex: number, group: {grouped: boolean, inGroup: (tab: Object) => boolean}}} */
+  let lastRender = null;
+
+  /**
+   * Rebuild the tab elements from the current tab list.
+   * With `group`, the tabs `inGroup` admits sit first, in a group that continues the pinned folder tab, and the rest follow after a gap.
    * @param {Array<{ name: string, asleep?: boolean, waking?: boolean }>} tabs
    * @param {number} activeIndex
    * @param {{grouped: boolean, inGroup: (tab: Object) => boolean}} [group]
    */
   function render(tabs, activeIndex, group = { grouped: false, inGroup: () => false }) {
+    if (drag) cancelDrag(false);
     closeTabMenu();
+    closeTabNote();
+    lastRender = { tabs, activeIndex, group };
     laneElem.textContent = '';
     tabStripElem.classList.toggle('grouped', group.grouped);
-    const groupElem = document.createElement('span');
-    groupElem.className = 'scribe-tab-group';
-    const gapElem = document.createElement('span');
-    gapElem.className = 'scribe-tab-gap';
+    groupElem = null;
+    gapElem = null;
     let groupedN = 0;
-    if (group.grouped) laneElem.append(groupElem, gapElem);
+    if (group.grouped) {
+      groupElem = document.createElement('span');
+      groupElem.className = 'scribe-tab-group';
+      gapElem = document.createElement('span');
+      gapElem.className = 'scribe-tab-gap';
+      laneElem.append(groupElem, gapElem);
+    }
     if (pinnedWrap) pinnedWrap.classList.toggle('scribe-tab-group-head', group.grouped);
     tabs.forEach((tab, i) => {
-      const chip = document.createElement('div');
-      chip.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
-      if (tab.asleep) chip.classList.add('asleep');
-      chip.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
-      chip.addEventListener('contextmenu', (event) => {
+      const tabElem = document.createElement('div');
+      tabElem.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
+      if (tab.asleep) tabElem.classList.add('asleep');
+      tabElem.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
+      tabElem.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTabMenu(event.clientX, event.clientY, i, tab.name, tabs.length);
       });
@@ -820,51 +957,355 @@ export function createTabStrip({ onSelect, onClose, onCloseOthers }) {
       const name = document.createElement('span');
       name.className = 'scribe-tab-name';
       name.textContent = tab.name;
-      chip.appendChild(name);
+      tabElem.appendChild(name);
 
       if (tab.waking) {
         const spin = document.createElement('span');
         spin.className = 'scribe-tab-spin';
-        chip.appendChild(spin);
+        tabElem.appendChild(spin);
       } else {
         const close = document.createElement('span');
         close.className = 'scribe-tab-close';
         close.textContent = '×';
         close.role = 'button';
         close.ariaLabel = `Close ${tab.name}`;
-        chip.appendChild(close);
-        // Stop the click reaching the chip, so closing a tab never also selects it.
+        tabElem.appendChild(close);
+        // Stop the click reaching the tab, so closing it never also selects it.
         close.addEventListener('click', (event) => {
           event.stopPropagation();
           onClose(i);
         });
       }
 
-      chip.addEventListener('click', () => onSelect(i));
-      chip.dataset.tabIndex = String(i);
+      tabElem.addEventListener('click', () => {
+        if (suppressClick) return;
+        onSelect(i);
+      });
+      tabElem.addEventListener('pointerdown', beginTabDrag);
+      tabElem.dataset.tabIndex = String(i);
       if (group.grouped && group.inGroup(tab)) {
-        groupElem.appendChild(chip);
+        /** @type {HTMLSpanElement} */ (groupElem).appendChild(tabElem);
         groupedN += 1;
       } else {
-        laneElem.appendChild(chip);
+        laneElem.appendChild(tabElem);
       }
     });
     if (group.grouped) {
-      if (pinnedWrap) pinnedWrap.classList.toggle('alone', groupedN === 0);
-      if (groupedN === 0) {
-        groupElem.remove();
-        gapElem.remove();
-      } else if (groupedN === tabs.length) {
-        gapElem.remove();
-      }
+      /** @type {HTMLSpanElement} */ (gapElem).classList.toggle('empty', groupedN === 0 || groupedN === tabs.length);
     }
     syncOverflow();
-    const activeChip = laneElem.querySelector(`[data-tab-index="${activeIndex}"]`);
-    if (activeChip) activeChip.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    const activeElem = laneElem.querySelector(`[data-tab-index="${activeIndex}"]`);
+    if (activeElem) activeElem.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  // --- Drag to reorder ---
+  /** @type {?TabDrag} */
+  let drag = null;
+  let suppressClick = false;
+
+  /** @param {PointerEvent} event */
+  function beginTabDrag(event) {
+    // A touch press is left to scroll the lane.
+    if (event.button !== 0 || event.pointerType === 'touch' || drag) return;
+    const tabElem = /** @type {HTMLElement} */ (event.currentTarget);
+    if (/** @type {HTMLElement} */ (event.target).closest('.scribe-tab-close')) return;
+    drag = {
+      tabElem,
+      from: +(tabElem.dataset.tabIndex || 0),
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      started: false,
+      inGroup: false,
+      w: 0,
+      grabDX: 0,
+      statics: { group: [], loose: [] },
+      grouped: false,
+      groupX: 0,
+      gapW: 0,
+      contentW: 0,
+      drop: null,
+      crossing: false,
+      positions: null,
+      autoDir: 0,
+      rafId: 0,
+    };
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', onDragUp);
+    window.addEventListener('pointercancel', onDragCancel);
+  }
+
+  function removeDragListeners() {
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', onDragUp);
+    window.removeEventListener('pointercancel', onDragCancel);
+  }
+
+  /** @param {PointerEvent} event */
+  function onDragMove(event) {
+    const d = drag;
+    if (!d) return;
+    d.lastX = event.clientX;
+    d.lastY = event.clientY;
+    if (!d.started) {
+      if (Math.hypot(event.clientX - d.startX, event.clientY - d.startY) < DRAG_THRESHOLD) return;
+      startDrag(d);
+    }
+    moveDrag(event.clientX, event.clientY);
+  }
+
+  function onDragUp() {
+    const d = drag;
+    if (!d) return;
+    removeDragListeners();
+    if (!d.started) {
+      drag = null;
+      return;
+    }
+    // The click that ends a drag is the drop, not a selection.
+    suppressClick = true;
+    setTimeout(() => { suppressClick = false; }, 0);
+    endDrag(d);
+  }
+
+  function onDragCancel() {
+    cancelDrag(true);
+  }
+
+  /** @param {KeyboardEvent} event */
+  function onDragKey(event) {
+    if (event.key !== 'Escape' || !drag) return;
+    event.preventDefault();
+    cancelDrag(true);
+  }
+
+  function onDragBlur() {
+    cancelDrag(true);
+  }
+
+  /**
+   * Turn the press into a drag.
+   * The tab leaves the flow, and from here on script positions it and every other tab in the lane.
+   * @param {TabDrag} d
+   */
+  function startDrag(d) {
+    d.started = true;
+    const laneRect = laneElem.getBoundingClientRect();
+    const scroll = laneElem.scrollLeft;
+    /** @param {DOMRect} r */
+    const toLane = (r) => r.left - laneRect.left + scroll;
+    const tabRect = d.tabElem.getBoundingClientRect();
+    d.inGroup = !!groupElem && d.tabElem.parentElement === groupElem;
+    for (const other of /** @type {NodeListOf<HTMLElement>} */ (laneElem.querySelectorAll('.scribe-tab'))) {
+      if (other === d.tabElem) continue;
+      const r = other.getBoundingClientRect();
+      d.statics[groupElem && other.parentElement === groupElem ? 'group' : 'loose'].push({
+        tabElem: other, x: toLane(r), w: r.width, index: +(other.dataset.tabIndex || 0),
+      });
+    }
+    d.grouped = !!groupElem;
+    d.groupX = groupElem ? toLane(groupElem.getBoundingClientRect()) : 0;
+    const gapRect = gapElem && !gapElem.classList.contains('empty') ? gapElem.getBoundingClientRect() : null;
+    d.gapW = gapRect ? gapRect.width : 14;
+    d.w = tabRect.width;
+    d.grabDX = d.startX - tabRect.left;
+    d.contentW = laneElem.scrollWidth;
+    const x0 = toLane(tabRect);
+    tabStripElem.classList.add('tab-drag');
+    // The lane's content is about to leave the flow, so a sizer keeps its scroll extent and offset.
+    laneElem.style.setProperty('--scribe-tab-drag-w', `${d.contentW}px`);
+    laneElem.style.scrollBehavior = 'auto';
+    const region = d.inGroup ? 'group' : 'loose';
+    applyPositions(positionsFor({ region, atIndex: d.statics[region].filter((s) => s.x < x0).length }));
+    laneElem.appendChild(d.tabElem);
+    d.tabElem.classList.add('dragging');
+    d.tabElem.style.left = `${x0}px`;
+    const plus = document.createElement('span');
+    plus.className = 'scribe-tab-plus';
+    plus.textContent = '+';
+    d.tabElem.appendChild(plus);
+    document.body.style.cursor = 'grabbing';
+    document.addEventListener('keydown', onDragKey, true);
+    window.addEventListener('blur', onDragBlur);
+    d.rafId = requestAnimationFrame(autoScrollTick);
+  }
+
+  /**
+   * Lane positions of every other tab when the dragged tab is taken out and a slot of its width is opened at `drop`, or nowhere.
+   * @param {?TabDrop} drop
+   * @returns {TabPositions}
+   */
+  function positionsFor(drop) {
+    const d = /** @type {TabDrag} */ (drag);
+    /** @type {Map<HTMLElement, number>} */
+    const pos = new Map();
+    /** @type {?number} */
+    let slotX = null;
+    /**
+     * @param {'group'|'loose'} region
+     * @param {number} left
+     */
+    const lay = (region, left) => {
+      let x = left;
+      const list = d.statics[region];
+      for (let i = 0; i <= list.length; i += 1) {
+        if (drop && drop.region === region && drop.atIndex === i) {
+          slotX = x;
+          x += d.w;
+        }
+        if (i < list.length) {
+          pos.set(list[i].tabElem, x);
+          x += list[i].w;
+        }
+      }
+      return x - left;
+    };
+    const groupW = d.grouped ? lay('group', d.groupX) : 0;
+    const gapW = groupW > 0 && d.statics.loose.length + (drop && drop.region === 'loose' ? 1 : 0) > 0 ? d.gapW : 0;
+    const looseX = d.groupX + groupW + gapW;
+    const looseW = lay('loose', looseX);
+    return {
+      pos, slotX, groupW, gapW, looseX, looseW,
+    };
+  }
+
+  /** @param {TabPositions} positions */
+  function applyPositions(positions) {
+    const d = /** @type {TabDrag} */ (drag);
+    if (groupElem && gapElem) {
+      groupElem.style.left = `${d.groupX}px`;
+      groupElem.style.width = `${positions.groupW}px`;
+      gapElem.style.left = `${d.groupX + positions.groupW}px`;
+      gapElem.style.width = `${positions.gapW}px`;
+    }
+    for (const s of d.statics.group) s.tabElem.style.left = `${positions.pos.get(s.tabElem) - d.groupX}px`;
+    for (const s of d.statics.loose) s.tabElem.style.left = `${positions.pos.get(s.tabElem)}px`;
+    d.positions = positions;
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function moveDrag(clientX, clientY) {
+    const d = drag;
+    if (!d) return;
+    d.lastX = clientX;
+    d.lastY = clientY;
+    const laneRect = laneElem.getBoundingClientRect();
+    const px = clientX - laneRect.left + laneElem.scrollLeft;
+    const base = positionsFor(null);
+    const groupEnd = d.groupX + base.groupW;
+    const canCross = d.grouped && !d.inGroup && typeof onCopyInto === 'function';
+    let minX = d.grouped ? d.groupX : 0;
+    let maxX = Math.max(minX, d.contentW - d.w);
+    // Group membership comes from the library, not from where a tab is dropped, so a folder document's tab is held inside the group.
+    if (d.inGroup) maxX = groupEnd;
+    else if (!canCross) minX = base.looseX;
+    const x = Math.max(minX, Math.min(maxX, px - d.grabDX));
+    const cx = x + d.w / 2;
+    // Over an empty group there is nothing to pass, so the tab counts as inside once it sits against the folder tab.
+    const groupSide = d.grouped && cx < (base.groupW > 0 ? groupEnd + d.gapW / 2 : d.groupX + d.w / 2 + 7);
+    /** @param {'group'|'loose'} region */
+    const countBefore = (region) => d.statics[region].filter((s) => /** @type {number} */ (base.pos.get(s.tabElem)) + s.w / 2 < cx).length;
+    // Against either stop the tab may not be able to pass a wider neighbor's midpoint, so the stop itself decides.
+    /** @param {'group'|'loose'} region */
+    const dropIndex = (region) => (x <= minX + 0.5 ? 0 : x >= maxX - 0.5 ? d.statics[region].length : countBefore(region));
+    /** @type {TabDrop} */
+    let drop;
+    if (d.inGroup) drop = { region: 'group', atIndex: dropIndex('group') };
+    else if (canCross && groupSide) drop = { region: 'group', atIndex: x <= minX + 0.5 ? 0 : countBefore('group') };
+    else drop = { region: 'loose', atIndex: dropIndex('loose') };
+    d.drop = drop;
+    d.crossing = !d.inGroup && drop.region === 'group';
+    applyPositions(positionsFor(drop));
+    d.tabElem.style.left = `${x}px`;
+    if (pinnedWrap) pinnedWrap.classList.toggle('drop', d.crossing);
+    if (groupElem) groupElem.classList.toggle('drop', d.crossing);
+    d.tabElem.classList.toggle('adding', d.crossing);
+    const max = laneElem.scrollWidth - laneElem.clientWidth;
+    if (clientX < laneRect.left + AUTOSCROLL_EDGE && laneElem.scrollLeft > 0) d.autoDir = -1;
+    else if (clientX > laneRect.right - AUTOSCROLL_EDGE && laneElem.scrollLeft < max) d.autoDir = 1;
+    else d.autoDir = 0;
+  }
+
+  function autoScrollTick() {
+    const d = drag;
+    if (!d) return;
+    if (d.autoDir) {
+      const before = laneElem.scrollLeft;
+      laneElem.scrollLeft = Math.max(0, Math.min(laneElem.scrollWidth - laneElem.clientWidth, before + d.autoDir * AUTOSCROLL_SPEED));
+      if (laneElem.scrollLeft !== before) moveDrag(d.lastX, d.lastY);
+    }
+    d.rafId = requestAnimationFrame(autoScrollTick);
+  }
+
+  /**
+   * Remove the drag's styling, key and blur listeners, and auto-scroll, applying nothing.
+   * The render that follows every end of a drag rebuilds the lane's tabs, so only what outlives it is reset here.
+   * @param {TabDrag} d
+   */
+  function endDragVisuals(d) {
+    cancelAnimationFrame(d.rafId);
+    tabStripElem.classList.remove('tab-drag', 'settling');
+    if (pinnedWrap) pinnedWrap.classList.remove('drop');
+    laneElem.style.removeProperty('--scribe-tab-drag-w');
+    laneElem.style.scrollBehavior = '';
+    document.body.style.cursor = '';
+    document.removeEventListener('keydown', onDragKey, true);
+    window.removeEventListener('blur', onDragBlur);
+  }
+
+  /**
+   * End the press or drag without applying it.
+   * @param {boolean} rerender - Redraw the strip, which a render already under way does not need.
+   */
+  function cancelDrag(rerender) {
+    const d = drag;
+    if (!d) return;
+    drag = null;
+    removeDragListeners();
+    if (!d.started) return;
+    endDragVisuals(d);
+    if (rerender && lastRender) render(lastRender.tabs, lastRender.activeIndex, lastRender.group);
+  }
+
+  /**
+   * Settle the released tab into its slot, then apply the move or the copy.
+   * @param {TabDrag} d
+   */
+  function endDrag(d) {
+    cancelAnimationFrame(d.rafId);
+    const drop = d.drop || { region: d.inGroup ? 'group' : 'loose', atIndex: 0 };
+    const finish = () => {
+      if (drag !== d) return;
+      drag = null;
+      // The insertion index counts in the list without the dragged tab.
+      /** @param {number} i */
+      const without = (i) => i - (i > d.from ? 1 : 0);
+      const list = d.statics[drop.region];
+      let to;
+      if (drop.atIndex < list.length) to = without(list[drop.atIndex].index);
+      else if (list.length) to = without(list[list.length - 1].index) + 1;
+      else to = drop.region === 'group' ? 0 : (lastRender ? lastRender.tabs.length - 1 : 0);
+      endDragVisuals(d);
+      if (lastRender) render(lastRender.tabs, lastRender.activeIndex, lastRender.group);
+      if (d.crossing && onCopyInto) onCopyInto(d.from, to);
+      else if (!d.crossing && onMove && to !== d.from) onMove(d.from, to);
+    };
+    const slotX = d.positions ? d.positions.slotX : null;
+    if (slotX !== null && Math.abs(parseFloat(d.tabElem.style.left) - slotX) > 0.5) {
+      tabStripElem.classList.add('settling');
+      d.tabElem.style.left = `${slotX}px`;
+      setTimeout(finish, 130);
+    } else {
+      finish();
+    }
   }
 
   return {
-    tabStripElem, render, addPinnedTab, removePinnedTab, pinnedCount, setPinnedActive,
+    tabStripElem, render, addPinnedTab, removePinnedTab, pinnedCount, setPinnedActive, showTabNote,
   };
 }
 
@@ -2225,28 +2666,46 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-strip.pin-active .scribe-tab-lane .scribe-tab.active .scribe-tab-name { text-shadow: none; }
 
     .${r} .scribe-tab-strip.grouped .scribe-tab-pin-sep { display: none; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-group {
-      margin-top: 3px;
-      border: 1px solid var(--scribe-line-strong);
-      border-bottom: none;
-      background: color-mix(in srgb, var(--scribe-accent) 6%, var(--scribe-surface));
-      transition: opacity .12s ease;
+    .${r} .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-group { position: relative; }
+    .${r} .scribe-tab-pin.scribe-tab-group-head::before, .${r} .scribe-tab-group::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 2px;
+      background: var(--scribe-ink-3);
+      pointer-events: none;
+      z-index: 1;
     }
-    .${r} .scribe-tab-pin.scribe-tab-group-head { margin-left: 6px; border-right: none; border-radius: 8px 0 0 0; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head.alone { border-right: 1px solid var(--scribe-line-strong); border-radius: 8px 8px 0 0; }
-    .${r} .scribe-tab-group { display: flex; align-items: stretch; flex: none; border-left: none; border-radius: 0 8px 0 0; }
-    .${r} .scribe-tab-group .scribe-tab { border-left: 1px solid color-mix(in srgb, var(--scribe-line-strong) 70%, transparent); }
-    /* The enclosure's chips are 4px shorter than loose chips, so their text is lifted to share the loose chips' center line. */
-    .${r} .scribe-tab-group .scribe-tab, .${r} .scribe-tab-pin.scribe-tab-group-head .scribe-tab { padding-bottom: 4px; }
+    .${r} .scribe-tab-group { display: flex; align-items: stretch; flex: none; }
     .${r} .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned { background: color-mix(in srgb, var(--scribe-accent) 12%, var(--scribe-surface)); color: var(--scribe-ink); padding-right: 8px; }
     .${r} .scribe-tab-strip.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { background: var(--scribe-surface); color: var(--scribe-accent); }
-    .${r} .scribe-tab-group .scribe-tab.active { background: var(--scribe-surface); }
     .${r} .scribe-tab-gap { width: 14px; flex: none; }
+    .${r} .scribe-tab-gap.empty { width: 0; }
     .${r} .scribe-tab-chev { width: 12px; height: 12px; flex: none; display: inline-flex; color: var(--scribe-ink-3); border-radius: 3px; }
     .${r} .scribe-tab-chev svg { width: 100%; height: 100%; display: block; }
     .${r} .scribe-tab-chev:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
     /* The library sets this class while its Close Folder command is hovered, previewing which tabs the command closes. */
-    .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-group { opacity: .35; border-style: dashed; background: transparent; }
+    .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-group { opacity: .35; }
+
+    .${r} .scribe-tab-lane { position: relative; }
+    .${r} .scribe-tab-strip.tab-drag .scribe-tab-lane::after { content: ''; flex: none; width: var(--scribe-tab-drag-w, 0px); }
+    .${r} .scribe-tab-strip.tab-drag .scribe-tab-group, .${r} .scribe-tab-strip.tab-drag .scribe-tab-gap { position: absolute; top: 0; bottom: 0; transition: left 120ms ease, width 120ms ease; }
+    .${r} .scribe-tab-strip.tab-drag .scribe-tab-lane .scribe-tab:not(.dragging) { position: absolute; top: 0; bottom: 0; transition: left 120ms ease; }
+    .${r} .scribe-tab.dragging { position: absolute; top: 0; bottom: 0; z-index: 5; background: var(--scribe-surface); color: var(--scribe-ink); box-shadow: 0 2px 10px rgba(20, 30, 60, .22); cursor: grabbing; }
+    .${r} .scribe-tab-strip.tab-drag.settling .scribe-tab.dragging { transition: left 120ms ease; }
+    .${r} .scribe-tab-plus { display: none; width: 14px; height: 14px; border-radius: 50%; background: var(--scribe-accent); color: var(--scribe-accent-ink); align-items: center; justify-content: center; font-size: 12px; font-weight: 600; line-height: 1; flex: none; }
+    .${r} .scribe-tab.dragging.adding .scribe-tab-plus { display: inline-flex; }
+    .${r} .scribe-tab.dragging.adding .scribe-tab-close { display: none; }
+    .${r} .scribe-tab-pin.scribe-tab-group-head.drop, .${r} .scribe-tab-group.drop { background: var(--scribe-accent-soft); }
+    .${r} .scribe-tab-pin.scribe-tab-group-head.drop::after, .${r} .scribe-tab-group.drop::after { content: ''; position: absolute; inset: 0; border: 2px dashed var(--scribe-accent); box-sizing: border-box; pointer-events: none; z-index: 3; }
+    .${r} .scribe-tab-pin.scribe-tab-group-head.drop::after { border-right: none; }
+    .${r} .scribe-tab-group.drop::after { border-left: none; }
+    .${r} .scribe-tab-note { position: absolute; z-index: 70; display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; color: var(--scribe-ink); white-space: nowrap; }
+    .${r} .scribe-tab-note::before { content: ''; position: absolute; top: -5px; left: 18px; width: 8px; height: 8px; background: var(--scribe-surface); border-left: 1px solid var(--scribe-line); border-top: 1px solid var(--scribe-line); transform: rotate(45deg); }
+    .${r} .scribe-tab-note-action { background: none; border: none; border-radius: 7px; padding: 5px 9px; color: var(--scribe-accent); font: 600 13px/1 inherit; font-family: inherit; cursor: pointer; }
+    .${r} .scribe-tab-note-action:hover { background: var(--scribe-hover); }
 
     .${r} .scribe-tab-spin {
       flex: none;
@@ -2312,6 +2771,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       ${MENU_ROW_NOICON_CSS}
     }
     .${r} .scribe-tab-menu-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-tab-menu-sep { ${MENU_SEP_CSS} }
 
     .${r} .highlight-color-btn {
       width: 20px;
@@ -3519,8 +3979,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-row.scribe-bm-adopt .scribe-bm-twisty { color: var(--scribe-accent); }
     /* The menu can open away from its row, so the subject row carries its own wash. */
     .${r} .scribe-bm-row.scribe-bm-menu-subject:not(.active) { background: var(--scribe-hover); }
-    /* The plate marks the slot the dragged card will settle into. */
-    .${r} .scribe-bm-plate {
+    .${r} .scribe-bm-slot {
       position: absolute;
       z-index: 9;
       border-radius: 8px;
@@ -3560,7 +4019,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* visibility, not display: the slide offsets are measured against a layout that still contains the lifted subtree's slot. */
     .${r} .scribe-bm-lift-src { visibility: hidden; }
     .${r} .scribe-bm-sliding .scribe-bm-row { transition: transform 160ms ease; }
-    .${r} .scribe-bm-dragging .scribe-bm-row { cursor: grabbing; }
+    .${r} .scribe-bm-row-drag .scribe-bm-row { cursor: grabbing; }
     @keyframes scribe-bm-fade-in { from { opacity: 0; } to { opacity: 1; } }
     .${r} .scribe-bm-row.scribe-bm-drop-in .scribe-bm-dots,
     .${r} .scribe-bm-row.scribe-bm-drop-in .scribe-bm-twisty { animation: scribe-bm-fade-in 140ms ease; }

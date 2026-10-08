@@ -3756,7 +3756,7 @@ export class ScribeViewer {
     const pageDims = this.doc.pageMetrics[page.n].dims;
     const renderedLines = page.lines.filter((l) => l.words.some((w) => w.text));
 
-    // Each line's horizontal extent is its COLUMN's width, not its own bbox; otherwise a short line (a paragraph's last line) leaves a selection hole out to the column edge.
+    // Each line's horizontal extent is its COLUMN's width, not its own bbox; otherwise a short line (a paragraph's last line) leaves a gap in the selection out to the column edge.
     // A short line x-overlaps its column's full-width lines, so the union recovers that width.
     // The vertical window keeps a distant full-width title from welding separate columns into one extent.
     /** @type {Map<OcrLine, {left: number, right: number}>} */

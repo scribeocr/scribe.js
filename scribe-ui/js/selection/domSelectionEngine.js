@@ -290,7 +290,7 @@ export class DomSelectionEngine {
     /** @type {Map<OcrLine, {left: number, right: number, top: number, bottom: number}>} */
     const fillLimits = new Map();
     // Territories must TILE: overlaps resolve by DOM order (reading order, not geometry), so a filler overhanging a column turns a small overshoot into a selection sweeping everything between.
-    // A hole is benign by comparison, only pinning the drag at its focus, which the backstop handles.
+    // A gap is benign by comparison, only pinning the drag at its focus, which the backstop handles.
     for (const l of renderedLines) {
       const lb = l.bbox;
       const col = colExtents.get(l);

@@ -123,7 +123,7 @@ class ThumbTouch {
     /** @type {number|ReturnType<typeof setTimeout>} Gap-reflow settle timer; 0 when idle. */
     this.reflowT = 0;
     /** Edge auto-scroll animation-frame handle; 0 when idle. */
-    this.autoRAF = 0;
+    this.rafId = 0;
     /** @type {?HTMLDivElement} Floating copy of the carried page(s) tracking the finger. */
     this.ghost = null;
     /** @type {?HTMLDivElement} Insertion-position accent line. */
@@ -677,7 +677,7 @@ export function installPageReorder(ctx) {
     if (!d) return;
     if (d.scrollMode) { ctx.scrollElem.scrollTop = d.scroll0 - (e.clientY - d.startY); return; }
     if (d.started) { moveDrag(e.clientX, e.clientY); return; }
-    if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) < DRAG_THRESHOLD) return;
+    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
     if (!ctx.pageEditArmed()) {
       // The press became a scroll, so its release must not also navigate.
       d.scrollMode = true;
@@ -902,7 +902,7 @@ export function installPageReorder(ctx) {
   }
 
   function touchAutoTick() {
-    if (!touch || (!touch.lifted && !touch.sweeping)) { if (touch) touch.autoRAF = 0; return; }
+    if (!touch || (!touch.lifted && !touch.sweeping)) { if (touch) touch.rafId = 0; return; }
     const rect = ctx.scrollElem.getBoundingClientRect();
     const max = ctx.scrollElem.scrollHeight - ctx.scrollElem.clientHeight;
     let dir = 0;
@@ -914,10 +914,10 @@ export function installPageReorder(ctx) {
       if (touch.lifted) updateGap(touch.lastX, touch.lastY);
       else runTo(touch.lastX, touch.lastY);
     }
-    touch.autoRAF = requestAnimationFrame(touchAutoTick);
+    touch.rafId = requestAnimationFrame(touchAutoTick);
   }
-  function startTouchAuto() { if (touch && !touch.autoRAF) touch.autoRAF = requestAnimationFrame(touchAutoTick); }
-  function stopTouchAuto() { if (touch && touch.autoRAF) { cancelAnimationFrame(touch.autoRAF); touch.autoRAF = 0; } }
+  function startTouchAuto() { if (touch && !touch.rafId) touch.rafId = requestAnimationFrame(touchAutoTick); }
+  function stopTouchAuto() { if (touch && touch.rafId) { cancelAnimationFrame(touch.rafId); touch.rafId = 0; } }
 
   /**
    * Lift `pages` (sorted ascending) into the carried ghost and arm the drag.

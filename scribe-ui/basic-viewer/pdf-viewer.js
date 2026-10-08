@@ -144,7 +144,7 @@ const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" strok
 const STOP_SVG = editIcon('<circle cx="12" cy="12" r="8.5"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>');
 const RECOGNIZE_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']];
 /**
- * Wrap SVG shape markup in a stroked icon for the app menu's 16px slots.
+ * Wrap SVG in a stroked icon for the app menu's 16px slots.
  * One unit of its 16-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
@@ -1066,6 +1066,9 @@ class ScribePDFViewer {
             if (this._tabs[j] !== kept) this._closeTab(j);
           }
         },
+        onMove: (from, to) => this._moveTab(from, to),
+        onCopyInto: (from, to) => { this._library?.copyTabIntoFolder?.(this._tabs[from], to); },
+        extraMenuItems: (i) => this._tabMenuExtras(i),
       });
       this._tabStrip = tabStrip;
       this._tabStripElem = tabStrip.tabStripElem;
@@ -2537,7 +2540,7 @@ class ScribePDFViewer {
     if (tab.asleep) tab.waking = true;
     this._renderTabs();
     this._syncTabNotice();
-    // Respawn the suspended pool before attaching, so the tab chip's spinner covers the slow part and the attach renders against a warm pool.
+    // Respawn the suspended pool before attaching, so the tab's spinner covers the slow part and the attach renders against a warm pool.
     // Bounded by a timeout so the spinner always ends.
     // On timeout or failure the attach proceeds and renders retry lazily.
     if (tab.waking && tab.doc.images.pdfData) {
@@ -2585,6 +2588,34 @@ class ScribePDFViewer {
       if (i < this._activeTab) this._activeTab -= 1;
       this._renderTabs();
     }
+  }
+
+  /**
+   * Move tab `from` to index `to` of the list without it.
+   * The active document stays active.
+   * @param {number} from
+   * @param {number} to
+   */
+  _moveTab(from, to) {
+    if (from < 0 || from >= this._tabs.length || from === to) return;
+    const active = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    const [tab] = this._tabs.splice(from, 1);
+    this._tabs.splice(Math.max(0, Math.min(to, this._tabs.length)), 0, tab);
+    if (active) this._activeTab = this._tabs.indexOf(active);
+    this._renderTabs();
+  }
+
+  /**
+   * The folder rows for tab `i`'s context menu.
+   * @param {number} i
+   * @returns {Array<{label: string, onPick: () => void}>}
+   */
+  _tabMenuExtras(i) {
+    const lib = this._library;
+    const tab = this._tabs[i];
+    if (!lib?.connected?.() || !tab) return [];
+    if (lib.ownsTab?.(tab)) return lib.showTab ? [{ label: 'Show in Folder', onPick: () => lib.showTab?.(tab) }] : [];
+    return lib.copyTabIntoFolder ? [{ label: `Copy into ${lib.folderName?.() || 'Folder'}`, onPick: () => lib.copyTabIntoFolder?.(tab, null) }] : [];
   }
 
   /** Re-render the tab strip and toggle its visibility. */

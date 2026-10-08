@@ -114,6 +114,9 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => Promise<void>} [closeFolder] Document library only: close the folder and the documents open from it.
  * @property {(tab: ?Object) => boolean} [ownsTab] Document library only: whether a tab holds a document from the open folder.
  * @property {() => string} [closeFolderLabel] Document library only: the Close Folder command's label, counting the folder's open documents.
+ * @property {() => string} [folderName] Document library only: the open folder's name.
+ * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
+ * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
  * @property {() => void} show
  * @property {() => void} hide
  * @property {() => void} docOpened
@@ -3846,6 +3849,8 @@ export function createLibraryInstance(viewer, opts) {
       onDocDone: (relPath) => {
         saveIndexSoon();
         const doneEntry = manifest?.docs[relPath];
+        // A tab adopted by a copy into the folder learns its hash once the ingest has computed it.
+        if (doneEntry?.hash) for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath === relPath && !t.libraryHash) t.libraryHash = doneEntry.hash;
         // Ingest and recognition write sidecars of their own, so cached sidecar pages must not outlive them.
         if (doneEntry?.hash) sessions.dropSidecar(doneEntry.hash);
         if (recognizingPath === relPath && doneEntry?.ocrError) runRecognizeFailures++;
@@ -4056,6 +4061,99 @@ export function createLibraryInstance(viewer, opts) {
     }
     render();
     ingest.start();
+  };
+
+  /**
+   * Copy a freestanding tab's PDF into the folder's root and make the tab one of the folder's.
+   * A note under the tab offers to undo the copy.
+   * @param {Object} tab
+   * @param {?number} toIndex - Insertion index in the tab list once the tab is taken out of it, or null for after the folder's last open document.
+   */
+  const copyTabIntoFolder = async (tab, toIndex) => {
+    if (!store || !ingest || !manifest || !tab || ownsTab(tab)) return;
+    const folderName = store.root.name;
+    const bytes = tab.doc?.images?.pdfData;
+    if (!bytes) {
+      viewer._showToast(`Couldn't copy “${tab.name}” into ${folderName} — its PDF data is not available.`);
+      return;
+    }
+    const fromIndex = viewer._tabs.indexOf(tab);
+    if (fromIndex < 0) return;
+    const fileName = /\.pdf$/i.test(tab.name) ? tab.name : `${tab.name}.pdf`;
+    const file = new File([bytes], fileName, { type: 'application/pdf', lastModified: Date.now() });
+    let relPath;
+    try {
+      relPath = await store.importSourceFile(fileName, file, '');
+      await ingest.enqueue(relPath, { size: file.size, mtime: file.lastModified });
+    } catch (err) {
+      viewer._showToast(`Couldn't copy “${tab.name}” into ${folderName} — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the file could not be written'}.`);
+      return;
+    }
+    justAdded.unshift({ relPath, from: '' });
+    tab.libraryOwner = instanceId;
+    tab.libraryRelPath = relPath;
+    // The ingest fills in the hash later.
+    tab.libraryHash = manifest.docs[relPath]?.hash || undefined;
+    wrapMutators(tab.doc, tab);
+    let to = toIndex;
+    if (to === null || to === undefined) {
+      to = 0;
+      viewer._tabs.forEach((t, i) => { if (t !== tab && ownsTab(t) && (t.libraryHash || t.libraryRelPath)) to = i - (i > fromIndex ? 1 : 0) + 1; });
+    }
+    viewer._moveTab(fromIndex, to);
+    viewer._renderTabs();
+    render();
+    ingest.start();
+    viewer._tabStrip?.showTabNote(viewer._tabs.indexOf(tab), 'Copied into the folder', {
+      actionLabel: 'Undo',
+      onAction: () => { undoCopyIntoFolder(tab, relPath, fromIndex).catch(() => {}); },
+    });
+  };
+
+  /**
+   * Reverse a copy into the folder.
+   * @param {Object} tab
+   * @param {string} relPath
+   * @param {number} fromIndex
+   */
+  const undoCopyIntoFolder = async (tab, relPath, fromIndex) => {
+    if (tab.libraryRelPath === relPath) {
+      tab.libraryDirty = false;
+      delete tab.libraryOwner;
+      delete tab.libraryRelPath;
+      delete tab.libraryHash;
+      const at = viewer._tabs.indexOf(tab);
+      if (at >= 0) viewer._moveTab(at, Math.min(fromIndex, viewer._tabs.length - 1));
+      viewer._renderTabs();
+    }
+    justAdded = justAdded.filter((a) => a.relPath !== relPath);
+    await forgetDocs([relPath]);
+    if (store) {
+      try {
+        await store.deleteSourceFile(relPath);
+      } catch (err) {
+        viewer._showToast(`Couldn't remove “${titleOf(relPath)}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the file could not be deleted'}.`);
+      }
+    }
+    render();
+  };
+
+  /**
+   * Show the folder view with the tab's document selected and scrolled into view.
+   * @param {Object} tab
+   */
+  const showTab = (tab) => {
+    if (!store || !manifest) return;
+    let relPath = tab?.libraryRelPath;
+    if (!relPath && tab?.libraryHash) relPath = Object.keys(manifest.docs).find((p) => manifest.docs[p].hash === tab.libraryHash);
+    if (!relPath) return;
+    const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
+    if (dir !== currentDir) openDir(dir);
+    selectedPaths.clear();
+    selectedPaths.add(relPath);
+    selAnchor = relPath;
+    if (!visible) showSurface();
+    render({ revealSelection: true });
   };
 
   // --- Event wiring -------------------------------------------------------
@@ -4683,6 +4781,9 @@ export function createLibraryInstance(viewer, opts) {
       closeFolder,
       ownsTab: (/** @type {?{libraryHash?: string, libraryRelPath?: string}} */ tab) => ownsTab(tab) && !!(tab?.libraryHash || tab?.libraryRelPath),
       closeFolderLabel,
+      folderName: () => store?.root.name ?? '',
+      copyTabIntoFolder,
+      showTab,
     } : {}),
     show: () => {
       if (visible) return;

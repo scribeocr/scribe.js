@@ -14,6 +14,32 @@ const AUTOSCROLL_EDGE = 36;
 const AUTOSCROLL_SPEED = 14;
 
 /**
+ * A press on a card or row in the library grid, from the press through the drag it may become.
+ * @typedef {Object} CardDrag
+ * @property {string} relPath - The pressed card's document.
+ * @property {HTMLElement} cardElem - The pressed card or row.
+ * @property {number} startX - Pointer clientX at the press.
+ * @property {number} startY - Pointer clientY at the press.
+ * @property {number} lastX - Last pointer clientX.
+ * @property {number} lastY
+ * @property {boolean} started - Whether the press has become a drag.
+ * @property {boolean} moved - Whether the pointer has traveled past the menu slop since the press.
+ * @property {boolean} canReorder - Whether the current sort and view allow manual ordering.
+ * @property {?string} dropDir - Move destination while over a folder or crumb, null for none.
+ * @property {?HTMLElement} dropElem - The folder card, row, or crumb that destination comes from.
+ * @property {?HTMLElement} ghost - Floating copy of the card tracking the pointer.
+ * @property {?HTMLElement} line - Insertion-position line.
+ * @property {number} gap - Current insertion gap, -1 before the first.
+ * @property {number} sinceGap - Pointer travel since `gap` last changed, for the hysteresis.
+ * @property {number} autoDir - Edge auto-scroll direction (-1, 0, 1).
+ * @property {number} rafId - Auto-scroll animation-frame handle, 0 when idle.
+ * @property {number} holdTimer - The touch hold timer that starts the drag.
+ * @property {boolean} isTouch - Whether the press came from touch.
+ * @property {number} grabDX - Offset of the grab point within the card.
+ * @property {number} grabDY
+ */
+
+/**
  * Install card drag-to-reorder over the library grid.
  * @param {Object} deps
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} deps.viewer
@@ -31,8 +57,8 @@ const AUTOSCROLL_SPEED = 14;
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, getStore, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
 }) {
-  /** @type {?Object} In-flight card drag. */
-  let dragState = null;
+  /** @type {?CardDrag} */
+  let drag = null;
   /** Render requested while a drag held the grid frozen; replayed when the drag ends. */
   let renderPending = false;
   /** Relative paths in the main grid's current display order (the drag's reorder base). */
@@ -45,7 +71,7 @@ export function createDragReorder({
   let lastTouchDragT = 0;
 
   const blockTouchScroll = (e) => {
-    if (dragState?.started) e.preventDefault();
+    if (drag?.started) e.preventDefault();
   };
 
   /**
@@ -122,7 +148,7 @@ export function createDragReorder({
   /**
    * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination.
    * The document's own folder never targets, so dropping there reads as a no-op rather than a move.
-   * @param {Object} d
+   * @param {CardDrag} d
    */
   const updateDropTarget = (d) => {
     const under = document.elementFromPoint(d.lastX, d.lastY);
@@ -140,7 +166,10 @@ export function createDragReorder({
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
   };
 
-  /** @param {Object} d @param {boolean} [force] - Commit the derived gap even under the hysteresis threshold. */
+  /**
+   * @param {CardDrag} d
+   * @param {boolean} [force] - Commit the derived gap even under the hysteresis threshold.
+   */
   const updateGap = (d, force = false) => {
     if (!mainGridElem || !d.line) return;
     const cards = /** @type {HTMLElement[]} */ ([...mainGridElem.querySelectorAll(':scope > .scribe-library-card:not(.folder)')]);
@@ -159,7 +188,7 @@ export function createDragReorder({
   };
 
   const autoScrollTick = () => {
-    const d = dragState;
+    const d = drag;
     if (!d || !d.autoDir) {
       if (d) d.rafId = 0;
       return;
@@ -172,7 +201,7 @@ export function createDragReorder({
   };
 
   const onDragMove = (e) => {
-    const d = dragState;
+    const d = drag;
     if (!d) return;
     d.sinceGap += Math.hypot(e.clientX - d.lastX, e.clientY - d.lastY);
     d.lastX = e.clientX;
@@ -203,11 +232,11 @@ export function createDragReorder({
 
   /** @param {boolean} commit */
   const endDrag = (commit) => {
-    const d = dragState;
+    const d = drag;
     if (!d) return;
     const manifest = getManifest();
     const store = getStore();
-    dragState = null;
+    drag = null;
     window.clearTimeout(d.holdTimer);
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup', onDragUp);
@@ -312,13 +341,13 @@ export function createDragReorder({
    * @param {HTMLElement} card
    */
   const beginCardDrag = (e, relPath, card) => {
-    if (dragState || !dragAllowed()) return;
+    if (drag || !dragAllowed()) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     // A sloppy modifier-click must land as a selection click, never arm a reorder drag.
     if (e.shiftKey || e.ctrlKey || e.metaKey) return;
     if (e.target instanceof Element && e.target.closest('.actions')) return;
     const isTouch = e.pointerType !== 'mouse';
-    dragState = {
+    drag = {
       relPath,
       cardElem: card,
       startX: e.clientX,
@@ -328,11 +357,10 @@ export function createDragReorder({
       started: false,
       moved: false,
       canReorder: reorderAllowed(),
-      /** @type {?string} Move destination while over a folder or crumb; null means none. */
       dropDir: null,
-      /** @type {?HTMLElement} */ dropElem: null,
-      /** @type {?HTMLElement} */ ghost: null,
-      /** @type {?HTMLElement} */ line: null,
+      dropElem: null,
+      ghost: null,
+      line: null,
       gap: -1,
       sinceGap: 0,
       autoDir: 0,
@@ -343,8 +371,8 @@ export function createDragReorder({
       grabDY: 0,
     };
     if (isTouch) {
-      dragState.holdTimer = window.setTimeout(() => {
-        const d = dragState;
+      drag.holdTimer = window.setTimeout(() => {
+        const d = drag;
         if (d && !d.started) {
           startDragVisuals(d);
           document.addEventListener('touchmove', blockTouchScroll, { passive: false });
@@ -370,14 +398,14 @@ export function createDragReorder({
     },
 
     /** Whether a drag is armed or running, so a click or context menu racing it can bow out. */
-    active: () => dragState !== null,
+    active: () => drag !== null,
 
     /**
      * Hold a render until the drop, since a rebuild mid-drag would pull the card out from under the pointer.
      * @returns {boolean} Whether the caller should skip its render.
      */
     deferRender: () => {
-      if (!dragState?.started) return false;
+      if (!drag?.started) return false;
       renderPending = true;
       return true;
     },
@@ -391,7 +419,7 @@ export function createDragReorder({
     /** Abandon any live drag without replaying the render it deferred. */
     cancel: () => {
       renderPending = false;
-      if (dragState) endDrag(false);
+      if (drag) endDrag(false);
     },
   };
 }

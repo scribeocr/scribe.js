@@ -31,7 +31,7 @@ const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.o
 const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 11" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M2.5 4.5l3 3 3-3"/></svg>';
 
 /**
- * Wrap SVG shape markup in a stroked icon for the mode control's 17px slots.
+ * Wrap SVG in a stroked icon for the mode control's 17px slots.
  * One unit of its 17-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
