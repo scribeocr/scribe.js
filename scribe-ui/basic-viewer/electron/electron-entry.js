@@ -101,7 +101,8 @@ if (platform !== 'darwin') {
     }
     if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'w' || e.key === 'W')) {
       e.preventDefault();
-      if (!pdfViewer.closeActiveDocument()) window.close();
+      // A refusal stands, unlike ⌘W on macOS, since Ctrl+W closes no window on these platforms.
+      pdfViewer.closeActiveDocument();
     }
   });
 }
@@ -120,6 +121,7 @@ window.electronAPI.onHighlight(({ highlights }) => enqueue(() => handleHighlight
 if (platform === 'darwin') {
   window.electronAPI.onMenuAction((id) => enqueue(() => {
     if (id === 'close-tab') {
+      // Close Tab is offered only while something is in front to close, so a refusal means the menu state lagged a surface change and ⌘W meant Close Window.
       if (!pdfViewer.closeActiveDocument()) window.close();
       return undefined;
     }

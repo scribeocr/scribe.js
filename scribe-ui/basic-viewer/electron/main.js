@@ -19,6 +19,16 @@ protocol.registerSchemesAsPrivileged([{
 
 let mainWindow;
 let shuttingDown = false;
+/**
+ * Whether a window is wanted once the one tearing down has closed.
+ * Opening it sooner would hand the new window to the old one's destroy.
+ * @type {boolean}
+ */
+let reopenPending = false;
+/** @type {?string} */
+let pendingMenuAction = null;
+// The launch arguments reach the first window only, so a window reopened later does not reload the launch file.
+let launchArgs = parseArgs(process.argv);
 
 // The Linux window is transparent so the renderer can round its corners the way GNOME rounds every window.
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -81,6 +91,9 @@ function parseArgs(argv) {
 }
 
 function createWindow() {
+  shuttingDown = false;
+  rendererReady = false;
+  reopenPending = false;
   // A remembered position must still be mostly on some connected display, or the window comes back stranded off-screen.
   let restoredBounds = shellState.bounds;
   if (restoredBounds) {
@@ -131,7 +144,7 @@ function createWindow() {
       // Lets the preload tell the renderer whether it runs from a packaged app, which carries its own OCR language data.
       additionalArguments: [
         ...(app.isPackaged ? ['--scribe-packaged'] : []),
-        ...(pendingOpenFile || parseArgs(process.argv).file ? ['--scribe-launch-file'] : []),
+        ...(pendingOpenFile || launchArgs.file ? ['--scribe-launch-file'] : []),
       ],
     },
   });
@@ -213,12 +226,22 @@ function createWindow() {
       sendArgsToRenderer({ file: pendingOpenFile });
       pendingOpenFile = null;
     } else {
-      sendArgsToRenderer(parseArgs(process.argv));
+      sendArgsToRenderer(launchArgs);
+    }
+    launchArgs = {};
+    if (pendingMenuAction) {
+      mainWindow?.webContents.send('menu-action', pendingMenuAction);
+      pendingMenuAction = null;
     }
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    if (process.platform !== 'darwin') return;
+    // No renderer is left to push menu state, so the menu resets here.
+    shuttingDown = false;
+    setAppMenu('Close Folder', false);
+    if (reopenPending || pendingOpenFile || pendingMenuAction) createWindow();
   });
 }
 
@@ -227,8 +250,12 @@ let pendingOpenFile = null;
 let rendererReady = false;
 app.on('open-file', (event, filePath) => {
   event.preventDefault();
-  if (rendererReady && mainWindow) sendArgsToRenderer({ file: filePath });
-  else pendingOpenFile = filePath;
+  if (rendererReady && mainWindow && !shuttingDown) {
+    sendArgsToRenderer({ file: filePath });
+    return;
+  }
+  pendingOpenFile = filePath;
+  if (app.isReady() && !mainWindow && !shuttingDown) createWindow();
 });
 
 function sendArgsToRenderer(args) {
@@ -272,12 +299,23 @@ function sendArgsToRenderer(args) {
 }
 
 let closeFolderLabel = 'Close Folder';
+let closeTabShown = false;
 /**
  * Build the macOS application menu.
- * @param {string} closeLabel
+ * @param {string} closeLabel - The Close Folder item's label.
+ * @param {boolean} closeTab - Whether ⌘W closes a tab rather than the window, as in tabbed macOS windows.
  */
-function buildAppMenu(closeLabel) {
-  const send = (id) => () => mainWindow?.webContents.send('menu-action', id);
+function buildAppMenu(closeLabel, closeTab) {
+  const send = (id) => () => {
+    if (mainWindow && !shuttingDown) {
+      mainWindow.webContents.send('menu-action', id);
+      return;
+    }
+    if (id !== 'open') return;
+    pendingMenuAction = id;
+    if (shuttingDown) reopenPending = true;
+    else createWindow();
+  };
   return Menu.buildFromTemplate([
     { role: 'appMenu' },
     {
@@ -289,8 +327,10 @@ function buildAppMenu(closeLabel) {
         { id: 'close-folder', label: closeLabel, enabled: false, click: send('close-folder') },
         { id: 'rebuild-index', label: 'Rebuild Search Index', enabled: false, click: send('rebuild-index') },
         { type: 'separator' },
-        { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
-        { role: 'close', label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
+        ...(closeTab ? [
+          { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
+          { role: 'close', label: 'Close Window', accelerator: 'Shift+CmdOrCtrl+W' },
+        ] : [{ role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+W' }]),
         { type: 'separator' },
         { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
         { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
@@ -334,13 +374,32 @@ function buildAppMenu(closeLabel) {
   ]);
 }
 
+/** The menu this shell last installed. */
+let appMenu = null;
+/**
+ * Install the macOS application menu.
+ * @param {string} closeLabel
+ * @param {boolean} closeTab
+ */
+function setAppMenu(closeLabel, closeTab) {
+  // Electron installs a default menu of its own at ready, so only the menu this shell built counts as installed.
+  // Labels are not dynamic in Electron, so a label change rebuilds the menu.
+  if (appMenu && Menu.getApplicationMenu() === appMenu && closeLabel === closeFolderLabel && closeTab === closeTabShown) return;
+  closeFolderLabel = closeLabel;
+  closeTabShown = closeTab;
+  appMenu = buildAppMenu(closeLabel, closeTab);
+  Menu.setApplicationMenu(appMenu);
+}
+
 // The renderer pushes menu state whenever it changes, so the macOS menu items grey and check to match the app.
 // The Windows overlay follows the app's own dark-mode setting, which the OS theme does not track.
 ipcMain.on('menu-state', (_event, state) => {
   if (process.platform === 'win32' && mainWindow) mainWindow.setTitleBarOverlay(overlayColors(!!state.darkChecked));
-  if (process.platform === 'darwin' && typeof state.closeFolderLabel === 'string' && state.closeFolderLabel !== closeFolderLabel) {
-    closeFolderLabel = state.closeFolderLabel;
-    Menu.setApplicationMenu(buildAppMenu(closeFolderLabel));
+  if (process.platform === 'darwin') {
+    setAppMenu(
+      typeof state.closeFolderLabel === 'string' ? state.closeFolderLabel : closeFolderLabel,
+      typeof state.closeTab === 'boolean' ? state.closeTab : closeTabShown,
+    );
   }
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
@@ -422,7 +481,15 @@ if (!gotTheLock) {
     if (shuttingDown || !mainWindow) {
       if (!shuttingDown) {
         // A second launch can arrive before the window exists, so hold the file for did-finish-load to deliver.
+        // On macOS it can also arrive with every window closed, and then opens a fresh one.
         if (args.file) pendingOpenFile = args.file;
+        if (app.isReady()) createWindow();
+        return;
+      }
+      if (process.platform === 'darwin') {
+        // The process lives on after the teardown under way, so the closed handler opens the window for this launch.
+        if (args.file) pendingOpenFile = args.file;
+        reopenPending = true;
         return;
       }
       // The window is gone but this process still holds the lock, so the launch that just bounced off it would otherwise vanish with no window and no error.
@@ -445,7 +512,7 @@ if (!gotTheLock) {
     // macOS gets a real application menu carrying the app's commands; the in-window menu button is hidden there.
     // Other platforms keep the in-window menu, and their window styling is unchanged.
     if (process.platform === 'darwin') {
-      Menu.setApplicationMenu(buildAppMenu(closeFolderLabel));
+      setAppMenu(closeFolderLabel, closeTabShown);
     } else {
       // Electron otherwise installs its default menu, whose accelerators fire even though a frameless window never draws it.
       // Ctrl+W quits, Ctrl+R reloads and loses the session, and Ctrl+0 and Ctrl+plus/minus drive Chromium page zoom over the app's own.
@@ -485,9 +552,13 @@ if (!gotTheLock) {
     powerMonitor.on('on-battery', () => mainWindow?.webContents.send('power-changed', { onBattery: true }));
     powerMonitor.on('on-ac', () => mainWindow?.webContents.send('power-changed', { onBattery: false }));
     createWindow();
+    app.on('activate', () => {
+      if (shuttingDown) reopenPending = true;
+      else if (!mainWindow) createWindow();
+    });
   });
 
   app.on('window-all-closed', () => {
-    app.quit();
+    if (process.platform !== 'darwin') app.quit();
   });
 }

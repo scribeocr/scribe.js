@@ -108,6 +108,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {?number} libraryOwner
  * @property {() => boolean} visible
  * @property {() => void} focusSearch
+ * @property {() => void} [close] Closable surfaces only (a portfolio): close it, as its pinned tab's control does.
  * @property {() => boolean} [connected] Document library only: whether a folder is connected.
  * @property {() => Promise<void>} [openFolder] Document library only: pick a folder and open it as the library.
  * @property {() => Promise<void>} [rebuildIndex] Document library only: re-index every document in the connected folder.
@@ -965,6 +966,7 @@ export function createLibraryInstance(viewer, opts) {
     viewer._tabStrip?.setPinnedActive(true);
     homeTab.classList.add('active');
     surface.style.display = 'flex';
+    viewer._syncFrontSurface();
     // A show that arrived while the surface was hidden only recorded its target, so replay it now that the pane has real dimensions.
     panes.mounted()?.reshow();
   };
@@ -977,7 +979,7 @@ export function createLibraryInstance(viewer, opts) {
     surface.style.display = 'none';
     // Leaving the library puts an open tab back in front of the reader, so the pane's document stops standing in for the active one.
     viewer._previewDocName = null;
-    viewer._announceActiveDoc();
+    viewer._syncFrontSurface();
   };
 
   // --- Persistence helpers ------------------------------------------------
@@ -4750,6 +4752,16 @@ export function createLibraryInstance(viewer, opts) {
     focusSearch();
   };
   document.addEventListener('keydown', onFindShortcut, true);
+  // The document's keyboard scope is off while the surface is in front, which silences its Ctrl+O, so the surface answers it.
+  /** @param {KeyboardEvent} e */
+  const onOpenShortcut = (e) => {
+    if (!visible) return;
+    if (!((e.key === 'o' || e.key === 'O') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    viewer.runMenuCommand('open');
+  };
+  document.addEventListener('keydown', onOpenShortcut, true);
 
   // Document-level like the find shortcut, so it works with focus anywhere on the surface, never inside a text field.
   /** @param {KeyboardEvent} e */
@@ -4786,6 +4798,7 @@ export function createLibraryInstance(viewer, opts) {
       copyTabIntoFolder,
       showTab,
     } : {}),
+    ...(opts.onClose ? { close: opts.onClose } : {}),
     show: () => {
       if (visible) return;
       showSurface();
@@ -4900,6 +4913,7 @@ export function createLibraryInstance(viewer, opts) {
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('keydown', onFindShortcut, true);
+      document.removeEventListener('keydown', onOpenShortcut, true);
       document.removeEventListener('keydown', onSelectAll, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
       viewer.pdfViewerElem.removeEventListener('scribe-recent-files-change', onRecentsChange);

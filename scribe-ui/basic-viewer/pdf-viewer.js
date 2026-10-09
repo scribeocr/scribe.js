@@ -764,6 +764,8 @@ class ScribePDFViewer {
     this._libraryInstances = [];
     /** @type {?import('../library/libraryView.js').LibraryInstance} The pinned surface shown most recently, which an emptied tab strip returns to. */
     this._lastPinned = null;
+    /** @type {?('focused'|'global'|'off')} The keyboard scope a pinned surface in front displaced, restored when it leaves. */
+    this._keyboardScopeBehindSurface = null;
     /** @type {?((event: DragEvent) => ?string)} */
     this._dragOverlayLabelFor = null;
     /** @type {?(() => void)} */
@@ -909,21 +911,22 @@ class ScribePDFViewer {
       };
       /**
        * The app's command handlers by id, shared between the in-window app menu and a desktop shell's native menus.
+       * The document commands refuse while a pinned surface is in front, since a shell's menu state lags a surface change by a message and a grayed in-window row still fires.
        * @type {Object<string, () => (void | Promise<void>)>}
        */
       this._menuCommands = {
         open: () => open.openElem.click(),
-        print: () => print.printElem.click(),
-        'rotate-left': () => this.scribe.rotatePage(this.scribe.state.cp.n, -90),
-        'rotate-right': () => this.scribe.rotatePage(this.scribe.state.cp.n, 90),
-        undo: () => { if (fieldOwnsUndo()) document.execCommand('undo'); else this._doUndo(false); },
-        redo: () => { if (fieldOwnsUndo()) document.execCommand('redo'); else this._doUndo(true); },
+        print: () => { if (!this._frontSurface()) print.printElem.click(); },
+        'rotate-left': () => { if (!this._frontSurface()) this.scribe.rotatePage(this.scribe.state.cp.n, -90); },
+        'rotate-right': () => { if (!this._frontSurface()) this.scribe.rotatePage(this.scribe.state.cp.n, 90); },
+        undo: () => { if (fieldOwnsUndo()) document.execCommand('undo'); else if (!this._frontSurface()) this._doUndo(false); },
+        redo: () => { if (fieldOwnsUndo()) document.execCommand('redo'); else if (!this._frontSurface()) this._doUndo(true); },
         find: () => {
-          const front = this._libraryInstances.find((inst) => inst.visible());
+          const front = this._frontSurface();
           if (front) front.focusSearch(); else this._searchBar?.openSearch();
         },
-        'find-next': () => this._searchBar?.stepMatch(false),
-        'find-prev': () => this._searchBar?.stepMatch(true),
+        'find-next': () => { if (!this._frontSurface()) this._searchBar?.stepMatch(false); },
+        'find-prev': () => { if (!this._frontSurface()) this._searchBar?.stepMatch(true); },
         'open-folder': () => this._library?.openFolder?.(),
         'close-folder': () => this._library?.closeFolder?.(),
         'rebuild-index': () => this._library?.rebuildIndex?.(),
@@ -931,7 +934,7 @@ class ScribePDFViewer {
       appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, shortcutLabel('O'));
       // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
       this._recentFilesSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
-      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, shortcutLabel('P'));
+      this._printMenuRow = appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, shortcutLabel('P'));
       this._menuCommands.inspect = () => this._enterInspectFromMenu();
       this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
@@ -2637,7 +2640,8 @@ class ScribePDFViewer {
 
   /** Tell the embedding page which document is active. */
   _announceActiveDoc() {
-    const activeName = this._previewDocName || (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
+    const activeName = this._frontSurface() ? this._previewDocName
+      : (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
     if (activeName === this._announcedDocName) return;
     this._announcedDocName = activeName;
     // The event must not bubble.
@@ -4040,12 +4044,19 @@ class ScribePDFViewer {
   }
 
   /**
-   * Close the active document's tab, for a desktop shell's close-tab shortcut.
-   * Fewer than two documents open is refused, leaving the caller to close its window instead.
-   * @returns {boolean} Whether a tab was closed.
+   * Close what is in front, for a desktop shell's close-tab shortcut.
+   * The target is the active document's tab, or a closable pinned surface such as a portfolio.
+   * Refused when the library itself is in front, or when a viewer without a library would be left with no document.
+   * @returns {boolean} Whether something was closed.
    */
   closeActiveDocument() {
-    if (this._tabs.length < 2) return false;
+    const front = this._frontSurface();
+    if (front) {
+      if (!front.close) return false;
+      front.close();
+      return true;
+    }
+    if (this._activeTab < 0 || (!this._libraryInstances.length && this._tabs.length < 2)) return false;
     this._closeTab(this._activeTab);
     return true;
   }
@@ -4134,17 +4145,21 @@ class ScribePDFViewer {
 
   /**
    * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
+   * With a pinned surface in front the document items read as having no document.
+   * `closeTab` says whether a close-tab command would close a tab or surface, or should fall to closing the window.
    * @returns {{docOpen: boolean, combine: boolean, split: boolean,
    *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
-   *   fieldsEnabled: boolean, fieldsChecked: boolean, library: boolean, libraryConnected: boolean, closeFolderLabel: string}}
+   *   fieldsEnabled: boolean, fieldsChecked: boolean, library: boolean, libraryConnected: boolean, closeFolderLabel: string,
+   *   closeTab: boolean}}
    */
   getMenuState() {
-    const doc = this.doc;
+    const front = this._frontSurface();
+    const doc = front ? null : this.doc;
     return {
       docOpen: !!doc,
       combine: this._tabs.length >= 2,
       split: !!doc && outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length >= 2,
-      coverEnabled: this.scribe.state.pagesPerRow === 2,
+      coverEnabled: !front && this.scribe.state.pagesPerRow === 2,
       coverChecked: !!this.scribe.state.coverAlone,
       darkChecked: this._effectiveTheme() === 'dark',
       fieldsEnabled: !!doc && docHasFormFields(doc),
@@ -4152,6 +4167,8 @@ class ScribePDFViewer {
       library: !!this._library,
       libraryConnected: !!this._library?.connected?.(),
       closeFolderLabel: this._library?.closeFolderLabel?.() ?? 'Close Folder',
+      // Mirrors closeActiveDocument's refusals.
+      closeTab: front ? !!front.close : this._activeTab >= 0 && (this._libraryInstances.length > 0 || this._tabs.length >= 2),
     };
   }
 
@@ -4159,6 +4176,28 @@ class ScribePDFViewer {
   _notifyMenuState() {
     if (!this._menuCommands) return;
     this.pdfViewerElem.dispatchEvent(new CustomEvent('scribe-menu-state-change', { detail: this.getMenuState(), bubbles: true }));
+  }
+
+  /**
+   * The pinned surface in front of the document, if any.
+   * @returns {?import('../library/libraryView.js').LibraryInstance}
+   */
+  _frontSurface() {
+    return this._libraryInstances.find((inst) => inst.visible()) ?? null;
+  }
+
+  /** React to a pinned surface taking or leaving the front. */
+  _syncFrontSurface() {
+    if (this._frontSurface()) {
+      if (this._keyboardScopeBehindSurface === null) this._keyboardScopeBehindSurface = this.scribe.opt.keyboardScope;
+      this.scribe.opt.keyboardScope = 'off';
+    } else if (this._keyboardScopeBehindSurface !== null) {
+      this.scribe.opt.keyboardScope = this._keyboardScopeBehindSurface;
+      this._keyboardScopeBehindSurface = null;
+    }
+    this._syncDocGatedControls();
+    if (this._editEnabled) this._updateSplitButton();
+    this._announceActiveDoc();
   }
 
   /**
@@ -5444,9 +5483,9 @@ class ScribePDFViewer {
     }
   }
 
-  /** Disable the controls that need a document while none is loaded. */
+  /** Disable the controls that need a document while none is loaded or a pinned surface is in front of it. */
   _syncDocGatedControls() {
-    const disabled = !this.doc;
+    const disabled = !this.doc || !!this._frontSurface();
     if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
     if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
@@ -5467,6 +5506,9 @@ class ScribePDFViewer {
       this._extractTablesTool?.toolbarElem,
       this._inspectTool?.toolbarElem,
       this._inspectMenuRow,
+      this._printMenuRow,
+      this._exportItem,
+      this._coverToggleItem,
       this._modeTrackViewBtn,
       this._modeTrackChev,
     ]) {
@@ -5693,7 +5735,7 @@ class ScribePDFViewer {
       // The `busy` class barely shows (the menu closes on click; the browser's download UI is the real progress cue) but is kept to match the Combine / Split siblings.
       this._menuCommands['export-pdf'] = async () => {
         // No-op at 0 pages (e.g. every page removed) rather than throwing deep in the PDF writer.
-        if (!this.doc || this.doc.pageMetrics.length === 0) return;
+        if (this._frontSurface() || !this.doc || this.doc.pageMetrics.length === 0) return;
         exportItem.classList.add('busy');
         try {
           // The export itself applies the marks, so the toast is the honest cue right when it happens.
@@ -5714,6 +5756,7 @@ class ScribePDFViewer {
         }
       };
       const exportItem = appMenu.addAction('Export PDF', ICON_EXPORT, this._menuCommands['export-pdf']);
+      this._exportItem = exportItem;
 
       // Separator before the document actions, hidden when neither Combine nor Split currently applies.
       this._appMenuDocSep = appMenu.addSeparator();
@@ -5733,7 +5776,7 @@ class ScribePDFViewer {
 
       // Split the active document into one file per top-level bookmark. Shown only when it would yield 2+ files (see `_updateSplitButton`).
       this._menuCommands.split = async () => {
-        const doc = this.doc;
+        const doc = this._frontSurface() ? null : this.doc;
         if (!doc) return;
         const count = outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length;
         if (count < 2) return;
@@ -5764,7 +5807,7 @@ class ScribePDFViewer {
       // The switch reflects the theme in effect each time the menu opens.
       appMenu.addSeparator();
       // The row shows only while pages are paired, so it never describes a state that is not on screen.
-      this._menuCommands['cover-alone'] = () => this._toggleCoverAlone();
+      this._menuCommands['cover-alone'] = () => { if (!this._frontSurface()) this._toggleCoverAlone(); };
       this._menuCommands['dark-mode'] = () => this._toggleDarkMode();
       this._menuCommands['highlight-fields'] = () => {
         if (this._fieldsToggleItem?.classList.contains('disabled')) return;
@@ -5844,7 +5887,7 @@ class ScribePDFViewer {
   /** Show the Split menu item only when the active document's top-level bookmarks would yield 2+ files. */
   _updateSplitButton() {
     if (this._splitItem) {
-      const doc = this.doc;
+      const doc = this._frontSurface() ? null : this.doc;
       const count = doc ? outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length : 0;
       this._splitItem.style.display = count >= 2 ? '' : 'none';
     }
