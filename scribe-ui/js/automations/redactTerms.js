@@ -3,6 +3,7 @@
 import scribe from '../../../scribe.js';
 import { redactWords, removeRedactionGroup, setRedactPreview } from '../viewerRedactions.js';
 import { formatTimestamp } from '../controls/toolbar.js';
+import { createDropdown } from '../controls/dropdown.js';
 
 const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
@@ -294,56 +295,57 @@ export function buildRedactionsWorkspace(host, container) {
 
   /** @type {?HTMLElement} */
   let menuElem = null;
-  const closeMenu = () => {
-    if (!menuElem) return;
-    menuElem.remove();
-    menuElem = null;
-    list.querySelector('.scribe-am-trow.menuopen')?.classList.remove('menuopen');
-    document.removeEventListener('pointerdown', onMenuPointerDown, true);
-  };
-  function onMenuPointerDown(e) {
-    if (menuElem && !menuElem.contains(e.target)) closeMenu();
-  }
-
-  function openRowMenu(rec, row, anchor) {
-    closeMenu();
-    row.classList.add('menuopen');
-    const menu = document.createElement('div');
-    menu.className = 'scribe-am-mmenu';
-    menu.setAttribute('role', 'menu');
-    const addItem = (label, danger, onClick) => {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'scribe-am-mrow';
-      item.textContent = label;
-      if (danger) item.style.color = 'var(--scribe-danger)';
-      item.addEventListener('click', () => {
-        closeMenu();
-        onClick();
+  /** @type {WeakMap<HTMLElement, {rec: RedactionTermRecord, row: HTMLElement}>} */
+  const rowMenuSpecs = new WeakMap();
+  const rowMenuDropdown = createDropdown({
+    show: (anchor) => {
+      const spec = rowMenuSpecs.get(anchor);
+      if (!spec) return null;
+      const { rec, row } = spec;
+      row.classList.add('menuopen');
+      const menu = document.createElement('div');
+      menu.className = 'scribe-am-mmenu';
+      menu.setAttribute('role', 'menu');
+      const addItem = (label, danger, onClick) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'scribe-am-mrow';
+        item.textContent = label;
+        if (danger) item.style.color = 'var(--scribe-danger)';
+        item.addEventListener('click', () => {
+          rowMenuDropdown.close();
+          onClick();
+        });
+        menu.appendChild(item);
+      };
+      addItem('Edit term', false, () => beginEdit(rec, row));
+      addItem('Rescan', false, () => runScan(rec, 'Updated redaction marks'));
+      addItem('Remove marks', true, () => {
+        viewer.doc.docHistory.group('Removed redaction marks', () => {
+          for (const gid of rec.groupIds) removeRedactionGroup(viewer, gid);
+        });
+        rec.groupIds = [];
+        rec.removed = true;
+        render();
       });
-      menu.appendChild(item);
-    };
-    addItem('Edit term', false, () => beginEdit(rec, row));
-    addItem('Rescan', false, () => runScan(rec, 'Updated redaction marks'));
-    addItem('Remove marks', true, () => {
-      viewer.doc.docHistory.group('Removed redaction marks', () => {
-        for (const gid of rec.groupIds) removeRedactionGroup(viewer, gid);
-      });
-      rec.groupIds = [];
-      rec.removed = true;
-      render();
-    });
-    const panel = /** @type {HTMLElement} */ (container.closest('.scribe-am-panel') || container);
-    const panelRect = panel.getBoundingClientRect();
-    const aRect = anchor.getBoundingClientRect();
-    menu.style.position = 'absolute';
-    menu.style.left = 'auto';
-    menu.style.right = `${Math.round(panelRect.right - aRect.right)}px`;
-    menu.style.top = `${Math.round(aRect.bottom - panelRect.top + 4)}px`;
-    panel.appendChild(menu);
-    menuElem = menu;
-    document.addEventListener('pointerdown', onMenuPointerDown, true);
-  }
+      const panel = /** @type {HTMLElement} */ (container.closest('.scribe-am-panel') || container);
+      const panelRect = panel.getBoundingClientRect();
+      const aRect = anchor.getBoundingClientRect();
+      menu.style.position = 'absolute';
+      menu.style.left = 'auto';
+      menu.style.right = `${Math.round(panelRect.right - aRect.right)}px`;
+      menu.style.top = `${Math.round(aRect.bottom - panelRect.top + 4)}px`;
+      panel.appendChild(menu);
+      menuElem = menu;
+      return menu;
+    },
+    hide: () => {
+      menuElem?.remove();
+      menuElem = null;
+      list.querySelector('.scribe-am-trow.menuopen')?.classList.remove('menuopen');
+    },
+    rows: '.scribe-am-mrow',
+  });
 
   function beginEdit(rec, row) {
     const nm = row.querySelector('.scribe-am-trow-nm');
@@ -427,7 +429,8 @@ export function buildRedactionsWorkspace(host, container) {
       dots.tabIndex = 0;
       dots.title = 'Term actions';
       dots.innerHTML = DOTS_SVG;
-      dots.addEventListener('click', () => openRowMenu(rec, row, dots));
+      rowMenuSpecs.set(dots, { rec, row });
+      rowMenuDropdown.attachTrigger(dots);
       acts.appendChild(dots);
     }
     row.append(t, nLine, acts);
@@ -435,7 +438,7 @@ export function buildRedactionsWorkspace(host, container) {
   }
 
   function render() {
-    closeMenu();
+    rowMenuDropdown.close();
     const terms = store().terms;
     const active = terms.filter((t) => !t.removed);
     scannedLine.style.display = terms.length && store().scannedAt ? '' : 'none';

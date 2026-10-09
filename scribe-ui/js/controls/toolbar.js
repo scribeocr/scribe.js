@@ -8,6 +8,7 @@ import {
 import {
   MENU_PLATE_CSS, MENU_ROW_CSS, MENU_ROW_NOICON_CSS, MENU_SEP_CSS,
 } from './menuStyles.js';
+import { createDropdown } from './dropdown.js';
 
 /**
  * Build a round icon button matching the control stylesheet's `.cr-icon-button`.
@@ -500,24 +501,21 @@ export function createAppMenu(rootClass) {
 
   /** @type {Array<() => void>} Toggle-item sync functions. */
   const toggleSyncs = [];
-  const isOpen = () => menuElem.style.display !== 'none';
-  const open = () => {
-    for (const sync of toggleSyncs) sync();
-    menuElem.style.display = 'block';
-    triggerElem.classList.add('active');
-  };
-  const close = () => {
-    menuElem.style.display = 'none';
-    triggerElem.classList.remove('active');
-    for (const w of menuElem.querySelectorAll('.scribe-app-menu-subwrap.sub-open')) w.classList.remove('sub-open');
-  };
-  triggerElem.addEventListener('click', (e) => { e.stopPropagation(); if (isOpen()) close(); else open(); });
-  const onDocClick = (e) => {
-    const target = /** @type {Node} */ (e.target);
-    if (!isOpen() || menuElem.contains(target) || triggerElem.contains(target)) return;
-    close();
-  };
-  document.addEventListener('click', onDocClick);
+  const dropdown = createDropdown({
+    show: () => {
+      for (const sync of toggleSyncs) sync();
+      menuElem.style.display = 'block';
+      triggerElem.classList.add('active');
+      return menuElem;
+    },
+    hide: () => {
+      menuElem.style.display = 'none';
+      triggerElem.classList.remove('active');
+      for (const w of menuElem.querySelectorAll('.scribe-app-menu-subwrap.sub-open')) w.classList.remove('sub-open');
+    },
+    rows: '.scribe-app-menu-item',
+  });
+  dropdown.attachTrigger(triggerElem);
 
   const makeRow = (label, iconSvg) => {
     const item = document.createElement('div');
@@ -540,7 +538,7 @@ export function createAppMenu(rootClass) {
       accelElem.textContent = accel;
       item.appendChild(accelElem);
     }
-    item.addEventListener('click', (e) => { e.stopPropagation(); close(); onClick(); });
+    item.addEventListener('click', (e) => { e.stopPropagation(); dropdown.close(); onClick(); });
     menuElem.appendChild(item);
     return item;
   };
@@ -575,7 +573,7 @@ export function createAppMenu(rootClass) {
         item.tabIndex = 0;
         item.textContent = r.label;
         item.addEventListener('mousedown', (e) => e.preventDefault());
-        item.addEventListener('click', (e) => { e.stopPropagation(); close(); r.onClick(); });
+        item.addEventListener('click', (e) => { e.stopPropagation(); dropdown.close(); r.onClick(); });
         sub.appendChild(item);
       }
       // An empty submenu hides its whole row rather than opening onto nothing.
@@ -608,10 +606,8 @@ export function createAppMenu(rootClass) {
     return sep;
   };
 
-  const destroy = () => document.removeEventListener('click', onDocClick);
-
   return {
-    menuWrap, triggerElem, menuElem, addAction, addToggle, addSubmenu, addSeparator, close, destroy,
+    menuWrap, triggerElem, menuElem, addAction, addToggle, addSubmenu, addSeparator, close: dropdown.close, destroy: dropdown.destroy,
   };
 }
 
@@ -1707,7 +1703,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       cursor: pointer;
       ${MENU_ROW_CSS}
     }
-    .${r} .scribe-app-menu-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-app-menu-item:hover, .${r} .scribe-app-menu-item:focus { background: var(--scribe-hover); outline: none; }
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
     .${r} .scribe-app-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-app-menu-item.disabled:hover { background: none; }
@@ -2784,8 +2780,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       flex: 0 0 auto;
     }
 
-    .${r} .highlight-color-btn:hover {
+    .${r} .highlight-color-btn:hover, .${r} .highlight-color-btn:focus {
       border-color: var(--scribe-ink-3);
+      outline: none;
     }
 
     .${r} .highlight-color-btn.active {

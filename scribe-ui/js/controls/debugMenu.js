@@ -1,5 +1,6 @@
 // Debug menu: developer-only tools, installed only when `DEBUG_MENU` in scribe-ui/devFlags.js is on and stripped from public builds.
 import { UiText } from '../viewerWordObjects.js';
+import { createDropdown } from './dropdown.js';
 import { makeOutlineNode } from '../../../js/objects/outlineObjects.js';
 import { saveAs } from '../../../js/utils/miscUtils.js';
 import { calcEvalStatsDoc } from '../../../js/recognizeConvert.js';
@@ -103,7 +104,7 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       }
       try {
         await doc.download(format, host?._baseName() || 'document', options);
-        exportMenu.style.display = 'none';
+        exportDropdown.close();
       } catch (err) {
         console.error(`Export to ${format} failed:`, err);
         host?._showToast(`${label} export failed — ${err?.message || 'see the console'}`);
@@ -114,7 +115,18 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     exportMenu.appendChild(row);
   }
 
-  appMenu.addAction('Export as…', EXPORT_SVG, () => { exportMenu.style.display = 'block'; });
+  const exportDropdown = createDropdown({
+    show: () => {
+      exportMenu.style.display = 'block';
+      return exportMenu;
+    },
+    hide: () => {
+      exportMenu.style.display = 'none';
+    },
+    rows: '.scribe-app-menu-item',
+  });
+  // Closing the app menu after a keyboard pick returns focus to its button, so focus there marks a keyboard open.
+  appMenu.addAction('Export as…', EXPORT_SVG, () => exportDropdown.open(appMenu.triggerElem, document.activeElement === appMenu.triggerElem ? 'first' : null));
 
   appMenu.addAction('Export assistant chat log', EXPORT_SVG, async () => {
     const envelope = viewer._automatePanel?.exportTrace?.(viewer.doc);
@@ -125,14 +137,7 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     await saveAs(JSON.stringify(envelope, null, 2), `${(host?._baseName() || 'document').replace(/\.\w{1,6}$/, '')}-assistant-trace.json`);
   });
 
-  appMenu.triggerElem.addEventListener('click', () => { exportMenu.style.display = 'none'; });
-
-  const onDocClick = (e) => {
-    if (exportMenu.style.display === 'none' || exportMenu.contains(/** @type {Node} */ (e.target))) return;
-    exportMenu.style.display = 'none';
-  };
-  document.addEventListener('click', onDocClick);
-  host?._teardownCallbacks.push(() => document.removeEventListener('click', onDocClick));
+  host?._teardownCallbacks.push(() => exportDropdown.destroy());
 
   // Off (the default) = the model-driven built-in engine; On = the DOM engine, whose invisible word spans sit under the browser's native selection.
   appMenu.addToggle(

@@ -20,6 +20,7 @@ import {
 } from '../viewerTablePreview.js';
 import { pulseTable, setActiveTable } from '../viewerLayout.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
+import { createDropdown } from './dropdown.js';
 
 // The head path (`.scribe-hl-tip`) is filled with the selected highlight color to preview the active swatch (see `setTipColor`), while the base bar underneath stays the default ink color.
 const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 20 20" fill="currentColor">
@@ -118,10 +119,9 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   const colorBtnElems = [];
   /** @type {?HTMLSpanElement} */ let paletteElem = null;
   /** @type {?HTMLSpanElement} */ let caretElem = null;
-  const closePalette = () => {
-    if (paletteElem) paletteElem.classList.remove('open');
-    if (caretElem) caretElem.classList.remove('active');
-  };
+  /** @type {?ReturnType<typeof createDropdown>} */
+  let paletteDropdown = null;
+  const closePalette = () => paletteDropdown?.close();
   /** @param {string} color @returns {HTMLSpanElement} */
   const makeColorBtn = (color) => {
     const btn = document.createElement('span');
@@ -168,12 +168,21 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     caretElem.ariaLabel = 'Choose highlight color';
     caretElem.innerHTML = HIGHLIGHT_CARET_SVG;
     caretElem.addEventListener('mousedown', (e) => e.preventDefault());
-    caretElem.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const willOpen = !paletteElem.classList.contains('open');
-      paletteElem.classList.toggle('open', willOpen);
-      caretElem.classList.toggle('active', willOpen);
+    const pop = paletteElem;
+    const caret = caretElem;
+    paletteDropdown = createDropdown({
+      show: () => {
+        pop.classList.add('open');
+        caret.classList.add('active');
+        return pop;
+      },
+      hide: () => {
+        pop.classList.remove('open');
+        caret.classList.remove('active');
+      },
+      rows: '.highlight-color-btn',
     });
+    paletteDropdown.attachTrigger(caretElem);
 
     split.append(highlightElem, caretElem, paletteElem);
     toolbarElem = split;
@@ -200,24 +209,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       applyToSelection();
     };
     document.addEventListener('mouseup', mouseupHandler);
-
-    // Close the color palette on an outside click or Escape (only wired when the split button built a palette).
-    const paletteOutsideClick = (event) => {
-      if (!paletteElem || !paletteElem.classList.contains('open')) return;
-      const t = event.target;
-      if (t instanceof Node && (paletteElem.contains(t) || (caretElem && caretElem.contains(t)))) return;
-      closePalette();
-    };
-    const paletteKeydown = (event) => {
-      if (event.key !== 'Escape' || !paletteElem || !paletteElem.classList.contains('open')) return;
-      // A consumed Escape is preventDefaulted, so the mode-exit handler leaves the active mode on.
-      event.preventDefault();
-      closePalette();
-    };
-    if (paletteElem) {
-      document.addEventListener('click', paletteOutsideClick);
-      document.addEventListener('keydown', paletteKeydown);
-    }
 
     // ---- Comment card: the one floating surface for a highlight or a note ----
     // Behaviors are delegated from the viewer root because marks are rebuilt with every fill-layer or notes-layer render.
@@ -997,10 +988,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
     return () => {
       document.removeEventListener('mouseup', mouseupHandler);
-      if (paletteElem) {
-        document.removeEventListener('click', paletteOutsideClick);
-        document.removeEventListener('keydown', paletteKeydown);
-      }
+      closePalette();
       commentObserver.disconnect();
       scribe.elem.removeEventListener('mouseover', cmtOver);
       scribe.elem.removeEventListener('mouseout', cmtOut);

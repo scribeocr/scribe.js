@@ -20,6 +20,7 @@ import {
   createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, UNDO_SVG, REDO_SVG,
 } from '../js/controls/toolbar.js';
 import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
+import { createDropdown } from '../js/controls/dropdown.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
@@ -3110,6 +3111,7 @@ class ScribePDFViewer {
       const menu = document.createElement('div');
       menu.className = 'scribe-edit-menu';
       menu.style.display = 'none';
+      const dropdown = this._wireDropdown(btn, menu);
       /** @type {Array<{value: string, labelElem: HTMLSpanElement, item: ?HTMLDivElement}>} */
       const entries = [];
       const show = (value) => {
@@ -3131,10 +3133,9 @@ class ScribePDFViewer {
           item.textContent = text;
           item.addEventListener('mousedown', (e) => e.preventDefault());
           item.addEventListener('click', () => {
+            dropdown.close();
             onPick(value);
             show(value);
-            menu.style.display = 'none';
-            btn.classList.remove('active');
           });
           menu.appendChild(item);
         }
@@ -3144,7 +3145,6 @@ class ScribePDFViewer {
       const caret = document.createElement('span');
       caret.innerHTML = CARET_SVG;
       btn.append(label, caret);
-      this._wireDropdown(btn, menu);
       wrap.append(btn, menu);
       return { wrap, show };
     };
@@ -3767,10 +3767,16 @@ class ScribePDFViewer {
     }
   }
 
-  /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and bar heights. */
+  /** Re-apply the drop zone, canvas and thumbnail-panel sizing from the current dimensions and bar heights. */
   _relayout() {
-    if (!this.scribe.scrollContainer) return;
     const top = this._topBarsHeight();
+    // The empty-state drop zone starts under the tab strip, or its clear top band takes the tabs' clicks.
+    if (this.dropZone) {
+      this.dropZone.style.top = `${top}px`;
+      this.dropZone.style.width = `${this._width - 6}px`;
+      this.dropZone.style.height = `${this._height - top - this._bottomBarsHeight()}px`;
+    }
+    if (!this.scribe.scrollContainer) return;
     // The phone app menu opens upward from the dock, and this cap keeps long menus scrolling in place instead of running off the top edge.
     if (this._phoneUi && this._dockElem) {
       this.pdfViewerElem.style.setProperty('--scribe-phone-menu-max', `${Math.max(120, this._height - this._bottomBarsHeight() - 24)}px`);
@@ -4358,13 +4364,7 @@ class ScribePDFViewer {
     // Crossing the phone threshold switches the layout before the canvas is re-measured.
     this._setPhoneUi(width <= 480 || (this._coarsePointer && height <= 480));
     this._syncModeOverflow();
-    if (this.dropZone) {
-      const dropTop = this._phoneUi ? 0 : this.toolbarHeight;
-      this.dropZone.style.top = `${dropTop}px`;
-      this.dropZone.style.width = `${width - 6}px`;
-      this.dropZone.style.height = `${height - dropTop - this._bottomBarsHeight()}px`;
-    }
-    // _relayout sizes the canvas and panel (its width is user-owned) and insets the document by the panel's width.
+    // _relayout places the drop zone, sizes the canvas and panel (its width is user-owned) and insets the document by the panel's width.
     this._relayout();
 
     // Re-run the automatic fit only when width-fit is involved on either side of the resize and the user is still at that fit, so a user zoom is never overridden.
@@ -5728,35 +5728,27 @@ class ScribePDFViewer {
   }
 
   /**
+   * Make `toggleEl` open `menuEl` as a dropdown.
    * @param {HTMLElement} toggleEl
    * @param {HTMLElement} menuEl
+   * @returns {ReturnType<typeof createDropdown>}
    */
   _wireDropdown(toggleEl, menuEl) {
-    const close = () => {
-      menuEl.style.display = 'none';
-      toggleEl.classList.remove('active');
-    };
-    toggleEl.addEventListener('click', () => {
-      const open = menuEl.style.display !== 'none';
-      menuEl.style.display = open ? 'none' : 'block';
-      toggleEl.classList.toggle('active', !open);
+    const dropdown = createDropdown({
+      show: () => {
+        menuEl.style.display = 'block';
+        toggleEl.classList.add('active');
+        return menuEl;
+      },
+      hide: () => {
+        menuEl.style.display = 'none';
+        toggleEl.classList.remove('active');
+      },
+      rows: '.scribe-edit-menu-item',
     });
-    const onDocPress = (e) => {
-      const target = /** @type {Node} */ (e.target);
-      if (menuEl.style.display === 'none' || menuEl.contains(target) || toggleEl.contains(target)) return;
-      close();
-    };
-    const onKey = (e) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || menuEl.style.display === 'none') return;
-      e.preventDefault();
-      close();
-    };
-    document.addEventListener('pointerdown', onDocPress, true);
-    document.addEventListener('keydown', onKey, true);
-    this._teardownCallbacks.push(() => {
-      document.removeEventListener('pointerdown', onDocPress, true);
-      document.removeEventListener('keydown', onKey, true);
-    });
+    dropdown.attachTrigger(toggleEl);
+    this._teardownCallbacks.push(() => dropdown.destroy());
+    return dropdown;
   }
 
   /**
@@ -6210,7 +6202,7 @@ class ScribePDFViewer {
         position: relative; display: flex; align-items: center; padding: 4px 10px 4px 26px;
         border-radius: 4px; cursor: pointer; white-space: nowrap;
       }
-      .scribe-pdf-viewer .scribe-edit-menu-item:hover { background: var(--scribe-hover); }
+      .scribe-pdf-viewer .scribe-edit-menu-item:hover, .scribe-pdf-viewer .scribe-edit-menu-item:focus { background: var(--scribe-hover); outline: none; }
       .scribe-pdf-viewer .scribe-edit-menu-item.selected::before {
         content: ''; position: absolute; left: 10px; top: 50%; width: 5px; height: 9px;
         border: solid var(--scribe-accent); border-width: 0 2px 2px 0; transform: translate(0, -60%) rotate(45deg);

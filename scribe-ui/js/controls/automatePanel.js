@@ -1,5 +1,6 @@
 import { makeIconButton, formatTimestamp } from './toolbar.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from './menuStyles.js';
+import { createDropdown } from './dropdown.js';
 import {
   AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS, SIDEBAR_GROUPS,
 } from '../automations/registry.js';
@@ -559,7 +560,7 @@ function addAutomateStyles(rootClass) {
       padding: 7px 9px; border-radius: 6px; cursor: pointer; border: none; background: none; font: inherit;
       color: var(--scribe-ink); -webkit-tap-highlight-color: transparent;
     }
-    .${r} .scribe-am-mrow:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-mrow:hover, .${r} .scribe-am-mrow:focus { background: var(--scribe-hover); }
     .${r} .scribe-am-mcol { min-width: 0; flex: 1; display: grid; gap: 1px; }
     .${r} .scribe-am-mname { font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .${r} .scribe-am-mhint { font-size: 11px; color: var(--scribe-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -872,7 +873,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     // The workspace's canvas marks and pick mode belong to its view, so leaving the view ends them.
     if (view === 'bulk' && next !== 'bulk') closeBulkWorkspace();
     view = next;
-    closeModelMenu(false);
+    modelDropdown.close();
     const rest = next === 'rest';
     // No catalog: "rest" is the closed panel.
     if (rest && !automations) { if (openState) close(); return; }
@@ -1624,7 +1625,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     const adapter = await app.getAssistantAdapter();
     modelAdapter = adapter && Array.isArray(adapter.models) && adapter.models.length ? adapter : null;
     if (!modelAdapter) {
-      closeModelMenu(false);
+      modelDropdown.close();
       modelChip.style.display = 'none';
       return;
     }
@@ -1632,23 +1633,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
     setChipLabel(modelLabelFor(modelAdapter));
   }
 
-  function onModelMenuPointerDown(e) {
-    if (modelMenu && !modelMenu.contains(e.target) && !modelChip.contains(e.target)) closeModelMenu(false);
-  }
-
-  function closeModelMenu(refocus) {
-    if (!modelMenu) return;
-    modelMenu.remove();
-    modelMenu = null;
-    modelChip.setAttribute('aria-expanded', 'false');
-    document.removeEventListener('pointerdown', onModelMenuPointerDown, true);
-    if (refocus) modelChip.focus();
-  }
-
   function pickModel(option) {
     const adapter = modelAdapter;
     const changed = adapter.model !== option.id;
-    closeModelMenu(true);
+    modelDropdown.close();
     if (!changed) return;
     app.setAssistantModel(option.id);
     setChipLabel(modelLabelFor(adapter));
@@ -1675,71 +1663,51 @@ export function createAutomatePanel(app, rootClass, hooks) {
     }
   }
 
-  function openModelMenu() {
-    if (modelMenu) {
-      closeModelMenu(true);
-      return;
-    }
-    if (!modelAdapter) return;
-    const menu = document.createElement('div');
-    menu.className = 'scribe-am-mmenu';
-    menu.setAttribute('role', 'menu');
-    const rows = [];
-    for (const option of modelAdapter.models) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'scribe-am-mrow';
-      row.setAttribute('role', 'menuitemradio');
-      row.setAttribute('aria-checked', String(option.id === modelAdapter.model));
-      const col = document.createElement('span');
-      col.className = 'scribe-am-mcol';
-      const name = document.createElement('span');
-      name.className = 'scribe-am-mname';
-      name.textContent = option.label;
-      col.appendChild(name);
-      if (option.hint) {
-        const hint = document.createElement('span');
-        hint.className = 'scribe-am-mhint';
-        hint.textContent = option.hint;
-        col.appendChild(hint);
+  const modelDropdown = createDropdown({
+    show: () => {
+      if (!modelAdapter) return null;
+      const menu = document.createElement('div');
+      menu.className = 'scribe-am-mmenu';
+      menu.setAttribute('role', 'menu');
+      const rows = [];
+      for (const option of modelAdapter.models) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'scribe-am-mrow';
+        row.setAttribute('role', 'menuitemradio');
+        row.setAttribute('aria-checked', String(option.id === modelAdapter.model));
+        const col = document.createElement('span');
+        col.className = 'scribe-am-mcol';
+        const name = document.createElement('span');
+        name.className = 'scribe-am-mname';
+        name.textContent = option.label;
+        col.appendChild(name);
+        if (option.hint) {
+          const hint = document.createElement('span');
+          hint.className = 'scribe-am-mhint';
+          hint.textContent = option.hint;
+          col.appendChild(hint);
+        }
+        const check = document.createElement('span');
+        check.className = 'scribe-am-mcheck';
+        check.innerHTML = CHECK_SVG;
+        row.append(col, check);
+        row.addEventListener('click', () => pickModel(option));
+        rows.push(row);
+        menu.appendChild(row);
       }
-      const check = document.createElement('span');
-      check.className = 'scribe-am-mcheck';
-      check.innerHTML = CHECK_SVG;
-      row.append(col, check);
-      row.addEventListener('click', () => pickModel(option));
-      rows.push(row);
-      menu.appendChild(row);
-    }
-    menu.addEventListener('keydown', (e) => {
-      const idx = rows.indexOf(document.activeElement);
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        rows[(idx + 1) % rows.length].focus();
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        rows[(idx - 1 + rows.length) % rows.length].focus();
-      } else if (e.key === 'Home') {
-        e.preventDefault();
-        rows[0].focus();
-      } else if (e.key === 'End') {
-        e.preventDefault();
-        rows[rows.length - 1].focus();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        closeModelMenu(true);
-      } else if (e.key === 'Tab') {
-        closeModelMenu(false);
-      }
-    });
-    menu.style.bottom = `${panelElem.clientHeight - composer.offsetTop + 6}px`;
-    panelElem.appendChild(menu);
-    modelMenu = menu;
-    modelChip.setAttribute('aria-expanded', 'true');
-    document.addEventListener('pointerdown', onModelMenuPointerDown, true);
-    (rows.find((row) => row.getAttribute('aria-checked') === 'true') || rows[0]).focus();
-  }
+      menu.style.bottom = `${panelElem.clientHeight - composer.offsetTop + 6}px`;
+      panelElem.appendChild(menu);
+      modelMenu = menu;
+      (rows.find((row) => row.getAttribute('aria-checked') === 'true') || rows[0]).focus();
+      return menu;
+    },
+    hide: () => {
+      modelMenu?.remove();
+      modelMenu = null;
+    },
+    rows: '.scribe-am-mrow',
+  });
 
   /**
    * The receipt row: navigates on click, and carries the act's ordinary removal when it has one.
@@ -2539,7 +2507,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       openChat(app.doc, newDraft());
     }
   });
-  modelChip.addEventListener('click', openModelMenu);
+  modelDropdown.attachTrigger(modelChip);
 
   /**
    * Set the panel width.
@@ -2592,7 +2560,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     if (!openState) return;
     openState = false;
     if (view === 'bulk') setView('rest');
-    closeModelMenu(false);
+    modelDropdown.close();
     panelElem.style.display = 'none';
     toggleElem.classList.remove('active');
     hooks.onLayoutChange();
@@ -2695,7 +2663,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
       closeInspectWorkspace();
       for (const abort of activeAborts) abort.abort();
       activeAborts.clear();
-      closeModelMenu(false);
+      modelDropdown.close();
       app.container.removeEventListener('scribe-active-doc-change', onDocChange);
     },
   };

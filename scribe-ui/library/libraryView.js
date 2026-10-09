@@ -6,6 +6,7 @@ import { saveAs } from '../../js/utils/miscUtils.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
+import { createDropdown } from '../js/controls/dropdown.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
@@ -200,7 +201,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-sort { position: relative; display: inline-flex; }
 .scribe-pdf-viewer .scribe-library-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 178px; ${MENU_PLATE_CSS} }
 .scribe-pdf-viewer .scribe-library-menu-item { display: flex; align-items: center; gap: 9px; cursor: pointer; ${MENU_ROW_CSS} }
-.scribe-pdf-viewer .scribe-library-menu-item:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-menu-item:hover, .scribe-pdf-viewer .scribe-library-menu-item:focus { background: var(--scribe-hover); outline: none; }
 .scribe-pdf-viewer .scribe-library-menu-item svg { width: 15px; height: 15px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
 .scribe-pdf-viewer .scribe-library-menu-sep { ${MENU_SEP_CSS} }
@@ -873,17 +874,19 @@ export function createLibraryInstance(viewer, opts) {
     });
     homeTab.appendChild(close);
   }
+  /** @type {?HTMLElement} */
+  let homeTabChev = null;
   if (isLibrary) {
     const chev = document.createElement('span');
     chev.className = 'scribe-tab-chev';
     chev.innerHTML = CHEVRON_SVG;
     chev.title = 'Folder actions';
     chev.role = 'button';
-    chev.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleFolderMenu(chev);
-    });
+    chev.tabIndex = 0;
+    // Stopped so opening the menu never also selects the tab.
+    chev.addEventListener('click', (e) => e.stopPropagation());
     homeTab.appendChild(chev);
+    homeTabChev = chev;
   }
   // The library mounts its tab when a folder opens.
   if (viewer._tabStrip && !isLibrary) {
@@ -1126,9 +1129,13 @@ export function createLibraryInstance(viewer, opts) {
     body.scrollTop = 0;
   };
 
+  /** @type {?ReturnType<typeof createDropdown>} */
+  let midDropdown = null;
   /** Rebuild the header breadcrumbs for `currentDir`; ancestors are links and drag-drop targets. */
   const syncCrumbs = () => {
     crumbsElem.replaceChildren();
+    midDropdown?.destroy();
+    midDropdown = null;
     const segs = currentDir ? currentDir.split('/') : [];
     const rootLabel = isLibrary && store ? store.root.name : opts.name;
     if (!segs.length) {
@@ -1141,7 +1148,7 @@ export function createLibraryInstance(viewer, opts) {
         rootMenuBtn.title = rootLabel;
         rootMenuBtn.innerHTML = `<span class="fi">${FOLDER_SVG}</span><span class="nm"></span>${CHEVRON_SVG}`;
         /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
-        rootMenuBtn.addEventListener('click', () => toggleFolderMenu(rootMenuBtn));
+        folderDropdown.attachTrigger(rootMenuBtn);
         crumbsElem.appendChild(rootMenuBtn);
         return;
       }
@@ -1177,19 +1184,17 @@ export function createLibraryInstance(viewer, opts) {
       midMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
       midMenu.setAttribute('role', 'menu');
       midMenu.style.display = 'none';
-      /** @param {PointerEvent} e */
-      const onMidOutside = (e) => {
-        if (!midWrap.contains(/** @type {Node} */ (e.target))) closeMid();
-      };
-      /** @param {KeyboardEvent} e */
-      const onMidKey = (e) => {
-        if (e.key === 'Escape') closeMid();
-      };
-      const closeMid = () => {
-        midMenu.style.display = 'none';
-        document.removeEventListener('pointerdown', onMidOutside);
-        document.removeEventListener('keydown', onMidKey);
-      };
+      const dropdown = createDropdown({
+        show: () => {
+          midMenu.style.display = '';
+          return midMenu;
+        },
+        hide: () => {
+          midMenu.style.display = 'none';
+        },
+        rows: '.scribe-library-menu-item',
+      });
+      midDropdown = dropdown;
       for (let i = 0; i < hidden; i++) {
         const item = document.createElement('div');
         item.className = 'scribe-library-menu-item';
@@ -1200,20 +1205,12 @@ export function createLibraryInstance(viewer, opts) {
         item.appendChild(document.createTextNode(segs[i]));
         const path = segs.slice(0, i + 1).join('/');
         item.addEventListener('click', () => {
-          closeMid();
+          dropdown.close();
           openDir(path);
         });
         midMenu.appendChild(item);
       }
-      midBtn.addEventListener('click', () => {
-        if (midMenu.style.display !== 'none') {
-          closeMid();
-          return;
-        }
-        midMenu.style.display = '';
-        document.addEventListener('pointerdown', onMidOutside);
-        document.addEventListener('keydown', onMidKey);
-      });
+      dropdown.attachTrigger(midBtn);
       midWrap.appendChild(midBtn);
       midWrap.appendChild(midMenu);
       crumbsElem.appendChild(midWrap);
@@ -4334,20 +4331,33 @@ export function createLibraryInstance(viewer, opts) {
   folderMenu.setAttribute('role', 'menu');
   folderMenu.style.display = 'none';
   const previewClose = (/** @type {boolean} */ on) => viewer._tabStripElem?.classList.toggle('scribe-tab-close-preview', on);
-  /** @param {PointerEvent} e */
-  const onFolderMenuOutside = (e) => {
-    if (!folderMenu.contains(/** @type {Node} */ (e.target))) closeFolderMenu();
-  };
-  /** @param {KeyboardEvent} e */
-  const onFolderMenuKey = (e) => {
-    if (e.key === 'Escape') closeFolderMenu();
-  };
-  const closeFolderMenu = () => {
-    folderMenu.style.display = 'none';
-    previewClose(false);
-    document.removeEventListener('pointerdown', onFolderMenuOutside);
-    document.removeEventListener('keydown', onFolderMenuKey);
-  };
+  /** @type {?HTMLElement} */
+  let revealItem = null;
+  const folderDropdown = createDropdown({
+    show: (anchor) => {
+      if (!store) return null;
+      // The shell learns a folder's location only from the picker, so a folder picked under an earlier version has none.
+      if (revealItem) {
+        const known = folderDirs.has(store.root.name);
+        revealItem.classList.toggle('disabled', !known);
+        revealItem.title = known ? '' : 'Available after the folder is picked again with Open Folder…';
+      }
+      const host = viewer.pdfViewerElem;
+      if (folderMenu.parentElement !== host) host.appendChild(folderMenu);
+      const hostRect = host.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      folderMenu.style.left = `${Math.max(4, anchorRect.left - hostRect.left)}px`;
+      folderMenu.style.top = `${anchorRect.bottom - hostRect.top + 4}px`;
+      folderMenu.style.display = '';
+      return folderMenu;
+    },
+    hide: () => {
+      folderMenu.style.display = 'none';
+      previewClose(false);
+    },
+    rows: '.scribe-library-menu-item',
+  });
+  if (homeTabChev) folderDropdown.attachTrigger(homeTabChev);
   /** @param {string} svg @param {string} label @param {() => void} onPick */
   const addFolderMenuItem = (svg, label, onPick) => {
     const item = document.createElement('div');
@@ -4358,7 +4368,7 @@ export function createLibraryInstance(viewer, opts) {
     if (glyph) glyph.style.cssText = 'width:15px;height:15px;';
     item.appendChild(document.createTextNode(label));
     item.addEventListener('click', () => {
-      closeFolderMenu();
+      folderDropdown.close();
       onPick();
     });
     folderMenu.appendChild(item);
@@ -4369,8 +4379,6 @@ export function createLibraryInstance(viewer, opts) {
     sep.className = 'scribe-library-menu-sep';
     folderMenu.appendChild(sep);
   };
-  /** @type {?HTMLElement} */
-  let revealItem = null;
   if (isLibrary && shell?.revealFolder) {
     revealItem = addFolderMenuItem(REVEAL_SVG, shell.platform === 'darwin' ? 'Reveal in Finder' : shell.platform === 'win32' ? 'Show in Explorer' : 'Show in file manager', () => {
       if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name);
@@ -4386,30 +4394,6 @@ export function createLibraryInstance(viewer, opts) {
   const folderMenuCloseItem = isLibrary ? addFolderMenuItem(CLOSE_X_SVG, 'Close Folder', () => closeFolder()) : null;
   folderMenuCloseItem?.addEventListener('mouseenter', () => previewClose(true));
   folderMenuCloseItem?.addEventListener('mouseleave', () => previewClose(false));
-  /** @param {HTMLElement} anchor */
-  const toggleFolderMenu = (anchor) => {
-    if (folderMenu.style.display !== 'none') {
-      closeFolderMenu();
-      return;
-    }
-    if (!store) return;
-    // The shell learns a folder's location only from the picker, so a folder picked under an earlier version has none.
-    if (revealItem) {
-      const known = folderDirs.has(store.root.name);
-      revealItem.classList.toggle('disabled', !known);
-      revealItem.title = known ? '' : 'Available after the folder is picked again with Open Folder…';
-    }
-    const host = viewer.pdfViewerElem;
-    if (folderMenu.parentElement !== host) host.appendChild(folderMenu);
-    const hostRect = host.getBoundingClientRect();
-    const anchorRect = anchor.getBoundingClientRect();
-    folderMenu.style.left = `${Math.max(4, anchorRect.left - hostRect.left)}px`;
-    folderMenu.style.top = `${anchorRect.bottom - hostRect.top + 4}px`;
-    folderMenu.style.display = '';
-    setTimeout(() => document.addEventListener('pointerdown', onFolderMenuOutside), 0);
-    document.addEventListener('keydown', onFolderMenuKey);
-  };
-
   /** @type {?HTMLElement} */
   let openFolderItem = null;
   /** @type {?HTMLElement} */
@@ -4488,38 +4472,24 @@ export function createLibraryInstance(viewer, opts) {
     sortLabelElem.textContent = SORT_LABELS[sortMode];
     for (const item of sortItems) item.classList.toggle('on', item.dataset.mode === sortMode);
   };
-  const closeSortMenu = () => {
-    sortMenu.style.display = 'none';
-    document.removeEventListener('pointerdown', onSortOutside);
-    document.removeEventListener('keydown', onSortKey);
-  };
-  /** @param {PointerEvent} e */
-  const onSortOutside = (e) => {
-    if (!sortWrap.contains(/** @type {Node} */ (e.target))) closeSortMenu();
-  };
-  /** @param {KeyboardEvent} e */
-  const onSortKey = (e) => {
-    if (e.key !== 'Escape') return;
-    closeSortMenu();
-    sortBtn.focus();
-  };
-  sortBtn.addEventListener('click', () => {
-    if (sortMenu.style.display !== 'none') {
-      closeSortMenu();
-      return;
-    }
-    syncSortUI();
-    sortMenu.style.display = '';
-    document.addEventListener('pointerdown', onSortOutside);
-    document.addEventListener('keydown', onSortKey);
+  const sortDropdown = createDropdown({
+    show: () => {
+      syncSortUI();
+      sortMenu.style.display = '';
+      return sortMenu;
+    },
+    hide: () => {
+      sortMenu.style.display = 'none';
+    },
+    rows: '.scribe-library-menu-item',
   });
+  sortDropdown.attachTrigger(sortBtn);
   /** @param {Event} e */
   const onSortItemClick = (e) => {
     sortMode = /** @type {string} */ (/** @type {HTMLElement} */ (e.currentTarget).dataset.mode);
     sortDir = SORT_DEFAULT_DIR[sortMode];
     syncSortUI();
-    closeSortMenu();
-    sortBtn.focus();
+    sortDropdown.close();
     render();
   };
   for (const item of sortItems) item.addEventListener('click', onSortItemClick);
@@ -4537,8 +4507,7 @@ export function createLibraryInstance(viewer, opts) {
       } catch { /* localStorage unavailable. */ }
     }
     syncOthersItem();
-    closeSortMenu();
-    sortBtn.focus();
+    sortDropdown.close();
     render();
   });
 
@@ -4583,40 +4552,27 @@ export function createLibraryInstance(viewer, opts) {
     if (!fullTextResults) render();
   });
 
-  const closeNewMenu = () => {
-    newMenu.style.display = 'none';
-    document.removeEventListener('pointerdown', onNewOutside);
-    document.removeEventListener('keydown', onNewKey);
-  };
-  /** @param {PointerEvent} e */
-  const onNewOutside = (e) => {
-    if (!newWrap.contains(/** @type {Node} */ (e.target))) closeNewMenu();
-  };
-  /** @param {KeyboardEvent} e */
-  const onNewKey = (e) => {
-    if (e.key !== 'Escape') return;
-    closeNewMenu();
-    newBtn.focus();
-  };
-  newBtn.addEventListener('click', () => {
-    if (newMenu.style.display !== 'none') {
-      closeNewMenu();
-      return;
-    }
-    newMenu.style.display = '';
-    document.addEventListener('pointerdown', onNewOutside);
-    document.addEventListener('keydown', onNewKey);
+  const newDropdown = createDropdown({
+    show: () => {
+      newMenu.style.display = '';
+      return newMenu;
+    },
+    hide: () => {
+      newMenu.style.display = 'none';
+    },
+    rows: '.scribe-library-menu-item',
   });
+  newDropdown.attachTrigger(newBtn);
   newFolderItem.addEventListener('click', () => {
-    closeNewMenu();
+    newDropdown.close();
     createNewFolder();
   });
   newPdfItem.addEventListener('click', () => {
-    closeNewMenu();
+    newDropdown.close();
     if (store) imageInput.click();
   });
   addPdfsItem.addEventListener('click', () => {
-    closeNewMenu();
+    newDropdown.close();
     if (store) fileInput.click();
   });
   fileInput.addEventListener('change', () => {
@@ -4995,7 +4951,10 @@ export function createLibraryInstance(viewer, opts) {
       openFolderItem?.remove();
       closeFolderItem?.remove();
       rebuildItem?.remove();
-      closeFolderMenu();
+      folderDropdown.destroy();
+      sortDropdown.destroy();
+      newDropdown.destroy();
+      midDropdown?.destroy();
       folderMenu.remove();
       viewer.pdfViewerElem.removeEventListener('scribe-menu-state-change', syncFolderRows);
       if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;

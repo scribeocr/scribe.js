@@ -7,6 +7,7 @@ import {
   nativeLineEligible, nativeLineDrawBox, nativeLineHitAt, refreshEditedPages,
 } from '../controls/tools.js';
 import { pxPerPt } from '../viewerFillSign.js';
+import { createDropdown } from '../controls/dropdown.js';
 
 const lineIcon = (inner) => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"'
   + ` style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
@@ -477,56 +478,55 @@ export function buildBulkEditWorkspace(host, container) {
 
   /** @type {?HTMLElement} */
   let menuElem = null;
-  /** @type {?HTMLElement} */
-  let menuAnchor = null;
-  const closeMenu = () => {
-    if (!menuElem) return;
-    menuElem.remove();
-    menuElem = null;
-    menuAnchor = null;
-    document.removeEventListener('pointerdown', onMenuPointerDown, true);
-  };
-  function onMenuPointerDown(e) {
-    // A press on the open menu's own button falls through to the click that toggles it shut.
-    if (menuElem && !menuElem.contains(e.target) && !menuAnchor.contains(e.target)) closeMenu();
-  }
+  /** @type {WeakMap<HTMLElement, () => {items: Array<{value: string, html: string, checked?: boolean}>, onPick: (value: string) => void}>} */
+  const menuSpecs = new WeakMap();
+  const menuDropdown = createDropdown({
+    show: (anchor) => {
+      const spec = menuSpecs.get(anchor);
+      if (!spec) return null;
+      const { items, onPick } = spec();
+      const menu = document.createElement('div');
+      menu.className = 'scribe-am-mmenu';
+      menu.setAttribute('role', 'menu');
+      for (const item of items) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'scribe-am-mrow';
+        row.setAttribute('role', 'menuitemradio');
+        row.setAttribute('aria-checked', item.checked ? 'true' : 'false');
+        row.innerHTML = `<span class="scribe-am-mcheck">${CHECK_SVG}</span><span class="scribe-am-mcol"><span class="scribe-am-mname">${item.html}</span></span>`;
+        row.addEventListener('click', () => {
+          menuDropdown.close();
+          onPick(item.value);
+        });
+        menu.appendChild(row);
+      }
+      const panel = /** @type {HTMLElement} */ (container.closest('.scribe-am-panel') || container);
+      const panelRect = panel.getBoundingClientRect();
+      const aRect = anchor.getBoundingClientRect();
+      menu.style.position = 'absolute';
+      menu.style.left = `${Math.max(10, Math.min(Math.round(aRect.left - panelRect.left), panelRect.width - 218))}px`;
+      menu.style.top = `${Math.round(aRect.bottom - panelRect.top + 4)}px`;
+      panel.appendChild(menu);
+      menuElem = menu;
+      menu.querySelector('.scribe-am-mrow')?.focus();
+      return menu;
+    },
+    hide: () => {
+      menuElem?.remove();
+      menuElem = null;
+    },
+    rows: '.scribe-am-mrow',
+  });
   /**
-   * @param {HTMLElement} anchor
-   * @param {Array<{value: string, html: string, checked?: boolean}>} items
-   * @param {(value: string) => void} onPick
+   * Give `btn` a menu, built from `spec()` each time it opens.
+   * @param {HTMLElement} btn
+   * @param {() => {items: Array<{value: string, html: string, checked?: boolean}>, onPick: (value: string) => void}} spec
    */
-  function openMenu(anchor, items, onPick) {
-    const reclick = menuAnchor === anchor;
-    closeMenu();
-    if (reclick) return;
-    const menu = document.createElement('div');
-    menu.className = 'scribe-am-mmenu';
-    menu.setAttribute('role', 'menu');
-    for (const item of items) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.className = 'scribe-am-mrow';
-      row.setAttribute('role', 'menuitemradio');
-      row.setAttribute('aria-checked', item.checked ? 'true' : 'false');
-      row.innerHTML = `<span class="scribe-am-mcheck">${CHECK_SVG}</span><span class="scribe-am-mcol"><span class="scribe-am-mname">${item.html}</span></span>`;
-      row.addEventListener('click', () => {
-        closeMenu();
-        onPick(item.value);
-      });
-      menu.appendChild(row);
-    }
-    const panel = /** @type {HTMLElement} */ (container.closest('.scribe-am-panel') || container);
-    const panelRect = panel.getBoundingClientRect();
-    const aRect = anchor.getBoundingClientRect();
-    menu.style.position = 'absolute';
-    menu.style.left = `${Math.max(10, Math.min(Math.round(aRect.left - panelRect.left), panelRect.width - 218))}px`;
-    menu.style.top = `${Math.round(aRect.bottom - panelRect.top + 4)}px`;
-    panel.appendChild(menu);
-    menuElem = menu;
-    menuAnchor = anchor;
-    document.addEventListener('pointerdown', onMenuPointerDown, true);
-    menu.querySelector('.scribe-am-mrow')?.focus();
-  }
+  const attachMenu = (btn, spec) => {
+    menuSpecs.set(btn, spec);
+    menuDropdown.attachTrigger(btn);
+  };
 
   const ESC = {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
@@ -603,30 +603,36 @@ export function buildBulkEditWorkspace(host, container) {
     const def = PROPS.find((p) => p.id === rule.prop) || PROPS[0];
     const propBtn = selButton(esc(def.label), false);
     propBtn.title = 'Property';
-    propBtn.addEventListener('click', () => openMenu(propBtn, PROPS.map((p) => ({ value: p.id, html: esc(p.label), checked: p.id === rule.prop })), (id) => {
-      if (id === rule.prop) return;
-      const next = PROPS.find((p) => p.id === id);
-      rule.prop = id;
-      rule.op = next.ops[0];
-      const exProps = example ? propsOf(example.line, example.n) : null;
-      if (id === 'style') {
-        const seed = exProps ? styleRuleFor(exProps.style) : null;
-        rule.op = seed ? seed.op : next.ops[0];
-        rule.value = seed ? seed.value : topStyleSeen();
-      } else {
-        rule.value = exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '');
-      }
-      scan();
-      render();
-      paintMarks();
+    attachMenu(propBtn, () => ({
+      items: PROPS.map((p) => ({ value: p.id, html: esc(p.label), checked: p.id === rule.prop })),
+      onPick: (id) => {
+        if (id === rule.prop) return;
+        const next = PROPS.find((p) => p.id === id);
+        rule.prop = id;
+        rule.op = next.ops[0];
+        const exProps = example ? propsOf(example.line, example.n) : null;
+        if (id === 'style') {
+          const seed = exProps ? styleRuleFor(exProps.style) : null;
+          rule.op = seed ? seed.op : next.ops[0];
+          rule.value = seed ? seed.value : topStyleSeen();
+        } else {
+          rule.value = exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '');
+        }
+        scan();
+        render();
+        paintMarks();
+      },
     }));
     const opBtn = selButton(esc(rule.op), false);
     opBtn.title = 'Operator';
-    opBtn.addEventListener('click', () => openMenu(opBtn, def.ops.map((op) => ({ value: op, html: esc(op), checked: op === rule.op })), (op) => {
-      rule.op = op;
-      scan();
-      render();
-      paintMarks();
+    attachMenu(opBtn, () => ({
+      items: def.ops.map((op) => ({ value: op, html: esc(op), checked: op === rule.op })),
+      onPick: (op) => {
+        rule.op = op;
+        scan();
+        render();
+        paintMarks();
+      },
     }));
     row.append(propBtn, opBtn);
     if (rule.prop === 'font' || rule.prop === 'color' || rule.prop === 'style' || rule.prop === 'position') {
@@ -636,7 +642,7 @@ export function buildBulkEditWorkspace(host, container) {
             : esc(regionLabel(rule.value || 'top'));
       const valBtn = selButton(shown, true);
       valBtn.title = 'Value';
-      valBtn.addEventListener('click', () => {
+      attachMenu(valBtn, () => {
         let items;
         if (rule.prop === 'font') {
           items = [...fontsSeen.entries()].sort((a, b) => b[1] - a[1]).map(([f]) => ({ value: f, html: esc(f), checked: f === rule.value }));
@@ -647,12 +653,15 @@ export function buildBulkEditWorkspace(host, container) {
         } else {
           items = REGIONS.map((r) => ({ value: r.id, html: esc(r.label), checked: r.id === rule.value }));
         }
-        openMenu(valBtn, items, (v) => {
-          rule.value = v;
-          scan();
-          render();
-          paintMarks();
-        });
+        return {
+          items,
+          onPick: (v) => {
+            rule.value = v;
+            scan();
+            render();
+            paintMarks();
+          },
+        };
       });
       row.appendChild(valBtn);
     } else {
@@ -729,17 +738,20 @@ export function buildBulkEditWorkspace(host, container) {
       add.type = 'button';
       add.className = 'scribe-am-be-add';
       add.textContent = '+ Add condition';
-      add.addEventListener('click', () => openMenu(add, unused.map((p) => ({ value: p.id, html: esc(p.label) })), (id) => {
-        const def = PROPS.find((p) => p.id === id);
-        const exProps = example ? propsOf(example.line, example.n) : null;
-        if (id === 'style') {
-          rules.push(exProps ? styleRuleFor(exProps.style) : { prop: 'style', op: def.ops[0], value: topStyleSeen() });
-        } else {
-          rules.push({ prop: id, op: def.ops[0], value: exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '') });
-        }
-        scan();
-        render();
-        paintMarks();
+      attachMenu(add, () => ({
+        items: unused.map((p) => ({ value: p.id, html: esc(p.label) })),
+        onPick: (id) => {
+          const def = PROPS.find((p) => p.id === id);
+          const exProps = example ? propsOf(example.line, example.n) : null;
+          if (id === 'style') {
+            rules.push(exProps ? styleRuleFor(exProps.style) : { prop: 'style', op: def.ops[0], value: topStyleSeen() });
+          } else {
+            rules.push({ prop: id, op: def.ops[0], value: exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '') });
+          }
+          scan();
+          render();
+          paintMarks();
+        },
       }));
       wrap.appendChild(add);
     }
@@ -1002,7 +1014,7 @@ export function buildBulkEditWorkspace(host, container) {
   }
 
   function render() {
-    closeMenu();
+    menuDropdown.close();
     body.textContent = '';
     countEl = null;
     matchBlock = null;
@@ -1118,7 +1130,7 @@ export function buildBulkEditWorkspace(host, container) {
     teardown: () => {
       destroyed = true;
       endPicking();
-      closeMenu();
+      menuDropdown.close();
       clearTimeout(rescanTimer);
       if (paintRaf) cancelAnimationFrame(paintRaf);
       clearMarks();
