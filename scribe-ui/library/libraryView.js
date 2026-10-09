@@ -21,9 +21,15 @@ import { createDragReorder } from './libraryDragReorder.js';
 // eslint-disable-next-line max-len
 const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="3" y="3.5" width="3.8" height="17" rx="0.9"/><rect x="8.8" y="3.5" width="3.8" height="17" rx="0.9"/><path d="M13.7 3.9 17.4 3.1 20.9 19.7 17.2 20.5Z"/></svg>';
 // eslint-disable-next-line max-len
-const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>';
+const FOLDER_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1 4a1 1 0 0 1 1-1h3.59a1 1 0 0 1 .7.29L8 5h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z"/></svg>';
+// Drawn on a 16-unit grid with 1.5px strokes because it is only shown at 15-18px, where a 24-unit outline thins to a hairline and its tab all but disappears.
+// eslint-disable-next-line max-len
+const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/></svg>';
 // eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
+// Matches FOLDER_SVG's grid and stroke, for the start screen, where the two sit side by side.
+// eslint-disable-next-line max-len
+const FILE_16_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.75 2.5a.75.75 0 0 1 .75-.75h4.9l2.85 2.85v8.9a.75.75 0 0 1-.75.75H4.5a.75.75 0 0 1-.75-.75z"/><path d="M9.4 1.75v2.85h2.85"/></svg>';
 // eslint-disable-next-line max-len
 
 // eslint-disable-next-line max-len
@@ -35,14 +41,14 @@ const SORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const CHEVRON_SVG = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 // eslint-disable-next-line max-len
-const FOLDER_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M12 10.75v5M9.5 13.25h5"/></svg>';
+const FOLDER_PLUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><path d="M8 7.9v3.4M6.3 9.6h3.4"/></svg>';
 // eslint-disable-next-line max-len
 const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M17.3 3v3.7H13.6"/></svg>';
 // eslint-disable-next-line max-len
 const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
 
 // A PDF portfolio, drawn as two stacked sheets.
-// Stroked at 24 for rows, crumbs and cards, and filled at 16 for the pinned tab, as the library's own glyph is.
+// Stroked at 24 for rows and cards, and filled at 16 for the pinned tab, as the library's own glyph is.
 // eslint-disable-next-line max-len
 const PORTFOLIO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M8 4.5h9a1.5 1.5 0 0 1 1.5 1.5v9.5"/><rect x="4.5" y="8" width="11" height="12" rx="1.5"/><path d="M7.5 12.5h5M7.5 15.5h5"/></svg>';
 // eslint-disable-next-line max-len
@@ -88,7 +94,6 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {'library'|'portfolio'} kind
  * @property {string} name - The pinned tab's and the root crumb's label.
  * @property {string} glyph - The pinned tab's icon.
- * @property {string} [crumbGlyph] - An icon before the root crumb's label.
  * @property {?Object} [store] - A store to open at once; the library connects its own folder instead.
  * @property {'grid'|'list'|'compact'} [viewDefault]
  * @property {boolean} [previewDefault]
@@ -275,6 +280,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.selected { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
 .scribe-pdf-viewer .scribe-library-row:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-lgroup { height: 32px; box-sizing: border-box; display: flex; align-items: flex-end; padding: 0 18px 6px; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: color-mix(in srgb, var(--scribe-ink) 60%, transparent); user-select: none; }
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-row .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
@@ -382,12 +388,16 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
 .scribe-pdf-viewer .scribe-library-crumbs .cur { overflow: hidden; text-overflow: ellipsis; }
-.scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; gap: 6px; padding: 10px; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); position: relative; }
-.scribe-pdf-viewer .scribe-library-card.folder .fstrip img { width: 52px; height: 69px; object-fit: cover; object-position: top; background: #fff; border: 1px solid var(--scribe-line-strong); box-sizing: border-box; display: block; }
-.scribe-pdf-viewer .scribe-library-card.folder .fstrip .empty { height: 69px; display: flex; align-items: center; color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-card.folder .fstrip .empty .fi { width: 26px; height: 26px; }
-.scribe-pdf-viewer .scribe-library-card.folder.drop .fstrip::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--scribe-accent) 26%, transparent); pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-card.folder .title .fi { display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; justify-content: center; align-items: center; min-height: 89px; box-sizing: border-box; padding: 11px 10px 10px; }
+.scribe-pdf-viewer .scribe-library-fold { position: relative; display: block; flex: none; --fold-back: color-mix(in srgb, var(--scribe-ink) 12%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-surface)); --fold-line: color-mix(in srgb, var(--scribe-ink) 22%, transparent); }
+.scribe-pdf-viewer .scribe-library-fold > svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
+.scribe-pdf-viewer .scribe-library-fold > svg path { fill: var(--fold-back); stroke: var(--fold-line); stroke-width: 1; }
+.scribe-pdf-viewer .scribe-library-fold .paper { position: absolute; background: #fff; box-shadow: 0 0 0 1px var(--scribe-line-strong); overflow: hidden; }
+.scribe-pdf-viewer .scribe-library-fold .paper img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.scribe-pdf-viewer .scribe-library-fold .front { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; box-sizing: border-box; background: var(--fold-front); border: 1px solid var(--fold-line); border-radius: 2px 2px 4px 4px; }
+.scribe-pdf-viewer .scribe-library-fold.mini .front { height: 14px; border-radius: 1.5px 1.5px 2.5px 2.5px; }
+.scribe-pdf-viewer .scribe-library-fold.mini .paper { box-shadow: 0 0 0 .5px var(--scribe-line-strong); }
+.scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold { --fold-back: color-mix(in srgb, var(--scribe-accent) 30%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-accent) 18%, var(--scribe-surface)); --fold-line: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card.folder .meta.hasatt { opacity: 1; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .att, .scribe-pdf-viewer .scribe-library-row.folder .att { color: var(--scribe-ink-2); font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .att.bad, .scribe-pdf-viewer .scribe-library-row.folder .att.bad { color: var(--scribe-danger); }
@@ -396,12 +406,13 @@ const addLibraryStyles = () => {
 /* The folder name outranks its tally, so the tally gives up all of its width before the name gives up any. */
 .scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex-shrink: 1000; min-width: 0; overflow: hidden; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row .fi { width: 18px; height: 18px; color: var(--scribe-ink-2); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-row.cf .fthumb { width: 40px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); flex-shrink: 0; }
+/* 42px is a page thumbnail's width with its border, so names start on one edge whatever fills the slot. */
+.scribe-pdf-viewer .scribe-library-row.cf .fthumb { width: 42px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-rename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px 0; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { width: calc(100% - 20px); }
+.scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { width: 100%; }
 .scribe-pdf-viewer .scribe-library-row .scribe-library-rename { flex: 1 1 auto; width: 100%; }
 .scribe-pdf-viewer .scribe-library-card.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-card.other:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
@@ -410,7 +421,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.portfolio > img.thumb { display: none; }
 .scribe-pdf-viewer .scribe-library-card.portfolio .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-card.portfolio .fthumb .fi { width: 46px; height: 46px; }
-.scribe-pdf-viewer .scribe-library-crumbs > .fi { display: inline-flex; width: 16px; height: 16px; margin-right: 5px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-pv-plate { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; color: var(--scribe-ink-2); font-size: 13px; text-align: center; }
 .scribe-pdf-viewer .scribe-library-pv-plate > .fi { width: 56px; height: 56px; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-plate .n { font-weight: 600; color: var(--scribe-ink); overflow-wrap: anywhere; }
@@ -502,7 +512,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled:hover { background: none; }
 .scribe-pdf-viewer .scribe-library-crumb-root { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; margin-left: -6px; border-radius: 6px; border: none; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-crumb-root:hover { background: var(--scribe-hover); }
-.scribe-pdf-viewer .scribe-library-crumb-root .fi { display: inline-flex; width: 16px; height: 16px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-crumb-root .chev { width: 12px; height: 12px; color: var(--scribe-ink-3); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-crumb-root .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
@@ -1146,13 +1155,12 @@ export function createLibraryInstance(viewer, opts) {
         rootMenuBtn.className = 'scribe-library-crumb-root';
         rootMenuBtn.setAttribute('aria-haspopup', 'menu');
         rootMenuBtn.title = rootLabel;
-        rootMenuBtn.innerHTML = `<span class="fi">${FOLDER_SVG}</span><span class="nm"></span>${CHEVRON_SVG}`;
+        rootMenuBtn.innerHTML = `<span class="nm"></span>${CHEVRON_SVG}`;
         /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
         folderDropdown.attachTrigger(rootMenuBtn);
         crumbsElem.appendChild(rootMenuBtn);
         return;
       }
-      if (opts.crumbGlyph) crumbsElem.insertAdjacentHTML('beforeend', `<span class="fi">${opts.crumbGlyph}</span>`);
       crumbsElem.appendChild(document.createTextNode(rootLabel));
       return;
     }
@@ -1357,19 +1365,13 @@ export function createLibraryInstance(viewer, opts) {
       } else {
         const rowsElem = /** @type {?HTMLElement} */ (body.querySelector('[data-band="rows"]'));
         if (rowsElem) {
-          const items = [
-            ...shownDirs.map((d) => ['dir', d]),
-            ...shown.map((pe) => ['doc', pe]),
-            ...shownOthers.map((p) => ['other', p]),
-          ];
-          syncKeyedChildren(rowsElem, items, ([kind, v]) => {
+          syncKeyedChildren(rowsElem, listItems(shownDirs, shown, shownOthers), ([kind, v]) => {
+            if (kind === 'head') return v[0];
             if (kind === 'dir') return `${v}/`;
             return kind === 'doc' ? v[0] : v;
-          }, ([kind, v]) => {
-            if (kind === 'dir') return buildFolderRow(v);
-            return kind === 'doc' ? buildRow(v[0], v[1]) : buildOtherRow(v);
-          }, (node, [kind, v]) => {
-            if (kind === 'dir') updateFolderRow(node, v);
+          }, buildListItem, (node, [kind, v]) => {
+            if (kind === 'head') node.textContent = v[1];
+            else if (kind === 'dir') updateFolderRow(node, v);
             else if (kind === 'doc') updateRow(node, v[0], v[1]);
           });
           listColsRefit?.();
@@ -1410,7 +1412,7 @@ export function createLibraryInstance(viewer, opts) {
       const openAct = document.createElement('button');
       openAct.type = 'button';
       openAct.className = 'scribe-library-sheet-act';
-      openAct.innerHTML = `<div class="t"><span class="ic">${FILE_SVG}</span><span>Open…</span><span class="kbd"></span></div>`
+      openAct.innerHTML = `<div class="t"><span class="ic">${FILE_16_SVG}</span><span>Open…</span><span class="kbd"></span></div>`
         + '<div class="d">A PDF or a scanned document. Text in scans is recognized, so you can search and copy it.</div>';
       /** @type {HTMLElement} */ (openAct.querySelector('.kbd')).textContent = shortcutLabel('O');
       openAct.addEventListener('click', () => viewer.runMenuCommand('open'));
@@ -1441,7 +1443,7 @@ export function createLibraryInstance(viewer, opts) {
         for (const f of recents.slice(0, 5)) {
           const row = document.createElement('button');
           row.type = 'button';
-          row.innerHTML = `<span class="fi">${FILE_SVG}</span><span class="n"></span><span class="p"></span>`;
+          row.innerHTML = `<span class="fi">${FILE_16_SVG}</span><span class="n"></span><span class="p"></span>`;
           /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = f.label;
           /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = f.dir ?? '';
           row.title = f.dir ? `${f.dir}/${f.label}` : f.label;
@@ -2197,6 +2199,43 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
+   * Draw a folder with its first covers tucked inside.
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} covers
+   * @param {boolean} [mini] - Draw at the List view's thumbnail-slot size, with two covers.
+   */
+  const buildFold = (covers, mini = false) => {
+    const [w, h, pw, ph, gap, tops] = mini ? [40, 32, 14, 18, 4, [8, 7, 8]] : [150, 68, 40, 52, 6, [11, 9, 12]];
+    const papers = covers.slice(0, mini ? 2 : 3);
+    const fold = document.createElement('span');
+    fold.className = mini ? 'scribe-library-fold mini' : 'scribe-library-fold';
+    fold.style.width = `${w}px`;
+    fold.style.height = `${h}px`;
+    // The back panel and its tab are one path, so the tab's shoulder meets the panel without a seam.
+    const r = mini ? 2.5 : 4;
+    const tabLen = Math.round(w * 0.29) - r - 4;
+    const shoulder = mini ? '2 2.5' : '3.4 4.5';
+    fold.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><path d="M.5 ${h - 3.5}V${r + 1.5}a${r} ${r} 0 0 1 ${r}-${r}h${tabLen}`
+      + `a${r} ${r} 0 0 1 3.1 1.5l${shoulder}H${w - 0.5 - r}a${r} ${r} 0 0 1 ${r} ${r}V${h - 3.5}a3 3 0 0 1-3 3H3.5a3 3 0 0 1-3-3z"/></svg>`;
+    const lift = [tops, [tops[0], tops[2]], [tops[1]]][3 - papers.length] ?? [];
+    const left0 = (w - (papers.length * pw + (papers.length - 1) * gap)) / 2;
+    papers.forEach((entry, i) => {
+      const paper = document.createElement('span');
+      paper.className = 'paper';
+      paper.style.cssText = `left:${left0 + i * (pw + gap)}px;top:${lift[i]}px;width:${pw}px;height:${ph}px;`;
+      const img = document.createElement('img');
+      img.alt = '';
+      img.draggable = false;
+      setThumbSrc(img, entry);
+      paper.appendChild(img);
+      fold.appendChild(paper);
+    });
+    const front = document.createElement('span');
+    front.className = 'front';
+    fold.appendChild(front);
+    return fold;
+  };
+
+  /**
    * Refresh everything a folder card shows, leaving the shell in place.
    * A folder's covers and tallies come from its children, so this runs whenever any of them change.
    * @param {HTMLElement} card
@@ -2205,19 +2244,7 @@ export function createLibraryInstance(viewer, opts) {
   const updateFolderCard = (card, dirPath) => {
     card.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
     const stats = dirStatsOf(dirPath);
-    const strip = /** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip'));
-    strip.textContent = '';
-    if (stats.covers.length) {
-      for (const entry of stats.covers) {
-        const img = document.createElement('img');
-        img.alt = '';
-        img.draggable = false;
-        setThumbSrc(img, entry);
-        strip.appendChild(img);
-      }
-    } else {
-      strip.innerHTML = `<span class="empty"><span class="fi">${FOLDER_SVG}</span></span>`;
-    }
+    /** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')).replaceChildren(buildFold(stats.covers));
     const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
     meta.textContent = '';
     meta.classList.remove('hasatt');
@@ -2245,8 +2272,7 @@ export function createLibraryInstance(viewer, opts) {
     cardBody.className = 'body';
     const title = document.createElement('div');
     title.className = 'title';
-    title.innerHTML = `<span class="fi">${FOLDER_SVG}</span>`;
-    title.appendChild(document.createTextNode(dirPath.split('/').pop() || dirPath));
+    title.textContent = dirPath.split('/').pop() || dirPath;
     title.title = dirPath;
     cardBody.appendChild(title);
     const meta = document.createElement('div');
@@ -2489,6 +2515,7 @@ export function createLibraryInstance(viewer, opts) {
     const comfortable = viewMode === 'list';
     row.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
     const stats = dirStatsOf(dirPath);
+    if (comfortable) /** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')).replaceChildren(buildFold(stats.covers, true));
     const sum = /** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt'));
     sum.textContent = '';
     sum.classList.remove('hasatt');
@@ -2526,10 +2553,9 @@ export function createLibraryInstance(viewer, opts) {
     title.textContent = dirPath.split('/').pop() || dirPath;
     title.title = dirPath;
     if (comfortable) {
-      const icon = document.createElement('span');
-      icon.className = 'fthumb';
-      icon.innerHTML = `<span class="fi">${FOLDER_SVG}</span>`;
-      nm.appendChild(icon);
+      const slot = document.createElement('span');
+      slot.className = 'fthumb';
+      nm.appendChild(slot);
       const stack = document.createElement('span');
       stack.className = 'tt';
       stack.appendChild(title);
@@ -2538,7 +2564,6 @@ export function createLibraryInstance(viewer, opts) {
       stack.appendChild(meta);
       nm.appendChild(stack);
     } else {
-      nm.insertAdjacentHTML('beforeend', `<span class="fi">${FOLDER_SVG}</span>`);
       nm.appendChild(title);
       const cnt = document.createElement('span');
       cnt.className = 'cnt';
@@ -2644,6 +2669,35 @@ export function createLibraryInstance(viewer, opts) {
       openCardMenu(e.clientX, e.clientY, relPath, row);
     });
     return row;
+  };
+
+  /**
+   * The list views' items in display order, with their group headings.
+   * @param {string[]} shownDirs
+   * @param {Array<[string, import('./libraryStore.js').LibraryDocEntry]>} shown
+   * @param {string[]} shownOthers
+   */
+  const listItems = (shownDirs, shown, shownOthers) => [
+    // Heading keys start with NUL, which no path can contain.
+    ...(shownDirs.length ? [['head', ['\u0000folders', `Folders · ${shownDirs.length}`]]] : []),
+    ...shownDirs.map((d) => ['dir', d]),
+    ...(shownDirs.length && shown.length ? [['head', ['\u0000docs', `Documents · ${shown.length}`]]] : []),
+    ...shown.map((pe) => ['doc', pe]),
+    ...(shownOthers.length ? [['head', ['\u0000others', 'Other files']]] : []),
+    ...shownOthers.map((p) => ['other', p]),
+  ];
+
+  /** @param {ReturnType<typeof listItems>[number]} item */
+  const buildListItem = ([kind, v]) => {
+    if (kind === 'head') {
+      const heading = document.createElement('div');
+      heading.className = 'scribe-library-lgroup';
+      heading.dataset.key = v[0];
+      heading.textContent = v[1];
+      return heading;
+    }
+    if (kind === 'dir') return buildFolderRow(v);
+    return kind === 'doc' ? buildRow(v[0], v[1]) : buildOtherRow(v);
   };
 
   // --- Folder operations --------------------------------------------------
@@ -2972,7 +3026,7 @@ export function createLibraryInstance(viewer, opts) {
       });
       measure(head);
       const nameWidths = [];
-      for (const row of rows.children) {
+      for (const row of rows.querySelectorAll(':scope > .scribe-library-row')) {
         measure(row);
         nameWidths.push(row.children[0].getBoundingClientRect().width);
       }
@@ -3154,7 +3208,7 @@ export function createLibraryInstance(viewer, opts) {
         const probe = w.map((n, j) => (j === i ? 'max-content' : `${n}px`));
         host.style.setProperty('--scribe-library-cols', probe.join(' '));
         let fit = cell.getBoundingClientRect().width;
-        for (const row of rows.children) {
+        for (const row of rows.querySelectorAll(':scope > .scribe-library-row')) {
           const rc = row.children[i];
           if (rc) fit = Math.max(fit, rc.getBoundingClientRect().width);
         }
@@ -3195,9 +3249,7 @@ export function createLibraryInstance(viewer, opts) {
       if (e.key === 'Enter') onHeaderActivate(e);
     });
     host.appendChild(head);
-    for (const dir of shownDirs) rows.appendChild(buildFolderRow(dir));
-    for (const [relPath, entry] of shown) rows.appendChild(buildRow(relPath, entry));
-    for (const relPath of shownOthers) rows.appendChild(buildOtherRow(relPath));
+    for (const item of listItems(shownDirs, shown, shownOthers)) rows.appendChild(buildListItem(item));
     host.appendChild(rows);
     // Measure the scrolling host, never the header, which reports its own overflow once it carries wide tracks.
     const avail = availCols();
@@ -4972,7 +5024,7 @@ export function createLibraryInstance(viewer, opts) {
  */
 export function installLibrary(viewer) {
   return createLibraryInstance(viewer, {
-    kind: 'library', name: 'Library', glyph: FOLDER_SVG, persistPrefs: true,
+    kind: 'library', name: 'Library', glyph: FOLDER_TAB_SVG, persistPrefs: true,
   });
 }
 
@@ -5000,7 +5052,6 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
     kind: 'portfolio',
     name,
     glyph: PORTFOLIO_TAB_SVG,
-    crumbGlyph: PORTFOLIO_SVG,
     store,
     viewDefault: 'compact',
     previewDefault: true,
