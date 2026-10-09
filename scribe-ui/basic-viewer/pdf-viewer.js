@@ -180,6 +180,14 @@ const ICON_ROTATE_RIGHT = appMenuIcon('<path d="M11.8 6A5 5 0 1 1 7.5 3.5h2M7.5 
  * @typedef {'width' | 'height' | 'page' | ((imgDims: {width: number, height: number}, viewerDims: {width: number, height: number}) => FitResult)} FitMode
  */
 
+/**
+ * The menu state a desktop shell mirrors in its native menus and window controls.
+ * @typedef {{docOpen: boolean, combine: boolean, split: boolean,
+ *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
+ *   fieldsEnabled: boolean, fieldsChecked: boolean, library: boolean, libraryConnected: boolean, closeFolderLabel: string,
+ *   closeTab: boolean, folderName: ?string}} MenuState
+ */
+
 // A release still travelling down this fast, in px/ms, closes the panel.
 const FLICK_SPEED = 0.45;
 const FLICK_WINDOW_MS = 100;
@@ -766,6 +774,11 @@ class ScribePDFViewer {
     this._lastPinned = null;
     /** @type {?('focused'|'global'|'off')} The keyboard scope a pinned surface in front displaced, restored when it leaves. */
     this._keyboardScopeBehindSurface = null;
+    /**
+     * Whether this viewer's window is the one a relaunch resumes.
+     * Only a desktop shell with several windows ever turns it off.
+     */
+    this._resumeOwner = true;
     /** @type {?((event: DragEvent) => ?string)} */
     this._dragOverlayLabelFor = null;
     /** @type {?(() => void)} */
@@ -1235,6 +1248,18 @@ class ScribePDFViewer {
     if (this._open) {
       this._teardownCallbacks.push(this._open.installOpenShortcut());
     }
+
+    const onStorage = (/** @type {StorageEvent} */ e) => {
+      if (e.key === THEME_STORAGE_KEY && this._themeSetting) {
+        this._themeSetting = this._readThemeSetting();
+        this._applyTheme();
+      } else if (e.key === PAGE_LAYOUT_STORAGE_KEY) {
+        this._pageLayoutSetting = this._readPageLayoutSetting();
+        this._applyPageLayoutPref();
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    this._teardownCallbacks.push(() => window.removeEventListener('storage', onStorage));
 
     // A loaded document hides the empty-state drop zone, and a library or portfolio surface stands in front of it, so neither can catch a dropped PDF.
     // Show a dedicated drag-over overlay during a file drag instead, and open the dropped PDF in a new tab.
@@ -4044,6 +4069,15 @@ class ScribePDFViewer {
   }
 
   /**
+   * Tell the viewer whether its window is the one a relaunch resumes, for a desktop shell with several windows.
+   * @param {boolean} on
+   */
+  setResumeOwner(on) {
+    this._resumeOwner = on;
+    if (on) this._library?.syncResume?.();
+  }
+
+  /**
    * Close what is in front, for a desktop shell's close-tab shortcut.
    * The target is the active document's tab, or a closable pinned surface such as a portfolio.
    * Refused when the library itself is in front, or when a viewer without a library would be left with no document.
@@ -4147,10 +4181,7 @@ class ScribePDFViewer {
    * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
    * With a pinned surface in front the document items read as having no document.
    * `closeTab` says whether a close-tab command would close a tab or surface, or should fall to closing the window.
-   * @returns {{docOpen: boolean, combine: boolean, split: boolean,
-   *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
-   *   fieldsEnabled: boolean, fieldsChecked: boolean, library: boolean, libraryConnected: boolean, closeFolderLabel: string,
-   *   closeTab: boolean}}
+   * @returns {MenuState}
    */
   getMenuState() {
     const front = this._frontSurface();
@@ -4169,6 +4200,8 @@ class ScribePDFViewer {
       closeFolderLabel: this._library?.closeFolderLabel?.() ?? 'Close Folder',
       // Mirrors closeActiveDocument's refusals.
       closeTab: front ? !!front.close : this._activeTab >= 0 && (this._libraryInstances.length > 0 || this._tabs.length >= 2),
+      // Lets a shell with several windows find the one that has a folder open.
+      folderName: this._library?.folderName?.() || null,
     };
   }
 
@@ -5581,12 +5614,13 @@ class ScribePDFViewer {
    * @param {object} [options]
    * @param {boolean} [options.terminateDoc] - Force-terminate (`true`) or force-retain (`false`) the attached document,
    *   overriding the default (terminate only a document the viewer created).
+   * @param {boolean} [options.resume=true] - Whether this viewer's window is the one a relaunch resumes.
    */
-  async destroy({ terminateDoc } = {}) {
+  async destroy({ terminateDoc, resume = true } = {}) {
     this._destroyed = true;
     for (const inst of this._libraryInstances) {
       // Flush unsaved library sidecars while the docs are still alive.
-      try { await inst.saveAllDirty(); } catch { /* Best effort; teardown continues. */ }
+      try { await inst.saveAllDirty({ resume }); } catch { /* Best effort; teardown continues. */ }
     }
     if (this._library) {
       this._library.destroy();

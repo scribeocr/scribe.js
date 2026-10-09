@@ -4,9 +4,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isPackaged: process.argv.includes('--scribe-packaged'),
   launchedWithFile: process.argv.includes('--scribe-launch-file'),
+  // Set for a window opened by New Window, which starts empty rather than resuming the last folder and tabs.
+  freshWindow: process.argv.includes('--scribe-fresh-window'),
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
   getFolderPath: (name) => ipcRenderer.invoke('folder-path', name),
   revealFolder: (name) => ipcRenderer.send('reveal-folder', name),
+  focusFolderWindow: (name) => ipcRenderer.send('focus-folder-window', name),
+  newWindow: () => ipcRenderer.send('new-window'),
+  onWindowFocused: (callback) => ipcRenderer.on('window-focused', (_event, on) => callback(on)),
   onLoadFile: (callback) => ipcRenderer.on('load-file', (_event, data) => callback(data)),
   onNavigate: (callback) => ipcRenderer.on('viewer-navigate', (_event, data) => callback(data)),
   onHighlight: (callback) => ipcRenderer.on('viewer-highlight', (_event, data) => callback(data)),
@@ -22,6 +27,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRecentFiles: (callback) => ipcRenderer.on('recent-files', (_event, files) => callback(files)),
   openRecent: (index) => ipcRenderer.send('open-recent', index),
   clearRecent: () => ipcRenderer.send('clear-recent'),
-  onAppTeardown: (callback) => ipcRenderer.on('app-teardown', () => callback()),
+  onAppTeardown: (callback) => ipcRenderer.on('app-teardown', (_event, data) => callback(data)),
   appTeardownDone: () => ipcRenderer.send('app-teardown-done'),
 });

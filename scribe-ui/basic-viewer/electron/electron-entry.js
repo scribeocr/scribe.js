@@ -2,6 +2,7 @@ import {
   ScribeViewer, pdfViewer, handleHighlights, handleLoadFile,
 } from '../example-app.js';
 import { scribe } from '../pdf-viewer.js';
+import { shortcutLabel } from '../../js/platform.js';
 
 // The shell serves COOP/COEP headers, so PDF bytes can be shared across workers instead of cloned per worker.
 scribe.opt.usePdfSharedBuffer = true;
@@ -99,12 +100,23 @@ if (platform !== 'darwin') {
       window.electronAPI.toggleFullScreen();
       return;
     }
-    if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === 'w' || e.key === 'W')) {
+    if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    if (e.key === 'w' || e.key === 'W') {
       e.preventDefault();
       // A refusal stands, unlike ⌘W on macOS, since Ctrl+W closes no window on these platforms.
       pdfViewer.closeActiveDocument();
+    } else if (e.key === 'n' || e.key === 'N') {
+      e.preventDefault();
+      window.electronAPI.newWindow();
     }
   });
+  const menu = pdfViewer._appMenu;
+  if (menu) {
+    const row = menu.addAction('New window', '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"'
+      + ' stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>',
+    () => window.electronAPI.newWindow(), shortcutLabel('N'));
+    menu.menuElem.insertBefore(row, menu.menuElem.firstChild);
+  }
 }
 
 // Use a queue to ensure events are processed sequentially and fully awaited.
@@ -141,10 +153,12 @@ window.electronAPI.onRecentFiles((files) => pdfViewer.setRecentFiles(
   () => window.electronAPI.clearRecent(),
 ));
 
+window.electronAPI.onWindowFocused((on) => pdfViewer.setResumeOwner(on));
+
 // destroy flushes dirty library sidecars, which needs the documents and their worker pools still alive, so it must run before terminate.
-window.electronAPI.onAppTeardown(async () => {
+window.electronAPI.onAppTeardown(async ({ resume = true } = {}) => {
   try {
-    await pdfViewer.destroy();
+    await pdfViewer.destroy({ resume });
     await scribe.terminate();
   } catch { /* Best effort: the shell proceeds regardless. */ }
   window.electronAPI.appTeardownDone();

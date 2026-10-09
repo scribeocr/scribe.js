@@ -123,7 +123,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} docOpened
  * @property {() => void} emptied
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
- * @property {() => Promise<void>} saveAllDirty
+ * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
+ * @property {() => void} [syncResume] Document library only: rewrite the keys a relaunch reads from, once this window is the one it resumes.
  * @property {() => void} destroy
  */
 
@@ -606,7 +607,7 @@ export function createLibraryInstance(viewer, opts) {
    *   view: ?{zoom: number, sx: number, sy: number}, lib: number}}
    */
   let resumeRecord = null;
-  if (isLibrary) {
+  if (isLibrary && !shell?.freshWindow) {
     try {
       const rawResume = resumeStorage.getItem(RESUME_STORAGE_KEY);
       const parsedResume = rawResume ? JSON.parse(rawResume) : null;
@@ -1028,7 +1029,7 @@ export function createLibraryInstance(viewer, opts) {
    */
   const writeResumeRecord = () => {
     // Only the library's tabs come back after a reload, because a portfolio's members are gone with it.
-    if (!isLibrary || restoringTabs) return;
+    if (!isLibrary || restoringTabs || !viewer._resumeOwner) return;
     try {
       const record = buildResumeRecord();
       if (!record) {
@@ -3784,8 +3785,38 @@ export function createLibraryInstance(viewer, opts) {
   // The gate opening is not an event, so a slow tick is what resumes warm work once the reader goes idle.
   const warmTimer = window.setInterval(() => { ingest?.start(); }, 15 * 1000);
 
+  /** @type {?(() => void)} */
+  let releaseFolderLock = null;
+  /**
+   * Take the lock that marks a folder open in this window, or report that another window holds it.
+   * @param {string} name
+   * @returns {Promise<boolean>}
+   */
+  const holdFolderLock = async (name) => {
+    releaseFolderLock?.();
+    releaseFolderLock = null;
+    if (!navigator.locks) return true;
+    const known = await shell?.getFolderPath?.(name).catch(() => null);
+    const key = `scribe-folder:${known?.path || name}`;
+    return new Promise((resolve) => {
+      navigator.locks.request(key, { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve(false);
+          return undefined;
+        }
+        resolve(true);
+        // The lock is held as long as this promise is pending, so the release is what settles it.
+        return new Promise((release) => { releaseFolderLock = release; });
+      }).catch(() => resolve(false));
+    });
+  };
   /** @param {LibraryStore} s */
   const openLibrary = async (s) => {
+    if (isLibrary && !(await holdFolderLock(s.root.name))) {
+      viewer._showToast(`“${s.root.name}” is already open in another window.`);
+      shell?.focusFolderWindow?.(s.root.name);
+      return;
+    }
     store = s;
     sessions.connect(s);
     currentDir = '';
@@ -3807,6 +3838,8 @@ export function createLibraryInstance(viewer, opts) {
       manifest = null;
       index = new LibraryIndex();
       sessions.reset();
+      releaseFolderLock?.();
+      releaseFolderLock = null;
       viewer._showToast(`Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
       render();
       syncBarForStore();
@@ -3922,7 +3955,9 @@ export function createLibraryInstance(viewer, opts) {
     viewer._renderTabs();
     positionSurface();
     recentFolders = await LibraryStore.recentFolders();
-    try { resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name); } catch { /* Storage unavailable. */ }
+    if (viewer._resumeOwner) {
+      try { resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name); } catch { /* Storage unavailable. */ }
+    }
     shell?.getFolderPath?.(store.root.name).then((/** @type {any} */ r) => {
       if (r?.dir && store) folderDirs.set(store.root.name, r.dir);
     }).catch(() => {});
@@ -4216,6 +4251,8 @@ export function createLibraryInstance(viewer, opts) {
     manifest = null;
     ingest = null;
     index = new LibraryIndex();
+    releaseFolderLock?.();
+    releaseFolderLock = null;
     // A folder's documents save their notes inside it, so they cannot stay open once it closes.
     // The active one closes last, so no document in between is attached only to be closed in turn.
     const activeTab = viewer._tabs[viewer._activeTab];
@@ -4231,7 +4268,9 @@ export function createLibraryInstance(viewer, opts) {
     syncFolderRows();
     viewer._notifyMenuState();
     writeResumeRecord();
-    try { resumeStorage.removeItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
+    if (viewer._resumeOwner) {
+      try { resumeStorage.removeItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
+    }
     if (visible) render();
     return folderTabs.length;
   };
@@ -4819,11 +4858,22 @@ export function createLibraryInstance(viewer, opts) {
       writeResumeRecord();
     },
     saveTabIfDirty,
-    saveAllDirty: async () => {
+    saveAllDirty: async ({ resume = true } = {}) => {
       // The desktop shell destroys its window without a pagehide, so teardown is the last chance to record the open tabs.
+      // The shell's teardown decides which window a relaunch resumes, overriding the role that focus gave.
+      viewer._resumeOwner = resume;
       writeResumeRecord();
       for (const tab of viewer._tabs) await saveTabIfDirty(tab);
     },
+    ...(isLibrary ? {
+      syncResume: () => {
+        try {
+          if (store) resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name);
+          else resumeStorage.removeItem(OPEN_FOLDER_KEY);
+        } catch { /* Storage unavailable. */ }
+        writeResumeRecord();
+      },
+    } : {}),
   });
   viewer._libraryInstances.push(api);
 
@@ -4861,7 +4911,7 @@ export function createLibraryInstance(viewer, opts) {
     // A launch by file opens only that file, and a folder closed before quitting stays closed.
     let openName = null;
     try { openName = resumeStorage.getItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
-    const handle = shell?.launchedWithFile || !openName ? null : (recentFolders.find((h) => h.name === openName) ?? null);
+    const handle = shell?.launchedWithFile || shell?.freshWindow || !openName ? null : (recentFolders.find((h) => h.name === openName) ?? null);
     if (handle) {
       const s = new LibraryStore(handle);
       if ((await s.permissionState()) === 'granted') {
@@ -4894,6 +4944,8 @@ export function createLibraryInstance(viewer, opts) {
       destroyed = true;
       drag.cancel();
       if (visible) hideSurface();
+      releaseFolderLock?.();
+      releaseFolderLock = null;
       closeCardMenu();
       ingest?.cancel();
       resizeObserver.disconnect();
