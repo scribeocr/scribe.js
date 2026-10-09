@@ -1841,6 +1841,7 @@ export function createLibraryInstance(viewer, opts) {
       // Files Scribe cannot open keep the verb in place, greyed, so the menu reads the same on every row.
       if (!paths.length) openItem.classList.add('disabled');
       addItem(all.length === 1 ? 'Save a copy…' : 'Save copies…', false, () => saveCopies(all));
+      addItem(all.length === 1 ? 'Copy name' : 'Copy names', false, () => navigator.clipboard?.writeText(all.map(titleOf).join('\n')).catch(() => {}));
       addIndexItem(paths);
       addRecognizeItem(paths);
       const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
