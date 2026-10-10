@@ -394,11 +394,11 @@ const addLibraryStyles = () => {
 @keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
 .scribe-pdf-viewer .scribe-library-crumbs { display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
-.scribe-pdf-viewer .scribe-library-crumb:first-child { margin-left: -7px; }
+.scribe-pdf-viewer .scribe-library-crumbs > .scribe-library-crumb:first-child { margin-left: -7px; }
 .scribe-pdf-viewer .scribe-library-crumb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
-.scribe-pdf-viewer .scribe-library-crumbs .cur { overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-crumbs .cur { padding-left: 7px; overflow: hidden; text-overflow: ellipsis; }
 .scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; justify-content: center; align-items: center; min-height: 89px; box-sizing: border-box; padding: 11px 10px 10px; }
 .scribe-pdf-viewer .scribe-library-fold { position: relative; display: block; flex: none; --fold-back: color-mix(in srgb, var(--scribe-ink) 12%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-surface)); --fold-line: color-mix(in srgb, var(--scribe-ink) 22%, transparent); }
 .scribe-pdf-viewer .scribe-library-fold > svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
@@ -422,9 +422,11 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-rename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px 0; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { width: 100%; }
-.scribe-pdf-viewer .scribe-library-row .scribe-library-rename { flex: 1 1 auto; width: 100%; }
+.scribe-pdf-viewer .scribe-library-rename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px -4px; width: calc(100% + 8px); min-width: 0; }
+.scribe-pdf-viewer .scribe-library-card .title:has(> .scribe-library-rename), .scribe-pdf-viewer .scribe-library-row .nm:has(.scribe-library-rename) { overflow: visible; }
+.scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { display: block; field-sizing: content; max-height: calc(2lh + 2px); resize: none; overflow: hidden; }
+.scribe-pdf-viewer .scribe-library-row .scribe-library-rename { flex: 1 1 auto; font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-row .tt:has(> .scribe-library-rename) { flex-grow: 1; }
 .scribe-pdf-viewer .scribe-library-card.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-card.other:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
 .scribe-pdf-viewer .scribe-library-card.other .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-3); }
@@ -2740,7 +2742,8 @@ export function createLibraryInstance(viewer, opts) {
   // --- Folder operations --------------------------------------------------
 
   /**
-   * Swap the folder's title text for an input, committing on Enter or blur and cancelling on Escape.
+   * Swap the folder's title text for a text field.
+   * Enter or blur commits the new name, and Escape cancels.
    * A `fresh` folder was just created under a placeholder name, so cancelling removes it again while it is still empty.
    * @param {string} dirPath
    * @param {HTMLElement} hostElem - The folder's grid card or list row.
@@ -2748,7 +2751,8 @@ export function createLibraryInstance(viewer, opts) {
    */
   const startFolderRename = (dirPath, hostElem, fresh = false) => {
     if (readOnly || renameEditing || fsOpBusy) return;
-    const target = hostElem.classList.contains('scribe-library-card')
+    const inGrid = hostElem.classList.contains('scribe-library-card');
+    const target = inGrid
       ? [...(hostElem.querySelector('.body .title')?.childNodes ?? [])].find((n) => n.nodeType === Node.TEXT_NODE)
       : hostElem.querySelector('.nm .t');
     if (!target) return;
@@ -2758,13 +2762,24 @@ export function createLibraryInstance(viewer, opts) {
     delete hostElem.dataset.dirTarget;
     delete hostElem.dataset.key;
     const oldName = dirPath.split('/').pop() || dirPath;
-    const input = document.createElement('input');
+    // A grid title wraps, so its field is a textarea that breaks at the same points.
+    const input = document.createElement(inGrid ? 'textarea' : 'input');
     input.className = 'scribe-library-rename';
     input.value = oldName;
     input.setAttribute('aria-label', 'Folder name');
     target.replaceWith(input);
     input.focus();
     input.select();
+    // Focusing and selecting leave a long name scrolled to its end, but the title showed its start.
+    input.scrollLeft = 0;
+    input.scrollTop = 0;
+    // Unlike an input, a textarea keeps pasted line breaks, which no folder name can hold.
+    input.addEventListener('input', () => {
+      if (!input.value.includes('\n')) return;
+      const { selectionStart, selectionEnd } = input;
+      input.value = input.value.replaceAll('\n', ' ');
+      input.setSelectionRange(selectionStart, selectionEnd);
+    });
     let done = false;
     /** @param {boolean} save @param {boolean} [viaEnter] */
     const finish = async (save, viaEnter = false) => {
@@ -2774,7 +2789,7 @@ export function createLibraryInstance(viewer, opts) {
         const problem = folderNameProblem(name);
         if (!problem) {
           done = true;
-          /** @type {HTMLInputElement} */ (input).disabled = true;
+          input.disabled = true;
           renameEditing = false;
           await commitFolderRename(dirPath, name);
           return;
@@ -2800,7 +2815,7 @@ export function createLibraryInstance(viewer, opts) {
       }
       render();
     };
-    input.addEventListener('keydown', (e) => {
+    /** @type {HTMLElement} */ (input).addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
         finish(true, true);
