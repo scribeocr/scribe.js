@@ -12,7 +12,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   focusFolderWindow: (name) => ipcRenderer.send('focus-folder-window', name),
   newWindow: () => ipcRenderer.send('new-window'),
   onWindowFocused: (callback) => ipcRenderer.on('window-focused', (_event, on) => callback(on)),
+  onFoldersOpenElsewhere: (callback) => ipcRenderer.on('folders-open-elsewhere', (_event, names) => callback(names)),
   onLoadFile: (callback) => ipcRenderer.on('load-file', (_event, data) => callback(data)),
+  onFileMissing: (callback) => ipcRenderer.on('file-missing', (_event, data) => callback(data)),
   onNavigate: (callback) => ipcRenderer.on('viewer-navigate', (_event, data) => callback(data)),
   onHighlight: (callback) => ipcRenderer.on('viewer-highlight', (_event, data) => callback(data)),
   onMenuAction: (callback) => ipcRenderer.on('menu-action', (_event, id) => callback(id)),
@@ -27,6 +29,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onRecentFiles: (callback) => ipcRenderer.on('recent-files', (_event, files) => callback(files)),
   openRecent: (index) => ipcRenderer.send('open-recent', index),
   clearRecent: () => ipcRenderer.send('clear-recent'),
+  removeRecent: (index) => ipcRenderer.send('remove-recent', index),
   onAppTeardown: (callback) => ipcRenderer.on('app-teardown', (_event, data) => callback(data)),
   appTeardownDone: () => ipcRenderer.send('app-teardown-done'),
 });

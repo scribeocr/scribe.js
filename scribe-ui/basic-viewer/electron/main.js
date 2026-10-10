@@ -69,6 +69,10 @@ const stateOf = (webContents) => {
 const broadcast = (channel, payload) => {
   for (const s of windows.values()) if (!s.win.isDestroyed()) s.win.webContents.send(channel, payload);
 };
+function pushFoldersOpenElsewhere() {
+  const open = [...windows.values()].filter((s) => !s.win.isDestroyed());
+  for (const s of open) s.win.webContents.send('folders-open-elsewhere', open.filter((o) => o !== s && o.folderName).map((o) => o.folderName));
+}
 
 // The Linux window is transparent so the renderer can round its corners the way GNOME rounds every window.
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
@@ -94,9 +98,33 @@ const overlayColors = (dark) => (dark
   ? { color: '#1c2028', symbolColor: '#e8ebf2' }
   : { color: '#ffffff', symbolColor: '#1f2530' });
 
-function pushRecentFiles() {
+/** @param {NodeJS.ErrnoException} err */
+const isGone = (err) => err.code === 'ENOENT' || err.code === 'ENOTDIR';
+/** @param {string} file */
+const fileKey = (file) => (process.platform === 'win32' ? file.toLowerCase() : file);
+
+// macOS's Open Recent and the Windows jump list take additions only, so a removal rebuilds them from the kept list.
+/** @param {string[]} files */
+function setRecentFiles(files) {
+  shellState.recentFiles = files;
+  saveShellState();
+  app.clearRecentDocuments();
+  for (const f of [...files].reverse()) app.addRecentDocument(f);
+}
+
+async function pushRecentFiles() {
+  const present = [];
+  for (const f of shellState.recentFiles) {
+    try {
+      await fs.promises.access(f);
+      present.push(f);
+    } catch (err) {
+      if (!isGone(err)) present.push(f);
+    }
+  }
+  if (present.length !== shellState.recentFiles.length) setRecentFiles(present);
   const home = app.getPath('home');
-  broadcast('recent-files', shellState.recentFiles.map((f) => {
+  broadcast('recent-files', present.map((f) => {
     const dir = path.dirname(f);
     return { label: path.basename(f), dir: dir === home || dir.startsWith(home + path.sep) ? `~${dir.slice(home.length)}` : dir };
   }));
@@ -104,10 +132,7 @@ function pushRecentFiles() {
 
 // Feeds the macOS Open Recent menu, the Windows jump list, and the in-window menu's Open recent submenu.
 function recordRecentFile(file) {
-  // Windows paths compare case-insensitively, so a re-open with different casing must not duplicate the entry.
-  const key = process.platform === 'win32' ? file.toLowerCase() : file;
-  shellState.recentFiles = [file, ...shellState.recentFiles
-    .filter((f) => (process.platform === 'win32' ? f.toLowerCase() : f) !== key)].slice(0, 10);
+  shellState.recentFiles = [file, ...shellState.recentFiles.filter((f) => fileKey(f) !== fileKey(file))].slice(0, 10);
   saveShellState();
   app.addRecentDocument(file);
   pushRecentFiles();
@@ -275,6 +300,7 @@ function createWindow({ fresh = false } = {}) {
     pushRecentFiles();
     // A focus change that arrived before the renderer listened was lost, so the window's role is restated here.
     win.webContents.send('window-focused', win.isFocused());
+    pushFoldersOpenElsewhere();
     if (pendingOpenFile) {
       sendArgsToRenderer({ file: pendingOpenFile }, state);
       pendingOpenFile = null;
@@ -290,6 +316,7 @@ function createWindow({ fresh = false } = {}) {
 
   win.on('closed', () => {
     windows.delete(win.id);
+    pushFoldersOpenElsewhere();
     if (quitting || process.platform !== 'darwin' || windows.size) return;
     // No renderer is left to push menu state, so the menu resets here.
     setAppMenu('Close Folder', false);
@@ -352,7 +379,19 @@ function sendArgsToRenderer(args, target = targetWindow()) {
       bytes,
       page: parseInt(args.page || '0', 10),
     });
-  }).catch((err) => console.error(`Could not read ${file}: ${err.message}`));
+  }).catch((err) => {
+    if (!isGone(err)) {
+      console.error(`Could not read ${file}: ${err.message}`);
+      return;
+    }
+    const kept = shellState.recentFiles.filter((f) => fileKey(f) !== fileKey(file));
+    const listed = kept.length !== shellState.recentFiles.length;
+    if (listed) {
+      setRecentFiles(kept);
+      pushRecentFiles();
+    }
+    if (!win.isDestroyed()) win.webContents.send('file-missing', { name: path.basename(file), listed });
+  });
 }
 
 let closeFolderLabel = 'Close Folder';
@@ -486,9 +525,12 @@ ipcMain.on('menu-state', (event, /** @type {MenuState} */ state) => {
   const s = stateOf(event.sender);
   if (!s) return;
   s.menuState = state;
-  s.folderName = typeof state.folderName === 'string' && state.folderName ? state.folderName : null;
+  const folderName = typeof state.folderName === 'string' && state.folderName ? state.folderName : null;
+  const folderChanged = folderName !== s.folderName;
+  s.folderName = folderName;
   if (process.platform === 'win32') s.win.setTitleBarOverlay(overlayColors(!!state.darkChecked));
   if (targetWindow() === s) applyMenuState(state);
+  if (folderChanged) pushFoldersOpenElsewhere();
 });
 
 // The library writes what a relaunch resumes only from the window in front, so every window is told whether it is.
@@ -549,9 +591,12 @@ ipcMain.on('open-recent', (event, index) => {
   if (file) sendArgsToRenderer({ file }, stateOf(event.sender) ?? targetWindow());
 });
 ipcMain.on('clear-recent', () => {
-  shellState.recentFiles = [];
-  saveShellState();
-  app.clearRecentDocuments();
+  setRecentFiles([]);
+  pushRecentFiles();
+});
+ipcMain.on('remove-recent', (_event, index) => {
+  if (!Number.isInteger(index) || !shellState.recentFiles[index]) return;
+  setRecentFiles(shellState.recentFiles.filter((_f, i) => i !== index));
   pushRecentFiles();
 });
 

@@ -262,6 +262,50 @@ export class LibraryStore {
   }
 
   /**
+   * Whether a remembered folder is still on disk.
+   * Only a missing directory counts as gone.
+   * @param {FileSystemDirectoryHandle} handle
+   * @returns {Promise<boolean>}
+   */
+  static async folderExists(handle) {
+    try {
+      const entries = handle.keys();
+      await entries.next();
+      await entries.return?.();
+      return true;
+    } catch (err) {
+      return !(err instanceof DOMException && err.name === 'NotFoundError');
+    }
+  }
+
+  /**
+   * Drop a folder from the recents list.
+   * @param {FileSystemDirectoryHandle} handle
+   */
+  static async forgetFolder(handle) {
+    try {
+      const same = async (/** @type {FileSystemDirectoryHandle} */ h) => h === handle
+        // @ts-ignore
+        || (typeof h.isSameEntry === 'function' && await h.isSameEntry(handle).catch(() => false));
+      const kept = [];
+      for (const h of await LibraryStore.recentFolders()) if (!(await same(h))) kept.push(h);
+      const now = Date.now();
+      await idbOp('readwrite', (s) => s.put(kept.map((h, i) => ({ handle: h, lastOpened: now - i })), RECENTS_KEY));
+      // An emptied list falls back to the single-folder key, which would bring the folder back.
+      const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
+      if (legacy && await same(legacy)) await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
+    } catch { /* Private mode or blocked storage. */ }
+  }
+
+  /** Empty the recents list. */
+  static async clearRecentFolders() {
+    try {
+      await idbOp('readwrite', (s) => s.put([], RECENTS_KEY));
+      await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
+    } catch { /* Private mode or blocked storage. */ }
+  }
+
+  /**
    * Prompt the user to pick a library folder. Must run within a user gesture.
    * @returns {Promise<LibraryStore>}
    */

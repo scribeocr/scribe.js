@@ -127,6 +127,9 @@ const enqueue = (fn) => { eventQueue = eventQueue.then(fn); };
 window.electronAPI.onLoadFile(({
   file, name, bytes, page,
 }) => enqueue(() => handleLoadFile(file, page, async () => ({ buffer: bytes, name }))));
+window.electronAPI.onFileMissing(({ name, listed }) => pdfViewer._showToast(listed
+  ? `“${name}” is no longer there and was removed from Recent.`
+  : `Couldn't open “${name}” — the file is no longer there.`));
 window.electronAPI.onNavigate(({ page }) => enqueue(() => ScribeViewer.displayPage(page, true, false)));
 window.electronAPI.onHighlight(({ highlights }) => enqueue(() => handleHighlights(highlights)));
 
@@ -149,11 +152,14 @@ pushMenuState();
 // The shell owns the recent-files list, since the web build cannot reopen paths.
 // Reopening routes through the main process so the list re-orders and the OS recents stay in step.
 window.electronAPI.onRecentFiles((files) => pdfViewer.setRecentFiles(
-  files.map((f, i) => ({ label: f.label, dir: f.dir, open: () => window.electronAPI.openRecent(i) })),
+  files.map((f, i) => ({
+    label: f.label, dir: f.dir, open: () => window.electronAPI.openRecent(i), remove: () => window.electronAPI.removeRecent(i),
+  })),
   () => window.electronAPI.clearRecent(),
 ));
 
 window.electronAPI.onWindowFocused((on) => pdfViewer.setResumeOwner(on));
+window.electronAPI.onFoldersOpenElsewhere((names) => pdfViewer.setFoldersOpenElsewhere(names));
 
 // destroy flushes dirty library sidecars, which needs the documents and their worker pools still alive, so it must run before terminate.
 window.electronAPI.onAppTeardown(async ({ resume = true } = {}) => {

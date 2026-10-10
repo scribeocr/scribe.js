@@ -484,7 +484,7 @@ const MENU_SVG = barIcon('<path d="M5 8h18M5 14h18M5 20h18"/>');
  *   menuWrap: HTMLSpanElement, triggerElem: HTMLSpanElement, menuElem: HTMLDivElement,
  *   addAction: (label: string, iconSvg: string, onClick: () => void, accel?: string) => HTMLDivElement,
  *   addToggle: (label: string, iconSvg: string, getState: () => boolean, onToggle: () => void) => { item: HTMLDivElement, sync: () => void },
- *   addSubmenu: (label: string, iconSvg: string) => { wrap: HTMLDivElement, setItems: (rows: Array<'sep' | { label: string, onClick: () => void }>) => void },
+ *   addSubmenu: (label: string, iconSvg: string) => { wrap: HTMLDivElement, setItems: (rows: Array<'sep' | { label: string, onClick: () => void, onRemove?: () => void }>) => void },
  *   addSeparator: () => HTMLDivElement, close: () => void, destroy: () => void,
  * }}
  */
@@ -574,6 +574,18 @@ export function createAppMenu(rootClass) {
         item.textContent = r.label;
         item.addEventListener('mousedown', (e) => e.preventDefault());
         item.addEventListener('click', (e) => { e.stopPropagation(); dropdown.close(); r.onClick(); });
+        if (r.onRemove) {
+          // The removal leaves the menu open, so the list can be pruned in one visit.
+          const x = document.createElement('button');
+          x.type = 'button';
+          x.className = 'scribe-app-menu-x';
+          x.textContent = '×';
+          x.title = 'Remove from the list';
+          x.ariaLabel = `Remove ${r.label} from the list`;
+          x.addEventListener('mousedown', (e) => e.preventDefault());
+          x.addEventListener('click', (e) => { e.stopPropagation(); r.onRemove(); });
+          item.appendChild(x);
+        }
         sub.appendChild(item);
       }
       // An empty submenu hides its whole row rather than opening onto nothing.
@@ -1704,6 +1716,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       ${MENU_ROW_CSS}
     }
     .${r} .scribe-app-menu-item:hover, .${r} .scribe-app-menu-item:focus { background: var(--scribe-hover); outline: none; }
+    .${r} .scribe-app-menu-x { flex: none; margin: -2px -4px -2px auto; width: 18px; height: 18px; border: none; border-radius: 4px; padding: 0; background: none; color: var(--scribe-ink-3); font: inherit; font-size: 15px; line-height: 1; cursor: pointer; visibility: hidden; }
+    .${r} .scribe-app-menu-item:hover .scribe-app-menu-x, .${r} .scribe-app-menu-item:focus-within .scribe-app-menu-x, .${r}.scribe-coarse .scribe-app-menu-x { visibility: visible; }
+    .${r} .scribe-app-menu-x:hover { background: var(--scribe-plate); color: var(--scribe-ink); }
+    .${r} .scribe-app-menu-x:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -1px; }
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
     .${r} .scribe-app-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-app-menu-item.disabled:hover { background: none; }

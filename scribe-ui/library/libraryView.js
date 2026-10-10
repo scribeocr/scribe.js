@@ -26,6 +26,8 @@ const FOLDER_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="poin
 // eslint-disable-next-line max-len
 const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/></svg>';
 // eslint-disable-next-line max-len
+const FOLDER_ELSEWHERE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><rect x="1" y="8" width="7" height="7" rx="1.5" fill="currentColor" stroke="var(--scribe-surface)" stroke-width="1"/><path d="M3.25 12.75l2.5-2.5M3.75 10.25h2v2" stroke="var(--scribe-surface)" stroke-width="1.5"/></svg>';
+// eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
 // Matches FOLDER_SVG's grid and stroke, for the start screen, where the two sit side by side.
 // eslint-disable-next-line max-len
@@ -122,6 +124,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {(tab: ?Object) => boolean} [ownsTab] Document library only: whether a tab holds a document from the open folder.
  * @property {() => string} [closeFolderLabel] Document library only: the Close Folder command's label, counting the folder's open documents.
  * @property {() => string} [folderName] Document library only: the open folder's name.
+ * @property {() => void} [syncFoldersOpenElsewhere] Document library only: reorder and redraw the Recent list once the folders other windows hold change.
  * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
  * @property {() => void} show
@@ -307,9 +310,17 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-btn .bi { display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 7px; }
 .scribe-pdf-viewer .scribe-library-recent { width: 100%; text-align: left; margin: 0 0 16px; border-top: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-recent .h { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--scribe-ink-3); margin: 12px 0 4px; }
-.scribe-pdf-viewer .scribe-library-recent button { display: flex; align-items: center; gap: 9px; width: calc(100% + 12px); margin: 0 -6px; padding: 5px 6px; border: none; border-radius: 6px; background: none; color: var(--scribe-ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; box-sizing: border-box; }
-.scribe-pdf-viewer .scribe-library-recent button:hover { background: var(--scribe-hover); }
-.scribe-pdf-viewer .scribe-library-recent button:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-recent .r { display: flex; align-items: center; gap: 9px; width: calc(100% + 12px); margin: 0 -6px; padding: 5px 6px; border-radius: 6px; color: var(--scribe-ink); font-size: 13px; text-align: left; cursor: pointer; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-library-recent .r:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-recent .r:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-recent .x { flex: none; width: 18px; height: 18px; margin: -2px 0; border: none; border-radius: 4px; padding: 0; background: none; color: var(--scribe-ink-3); font: inherit; font-size: 15px; line-height: 1; cursor: pointer; visibility: hidden; }
+.scribe-pdf-viewer .scribe-library-recent .r:hover .x, .scribe-pdf-viewer .scribe-library-recent .r:focus-within .x, .scribe-pdf-viewer.scribe-coarse .scribe-library-recent .x { visibility: visible; }
+.scribe-pdf-viewer .scribe-library-recent .x:hover { background: var(--scribe-plate); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-recent .x:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -1px; }
+.scribe-pdf-viewer .scribe-library-recent .r.leaving, .scribe-pdf-viewer .scribe-library-recent.leaving { overflow: hidden; pointer-events: none; opacity: 0; transition: opacity .12s ease; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-library-recent .r.leaving.closing { height: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; transition: height .16s ease, padding .16s ease; }
+.scribe-pdf-viewer .scribe-library-sheet .scribe-library-recent.leaving.closing { height: 0 !important; margin-top: 0 !important; border-top-width: 0 !important; transition: height .16s ease, margin-top .16s ease, border-top-width .16s ease; }
+@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-recent .r.leaving, .scribe-pdf-viewer .scribe-library-recent .r.leaving.closing, .scribe-pdf-viewer .scribe-library-recent.leaving, .scribe-pdf-viewer .scribe-library-sheet .scribe-library-recent.leaving.closing { transition: none; } }
 .scribe-pdf-viewer .scribe-library-recent .fi { width: 16px; height: 16px; flex: none; display: inline-flex; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-recent .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
@@ -1424,32 +1435,50 @@ export function createLibraryInstance(viewer, opts) {
       folderAct.addEventListener('click', () => openFolder());
       acts.append(openAct, folderAct);
       sheet.appendChild(acts);
-      const recents = viewer._recentFiles ?? [];
-      if (recentFolders.length || recents.length) {
+      const recentAll = viewer._recents.list();
+      const recentRows = [...recentAll.filter((e) => e.kind === 'folder').slice(0, 3), ...recentAll.filter((e) => e.kind === 'file').slice(0, 5)];
+      if (recentRows.length) {
         const list = document.createElement('div');
         list.className = 'scribe-library-recent';
         list.innerHTML = '<div class="h">Recent</div>';
-        for (const handle of recentFolders.slice(0, 3)) {
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.innerHTML = `<span class="fi">${FOLDER_SVG}</span><span class="n"></span><span class="p"></span>`;
-          /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = handle.name;
-          const dir = folderDirs.get(handle.name);
-          /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = dir ?? '';
-          row.title = dir ? `${dir}/${handle.name}` : handle.name;
-          row.addEventListener('click', () => openRecentFolder(handle));
+        recentRows.forEach((entry, i) => {
+          const elsewhere = entry.kind === 'folder' && viewer._foldersOpenElsewhere.includes(entry.label);
+          const row = document.createElement('div');
+          row.className = 'r';
+          row.role = 'button';
+          row.tabIndex = 0;
+          row.innerHTML = `<span class="fi">${entry.kind === 'file' ? FILE_16_SVG : elsewhere ? FOLDER_ELSEWHERE_SVG : FOLDER_SVG}</span><span class="n"></span><span class="p"></span>`
+            + '<button type="button" class="x" title="Remove from Recent" aria-label="Remove from Recent">×</button>';
+          /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = entry.label;
+          /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = entry.dir;
+          row.title = entry.dir ? `${entry.dir}/${entry.label}` : entry.label;
+          const open = () => (elsewhere ? shell?.focusFolderWindow?.(entry.label) : entry.open());
+          const remove = (fromKeyboard) => {
+            if (row.classList.contains('leaving')) return;
+            recentExit = exitRecentRow(row).then(() => { recentExit = null; });
+            if (fromKeyboard) {
+              recentFocusIndex = i;
+              const left = /** @type {HTMLElement[]} */ ([...list.querySelectorAll('.r:not(.leaving)')]);
+              (left[i] ?? left[left.length - 1])?.focus({ preventScroll: true });
+            }
+            entry.remove();
+          };
+          row.addEventListener('click', open);
+          row.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              open();
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
+              e.preventDefault();
+              remove(true);
+            }
+          });
+          row.querySelector('.x').addEventListener('click', (e) => {
+            e.stopPropagation();
+            remove(false);
+          });
           list.appendChild(row);
-        }
-        for (const f of recents.slice(0, 5)) {
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.innerHTML = `<span class="fi">${FILE_16_SVG}</span><span class="n"></span><span class="p"></span>`;
-          /** @type {HTMLElement} */ (row.querySelector('.n')).textContent = f.label;
-          /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = f.dir ?? '';
-          row.title = f.dir ? `${f.dir}/${f.label}` : f.label;
-          row.addEventListener('click', () => f.open());
-          list.appendChild(row);
-        }
+        });
         sheet.appendChild(list);
       }
       const hint = document.createElement('div');
@@ -1457,6 +1486,14 @@ export function createLibraryInstance(viewer, opts) {
       hint.textContent = 'or drop a file here';
       sheet.appendChild(hint);
       body.appendChild(sheet);
+      pruneRecents();
+      if (recentFocusIndex >= 0) {
+        // A removal from the keyboard keeps the focus in the list, on the row that took the removed one's place.
+        const rows = sheet.querySelectorAll('.scribe-library-recent .r');
+        const next = /** @type {?HTMLElement} */ (rows[Math.min(recentFocusIndex, rows.length - 1)] ?? null);
+        recentFocusIndex = -1;
+        if (next) next.focus({ preventScroll: true });
+      }
       if (!document.activeElement || document.activeElement === document.body) {
         openAct.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
       }
@@ -3807,6 +3844,79 @@ export function createLibraryInstance(viewer, opts) {
 
   /** @type {FileSystemDirectoryHandle[]} */
   let recentFolders = [];
+  const publishFolders = () => {
+    if (!isLibrary) return;
+    // A folder open in another window heads the list, so the way to that window is always in sight.
+    const held = (/** @type {FileSystemDirectoryHandle} */ h) => Number(viewer._foldersOpenElsewhere.includes(h.name));
+    const ordered = [...recentFolders].sort((a, b) => held(b) - held(a));
+    viewer._recents.setFolders(ordered.map((h) => ({
+      kind: 'folder',
+      label: h.name,
+      dir: folderDirs.get(h.name) ?? '',
+      open: () => openRecentFolder(h),
+      remove: async () => {
+        await LibraryStore.forgetFolder(h);
+        recentFolders = await LibraryStore.recentFolders();
+        publishFolders();
+      },
+    })), async () => {
+      await LibraryStore.clearRecentFolders();
+      recentFolders = [];
+      publishFolders();
+    });
+  };
+  let recentFocusIndex = -1;
+  /** @type {?Promise<void>} */
+  let recentExit = null;
+  let renderAfterExit = false;
+  /**
+   * Take a removed row out of the list.
+   * @param {HTMLElement} row
+   * @returns {Promise<void>}
+   */
+  const exitRecentRow = (row) => new Promise((resolve) => {
+    // The last row takes the whole section with it, heading and rule included, in the one motion.
+    const section = /** @type {?HTMLElement} */ (row.closest('.scribe-library-recent'));
+    const target = section && section.querySelectorAll('.r:not(.leaving)').length === 1 ? section : row;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      target.remove();
+      resolve();
+      return;
+    }
+    target.classList.add('leaving');
+    window.setTimeout(() => {
+      target.style.height = `${target.getBoundingClientRect().height}px`;
+      target.getBoundingClientRect();
+      target.classList.add('closing');
+      const done = () => {
+        target.removeEventListener('transitionend', onEnd);
+        target.remove();
+        resolve();
+      };
+      /** @param {TransitionEvent} e */
+      const onEnd = (e) => { if (e.target === target && e.propertyName === 'height') done(); };
+      target.addEventListener('transitionend', onEnd);
+      // A transition that never ends, as in a hidden window, must not hold the list.
+      window.setTimeout(() => { if (target.isConnected) done(); }, 400);
+    }, 120);
+  });
+
+  let recentsPruning = false;
+  const pruneRecents = async () => {
+    if (recentsPruning) return;
+    recentsPruning = true;
+    const gone = [];
+    try {
+      for (const h of recentFolders) if (!(await LibraryStore.folderExists(h))) gone.push(h);
+      for (const h of gone) await LibraryStore.forgetFolder(h);
+    } finally {
+      recentsPruning = false;
+    }
+    if (destroyed || !gone.length) return;
+    recentFolders = recentFolders.filter((h) => !gone.includes(h));
+    publishFolders();
+  };
+
   /** Each folder's parent directory, keyed by the folder's name, as the desktop shell reports it. @type {Map<string, string>} */
   const folderDirs = new Map();
   /** The copies the Just added row lists, newest first, each with the name of the directory it came from. @type {Array<{relPath: string, from: string}>} */
@@ -3836,6 +3946,12 @@ export function createLibraryInstance(viewer, opts) {
 
   /** @type {?(() => void)} */
   let releaseFolderLock = null;
+  /** @param {string} name */
+  const folderLockKey = async (name) => {
+    const known = await shell?.getFolderPath?.(name).catch(() => null);
+    return `scribe-folder:${known?.path || name}`;
+  };
+
   /**
    * Take the lock that marks a folder open in this window, or report that another window holds it.
    * @param {string} name
@@ -3845,8 +3961,7 @@ export function createLibraryInstance(viewer, opts) {
     releaseFolderLock?.();
     releaseFolderLock = null;
     if (!navigator.locks) return true;
-    const known = await shell?.getFolderPath?.(name).catch(() => null);
-    const key = `scribe-folder:${known?.path || name}`;
+    const key = await folderLockKey(name);
     return new Promise((resolve) => {
       navigator.locks.request(key, { ifAvailable: true }, (lock) => {
         if (!lock) {
@@ -3859,11 +3974,26 @@ export function createLibraryInstance(viewer, opts) {
       }).catch(() => resolve(false));
     });
   };
+
+  /**
+   * Whether another window holds a folder.
+   * Call it before a pick closes the open folder, so a refusal leaves that folder open.
+   * @param {string} name
+   * @returns {Promise<boolean>}
+   */
+  const heldElsewhere = async (name) => {
+    if (!isLibrary || !navigator.locks || name === store?.root.name) return false;
+    return navigator.locks.request(await folderLockKey(name), { ifAvailable: true }, (lock) => !lock).catch(() => true);
+  };
+  /** @param {string} name */
+  const refuseHeldElsewhere = (name) => {
+    viewer._showToast(`“${name}” is already open in another window.`);
+    shell?.focusFolderWindow?.(name);
+  };
   /** @param {LibraryStore} s */
   const openLibrary = async (s) => {
     if (isLibrary && !(await holdFolderLock(s.root.name))) {
-      viewer._showToast(`“${s.root.name}” is already open in another window.`);
-      shell?.focusFolderWindow?.(s.root.name);
+      refuseHeldElsewhere(s.root.name);
       return;
     }
     store = s;
@@ -3889,7 +4019,14 @@ export function createLibraryInstance(viewer, opts) {
       sessions.reset();
       releaseFolderLock?.();
       releaseFolderLock = null;
-      viewer._showToast(`Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      const gone = err instanceof DOMException && err.name === 'NotFoundError';
+      if (gone) {
+        await LibraryStore.forgetFolder(s.root);
+        recentFolders = await LibraryStore.recentFolders();
+        publishFolders();
+      }
+      viewer._showToast(gone ? `“${s.root.name}” is no longer there and was removed from Recent.`
+        : `Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
       render();
       syncBarForStore();
       viewer._notifyMenuState();
@@ -4004,11 +4141,14 @@ export function createLibraryInstance(viewer, opts) {
     viewer._renderTabs();
     positionSurface();
     recentFolders = await LibraryStore.recentFolders();
+    publishFolders();
     if (viewer._resumeOwner) {
       try { resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name); } catch { /* Storage unavailable. */ }
     }
     shell?.getFolderPath?.(store.root.name).then((/** @type {any} */ r) => {
-      if (r?.dir && store) folderDirs.set(store.root.name, r.dir);
+      if (!r?.dir || !store) return;
+      folderDirs.set(store.root.name, r.dir);
+      publishFolders();
     }).catch(() => {});
     render();
     syncBarForStore();
@@ -4266,6 +4406,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     return null;
   };
+
   /**
    * Leave the open folder, saving and closing the documents open from it.
    * @returns {Promise<number>} How many of the folder's documents were closed.
@@ -4280,11 +4421,13 @@ export function createLibraryInstance(viewer, opts) {
       manifestTimer = null;
       if (manifest) store.writeManifest(manifest).catch(() => {});
     }
+
     if (indexTimer !== null) {
       window.clearTimeout(indexTimer);
       indexTimer = null;
       store.writeSearchIndex(index.serialize()).catch(() => {});
     }
+
     panes.mounted()?.destroy();
     sessions.reset();
     results.dispose();
@@ -4342,6 +4485,10 @@ export function createLibraryInstance(viewer, opts) {
   const openFolder = async () => {
     const s = await pickFolder();
     if (!s) return;
+    if (await heldElsewhere(s.root.name)) {
+      refuseHeldElsewhere(s.root.name);
+      return;
+    }
     await disconnectFolder();
     showSurface();
     await openLibrary(s);
@@ -4360,6 +4507,10 @@ export function createLibraryInstance(viewer, opts) {
       }
     } catch (err) {
       viewer._showToast(`Couldn't open “${handle.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      return;
+    }
+    if (await heldElsewhere(handle.name)) {
+      refuseHeldElsewhere(handle.name);
       return;
     }
     await disconnectFolder();
@@ -4744,9 +4895,23 @@ export function createLibraryInstance(viewer, opts) {
     const tab = viewer._tabs[viewer._activeTab];
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
+
   viewer.pdfViewerElem.addEventListener('input', onInput, true);
-  const onRecentsChange = () => { if (visible && !store) render(); };
-  viewer.pdfViewerElem.addEventListener('scribe-recent-files-change', onRecentsChange);
+  const offRecents = viewer._recents.onChange(() => {
+    if (!visible || store) return;
+    if (!recentExit) {
+      render();
+      return;
+    }
+    // A row still on its way out finishes first, so the redraw cannot cut its motion short.
+    if (renderAfterExit) return;
+    renderAfterExit = true;
+    recentExit.then(() => {
+      renderAfterExit = false;
+      if (visible && !store) render();
+    });
+  });
+
   // Two single-slot hooks on the viewer: the first instance sets them, and they mark any instance's tab dirty.
   const ownsEditHooks = !viewer.scribe.onAnnotationsEdited;
   if (ownsEditHooks) {
@@ -4881,6 +5046,7 @@ export function createLibraryInstance(viewer, opts) {
         } catch { /* Storage unavailable. */ }
         writeResumeRecord();
       },
+      syncFoldersOpenElsewhere: () => publishFolders(),
     } : {}),
   });
   viewer._libraryInstances.push(api);
@@ -4909,11 +5075,12 @@ export function createLibraryInstance(viewer, opts) {
     }
     recentFolders = await LibraryStore.recentFolders();
     if (destroyed) return;
+    publishFolders();
     recentFolders.forEach((h) => {
       shell?.getFolderPath?.(h.name).then((/** @type {any} */ r) => {
         if (!r?.dir || destroyed) return;
         folderDirs.set(h.name, r.dir);
-        if (visible && !store) render();
+        publishFolders();
       }).catch(() => {});
     });
     // A launch by file opens only that file, and a folder closed before quitting stays closed.
@@ -4976,7 +5143,7 @@ export function createLibraryInstance(viewer, opts) {
       document.removeEventListener('keydown', onOpenShortcut, true);
       document.removeEventListener('keydown', onSelectAll, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
-      viewer.pdfViewerElem.removeEventListener('scribe-recent-files-change', onRecentsChange);
+      offRecents();
       if (!readOnly) viewer._dragOverlayLabelFor = priorDragLabel;
       // Flush, don't drop: a cancelled debounce would lose the last manifest/index update.
       if (manifestTimer !== null) {

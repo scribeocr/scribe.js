@@ -19,6 +19,7 @@ import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
   createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, UNDO_SVG, REDO_SVG,
 } from '../js/controls/toolbar.js';
+import { createRecents } from '../js/controls/recents.js';
 import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
@@ -780,12 +781,13 @@ class ScribePDFViewer {
      * Only a desktop shell with several windows ever turns it off.
      */
     this._resumeOwner = true;
+    /** @type {string[]} The names of the folders a desktop shell's other windows have open. */
+    this._foldersOpenElsewhere = [];
     /** @type {?((event: DragEvent) => ?string)} */
     this._dragOverlayLabelFor = null;
     /** @type {?(() => void)} */
     this._hideDragOverlay = null;
-    /** @type {Array<{label: string, open: () => void, dir?: string}>} */
-    this._recentFiles = [];
+    this._recents = createRecents();
     /**
      * Fired when a document's assistant history changes, so the embedder can mark that document's session dirty.
      * The document is passed rather than assumed active, because a turn can settle after the user switches tabs.
@@ -946,8 +948,13 @@ class ScribePDFViewer {
         'rebuild-index': () => this._library?.rebuildIndex?.(),
       };
       appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, shortcutLabel('O'));
-      // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
-      this._recentFilesSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
+      this._recentsSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
+      this._recents.onChange(() => {
+        /** @type {Array<'sep' | {label: string, onClick: () => void, onRemove?: () => void}>} */
+        const rows = this._recents.list().map((e) => ({ label: e.label, onClick: e.open, onRemove: e.remove }));
+        if (rows.length) rows.push('sep', { label: 'Clear list', onClick: () => this._recents.clear() });
+        this._recentsSubmenu.setItems(rows);
+      });
       this._printMenuRow = appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, shortcutLabel('P'));
       this._menuCommands.inspect = () => this._enterInspectFromMenu();
       this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
@@ -4059,19 +4066,14 @@ class ScribePDFViewer {
   }
 
   /**
-   * Populate the app menu's "Open recent" submenu, for a desktop shell that can reopen files by path.
-   * The row stays hidden while the list is empty, so surfaces that never call this never show it.
-   * @param {Array<{label: string, open: () => void, dir?: string}>} files
-   * @param {() => void} [onClear] - Invoked by the submenu's "Clear list" row.
+   * Hand the viewer the files a desktop shell can reopen by path, for the Recent list.
+   * @param {Array<{label: string, dir?: string, open: () => void, remove: () => void}>} files
+   * @param {() => void} [onClear] - Empties the shell's list.
    */
   setRecentFiles(files, onClear) {
-    this._recentFiles = files;
-    this.pdfViewerElem.dispatchEvent(new CustomEvent('scribe-recent-files-change'));
-    if (!this._recentFilesSubmenu) return;
-    /** @type {Array<'sep' | {label: string, onClick: () => void}>} */
-    const rows = files.map((f) => ({ label: f.label, onClick: f.open }));
-    if (rows.length && onClear) rows.push('sep', { label: 'Clear list', onClick: onClear });
-    this._recentFilesSubmenu.setItems(rows);
+    this._recents.setFiles(files.map((f) => ({
+      kind: 'file', label: f.label, dir: f.dir ?? '', open: f.open, remove: f.remove,
+    })), onClear);
   }
 
   /**
@@ -4081,6 +4083,15 @@ class ScribePDFViewer {
   setResumeOwner(on) {
     this._resumeOwner = on;
     if (on) this._library?.syncResume?.();
+  }
+
+  /**
+   * Tell the viewer which folders other windows of a desktop shell have open.
+   * @param {string[]} names
+   */
+  setFoldersOpenElsewhere(names) {
+    this._foldersOpenElsewhere = names;
+    this._library?.syncFoldersOpenElsewhere?.();
   }
 
   /**
