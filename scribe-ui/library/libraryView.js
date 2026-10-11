@@ -285,7 +285,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-cols-drag { user-select: none; }
 .scribe-pdf-viewer .scribe-library-cols-drag * { cursor: col-resize !important; }
 .scribe-pdf-viewer.scribe-coarse .scribe-library-hres { display: none; }
-.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; }
+/* The scroll margin is the sticky column header's height, so a row scrolled into view is not hidden behind it. */
+.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; scroll-margin-top: 31px; }
 .scribe-pdf-viewer .scribe-library-row > * { min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row:hover:where(.scribe-library-surface:not(.card-drag) *) { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-row.selected { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
@@ -1449,9 +1450,19 @@ export function createLibraryInstance(viewer, opts) {
     const revealSelection = !!(renderOpts && renderOpts.revealSelection);
     const reveal = () => {
       if (!revealSelection) return;
-      const item = (listPreviewPath && body.querySelector(`[data-rel-path="${CSS.escape(listPreviewPath)}"]`))
-        || body.querySelector('[data-rel-path].selected');
-      item?.scrollIntoView({ block: 'nearest' });
+      const previewed = listPreviewOn && viewMode !== 'grid' ? listPreviewPath : null;
+      const sel = previewed ? `[data-rel-path="${CSS.escape(previewed)}"]` : '[data-rel-path].selected';
+      // Recent and the just-added shelf repeat documents listed below them, so the document's own card or row is the one brought into view.
+      const item = /** @type {?HTMLElement} */ (body.querySelector(`[data-band="main-grid"] > ${sel}, [data-band="rows"] > ${sel}`) || body.querySelector(sel));
+      if (!item) return;
+      item.focus({ preventScroll: true });
+      const scroller = /** @type {HTMLElement} */ (item.closest('.scribe-library-rlist') || body);
+      const headH = scroller.querySelector('.scribe-library-lhead')?.getBoundingClientRect().height ?? 0;
+      const s = scroller.getBoundingClientRect();
+      const r = item.getBoundingClientRect();
+      if (r.top >= s.top + headH && r.bottom <= s.bottom) return;
+      // scrollIntoView would also scroll the viewer root, which clips its overflow, and carry the toolbar and tab strip out of view with it.
+      scroller.scrollTop += (r.top + r.bottom - s.top - headH - s.bottom) / 2;
     };
 
     const dirSet = new Set(manifest?.dirs ?? []);
@@ -3066,6 +3077,7 @@ export function createLibraryInstance(viewer, opts) {
     for (const p of selected) selectedPaths.add(p.endsWith('/') ? `${rekey(p.slice(0, -1))}/` : rekey(p));
     if (selAnchor) selAnchor = selAnchor.endsWith('/') ? `${rekey(selAnchor.slice(0, -1))}/` : rekey(selAnchor);
     if (listPreviewPath) listPreviewPath = rekey(listPreviewPath);
+    for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath) t.libraryRelPath = rekey(t.libraryRelPath);
     currentDir = rekey(currentDir);
     try {
       await store.writeManifest(manifest);
@@ -5025,15 +5037,37 @@ export function createLibraryInstance(viewer, opts) {
   const showTab = (tab) => {
     if (!store || !manifest) return;
     let relPath = tab?.libraryRelPath;
-    if (!relPath && tab?.libraryHash) relPath = Object.keys(manifest.docs).find((p) => manifest.docs[p].hash === tab.libraryHash);
-    if (!relPath) return;
+    // A drag into a folder or a rename outside the app leaves the tab's path stale, so the document is looked up by its hash.
+    if ((!relPath || !manifest.docs[relPath]) && tab?.libraryHash) {
+      relPath = Object.keys(manifest.docs).find((p) => manifest.docs[p].hash === tab.libraryHash) ?? relPath;
+    }
+    const entry = relPath ? manifest.docs[relPath] : null;
+    if (!relPath || !entry) {
+      viewer._showToast(`Couldn't find “${tab?.name ?? 'the document'}” in ${store.root.name}.`);
+      return;
+    }
+    if (!visible) showSurface();
+    storageOpen = false;
+    const previewing = listPreviewOn && viewMode !== 'grid';
+    if (previewing) {
+      listPreviewPath = relPath;
+      listPreviewPage = 0;
+    }
     const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
-    if (dir !== currentDir) openDir(dir);
+    if (dir !== currentDir) {
+      openDir(dir);
+    } else {
+      fullTextResults = null;
+      filterText = '';
+      searchInput.value = '';
+      searchField.classList.remove('has-text', 'hint-yield');
+    }
     selectedPaths.clear();
     selectedPaths.add(relPath);
     selAnchor = relPath;
-    if (!visible) showSurface();
     render({ revealSelection: true });
+    // A render that reconciles the list in place leaves the pane alone, so the preview is asked for directly.
+    if (previewing && listPane) showListPreview(relPath, entry, 0);
   };
 
   // --- Event wiring -------------------------------------------------------
