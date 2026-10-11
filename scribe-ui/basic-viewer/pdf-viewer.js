@@ -4344,7 +4344,9 @@ class ScribePDFViewer {
   }
 
   /**
-   * Run a query: highlight all matches across the document and jump to the first one.
+   * Run a query in the find bar.
+   * Highlights all matches across the document and jumps to the first one.
+   * Does nothing while the find bar is closed, so call `openSearch` first.
    * @param {string} query
    * @returns {Promise<void>}
    */
@@ -4357,7 +4359,7 @@ class ScribePDFViewer {
     this._searchBar?.updateSearchCounter();
   }
 
-  /** Reset the find bar UI: hide it, clear the input, and exit search mode. */
+  /** Close the find bar and clear its input. */
   resetSearch() {
     this._searchBar?.resetSearch();
   }

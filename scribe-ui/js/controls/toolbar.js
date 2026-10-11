@@ -1395,6 +1395,8 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   /**
+   * Search for `query` in the find bar.
+   * Does nothing while the bar is closed.
    * @param {string} query
    * @param {number} [targetPageN] - Land on this page's first match instead of the document's
    *   first, so a search primed from a known hit page doesn't yank the reader elsewhere.
@@ -1409,7 +1411,8 @@ export function createSearchBar(scribe, rootElem) {
       await doc.textReady;
       if (scribe.doc !== doc) return;
     }
-    scribe.state.searchMode = true;
+    // This guard also covers a close during the wait above.
+    if (!scribe.state.searchMode) return;
     findText(scribe, query);
     updateSearchCounter();
     if (!navigate) return;
@@ -1423,6 +1426,9 @@ export function createSearchBar(scribe, rootElem) {
 
   // Restored on reopen, since re-running the search leaves no match active and the count would read 0/N.
   let lastActive = -1;
+  // The query whose matches `lastActive` indexes.
+  let lastQuery = '';
+  let searchDebounce = null;
 
   async function openSearch() {
     if (!scribe.doc || !scribe.doc.pageMetrics || scribe.doc.pageMetrics.length === 0) return;
@@ -1438,14 +1444,17 @@ export function createSearchBar(scribe, rootElem) {
     // A retained query gets its highlights and its active match back, but the view must not move until the user types or steps through matches.
     if (!searchInputElem.value.trim()) return;
     await runSearch(searchInputElem.value, undefined, false);
-    const { matchList } = scribe._searchState;
-    if (lastActive < 0 || !matchList.length || !scribe.state.searchMode) return;
+    const { matchList, search, activeMatch } = scribe._searchState;
+    // A search or step that picked a match during the wait above wins over the restore.
+    if (lastActive < 0 || !matchList.length || !scribe.state.searchMode || search !== lastQuery || activeMatch >= 0) return;
     await goToMatch(scribe, Math.min(lastActive, matchList.length - 1), { navigate: false });
     updateSearchCounter();
   }
 
   function closeSearch() {
+    clearTimeout(searchDebounce);
     lastActive = scribe._searchState.activeMatch;
+    lastQuery = scribe._searchState.search;
     findGroupElem.style.display = 'none';
     searchElem.classList.remove('active');
     scribe.state.searchMode = false;
@@ -1454,12 +1463,10 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   function resetSearch() {
+    // Re-attaching the same document keeps the viewer's search state, so the reset clears it the way a close does.
+    closeSearch();
     lastActive = -1;
-    findGroupElem.style.display = 'none';
-    searchElem.classList.remove('active');
     searchInputElem.value = '';
-    scribe.state.searchMode = false;
-    updateSearchCounter();
   }
 
   searchElem.addEventListener('click', () => {
@@ -1467,7 +1474,6 @@ export function createSearchBar(scribe, rootElem) {
     else closeSearch();
   });
 
-  let searchDebounce = null;
   searchInputElem.addEventListener('input', () => {
     if (searchDebounce) clearTimeout(searchDebounce);
     const { value } = searchInputElem;

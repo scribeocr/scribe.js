@@ -4,26 +4,31 @@ import scribe from '../../scribe.js';
 import { parseCitation } from '../../js/resolveCitation.js';
 
 /**
- * Repaint match highlights on the currently-rendered words from `_searchState`.
+ * Repaint match highlights from `_searchState` on every page that holds word objects.
  * @param {import('../viewer.js').ScribeViewer} viewer
  */
 function applyHighlights(viewer) {
   const s = viewer._searchState;
   const activeEntry = s.matchList[s.activeMatch];
   const activeIds = activeEntry ? new Set(activeEntry.wordIds) : new Set();
-  /** @type {Object<number, Set<string>>} */
-  const matchIdsByPage = {};
-  for (const kw of viewer.getUiWords()) {
-    const pageN = kw.word.line.page.n;
-    if (!matchIdsByPage[pageN]) {
-      matchIdsByPage[pageN] = s.search && viewer.doc.ocr.active[pageN]
-        ? new Set(scribe.utils.ocr.getMatchingWordIds(s.search, viewer.doc.ocr.active[pageN]))
-        : new Set();
-    }
-    const isActive = activeIds.has(kw.word.id);
-    kw.activeMatch = isActive;
-    kw.fillBox = !isActive && matchIdsByPage[pageN].has(kw.word.id);
+  if (s.search && viewer.useCustomSelection) {
+    // The custom engine builds word objects lazily, and a match needs one to paint on, both on the pages in view and on those kept rendered off-screen.
+    viewer.getUiWords();
+    for (const n of viewer.textGroupsRenderIndices) viewer.ensureWordObjs(n);
   }
+  // Pages kept built off-screen hold the previous query's highlights too.
+  viewer._wordObjs.forEach((pageWords, n) => {
+    if (!pageWords) return;
+    const matchIds = s.search && viewer.doc.ocr.active[n]
+      ? new Set(scribe.utils.ocr.getMatchingWordIds(s.search, viewer.doc.ocr.active[n]))
+      : new Set();
+    for (const kw of pageWords) {
+      if (kw._destroyed) continue;
+      const isActive = activeIds.has(kw.word.id);
+      kw.activeMatch = isActive;
+      kw.fillBox = !isActive && matchIds.has(kw.word.id);
+    }
+  });
 }
 
 /**
@@ -85,20 +90,29 @@ export async function goToMatch(viewer, index, { navigate = true } = {}) {
   // refresh=false: pages already rendered are left intact,
   // so advancing to an on-screen page just moves the image rather than rebuilding every word shape.
   // Pages drawn fresh here already pick up the correct highlights from the renderer.
-  if (navigate) await _viewer.displayPage(match.pageN, false, false);
+  if (navigate) {
+    await _viewer.displayPage(match.pageN, false, false);
+    // The search can close, or run a new query, while the page renders, and then this match must not light up.
+    if (_viewer._searchState.matchList[n] !== match) return;
+  }
 
   // Move the active (orange) highlight without re-rendering.
   // The blue match highlights on already-rendered pages are unchanged,
   // so only the new active words and the previous active words need their flags flipped.
+  // The previous active words can sit on a page kept built off-screen, so every built page is checked.
   const uiWords = _viewer.getUiWords();
   const activeIds = new Set(match.wordIds);
-  for (const kw of uiWords) {
-    if (activeIds.has(kw.word.id)) {
-      kw.activeMatch = true;
-      kw.fillBox = false;
-    } else if (kw.activeMatch) {
-      kw.activeMatch = false;
-      kw.fillBox = true;
+  for (const pageWords of _viewer._wordObjs) {
+    if (!pageWords) continue;
+    for (const kw of pageWords) {
+      if (kw._destroyed) continue;
+      if (activeIds.has(kw.word.id)) {
+        kw.activeMatch = true;
+        kw.fillBox = false;
+      } else if (kw.activeMatch) {
+        kw.activeMatch = false;
+        kw.fillBox = true;
+      }
     }
   }
 
