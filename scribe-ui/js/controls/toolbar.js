@@ -1814,7 +1814,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-fs-font { appearance: none; background: none; border: 1px solid var(--scribe-line); border-radius: 7px;
       padding: 0 10px; font-size: 16px; color: var(--scribe-ink); cursor: pointer;
       height: 34px; line-height: 1; display: inline-flex; align-items: center; }
-    .${r} .scribe-fs-font.active { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-fs-font.active { border-color: var(--scribe-accent); }
     .${r} .scribe-fs-type-preview { height: 88px; box-sizing: border-box; line-height: 1.2;
       display: flex; align-items: center; justify-content: center;
       font-size: 44px; border: 1px dashed var(--scribe-line-strong); border-radius: 8px; background: #fff;

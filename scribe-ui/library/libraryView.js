@@ -182,18 +182,19 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Only the field yields under bar pressure, so the rungs below decide what else goes. */
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 196px; min-width: 106px; }
-/* A grown flex-basis alone is invisible to the content-sized zone, which sizes the field to its own max-content, so the focus growth comes from a definite input width. */
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field:focus-within { flex: 1 1 320px; max-width: 320px; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 auto; width: 320px; min-width: 106px; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field:focus-within .scribe-library-search { width: 290px; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-field > svg { width: 15px; height: 15px; color: var(--scribe-ink-3); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-search { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 170px; padding: 0; caret-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-search { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 170px; padding: 0; text-align: left; text-overflow: ellipsis; caret-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-search::placeholder { color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-hint { display: none; font-size: 11.5px; color: var(--scribe-ink-3); white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-field:focus-within .scribe-library-hint { display: inline; }
+/* The key cap is a block-level flex item here, so without line-height: normal it would size to the toolbar's inherited 28px line-height. */
+.scribe-pdf-viewer .scribe-library-hint { display: none; align-items: center; gap: 4px; max-width: 160px; overflow: hidden; line-height: normal; font-size: 11.5px; color: var(--scribe-ink-3); white-space: nowrap; transition: opacity .12s ease-out, max-width .16s ease-out, margin-left .16s ease-out; }
+.scribe-pdf-viewer .scribe-library-field.has-text:focus-within .scribe-library-hint { display: inline-flex; }
+/* The fold collapses width and opacity rather than switching display, so a phrase takes the room without a jump. */
+.scribe-pdf-viewer .scribe-library-field.hint-yield .scribe-library-hint { opacity: 0; max-width: 0; margin-left: -6px; }
+@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-hint { transition: none; } }
 .scribe-pdf-viewer .scribe-library-hint kbd { font-family: inherit; border: 1px solid var(--scribe-line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 10.5px; color: var(--scribe-ink-2); background: var(--scribe-surface); }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.hint-tight .scribe-library-hint { display: none; }
 .scribe-pdf-viewer .scribe-library-clear { display: none; width: 17px; height: 17px; padding: 2px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; border-radius: 4px; }
@@ -223,7 +224,7 @@ const addLibraryStyles = () => {
 /* Verb and crumb menus show their row icons outright, unlike the sort menu's hidden-until-checked marks. */
 .scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg, .scribe-pdf-viewer .scribe-library-crumb-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-crumb-menu { left: 0; right: auto; }
-.scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
+.scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; box-sizing: border-box; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
 .scribe-pdf-viewer .scribe-library-seg button { width: 32px; border: none; background: none; color: var(--scribe-ink-3); padding: 5px 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .scribe-pdf-viewer .scribe-library-seg button svg { width: 16px; height: 16px; }
 .scribe-pdf-viewer .scribe-library-seg button:hover { color: var(--scribe-ink); }
@@ -722,8 +723,8 @@ export function createLibraryInstance(viewer, opts) {
   const searchInput = document.createElement('input');
   searchInput.className = 'scribe-library-search';
   searchInput.type = 'text';
-  searchInput.placeholder = 'Filter';
-  searchInput.setAttribute('aria-label', 'Filter documents');
+  searchInput.placeholder = 'Search or filter by name';
+  searchInput.setAttribute('aria-label', 'Search documents');
   searchField.appendChild(searchInput);
   const searchHint = document.createElement('span');
   searchHint.className = 'scribe-library-hint';
@@ -731,13 +732,24 @@ export function createLibraryInstance(viewer, opts) {
   searchField.appendChild(searchHint);
   const clearBtn = document.createElement('button');
   clearBtn.className = 'scribe-library-clear';
-  clearBtn.setAttribute('aria-label', 'Clear filter');
+  clearBtn.setAttribute('aria-label', 'Clear');
   clearBtn.innerHTML = FIELD_CLEAR_SVG;
   searchField.appendChild(clearBtn);
   header.appendChild(searchField);
+  const hintMeasure = /** @type {CanvasRenderingContext2D} */ (document.createElement('canvas').getContext('2d'));
+  const syncHint = () => {
+    if (!searchInput.value || searchField.classList.contains('hint-tight') || document.activeElement !== searchInput) return;
+    const style = getComputedStyle(searchInput);
+    hintMeasure.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const textWidth = hintMeasure.measureText(searchInput.value).width;
+    // The room beside a fully shown hint, read off the live layout so a fold in progress measures the same as a settled one.
+    const room = searchInput.clientWidth + searchHint.offsetWidth + parseFloat(getComputedStyle(searchHint).marginLeft) - searchHint.scrollWidth;
+    searchField.classList.toggle('hint-yield', textWidth + 8 > room);
+  };
   // A container query here would zero the field's contribution to the content-sized bar zone and pin it at its minimum width, so the signal comes from a resize observer.
   const hintObserver = new ResizeObserver((entries) => {
     searchField.classList.toggle('hint-tight', entries[0].contentRect.width < 250);
+    syncHint();
   });
   hintObserver.observe(searchField);
 
@@ -1196,7 +1208,7 @@ export function createLibraryInstance(viewer, opts) {
     fullTextResults = null;
     filterText = '';
     searchInput.value = '';
-    searchField.classList.remove('has-text');
+    searchField.classList.remove('has-text', 'hint-yield');
     crumbFadeDue = true;
     render();
     body.scrollTop = 0;
@@ -3078,7 +3090,7 @@ export function createLibraryInstance(viewer, opts) {
       fullTextResults = null;
       filterText = '';
       searchInput.value = '';
-      searchField.classList.remove('has-text');
+      searchField.classList.remove('has-text', 'hint-yield');
     }
     fsOpBusy = true;
     let relPath = '';
@@ -4396,7 +4408,7 @@ export function createLibraryInstance(viewer, opts) {
     onBack: () => {
       fullTextResults = null;
       searchInput.value = '';
-      searchField.classList.remove('has-text');
+      searchField.classList.remove('has-text', 'hint-yield');
       filterText = '';
       render();
     },
@@ -5075,7 +5087,7 @@ export function createLibraryInstance(viewer, opts) {
     selAnchor = null;
     filterText = '';
     searchInput.value = '';
-    searchField.classList.remove('has-text');
+    searchField.classList.remove('has-text', 'hint-yield');
     fullTextResults = null;
     justAdded = [];
     currentDir = '';
@@ -5269,10 +5281,28 @@ export function createLibraryInstance(viewer, opts) {
   searchInput.addEventListener('input', () => {
     filterText = searchInput.value;
     searchField.classList.toggle('has-text', !!filterText);
+    if (filterText) syncHint();
+    else searchField.classList.remove('hint-yield');
     if (fullTextResults && !filterText) fullTextResults = null;
     if (!fullTextResults) render();
   });
+  searchInput.addEventListener('focus', syncHint);
   searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (searchInput.value) {
+        searchInput.value = '';
+        filterText = '';
+        searchField.classList.remove('has-text', 'hint-yield');
+        fullTextResults = null;
+        render();
+        return;
+      }
+      const first = /** @type {?HTMLElement} */ (body.querySelector('[data-rel-path]'));
+      if (first) first.focus();
+      else searchInput.blur();
+      return;
+    }
     if (e.key !== 'Enter') return;
     const query = searchInput.value.trim();
     if (!query) return;
@@ -5290,7 +5320,7 @@ export function createLibraryInstance(viewer, opts) {
   clearBtn.addEventListener('click', () => {
     searchInput.value = '';
     filterText = '';
-    searchField.classList.remove('has-text');
+    searchField.classList.remove('has-text', 'hint-yield');
     fullTextResults = null;
     render();
     searchInput.focus();
