@@ -455,9 +455,11 @@ export class UiText {
       this.viewer?.scheduleMarkRepaint(this.word.line.page.n);
       return;
     }
-    if (this._activeMatch) this.el.style.backgroundColor = '#ff990088';
-    else if (this._fillBox) this.el.style.backgroundColor = '#4278f550';
+    if (this._activeMatch) this.el.style.backgroundColor = '#a4c0ee';
+    else if (this._fillBox) this.el.style.backgroundColor = '#e4e6ea';
     else this.el.style.backgroundColor = '';
+    // Multiplied like the custom engine's mark layer, so in invis mode the wash sits behind the raster's ink.
+    this.el.style.mixBlendMode = this._activeMatch || this._fillBox ? 'multiply' : '';
 
     if (this._selected) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';
@@ -615,9 +617,10 @@ export class UiText {
    * @param {HTMLSpanElement} elem
    */
   _applyStateStyleOn(elem) {
-    if (this._activeMatch) elem.style.backgroundColor = '#ff990088';
-    else if (this._fillBox) elem.style.backgroundColor = '#4278f550';
+    if (this._activeMatch) elem.style.backgroundColor = '#a4c0ee';
+    else if (this._fillBox) elem.style.backgroundColor = '#e4e6ea';
     else elem.style.backgroundColor = '';
+    elem.style.mixBlendMode = this._activeMatch || this._fillBox ? 'multiply' : '';
 
     if (this._selected) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';

@@ -46,8 +46,9 @@ export function ensureSelectionStyleSheet() {
   // multiply keeps glyphs at full contrast under the wash, unlike a translucent per-rect background, and matches how the highlight layer below already blends.
   styleEl.textContent = '.scribe-layer-select{mix-blend-mode:multiply;pointer-events:none}'
     + '.scribe-sel-rect{position:absolute;background:var(--scribe-sel,#a6c8ff)}'
-    + '.scribe-mark-rect{position:absolute;background:var(--scribe-match,#a9c4f5)}'
-    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active,#ffb454)}'
+    + '.scribe-mark-rect{position:absolute;background:var(--scribe-match,#e4e6ea);border-radius:calc(2px / var(--scribe-zoom,1));transition:background-color .12s ease}'
+    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active,#a4c0ee)}'
+    + '@media (prefers-reduced-motion: reduce){.scribe-mark-rect{transition:none}}'
     // The group is pointer-transparent and each handle re-enables hits, so the page still scrolls around the touch-selection grips.
     // `--sel-handle-scale`, set to 1/zoom per render, holds the grips' drawn size constant on screen at any document zoom.
     + '.scribe-layer-selhandles{pointer-events:none}'
@@ -694,6 +695,8 @@ export class TextSelection {
 
     /** @type {Array<Object<string, Array<HTMLDivElement>>>} Pooled selection rectangles, per page then orientation. */
     this._rectPool = [];
+    /** @type {Array<?Map<string, HTMLDivElement>>} Per page, the match rects by the id of the first word they cover, kept across repaints. */
+    this._markPool = [];
 
     /** A CSS cursor overriding the hover-derived one, set by the highlighter tool. @type {?string} */
     this.cursorOverride = null;
@@ -745,6 +748,7 @@ export class TextSelection {
     this._hideHandles();
     this._index.length = 0;
     this._rectPool.length = 0;
+    this._markPool.length = 0;
     this._handleGroups.length = 0;
     this.range = null;
   }
@@ -776,6 +780,7 @@ export class TextSelection {
   invalidateAll() {
     this._index.length = 0;
     this._rectPool.length = 0;
+    this._markPool.length = 0;
     this._handleGroups.length = 0;
     this._hideHandles();
     this.range = null;
@@ -1689,36 +1694,79 @@ export class TextSelection {
    */
   destroyPage(n) {
     this._rectPool[n] = {};
+    this._markPool[n] = null;
     this._handleGroups[n] = null;
   }
 
   /**
    * Draw page `n`'s search-match rectangles.
    * Match state lives on the word objects (`viewerSearch` sets it), which have no span to paint a background onto.
+   * The words of one match on one line share a rectangle.
    * @param {number} n
    */
   renderMarks(n) {
-    const groups = this.viewer._selectGroups[n];
-    if (groups) {
-      for (const group of Object.values(groups)) {
-        for (const el of [...group.querySelectorAll('.scribe-mark-rect')]) el.remove();
-      }
-    }
+    const pool = this._markPool[n] || (this._markPool[n] = new Map());
+    const keep = new Set();
     const words = this.viewer._wordObjs[n];
-    if (!words || words.length === 0) return;
-    for (const kw of words) {
-      if (!kw.activeMatch && !kw.fillBox) continue;
-      // A span-backed word (visible display modes) paints its own match background, so a mark rect on top would double-tint it.
-      if (kw.el) continue;
-      const div = document.createElement('div');
-      div.className = kw.activeMatch ? 'scribe-mark-rect scribe-mark-active' : 'scribe-mark-rect';
-      Object.assign(div.style, {
-        left: `${kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0)}px`,
-        top: `${kw.y() - kw.fontSize * 0.12}px`,
-        width: `${kw.width()}px`,
-        height: `${kw.fontSize * 0.84}px`,
-      });
-      this.viewer.getSelectGroup(n, kw.word.line.orientation).appendChild(div);
+    if (words && words.length) {
+      // Which match each word belongs to, so adjacent words of two different matches keep their own rectangles.
+      const matchOf = new Map();
+      this.viewer._searchState.matchList.forEach((m, i) => { for (const id of m.wordIds) matchOf.set(id, i); });
+      const air = 1 / (this.viewer.zoomLevel || 1);
+      /** @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, active: boolean, left: number, right: number, top: number, bottom: number}} */
+      let run = null;
+      const flush = () => {
+        if (!run) return;
+        const group = this.viewer.getSelectGroup(n, run.line.orientation);
+        // Reused across repaints so the active match's color can transition.
+        let div = pool.get(run.key);
+        if (!div || div.parentNode !== group) {
+          if (div) div.remove();
+          div = document.createElement('div');
+          pool.set(run.key, div);
+          if (group) group.appendChild(div);
+        }
+        div.className = run.active ? 'scribe-mark-rect scribe-mark-active' : 'scribe-mark-rect';
+        Object.assign(div.style, {
+          left: `${run.left - air}px`,
+          top: `${run.top - air}px`,
+          width: `${run.right - run.left + 2 * air}px`,
+          height: `${run.bottom - run.top + 2 * air}px`,
+        });
+        keep.add(run.key);
+        run = null;
+      };
+      for (const kw of words) {
+        // A span-backed word (visible display modes) paints its own match background, so a mark rect on top would double-tint it.
+        if ((!kw.activeMatch && !kw.fillBox) || kw.el) {
+          flush();
+          continue;
+        }
+        const member = matchOf.has(kw.word.id) ? matchOf.get(kw.word.id) : 'citation';
+        const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
+        const right = left + kw.width();
+        // Em offsets, not `fontAscentPx`/`fontDescentPx`, which vary by font and overstate the ink.
+        // 0.25 em below the baseline clears typical descenders.
+        const top = kw.yActual - kw.fontSize * 0.72;
+        const bottom = kw.yActual + kw.fontSize * 0.25;
+        if (run && run.line === kw.word.line && run.member === member && run.active === kw.activeMatch) {
+          run.left = Math.min(run.left, left);
+          run.right = Math.max(run.right, right);
+          run.top = Math.min(run.top, top);
+          run.bottom = Math.max(run.bottom, bottom);
+        } else {
+          flush();
+          run = {
+            key: kw.word.id, line: kw.word.line, member, active: kw.activeMatch, left, right, top, bottom,
+          };
+        }
+      }
+      flush();
+    }
+    for (const [key, div] of pool) {
+      if (keep.has(key)) continue;
+      div.remove();
+      pool.delete(key);
     }
   }
 }

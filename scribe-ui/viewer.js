@@ -242,6 +242,11 @@ export class ScribeViewer {
      */
     this._deferredTextTimer = null;
     /**
+     * The find glide in progress, or null.
+     * @type {?{raf: number}}
+     */
+    this._scrollGlide = null;
+    /**
      * Whether page rasters are currently deferred to previews.
      * Set/cleared with hysteresis in `updateCurrentPage`; force-cleared by any settled full render in `displayPage`.
      * @type {boolean}
@@ -1582,6 +1587,9 @@ export class ScribeViewer {
     const { clientHeight: clientH, scrollHeight } = this._scrollMetrics();
     const y = (this._scrollTop + clientH / 2) / this.zoomLevel;
     const pageNew = this.calcPage(y);
+
+    // The destination is already the current page during a find glide, so frames still centered on the page being left must not flip it back.
+    if (this._scrollGlide && pageNew !== this.state.cp.n) return false;
 
     // Row-stable cursor: while the center row still holds the cursor's page, scrolling must not move it.
     // Without this, an explicitly navigated right-hand page would snap back to its row's first page.
@@ -3437,19 +3445,52 @@ export class ScribeViewer {
   /**
    * Scroll so `kw` sits at the vertical center of the viewport, nudging horizontally only when it would sit off an edge.
    * @param {UiOcrWord} kw - A word in the rendered window.
+   * @param {object} [options]
+   * @param {boolean} [options.glide=false] - Glide to the word when it is within a screen's height; farther, or under reduced motion, jump.
    */
-  scrollToWord(kw) {
+  scrollToWord(kw, { glide = false } = {}) {
     // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
     const rect = kw.getClientRect();
     const margin = 30;
     const sc = this.scrollContainer;
     const zoom = this.zoomLevel || 1;
-    sc.scrollTop = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
+    const top = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
     const leftPx = rect.x * zoom - sc.scrollLeft;
     const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
     if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
     else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
-    this.updateCurrentPage();
+    if (this._scrollGlide) {
+      cancelAnimationFrame(this._scrollGlide.raf);
+      this._scrollGlide = null;
+    }
+    const from = sc.scrollTop;
+    const target = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, top));
+    const distance = Math.abs(target - from);
+    const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    // Beyond a screen, jump: the glide renders nothing on its way, so a longer one could pass pages that were never drawn.
+    if (!glide || reduce || distance === 0 || distance > sc.clientHeight) {
+      sc.scrollTop = top;
+      this.updateCurrentPage();
+      return;
+    }
+    const duration = Math.min(450, 300 + 0.6 * distance);
+    const t0 = performance.now();
+    const glideState = { raf: 0 };
+    this._scrollGlide = glideState;
+    const step = (now) => {
+      if (this._scrollGlide !== glideState) return;
+      const k = Math.min(1, (now - t0) / duration);
+      // Power 3.5 approximates cubic-bezier(.3, .8, .3, 1).
+      // A plain cubic keeps moving late in the glide, so it stops abruptly.
+      sc.scrollTop = from + (target - from) * (1 - (1 - k) ** 3.5);
+      if (k < 1) {
+        glideState.raf = requestAnimationFrame(step);
+        return;
+      }
+      this._scrollGlide = null;
+      this.updateCurrentPage();
+    };
+    glideState.raf = requestAnimationFrame(step);
   }
 
   getUiWords() {
@@ -4342,6 +4383,10 @@ export class ScribeViewer {
    */
   destroy() {
     unregisterViewer(this);
+    if (this._scrollGlide) {
+      cancelAnimationFrame(this._scrollGlide.raf);
+      this._scrollGlide = null;
+    }
     this.stopAutoScroll(false);
     this._linkConfirmHide(false);
     this._endScrollTextHide();

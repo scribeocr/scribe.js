@@ -1363,6 +1363,12 @@ export function createSearchBar(scribe, rootElem) {
 
   const searchCounterElem = document.createElement('span');
   searchCounterElem.className = 'scribe-search-count';
+  // The ghost draws its text from an attribute, so the counter's textContent is only the current value.
+  const searchCountValueElem = document.createElement('span');
+  searchCountValueElem.className = 'scribe-search-count-value in';
+  const searchCountGhostElem = document.createElement('span');
+  searchCountGhostElem.className = 'scribe-search-count-ghost';
+  searchCounterElem.append(searchCountValueElem, searchCountGhostElem);
   searchFieldElem.append(searchInputElem, searchCounterElem);
 
   const searchSepElem = document.createElement('span');
@@ -1380,9 +1386,18 @@ export function createSearchBar(scribe, rootElem) {
 
   function updateSearchCounter() {
     const s = scribe._searchState;
-    if (!s.search) searchCounterElem.textContent = '';
-    else if (!s.matchList.length) searchCounterElem.textContent = 'No results';
-    else searchCounterElem.textContent = `${s.activeMatch + 1}/${s.matchList.length}`;
+    let text = '';
+    if (s.search) text = s.matchList.length ? `${s.activeMatch + 1}/${s.matchList.length}` : 'No results';
+    if (text !== searchCountValueElem.textContent) {
+      // The reflow commits the swapped classes before they flip back, so both fades play.
+      searchCountGhostElem.dataset.text = searchCountValueElem.textContent;
+      searchCountValueElem.textContent = text;
+      searchCountGhostElem.classList.add('show');
+      searchCountValueElem.classList.remove('in');
+      void searchCounterElem.offsetWidth;
+      searchCountGhostElem.classList.remove('show');
+      searchCountValueElem.classList.add('in');
+    }
     const none = !s.matchList.length;
     for (const el of [searchPrevElem, searchNextElem]) {
       el.classList.toggle('disabled', none);
@@ -1390,7 +1405,7 @@ export function createSearchBar(scribe, rootElem) {
       el.tabIndex = none ? -1 : 0;
     }
     // The toolbar field keeps typed text clear of the count drawn inside it.
-    const countW = searchCounterElem.offsetWidth;
+    const countW = searchCountValueElem.offsetWidth;
     searchFieldElem.style.setProperty('--scribe-search-count-w', `${countW ? countW + 8 : 0}px`);
   }
 
@@ -1429,13 +1444,23 @@ export function createSearchBar(scribe, rootElem) {
   // The query whose matches `lastActive` indexes.
   let lastQuery = '';
   let searchDebounce = null;
+  /** @type {?ReturnType<typeof setTimeout>} Hides the bar once its exit has played. */
+  let closeTimer = null;
 
   async function openSearch() {
     if (!scribe.doc || !scribe.doc.pageMetrics || scribe.doc.pageMetrics.length === 0) return;
+    if (closeTimer) {
+      clearTimeout(closeTimer);
+      closeTimer = null;
+    }
+    findGroupElem.classList.remove('scribe-search-closing');
     findGroupElem.style.display = 'inline-flex';
     // The desktop find bar hangs from the Find button's right edge, which a desktop shell's window controls can push in from the toolbar's.
     const bar = findGroupElem.parentElement;
     if (bar) findGroupElem.style.setProperty('--scribe-search-right', `${bar.getBoundingClientRect().right - searchElem.getBoundingClientRect().right}px`);
+    // The display flip has to land before the class does, or the entrance has no start state to play from.
+    void findGroupElem.offsetWidth;
+    findGroupElem.classList.add('scribe-search-open');
     updateSearchCounter();
     searchElem.classList.add('active');
     scribe.state.searchMode = true;
@@ -1455,11 +1480,25 @@ export function createSearchBar(scribe, rootElem) {
     clearTimeout(searchDebounce);
     lastActive = scribe._searchState.activeMatch;
     lastQuery = scribe._searchState.search;
-    findGroupElem.style.display = 'none';
     searchElem.classList.remove('active');
     scribe.state.searchMode = false;
     findText(scribe, '');
     updateSearchCounter();
+    // The bar stays displayed through its exit, so it gives up focus now.
+    if (document.activeElement === searchInputElem) searchInputElem.blur();
+    findGroupElem.classList.remove('scribe-search-open');
+    if (findGroupElem.style.display === 'none') return;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      findGroupElem.style.display = 'none';
+      return;
+    }
+    findGroupElem.classList.add('scribe-search-closing');
+    if (closeTimer) clearTimeout(closeTimer);
+    closeTimer = setTimeout(() => {
+      closeTimer = null;
+      findGroupElem.classList.remove('scribe-search-closing');
+      findGroupElem.style.display = 'none';
+    }, 90);
   }
 
   function resetSearch() {
@@ -1470,7 +1509,7 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   searchElem.addEventListener('click', () => {
-    if (findGroupElem.style.display === 'none') openSearch();
+    if (!scribe.state.searchMode) openSearch();
     else closeSearch();
   });
 
@@ -1660,6 +1699,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       user-select: none;
       vertical-align: middle;
       width: var(--scribe-icon-size, 32px);
+      transition: background-color .12s ease, color .12s ease;
     }
 
     .${r} .cr-icon-button:hover {
@@ -3288,17 +3328,49 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-line);
       border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow);
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    .${r} .scribe-search-group.scribe-search-open {
+      opacity: 1;
+      transform: none;
+      transition: opacity .12s cubic-bezier(.2, .7, .3, 1), transform .12s cubic-bezier(.2, .7, .3, 1);
+    }
+    .${r} .scribe-search-group.scribe-search-closing {
+      opacity: 0;
+      transform: translateY(-2px);
+      transition: opacity .09s ease-in, transform .09s ease-in;
+      pointer-events: none;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-search-group,
+      .${r} .scribe-search-group.scribe-search-open,
+      .${r} .scribe-search-group.scribe-search-closing { transition: none; transform: none; }
+      .${r} .cr-icon-button,
+      .${r}-toolbar input.scribe-search-input,
+      .${r} .scribe-search-count > span { transition: none; }
     }
 
     /* These rules style the phone find bar, which sits outside the toolbar.
        The toolbar rules below restyle the same parts for the desktop find bar. */
     .${r} .scribe-search-count {
+      display: grid;
+      justify-items: center;
+      align-items: center;
       font-size: 13px;
       min-width: 6ch;
       padding: 0 6px;
       text-align: center;
       white-space: nowrap;
+      isolation: isolate;
     }
+    /* The values blend additively within the isolated count, so text both share, such as the match total, keeps its full ink through the cross-fade. */
+    .${r} .scribe-search-count > span { grid-area: 1 / 1; white-space: nowrap; mix-blend-mode: plus-lighter; }
+    .${r} .scribe-search-count-value { opacity: 0; }
+    .${r} .scribe-search-count-value.in { opacity: 1; transition: opacity .09s ease; }
+    .${r} .scribe-search-count-ghost { opacity: 0; transition: opacity .09s ease; }
+    .${r} .scribe-search-count-ghost.show { opacity: 1; transition: none; }
+    .${r} .scribe-search-count-ghost::before { content: attr(data-text); }
     /* The wrapper dissolves, so the field and the count are the phone find bar's own flex items. */
     .${r} .scribe-search-field { display: contents; }
     .${r} .scribe-search-sep,
@@ -3319,6 +3391,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       margin: 0;
       padding: 2px calc(var(--scribe-search-count-w, 0px) + 8px) 2px 8px;
       text-align: left;
+      transition: border-color .12s ease;
     }
     .${r}-toolbar input.scribe-search-input:focus { border-color: var(--scribe-accent); }
     .${r}-toolbar .scribe-search-count {
@@ -3326,7 +3399,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       right: 8px;
       top: 0;
       bottom: 0;
-      display: flex;
+      display: grid;
+      justify-items: end;
       align-items: center;
       min-width: 0;
       padding: 0;
@@ -3335,7 +3409,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-variant-numeric: tabular-nums;
       pointer-events: none;
     }
-    .${r}-toolbar .scribe-search-count:empty { display: none; }
     .${r}-toolbar .scribe-search-sep {
       display: block;
       width: 1px;

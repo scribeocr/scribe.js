@@ -73,9 +73,10 @@ export function findText(viewer, text) {
  * @param {number} index
  * @param {object} [options]
  * @param {boolean} [options.navigate=true] - Pass false to make the match active without moving the view.
+ * @param {boolean} [options.glide=false] - Glide to a near match.
  * @returns {Promise<void>}
  */
-export async function goToMatch(viewer, index, { navigate = true } = {}) {
+export async function goToMatch(viewer, index, { navigate = true, glide = false } = {}) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const s = _viewer._searchState;
   if (!s.matchList.length) {
@@ -118,7 +119,7 @@ export async function goToMatch(viewer, index, { navigate = true } = {}) {
 
   if (!navigate) return;
   const uiWord = uiWords.find((kw) => kw.word.id === match.wordIds[0]);
-  if (uiWord) _viewer.scrollToWord(uiWord);
+  if (uiWord) _viewer.scrollToWord(uiWord, { glide });
 }
 
 /**
@@ -128,7 +129,7 @@ export async function goToMatch(viewer, index, { navigate = true } = {}) {
  */
 export function nextMatch(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  return goToMatch(_viewer, _viewer._searchState.activeMatch + 1);
+  return goToMatch(_viewer, _viewer._searchState.activeMatch + 1, { glide: true });
 }
 
 /**
@@ -140,7 +141,7 @@ export function prevMatch(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const i = _viewer._searchState.activeMatch;
   // With no match active yet, "previous" is the last match, which index -1 wraps to.
-  return goToMatch(_viewer, i < 0 ? -1 : i - 1);
+  return goToMatch(_viewer, i < 0 ? -1 : i - 1, { glide: true });
 }
 
 /**
