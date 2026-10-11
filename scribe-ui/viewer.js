@@ -1579,16 +1579,21 @@ export class ScribeViewer {
     // Reading it before the frame's word build dirties layout keeps it cheap.
     this._scrollTop = this.scrollContainer.scrollTop;
     this._scrollLeft = this.scrollContainer.scrollLeft;
-    const y = (this._scrollTop + this._scrollMetrics().clientHeight / 2) / this.zoomLevel;
+    const { clientHeight: clientH, scrollHeight } = this._scrollMetrics();
+    const y = (this._scrollTop + clientH / 2) / this.zoomLevel;
     const pageNew = this.calcPage(y);
 
     // Row-stable cursor: while the center row still holds the cursor's page, scrolling must not move it.
     // Without this, an explicitly navigated right-hand page would snap back to its row's first page.
     if (pageNew >= 0 && this.state.cp.n !== pageNew && this.rowDistance(this.state.cp.n, pageNew) > 0) {
+      // The scroll clamps at either end of the document, which can leave the viewport center on the neighbor of a short first or last page the user navigated to.
+      // Scrolling toward an end carries the cursor along with the center, so this guard never stops a scroll from moving it.
+      const atTop = this._scrollTop <= 0;
+      const atBottom = this._scrollTop + clientH >= scrollHeight - 1;
+      if ((atTop && this.state.cp.n < pageNew) || (atBottom && this.state.cp.n > pageNew)) return false;
       // Defer the word build when the page changes too fast to read: update the page now and (re)arm a settle timer, so a fast sweep builds only the landing page.
       // Invis mode always defers (its text is invisible).
       // Visible modes defer only above the speed threshold, so a normal slow scroll builds immediately.
-      const clientH = this._scrollMetrics().clientHeight;
       const fast = scrollSpeed > clientH * ScribeViewer.deferTextVelocityFraction;
       const defer = this.state.displayMode === 'invis' || fast;
       // The raster strategy defers on its own, much lower cutoff than text (see the statics for why).
