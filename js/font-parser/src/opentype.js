@@ -2730,11 +2730,13 @@ function getEncoding(platformID, encodingID, languageID) {
 // Parse the naming `name` table.
 // FIXME: Format 1 additional fields are not supported yet.
 // ltag is the content of the `ltag' table, such as ['en', 'zh-Hans', 'de-CH-1904'].
-export function parseNameTable(data, start, ltag) {
+export function parseNameTable(data, start, ltag, length = data.byteLength - start) {
   const name = {};
+  const end = Math.min(start + length, data.byteLength);
+  if (end - start < 6) return name;
   const p = new parse.Parser(data, start);
   const format = p.parseUShort();
-  const count = p.parseUShort();
+  const count = Math.min(p.parseUShort(), Math.floor((end - start - 6) / 12));
   const stringOffset = p.offset + p.parseUShort();
   for (let i = 0; i < count; i++) {
     const platformID = p.parseUShort();
@@ -2746,7 +2748,8 @@ export function parseNameTable(data, start, ltag) {
     const offset = p.parseUShort();
     const language = getLanguageCode(platformID, languageID, ltag);
     const encoding = getEncoding(platformID, encodingID, languageID);
-    if (encoding !== undefined && language !== undefined) {
+    // Some otherwise usable subset fonts carry name records whose strings lie past the end of the table.
+    if (encoding !== undefined && language !== undefined && stringOffset + offset + byteLength <= end) {
       let text;
       if (encoding === utf16) {
         text = decode.UTF16(data, stringOffset + offset, byteLength);
@@ -3970,7 +3973,7 @@ function parseBuffer(buffer, options = {}) {
   }
 
   const nameTable = uncompressTable(data, nameTableEntry);
-  font.tables.name = parseNameTable(nameTable.data, nameTable.offset, ltagTable);
+  font.tables.name = parseNameTable(nameTable.data, nameTable.offset, ltagTable, nameTableEntry.length);
   font.names = font.tables.name;
 
   if (glyfTableEntry && locaTableEntry) {

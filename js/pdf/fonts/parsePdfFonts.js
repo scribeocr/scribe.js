@@ -1828,14 +1828,14 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 const nameEntry = opentype.readSfntTableDirectory(dv).name;
                 if (nameEntry) {
                   const names = /** @type {Object<string, Object<string, string>>} */ (
-                    opentype.parseNameTable(dv, nameEntry.offset, undefined));
+                    opentype.parseNameTable(dv, nameEntry.offset, undefined, nameEntry.length));
                   const psRaw = ((names.postScriptName && names.postScriptName.en)
                     || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
                   if (psRaw) {
                     baseName = psRaw;
                     familyName = ((names.preferredFamily && names.preferredFamily.en)
                       || (names.fontFamily && names.fontFamily.en)
-                      || baseName.replace(/-.+/, '').replace(/,.*/, ''));
+                      || baseName.replace(/-.+/, '').replace(/,.*/, '')).replace(/^[A-Z]{6}\+/, '');
                   }
                   const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
                     || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
