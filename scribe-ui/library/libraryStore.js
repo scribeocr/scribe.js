@@ -4,6 +4,7 @@ const HANDLE_KEY = 'library-root';
 const RECENTS_KEY = 'recent-folders';
 const RECENTS_MAX = 8;
 const DATA_DIR = '.scribe';
+const APP_DATA_DIR = 'libraries';
 
 const MANIFEST_VERSION = 1;
 const INDEX_FILE = 'search-index.json.gz';
@@ -112,6 +113,18 @@ const gzip = async (text) => new Uint8Array(
 const gunzip = (data) => new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
 
 /**
+ * Whether two directory handles name the same directory.
+ * Two handles to the same directory can be distinct objects.
+ * @param {FileSystemDirectoryHandle} a
+ * @param {FileSystemDirectoryHandle} b
+ */
+export const sameEntry = async (a, b) => a === b
+  // @ts-ignore - isSameEntry is Chromium-only.
+  || (typeof a.isSameEntry === 'function' && await a.isSameEntry(b).catch(() => false));
+
+const newFolderId = () => [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+
+/**
  * @param {FileSystemDirectoryHandle} dir
  * @param {string} name
  * @param {Blob|ArrayBuffer|Uint8Array} data
@@ -130,7 +143,10 @@ const writeFileIn = async (dir, name, data) => {
  */
 const readFileIn = async (dir, name) => {
   try {
-    return await (await dir.getFileHandle(name)).getFile();
+    const file = await (await dir.getFileHandle(name)).getFile();
+    // `writeFileIn` creates the file before its writable opens, so a zero-byte file is a write that has not finished.
+    // Nothing under `dataDir` is written empty.
+    return file.size ? file : null;
   } catch {
     return null;
   }
@@ -185,9 +201,23 @@ const freeFolderNameIn = async (dir, base) => {
 };
 
 export class LibraryStore {
-  /** @param {FileSystemDirectoryHandle} rootHandle */
-  constructor(rootHandle) {
+  /**
+   * @param {FileSystemDirectoryHandle} rootHandle
+   * @param {{id?: string, notesBeside?: ?boolean}} [known] - What the recents list records for the folder.
+   */
+  constructor(rootHandle, { id = '', notesBeside = null } = {}) {
     this.root = rootHandle;
+    /** Name of the folder's data directory in the site's storage. */
+    this.id = id;
+    /**
+     * Whether the sidecars live in the folder's hidden `.scribe/docs` rather than in the site's storage.
+     * Null until `init` settles it for a folder this version has not opened before.
+     * @type {?boolean}
+     */
+    this.notesBeside = notesBeside;
+    /** @type {?FileSystemDirectoryHandle} The folder's own `.scribe` directory when one exists, whether an older version's leftover or the sidecars' home. */
+    this.folderDataDir = null;
+    this.persistAsked = false;
     /** @type {?FileSystemDirectoryHandle} */
     this.dataDir = null;
     /** @type {?FileSystemDirectoryHandle} */
@@ -218,40 +248,87 @@ export class LibraryStore {
   }
 
   /**
-   * Folders opened before, newest first.
-   * @returns {Promise<FileSystemDirectoryHandle[]>}
+   * The recents list as stored, newest first.
+   * @typedef {{handle: FileSystemDirectoryHandle, lastOpened: number, id?: string, notesBeside?: boolean}} RecentRecord
+   * @returns {Promise<RecentRecord[]>}
    */
-  static async recentFolders() {
+  static async recentRecords() {
     try {
-      /** @type {?Array<{handle: FileSystemDirectoryHandle, lastOpened: number}>} */
       const list = await idbOp('readonly', (s) => s.get(RECENTS_KEY));
-      if (Array.isArray(list) && list.length) return list.map((r) => r.handle).filter(Boolean);
+      if (Array.isArray(list) && list.length) return list.filter((r) => r && r.handle);
       // A profile from before the recents list holds its one folder under the old key.
       const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
-      return legacy ? [legacy] : [];
+      return legacy ? [{ handle: legacy, lastOpened: 0 }] : [];
     } catch {
       return [];
     }
   }
 
   /**
-   * Record `handle` as the folder opened most recently.
+   * Folders opened before, newest first.
+   * @returns {Promise<FileSystemDirectoryHandle[]>}
+   */
+  static async recentFolders() {
+    return (await LibraryStore.recentRecords()).map((r) => r.handle);
+  }
+
+  /**
+   * @param {FileSystemDirectoryHandle} handle
+   * @returns {Promise<?RecentRecord>}
+   */
+  static async recordFor(handle) {
+    for (const r of await LibraryStore.recentRecords()) if (await sameEntry(r.handle, handle)) return r;
+    return null;
+  }
+
+  /**
+   * A store for a remembered folder, carrying what the recents list records for it.
    * @param {FileSystemDirectoryHandle} handle
    */
-  static async persistHandle(handle) {
+  static async forHandle(handle) {
+    const rec = await LibraryStore.recordFor(handle);
+    // A record without an id is from before this version, or from a folder just remembered.
+    // `init` decides where such a folder's data lives.
+    return new LibraryStore(handle, { id: rec?.id ?? '', notesBeside: rec?.id ? !!rec.notesBeside : null });
+  }
+
+  /**
+   * Record `handle` as the folder opened most recently, keeping what its record already holds.
+   * @param {FileSystemDirectoryHandle} handle
+   * @param {{id?: string, notesBeside?: boolean}} [patch]
+   */
+  static async persistHandle(handle, patch = {}) {
     try {
-      const recents = await LibraryStore.recentFolders();
+      /** @type {?RecentRecord} */
+      let own = null;
+      /** @type {RecentRecord[]} */
       const kept = [];
-      for (const h of recents) {
-        // Two handles to the same directory can be distinct objects.
-        // @ts-ignore
-        const same = h === handle || (typeof h.isSameEntry === 'function' && await h.isSameEntry(handle).catch(() => false));
-        if (!same) kept.push(h);
+      for (const r of await LibraryStore.recentRecords()) {
+        if (await sameEntry(r.handle, handle)) own = own ?? r;
+        else kept.push(r);
       }
       const now = Date.now();
-      const list = [handle, ...kept].slice(0, RECENTS_MAX).map((h, i) => ({ handle: h, lastOpened: now - i }));
+      const list = [{ ...(own ?? {}), ...patch, handle }, ...kept].slice(0, RECENTS_MAX).map((r, i) => ({ ...r, lastOpened: now - i }));
       await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
       await idbOp('readwrite', (s) => s.put(handle, HANDLE_KEY));
+    } catch { /* Private mode or blocked storage. */ }
+  }
+
+  /**
+   * Set record fields for a remembered folder without moving it in the list.
+   * @param {FileSystemDirectoryHandle} handle
+   * @param {{id?: string, notesBeside?: boolean}} patch
+   */
+  static async updateRecord(handle, patch) {
+    try {
+      const list = await LibraryStore.recentRecords();
+      let found = false;
+      for (let i = 0; i < list.length; i++) {
+        if (!(await sameEntry(list[i].handle, handle))) continue;
+        list[i] = { ...list[i], ...patch };
+        found = true;
+      }
+      if (found) await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
     } catch { /* Private mode or blocked storage. */ }
   }
 
@@ -284,16 +361,13 @@ export class LibraryStore {
    */
   static async forgetFolder(handle) {
     try {
-      const same = async (/** @type {FileSystemDirectoryHandle} */ h) => h === handle
-        // @ts-ignore
-        || (typeof h.isSameEntry === 'function' && await h.isSameEntry(handle).catch(() => false));
       const kept = [];
-      for (const h of await LibraryStore.recentFolders()) if (!(await same(h))) kept.push(h);
+      for (const r of await LibraryStore.recentRecords()) if (!(await sameEntry(r.handle, handle))) kept.push(r);
       const now = Date.now();
-      await idbOp('readwrite', (s) => s.put(kept.map((h, i) => ({ handle: h, lastOpened: now - i })), RECENTS_KEY));
+      await idbOp('readwrite', (s) => s.put(kept.map((r, i) => ({ ...r, lastOpened: now - i })), RECENTS_KEY));
       // An emptied list falls back to the single-folder key, which would bring the folder back.
       const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
-      if (legacy && await same(legacy)) await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
+      if (legacy && await sameEntry(legacy, handle)) await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
     } catch { /* Private mode or blocked storage. */ }
   }
 
@@ -310,36 +384,105 @@ export class LibraryStore {
    * @returns {Promise<LibraryStore>}
    */
   static async connectNew() {
+    // Opening only reads the folder, so the browser's prompt asks to view it, and each action that writes asks to edit.
+    // The desktop shell learns a folder's path only from the picker's write request, and grants that request without a prompt, so there the picker still asks to edit.
+    const mode = /** @type {any} */ (window).electronAPI ? 'readwrite' : 'read';
     // @ts-ignore - showDirectoryPicker is Chromium-only and absent from lib.dom.
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    const handle = await window.showDirectoryPicker({ mode });
     await LibraryStore.persistHandle(handle);
-    return new LibraryStore(handle);
+    return LibraryStore.forHandle(handle);
   }
 
-  /** @returns {Promise<'granted'|'prompt'|'denied'>} */
-  async permissionState() {
+  /** @returns {'read'|'readwrite'} */
+  openMode() {
+    return this.notesBeside ? 'readwrite' : 'read';
+  }
+
+  /**
+   * @param {'read'|'readwrite'} [mode]
+   * @returns {Promise<'granted'|'prompt'|'denied'>}
+   */
+  async permissionState(mode = this.openMode()) {
     // Handles without the permission API, such as OPFS, are always writable.
     // @ts-ignore - queryPermission is Chromium-only.
     if (!this.root.queryPermission) return 'granted';
     // @ts-ignore
-    return this.root.queryPermission({ mode: 'readwrite' });
+    return this.root.queryPermission({ mode });
   }
 
-  /** @returns {Promise<'granted'|'prompt'|'denied'>} Must run within a user gesture. */
-  async requestPermission() {
+  /**
+   * @param {'read'|'readwrite'} [mode]
+   * @returns {Promise<'granted'|'prompt'|'denied'>} Must run within a user gesture.
+   */
+  async requestPermission(mode = this.openMode()) {
     // @ts-ignore - requestPermission is Chromium-only.
     if (!this.root.requestPermission) return 'granted';
     // @ts-ignore
-    return this.root.requestPermission({ mode: 'readwrite' });
+    return this.root.requestPermission({ mode });
   }
 
-  /** Create the `.scribe/` data directories. Requires granted permission. */
+  /**
+   * Whether the folder may be written to, asking the user when it may not yet be.
+   * Must run within a user gesture, at the start of the action that writes.
+   * @returns {Promise<boolean>}
+   */
+  async ensureWritable() {
+    try {
+      if ((await this.permissionState('readwrite')) === 'granted') return true;
+      return (await this.requestPermission('readwrite')) === 'granted';
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Open the folder's data directories in the site's storage, and its sidecars where they live.
+   * Nothing is written into the folder unless its sidecars already live there.
+   */
   async init() {
-    this.dataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
-    this.docsDir = await this.dataDir.getDirectoryHandle('docs', { create: true });
+    if (!this.id) this.id = newFolderId();
+    const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR, { create: true });
+    this.dataDir = await appRoot.getDirectoryHandle(this.id, { create: true });
     this.textDir = await this.dataDir.getDirectoryHandle('text', { create: true });
     this.thumbsDir = await this.dataDir.getDirectoryHandle('thumbs', { create: true });
     this.pagesDir = await this.dataDir.getDirectoryHandle('pages', { create: true });
+    this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR).catch(() => null);
+    if (this.notesBeside === null) {
+      this.notesBeside = false;
+      if (this.folderDataDir && !(await readFileIn(this.dataDir, MANIFEST_FILE))) {
+        // A folder an older version opened keeps its data in its own `.scribe` directory, which is copied here once and left for the user to remove.
+        // Page previews are left out, since they are the bulk and are rendered again as pages are viewed.
+        for (const name of [MANIFEST_FILE, INDEX_FILE]) {
+          const file = await readFileIn(this.folderDataDir, name);
+          if (file) await writeFileIn(this.dataDir, name, file);
+        }
+        /** @type {Array<[?FileSystemDirectoryHandle, FileSystemDirectoryHandle]>} */
+        const pairs = [
+          [await this.folderDataDir.getDirectoryHandle('text').catch(() => null), this.textDir],
+          [await this.folderDataDir.getDirectoryHandle('thumbs').catch(() => null), this.thumbsDir],
+          [await this.folderDataDir.getDirectoryHandle('docs').catch(() => null), await this.dataDir.getDirectoryHandle('docs', { create: true })],
+        ];
+        for (const [from, to] of pairs) {
+          if (!from) continue;
+          // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+          for await (const [name, handle] of from.entries()) {
+            if (handle.kind === 'file') await writeFileIn(to, name, await handle.getFile());
+          }
+        }
+      }
+    }
+    if (this.notesBeside) {
+      this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
+      this.docsDir = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
+    } else {
+      this.docsDir = await this.dataDir.getDirectoryHandle('docs', { create: true });
+    }
+    await LibraryStore.updateRecord(this.root, { id: this.id, notesBeside: this.notesBeside });
+    try {
+      // The previews must leave room in the site's storage quota for the notes and the index.
+      const estimate = await navigator.storage.estimate();
+      if (estimate.quota) this.rasterBudget = Math.min(RASTER_BUDGET_BYTES, Math.floor(estimate.quota / 4));
+    } catch { /* The fixed budget stands. */ }
   }
 
   /**
@@ -562,6 +705,12 @@ export class LibraryStore {
    */
   async writeSidecar(hash, data) {
     await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`, data);
+    // Notes kept in the site's storage can be evicted under disk pressure unless the browser is asked to keep them.
+    // Chromium decides that request without a prompt.
+    if (!this.notesBeside && !this.persistAsked) {
+      this.persistAsked = true;
+      navigator.storage.persist?.().catch(() => {});
+    }
   }
 
   /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
@@ -693,6 +842,153 @@ export class LibraryStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Byte totals of what the app keeps for the folder, and of what an older version left inside it.
+   * `index` covers the manifest, the search index, the extracted text and the thumbnails.
+   * `older` is the folder's own `.scribe` directory, less the sidecars when they live there.
+   * @returns {Promise<{previews: number, index: number, notes: number, older: number}>}
+   */
+  async measure() {
+    /**
+     * @param {?FileSystemDirectoryHandle} dir
+     * @param {Set<string>} [skip]
+     * @returns {Promise<number>}
+     */
+    const sizeOf = async (dir, skip = new Set()) => {
+      if (!dir) return 0;
+      let total = 0;
+      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const [name, handle] of dir.entries()) {
+        if (skip.has(name)) continue;
+        total += handle.kind === 'directory' ? await sizeOf(handle) : (await handle.getFile()).size;
+      }
+      return total;
+    };
+    return {
+      previews: await sizeOf(this.pagesDir),
+      index: await sizeOf(this.dataDir, new Set(['pages', 'docs'])),
+      notes: await sizeOf(this.docsDir),
+      older: await sizeOf(this.folderDataDir, new Set(this.notesBeside ? ['docs'] : [])),
+    };
+  }
+
+  async clearPreviews() {
+    const pagesDir = /** @type {FileSystemDirectoryHandle} */ (this.pagesDir);
+    const names = [];
+    // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const name of pagesDir.keys()) names.push(name);
+    for (const name of names) await pagesDir.removeEntry(name, { recursive: true }).catch(() => {});
+    this.rasterBytes = 0;
+  }
+
+  /**
+   * Delete the derived data: the search index, the extracted text, the thumbnails and the previews.
+   * The manifest stays, so each document keeps its record of edits and recognition.
+   * A rebuild then regenerates the rest from the sidecars.
+   */
+  async deleteCaches() {
+    const dataDir = /** @type {FileSystemDirectoryHandle} */ (this.dataDir);
+    const names = [];
+    // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const name of dataDir.keys()) if (name !== 'docs' && name !== MANIFEST_FILE) names.push(name);
+    for (const name of names) await dataDir.removeEntry(name, { recursive: true }).catch(() => {});
+    this.textDir = await dataDir.getDirectoryHandle('text', { create: true });
+    this.thumbsDir = await dataDir.getDirectoryHandle('thumbs', { create: true });
+    this.pagesDir = await dataDir.getDirectoryHandle('pages', { create: true });
+    this.rasterBytes = 0;
+  }
+
+  /**
+   * Delete everything the app keeps for the folder, and any `.scribe` directory inside it.
+   * Removing that directory needs write access to the folder, without which it silently stays.
+   */
+  async deleteAll() {
+    await LibraryStore.deleteAppData(this.id);
+    if (this.folderDataDir) await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
+    this.folderDataDir = null;
+  }
+
+  /** @param {string} id */
+  static async deleteAppData(id) {
+    if (!id) return;
+    try {
+      const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR);
+      await appRoot.removeEntry(id, { recursive: true });
+    } catch { /* Nothing stored. */ }
+  }
+
+  /**
+   * @param {string} id
+   * @returns {Promise<{docs: number, edited: number}>}
+   */
+  static async countsIn(id) {
+    try {
+      const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR);
+      const file = await readFileIn(await appRoot.getDirectoryHandle(id), MANIFEST_FILE);
+      const parsed = file ? JSON.parse(await file.text()) : null;
+      const entries = Object.values(parsed?.docs ?? {});
+      return { docs: entries.length, edited: entries.filter((e) => e && e.editedAt).length };
+    } catch {
+      return { docs: 0, edited: 0 };
+    }
+  }
+
+  /**
+   * Remove what an older version left in the folder's `.scribe` directory, sparing the sidecars when they live there.
+   * Requires write access to the folder.
+   */
+  async removeOlderFiles() {
+    const dir = this.folderDataDir;
+    if (!dir) return;
+    if (!this.notesBeside) {
+      await this.root.removeEntry(DATA_DIR, { recursive: true });
+      this.folderDataDir = null;
+      return;
+    }
+    const names = [];
+    // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const name of dir.keys()) if (name !== 'docs') names.push(name);
+    for (const name of names) await dir.removeEntry(name, { recursive: true });
+  }
+
+  /**
+   * Move the sidecars into the folder's hidden `.scribe/docs` directory, or back into the site's storage.
+   * Moving into the folder requires write access to it.
+   * @param {boolean} beside
+   */
+  async setNotesBeside(beside) {
+    if (beside === this.notesBeside) return;
+    const from = /** @type {FileSystemDirectoryHandle} */ (this.docsDir);
+    let to;
+    if (beside) {
+      this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
+      to = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
+    } else {
+      to = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('docs', { create: true });
+    }
+    const names = [];
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [name, handle] of from.entries()) if (handle.kind === 'file') names.push(name);
+    for (const name of names) {
+      await writeFileIn(to, name, await (await from.getFileHandle(name)).getFile());
+      await deleteFileIn(from, name);
+    }
+    this.docsDir = to;
+    this.notesBeside = beside;
+    if (!beside && this.folderDataDir) {
+      // The folder keeps its `.scribe` directory only while an older version's files are still in it.
+      let rest = 0;
+      // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const name of this.folderDataDir.keys()) if (name !== 'docs') rest++;
+      if (rest) await this.folderDataDir.removeEntry('docs', { recursive: true }).catch(() => {});
+      else {
+        await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
+        this.folderDataDir = null;
+      }
+    }
+    await LibraryStore.updateRecord(this.root, { notesBeside: beside });
   }
 
   /**

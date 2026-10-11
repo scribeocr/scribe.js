@@ -424,6 +424,7 @@ function buildAppMenu(closeLabel, closeTab) {
         { id: 'open-folder', label: 'Open Folder…', enabled: false, click: send('open-folder') },
         { id: 'close-folder', label: closeLabel, enabled: false, click: send('close-folder') },
         { id: 'rebuild-index', label: 'Rebuild Search Index', enabled: false, click: send('rebuild-index') },
+        { id: 'library-storage', label: 'Library Storage…', enabled: false, click: send('library-storage') },
         { type: 'separator' },
         ...(closeTab ? [
           { id: 'close-tab', label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
@@ -516,6 +517,7 @@ function applyMenuState(state) {
   set('dark-mode', { checked: state.darkChecked });
   set('open-folder', { enabled: state.library });
   set('rebuild-index', { enabled: state.libraryConnected });
+  set('library-storage', { enabled: state.libraryConnected });
   set('close-folder', { enabled: state.libraryConnected });
 }
 

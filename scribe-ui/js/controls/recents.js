@@ -10,6 +10,7 @@
  * @property {string} dir - Where it is, or '' while unknown.
  * @property {() => void} open
  * @property {() => void} remove - Drops the entry from its store, after which the list changes.
+ * @property {() => Promise<boolean>} [confirm] - Asked before `remove` when removing would lose something, and resolves false to keep the entry.
  */
 
 /**

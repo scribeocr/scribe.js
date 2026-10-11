@@ -8,7 +8,9 @@ import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
-import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
+import {
+  LibraryStore, folderNameProblem, sameEntry, titleOf,
+} from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
@@ -72,6 +74,10 @@ const VIEW_COMPACT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCo
 // eslint-disable-next-line max-len
 const PREVIEW_PANEL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M13.5 4.5v15"/></svg>';
 
+const STORAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<rect x="3.5" y="4.5" width="17" height="6" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>';
+const BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
+
 // ScribeDoc methods that mutate persisted state.
 const MUTATOR_METHODS = [
   'addHighlights', 'addFreeText', 'addShapes', 'addTextAnnots', 'addRedactions', 'removeRedactions',
@@ -120,6 +126,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => boolean} [connected] Document library only: whether a folder is connected.
  * @property {() => Promise<void>} [openFolder] Document library only: pick a folder and open it as the library.
  * @property {() => Promise<void>} [rebuildIndex] Document library only: re-index every document in the connected folder.
+ * @property {() => void} [openStorage] Document library only: show the Library Storage sheet for the connected folder.
  * @property {() => Promise<void>} [closeFolder] Document library only: close the folder and the documents open from it.
  * @property {(tab: ?Object) => boolean} [ownsTab] Document library only: whether a tab holds a document from the open folder.
  * @property {() => string} [closeFolderLabel] Document library only: the Close Folder command's label, counting the folder's open documents.
@@ -392,13 +399,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
 @keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
-.scribe-pdf-viewer .scribe-library-crumbs { display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-crumbs { position: relative; display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-crumbs > .scribe-library-crumb:first-child { margin-left: -7px; }
 .scribe-pdf-viewer .scribe-library-crumb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
 .scribe-pdf-viewer .scribe-library-crumbs .cur { padding-left: 7px; overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-crumbs .scribe-library-crumb-ghost { position: absolute; margin: 0; box-sizing: border-box; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; justify-content: center; align-items: center; min-height: 89px; box-sizing: border-box; padding: 11px 10px 10px; }
 .scribe-pdf-viewer .scribe-library-fold { position: relative; display: block; flex: none; --fold-back: color-mix(in srgb, var(--scribe-ink) 12%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-surface)); --fold-line: color-mix(in srgb, var(--scribe-ink) 22%, transparent); }
 .scribe-pdf-viewer .scribe-library-fold > svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
@@ -480,7 +488,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card .ocrhair { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--scribe-accent); pointer-events: none; }
 /* Revert confirmation: the centered dialog grammar of the Fill & Sign signature dialog. */
 .scribe-pdf-viewer .scribe-library-confirm-scrim { position: absolute; inset: 0; z-index: 70; background: rgba(15, 18, 26, .42); display: flex; align-items: center; justify-content: center; }
-.scribe-pdf-viewer .scribe-library-confirm { width: min(430px, calc(100% - 32px)); box-sizing: border-box; padding: 16px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 12px; box-shadow: var(--scribe-menu-shadow); color: var(--scribe-ink); font-size: 13px; line-height: 1.5; }
+.scribe-pdf-viewer .scribe-library-confirm { width: min(430px, calc(100% - 32px)); box-sizing: border-box; padding: 16px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 12px; box-shadow: var(--scribe-menu-shadow); color: var(--scribe-ink); font-size: 13px; line-height: 1.5; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-confirm .ttl { font-size: 15px; font-weight: 650; margin-bottom: 10px; }
 .scribe-pdf-viewer .scribe-library-confirm .id { display: flex; gap: 10px; align-items: center; padding: 8px; border: 1px solid var(--scribe-line); border-radius: 8px; margin-bottom: 12px; }
 .scribe-pdf-viewer .scribe-library-confirm .id img { width: 38px; height: 50px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line-strong); background: #fff; flex: none; }
@@ -495,6 +503,39 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-confirm .foot button:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-confirm .foot button.danger { background: var(--scribe-danger); border-color: var(--scribe-danger); color: #fff; font-weight: 650; }
 .scribe-pdf-viewer .scribe-library-confirm .foot button.danger:hover { filter: brightness(.94); }
+.scribe-pdf-viewer .scribe-library-confirm .id .fth { width: 38px; height: 50px; flex: none; display: flex; align-items: center; justify-content: center; border: 1px solid var(--scribe-line-strong); background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-confirm .id .fth svg { width: 24px; height: 24px; }
+.scribe-pdf-viewer .scribe-library-confirm .chk { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 2px; cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-confirm .chk input { margin: 3px 0 0; accent-color: var(--scribe-accent); flex: none; }
+/* The Library Storage sheet, on the same plate as the start sheet. */
+.scribe-pdf-viewer .scribe-library-storage { width: 560px; max-width: calc(100% - 44px); margin: 28px auto 0; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 20px 24px 18px; box-sizing: border-box; font-size: 13px; line-height: 1.5; -webkit-user-select: text; user-select: text; }
+.scribe-pdf-viewer .scribe-library-storage .back { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--scribe-accent); background: none; border: none; cursor: pointer; padding: 2px 6px 2px 2px; margin: 0 0 10px -2px; border-radius: 5px; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-storage .back:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-storage .back svg { width: 14px; height: 14px; flex: none; }
+.scribe-pdf-viewer .scribe-library-storage h3 { margin: 0 0 2px; font-size: 15px; font-weight: 650; }
+.scribe-pdf-viewer .scribe-library-storage .sub { color: var(--scribe-ink-2); margin-bottom: 12px; }
+.scribe-pdf-viewer .scribe-library-storage .row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center; padding: 8px 0; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-storage .row .l { font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-storage .row .d { font-size: 12px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-storage .row .sz { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-storage button.act { font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 7px; border: 1px solid var(--scribe-line-strong); background: none; color: var(--scribe-ink); cursor: pointer; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-storage button.act:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-storage button.act:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 1px; }
+.scribe-pdf-viewer .scribe-library-storage button.act:disabled { color: var(--scribe-ink-3); cursor: default; background: none; }
+.scribe-pdf-viewer .scribe-library-storage button.act.danger { color: var(--scribe-danger); border-color: color-mix(in srgb, var(--scribe-danger) 45%, transparent); }
+.scribe-pdf-viewer .scribe-library-storage button.act.danger:hover { background: var(--scribe-danger-soft); }
+.scribe-pdf-viewer .scribe-library-storage button.act.danger:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); background: none; }
+.scribe-pdf-viewer .scribe-library-storage button.act.primary { background: var(--scribe-accent); border-color: var(--scribe-accent); color: #fff; font-weight: 650; }
+.scribe-pdf-viewer .scribe-library-storage .loc { padding-top: 10px; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-storage .loc .lt { font-weight: 600; margin-bottom: 6px; }
+.scribe-pdf-viewer .scribe-library-storage .opt { display: flex; gap: 9px; align-items: flex-start; padding: 5px 0; cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-storage .opt input { margin: 3px 0 0; accent-color: var(--scribe-accent); flex: none; }
+.scribe-pdf-viewer .scribe-library-storage .opt .ol { font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-storage .opt .od { font-size: 12px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-storage .mv { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 6px 0 2px; font-size: 12.5px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-storage .mv[hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-storage .foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-storage .foot .tot { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; }
 /* Start screen: one sheet with the two ways in, and one Recent list of folders and files. */
 .scribe-pdf-viewer .scribe-library-sheet { width: 560px; max-width: calc(100% - 44px); margin: 44px auto 0; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 26px 28px 22px; box-sizing: border-box; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-sheet-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -656,6 +697,11 @@ export function createLibraryInstance(viewer, opts) {
   const selectedPaths = new Set();
   /** @type {?string} Pivot card for Shift ranges. */
   let selAnchor = null;
+  let storageOpen = false;
+  /** @type {?{previews: number, index: number, notes: number, older: number}} Byte totals the open sheet shows, null while they are being measured. */
+  let storageSizes = null;
+  /** Set while the folder's data is being deleted, so closing the folder does not write it back. */
+  let discardOnClose = false;
 
   // --- DOM scaffold -------------------------------------------------------
 
@@ -1140,118 +1186,219 @@ export function createLibraryInstance(viewer, opts) {
    * @param {string} dirPath
    */
   const openDir = (dirPath) => {
+    const from = currentDir;
+    const up = from !== '' && (dirPath === '' || from.startsWith(`${dirPath}/`));
+    const came = up ? `${dirPath ? `${dirPath}/` : ''}${from.slice(dirPath ? dirPath.length + 1 : 0).split('/')[0]}/` : '';
     currentDir = dirPath;
     selectedPaths.clear();
-    selAnchor = null;
+    selAnchor = came || null;
+    if (came) selectedPaths.add(came);
     fullTextResults = null;
     filterText = '';
     searchInput.value = '';
     searchField.classList.remove('has-text');
+    crumbFadeDue = true;
     render();
     body.scrollTop = 0;
+    const cameElem = came ? /** @type {?HTMLElement} */ (body.querySelector(`[data-rel-path="${CSS.escape(came)}"]`)) : null;
+    if (cameElem) {
+      cameElem.focus({ preventScroll: true });
+      cameElem.scrollIntoView({ block: 'nearest' });
+    }
   };
 
   /** @type {?ReturnType<typeof createDropdown>} */
   let midDropdown = null;
+  let crumbFadeDue = false;
+  // `currentDir` already names the destination when the old trail is measured, so the trail keeps the directory it was built for.
+  let crumbsDir = '';
+  /** @returns {Array<{node: Node, key: string, left: number, top: number, width: number, height: number, textLeft: number, color: string, chev: ?DOMRect, chevOnly?: boolean}>} */
+  const measureCrumbs = () => {
+    const base = crumbsElem.getBoundingClientRect();
+    const items = [];
+    let seps = 0;
+    for (const node of crumbsElem.childNodes) {
+      let key = '';
+      let rect;
+      let color;
+      let textLeft;
+      /** @type {?DOMRect} */
+      let chev = null;
+      if (node instanceof Text) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        rect = range.getBoundingClientRect();
+        color = getComputedStyle(crumbsElem).color;
+        textLeft = rect.left;
+        key = 'root';
+      } else if (node instanceof HTMLElement && !node.classList.contains('scribe-library-crumb-ghost')) {
+        const cs = getComputedStyle(node);
+        rect = node.getBoundingClientRect();
+        color = cs.color;
+        textLeft = rect.left + parseFloat(cs.paddingLeft);
+        if (node.classList.contains('sep')) key = `sep${++seps}`;
+        else if (node.classList.contains('cur')) key = `dir:${crumbsDir}`;
+        else if (node.classList.contains('scribe-library-sort')) key = 'dots';
+        else if (node.classList.contains('scribe-library-crumb-root')) {
+          key = 'root';
+          const c = /** @type {SVGElement} */ (node.querySelector('svg')).getBoundingClientRect();
+          chev = new DOMRect(c.left - base.left, c.top - base.top, c.width, c.height);
+        } else key = node.dataset.dirTarget ? `dir:${node.dataset.dirTarget}` : 'root';
+      } else continue;
+      items.push({
+        node, key, left: rect.left - base.left, top: rect.top - base.top, width: rect.width, height: rect.height, textLeft: textLeft - base.left, color, chev,
+      });
+    }
+    return items;
+  };
   /** Rebuild the header breadcrumbs for `currentDir`; ancestors are links and drag-drop targets. */
   const syncCrumbs = () => {
+    for (const a of crumbsElem.getAnimations({ subtree: true })) a.finish();
+    for (const ghost of crumbsElem.querySelectorAll('.scribe-library-crumb-ghost')) ghost.remove();
+    const before = crumbFadeDue && visible && !window.matchMedia('(prefers-reduced-motion: reduce)').matches ? measureCrumbs() : null;
+    crumbFadeDue = false;
     crumbsElem.replaceChildren();
     midDropdown?.destroy();
     midDropdown = null;
     const segs = currentDir ? currentDir.split('/') : [];
     const rootLabel = isLibrary && store ? store.root.name : opts.name;
-    if (!segs.length) {
-      crumbsElem.textContent = '';
-      if (isLibrary) {
-        const rootMenuBtn = document.createElement('button');
-        rootMenuBtn.type = 'button';
-        rootMenuBtn.className = 'scribe-library-crumb-root';
-        rootMenuBtn.setAttribute('aria-haspopup', 'menu');
-        rootMenuBtn.title = rootLabel;
-        rootMenuBtn.innerHTML = `<span class="nm"></span>${CHEVRON_SVG}`;
-        /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
-        folderDropdown.attachTrigger(rootMenuBtn);
-        crumbsElem.appendChild(rootMenuBtn);
-        return;
-      }
+    if (!segs.length && isLibrary) {
+      const rootMenuBtn = document.createElement('button');
+      rootMenuBtn.type = 'button';
+      rootMenuBtn.className = 'scribe-library-crumb-root';
+      rootMenuBtn.setAttribute('aria-haspopup', 'menu');
+      rootMenuBtn.title = rootLabel;
+      rootMenuBtn.innerHTML = `<span class="nm"></span>${CHEVRON_SVG}`;
+      /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
+      folderDropdown.attachTrigger(rootMenuBtn);
+      crumbsElem.appendChild(rootMenuBtn);
+    } else if (!segs.length) {
       crumbsElem.appendChild(document.createTextNode(rootLabel));
-      return;
-    }
-    const rootBtn = document.createElement('button');
-    rootBtn.className = 'scribe-library-crumb';
-    rootBtn.textContent = rootLabel;
-    rootBtn.dataset.dirTarget = '';
-    rootBtn.addEventListener('click', () => openDir(''));
-    crumbsElem.appendChild(rootBtn);
-    const addSep = () => {
-      const sep = document.createElement('span');
-      sep.className = 'sep';
-      sep.textContent = '›';
-      crumbsElem.appendChild(sep);
-    };
-    // Collapsed ancestors stop being drop targets, the tradeoff for bounding the crumb width at any depth.
-    const hidden = segs.length >= 3 ? segs.length - 2 : 0;
-    if (hidden) {
-      addSep();
-      const midWrap = document.createElement('span');
-      midWrap.className = 'scribe-library-sort';
-      const midBtn = document.createElement('button');
-      midBtn.className = 'scribe-library-crumb';
-      midBtn.textContent = '…';
-      midBtn.title = segs.slice(0, hidden).join(' › ');
-      midBtn.setAttribute('aria-label', 'Hidden folders');
-      midBtn.setAttribute('aria-haspopup', 'menu');
-      const midMenu = document.createElement('div');
-      midMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
-      midMenu.setAttribute('role', 'menu');
-      midMenu.style.display = 'none';
-      const dropdown = createDropdown({
-        show: () => {
-          midMenu.style.display = '';
-          return midMenu;
-        },
-        hide: () => {
-          midMenu.style.display = 'none';
-        },
-        rows: '.scribe-library-menu-item',
-      });
-      midDropdown = dropdown;
-      for (let i = 0; i < hidden; i++) {
-        const item = document.createElement('div');
-        item.className = 'scribe-library-menu-item';
-        item.setAttribute('role', 'menuitem');
-        item.innerHTML = FOLDER_SVG;
-        // The shared folder glyph carries inline 100% sizing for card use, which would balloon in a menu row.
-        /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
-        item.appendChild(document.createTextNode(segs[i]));
-        const path = segs.slice(0, i + 1).join('/');
-        item.addEventListener('click', () => {
-          dropdown.close();
-          openDir(path);
+    } else {
+      const rootBtn = document.createElement('button');
+      rootBtn.className = 'scribe-library-crumb';
+      rootBtn.textContent = rootLabel;
+      rootBtn.dataset.dirTarget = '';
+      rootBtn.addEventListener('click', () => openDir(''));
+      crumbsElem.appendChild(rootBtn);
+      const addSep = () => {
+        const sep = document.createElement('span');
+        sep.className = 'sep';
+        sep.textContent = '›';
+        crumbsElem.appendChild(sep);
+      };
+      // Collapsed ancestors stop being drop targets, the tradeoff for bounding the crumb width at any depth.
+      const hidden = segs.length >= 3 ? segs.length - 2 : 0;
+      if (hidden) {
+        addSep();
+        const midWrap = document.createElement('span');
+        midWrap.className = 'scribe-library-sort';
+        const midBtn = document.createElement('button');
+        midBtn.className = 'scribe-library-crumb';
+        midBtn.textContent = '…';
+        midBtn.title = segs.slice(0, hidden).join(' › ');
+        midBtn.setAttribute('aria-label', 'Hidden folders');
+        midBtn.setAttribute('aria-haspopup', 'menu');
+        const midMenu = document.createElement('div');
+        midMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
+        midMenu.setAttribute('role', 'menu');
+        midMenu.style.display = 'none';
+        const dropdown = createDropdown({
+          show: () => {
+            midMenu.style.display = '';
+            return midMenu;
+          },
+          hide: () => {
+            midMenu.style.display = 'none';
+          },
+          rows: '.scribe-library-menu-item',
         });
-        midMenu.appendChild(item);
+        midDropdown = dropdown;
+        for (let i = 0; i < hidden; i++) {
+          const item = document.createElement('div');
+          item.className = 'scribe-library-menu-item';
+          item.setAttribute('role', 'menuitem');
+          item.innerHTML = FOLDER_SVG;
+          // The shared folder glyph carries inline 100% sizing for card use, which would balloon in a menu row.
+          /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
+          item.appendChild(document.createTextNode(segs[i]));
+          const path = segs.slice(0, i + 1).join('/');
+          item.addEventListener('click', () => {
+            dropdown.close();
+            openDir(path);
+          });
+          midMenu.appendChild(item);
+        }
+        dropdown.attachTrigger(midBtn);
+        midWrap.appendChild(midBtn);
+        midWrap.appendChild(midMenu);
+        crumbsElem.appendChild(midWrap);
       }
-      dropdown.attachTrigger(midBtn);
-      midWrap.appendChild(midBtn);
-      midWrap.appendChild(midMenu);
-      crumbsElem.appendChild(midWrap);
+      for (let i = hidden; i < segs.length; i++) {
+        addSep();
+        if (i === segs.length - 1) {
+          const cur = document.createElement('span');
+          cur.className = 'cur';
+          cur.textContent = segs[i];
+          crumbsElem.appendChild(cur);
+        } else {
+          const btn = document.createElement('button');
+          btn.className = 'scribe-library-crumb';
+          btn.textContent = segs[i];
+          const path = segs.slice(0, i + 1).join('/');
+          btn.dataset.dirTarget = path;
+          btn.addEventListener('click', () => openDir(path));
+          crumbsElem.appendChild(btn);
+        }
+      }
     }
-    for (let i = hidden; i < segs.length; i++) {
-      addSep();
-      if (i === segs.length - 1) {
-        const cur = document.createElement('span');
-        cur.className = 'cur';
-        cur.textContent = segs[i];
-        crumbsElem.appendChild(cur);
+    crumbsDir = currentDir;
+    if (!before) return;
+
+    const after = measureCrumbs();
+    const beforeBy = new Map(before.map((it) => [it.key, it]));
+    const afterBy = new Map(after.map((it) => [it.key, it]));
+    // A crumb stays only if its text keeps its place, so a name that moves fades out and back in.
+    // Names move only when ancestors collapse into the hidden-folders crumb.
+    /** @param {{textLeft: number}} a @param {{textLeft: number} | undefined} b */
+    const stays = (a, b) => !!b && Math.abs(a.textLeft - b.textLeft) <= 1;
+    const leaving = before.filter((it) => !stays(it, afterBy.get(it.key)));
+    const coming = after.filter((it) => !stays(it, beforeBy.get(it.key)));
+    for (const it of after) {
+      const was = beforeBy.get(it.key);
+      if (!stays(it, was) || !was) continue;
+      if (was.color !== it.color && it.node instanceof Element) it.node.animate([{ color: was.color }, { color: it.color }], { duration: 160, easing: 'cubic-bezier(.4, 0, .2, 1)' });
+      if (was.chev && !it.chev) leaving.push({ ...was, chevOnly: true });
+      if (it.chev && !was.chev) coming.push({ ...it, node: /** @type {Element} */ (/** @type {Element} */ (it.node).querySelector('svg')), left: it.chev.x, width: it.chev.width });
+    }
+    // Where a leaving crumb and an arriving one share space, the arrival waits for the departure, so two names never show through each other.
+    /** @param {{left: number, width: number, chev: ?DOMRect, chevOnly?: boolean}} it */
+    const span = (it) => (it.chevOnly && it.chev ? [it.chev.x, it.chev.x + it.chev.width] : [it.left, it.left + it.width]);
+    const through = leaving.some((l) => coming.some((c) => span(l)[0] < span(c)[1] - 1 && span(c)[0] < span(l)[1] - 1));
+    for (const it of leaving) {
+      /** @type {HTMLElement} */
+      let ghost;
+      if (it.node instanceof HTMLElement) {
+        ghost = /** @type {HTMLElement} */ (it.node.cloneNode(true));
+        if (it.chevOnly) /** @type {HTMLElement} */ (ghost.querySelector('.nm')).style.visibility = 'hidden';
       } else {
-        const btn = document.createElement('button');
-        btn.className = 'scribe-library-crumb';
-        btn.textContent = segs[i];
-        const path = segs.slice(0, i + 1).join('/');
-        btn.dataset.dirTarget = path;
-        btn.addEventListener('click', () => openDir(path));
-        crumbsElem.appendChild(btn);
+        ghost = document.createElement('span');
+        ghost.textContent = it.node.textContent;
       }
+      ghost.classList.add('scribe-library-crumb-ghost');
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.setAttribute('inert', '');
+      ghost.style.left = `${it.left}px`;
+      ghost.style.top = `${it.top}px`;
+      ghost.style.width = `${it.width}px`;
+      ghost.style.height = `${it.height}px`;
+      ghost.style.color = it.color;
+      crumbsElem.appendChild(ghost);
+      const fade = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: through ? 90 : 120, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' });
+      fade.finished.then(() => ghost.remove(), () => ghost.remove());
+    }
+    for (const it of coming) {
+      if (it.node instanceof Element) it.node.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: through ? 80 : 40, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'backwards' });
     }
   };
 
@@ -1345,13 +1492,14 @@ export function createLibraryInstance(viewer, opts) {
 
     let renderKey;
     if (!store || !manifest) renderKey = 'wall';
+    else if (storageOpen) renderKey = 'storage';
     else if (fullTextResults) renderKey = 'results';
     else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
     const renderSig = emptyLib ? 'empty-lib'
       : `r${recent.length ? 1 : 0}d${shownDirs.length ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
     // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
-    if (store && manifest && !fullTextResults && !emptyLib
+    if (store && manifest && !fullTextResults && !storageOpen && !emptyLib
       && renderKey === lastRenderKey && renderSig === lastRenderSig) {
       if (viewMode === 'grid') {
         /** @param {string} name */
@@ -1455,8 +1603,12 @@ export function createLibraryInstance(viewer, opts) {
           /** @type {HTMLElement} */ (row.querySelector('.p')).textContent = entry.dir;
           row.title = entry.dir ? `${entry.dir}/${entry.label}` : entry.label;
           const open = () => (elsewhere ? shell?.focusFolderWindow?.(entry.label) : entry.open());
-          const remove = (fromKeyboard) => {
+          /** @param {boolean} fromKeyboard */
+          const remove = async (fromKeyboard) => {
             if (row.classList.contains('leaving')) return;
+            // Asked before the row starts to leave, so a cancel leaves it in place.
+            if (entry.confirm && !(await entry.confirm())) return;
+            if (!row.isConnected || row.classList.contains('leaving')) return;
             recentExit = exitRecentRow(row).then(() => { recentExit = null; });
             if (fromKeyboard) {
               recentFocusIndex = i;
@@ -1499,6 +1651,11 @@ export function createLibraryInstance(viewer, opts) {
       if (!document.activeElement || document.activeElement === document.body) {
         openAct.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
       }
+      return;
+    }
+
+    if (storageOpen) {
+      body.appendChild(buildStorageSheet());
       return;
     }
 
@@ -2075,6 +2232,10 @@ export function createLibraryInstance(viewer, opts) {
    */
   const removeJustAdded = async (relPath) => {
     if (!store || !manifest) return;
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't remove “${titleOf(relPath)}” — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
     const name = titleOf(relPath);
     const folderName = store.root.name;
     const entry = manifest.docs[relPath];
@@ -2749,8 +2910,14 @@ export function createLibraryInstance(viewer, opts) {
    * @param {HTMLElement} hostElem - The folder's grid card or list row.
    * @param {boolean} [fresh]
    */
-  const startFolderRename = (dirPath, hostElem, fresh = false) => {
-    if (readOnly || renameEditing || fsOpBusy) return;
+  const startFolderRename = async (dirPath, hostElem, fresh = false) => {
+    if (readOnly || renameEditing || fsOpBusy || !store) return;
+    // Asked when the editor opens, since a commit on blur may come without the user gesture a prompt needs.
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't rename — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
+    if (renameEditing || fsOpBusy || !hostElem.isConnected) return;
     const inGrid = hostElem.classList.contains('scribe-library-card');
     const target = inGrid
       ? [...(hostElem.querySelector('.body .title')?.childNodes ?? [])].find((n) => n.nodeType === Node.TEXT_NODE)
@@ -2902,6 +3069,10 @@ export function createLibraryInstance(viewer, opts) {
   /** Create a placeholder-named folder in the browsed directory and drop its card straight into rename. */
   const createNewFolder = async () => {
     if (readOnly || !store || !manifest || fsOpBusy || renameEditing) return;
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't create a folder — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
     // A filter or search hides folder cards, so creating one returns to the browse view first.
     if (fullTextResults || filterText) {
       fullTextResults = null;
@@ -2958,6 +3129,12 @@ export function createLibraryInstance(viewer, opts) {
   // Blank-area right-click is the thumbnail view's create gesture.
   // The list views use the New menu instead.
   body.addEventListener('contextmenu', (e) => {
+    if (storageOpen) {
+      // The browser's menu stays available only for copying selected text.
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) e.preventDefault();
+      return;
+    }
     if (viewMode !== 'grid' || fullTextResults || filterText.trim()) return;
     if (readOnly || !store || !manifest || fsOpBusy || renameEditing) return;
     if (drag.active() || drag.touchDragRecent()) return;
@@ -3686,6 +3863,390 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?() => void} */
   let confirmClose = null;
 
+  /** @param {number} n */
+  const fmtBytes = (n) => (n >= 1024 * 1024 * 1024 ? `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
+    : n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB`
+      : `${n ? Math.max(1, Math.round(n / 1024)) : 0} KB`);
+
+  /**
+   * A confirmation dialog for deleting the library's own data.
+   * @param {{title: string, name: string, meta: string, intro: string, items: string[], note: string, confirmLabel: string, keep?: string, host?: HTMLElement}} spec
+   *   A `keep` label adds a checkbox under the list.
+   *   `host` is the element the scrim covers, the library surface by default.
+   * @returns {Promise<?{keep: boolean}>} Null when the dialog was dismissed.
+   */
+  const openStorageConfirm = (spec) => new Promise((resolve) => {
+    confirmClose?.();
+    const scrim = document.createElement('div');
+    scrim.className = 'scribe-library-confirm-scrim';
+    const dlg = document.createElement('div');
+    dlg.className = 'scribe-library-confirm';
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    const ttl = document.createElement('div');
+    ttl.className = 'ttl';
+    ttl.id = 'scribe-library-confirm-title';
+    ttl.textContent = spec.title;
+    dlg.setAttribute('aria-labelledby', ttl.id);
+    const id = document.createElement('div');
+    id.className = 'id';
+    const glyph = document.createElement('span');
+    glyph.className = 'fth';
+    glyph.innerHTML = FOLDER_SVG;
+    const idText = document.createElement('div');
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = spec.name;
+    const m = document.createElement('div');
+    m.className = 'm';
+    m.textContent = spec.meta;
+    idText.append(n, m);
+    id.append(glyph, idText);
+    const intro = document.createElement('div');
+    intro.textContent = spec.intro;
+    const list = document.createElement('ul');
+    for (const text of spec.items) {
+      const li = document.createElement('li');
+      li.textContent = text;
+      list.appendChild(li);
+    }
+    /** @type {?HTMLInputElement} */
+    let keepBox = null;
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = spec.note;
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    const confirm = document.createElement('button');
+    confirm.type = 'button';
+    confirm.className = 'danger';
+    confirm.textContent = spec.confirmLabel;
+    foot.append(cancel, confirm);
+    dlg.append(ttl, id, intro, list);
+    if (spec.keep) {
+      const label = document.createElement('label');
+      label.className = 'chk';
+      keepBox = document.createElement('input');
+      keepBox.type = 'checkbox';
+      const text = document.createElement('span');
+      text.textContent = spec.keep;
+      label.append(keepBox, text);
+      dlg.appendChild(label);
+    }
+    dlg.append(note, foot);
+    scrim.appendChild(dlg);
+    (spec.host ?? surface).appendChild(scrim);
+    confirmScrim = scrim;
+    /** @param {?{keep: boolean}} result */
+    const close = (result) => {
+      scrim.remove();
+      document.removeEventListener('keydown', onKey, true);
+      if (confirmScrim === scrim) {
+        confirmScrim = null;
+        confirmClose = null;
+      }
+      resolve(result);
+    };
+    confirmClose = () => close(null);
+    /** @param {KeyboardEvent} e */
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close(null);
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const order = /** @type {HTMLElement[]} */ ([keepBox, cancel, confirm].filter((el) => el));
+        const at = order.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+        order[(at + (e.shiftKey ? -1 : 1) + order.length) % order.length]?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey, true);
+    scrim.addEventListener('pointerdown', (e) => {
+      if (e.target === scrim) close(null);
+    });
+    cancel.addEventListener('click', () => close(null));
+    confirm.addEventListener('click', () => close({ keep: !!keepBox?.checked }));
+    cancel.focus();
+  });
+
+  const notesWhere = () => (store?.notesBeside ? 'beside the documents' : 'in this app');
+
+  const openStorage = () => {
+    if (!store) return;
+    const s = store;
+    storageOpen = true;
+    storageSizes = null;
+    if (!visible) showSurface();
+    render();
+    s.measure().then((sizes) => {
+      if (store !== s || !storageOpen) return;
+      storageSizes = sizes;
+      render();
+    }).catch(() => { });
+  };
+  const closeStorage = () => {
+    storageOpen = false;
+    render();
+  };
+
+  const deleteAllNotes = async () => {
+    if (!store || !manifest || !ingest) return;
+    const s = store;
+    const name = s.root.name;
+    const sizes = storageSizes ?? await s.measure();
+    const docs = Object.keys(manifest.docs).length;
+    const edited = Object.values(manifest.docs).filter((e) => e.editedAt).length;
+    const choice = await openStorageConfirm({
+      title: 'Delete all notes and edits?',
+      name,
+      meta: `${docs} document${docs === 1 ? '' : 's'} · ${edited} with notes or edits, kept ${notesWhere()}`,
+      intro: 'This discards the saved work for every document in the folder:',
+      items: [`Notes, edits and recognized text for ${edited} document${edited === 1 ? '' : 's'} (${fmtBytes(sizes.notes)})`],
+      note: s.notesBeside
+        ? 'The index and previews in this app are kept; the PDF files are not changed. This cannot be undone.'
+        : `The index and previews are kept; nothing in ${name} is changed. This cannot be undone.`,
+      confirmLabel: 'Delete notes and edits',
+    });
+    if (!choice || store !== s || !manifest || !ingest) return;
+    for (const entry of Object.values(manifest.docs)) if (entry.hash) closeTabsFor(entry.hash);
+    await forgetDocs(Object.keys(manifest.docs));
+    storageOpen = false;
+    storageSizes = null;
+    await ingest.scan();
+    render();
+    ingest.start();
+  };
+
+  const deleteLibraryData = async () => {
+    if (!store || !manifest) return;
+    const s = store;
+    const name = s.root.name;
+    const sizes = storageSizes ?? await s.measure();
+    const docs = Object.keys(manifest.docs).length;
+    const edited = Object.values(manifest.docs).filter((e) => e.editedAt).length;
+    const beside = !!s.notesBeside;
+    const plural = (/** @type {number} */ count) => (count === 1 ? '' : 's');
+    const inApp = sizes.previews + sizes.index + (beside ? 0 : sizes.notes);
+    const items = [`Page previews, thumbnails, extracted text and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
+    if (beside) items.push(`The hidden .scribe folder inside ${name}${edited ? `, holding notes, edits and recognized text for ${edited} document${plural(edited)}` : ''} (${fmtBytes(sizes.notes)})`);
+    else if (edited) items.push(`Notes, edits and recognized text for ${edited} document${plural(edited)} (${fmtBytes(sizes.notes)})`);
+    if (sizes.older && !beside) items.push(`The files an older version left inside ${name} (${fmtBytes(sizes.older)})`);
+    items.push('Its place in the Recent list');
+    const touchesFolder = beside || sizes.older > 0;
+    const choice = await openStorageConfirm({
+      title: `Delete library data for ${name}?`,
+      name,
+      meta: beside
+        ? `${docs} document${plural(docs)} · ${fmtBytes(inApp)} in this app, ${fmtBytes(sizes.notes)} of notes beside the documents`
+        : `${docs} document${plural(docs)} · ${fmtBytes(inApp)} in this app`,
+      intro: 'This deletes everything this app keeps for the folder:',
+      items,
+      keep: edited ? `Keep notes and edits (${edited} document${plural(edited)}, ${fmtBytes(sizes.notes)}${beside ? ', beside the documents' : ''})` : undefined,
+      note: touchesFolder ? 'The PDF files are not changed. This cannot be undone.' : `Nothing in ${name} is changed. This cannot be undone.`,
+      confirmLabel: 'Delete library data',
+    });
+    if (!choice || store !== s || !manifest) return;
+    if (choice.keep) {
+      ingest?.cancel();
+      panes.mounted()?.destroy();
+      sessions.reset();
+      await s.deleteCaches();
+      index = new LibraryIndex();
+      if (ingest) ingest.index = index;
+      storageOpen = false;
+      storageSizes = null;
+      await rebuildIndex();
+      return;
+    }
+    // Asked before the folder closes, while the confirmation's click still counts as a user gesture.
+    if (touchesFolder && !(await s.ensureWritable())) viewer._showToast(`Editing ${name} wasn't allowed, so its .scribe folder stays.`);
+    const handle = s.root;
+    discardOnClose = true;
+    try {
+      await closeFolder();
+    } finally {
+      discardOnClose = false;
+    }
+    await s.deleteAll();
+    await LibraryStore.forgetFolder(handle);
+    recentFolders = await LibraryStore.recentFolders();
+    publishFolders();
+    viewer._showToast(`Deleted library data for ${name}.`);
+  };
+
+  const buildStorageSheet = () => {
+    const s = /** @type {LibraryStore} */ (store);
+    const name = s.root.name;
+    const sizes = storageSizes;
+    const docs = manifest ? Object.keys(manifest.docs).length : 0;
+    const edited = manifest ? Object.values(manifest.docs).filter((e) => e.editedAt).length : 0;
+    const sheet = document.createElement('div');
+    sheet.className = 'scribe-library-storage';
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.className = 'back';
+    back.innerHTML = `${BACK_SVG}<span></span>`;
+    /** @type {HTMLElement} */ (back.querySelector('span')).textContent = `Back to ${name}`;
+    back.addEventListener('click', closeStorage);
+    const heading = document.createElement('h3');
+    heading.textContent = 'Library storage';
+    const sub = document.createElement('div');
+    sub.className = 'sub';
+    sub.textContent = `What this app keeps for ${name}. The PDF files themselves are never touched.`;
+    sheet.append(back, heading, sub);
+    /**
+     * @param {string} label @param {string} detail @param {number} bytes @param {string} action @param {() => void} onAct @param {boolean} [danger]
+     */
+    const row = (label, detail, bytes, action, onAct, danger = false) => {
+      const el = document.createElement('div');
+      el.className = 'row';
+      const text = document.createElement('div');
+      const l = document.createElement('div');
+      l.className = 'l';
+      l.textContent = label;
+      const d = document.createElement('div');
+      d.className = 'd';
+      d.textContent = detail;
+      text.append(l, d);
+      const size = document.createElement('div');
+      size.className = 'sz';
+      size.textContent = sizes ? fmtBytes(bytes) : 'Measuring…';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = danger ? 'act danger' : 'act';
+      btn.textContent = action;
+      btn.disabled = !sizes || !bytes;
+      btn.addEventListener('click', onAct);
+      el.append(text, size, btn);
+      sheet.appendChild(el);
+    };
+    row('Page previews', 'Rendered pages, kept so documents open at once. Rendered again as pages are viewed.', sizes?.previews ?? 0, 'Clear', async () => {
+      await s.clearPreviews();
+      storageSizes = await s.measure();
+      if (store === s && storageOpen) render();
+    });
+    row('Search index, extracted text and thumbnails', 'Rebuilt from the documents and their notes.', sizes?.index ?? 0, 'Rebuild', () => {
+      closeStorage();
+      rebuildIndex();
+    });
+    row('Notes, edits and recognized text', edited
+      ? `${edited} of ${docs} document${docs === 1 ? '' : 's'} ${edited === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`
+      : `No document has saved work. Kept ${notesWhere()}.`, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
+    if (sizes?.older) {
+      row('Files an older version left in the folder', `Previews and an index inside ${name}/.scribe that this version no longer uses.`, sizes.older, 'Remove', async () => {
+        if (!(await s.ensureWritable())) {
+          viewer._showToast(`Couldn't remove them — editing ${name} wasn't allowed.`);
+          return;
+        }
+        try {
+          await s.removeOlderFiles();
+        } catch (err) {
+          viewer._showToast(`Couldn't remove them — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the files could not be deleted'}.`);
+        }
+        storageSizes = await s.measure();
+        if (store === s && storageOpen) render();
+      });
+    }
+    const loc = document.createElement('div');
+    loc.className = 'loc';
+    const lt = document.createElement('div');
+    lt.className = 'lt';
+    lt.textContent = `Where this app keeps your notes for ${name}`;
+    loc.appendChild(lt);
+    const radioName = `scribe-library-notes-${instanceId}`;
+    const current = s.notesBeside ? 'beside' : 'app';
+    /** @type {HTMLInputElement[]} */
+    const radios = [];
+    /** @param {'app'|'beside'} value @param {string} label @param {string} detail */
+    const option = (value, label, detail) => {
+      const el = document.createElement('label');
+      el.className = 'opt';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = radioName;
+      input.value = value;
+      input.checked = value === current;
+      const text = document.createElement('span');
+      const ol = document.createElement('div');
+      ol.className = 'ol';
+      ol.textContent = label;
+      const od = document.createElement('div');
+      od.className = 'od';
+      od.textContent = detail;
+      text.append(ol, od);
+      el.append(input, text);
+      radios.push(input);
+      loc.appendChild(el);
+    };
+    option('app', 'In this app', `Nothing is written into ${name}. Notes stay on this computer, in this app.`);
+    option('beside', 'Beside the documents', `A hidden .scribe folder inside ${name} holds your notes, so they travel with the folder. Previews and the index stay in this app.${shell ? '' : ' The browser will ask for permission to edit the folder.'}`);
+    const mv = document.createElement('div');
+    mv.className = 'mv';
+    mv.hidden = true;
+    const mvText = document.createElement('span');
+    const mvCancel = document.createElement('button');
+    mvCancel.type = 'button';
+    mvCancel.className = 'act';
+    mvCancel.textContent = 'Cancel';
+    const mvGo = document.createElement('button');
+    mvGo.type = 'button';
+    mvGo.className = 'act primary';
+    mvGo.textContent = 'Move';
+    mv.append(mvText, mvCancel, mvGo);
+    loc.appendChild(mv);
+    const chosen = () => (radios.find((r) => r.checked)?.value === 'beside' ? 'beside' : 'app');
+    const resetChoice = () => {
+      for (const r of radios) r.checked = r.value === current;
+      mv.hidden = true;
+    };
+    for (const r of radios) {
+      r.addEventListener('change', () => {
+        if (chosen() === current) {
+          mv.hidden = true;
+          return;
+        }
+        mvText.textContent = `Move ${sizes ? fmtBytes(sizes.notes) : 'the'} notes ${chosen() === 'beside' ? 'beside the documents' : 'into this app'}?`;
+        mv.hidden = false;
+      });
+    }
+    mvCancel.addEventListener('click', resetChoice);
+    mvGo.addEventListener('click', async () => {
+      const beside = chosen() === 'beside';
+      if (beside && !(await s.ensureWritable())) {
+        viewer._showToast(`Couldn't move the notes — editing ${name} wasn't allowed.`);
+        resetChoice();
+        return;
+      }
+      mvGo.disabled = true;
+      try {
+        await s.setNotesBeside(beside);
+        sessions.reset();
+      } catch (err) {
+        viewer._showToast(`Couldn't move the notes — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the files could not be moved'}.`);
+      }
+      storageSizes = await s.measure();
+      if (store === s && storageOpen) render();
+    });
+    const foot = document.createElement('div');
+    foot.className = 'foot';
+    const tot = document.createElement('span');
+    tot.className = 'tot';
+    tot.textContent = sizes ? `${fmtBytes(sizes.previews + sizes.index + sizes.notes)} in all` : 'Measuring…';
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'act danger';
+    del.textContent = 'Delete Library Data…';
+    del.disabled = !sizes;
+    del.addEventListener('click', deleteLibraryData);
+    foot.append(tot, del);
+    sheet.append(loc, foot);
+    return sheet;
+  };
+
   /**
    * The revert confirmation: who the document is, what will be discarded, and that the file itself is untouched.
    * @param {string} relPath
@@ -3869,14 +4430,62 @@ export function createLibraryInstance(viewer, opts) {
       label: h.name,
       dir: folderDirs.get(h.name) ?? '',
       open: () => openRecentFolder(h),
+      // The open folder's data is in use, so only Library Storage deletes it.
       remove: async () => {
+        const rec = await LibraryStore.recordFor(h);
+        if (rec?.id && !(store && await sameEntry(store.root, h))) await LibraryStore.deleteAppData(rec.id);
         await LibraryStore.forgetFolder(h);
         recentFolders = await LibraryStore.recentFolders();
         publishFolders();
       },
+      confirm: async () => {
+        const rec = await LibraryStore.recordFor(h);
+        // Notes kept beside the documents stay in the folder, so forgetting it loses only caches.
+        if (!rec?.id || rec.notesBeside || (store && await sameEntry(store.root, h))) return true;
+        const counts = await LibraryStore.countsIn(rec.id);
+        if (!counts.edited) return true;
+        return !!(await openStorageConfirm({
+          title: `Forget ${h.name}?`,
+          name: h.name,
+          meta: `${counts.docs} document${counts.docs === 1 ? '' : 's'} · notes or edits for ${counts.edited}`,
+          intro: 'This removes the folder from Recent and deletes what this app keeps for it:',
+          items: ['Page previews, thumbnails and the search index', `Notes, edits and recognized text for ${counts.edited} document${counts.edited === 1 ? '' : 's'}`],
+          note: `Nothing in ${h.name} is changed. This cannot be undone.`,
+          confirmLabel: 'Forget folder',
+          host: visible ? surface : viewer.pdfViewerElem,
+        }));
+      },
     })), async () => {
-      await LibraryStore.clearRecentFolders();
-      recentFolders = [];
+      const records = await LibraryStore.recentRecords();
+      /** @type {string[]} */
+      const names = [];
+      let edited = 0;
+      for (const r of records) {
+        if (!r.id || r.notesBeside || (store && await sameEntry(store.root, r.handle))) continue;
+        const counts = await LibraryStore.countsIn(r.id);
+        if (!counts.edited) continue;
+        edited += counts.edited;
+        names.push(r.handle.name);
+      }
+      if (edited) {
+        const ok = await openStorageConfirm({
+          title: 'Clear the Recent list?',
+          name: names.join(', '),
+          meta: `notes or edits for ${edited} document${edited === 1 ? '' : 's'} in ${names.length} folder${names.length === 1 ? '' : 's'}`,
+          intro: 'This forgets every listed folder and deletes what this app keeps for them:',
+          items: ['Page previews, thumbnails and search indexes', `Notes, edits and recognized text for ${edited} document${edited === 1 ? '' : 's'}`],
+          note: 'The folders themselves are not changed. This cannot be undone.',
+          confirmLabel: 'Clear and delete',
+          host: visible ? surface : viewer.pdfViewerElem,
+        });
+        if (!ok) return;
+      }
+      for (const r of records) {
+        if (store && await sameEntry(store.root, r.handle)) continue;
+        if (r.id) await LibraryStore.deleteAppData(r.id);
+        await LibraryStore.forgetFolder(r.handle);
+      }
+      recentFolders = await LibraryStore.recentFolders();
       publishFolders();
     });
   };
@@ -4005,8 +4614,11 @@ export function createLibraryInstance(viewer, opts) {
     viewer._showToast(`“${name}” is already open in another window.`);
     shell?.focusFolderWindow?.(name);
   };
-  /** @param {LibraryStore} s */
-  const openLibrary = async (s) => {
+  /**
+   * @param {LibraryStore} s
+   * @param {{resumed?: boolean}} [opts] - `resumed` marks a launch reopening its last folder: the user asked for nothing, so a failure reports nothing.
+   */
+  const openLibrary = async (s, { resumed = false } = {}) => {
     if (isLibrary && !(await holdFolderLock(s.root.name))) {
       refuseHeldElsewhere(s.root.name);
       return;
@@ -4040,8 +4652,10 @@ export function createLibraryInstance(viewer, opts) {
         recentFolders = await LibraryStore.recentFolders();
         publishFolders();
       }
-      viewer._showToast(gone ? `“${s.root.name}” is no longer there and was removed from Recent.`
-        : `Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      if (!resumed) {
+        viewer._showToast(gone ? `“${s.root.name}” is no longer there and was removed from Recent.`
+          : `Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
+      }
       render();
       syncBarForStore();
       viewer._notifyMenuState();
@@ -4236,6 +4850,10 @@ export function createLibraryInstance(viewer, opts) {
    */
   const createPdfFromImages = async (files) => {
     if (!store || !ingest || creatingPdf) return;
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't add a PDF — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
     // Match the importer's name sort so the derived file name is page 1's image.
     const images = files.filter((f) => isImageName(f.name))
       .sort((a, b) => ((a.name > b.name) ? 1 : ((b.name > a.name) ? -1 : 0)));
@@ -4277,6 +4895,10 @@ export function createLibraryInstance(viewer, opts) {
 
   const startIngestFiles = async (files) => {
     if (!store || !ingest) return;
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't add the files — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
     const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
     if (!pdfs.length) {
       viewer._showToast('This folder holds PDFs — none of the dropped files were PDFs.');
@@ -4314,6 +4936,10 @@ export function createLibraryInstance(viewer, opts) {
   const copyTabIntoFolder = async (tab, toIndex) => {
     if (!store || !ingest || !manifest || !tab || ownsTab(tab)) return;
     const folderName = store.root.name;
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't copy “${tab.name}” into ${folderName} — editing the folder wasn't allowed.`);
+      return;
+    }
     const bytes = tab.doc?.images?.pdfData;
     if (!bytes) {
       viewer._showToast(`Couldn't copy “${tab.name}” into ${folderName} — its PDF data is not available.`);
@@ -4414,7 +5040,7 @@ export function createLibraryInstance(viewer, opts) {
     try {
       const s = await LibraryStore.connectNew();
       if ((await s.permissionState()) === 'granted') return s;
-      viewer._showToast("Couldn't connect the folder — write access to it was refused.");
+      viewer._showToast("Couldn't connect the folder — access to it was refused.");
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return null;
       viewer._showToast(`Couldn't connect the folder — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'something went wrong'}.`);
@@ -4422,25 +5048,24 @@ export function createLibraryInstance(viewer, opts) {
     return null;
   };
 
-  /**
-   * Leave the open folder, saving and closing the documents open from it.
-   * @returns {Promise<number>} How many of the folder's documents were closed.
-   */
-  const disconnectFolder = async () => {
-    if (!store) return 0;
+  /** Close the open folder, saving and closing the documents open from it. */
+  const closeFolder = async () => {
+    if (!store) return;
     const folderTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
     for (const tab of folderTabs) await saveTabIfDirty(tab);
     ingest?.cancel();
+    storageOpen = false;
+    storageSizes = null;
     if (manifestTimer !== null) {
       window.clearTimeout(manifestTimer);
       manifestTimer = null;
-      if (manifest) store.writeManifest(manifest).catch(() => {});
+      if (manifest && !discardOnClose) store.writeManifest(manifest).catch(() => {});
     }
 
     if (indexTimer !== null) {
       window.clearTimeout(indexTimer);
       indexTimer = null;
-      store.writeSearchIndex(index.serialize()).catch(() => {});
+      if (!discardOnClose) store.writeSearchIndex(index.serialize()).catch(() => {});
     }
 
     panes.mounted()?.destroy();
@@ -4479,23 +5104,6 @@ export function createLibraryInstance(viewer, opts) {
       try { resumeStorage.removeItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
     }
     if (visible) render();
-    return folderTabs.length;
-  };
-  const closeFolder = async () => {
-    if (!store) return;
-    const handle = store.root;
-    const folderName = handle.name;
-    // Captured before the folder's tabs close, so Undo can reopen them through the restore path.
-    const record = buildResumeRecord();
-    const n = await disconnectFolder();
-    viewer._showToast(`Closed ${folderName}${n ? ` and ${n} document${n === 1 ? '' : 's'}` : ''}`, {
-      actionLabel: 'Undo',
-      onAction: async () => {
-        if (store) return;
-        resumeRecord = record;
-        await openLibrary(new LibraryStore(handle));
-      },
-    });
   };
   const openFolder = async () => {
     const s = await pickFolder();
@@ -4504,7 +5112,7 @@ export function createLibraryInstance(viewer, opts) {
       refuseHeldElsewhere(s.root.name);
       return;
     }
-    await disconnectFolder();
+    await closeFolder();
     showSurface();
     await openLibrary(s);
   };
@@ -4514,7 +5122,7 @@ export function createLibraryInstance(viewer, opts) {
    * @param {FileSystemDirectoryHandle} handle
    */
   const openRecentFolder = async (handle) => {
-    const s = new LibraryStore(handle);
+    const s = await LibraryStore.forHandle(handle);
     try {
       if ((await s.permissionState()) !== 'granted' && (await s.requestPermission()) !== 'granted') {
         viewer._showToast(`Couldn't open “${handle.name}” — access to the folder was refused.`);
@@ -4528,7 +5136,7 @@ export function createLibraryInstance(viewer, opts) {
       refuseHeldElsewhere(handle.name);
       return;
     }
-    await disconnectFolder();
+    await closeFolder();
     await LibraryStore.persistHandle(handle);
     showSurface();
     await openLibrary(s);
@@ -4607,6 +5215,7 @@ export function createLibraryInstance(viewer, opts) {
     addFolderMenuSep();
     addFolderMenuItem(REFRESH_SVG, 'Refresh Folder', () => refreshBtn.click());
     addFolderMenuItem(LIBRARY_SVG, 'Rebuild Search Index', () => rebuildIndex());
+    addFolderMenuItem(STORAGE_SVG, 'Library Storage…', () => openStorage());
     addFolderMenuSep();
   }
   const folderMenuCloseItem = isLibrary ? addFolderMenuItem(CLOSE_X_SVG, 'Close Folder', () => closeFolder()) : null;
@@ -4618,6 +5227,8 @@ export function createLibraryInstance(viewer, opts) {
   let closeFolderItem = null;
   /** @type {?HTMLElement} */
   let rebuildItem = null;
+  /** @type {?HTMLElement} */
+  let storageItem = null;
   if (viewer._appMenu && isLibrary) {
     openFolderItem = viewer._appMenu.addAction('Open folder', FOLDER_SVG, openFolder);
     // Sits directly under "Open file".
@@ -4628,6 +5239,8 @@ export function createLibraryInstance(viewer, opts) {
     closeFolderItem.addEventListener('mouseleave', () => previewClose(false));
     rebuildItem = viewer._appMenu.addAction('Rebuild search index', LIBRARY_SVG, () => { if (store) rebuildIndex(); });
     viewer._appMenu.menuElem.insertBefore(rebuildItem, closeFolderItem.nextSibling);
+    storageItem = viewer._appMenu.addAction('Library storage…', STORAGE_SVG, () => { if (store) openStorage(); });
+    viewer._appMenu.menuElem.insertBefore(storageItem, rebuildItem.nextSibling);
   }
   const folderDocCount = () => viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath)).length;
   const closeFolderLabel = () => {
@@ -4642,7 +5255,7 @@ export function createLibraryInstance(viewer, opts) {
     };
     relabel(folderMenuCloseItem, closeFolderLabel());
     relabel(closeFolderItem, n ? `Close folder and ${n} document${n === 1 ? '' : 's'}` : 'Close folder');
-    for (const item of [closeFolderItem, rebuildItem]) {
+    for (const item of [closeFolderItem, rebuildItem, storageItem]) {
       if (!item) continue;
       item.classList.toggle('disabled', !store);
       item.ariaDisabled = store ? 'false' : 'true';
@@ -4785,13 +5398,14 @@ export function createLibraryInstance(viewer, opts) {
     newDropdown.close();
     createNewFolder();
   });
-  newPdfItem.addEventListener('click', () => {
+  // Write permission is asked for before the picker opens, since the picker's dialog ends the gesture a prompt needs.
+  newPdfItem.addEventListener('click', async () => {
     newDropdown.close();
-    if (store) imageInput.click();
+    if (store && await store.ensureWritable()) imageInput.click();
   });
-  addPdfsItem.addEventListener('click', () => {
+  addPdfsItem.addEventListener('click', async () => {
     newDropdown.close();
-    if (store) fileInput.click();
+    if (store && await store.ensureWritable()) fileInput.click();
   });
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.length) startIngestFiles([...fileInput.files]);
@@ -5018,6 +5632,7 @@ export function createLibraryInstance(viewer, opts) {
       connected: () => !!store,
       openFolder,
       rebuildIndex,
+      openStorage,
       closeFolder,
       ownsTab: (/** @type {?{libraryHash?: string, libraryRelPath?: string}} */ tab) => ownsTab(tab) && !!(tab?.libraryHash || tab?.libraryRelPath),
       closeFolderLabel,
@@ -5103,13 +5718,13 @@ export function createLibraryInstance(viewer, opts) {
     try { openName = resumeStorage.getItem(OPEN_FOLDER_KEY); } catch { /* Storage unavailable. */ }
     const handle = shell?.launchedWithFile || shell?.freshWindow || !openName ? null : (recentFolders.find((h) => h.name === openName) ?? null);
     if (handle) {
-      const s = new LibraryStore(handle);
+      const s = await LibraryStore.forHandle(handle);
       if ((await s.permissionState()) === 'granted') {
         if (viewer._tabs.length === 0 && !viewerRestorePending) {
           showSurface();
           render();
         }
-        await openLibrary(s);
+        await openLibrary(s, { resumed: true });
         // A restore that reopened nothing leaves the surface hidden, so fall back to the library rather than a bare drop zone.
         if (viewerRestorePending && !destroyed && viewer._tabs.length === 0) {
           if (viewer.dropZone) viewer.dropZone.style.display = '';
@@ -5185,6 +5800,7 @@ export function createLibraryInstance(viewer, opts) {
       openFolderItem?.remove();
       closeFolderItem?.remove();
       rebuildItem?.remove();
+      storageItem?.remove();
       folderDropdown.destroy();
       sortDropdown.destroy();
       newDropdown.destroy();

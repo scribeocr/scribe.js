@@ -946,6 +946,7 @@ class ScribePDFViewer {
         'open-folder': () => this._library?.openFolder?.(),
         'close-folder': () => this._library?.closeFolder?.(),
         'rebuild-index': () => this._library?.rebuildIndex?.(),
+        'library-storage': () => this._library?.openStorage?.(),
       };
       appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, shortcutLabel('O'));
       this._recentsSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);

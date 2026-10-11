@@ -269,6 +269,7 @@ export function createDragReorder({
           const entry = manifest.docs[relPath];
           if (!entry || !store) return;
           try {
+            if (!(await store.ensureWritable())) throw new Error(`editing ${store.root.name} wasn't allowed`);
             const moved = await store.moveFile(relPath, dropDir);
             delete manifest.docs[relPath];
             manifest.docs[moved.relPath] = entry;
