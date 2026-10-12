@@ -270,7 +270,9 @@ export function flyCopies(flights, ms) {
     imgClone.style.opacity = '';
     imgClone.style.filter = '';
     imgClone.style.objectFit = f.fit || 'contain';
-    imgClone.style.objectPosition = 'top';
+    // A covering copy shows the page's top, like the folder papers it lands in.
+    // A contained one centers the page, like the thumbnail it lands on, so the page holds still when the real image takes over.
+    imgClone.style.objectPosition = f.fit === 'cover' ? 'top' : 'center';
     imgClone.style.display = 'block';
     clone.appendChild(imgClone);
     document.body.appendChild(clone);

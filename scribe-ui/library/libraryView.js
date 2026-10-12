@@ -240,13 +240,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress-stop:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
-.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; }
+.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; scrollbar-gutter: stable; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 7px; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
-.scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
+/* Border-box, because script pins a folder card's measured height, border included, as its min-height when a drag hovers it. */
+.scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
 .scribe-library-ghost { position: fixed; z-index: 9999; pointer-events: none; font-size: 14px; color: var(--scribe-ink); }
 .scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
@@ -333,7 +334,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-recent .fi { width: 16px; height: 16px; flex: none; display: inline-flex; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-recent .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
-.scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; }
+/* A stable gutter is reserved even under overflow: hidden. */
+.scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; scrollbar-gutter: auto; }
 .scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
 /* Columns the layout dropped to keep the name readable.
    Their tracks are gone, so the cells have to go with them. */
@@ -427,7 +429,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold { --fold-back: color-mix(in srgb, var(--scribe-accent) 30%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-accent) 18%, var(--scribe-surface)); --fold-line: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold .front, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold .front { transform: perspective(260px) rotateX(-12deg); }
 .scribe-pdf-viewer .scribe-library-card.folder.landed, .scribe-pdf-viewer .scribe-library-row.folder.landed { transition: background-color 400ms ease, border-color 400ms ease, box-shadow 400ms ease; }
-.scribe-pdf-viewer .scribe-library-card.folder .meta.live { opacity: 1; color: var(--scribe-ink-2); }
+/* A drop's preview or undo line that wraps can grow the card while it shows, pushing down everything below. */
+.scribe-pdf-viewer .scribe-library-card.folder .meta.live { opacity: 1; color: var(--scribe-ink-2); flex-wrap: nowrap; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta.live > :last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .delta, .scribe-pdf-viewer .scribe-library-row.folder .delta { color: var(--scribe-accent); font-weight: 600; transition: opacity 300ms ease; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo, .scribe-pdf-viewer .scribe-library-row.folder .undo { color: var(--scribe-accent); font-weight: 600; cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo:hover, .scribe-pdf-viewer .scribe-library-row.folder .undo:hover { text-decoration: underline; }
