@@ -17,7 +17,8 @@ import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
 import { buildPreviewSplit, createPreviewPanes } from './libraryPreviewPane.js';
 import { createResultsView } from './libraryResultsView.js';
-import { createDragReorder } from './libraryDragReorder.js';
+import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
+import { flyCopies } from '../js/controls/pageReorder.js';
 
 // Filled rather than stroked because outlined spines collapse into double-line mush at the pinned tab's 16px.
 // eslint-disable-next-line max-len
@@ -246,11 +247,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
-/* The lifted item vacates its place rather than being removed, so the slot it held stays open for the length of the drag. */
-.scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { visibility: hidden; }
-/* A cloned list row brings no background of its own, so without this the ghost renders as bare floating text. */
-.scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); transition: opacity 0.12s ease; }
-.scribe-library-ghost.over-drop { opacity: 0.7; }
+.scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
+.scribe-library-ghost { position: fixed; z-index: 9999; pointer-events: none; font-size: 14px; color: var(--scribe-ink); }
+.scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
+.scribe-library-ghost .row-ghost .scribe-library-row { border-bottom: none; }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
 /* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
 .scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *), .scribe-pdf-viewer .scribe-library-card:focus-visible { border-color: var(--scribe-accent); outline: none; }
@@ -413,12 +413,25 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-fold { position: relative; display: block; flex: none; --fold-back: color-mix(in srgb, var(--scribe-ink) 12%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-surface)); --fold-line: color-mix(in srgb, var(--scribe-ink) 22%, transparent); }
 .scribe-pdf-viewer .scribe-library-fold > svg { position: absolute; left: 0; top: 0; display: block; overflow: visible; }
 .scribe-pdf-viewer .scribe-library-fold > svg path { fill: var(--fold-back); stroke: var(--fold-line); stroke-width: 1; }
-.scribe-pdf-viewer .scribe-library-fold .paper { position: absolute; background: #fff; box-shadow: 0 0 0 1px var(--scribe-line-strong); overflow: hidden; }
-.scribe-pdf-viewer .scribe-library-fold .paper img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; }
-.scribe-pdf-viewer .scribe-library-fold .front { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; box-sizing: border-box; background: var(--fold-front); border: 1px solid var(--fold-line); border-radius: 2px 2px 4px 4px; }
+.scribe-pdf-viewer .scribe-library-fold .paper { position: absolute; background: #fff; box-shadow: 0 0 0 1px var(--scribe-line-strong); overflow: hidden; isolation: isolate; transition: left 140ms ease, top 140ms ease, opacity 140ms ease, box-shadow 140ms ease; }
+.scribe-pdf-viewer .scribe-library-fold .paper img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; transition: opacity 140ms ease, filter 140ms ease; }
+.scribe-pdf-viewer .scribe-library-fold .paper::after { content: ''; position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; opacity: 0; transition: opacity 140ms ease; }
+/* The flap stays above every paper, the fading copies a strip change leaves behind included. */
+.scribe-pdf-viewer .scribe-library-fold .front { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; box-sizing: border-box; z-index: 10; background: var(--fold-front); border: 1px solid var(--fold-line); border-radius: 2px 2px 4px 4px; transform-origin: 50% 100%; transition: transform 160ms ease; }
 .scribe-pdf-viewer .scribe-library-fold.mini .front { height: 14px; border-radius: 1.5px 1.5px 2.5px 2.5px; }
 .scribe-pdf-viewer .scribe-library-fold.mini .paper { box-shadow: 0 0 0 .5px var(--scribe-line-strong); }
+.scribe-pdf-viewer .scribe-library-fold .paper.reserved { box-shadow: 0 0 0 1px transparent; }
+.scribe-pdf-viewer .scribe-library-fold .paper.reserved img { opacity: .4; filter: grayscale(.5); }
+.scribe-pdf-viewer .scribe-library-fold .paper.reserved::after { opacity: 1; border: 1.5px dashed var(--scribe-accent); background: var(--scribe-accent-wash); }
+.scribe-pdf-viewer .scribe-library-fold .paper.leaving { pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold { --fold-back: color-mix(in srgb, var(--scribe-accent) 30%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-accent) 18%, var(--scribe-surface)); --fold-line: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold .front, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold .front { transform: perspective(260px) rotateX(-12deg); }
+.scribe-pdf-viewer .scribe-library-card.folder.landed, .scribe-pdf-viewer .scribe-library-row.folder.landed { transition: background-color 400ms ease, border-color 400ms ease, box-shadow 400ms ease; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta.live { opacity: 1; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-card.folder .meta .delta, .scribe-pdf-viewer .scribe-library-row.folder .delta { color: var(--scribe-accent); font-weight: 600; transition: opacity 300ms ease; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta .undo, .scribe-pdf-viewer .scribe-library-row.folder .undo { color: var(--scribe-accent); font-weight: 600; cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta .undo:hover, .scribe-pdf-viewer .scribe-library-row.folder .undo:hover { text-decoration: underline; }
+@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-fold .paper, .scribe-pdf-viewer .scribe-library-fold .paper img, .scribe-pdf-viewer .scribe-library-fold .paper::after, .scribe-pdf-viewer .scribe-library-fold .front { transition: none; } }
 .scribe-pdf-viewer .scribe-library-card.folder .meta.hasatt { opacity: 1; color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .att, .scribe-pdf-viewer .scribe-library-row.folder .att { color: var(--scribe-ink-2); font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .att.bad, .scribe-pdf-viewer .scribe-library-row.folder .att.bad { color: var(--scribe-danger); }
@@ -2344,6 +2357,12 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
+   * Per folder, the cover order its card showed when a drop landed, which redraws keep.
+   * @type {Map<string, string[]>}
+   */
+  const coverOrder = new Map();
+
+  /**
    * Counts, aggregates, ingest-state tallies, and cover entries over a folder's direct children.
    * @param {string} dirPath
    */
@@ -2384,8 +2403,20 @@ export function createLibraryInstance(viewer, opts) {
       if ((cut < 0 ? '' : dir.slice(0, cut)) === dirPath) stats.subdirs++;
     }
     // Name order keeps the strip from reshuffling whenever the sort mode changes.
+    // After a drop the strip keeps the order its landing showed.
+    // Otherwise the latest drag arrivals go last, where a drop draws them.
     children.sort(([a], [b]) => titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }));
-    stats.covers = children.slice(0, 3).map(([, entry]) => entry);
+    const latest = Math.max(0, ...children.map(([, entry]) => entry.arrived ?? 0));
+    const newest = latest ? children.filter(([, entry]) => entry.arrived === latest).slice(0, 3) : [];
+    const byName = children.filter((child) => !newest.includes(child));
+    /** @type {typeof children} */
+    const kept = [];
+    for (const hash of coverOrder.get(dirPath) ?? []) {
+      const child = children.find(([, entry]) => entry.hash === hash);
+      if (child) kept.push(child);
+    }
+    const ordered = kept.length ? [...new Set([...kept, ...newest, ...byName])] : [...byName.slice(0, 3 - newest.length), ...newest];
+    stats.covers = ordered.slice(0, 3).map(([, entry]) => entry);
     return stats;
   };
 
@@ -2393,14 +2424,32 @@ export function createLibraryInstance(viewer, opts) {
    * Fill `host` with a folder's summary line.
    * @param {HTMLElement} host
    * @param {ReturnType<typeof dirStatsOf>} stats
+   * @param {number} [incoming] - How many documents a drag carries over the folder, shown as an increment after the count.
+   *    `stats.docs` must already include them.
    */
-  const fillFolderSummary = (host, stats) => {
+  const fillFolderSummary = (host, stats, incoming = 0) => {
     const parts = [];
     if (stats.docs) parts.push(`${stats.docs} document${stats.docs === 1 ? '' : 's'}`);
     if (stats.subdirs) parts.push(`${stats.subdirs} folder${stats.subdirs === 1 ? '' : 's'}`);
-    const base = document.createElement('span');
-    base.textContent = parts.length ? parts.join(' · ') : 'Empty';
-    host.appendChild(base);
+    if (incoming) {
+      const count = document.createElement('span');
+      count.textContent = parts.shift() ?? '';
+      host.appendChild(count);
+      const delta = document.createElement('span');
+      delta.className = 'delta';
+      delta.textContent = `+${incoming}`;
+      host.appendChild(delta);
+      if (parts.length) {
+        const sep = document.createElement('span');
+        sep.textContent = '·';
+        host.appendChild(sep);
+      }
+    }
+    if (parts.length || !incoming) {
+      const base = document.createElement('span');
+      base.textContent = parts.length ? parts.join(' · ') : 'Empty';
+      host.appendChild(base);
+    }
     const danger = [];
     if (stats.failed) danger.push(`${stats.failed} failed`);
     if (stats.missing) danger.push(`${stats.missing} missing`);
@@ -2425,10 +2474,12 @@ export function createLibraryInstance(viewer, opts) {
    * Draw a folder with its first covers tucked inside.
    * @param {import('./libraryStore.js').LibraryDocEntry[]} covers
    * @param {boolean} [mini] - Draw at the List view's thumbnail-slot size, with two covers.
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} [reserved] - Documents a drag carries over the folder, drawn last as reserved slots.
    */
-  const buildFold = (covers, mini = false) => {
+  const buildFold = (covers, mini = false, reserved = []) => {
     const [w, h, pw, ph, gap, tops] = mini ? [40, 32, 14, 18, 4, [8, 7, 8]] : [150, 68, 40, 52, 6, [11, 9, 12]];
-    const papers = covers.slice(0, mini ? 2 : 3);
+    const incoming = reserved.slice(0, mini ? 2 : 3);
+    const papers = [...covers.slice(0, (mini ? 2 : 3) - incoming.length), ...incoming];
     const fold = document.createElement('span');
     fold.className = mini ? 'scribe-library-fold mini' : 'scribe-library-fold';
     fold.style.width = `${w}px`;
@@ -2443,7 +2494,8 @@ export function createLibraryInstance(viewer, opts) {
     const left0 = (w - (papers.length * pw + (papers.length - 1) * gap)) / 2;
     papers.forEach((entry, i) => {
       const paper = document.createElement('span');
-      paper.className = 'paper';
+      paper.className = i >= papers.length - incoming.length ? 'paper reserved' : 'paper';
+      paper.dataset.paper = entry.hash ?? '';
       paper.style.cssText = `left:${left0 + i * (pw + gap)}px;top:${lift[i]}px;width:${pw}px;height:${ph}px;`;
       const img = document.createElement('img');
       img.alt = '';
@@ -2459,6 +2511,120 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
+   * Replace the fold in `strip` with `fold`, animating the change.
+   * Papers are matched by document, so a paper in both slides to its new slot and the rest fade in or out where they sit.
+   * @param {HTMLElement} strip
+   * @param {HTMLElement} fold
+   */
+  const morphFold = (strip, fold) => {
+    const old = strip.firstElementChild;
+    if (!old || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      strip.replaceChildren(fold);
+      return;
+    }
+    /** @param {Element} paper */
+    const keyOf = (paper) => `${/** @type {HTMLElement} */ (paper).dataset.paper}${paper.classList.contains('reserved') ? ':reserved' : ''}`;
+    const leaving = new Map([...old.querySelectorAll('.paper:not(.leaving)')].map((paper) => [keyOf(paper), /** @type {HTMLElement} */ (paper)]));
+    /** @type {HTMLElement[]} */
+    const arriving = [];
+    /** @type {Array<[HTMLElement, string, string]>} */
+    const sliding = [];
+    for (const el of fold.querySelectorAll('.paper')) {
+      const paper = /** @type {HTMLElement} */ (el);
+      const was = leaving.get(keyOf(paper));
+      if (!was) {
+        arriving.push(paper);
+        continue;
+      }
+      leaving.delete(keyOf(paper));
+      // Read the drawn position, since a paper caught mid-slide is not yet at its inline one.
+      const from = getComputedStyle(was);
+      if (from.left !== paper.style.left || from.top !== paper.style.top) {
+        sliding.push([paper, paper.style.left, paper.style.top]);
+        paper.style.left = from.left;
+        paper.style.top = from.top;
+      }
+    }
+    /** @type {HTMLElement[]} */
+    const fading = [];
+    const front = /** @type {HTMLElement} */ (fold.querySelector('.front'));
+    for (const [, paper] of leaving) {
+      const copy = /** @type {HTMLElement} */ (paper.cloneNode(true));
+      copy.classList.add('leaving');
+      front.before(copy);
+      fading.push(copy);
+    }
+    for (const paper of arriving) paper.style.opacity = '0';
+    strip.replaceChildren(fold);
+    // A layout read commits the start styles before the transitions arm.
+    fold.getBoundingClientRect();
+    for (const paper of arriving) paper.style.opacity = '';
+    for (const [paper, left, top] of sliding) {
+      paper.style.left = left;
+      paper.style.top = top;
+    }
+    for (const copy of fading) copy.style.opacity = '0';
+    setTimeout(() => { for (const copy of fading) copy.remove(); }, 200);
+  };
+
+  /**
+   * Folders a drop is landing in, each with the documents still in flight.
+   * @type {Map<string, import('./libraryStore.js').LibraryDocEntry[]>}
+   */
+  const landings = new Map();
+
+  /**
+   * The move a drag just landed, shown on its folder as "Moved N here · Undo" until the timer runs out.
+   * @type {?{dir: string, moves: Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>}}
+   */
+  let undoInfo = null;
+  let undoTimer = 0;
+  const clearUndo = () => {
+    window.clearTimeout(undoTimer);
+    undoTimer = 0;
+    undoInfo = null;
+  };
+
+  /**
+   * Fill a folder's summary slot with its tallies, or with the undo line while its last drop can still be taken back.
+   * @param {HTMLElement} host
+   * @param {string} dirPath
+   * @param {ReturnType<typeof dirStatsOf>} stats
+   */
+  const fillFolderLine = (host, dirPath, stats) => {
+    host.textContent = '';
+    host.classList.remove('hasatt', 'live');
+    if (undoInfo && undoInfo.dir === dirPath) {
+      host.classList.add('live');
+      const n = undoInfo.moves.length;
+      host.appendChild(document.createTextNode(`Moved ${n} here`));
+      const sep = document.createElement('span');
+      sep.textContent = '·';
+      host.appendChild(sep);
+      const undo = document.createElement('span');
+      undo.className = 'undo';
+      undo.textContent = 'Undo';
+      undo.setAttribute('role', 'button');
+      undo.tabIndex = 0;
+      undo.addEventListener('pointerdown', (e) => e.stopPropagation());
+      undo.addEventListener('click', (e) => {
+        e.stopPropagation();
+        undoMoves();
+      });
+      undo.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          e.stopPropagation();
+          undoMoves();
+        }
+      });
+      host.appendChild(undo);
+      return;
+    }
+    fillFolderSummary(host, stats);
+  };
+
+  /**
    * Refresh everything a folder card shows, leaving the shell in place.
    * A folder's covers and tallies come from its children, so this runs whenever any of them change.
    * @param {HTMLElement} card
@@ -2466,12 +2632,161 @@ export function createLibraryInstance(viewer, opts) {
    */
   const updateFolderCard = (card, dirPath) => {
     card.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
+    // A drop landing here keeps the face its hover showed, even on a card rebuilt mid-flight.
+    const inFlight = landings.get(dirPath);
+    if (inFlight) {
+      card.classList.add('drop');
+      previewFolder(card, dirPath, inFlight);
+      return;
+    }
+    if (!(undoInfo && undoInfo.dir === dirPath)) card.style.minHeight = '';
     const stats = dirStatsOf(dirPath);
-    /** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')).replaceChildren(buildFold(stats.covers));
-    const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
-    meta.textContent = '';
-    meta.classList.remove('hasatt');
-    fillFolderSummary(meta, stats);
+    morphFold(/** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
+    fillFolderLine(/** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta')), dirPath, stats);
+  };
+
+  /**
+   * Show a folder as the drag over it will leave it.
+   * @param {HTMLElement} elem - The folder's card or row.
+   * @param {string} dirPath
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries - The documents in the hand.
+   */
+  const previewFolder = (elem, dirPath, entries) => {
+    const isCard = elem.classList.contains('scribe-library-card');
+    // The card keeps at least its resting height from the hover until the undo line goes.
+    // Shrinking it would flicker the drop target during the hover and shift the cards below when the undo line appears.
+    if (isCard && !elem.style.minHeight) elem.style.minHeight = `${elem.getBoundingClientRect().height}px`;
+    const stats = dirStatsOf(dirPath);
+    // Once the files move, the carried documents are the folder's own, and must be neither counted nor drawn twice.
+    const own = new Set();
+    for (const [p, entry] of Object.entries(manifest?.docs ?? {})) {
+      const cut = p.lastIndexOf('/');
+      if ((cut < 0 ? '' : p.slice(0, cut)) === dirPath) own.add(entry);
+    }
+    const strip = /** @type {?HTMLElement} */ (isCard ? elem.querySelector(':scope > .fstrip') : elem.querySelector('.nm > .fthumb'));
+    if (strip) morphFold(strip, buildFold(stats.covers.filter((entry) => !entries.includes(entry)), !isCard, entries));
+    const line = /** @type {HTMLElement} */ (isCard ? elem.querySelector(':scope > .body > .meta') : elem.querySelector(viewMode === 'list' ? '.nm .m2' : '.nm .cnt'));
+    line.textContent = '';
+    line.classList.remove('hasatt');
+    line.classList.add('live');
+    const incoming = entries.filter((entry) => !own.has(entry)).length;
+    fillFolderSummary(line, { ...stats, docs: stats.docs + incoming }, entries.length);
+  };
+
+  /**
+   * Begin a drop's landing in a folder.
+   * The folder keeps the face its hover showed until the landing finishes.
+   * @param {string} dirPath
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries - The documents in flight.
+   */
+  const startLanding = (dirPath, entries) => {
+    landings.set(dirPath, entries);
+  };
+
+  /**
+   * Settle a folder once the pages are in.
+   * @param {string} dirPath
+   * @param {Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>} moves - What landed, for the undo line; empty when no file moved.
+   */
+  const finishLanding = (dirPath, moves) => {
+    landings.delete(dirPath);
+    const elem = folderElemOf(dirPath);
+    if (!elem) return;
+    const redraw = () => (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath);
+    if (!moves.length) {
+      elem.classList.remove('drop');
+      redraw();
+      return;
+    }
+    for (const paper of elem.querySelectorAll('.paper.reserved')) {
+      const img = /** @type {?HTMLImageElement} */ (paper.querySelector('img'));
+      if (img) {
+        img.style.opacity = '1';
+        img.style.filter = 'none';
+      }
+      paper.classList.remove('reserved');
+    }
+    if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
+    const delta = /** @type {?HTMLElement} */ (elem.querySelector('.delta'));
+    if (delta) delta.style.opacity = '0';
+    elem.classList.add('landed');
+    elem.classList.remove('drop');
+    clearUndo();
+    undoInfo = { dir: dirPath, moves };
+    undoTimer = window.setTimeout(() => {
+      clearUndo();
+      const now = folderElemOf(dirPath);
+      if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, dirPath);
+    }, 8000);
+    window.setTimeout(() => {
+      elem.classList.remove('landed');
+      redraw();
+    }, 420);
+  };
+
+  /** @param {string} dirPath */
+  const folderElemOf = (dirPath) => /** @type {?HTMLElement} */ (body.querySelector(`.scribe-library-card.folder[data-dir-target="${CSS.escape(dirPath)}"], .scribe-library-row.folder[data-dir-target="${CSS.escape(dirPath)}"]`));
+
+  /** Take back the drop the undo line stands for. */
+  const undoMoves = async () => {
+    const info = undoInfo;
+    if (!info || !store || !manifest || fsOpBusy) return;
+    clearUndo();
+    const order = coverOrder.get(info.dir);
+    if (order) coverOrder.set(info.dir, order.filter((hash) => !info.moves.some((move) => move.hash === hash)));
+    const host = folderElemOf(info.dir);
+    /** @type {Map<string, DOMRect>} */
+    const starts = new Map();
+    if (host) {
+      for (const paper of host.querySelectorAll('.paper[data-paper]')) starts.set(/** @type {HTMLElement} */ (paper).dataset.paper ?? '', paper.getBoundingClientRect());
+      const fold = host.querySelector('.scribe-library-fold');
+      if (fold) starts.set('', fold.getBoundingClientRect());
+    }
+    /** @type {Array<{hash: string, relPath: string}>} */
+    const restored = [];
+    if (!(await store.ensureWritable())) {
+      viewer._showToast(`Couldn't move them back — editing ${store.root.name} wasn't allowed.`);
+      return;
+    }
+    for (const move of info.moves) {
+      const entry = manifest.docs[move.to];
+      if (!entry) continue;
+      try {
+        const cut = move.from.lastIndexOf('/');
+        const back = await store.moveFile(move.to, cut < 0 ? '' : move.from.slice(0, cut));
+        delete manifest.docs[move.to];
+        manifest.docs[back.relPath] = entry;
+        entry.mtime = back.mtime;
+        if (move.arrivedBefore) entry.arrived = move.arrivedBefore;
+        else delete entry.arrived;
+        selectedPaths.add(back.relPath);
+        restored.push({ hash: entry.hash, relPath: back.relPath });
+      } catch (err) {
+        viewer._showToast(`Couldn't move “${titleOf(move.to)}” back — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
+      }
+    }
+    saveManifestSoon();
+    const now = folderElemOf(info.dir);
+    if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, info.dir);
+    render();
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    /** @type {Parameters<typeof flyCopies>[0]} */
+    const flights = [];
+    /** @type {HTMLImageElement[]} */
+    const hidden = [];
+    for (const { hash, relPath } of restored) {
+      const card = /** @type {?HTMLElement} */ (body.querySelector(`[data-band="main-grid"] > [data-rel-path="${CSS.escape(relPath)}"]`));
+      const img = /** @type {?HTMLImageElement} */ (card?.querySelector('img.thumb') ?? null);
+      const from = starts.get(hash) ?? starts.get('');
+      if (!img || !from) continue;
+      img.style.opacity = '0';
+      hidden.push(img);
+      flights.push({
+        img, from: { left: from.left, top: from.top, width: from.width, height: from.height }, to: img.getBoundingClientRect(), fit: 'contain',
+      });
+    }
+    await flyCopies(flights, FOLDER_FLY_MS);
+    for (const img of hidden) img.style.opacity = '';
   };
 
   /**
@@ -2737,12 +3052,15 @@ export function createLibraryInstance(viewer, opts) {
   const updateFolderRow = (row, dirPath) => {
     const comfortable = viewMode === 'list';
     row.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
+    const inFlight = landings.get(dirPath);
+    if (inFlight) {
+      row.classList.add('drop');
+      previewFolder(row, dirPath, inFlight);
+      return;
+    }
     const stats = dirStatsOf(dirPath);
-    if (comfortable) /** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')).replaceChildren(buildFold(stats.covers, true));
-    const sum = /** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt'));
-    sum.textContent = '';
-    sum.classList.remove('hasatt');
-    fillFolderSummary(sum, stats);
+    if (comfortable) morphFold(/** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
+    fillFolderLine(/** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt')), dirPath, stats);
     /** @param {number} t */
     const fmtDate = (t) => (t > 0
       ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -4438,6 +4756,10 @@ export function createLibraryInstance(viewer, opts) {
     openCardMenu,
     dragAllowed: () => !readOnly && !fullTextResults && !filterText.trim() && !fsOpBusy,
     reorderAllowed: () => sortMode === 'custom' && viewMode === 'grid',
+    previewFolder,
+    unpreviewFolder: (elem, dirPath) => (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath),
+    startLanding,
+    finishLanding,
   });
 
   // --- Ingest wiring ------------------------------------------------------

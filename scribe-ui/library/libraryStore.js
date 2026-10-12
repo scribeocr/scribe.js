@@ -63,6 +63,7 @@ export const folderNameProblem = (name) => {
  *    Interrupted failures get one automatic retry at the next scan.
  * @property {boolean} [retried] - Set once the automatic retry for an interrupted failure has been spent.
  * @property {number} [order] - Manual position under the Custom sort; absent until the user first drag-reorders.
+ * @property {number} [arrived] - Epoch ms when a drag last moved the document into its current folder; absent until then.
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
  * @property {number} [firstPaintMs] - Measured cost, in ms, of a cold open of this document plus its first-page render.
  *    Recorded only from an open the app performs anyway, never from one run to measure.

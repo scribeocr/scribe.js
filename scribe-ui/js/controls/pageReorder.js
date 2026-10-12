@@ -235,8 +235,69 @@ function slideRows(snapshot, movedOld, noSlide) {
 }
 
 /**
+ * One page copy's trip across the screen, in viewport coordinates.
+ * @typedef {Object} PageFlight
+ * @property {HTMLImageElement} img - The page image to copy.
+ * @property {{left: number, top: number, width: number, height: number}} from - Where the copy starts.
+ * @property {{left: number, top: number, width: number, height: number}} to - Where the copy lands.
+ * @property {number} [rot] - Tilt in degrees at the start.
+ * @property {number} [opacity] - Opacity at the start.
+ * @property {boolean} [fade] - Fade out on the way.
+ * @property {'contain'|'cover'} [fit] - How the image fills the copy.
+ */
+
+/**
+ * Fly page copies across the screen and remove them once they land.
+ * @param {Array<PageFlight>} flights
+ * @param {number} ms - Flight duration.
+ * @returns {Promise<void>} Resolves once the copies are gone.
+ */
+export function flyCopies(flights, ms) {
+  /** @type {Array<HTMLElement>} */
+  const clones = [];
+  flights.forEach((f, i) => {
+    const clone = document.createElement('div');
+    clone.style.cssText = 'position:fixed;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
+      + `box-shadow:0 8px 22px rgba(0,0,0,.45);pointer-events:none;z-index:${9999 - i};transform-origin:50% 50%;`
+      + `left:${f.from.left}px;top:${f.from.top}px;width:${f.from.width}px;height:${f.from.height}px;`
+      + `transform:rotate(${f.rot || 0}deg);opacity:${f.opacity ?? 1}`;
+    const imgClone = /** @type {HTMLImageElement} */ (f.img.cloneNode(true));
+    // A rotated page carries inline sizing already.
+    // An upright one relies on a scoped rule that does not reach document.body.
+    if (!imgClone.style.width) { imgClone.style.width = '100%'; imgClone.style.height = '100%'; }
+    // The source may be blanked while its copy flies.
+    // The copy must not inherit that.
+    imgClone.style.opacity = '';
+    imgClone.style.filter = '';
+    imgClone.style.objectFit = f.fit || 'contain';
+    imgClone.style.objectPosition = 'top';
+    imgClone.style.display = 'block';
+    clone.appendChild(imgClone);
+    document.body.appendChild(clone);
+    clones.push(clone);
+  });
+  // A layout read commits the start boxes before the transitions arm.
+  if (clones.length) clones[0].getBoundingClientRect();
+  clones.forEach((clone, i) => {
+    const f = flights[i];
+    clone.style.transition = `left ${ms}ms ease, top ${ms}ms ease, width ${ms}ms ease, height ${ms}ms ease, transform ${ms}ms ease, opacity ${ms}ms ease`;
+    clone.style.left = `${f.to.left}px`;
+    clone.style.top = `${f.to.top}px`;
+    clone.style.width = `${f.to.width}px`;
+    clone.style.height = `${f.to.height}px`;
+    clone.style.transform = 'rotate(0deg)';
+    clone.style.opacity = f.fade ? '0' : '1';
+  });
+  return new Promise((resolve) => {
+    setTimeout(() => {
+      for (const clone of clones) clone.remove();
+      resolve();
+    }, ms + 20);
+  });
+}
+
+/**
  * Fly each just-dropped page from where it was released to its destination slot, then reveal the real rows.
- * The copies animate on `document.body` so they are not clipped at the panel edge, and each flies to its own slot so a multi-page drop spreads into place.
  * The caller keeps the real rows hidden (opacity 0) until their copy arrives, so no duplicate shows mid-flight.
  * @param {?HTMLElement} ghost - The drag ghost (on `document.body`); removed here, its position is the flight start.
  * @param {Array<ThumbRow>} targetEntries - The dropped rows, revealed as their copies land.
@@ -244,46 +305,56 @@ function slideRows(snapshot, movedOld, noSlide) {
 function dealRows(ghost, targetEntries) {
   const startRect = ghost ? ghost.getBoundingClientRect() : null;
   if (ghost) ghost.remove();
-  if (!startRect || targetEntries.length === 0) {
+  const reveal = () => {
     for (const entry of targetEntries) { entry.thumbElem.style.opacity = ''; entry.thumbElem.style.transition = ''; }
+  };
+  if (!startRect || targetEntries.length === 0) {
+    reveal();
     return;
   }
   // Cap the flown copies so a very large multi-page drop does not spawn a swarm; any pages beyond the cap just appear.
   const FLY_CAP = 24;
   const flying = targetEntries.slice(0, FLY_CAP);
   for (const entry of targetEntries.slice(FLY_CAP)) entry.thumbElem.style.opacity = '';
-
-  /** @type {Array<HTMLElement>} */
-  const clones = [];
+  /** @type {Parameters<typeof flyCopies>[0]} */
+  const flights = [];
   flying.forEach((entry, i) => {
     const box = entry.imgElem.parentElement;
     const destRect = box ? box.getBoundingClientRect() : null;
     if (!destRect || destRect.width === 0) return;
     // Start each copy stacked at the cursor in the drag ghost's fan order (front copy on top) for a seamless hand-off.
     const off = Math.min(i, 2) * 7;
-    const clone = document.createElement('div');
-    clone.style.cssText = 'position:fixed;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
-      + `box-shadow:0 8px 22px rgba(0,0,0,.45);pointer-events:none;z-index:${9999 - i};`
-      + `left:${destRect.left}px;top:${destRect.top}px;width:${destRect.width}px;height:${destRect.height}px;`
-      + `transform:translate(${startRect.left + off - destRect.left}px,${startRect.top + off - destRect.top}px)`;
-    const imgClone = /** @type {HTMLImageElement} */ (entry.imgElem.cloneNode(true));
-    if (!imgClone.style.width) { imgClone.style.width = '100%'; imgClone.style.height = '100%'; }
-    imgClone.style.objectFit = 'contain';
-    imgClone.style.display = 'block';
-    clone.appendChild(imgClone);
-    document.body.appendChild(clone);
-    clones.push(clone);
+    flights.push({
+      img: entry.imgElem,
+      from: {
+        left: startRect.left + off, top: startRect.top + off, width: destRect.width, height: destRect.height,
+      },
+      to: destRect,
+    });
   });
-  // Commit the start offsets, then transition each copy to its slot (FLIP).
-  if (clones.length) clones[0].getBoundingClientRect();
-  for (const clone of clones) {
-    clone.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
-    clone.style.transform = 'translate(0, 0)';
+  flyCopies(flights, REORDER_SLIDE_MS).then(reveal);
+}
+
+/**
+ * The items a drag ghost fans, front first.
+ * They are the grabbed item and its nearest carried neighbors, alternating before and after it, at most three in all.
+ * An entry's `dir` is -1 for an item before the grabbed one, 1 for one after, and 0 for the grabbed item.
+ * @template T
+ * @param {T} primary
+ * @param {Array<T>} items - The carried items in display order, `primary` among them.
+ * @param {(item: T) => boolean} [usable] - Whether an item can be drawn; the rest are skipped.
+ * @returns {Array<{item: T, dir: number}>}
+ */
+export function fanOrder(primary, items, usable = () => true) {
+  /** @type {Array<{item: T, dir: number}>} */
+  const out = [];
+  if (usable(primary)) out.push({ item: primary, dir: 0 });
+  const k = items.indexOf(primary);
+  for (let step = 1; out.length < 3 && (k - step >= 0 || k + step < items.length); step += 1) {
+    if (k - step >= 0 && usable(items[k - step])) out.push({ item: items[k - step], dir: -1 });
+    if (out.length < 3 && k + step < items.length && usable(items[k + step])) out.push({ item: items[k + step], dir: 1 });
   }
-  setTimeout(() => {
-    for (const entry of targetEntries) { entry.thumbElem.style.opacity = ''; entry.thumbElem.style.transition = ''; }
-    for (const clone of clones) clone.remove();
-  }, REORDER_SLIDE_MS + 20);
+  return out;
 }
 
 /**
@@ -294,7 +365,7 @@ function dealRows(ghost, targetEntries) {
  * @param {number} badgeCount - Total pages moving; a badge shows when >1.
  * @returns {HTMLDivElement}
  */
-function buildGhost(cards, rect, badgeCount) {
+export function buildGhost(cards, rect, badgeCount) {
   const ghost = document.createElement('div');
   // position: fixed on document.body follows the pointer without being clipped by a transformed ancestor.
   ghost.style.cssText = 'position:fixed;margin:0;pointer-events:none;z-index:9999;'
@@ -310,9 +381,12 @@ function buildGhost(cards, rect, badgeCount) {
     const card = document.createElement('div');
     const off = depth[i] * 7;
     const dir = cards[i].dir || 1;
+    const rot = i === 0 ? 0 : dir * (2 + depth[i] * 3);
+    card.className = 'scribe-ghost-card';
+    card.dataset.rot = String(rot);
     card.style.cssText = 'position:absolute;left:0;top:0;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
       + `box-shadow:0 8px 22px rgba(0,0,0,.45);width:${rect.width}px;height:${rect.height}px;opacity:.95;`
-      + `transform:translate(${dir * off}px,${off}px) rotate(${i === 0 ? 0 : dir * (2 + depth[i] * 3)}deg);z-index:${cardCount - i}`;
+      + `transform:translate(${dir * off}px,${off}px) rotate(${rot}deg);z-index:${cardCount - i}`;
     const srcImg = cards[i].img;
     if (srcImg) {
       const img = /** @type {HTMLImageElement} */ (srcImg.cloneNode(true));
@@ -382,18 +456,9 @@ export function installPageReorder(ctx) {
    * @returns {Array<{img: HTMLImageElement, dir: number}>}
    */
   function ghostCards(primaryN, pages) {
-    /** @type {Array<{img: HTMLImageElement, dir: number}>} */
-    const cards = [];
-    /** @param {number} m @param {number} dir */
-    const push = (m, dir) => { const e = ctx.mounted.get(m); if (e && e.imgElem) cards.push({ img: e.imgElem, dir }); };
-    push(primaryN, 0);
     const sorted = [...pages].sort((a, b) => a - b);
-    const k = sorted.indexOf(primaryN);
-    for (let step = 1; cards.length < 3 && (k - step >= 0 || k + step < sorted.length); step += 1) {
-      if (k - step >= 0) push(sorted[k - step], -1);
-      if (cards.length < 3 && k + step < sorted.length) push(sorted[k + step], 1);
-    }
-    return cards;
+    return fanOrder(primaryN, sorted, (m) => !!ctx.mounted.get(m)?.imgElem)
+      .map(({ item, dir }) => ({ img: /** @type {HTMLImageElement} */ (/** @type {ThumbRow} */ (ctx.mounted.get(item)).imgElem), dir }));
   }
 
   /**

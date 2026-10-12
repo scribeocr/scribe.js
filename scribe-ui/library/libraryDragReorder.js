@@ -1,7 +1,9 @@
-// Card drag for the library's main grid: lift, ghost, insertion line, folder drop, and edge autoscroll.
+// Card drag for the library's grid and lists: lift, ghost, insertion line, folder drop, and edge autoscroll.
 // Owns the gesture's whole state, so the surface around it only asks whether a drag is running rather than tracking one.
 
-import { REORDER_SLIDE_MS } from '../js/controls/pageReorder.js';
+import {
+  REORDER_SLIDE_MS, buildGhost, fanOrder, flyCopies,
+} from '../js/controls/pageReorder.js';
 import { titleOf } from './libraryStore.js';
 
 // Card drag thresholds, matching the Pages-view gesture grammar so the two surfaces feel identical.
@@ -12,12 +14,18 @@ const MENU_SLOP = 8;
 const GAP_HYSTERESIS = 12;
 const AUTOSCROLL_EDGE = 36;
 const AUTOSCROLL_SPEED = 14;
+export const FOLDER_FLY_MS = 240;
+const OVER_TARGET_SCALE = 0.45;
+const OVER_TARGET_MS = 140;
 
 /**
  * A press on a card or row in the library grid, from the press through the drag it may become.
  * @typedef {Object} CardDrag
  * @property {string} relPath - The pressed card's document.
  * @property {HTMLElement} cardElem - The pressed card or row.
+ * @property {boolean} isRow - Whether the press is on a list row.
+ * @property {string[]} carried - Every document moving, in display order.
+ * @property {Array<{relPath: string, img: ?HTMLImageElement}>} fan - The documents the ghost shows, front first.
  * @property {number} startX - Pointer clientX at the press.
  * @property {number} startY - Pointer clientY at the press.
  * @property {number} lastX - Last pointer clientX.
@@ -27,7 +35,7 @@ const AUTOSCROLL_SPEED = 14;
  * @property {boolean} canReorder - Whether the current sort and view allow manual ordering.
  * @property {?string} dropDir - Move destination while over a folder or crumb, null for none.
  * @property {?HTMLElement} dropElem - The folder card, row, or crumb that destination comes from.
- * @property {?HTMLElement} ghost - Floating copy of the card tracking the pointer.
+ * @property {?HTMLElement} ghost - Floating copy tracking the pointer, a fan of pages for cards or a stack of rows for lists.
  * @property {?HTMLElement} line - Insertion-position line.
  * @property {number} gap - Current insertion gap, -1 before the first.
  * @property {number} sinceGap - Pointer travel since `gap` last changed, for the hysteresis.
@@ -35,7 +43,7 @@ const AUTOSCROLL_SPEED = 14;
  * @property {number} rafId - Auto-scroll animation-frame handle, 0 when idle.
  * @property {number} holdTimer - The touch hold timer that starts the drag.
  * @property {boolean} isTouch - Whether the press came from touch.
- * @property {number} grabDX - Offset of the grab point within the card.
+ * @property {number} grabDX - Offset of the grab point within the ghost.
  * @property {number} grabDY
  */
 
@@ -53,9 +61,14 @@ const AUTOSCROLL_SPEED = 14;
  * @param {(clientX: number, clientY: number, relPath: string, card: HTMLElement) => void} deps.openCardMenu
  * @param {() => boolean} deps.dragAllowed - Whether the grid is in a state a card drag may start from.
  * @param {() => boolean} deps.reorderAllowed - Whether the current sort and view support manual ordering.
+ * @param {(elem: HTMLElement, dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.previewFolder - Show a folder as the hovering drag would leave it.
+ * @param {(elem: HTMLElement, dirPath: string) => void} deps.unpreviewFolder - Put a folder back as it is.
+ * @param {(dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.startLanding - Begin a drop's landing in a folder.
+ * @param {(dirPath: string, moves: Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>) => void} deps.finishLanding - Settle a folder once the pages are in.
  */
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, getStore, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
+  previewFolder, unpreviewFolder, startLanding, finishLanding,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
@@ -70,9 +83,18 @@ export function createDragReorder({
   /** When the last touch drag ended, so the native long-press contextmenu racing it is swallowed. */
   let lastTouchDragT = 0;
 
+  const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   const blockTouchScroll = (e) => {
     if (drag?.started) e.preventDefault();
   };
+
+  /**
+   * The card or row for `relPath` beside the pressed one.
+   * @param {CardDrag} d
+   * @param {string} relPath
+   */
+  const elemOf = (d, relPath) => /** @type {?HTMLElement} */ (d.cardElem.parentElement?.querySelector(`[data-rel-path="${CSS.escape(relPath)}"]`) ?? null);
 
   /**
    * Insertion gap (0..cards.length) for a pointer position.
@@ -97,36 +119,90 @@ export function createDragReorder({
     return best + (x > /** @type {DOMRect} */ (bestRect).left + /** @type {DOMRect} */ (bestRect).width / 2 ? 1 : 0);
   };
 
+  /**
+   * Build the drag ghost for a list row.
+   * @param {CardDrag} d
+   * @param {DOMRect} rect - The pressed row's box.
+   */
+  const buildRowGhost = (d, rect) => {
+    // On document.body the ghost sits outside the viewer root, so it carries the scope class, theme, and font itself for the scoped row rules and tokens to apply.
+    const ghost = document.createElement('div');
+    ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
+    const theme = viewer.pdfViewerElem.getAttribute('data-theme');
+    if (theme) ghost.setAttribute('data-theme', theme);
+    ghost.style.fontFamily = getComputedStyle(viewer.pdfViewerElem).fontFamily;
+    ghost.style.width = `${rect.width}px`;
+    ghost.style.height = `${rect.height}px`;
+    // A row's track widths and its dropped columns are both decided by the list host the ghost is about to leave behind.
+    // Neither follows a clone to document.body, so both are carried over from what the source row resolved to.
+    const rowStyle = getComputedStyle(d.cardElem);
+    const hiddenCells = [...d.cardElem.children].map((cell) => getComputedStyle(cell).display === 'none');
+    /** @param {HTMLElement} row */
+    const cloneRow = (row) => {
+      const clone = /** @type {HTMLElement} */ (row.cloneNode(true));
+      clone.classList.remove('dragging', 'selected', 'context');
+      clone.style.width = '100%';
+      clone.style.boxSizing = 'border-box';
+      if (rowStyle.display === 'grid') {
+        clone.style.gridTemplateColumns = rowStyle.gridTemplateColumns;
+        [...clone.children].forEach((cell, i) => {
+          if (hiddenCells[i]) /** @type {HTMLElement} */ (cell).style.display = 'none';
+        });
+      }
+      return clone;
+    };
+    for (let i = Math.min(d.fan.length - 1, 2); i >= 1; i--) {
+      const behind = elemOf(d, d.fan[i].relPath);
+      if (!behind) continue;
+      const plate = document.createElement('div');
+      plate.className = 'row-ghost';
+      plate.style.cssText = `height:${rect.height}px;transform:translate(${i * 6}px,${i * 6}px);z-index:${3 - i}`;
+      plate.appendChild(cloneRow(behind));
+      ghost.appendChild(plate);
+    }
+    const front = document.createElement('div');
+    front.className = 'row-ghost';
+    front.style.cssText = `height:${rect.height}px;z-index:3`;
+    front.appendChild(cloneRow(d.cardElem));
+    ghost.appendChild(front);
+    if (d.carried.length > 1) {
+      const badge = document.createElement('div');
+      badge.textContent = String(d.carried.length);
+      badge.style.cssText = 'position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 6px;z-index:10;'
+        + 'display:flex;align-items:center;justify-content:center;border-radius:4px;background:rgba(24,27,30,.92);'
+        + 'border:1px solid rgba(255,255,255,.25);color:#fff;font:600 11px sans-serif;box-sizing:border-box';
+      ghost.appendChild(badge);
+    }
+    document.body.appendChild(ghost);
+    return ghost;
+  };
+
   const startDragVisuals = (d) => {
     d.started = true;
+    const manifest = getManifest();
+    const group = selectedPaths.has(d.relPath) && selectedPaths.size >= 2;
+    const siblings = [...(d.cardElem.parentElement?.querySelectorAll('[data-rel-path]') ?? [])]
+      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+    d.carried = group ? siblings.filter((p) => selectedPaths.has(p) && !!manifest?.docs[p]) : [d.relPath];
+    if (!d.carried.includes(d.relPath)) d.carried = [d.relPath];
+    d.isRow = d.cardElem.classList.contains('scribe-library-row');
+    d.fan = fanOrder(d.relPath, d.carried).map(({ item }) => ({ relPath: item, img: /** @type {?HTMLImageElement} */ (elemOf(d, item)?.querySelector('img.thumb') ?? null) }));
     const rect = d.cardElem.getBoundingClientRect();
-    d.grabDX = d.startX - rect.left;
-    d.grabDY = d.startY - rect.top;
-    const clone = /** @type {HTMLElement} */ (d.cardElem.cloneNode(true));
-    clone.style.width = '100%';
-    clone.style.height = '100%';
-    clone.style.boxSizing = 'border-box';
-    // A row's track widths and its dropped columns are both decided by the list host the ghost is about to leave behind.
-    // Neither follows the clone to document.body, so both are carried over from what the source row resolved to.
-    const rowStyle = getComputedStyle(d.cardElem);
-    if (rowStyle.display === 'grid') {
-      clone.style.gridTemplateColumns = rowStyle.gridTemplateColumns;
-      const cells = [...d.cardElem.children];
-      [...clone.children].forEach((cell, i) => {
-        if (getComputedStyle(cells[i]).display === 'none') /** @type {HTMLElement} */ (cell).style.display = 'none';
-      });
+    if (d.isRow) {
+      d.ghost = buildRowGhost(d, rect);
+      d.grabDX = d.startX - rect.left;
+      d.grabDY = d.startY - rect.top;
+    } else {
+      const thumb = d.cardElem.querySelector('img.thumb');
+      const tr = thumb && thumb.getBoundingClientRect().width > 0 ? thumb.getBoundingClientRect() : rect;
+      const cards = fanOrder(d.relPath, d.carried).map(({ item, dir }) => ({ img: /** @type {HTMLImageElement} */ (elemOf(d, item)?.querySelector('img.thumb') ?? document.createElement('img')), dir }));
+      d.ghost = buildGhost(cards, tr, d.carried.length);
+      d.grabDX = d.startX - tr.left;
+      d.grabDY = d.startY - tr.top;
     }
-    // On document.body the ghost sits outside the viewer root, so it carries the scope class, theme, and font itself for the scoped card rules and tokens to apply.
-    d.ghost = document.createElement('div');
-    d.ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
-    const theme = viewer.pdfViewerElem.getAttribute('data-theme');
-    if (theme) d.ghost.setAttribute('data-theme', theme);
-    d.ghost.style.fontFamily = getComputedStyle(viewer.pdfViewerElem).fontFamily;
-    d.ghost.style.width = `${rect.width}px`;
-    d.ghost.style.height = `${rect.height}px`;
-    d.ghost.appendChild(clone);
-    document.body.appendChild(d.ghost);
-    d.cardElem.classList.add('dragging');
+    d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
+    d.ghost.style.transition = reducedMotion() ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
+    for (const p of d.carried) elemOf(d, p)?.classList.add('dragging');
     surface.classList.add('card-drag');
     if (d.canReorder && mainGridElem) {
       d.line = document.createElement('div');
@@ -157,10 +233,20 @@ export function createDragReorder({
     const parent = cut < 0 ? '' : d.relPath.slice(0, cut);
     const elem = target && target.dataset.dirTarget !== parent ? target : null;
     if (elem !== d.dropElem) {
-      d.dropElem?.classList.remove('drop');
+      if (d.dropElem) {
+        d.dropElem.classList.remove('drop');
+        if (d.dropElem.classList.contains('folder')) unpreviewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '');
+      }
       d.dropElem = elem;
-      d.dropElem?.classList.add('drop');
-      d.ghost?.classList.toggle('over-drop', !!d.dropElem);
+      if (d.dropElem) {
+        d.dropElem.classList.add('drop');
+        if (d.dropElem.classList.contains('folder')) {
+          const manifest = getManifest();
+          const entries = d.carried.map((p) => manifest?.docs[p]).filter((e) => !!e);
+          previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
+        }
+      }
+      if (d.ghost) d.ghost.style.transform = d.dropElem ? `scale(${OVER_TARGET_SCALE})` : '';
       if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
@@ -230,12 +316,300 @@ export function createDragReorder({
   const onDragUp = () => endDrag(true);
   const onDragCancel = () => endDrag(false);
 
+  /**
+   * The ghost's pages as they are drawn now, front first.
+   * @param {CardDrag} d
+   * @returns {Array<{relPath: string, img: HTMLImageElement, from: {left: number, top: number, width: number, height: number}, rot: number, opacity: number}>}
+   */
+  const ghostPages = (d) => {
+    if (!d.ghost || d.isRow) return [];
+    const scale = new DOMMatrix(getComputedStyle(d.ghost).transform).a || 1;
+    const cards = [...d.ghost.querySelectorAll('.scribe-ghost-card')].reverse();
+    /** @type {ReturnType<typeof ghostPages>} */
+    const out = [];
+    cards.forEach((card, i) => {
+      const img = d.fan[i]?.img;
+      if (!img) return;
+      const b = card.getBoundingClientRect();
+      const w = /** @type {HTMLElement} */ (card).offsetWidth * scale;
+      const h = /** @type {HTMLElement} */ (card).offsetHeight * scale;
+      out.push({
+        relPath: d.fan[i].relPath,
+        img,
+        from: {
+          left: b.left + b.width / 2 - w / 2, top: b.top + b.height / 2 - h / 2, width: w, height: h,
+        },
+        rot: Number(/** @type {HTMLElement} */ (card).dataset.rot || 0),
+        opacity: 0.95,
+      });
+    });
+    return out;
+  };
+
+  /**
+   * Glide the list's ghost to `to` and remove it on arrival.
+   * @param {CardDrag} d
+   * @param {{left: number, top: number, width: number, height: number}} to
+   * @param {boolean} fade - Vanish into the target.
+   * @param {number} ms
+   */
+  const glideRowGhost = (d, to, fade, ms) => {
+    const g = d.ghost;
+    if (!g) return Promise.resolve();
+    if (reducedMotion()) {
+      g.remove();
+      return Promise.resolve();
+    }
+    const r = g.getBoundingClientRect();
+    g.style.transition = 'none';
+    g.style.transformOrigin = '0 0';
+    g.style.left = `${r.left}px`;
+    g.style.top = `${r.top}px`;
+    g.style.transform = `scale(${r.width / g.offsetWidth})`;
+    g.getBoundingClientRect();
+    const scale = fade ? Math.min(1, Math.max(0.1, to.height / g.offsetHeight)) : 1;
+    g.style.transition = `transform ${ms}ms ease, opacity ${ms}ms ease`;
+    g.style.transform = `translate(${to.left - r.left}px, ${to.top - r.top}px) scale(${scale})`;
+    if (fade) g.style.opacity = '0';
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        g.remove();
+        resolve();
+      }, ms + 20);
+    });
+  };
+
+  /**
+   * Where each carried page lands in `target`.
+   * @param {HTMLElement} target
+   * @param {Map<string, string>} hashByPath - relPath -> document hash.
+   * @returns {(relPath: string) => {to: {left: number, top: number, width: number, height: number}, fade: boolean}}
+   */
+  const landingSpots = (target, hashByPath) => {
+    const reserved = new Map([...target.querySelectorAll('.paper.reserved')].map((paper) => [/** @type {HTMLElement} */ (paper).dataset.paper ?? '', paper.getBoundingClientRect()]));
+    const fold = target.querySelector('.scribe-library-fold');
+    const foldRect = fold ? fold.getBoundingClientRect() : null;
+    const icon = target.querySelector('.fi');
+    const iconRect = (icon || target).getBoundingClientRect();
+    return (relPath) => {
+      const slot = reserved.get(hashByPath.get(relPath) ?? '');
+      if (slot) return { to: slot, fade: false };
+      if (foldRect) {
+        return {
+          to: {
+            left: foldRect.left + foldRect.width / 2 - 20, top: foldRect.top + 8, width: 40, height: 52,
+          },
+          fade: true,
+        };
+      }
+      return {
+        to: {
+          left: iconRect.left + iconRect.width / 2 - 12, top: iconRect.top + iconRect.height / 2 - 16, width: 24, height: 32,
+        },
+        fade: true,
+      };
+    };
+  };
+
+  /**
+   * Re-render, sliding every card or row whose place changed from its old slot.
+   * @param {string[]} [still] - Items to leave un-slid.
+   */
+  const renderWithSlide = (still = []) => {
+    const SEL = '[data-band="main-grid"] > .scribe-library-card, [data-band="rows"] > .scribe-library-row';
+    const beforeRects = new Map();
+    for (const el of body.querySelectorAll(SEL)) beforeRects.set(/** @type {HTMLElement} */ (el).dataset.relPath, el.getBoundingClientRect());
+    renderPending = false;
+    render();
+    if (reducedMotion()) return;
+    /** @type {HTMLElement[]} */
+    const moved = [];
+    for (const el of body.querySelectorAll(SEL)) {
+      const elem = /** @type {HTMLElement} */ (el);
+      const prev = beforeRects.get(elem.dataset.relPath);
+      if (!prev || still.includes(elem.dataset.relPath ?? '')) continue;
+      const now = elem.getBoundingClientRect();
+      const dx = prev.left - now.left;
+      const dy = prev.top - now.top;
+      if (!dx && !dy) continue;
+      elem.style.transition = 'none';
+      elem.style.transform = `translate(${dx}px, ${dy}px)`;
+      moved.push(elem);
+    }
+    // A synchronous layout read commits the translated positions before the slide-back transition arms.
+    if (moved.length) body.getBoundingClientRect();
+    for (const elem of moved) {
+      elem.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
+      elem.style.transform = '';
+      elem.addEventListener('transitionend', () => {
+        elem.style.transition = '';
+      }, { once: true });
+    }
+  };
+
+  /**
+   * Put the carried cards back as they were.
+   * @param {CardDrag} d
+   */
+  const settleBack = async (d) => {
+    const release = () => {
+      for (const p of d.carried) elemOf(d, p)?.classList.remove('dragging');
+    };
+    if (!d.ghost) {
+      release();
+      return;
+    }
+    if (d.isRow) {
+      await glideRowGhost(d, d.cardElem.getBoundingClientRect(), false, REORDER_SLIDE_MS);
+      release();
+      return;
+    }
+    const pages = ghostPages(d);
+    d.ghost.remove();
+    if (reducedMotion()) {
+      release();
+      return;
+    }
+    /** @type {Parameters<typeof flyCopies>[0]} */
+    const flights = [];
+    for (const page of pages) {
+      const home = elemOf(d, page.relPath)?.querySelector('img.thumb');
+      if (!home) continue;
+      flights.push({
+        img: page.img, from: page.from, to: home.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain',
+      });
+    }
+    await flyCopies(flights, REORDER_SLIDE_MS);
+    release();
+  };
+
+  /**
+   * Move the carried documents into the dropped-on folder or crumb while their pages fly into it.
+   * @param {CardDrag} d
+   */
+  const commitMove = async (d) => {
+    const target = /** @type {HTMLElement} */ (d.dropElem);
+    const destDir = /** @type {string} */ (d.dropDir);
+    const manifest = getManifest();
+    const store = getStore();
+    const isFolder = target.classList.contains('folder');
+    if (isFolder) {
+      const entries = d.carried.map((p) => manifest?.docs[p]).filter((e) => !!e);
+      startLanding(destDir, /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
+    }
+    /** @type {Map<string, string>} */
+    const hashByPath = new Map(d.carried.map((p) => [p, manifest?.docs[p]?.hash ?? '']));
+    const spotOf = landingSpots(target, hashByPath);
+    /** @type {Promise<void>} */
+    let flight;
+    if (d.isRow) {
+      const spot = spotOf(d.relPath);
+      flight = glideRowGhost(d, spot.to, true, FOLDER_FLY_MS);
+    } else {
+      const pages = ghostPages(d);
+      d.ghost?.remove();
+      flight = reducedMotion() ? Promise.resolve() : flyCopies(pages.map((page) => {
+        const spot = spotOf(page.relPath);
+        return {
+          img: page.img, from: page.from, to: spot.to, rot: page.rot, opacity: page.opacity, fade: spot.fade, fit: 'cover',
+        };
+      }), FOLDER_FLY_MS);
+    }
+    /** @type {Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>} */
+    const moves = [];
+    /** @type {string[]} */
+    const failed = [];
+    if (manifest && store) {
+      let writable = false;
+      try {
+        writable = await store.ensureWritable();
+        if (!writable) viewer._showToast(`Couldn't move ${d.carried.length === 1 ? `“${titleOf(d.relPath)}”` : `${d.carried.length} documents`} — editing ${store.root.name} wasn't allowed.`);
+      } catch (err) {
+        viewer._showToast(`Couldn't move ${d.carried.length === 1 ? `“${titleOf(d.relPath)}”` : `${d.carried.length} documents`} — ${err instanceof Error ? err.message : 'the folder could not be edited'}.`);
+      }
+      const stamp = Date.now();
+      for (const relPath of d.carried) {
+        const entry = manifest.docs[relPath];
+        if (!entry || !writable) {
+          failed.push(relPath);
+          continue;
+        }
+        try {
+          const moved = await store.moveFile(relPath, destDir);
+          delete manifest.docs[relPath];
+          manifest.docs[moved.relPath] = entry;
+          // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
+          entry.mtime = moved.mtime;
+          moves.push({
+            from: relPath, to: moved.relPath, hash: entry.hash, arrivedBefore: entry.arrived ?? null,
+          });
+          entry.arrived = stamp;
+          selectedPaths.delete(relPath);
+        } catch (err) {
+          viewer._showToast(`Couldn't move “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
+          failed.push(relPath);
+        }
+      }
+      if (moves.length) saveManifestSoon();
+    } else failed.push(...d.carried);
+    renderWithSlide();
+    for (const p of failed) body.querySelector(`[data-rel-path="${CSS.escape(p)}"]`)?.classList.remove('dragging');
+    await flight;
+    if (isFolder) finishLanding(destDir, moves);
+    else target.classList.remove('drop');
+  };
+
+  /**
+   * Put the carried cards at the insertion gap under the Custom sort.
+   * @param {CardDrag} d
+   * @param {import('./libraryStore.js').LibraryManifest} manifest
+   */
+  const commitReorder = async (d, manifest) => {
+    const paths = gridPaths.slice();
+    const moving = paths.filter((p) => d.carried.includes(p));
+    const before = paths.slice(0, d.gap).filter((p) => !moving.includes(p));
+    const after = paths.slice(d.gap).filter((p) => !moving.includes(p));
+    const next = [...before, ...moving, ...after];
+    if (!moving.length || next.every((p, i) => p === paths[i])) {
+      await settleBack(d);
+      return;
+    }
+    // The displayed order becomes the manual order wholesale, so every doc in the folder gets a concrete position the first time one is placed.
+    next.forEach((p, i) => {
+      const entry = manifest.docs[p];
+      if (entry) entry.order = i;
+    });
+    saveManifestSoon();
+    const pages = ghostPages(d);
+    d.ghost?.remove();
+    renderWithSlide(moving);
+    if (reducedMotion()) {
+      for (const p of moving) body.querySelector(`[data-rel-path="${CSS.escape(p)}"]`)?.classList.remove('dragging');
+      return;
+    }
+    /** @type {HTMLImageElement[]} */
+    const hidden = [];
+    /** @type {Parameters<typeof flyCopies>[0]} */
+    const flights = [];
+    for (const page of pages) {
+      const img = /** @type {?HTMLImageElement} */ (body.querySelector(`[data-band="main-grid"] > [data-rel-path="${CSS.escape(page.relPath)}"] img.thumb`));
+      if (!img) continue;
+      img.style.opacity = '0';
+      hidden.push(img);
+      flights.push({
+        img: page.img, from: page.from, to: img.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain',
+      });
+    }
+    await flyCopies(flights, REORDER_SLIDE_MS);
+    for (const img of hidden) img.style.opacity = '';
+    for (const p of moving) body.querySelector(`[data-rel-path="${CSS.escape(p)}"]`)?.classList.remove('dragging');
+  };
+
   /** @param {boolean} commit */
   const endDrag = (commit) => {
     const d = drag;
     if (!d) return;
     const manifest = getManifest();
-    const store = getStore();
     drag = null;
     window.clearTimeout(d.holdTimer);
     window.removeEventListener('pointermove', onDragMove);
@@ -243,97 +617,49 @@ export function createDragReorder({
     window.removeEventListener('pointercancel', onDragCancel);
     document.removeEventListener('touchmove', blockTouchScroll);
     if (d.rafId) cancelAnimationFrame(d.rafId);
-    d.ghost?.remove();
     d.line?.remove();
-    d.dropElem?.classList.remove('drop');
-    d.cardElem.classList.remove('dragging');
     surface.classList.remove('card-drag');
-    if (d.started) {
-      suppressClickUntil = Date.now() + 350;
-      if (d.isTouch) {
-        lastTouchDragT = Date.now();
-        // A lift released without ever dragging opens the card menu, the touch home for Remove.
-        if (commit && !d.moved) {
-          if (renderPending) {
-            renderPending = false;
-            render();
-          }
-          openCardMenu(d.startX, d.startY, d.relPath, d.cardElem);
-          return;
-        }
-      }
-      if (commit && d.dropDir != null && manifest) {
-        const { relPath, dropDir } = d;
+    if (!d.started) {
+      if (renderPending) {
         renderPending = false;
-        (async () => {
-          const entry = manifest.docs[relPath];
-          if (!entry || !store) return;
-          try {
-            if (!(await store.ensureWritable())) throw new Error(`editing ${store.root.name} wasn't allowed`);
-            const moved = await store.moveFile(relPath, dropDir);
-            delete manifest.docs[relPath];
-            manifest.docs[moved.relPath] = entry;
-            // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
-            entry.mtime = moved.mtime;
-            saveManifestSoon();
-          } catch (err) {
-            viewer._showToast(`Couldn't move “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
-          }
-          selectedPaths.delete(relPath);
-          render();
-        })();
-        return;
+        render();
       }
-      if (commit && d.canReorder && d.gap >= 0 && manifest) {
-        const paths = gridPaths.slice();
-        const fromIdx = paths.indexOf(d.relPath);
-        const to = d.gap > fromIdx ? d.gap - 1 : d.gap;
-        if (fromIdx >= 0 && to !== fromIdx) {
-          paths.splice(fromIdx, 1);
-          paths.splice(to, 0, d.relPath);
-          // The displayed order becomes the manual order wholesale, so every doc in the folder gets a concrete position the first time one is placed.
-          paths.forEach((p, i) => {
-            const entry = manifest.docs[p];
-            if (entry) entry.order = i;
-          });
-          saveManifestSoon();
-          const beforeRects = new Map();
-          for (const el of mainGridElem?.querySelectorAll(':scope > .scribe-library-card') ?? []) {
-            beforeRects.set(/** @type {HTMLElement} */ (el).dataset.relPath, el.getBoundingClientRect());
-          }
+      return;
+    }
+    suppressClickUntil = Date.now() + 350;
+    const dropping = commit && d.dropDir != null && !!manifest && !!d.dropElem;
+    if (!dropping && d.dropElem) {
+      d.dropElem.classList.remove('drop');
+      if (d.dropElem.classList.contains('folder')) unpreviewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '');
+    }
+    if (d.isTouch) {
+      lastTouchDragT = Date.now();
+      // A lift released without ever dragging opens the card menu, the touch home for Remove.
+      if (commit && !d.moved) {
+        d.ghost?.remove();
+        for (const p of d.carried) elemOf(d, p)?.classList.remove('dragging');
+        if (renderPending) {
           renderPending = false;
           render();
-          // Slide each card from its old slot so the move reads as a move.
-          const moved = [];
-          for (const el of mainGridElem?.querySelectorAll(':scope > .scribe-library-card') ?? []) {
-            const prev = beforeRects.get(/** @type {HTMLElement} */ (el).dataset.relPath);
-            if (!prev) continue;
-            const now = el.getBoundingClientRect();
-            const dx = prev.left - now.left;
-            const dy = prev.top - now.top;
-            if (!dx && !dy) continue;
-            const elem = /** @type {HTMLElement} */ (el);
-            elem.style.transition = 'none';
-            elem.style.transform = `translate(${dx}px, ${dy}px)`;
-            moved.push(elem);
-          }
-          // A synchronous layout read commits the translated positions before the slide-back transition arms.
-          if (moved.length && mainGridElem) mainGridElem.getBoundingClientRect();
-          for (const elem of moved) {
-            elem.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
-            elem.style.transform = '';
-            elem.addEventListener('transitionend', () => {
-              elem.style.transition = '';
-            }, { once: true });
-          }
-          return;
         }
+        openCardMenu(d.startX, d.startY, d.relPath, d.cardElem);
+        return;
       }
     }
-    if (renderPending) {
-      renderPending = false;
-      render();
+    if (dropping) {
+      commitMove(d);
+      return;
     }
+    if (commit && d.canReorder && d.gap >= 0 && manifest) {
+      commitReorder(d, manifest);
+      return;
+    }
+    settleBack(d).then(() => {
+      if (renderPending) {
+        renderPending = false;
+        render();
+      }
+    });
   };
 
   /**
@@ -351,6 +677,9 @@ export function createDragReorder({
     drag = {
       relPath,
       cardElem: card,
+      isRow: false,
+      carried: [relPath],
+      fan: [],
       startX: e.clientX,
       startY: e.clientY,
       lastX: e.clientX,
