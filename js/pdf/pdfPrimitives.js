@@ -102,16 +102,21 @@ export function byteIndexOf(bytes, needle, from = 0, end = bytes.length) {
   const nLen = needle.length;
   if (nLen === 0) return from;
   const c0 = needle.charCodeAt(0);
-  const last = Math.min(bytes.length, end) - nLen;
+  const limit = Math.min(bytes.length, end);
+  const last = limit - nLen;
+  if (last < from) return -1;
+  // Native `indexOf` has no end bound, so a bounded search runs on a view that ends at `limit`.
+  // Without it the jump to the needle's first byte would run to its next occurrence anywhere in the file, however far past `end`.
+  const hay = limit < bytes.length ? bytes.subarray(0, limit) : bytes;
   if (nLen === 1) {
-    const idx = bytes.indexOf(c0, from);
+    const idx = hay.indexOf(c0, from);
     return (idx === -1 || idx > last) ? -1 : idx;
   }
   let i = from;
   // Jump to each occurrence of the first byte via native `indexOf`, then verify the rest in JS.
   // Faster than a plain byte-by-byte loop, especially for sparse needles.
   while (i <= last) {
-    i = bytes.indexOf(c0, i);
+    i = hay.indexOf(c0, i);
     if (i === -1 || i > last) return -1;
     let j = 1;
     while (j < nLen && bytes[i + j] === needle.charCodeAt(j)) j++;
@@ -132,7 +137,7 @@ export function byteIndexOf(bytes, needle, from = 0, end = bytes.length) {
 export function objTextEnd(bytes, objStart, endObj) {
   // Find the object's dictionary opening '<<'.
   // A non-dict object (array, number, string) has none before endobj, so its text runs to endObj.
-  const dictStart = byteIndexOf(bytes, '<<', objStart);
+  const dictStart = byteIndexOf(bytes, '<<', objStart, endObj);
   if (dictStart === -1 || dictStart >= endObj) return endObj;
 
   // Balance-scan to the dictionary's own closing '>>'.
