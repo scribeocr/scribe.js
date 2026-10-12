@@ -123,6 +123,34 @@ export async function goToMatch(viewer, index, { navigate = true, glide = false 
 }
 
 /**
+ * Search `viewer` for `query` and land on a match.
+ * Does nothing unless `viewer.state.searchMode` is on once the document's text is ready.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {string} query
+ * @param {object} [options]
+ * @param {number} [options.pageN] - Land on the first match at or after this page rather than the page in view.
+ * @param {boolean} [options.navigate=true] - Pass false to refresh the matches and highlights without moving the view.
+ * @returns {Promise<void>}
+ */
+export async function searchDoc(viewer, query, { pageN, navigate = true } = {}) {
+  const doc = viewer.doc;
+  if (!doc || doc.pageMetrics.length === 0) return;
+  // Deferred-import text may still be extracting, so searching now would falsely report "No results".
+  if (doc._textReadySettle) {
+    await doc.textReady;
+    if (viewer.doc !== doc) return;
+  }
+  if (!viewer.state.searchMode) return;
+  findText(viewer, query);
+  if (!navigate) return;
+  const { matchList } = viewer._searchState;
+  if (!matchList.length) return;
+  const from = pageN ?? viewer.state.cp.n;
+  const idx = matchList.findIndex((m) => m.pageN >= from);
+  await goToMatch(viewer, idx >= 0 ? idx : 0);
+}
+
+/**
  * Move to the next match, wrapping to the first after the last.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @returns {Promise<void>}

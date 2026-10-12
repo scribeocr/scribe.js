@@ -3,7 +3,7 @@
 // and the shared control stylesheet injected once per app.
 import { ScribeViewer } from '../../viewer.js';
 import {
-  findText, nextMatch, prevMatch, goToMatch,
+  findText, nextMatch, prevMatch, goToMatch, searchDoc,
 } from '../viewerSearch.js';
 import {
   MENU_PLATE_CSS, MENU_ROW_CSS, MENU_ROW_NOICON_CSS, MENU_SEP_CSS,
@@ -1399,7 +1399,7 @@ export function createSearchBar(scribe, rootElem) {
       searchCountValueElem.textContent = text;
       searchCountGhostElem.classList.add('show');
       searchCountValueElem.classList.remove('in');
-      void searchCounterElem.offsetWidth;
+      searchCounterElem.getBoundingClientRect();
       searchCountGhostElem.classList.remove('show');
       searchCountValueElem.classList.add('in');
     }
@@ -1415,33 +1415,15 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   /**
-   * Search for `query` in the find bar.
+   * Search from the bar, keeping the counter in step.
    * Does nothing while the bar is closed.
    * @param {string} query
-   * @param {number} [targetPageN] - Land on this page's first match instead of the document's
-   *   first, so a search primed from a known hit page doesn't yank the reader elsewhere.
+   * @param {number} [targetPageN] - Land on the first match at or after this page rather than the page in view.
    * @param {boolean} [navigate] - Pass false to refresh the matches and highlights without moving the view.
    */
   async function runSearch(query, targetPageN, navigate = true) {
-    const doc = scribe.doc;
-    if (!doc || doc.pageMetrics.length === 0) return;
-    // Deferred-import text may still be extracting, so searching now would falsely report "No results".
-    // The await can span a document switch, so bail if the active doc changed.
-    if (doc._textReadySettle) {
-      await doc.textReady;
-      if (scribe.doc !== doc) return;
-    }
-    // This guard also covers a close during the wait above.
-    if (!scribe.state.searchMode) return;
-    findText(scribe, query);
+    await searchDoc(scribe, query, { pageN: targetPageN, navigate });
     updateSearchCounter();
-    if (!navigate) return;
-    const { matchList } = scribe._searchState;
-    if (matchList.length) {
-      const onTarget = targetPageN != null ? matchList.findIndex((m) => m.pageN === targetPageN) : -1;
-      await goToMatch(scribe, onTarget >= 0 ? onTarget : 0);
-      updateSearchCounter();
-    }
   }
 
   // Restored on reopen, since re-running the search leaves no match active and the count would read 0/N.
@@ -1464,7 +1446,7 @@ export function createSearchBar(scribe, rootElem) {
     const bar = findGroupElem.parentElement;
     if (bar) findGroupElem.style.setProperty('--scribe-search-right', `${bar.getBoundingClientRect().right - searchElem.getBoundingClientRect().right}px`);
     // The display flip has to land before the class does, or the entrance has no start state to play from.
-    void findGroupElem.offsetWidth;
+    findGroupElem.getBoundingClientRect();
     findGroupElem.classList.add('scribe-search-open');
     updateSearchCounter();
     searchElem.classList.add('active');
@@ -1630,6 +1612,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-soft: #e8f0fd;
       --scribe-accent-ring: rgba(28, 98, 212, .30);
       --scribe-accent-wash: rgba(28, 98, 212, .14);
+      --scribe-match: #e4e6ea;
+      --scribe-match-active: #a4c0ee;
       --scribe-note: #f4d06a;
       --scribe-warn-soft: #fbf1d3;
       --scribe-danger: #d1493d;
@@ -1662,6 +1646,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-soft: #1e2c44;
       --scribe-accent-ring: rgba(79, 139, 240, .38);
       --scribe-accent-wash: rgba(79, 139, 240, .22);
+      --scribe-match: #e4e6ea;
+      --scribe-match-active: #a4c0ee;
       --scribe-note: #f0cd68;
       --scribe-warn-soft: #3a3117;
       --scribe-danger: #ef7a6c;

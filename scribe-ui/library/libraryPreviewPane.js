@@ -4,7 +4,9 @@
 
 import scribeLib from '../../scribe.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
-import { findText, goToMatch } from '../js/viewerSearch.js';
+import {
+  findText, nextMatch, prevMatch, searchDoc,
+} from '../js/viewerSearch.js';
 import {
   PAGE_RASTER_WIDTH, RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
 } from './libraryIngest.js';
@@ -70,33 +72,21 @@ export const buildPreviewSplit = (defaultWidth, getWidth, setWidth) => {
 
 /**
  * Word boxes for every occurrence of the query on a page, for painting match marks over a render.
- * Accepts a live `OcrPage` or a raw sidecar page, anything with `lines[].words[].{text, bbox}`.
- * @param {?{lines: Array<Object>, dims?: {width: number, height: number}}} page
+ * Accepts a live `OcrPage` or a raw sidecar page.
+ * @param {?{n: number, lines: Array<{words: Array<{id: string, text: string, bbox: {left: number, top: number, right: number, bottom: number}}>}>, dims?: {width: number, height: number}}} page
  * @param {?{width: number, height: number}} dims - Page dimensions when the page object carries none.
  * @param {string} query
  * @returns {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}}
  */
 export const getMatchRects = (page, dims, query) => {
   if (!page || !Array.isArray(page.lines) || !dims) return null;
-  const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((t) => t.length);
-  if (!tokens.length) return null;
-  const words = [];
-  for (const line of page.lines) for (const w of (line.words || [])) if (w && w.text && w.bbox) words.push(w);
-  const norm = (s) => s.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  const matches = scribeLib.utils.ocr.getDocMatches(query, [page]);
+  if (!matches.length) return null;
+  const boxes = new Map();
+  for (const line of page.lines) for (const w of (line.words || [])) if (w && w.bbox) boxes.set(w.id, w.bbox);
   const rects = [];
-  for (let i = 0; i + tokens.length <= words.length; i++) {
-    let ok = true;
-    for (let j = 0; j < tokens.length; j++) {
-      const t = norm(words[i + j].text);
-      if (!(j === tokens.length - 1 ? t.startsWith(tokens[j]) : t === tokens[j])) {
-        ok = false;
-        break;
-      }
-    }
-    if (!ok) continue;
-    for (let j = 0; j < tokens.length; j++) rects.push(words[i + j].bbox);
-  }
-  return { dims: page.dims || dims, rects, per: tokens.length };
+  for (const m of matches) for (const id of m.wordIds) if (boxes.has(id)) rects.push(boxes.get(id));
+  return { dims: page.dims || dims, rects, per: matches[0].wordIds.length };
 };
 
 /**
@@ -369,15 +359,13 @@ export function createPreviewPanes({
       const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
       if (target.query) {
         ps.state.searchMode = true;
-        findText(ps, target.query);
-        const idx = ps._searchState.matchList.findIndex((m) => m.pageN === target.pageN);
-        if (idx >= 0) await goToMatch(ps, idx);
-        else await ps.displayPage(target.pageN, true, false);
+        await searchDoc(ps, target.query, { pageN: target.pageN });
+        if (ps._searchState.matchList.length) return;
       } else {
         if (ps._searchState.search) findText(ps, '');
         ps.state.searchMode = false;
-        await ps.displayPage(target.pageN, true, false);
       }
+      await ps.displayPage(target.pageN, true, false);
     };
 
     /**
@@ -428,25 +416,24 @@ export function createPreviewPanes({
       if (ps._searchState.search) findText(ps, '');
       ps.state.searchMode = false;
     };
-    const pvRunFind = async () => {
+    /** @param {boolean} backwards */
+    const pvRunFind = async (backwards) => {
       if (!paneViewer?.doc) return;
       const ps = paneViewer.scribe;
       const q = pvFindInput.value.trim();
       if (!q) return;
-      if (q !== pvFindLast) {
-        pvFindLast = q;
-        ps.state.searchMode = true;
-        findText(ps, q);
-        const idx = ps._searchState.matchList.findIndex((m) => m.pageN >= ps.state.cp.n);
-        await goToMatch(ps, idx >= 0 ? idx : 0);
-      } else {
-        await goToMatch(ps, ps._searchState.activeMatch + 1);
+      if (q === pvFindLast) {
+        await (backwards ? prevMatch(ps) : nextMatch(ps));
+        return;
       }
+      pvFindLast = q;
+      ps.state.searchMode = true;
+      await searchDoc(ps, q);
     };
     pvFindInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
-        pvRunFind();
+        pvRunFind(e.shiftKey);
       } else if (e.key === 'Escape' && pvFindInput.value) {
         e.preventDefault();
         e.stopPropagation();
@@ -876,15 +863,9 @@ export function createPreviewPanes({
           if (current.query) {
             // The swap rebuilt the word objects, so re-derive the matches from the real document at whatever page the reader has reached.
             ps.state.searchMode = true;
-            findText(ps, current.query);
-            if (!readerMoved) {
-              const idx = ps._searchState.matchList.findIndex((m) => m.pageN === ps.state.cp.n);
-              if (idx >= 0) {
-                Promise.resolve(goToMatch(ps, idx)).then(() => {
-                  if (current && current.handle === handle) current.anchorTop = sc.scrollTop;
-                }).catch(() => {});
-              }
-            }
+            searchDoc(ps, current.query, { navigate: !readerMoved }).then(() => {
+              if (!readerMoved && current && current.handle === handle) current.anchorTop = sc.scrollTop;
+            }).catch(() => {});
           }
           const entry = getManifest()?.docs[current.relPath];
           if (entry) persistRasterWindow(paneViewer.doc, entry, ps.state.cp.n);

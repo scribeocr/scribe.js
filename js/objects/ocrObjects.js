@@ -970,7 +970,7 @@ function getMatchingWordIds(text, ocrPage) {
  * Gets every match of `text` across all pages, in reading order, as one entry per non-overlapping occurrence.
  * Each entry's `wordIds[0]` is the occurrence's first (anchor) word.
  * @param {string} text
- * @param {Array<OcrPage>} ocrPages
+ * @param {Array<?{n: number, lines: Array<{words: Array<{id: string, text: string}>}>}>} ocrPages
  * @returns {Array<{pageN: number, wordIds: Array<string>}>}
  */
 function getDocMatches(text, ocrPages) {

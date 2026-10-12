@@ -373,8 +373,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hit .sn b { font-weight: 600; color: var(--scribe-ink); background: #4278f550; border-radius: 2px; padding: 0 1px; }
 .scribe-pdf-viewer .scribe-library-rmore { display: block; border: none; background: none; padding: 4px 16px 6px 89px; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-rmore:hover { text-decoration: underline; }
-.scribe-pdf-viewer .scribe-mark { position: absolute; background: #4278f550; }
-.scribe-pdf-viewer .scribe-mark.act { background: #ff990088; }
+.scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
+.scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
 .scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-pv-head .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

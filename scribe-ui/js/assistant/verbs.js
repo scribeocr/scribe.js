@@ -370,7 +370,7 @@ export const VERBS = [
   },
   {
     name: 'find_text',
-    description: "Run the viewer's find bar on a phrase the user should see for themselves: opens the bar, highlights every match, and jumps to the first. "
+    description: "Run the viewer's find bar on a phrase the user should see for themselves: opens the bar, highlights every match, and jumps to the first match at or after the page in view. "
       + "Matching is the find bar's own (case-insensitive, across consecutive words).",
     params: {
       type: 'object',

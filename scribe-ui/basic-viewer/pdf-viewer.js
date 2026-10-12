@@ -4351,7 +4351,7 @@ class ScribePDFViewer {
 
   /**
    * Run a query in the find bar.
-   * Highlights all matches across the document and jumps to the first one.
+   * Highlights all matches across the document and jumps to the first one at or after the page in view.
    * Does nothing while the find bar is closed, so call `openSearch` first.
    * @param {string} query
    * @returns {Promise<void>}

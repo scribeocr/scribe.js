@@ -46,8 +46,8 @@ export function ensureSelectionStyleSheet() {
   // multiply keeps glyphs at full contrast under the wash, unlike a translucent per-rect background, and matches how the highlight layer below already blends.
   styleEl.textContent = '.scribe-layer-select{mix-blend-mode:multiply;pointer-events:none}'
     + '.scribe-sel-rect{position:absolute;background:var(--scribe-sel,#a6c8ff)}'
-    + '.scribe-mark-rect{position:absolute;background:var(--scribe-match,#e4e6ea);border-radius:calc(2px / var(--scribe-zoom,1));transition:background-color .12s ease}'
-    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active,#a4c0ee)}'
+    + '.scribe-mark-rect{position:absolute;background:var(--scribe-match);border-radius:calc(2px / var(--scribe-zoom,1));transition:background-color .12s ease}'
+    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active)}'
     + '@media (prefers-reduced-motion: reduce){.scribe-mark-rect{transition:none}}'
     // The group is pointer-transparent and each handle re-enables hits, so the page still scrolls around the touch-selection grips.
     // `--sel-handle-scale`, set to 1/zoom per render, holds the grips' drawn size constant on screen at any document zoom.
