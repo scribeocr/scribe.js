@@ -5,6 +5,7 @@ const EDGE = 6;
 /**
  * Give each control inside `root` that has a `data-tip` attribute a tooltip showing that text.
  * A `data-tip-key` attribute adds the control's keyboard shortcut after the text.
+ * A control with the `cr-labeled-button` class gets no tooltip.
  * @param {HTMLElement} root - A positioned element carrying the class passed to `addControlStyles`.
  * @returns {() => void} Removes the tooltips.
  */
@@ -21,7 +22,7 @@ export function installTooltips(root) {
   let pressed = null;
 
   /** @param {EventTarget | null} t */
-  const anchorOf = (t) => (t instanceof Element ? /** @type {?HTMLElement} */ (t.closest('[data-tip]')) : null);
+  const anchorOf = (t) => (t instanceof Element ? /** @type {?HTMLElement} */ (t.closest('[data-tip]:not(.cr-labeled-button)')) : null);
 
   const hide = () => {
     clearTimeout(timer);

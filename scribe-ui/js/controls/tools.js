@@ -162,7 +162,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     // A slim caret (not a full icon button) so the dropdown half stays visually subordinate to the marker.
     caretElem = document.createElement('span');
     caretElem.className = 'cr-icon-button scribe-hl-caret';
-    caretElem.title = 'Highlight color';
+    caretElem.dataset.tip = 'Highlight color';
     caretElem.role = 'button';
     caretElem.tabIndex = 0;
     caretElem.ariaLabel = 'Choose highlight color';

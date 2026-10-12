@@ -1028,10 +1028,12 @@ class ScribePDFViewer {
       }
 
       if (this._editEnabled) {
-        const undoBtn = makeIconButton(`Undo (${shortcutLabel('Z')})`, UNDO_SVG);
+        const undoBtn = makeIconButton('Undo', UNDO_SVG);
+        undoBtn.dataset.tipKey = shortcutLabel('Z');
         undoBtn.classList.add('disabled');
         undoBtn.addEventListener('click', () => { if (!undoBtn.classList.contains('disabled')) this._doUndo(false); });
-        const redoBtn = makeIconButton(`Redo (${IS_MAC ? shortcutLabel('Z', { shift: true }) : shortcutLabel('Y')})`, REDO_SVG);
+        const redoBtn = makeIconButton('Redo', REDO_SVG);
+        redoBtn.dataset.tipKey = IS_MAC ? shortcutLabel('Z', { shift: true }) : shortcutLabel('Y');
         redoBtn.classList.add('disabled');
         redoBtn.addEventListener('click', () => { if (!redoBtn.classList.contains('disabled')) this._doUndo(true); });
         this._undoBtnElem = undoBtn;
@@ -1679,9 +1681,6 @@ class ScribePDFViewer {
         this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
-        // A labeled mode button shows its name, so it gets no browser tooltip.
-        // Its name stays in aria-label.
-        if (btn.classList.contains('cr-labeled-button')) btn.title = '';
         btn.addEventListener('click', () => {
           if (btn.classList.contains('active')) {
             for (const other of exclusiveToolBtns) {
@@ -4051,8 +4050,8 @@ class ScribePDFViewer {
     if (this._activeSidebar) this._lastSidebarView = this._activeSidebar;
     const open = this._activeSidebar !== null;
     this._sidebarToggleElem.classList.toggle('active', open);
-    this._sidebarToggleElem.title = open ? 'Hide sidebar' : 'Show sidebar';
-    this._sidebarToggleElem.ariaLabel = this._sidebarToggleElem.title;
+    this._sidebarToggleElem.dataset.tip = open ? 'Hide sidebar' : 'Show sidebar';
+    this._sidebarToggleElem.ariaLabel = this._sidebarToggleElem.dataset.tip;
     for (const [key, tab] of Object.entries(this._sidebarTabElems)) {
       tab.classList.toggle('on', key === this._activeSidebar);
       const panel = this._panelFor(/** @type {'thumbnails'|'bookmarks'|'comments'} */ (key));
@@ -4131,7 +4130,7 @@ class ScribePDFViewer {
     if (on && chev.classList.contains('disabled')) return;
     this._modeTrackOpen = on;
     track.classList.toggle('open', on);
-    chev.title = on ? 'Hide extra tools' : 'More tools';
+    chev.dataset.tip = on ? 'Hide extra tools' : 'More tools';
   }
 
   /**

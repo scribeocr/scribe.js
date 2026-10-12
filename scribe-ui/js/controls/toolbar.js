@@ -9,22 +9,23 @@ import {
   MENU_PLATE_CSS, MENU_ROW_CSS, MENU_ROW_NOICON_CSS, MENU_SEP_CSS,
 } from './menuStyles.js';
 import { createDropdown } from './dropdown.js';
+import { shortcutLabel } from '../platform.js';
 
 /**
  * Build a round icon button matching the control stylesheet's `.cr-icon-button`.
  * Suppresses the default mousedown (so clicking a button never steals canvas selection focus).
- * @param {string} title - Tooltip / accessible title.
+ * @param {string} label - Tooltip text and accessible name.
  * @param {string} svgInnerHTML - SVG markup for the glyph.
- * @param {string} [ariaLabel] - Optional ARIA label (defaults to `title`).
+ * @param {string} [ariaLabel] - Accessible name, if different from `label`.
  * @returns {HTMLSpanElement}
  */
-export function makeIconButton(title, svgInnerHTML, ariaLabel) {
+export function makeIconButton(label, svgInnerHTML, ariaLabel) {
   const el = document.createElement('span');
   el.className = 'cr-icon-button';
-  el.title = title;
+  el.dataset.tip = label;
   el.role = 'button';
   el.tabIndex = 0;
-  el.ariaLabel = ariaLabel ?? title;
+  el.ariaLabel = ariaLabel ?? label;
 
   const icon = document.createElement('span');
   icon.className = 'cr-icon';
@@ -169,6 +170,8 @@ const NAV_NEXT_SVG = barIcon('<path d="M11 7l7 7-7 7"/>');
 export function createPageNav(scribe) {
   const prevElem = makeIconButton('Previous page', NAV_PREV_SVG);
   const nextElem = makeIconButton('Next page', NAV_NEXT_SVG);
+  delete prevElem.dataset.tip;
+  delete nextElem.dataset.tip;
 
   const pageInputGroup = document.createElement('div');
   pageInputGroup.className = 'btn-group';
@@ -1346,6 +1349,7 @@ const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
  */
 export function createSearchBar(scribe, rootElem) {
   const searchElem = makeIconButton('Find', SEARCH_SVG);
+  searchElem.dataset.tipKey = shortcutLabel('F');
 
   const findGroupElem = document.createElement('span');
   findGroupElem.className = 'scribe-search-group';
@@ -1381,6 +1385,7 @@ export function createSearchBar(scribe, rootElem) {
   // The desktop find bar closes from the Find button or Esc, so only the phone find bar, with no Esc key, shows this control.
   const searchCloseElem = makeIconButton('Close', CLOSE_SVG);
   searchCloseElem.classList.add('scribe-search-close');
+  for (const el of [searchPrevElem, searchNextElem, searchCloseElem]) delete el.dataset.tip;
 
   findGroupElem.append(searchFieldElem, searchSepElem, searchPrevElem, searchNextElem, searchCloseElem);
 

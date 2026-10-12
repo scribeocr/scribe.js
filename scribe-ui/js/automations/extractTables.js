@@ -407,7 +407,7 @@ export function buildTablesWorkspace(host, container) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'scribe-am-xtsugact';
-    b.title = res.label;
+    b.dataset.tip = res.label;
     b.innerHTML = res.kind === 'combine' ? LINK_SVG : UNLINK_SVG;
     b.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -653,7 +653,7 @@ export function buildTablesWorkspace(host, container) {
       const isOut = !!viewer.doc.tableExport.excluded[e.head.id];
       if (isOut) row.classList.add('out');
       const stateGlyph = isOut ? glyphSpan(EYE_OFF_SVG, true, 'link muted') : glyphSpan(LINK_SVG, multi, 'link');
-      if (isOut) stateGlyph.title = 'Left out of the workbook';
+      if (isOut) stateGlyph.dataset.tip = 'Left out of the workbook';
       row.appendChild(stateGlyph);
       const tx = document.createElement('span');
       tx.className = 'scribe-am-xtrow-tx';
@@ -675,7 +675,7 @@ export function buildTablesWorkspace(host, container) {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'scribe-am-xtsugact muted';
-        b.title = `Unlink pages ${e.n + 1}\u2013${e.chain[e.chain.length - 1].n + 1}`;
+        b.dataset.tip = `Unlink pages ${e.n + 1}\u2013${e.chain[e.chain.length - 1].n + 1}`;
         b.innerHTML = UNLINK_SVG;
         b.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -691,7 +691,7 @@ export function buildTablesWorkspace(host, container) {
         const outBtn = document.createElement('button');
         outBtn.type = 'button';
         outBtn.className = 'scribe-am-xtsugact muted';
-        outBtn.title = selAllOut ? 'Include in workbook' : 'Leave out of workbook';
+        outBtn.dataset.tip = selAllOut ? 'Include in workbook' : 'Leave out of workbook';
         outBtn.innerHTML = selAllOut ? EYE_SVG : EYE_OFF_SVG;
         outBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
@@ -737,7 +737,7 @@ export function buildTablesWorkspace(host, container) {
             const b = document.createElement('button');
             b.type = 'button';
             b.className = 'scribe-am-xtsugact muted';
-            b.title = `Unlink from ${e.name} before page ${frag.n + 1}`;
+            b.dataset.tip = `Unlink from ${e.name} before page ${frag.n + 1}`;
             b.innerHTML = UNLINK_SVG;
             b.addEventListener('click', (ev) => {
               ev.stopPropagation();
@@ -804,7 +804,7 @@ export function buildTablesWorkspace(host, container) {
         const mkAct = (svg, title, handler, muted) => {
           const b = document.createElement('button');
           b.type = 'button';
-          b.title = title;
+          b.dataset.tip = title;
           b.className = `scribe-am-xtsugact${muted ? ' muted' : ''}`;
           b.innerHTML = svg;
           b.addEventListener('click', (ev) => { ev.stopPropagation(); handler(); });
@@ -934,7 +934,7 @@ export function buildTablesWorkspace(host, container) {
         x.type = 'button';
         x.className = 'scribe-am-result-act';
         x.textContent = '\u00d7';
-        x.title = 'Dismiss';
+        x.dataset.tip = 'Dismiss';
         if (!spec.action) x.style.marginLeft = 'auto';
         x.addEventListener('click', () => { lastOutcome = null; renderReceipt(); });
         row.appendChild(x);

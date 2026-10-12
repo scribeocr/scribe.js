@@ -328,7 +328,7 @@ export function applyTablePreview(viewer, n) {
     nameSpan.textContent = `continued \u00b7 ${chainName}`;
     strip.appendChild(nameSpan);
     const act = document.createElement('span');
-    act.title = 'Unlink tables';
+    act.dataset.tip = 'Unlink tables';
     act.setAttribute('role', 'button');
     Object.assign(act.style, {
       marginLeft: 'auto',

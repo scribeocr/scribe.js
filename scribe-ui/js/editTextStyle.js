@@ -275,7 +275,8 @@ export function createStyleCluster(scribe, opts = {}) {
    * @param {string} hint
    */
   const toggle = (prop, label, svg, hint) => {
-    const b = makeIconButton(`${label} (${hint})`, svg);
+    const b = makeIconButton(label, svg);
+    b.dataset.tipKey = hint;
     b.classList.add(`scribe-tc-${prop}`);
     b.addEventListener('click', (e) => { e.stopPropagation(); if (b.classList.contains('disabled')) return; scribe._editTextToggleStyle?.(prop); });
     b.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); b.click(); } });
@@ -289,7 +290,7 @@ export function createStyleCluster(scribe, opts = {}) {
   apply.classList.add('scribe-tc-apply');
   const caret = document.createElement('span');
   caret.className = 'cr-icon-button scribe-tc-caret';
-  caret.title = 'Choose text color';
+  caret.dataset.tip = 'Choose text color';
   caret.role = 'button';
   caret.tabIndex = 0;
   caret.ariaLabel = 'Choose text color';
@@ -409,14 +410,15 @@ export function createStyleCluster(scribe, opts = {}) {
       const s = scribe._editTextStyleState?.(prop) || { present: false, on: false, locked: false };
       t.el.classList.toggle('disabled', !s.present || s.locked);
       t.el.classList.toggle('active', s.on);
-      t.el.title = s.locked ? `This font is only available in ${prop}.` : `${t.label} (${t.hint})`;
+      t.el.dataset.tip = s.locked ? `This font is only available in ${prop}.` : t.label;
+      t.el.dataset.tipKey = s.locked ? '' : t.hint;
     }
     const cs = scribe._editTextColorState?.() || { present: false };
     const ink = scribe._editTextInkState?.().cur || '#000000';
     apply.classList.toggle('disabled', !cs.present);
     caret.classList.toggle('disabled', !cs.present);
     apply.style.setProperty('--scribe-text-ink', ink);
-    apply.title = `Text color: ${inkName(ink)}`;
+    apply.dataset.tip = `Text color: ${inkName(ink)}`;
     if (!cs.present && isOpen()) close();
   };
   return {

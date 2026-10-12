@@ -451,13 +451,13 @@ export function renderChainChrome(viewer, n) {
       ...tabBase(bbox, edge), background: CHROME_ACCENT, color: '#fff', boxShadow: `0 ${px(2)} ${px(7)} rgba(30,26,16,.28)`,
     });
     tab.innerHTML = `${arrow(edge === 'bottom' ? 'down' : 'up')}<span>${label}</span>`;
-    tab.title = `Go to page ${navN + 1}`;
+    tab.dataset.tip = `Go to page ${navN + 1}`;
     tab.addEventListener('click', (e) => {
       e.stopPropagation();
       viewer.displayPage(navN, true, true).then(() => pulseTable(viewer, navTable)).catch(() => {});
     });
     const seg = document.createElement('span');
-    seg.title = 'Unlink tables';
+    seg.dataset.tip = 'Unlink tables';
     seg.setAttribute('role', 'button');
     Object.assign(seg.style, {
       display: 'inline-flex', alignItems: 'center', alignSelf: 'stretch', paddingLeft: px(12), borderLeft: `${px(2)} solid rgba(255, 255, 255, .45)`, cursor: 'pointer',
@@ -476,7 +476,7 @@ export function renderChainChrome(viewer, n) {
     });
     const btn = (svg, title, handler, muted) => {
       const b = document.createElement('span');
-      b.title = title;
+      b.dataset.tip = title;
       b.setAttribute('role', 'button');
       Object.assign(b.style, {
         display: 'inline-flex', cursor: 'pointer', color: muted ? '#98a1b0' : CHROME_ACCENT, padding: `${px(2)} ${px(5)}`, borderRadius: px(10),
