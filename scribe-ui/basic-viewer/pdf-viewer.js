@@ -22,6 +22,7 @@ import {
 import { createRecents } from '../js/controls/recents.js';
 import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
+import { installTooltips } from '../js/controls/tooltip.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
@@ -1191,6 +1192,8 @@ class ScribePDFViewer {
     // The app menu's outside-click listener is document-level, so retire it on destroy.
     if (this._appMenu) this._teardownCallbacks.push(() => this._appMenu.destroy());
 
+    this._teardownCallbacks.push(installTooltips(this.pdfViewerElem));
+
     // The on-screen keyboard shrinks the visual viewport but not the layout viewport, so bottom-anchored bars (the phone find bar) would sit underneath it.
     // --scribe-kb-inset publishes the keyboard's overlap with this component's bottom edge; the phone CSS lifts the find bar by it.
     if (window.visualViewport) {
@@ -1676,6 +1679,9 @@ class ScribePDFViewer {
         this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
+        // A labeled mode button shows its name, so it gets no browser tooltip.
+        // Its name stays in aria-label.
+        if (btn.classList.contains('cr-labeled-button')) btn.title = '';
         btn.addEventListener('click', () => {
           if (btn.classList.contains('active')) {
             for (const other of exclusiveToolBtns) {
@@ -2925,7 +2931,7 @@ class ScribePDFViewer {
   _syncModeBanner() {
     // A tool with no hint (the unmounted Redact button) gets no banner, so the hint doubles as the banner-eligibility test.
     const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.dataset.modeHint) || null;
-    if (this._automatePanel) this._automatePanel.syncMode(activeBtn ? activeBtn.title : null);
+    if (this._automatePanel) this._automatePanel.syncMode(activeBtn ? activeBtn.ariaLabel : null);
     // The root class lets the stylesheet lift the companion strip above the Fill & Sign bar.
     // That bar changes the bottom inset, so the document lays out again when it comes or goes.
     const fsBarOn = this._phoneUi && !!this._fillSignTool && activeBtn === this._fillSignTool.toolbarElem;
@@ -2961,7 +2967,7 @@ class ScribePDFViewer {
       this._modeBannerBtn = activeBtn;
       this._dockElem.classList.add('scribe-mode-on');
       this._dockModeParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
-      this._dockModeParts.nm.textContent = activeBtn.title;
+      this._dockModeParts.nm.textContent = activeBtn.ariaLabel;
       // The Recognize row hides the mode's name, so a later sync for another mode puts it back.
       this._dockModeParts.nm.style.display = '';
       const recogMode = !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem;
@@ -3026,7 +3032,7 @@ class ScribePDFViewer {
     }
     this._modeBannerBtn = activeBtn;
     this._modeBannerParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
-    this._modeBannerParts.name.textContent = activeBtn.title;
+    this._modeBannerParts.name.textContent = activeBtn.ariaLabel;
     this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
     this._modeBannerParts.hint.classList.remove('scribe-mode-banner-hint-armed');
 
@@ -4578,7 +4584,7 @@ class ScribePDFViewer {
         txt.className = 'scribe-mode-sheet-txt';
         const nm = document.createElement('span');
         nm.className = 'scribe-mode-sheet-nm';
-        nm.textContent = btn.title;
+        nm.textContent = btn.ariaLabel;
         const sb = document.createElement('span');
         sb.className = 'scribe-mode-sheet-sub';
         sb.textContent = sub;

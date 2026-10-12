@@ -1635,6 +1635,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-page-shadow: 0 1px 3px rgba(30, 26, 16, .18);
       --scribe-lift-shadow: 0 10px 24px rgba(20, 30, 60, .30);
       --scribe-plate: rgba(28, 42, 68, .09);
+      --scribe-tip-bg: #5e5950;
+      --scribe-tip-ink: #ffffff;
+      --scribe-tip-ink-2: rgba(255, 255, 255, .72);
+      --scribe-tip-shadow: 0 2px 6px rgba(20, 30, 60, .22);
     }
     .${r}[data-theme="dark"] {
       --scribe-surface: #1c2028;
@@ -1663,6 +1667,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-page-shadow: 0 1px 3px rgba(0, 0, 0, .5);
       --scribe-lift-shadow: 0 12px 28px rgba(0, 0, 0, .7);
       --scribe-plate: rgba(255, 255, 255, .09);
+      --scribe-tip-bg: #5e5950;
+      --scribe-tip-ink: #ffffff;
+      --scribe-tip-ink-2: rgba(255, 255, 255, .72);
+      --scribe-tip-shadow: 0 2px 8px rgba(0, 0, 0, .5);
     }
 
     .${r} .scribe-viewport { font-synthesis-weight: auto; }
@@ -1738,7 +1746,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       pointer-events: none;
     }
 
-    /* Far-left app menu: document/app actions in a dropdown, shared by the viewer and editor. */
+    .${r} .scribe-tip {
+      position: absolute; left: 0; top: 0; z-index: 70; pointer-events: none; opacity: 0;
+      padding: 4px 8px; border-radius: 5px; background: var(--scribe-tip-bg); color: var(--scribe-tip-ink);
+      box-shadow: var(--scribe-tip-shadow); font-size: 12px; line-height: 1.3; white-space: nowrap; user-select: none;
+    }
+    .${r} .scribe-tip.on { opacity: 1; transition: opacity .08s ease-out; }
+    .${r} .scribe-tip-key { margin-left: 9px; color: var(--scribe-tip-ink-2); }
+
     .${r} .scribe-app-menu-wrap {
       position: relative;
       display: inline-flex;
@@ -1813,7 +1828,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-fs-menu-del:hover { background: var(--scribe-hover); color: #d1493d; }
     .${r} .scribe-fs-menu-ic { width: 18px; height: 18px; display: flex; }
     .${r} .scribe-fs-menu-ic svg { width: 16px; height: 16px; }
-    /* The preview chip stays paper-white in both themes, because a signature is ink on paper. */
+    /* The preview chip stays white in both themes. */
     .${r}.scribe-phone .scribe-fs-menu { min-width: 250px; max-height: 232px; overflow-y: auto; }
     .${r}.scribe-phone .scribe-fs-menu-item { min-height: 44px; padding: 4px 6px; font-size: 13px; }
     .${r}.scribe-phone .scribe-fs-menu-item:hover { background: none; }
@@ -1826,8 +1841,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}.scribe-phone .scribe-fs-menu-del:active { background: var(--scribe-hover); color: var(--scribe-danger); }
     .${r}.scribe-phone .scribe-fs-menu-add { padding: 4px 10px; }
 
-    /* Fill & Sign: FS3a centered signature dialog. The drawing/preview surfaces stay paper-white in
-       both themes — a signature is made on paper. */
     .${r} .scribe-fs-scrim { position: absolute; inset: 0; background: rgba(15, 18, 26, .42); z-index: 60;
       display: flex; align-items: center; justify-content: center; }
     .${r} .scribe-fs-dialog { width: min(620px, calc(100% - 32px)); background: var(--scribe-surface);
@@ -2488,7 +2501,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       outline: 1px solid var(--scribe-line-strong);
     }
 
-    /* Floating selection bar: the room-Edit batch surface, rising over the grid's bottom edge while anything is selected. */
     .${r} .scribe-thumb-selbar {
       position: absolute;
       left: 10px;
@@ -2879,7 +2891,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* Slim is fine for a mouse; a finger needs the platform-minimum width on the dropdown half too. */
     .${r}.scribe-coarse .scribe-hl-split .scribe-hl-caret { width: 44px; }
 
-    /* Seam divider hairline whose 14px height stays under the 15px group separators, so it reads as an intra-control line. */
     .${r} .scribe-hl-split .scribe-hl-caret::before {
       content: '';
       position: absolute;
@@ -3347,6 +3358,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       .${r} .scribe-search-group.scribe-search-open,
       .${r} .scribe-search-group.scribe-search-closing { transition: none; transform: none; }
       .${r} .cr-icon-button,
+      .${r} .scribe-tip.on,
       .${r}-toolbar input.scribe-search-input,
       .${r} .scribe-search-count > span { transition: none; }
     }
@@ -3502,7 +3514,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-sizing: border-box;
     }
 
-    /* Thin custom bar rather than a thicker native bar. */
     .${r} .scribe-thumb-scroll::-webkit-scrollbar {
       width: 7px;
     }

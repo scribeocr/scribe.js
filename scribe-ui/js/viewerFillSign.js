@@ -18,7 +18,7 @@ const paletteIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="cur
 
 /**
  * A palette icon button with the app's toolbar-button classes.
- * @param {string} label - Tooltip text and accessible name.
+ * @param {string} label - Accessible name and tooltip text.
  * @param {string} iconSvg - Inline SVG markup for the button icon.
  * @returns {HTMLSpanElement}
  */
@@ -27,7 +27,7 @@ function iconButton(label, iconSvg) {
   btn.className = 'cr-icon-button';
   btn.role = 'button';
   btn.tabIndex = 0;
-  btn.title = label;
+  btn.dataset.tip = label;
   btn.ariaLabel = label;
   btn.innerHTML = iconSvg;
   return btn;
@@ -807,9 +807,9 @@ export function createFillSignPalette(app) {
   });
   app._fsUndoBtn = undoBtn;
   const textBtn = iconButton('Add text', ICON_TEXT);
-  const checkBtn = iconButton('Check mark', ICON_CHECK);
-  const crossBtn = iconButton('Cross mark', ICON_CROSS);
-  const signBtn = iconButton('Signature', ICON_SIGN);
+  const checkBtn = iconButton('Add a check mark', ICON_CHECK);
+  const crossBtn = iconButton('Add a cross mark', ICON_CROSS);
+  const signBtn = iconButton('Add your signature', ICON_SIGN);
   // The labels show only in the phone UI, where the palette is a docked tool bar.
   for (const [btn, lbl] of [[textBtn, 'Text'], [checkBtn, 'Check'], [crossBtn, 'Cross'], [signBtn, 'Sign']]) {
     const s = document.createElement('span');
@@ -936,7 +936,8 @@ export function createFillSignPalette(app) {
       const del = document.createElement('span');
       del.className = 'scribe-fs-menu-del';
       del.textContent = '×';
-      del.title = 'Delete signature';
+      del.dataset.tip = 'Delete this signature';
+      del.ariaLabel = 'Delete this signature';
       del.addEventListener('click', (e) => { e.stopPropagation(); deleteSignature(sig.id); openMenu(); });
       it.appendChild(del);
       it.addEventListener('click', () => armSig(sig));
