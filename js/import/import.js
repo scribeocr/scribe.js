@@ -23,7 +23,7 @@ import { importImageFileToBase64 } from '../utils/imageUtils.js';
 import {
   readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
 } from '../utils/miscUtils.js';
-import { importOCRFiles } from './importOCR.js';
+import { countOcrPages, importOCRFiles } from './importOCR.js';
 import { extractInternalPDFText } from '../extractPDFText.js';
 
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
@@ -825,17 +825,7 @@ export async function importFiles(doc, files, options = {}) {
     }
   }
 
-  let pageCountOcr = doc.ocrRaw.active?.length || doc.ocr.active?.length || 0;
-
-  // For Textract, `doc.ocrRaw.active[0]` is a string containing the Textract JSON data for all pages.
-  // This ad-hoc solution counts the number of "PAGE" blocks in the Textract JSON data.
-  if (format === 'textract' && doc.ocrRaw.active?.length) {
-    pageCountOcr = doc.ocrRaw.active[0].match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || pageCountOcr;
-  }
-
-  if (format === 'google_doc_ai' && doc.ocrRaw.active?.length) {
-    pageCountOcr = doc.ocrRaw.active[0].match(/"pageNumber":\s*\d+/g)?.length || pageCountOcr;
-  }
+  const pageCountOcr = doc.ocrRaw.active?.length ? countOcrPages(format, doc.ocrRaw.active) : (doc.ocr.active?.length || 0);
 
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (xmlModeImport && (doc.inputData.imageMode || doc.inputData.pdfMode)) {
@@ -1035,7 +1025,7 @@ export async function importFilesSupp(doc, files, ocrName) {
 
   const ocrData = await importOCRFiles(ocrFilesAll);
 
-  const pageCountHOCR = ocrData.hocrRaw.length;
+  const pageCountHOCR = countOcrPages(ocrData.format, ocrData.hocrRaw);
 
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (doc.images.pageCount > 0 && doc.images.pageCount !== pageCountHOCR) {

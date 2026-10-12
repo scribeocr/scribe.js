@@ -73,6 +73,20 @@ const detectOcrFormat = (ocrStr, ext) => {
 };
 
 /**
+ * Number of pages in the raw OCR strings of one import.
+ * @param {string} format
+ * @param {Array<?string>} ocrRaw
+ */
+export function countOcrPages(format, ocrRaw) {
+  const whole = ocrRaw[0];
+  if (ocrRaw.length !== 1 || !whole) return ocrRaw.length;
+  if (format === 'textract') return whole.match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || 1;
+  if (format === 'google_doc_ai') return whole.match(/"pageNumber":\s*\d+/g)?.length || 1;
+  if (format === 'azure_doc_intel') return whole.match(/"unit":\s*"(pixel|inch)"/g)?.length || 1;
+  return 1;
+}
+
+/**
  * Import raw OCR data from files.
  * Currently supports .hocr (used by Tesseract), Abbyy .xml, and stext (an intermediate data format used by mupdf).
  *

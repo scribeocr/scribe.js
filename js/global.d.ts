@@ -1020,6 +1020,37 @@ declare global {
         confidence: number;
     }
 
+    interface AzureDocIntelBoundingRegion {
+        pageNumber: number;
+        polygon: number[];
+    }
+
+    interface AzureDocIntelParagraph {
+        content: string;
+        spans: AzureDocIntelSpan[];
+        boundingRegions?: AzureDocIntelBoundingRegion[];
+        role?: 'title' | 'sectionHeading' | 'footnote' | 'pageHeader' | 'pageFooter' | 'pageNumber' | 'formulaBlock';
+    }
+
+    interface AzureDocIntelTableCell {
+        kind?: 'content' | 'rowHeader' | 'columnHeader' | 'stereotype' | 'description';
+        rowIndex: number;
+        columnIndex: number;
+        rowSpan?: number;
+        columnSpan?: number;
+        content: string;
+        boundingRegions?: AzureDocIntelBoundingRegion[];
+        spans: AzureDocIntelSpan[];
+    }
+
+    interface AzureDocIntelTable {
+        rowCount: number;
+        columnCount: number;
+        cells: AzureDocIntelTableCell[];
+        boundingRegions?: AzureDocIntelBoundingRegion[];
+        spans: AzureDocIntelSpan[];
+    }
+
     interface AzureDocIntelPage {
         pageNumber: number;
         angle: number;
@@ -1036,6 +1067,8 @@ declare global {
         modelId: string;
         content: string;
         pages: AzureDocIntelPage[];
+        paragraphs?: AzureDocIntelParagraph[];
+        tables?: AzureDocIntelTable[];
         styles: AzureDocIntelStyle[];
     }
 
