@@ -142,7 +142,7 @@ const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="curren
  * @param {string} inner - Path/shape markup.
  * @returns {string} The SVG markup for the icon.
  */
-const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+export const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 /**
  * Wrap SVG in a stroked icon for the app menu's 16px slots.
@@ -1342,7 +1342,7 @@ const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
  * @returns {{
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
- *   openSearch: () => Promise<void>, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
+ *   openSearch: (options?: {focus?: boolean}) => Promise<void>, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
  *   updateSearchCounter: () => void, resetSearch: () => void,
  *   installFindShortcut: () => (() => void)
  * }}
@@ -1434,7 +1434,24 @@ export function createSearchBar(scribe, rootElem) {
   /** @type {?ReturnType<typeof setTimeout>} Hides the bar once its exit has played. */
   let closeTimer = null;
 
-  async function openSearch() {
+  // The desktop find bar hangs from the Find button's right edge, which a desktop shell's window controls can push in from the toolbar's.
+  const placeBar = () => {
+    const bar = findGroupElem.parentElement;
+    if (!bar) return;
+    const barRect = bar.getBoundingClientRect();
+    const want = barRect.right - searchElem.getBoundingClientRect().right;
+    // The bar stays inside a narrow host, such as the library's preview pane.
+    const most = Math.max(8, barRect.width - findGroupElem.offsetWidth - 8);
+    findGroupElem.style.setProperty('--scribe-search-right', `${Math.min(want, most)}px`);
+  };
+  const barResize = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(placeBar) : null;
+
+  /**
+   * Open the find bar.
+   * @param {object} [options]
+   * @param {boolean} [options.focus=true] - Pass false to open the bar without taking focus, for a search started from elsewhere.
+   */
+  async function openSearch({ focus = true } = {}) {
     if (!scribe.doc || !scribe.doc.pageMetrics || scribe.doc.pageMetrics.length === 0) return;
     if (closeTimer) {
       clearTimeout(closeTimer);
@@ -1442,17 +1459,21 @@ export function createSearchBar(scribe, rootElem) {
     }
     findGroupElem.classList.remove('scribe-search-closing');
     findGroupElem.style.display = 'inline-flex';
-    // The desktop find bar hangs from the Find button's right edge, which a desktop shell's window controls can push in from the toolbar's.
-    const bar = findGroupElem.parentElement;
-    if (bar) findGroupElem.style.setProperty('--scribe-search-right', `${bar.getBoundingClientRect().right - searchElem.getBoundingClientRect().right}px`);
+    placeBar();
+    if (barResize && findGroupElem.parentElement) {
+      barResize.disconnect();
+      barResize.observe(findGroupElem.parentElement);
+    }
     // The display flip has to land before the class does, or the entrance has no start state to play from.
     findGroupElem.getBoundingClientRect();
     findGroupElem.classList.add('scribe-search-open');
     updateSearchCounter();
     searchElem.classList.add('active');
     scribe.state.searchMode = true;
-    searchInputElem.focus();
-    searchInputElem.select();
+    if (focus) {
+      searchInputElem.focus();
+      searchInputElem.select();
+    }
     // A retained query gets its highlights and its active match back, but the view must not move until the user types or steps through matches.
     if (!searchInputElem.value.trim()) return;
     await runSearch(searchInputElem.value, undefined, false);
@@ -1465,6 +1486,7 @@ export function createSearchBar(scribe, rootElem) {
 
   function closeSearch() {
     clearTimeout(searchDebounce);
+    barResize?.disconnect();
     lastActive = scribe._searchState.activeMatch;
     lastQuery = scribe._searchState.search;
     searchElem.classList.remove('active');

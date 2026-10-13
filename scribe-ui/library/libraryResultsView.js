@@ -96,10 +96,6 @@ export function createResultsView({
     const selectHit = (i) => {
       active = i;
       hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
-      if (i < 0) {
-        pv.showEmpty();
-        return;
-      }
       const h = hits[i];
       h.row.scrollIntoView({ block: 'nearest' });
       pv.show({
@@ -109,26 +105,21 @@ export function createResultsView({
         pageN: h.pageN,
         query: fullTextQuery,
         title: titleOf(h.relPath),
-        meta: `Page ${h.pageN + 1} of ${h.entry.pageCount || 1}`,
         jump: true,
       });
     };
 
     const openActive = async () => {
-      if (active < 0) return;
+      if (active < 0 || pv.openBtn.classList.contains('disabled')) return;
       const h = hits[active];
-      const label = pv.openBtn.innerHTML;
-      /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = true;
-      pv.openBtn.textContent = 'Opening…';
+      pv.openBtn.classList.add('disabled');
       try {
         await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
       } finally {
-        pv.openBtn.innerHTML = label;
-        /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = false;
+        pv.openBtn.classList.remove('disabled');
       }
     };
     pv.onOpen = openActive;
-    pv.onClose = () => selectHit(-1);
     listEl.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -138,8 +129,6 @@ export function createResultsView({
         if (active > 0) selectHit(active - 1);
       } else if (e.key === 'Enter') {
         openActive();
-      } else if (e.key === 'Escape') {
-        selectHit(-1);
       }
     });
 
@@ -340,6 +329,11 @@ export function createResultsView({
       row.addEventListener('click', () => {
         selectHit(hits.indexOf(hit));
         listEl.focus();
+      });
+      row.addEventListener('dblclick', (e) => {
+        if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+        selectHit(hits.indexOf(hit));
+        openActive();
       });
       thumbQueue.push({
         relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, img: ph,

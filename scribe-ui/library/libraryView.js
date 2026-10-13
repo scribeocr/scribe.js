@@ -376,25 +376,12 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
 .scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
 .scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); }
-.scribe-pdf-viewer .scribe-library-pv-head .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-pv-head .m { color: var(--scribe-ink-3); white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-pv-head .grow { flex: 1; }
-.scribe-pdf-viewer .scribe-library-pv-open { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-pv-open:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-pv-open:disabled { opacity: 0.6; cursor: default; background: none; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-pv-open svg { width: 15px; height: 15px; }
-.scribe-pdf-viewer .scribe-library-pv-x { width: 28px; height: 28px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
-.scribe-pdf-viewer .scribe-library-pv-x:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-pv-x svg { width: 100%; height: 100%; display: block; }
-.scribe-pdf-viewer .scribe-library-pv-zoom { width: 28px; height: 28px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
-.scribe-pdf-viewer .scribe-library-pv-zoom:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-pv-zoom svg { width: 100%; height: 100%; display: block; }
-.scribe-pdf-viewer .scribe-library-pv-find { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; flex: 0 1 auto; min-width: 76px; }
-.scribe-pdf-viewer .scribe-library-pv-find:focus-within { border-color: var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-pv-find > svg { width: 15px; height: 15px; color: var(--scribe-ink-3); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-pv-find input { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 96px; min-width: 0; padding: 0; caret-color: var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-pv-find input::placeholder { color: var(--scribe-ink-3); }
+/* Stacked above the stage, so the find bar that hangs from it paints over the page. */
+.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 2; }
+.scribe-pdf-viewer .scribe-library-pv-head .t { flex: 1 1 0; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-tools { display: inline-flex; align-items: center; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-pv-tools { flex: 1 1 0; justify-content: flex-end; gap: 8px; }
+.scribe-pdf-viewer .scribe-library-pv-tools .vertical-separator { margin: 0; }
 .scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv.scribe-library-pv-live .scribe-cmt-card { display: none !important; }
@@ -466,23 +453,22 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-plate .n { font-weight: 600; color: var(--scribe-ink); overflow-wrap: anywhere; }
 .scribe-pdf-viewer .scribe-library-pv-plate .m { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-plate .scribe-library-btn { margin-top: 8px; }
-.scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-find, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-open, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-head .vertical-separator { display: none; }
+.scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-tools { display: none; }
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
 /* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
 .scribe-pdf-viewer .scribe-library-surface.card-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag * { cursor: grabbing; }
 /* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
 .scribe-pdf-viewer .scribe-library-pv-head { container: scribe-pv / inline-size; }
-/* A pane dragged toward its 320px minimum would otherwise push Close past the right edge. */
-@container scribe-pv (max-width: 470px) {
-  .scribe-pdf-viewer .scribe-library-pv-head .m { display: none; }
+@container scribe-pv (max-width: 472px) {
+  .scribe-pdf-viewer .scribe-library-pv-nav .cr-icon-button { display: none; }
 }
-@container scribe-pv (max-width: 400px) {
-  .scribe-pdf-viewer .scribe-library-pv-head .vertical-separator { display: none; }
+@container scribe-pv (max-width: 416px) {
+  .scribe-pdf-viewer .scribe-library-pv-zoom { display: none; }
+  .scribe-pdf-viewer .scribe-library-pv-tools { flex: 0 0 auto; }
 }
-@container scribe-pv (max-width: 350px) {
-  .scribe-pdf-viewer .scribe-library-pv-find { min-width: 58px; }
-  .scribe-pdf-viewer .scribe-library-pv-find > svg { display: none; }
+@container scribe-pv (max-width: 352px) {
+  .scribe-pdf-viewer .scribe-library-pv-nav { display: none; }
 }
 .scribe-pdf-viewer .scribe-library-bar { container: scribe-bar / inline-size; }
 @container scribe-bar (max-width: 820px) {
@@ -3512,20 +3498,13 @@ export function createLibraryInstance(viewer, opts) {
         const entry = previewEntry();
         if (!entry || !listPreviewPath) return;
         const pane = listPane;
-        if (!pane) return;
-        const label = pane.openBtn.innerHTML;
-        /** @type {HTMLButtonElement} */ (pane.openBtn).disabled = true;
-        pane.openBtn.textContent = 'Opening…';
+        if (!pane || pane.openBtn.classList.contains('disabled')) return;
+        pane.openBtn.classList.add('disabled');
         try {
           await openEntry(listPreviewPath, entry, { pageN: listPreviewPage });
         } finally {
-          pane.openBtn.innerHTML = label;
-          /** @type {HTMLButtonElement} */ (pane.openBtn).disabled = false;
+          pane.openBtn.classList.remove('disabled');
         }
-      };
-      listPane.onClose = () => {
-        listPreviewPath = null;
-        listPane?.showEmpty();
       };
       host = split.left;
     }
@@ -3881,7 +3860,6 @@ export function createLibraryInstance(viewer, opts) {
     if (!listPane) return;
     listPreviewPath = relPath;
     listPreviewPage = pageN;
-    const pages = entry.pageCount || 1;
     listPane.show({
       relPath,
       hash: entry.hash,
@@ -3889,7 +3867,6 @@ export function createLibraryInstance(viewer, opts) {
       pageN,
       query: null,
       title: titleOf(relPath),
-      meta: `Page ${pageN + 1} of ${pages}`,
       jump: true,
     });
   };
@@ -5967,12 +5944,9 @@ export function createLibraryInstance(viewer, opts) {
 
   const focusSearch = () => {
     const pane = panes.mounted();
-    const paneFind = paneEngaged && pane
-      ? /** @type {?HTMLInputElement} */ (pane.pane.querySelector('.scribe-library-pv-find input'))
-      : null;
-    const findTarget = paneFind || searchInput;
-    findTarget.focus();
-    findTarget.select();
+    if (paneEngaged && pane?.openFind()) return;
+    searchInput.focus();
+    searchInput.select();
   };
   // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
   const onFindShortcut = (e) => {

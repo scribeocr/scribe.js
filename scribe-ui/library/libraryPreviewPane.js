@@ -1,25 +1,18 @@
-// The library's read-only preview pane: an embedded viewer seeded straight from stored page rasters and sidecars,
-// with its own find bar, zoom, page nav, and match marks. Search results and the list views both mount one.
+// The library's preview pane is an embedded viewer seeded straight from stored page rasters and sidecars.
+// Search results and the list views both mount one.
 // Seeding rather than importing is what lets a reader flip through documents without paying for a full load each time.
 
 import scribeLib from '../../scribe.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
 import {
-  findText, nextMatch, prevMatch, searchDoc,
-} from '../js/viewerSearch.js';
+  barIcon, createPageNav, createSearchBar, createZoomControls, makeIconButton, makeSeparator,
+} from '../js/controls/toolbar.js';
 import {
   PAGE_RASTER_WIDTH, RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
 } from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
 
-// eslint-disable-next-line max-len
-const PANE_FIND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
-
-// The zoom pair is drawn as bare signs rather than reusing the toolbar's lens icons.
-// A lens's interior +/- falls below legibility at the 18px inset scale these buttons render at.
-const PANE_ZOOM_OUT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12h12"/></svg>';
-// eslint-disable-next-line max-len
-const PANE_ZOOM_IN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+const OPEN_IN_TAB_SVG = barIcon('<path d="M12 7H8.5A2.5 2.5 0 0 0 6 9.5v10A2.5 2.5 0 0 0 8.5 22h10a2.5 2.5 0 0 0 2.5-2.5V16"/><path d="M16 6h6v6M22 6l-9 9"/>');
 
 /**
  * The split shell shared by the search-results view and the list-view preview: a resizable left column, a drag sash, and room for the caller-appended right pane.
@@ -305,23 +298,24 @@ export function createPreviewPanes({
   const buildPreviewPane = (emptyText) => {
     const pane = document.createElement('div');
     pane.className = 'scribe-library-pv';
-    pane.innerHTML = '<div class="scribe-library-pv-head" style="display:none;"><span class="t"></span><span class="m"></span><span class="grow"></span>'
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">${PANE_ZOOM_OUT_SVG}</button>`
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">${PANE_ZOOM_IN_SVG}</button>`
-      + `<span class="scribe-library-pv-find">${PANE_FIND_SVG}<input type="text" placeholder="Find" aria-label="Find in the previewed document"></span>`
-      + '<span class="vertical-separator"></span>'
-      + '<button class="scribe-library-pv-open" type="button">Open<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" '
-      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>'
-      + '<button class="scribe-library-pv-x" type="button" aria-label="Close preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-      + 'stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
+    // The toolbar class applies the toolbar-scoped styles of the find bar and the page input.
+    // The find bar's styles stay scoped because the phone layout moves the bar out of the toolbar.
+    pane.innerHTML = '<div class="scribe-library-pv-head scribe-pdf-viewer-toolbar" style="display:none;">'
+      + '<span class="t"></span><span class="scribe-library-pv-tools"></span></div>'
       + `<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty">${emptyText}</div><div class="scribe-library-pv-viewer" style="display:none;"></div>`
       + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>';
     const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
-    const pvMeta = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head .m'));
+    const pvTitle = /** @type {HTMLElement} */ (pvHead.querySelector('.t'));
+    const pvTools = /** @type {HTMLElement} */ (pvHead.querySelector('.scribe-library-pv-tools'));
     const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
     const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
     const pvHost = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-viewer'));
-    const pvFindInput = /** @type {HTMLInputElement} */ (pane.querySelector('.scribe-library-pv-find input'));
+    const openBtn = makeIconButton('Open', OPEN_IN_TAB_SVG);
+    pvTools.append(makeSeparator(), openBtn);
+    /** @type {?ReturnType<typeof createPageNav>} */
+    let pageNav = null;
+    /** @type {?ReturnType<typeof createSearchBar>} */
+    let searchBar = null;
     /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
     let paneViewer = null;
     let token = 0;
@@ -357,14 +351,17 @@ export function createPreviewPanes({
      */
     const applyQueryAndPage = async (target) => {
       const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
+      const bar = /** @type {NonNullable<typeof searchBar>} */ (searchBar);
       if (target.query) {
-        ps.state.searchMode = true;
-        await searchDoc(ps, target.query, { pageN: target.pageN });
+        if (!ps.state.searchMode) {
+          // Opening would run any query left in the field before the landing search below replaces it.
+          bar.searchInputElem.value = '';
+          await bar.openSearch({ focus: false });
+        }
+        bar.searchInputElem.value = target.query;
+        await bar.runSearch(target.query, target.pageN);
         if (ps._searchState.matchList.length) return;
-      } else {
-        if (ps._searchState.search) findText(ps, '');
-        ps.state.searchMode = false;
-      }
+      } else if (ps.state.searchMode) bar.closeSearch();
       await ps.displayPage(target.pageN, true, false);
     };
 
@@ -401,49 +398,6 @@ export function createPreviewPanes({
       if (t !== token) return;
       hydrate(t, target);
     };
-
-    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-in]')).addEventListener('click', () => {
-      if (paneViewer?.doc) paneViewer.scribe.zoom(1.1, paneViewer.scribe.getViewportCenter());
-    });
-    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-out]')).addEventListener('click', () => {
-      if (paneViewer?.doc) paneViewer.scribe.zoom(0.9, paneViewer.scribe.getViewportCenter());
-    });
-    let pvFindLast = '';
-    const pvClearFind = () => {
-      pvFindLast = '';
-      if (!paneViewer?.doc) return;
-      const ps = paneViewer.scribe;
-      if (ps._searchState.search) findText(ps, '');
-      ps.state.searchMode = false;
-    };
-    /** @param {boolean} backwards */
-    const pvRunFind = async (backwards) => {
-      if (!paneViewer?.doc) return;
-      const ps = paneViewer.scribe;
-      const q = pvFindInput.value.trim();
-      if (!q) return;
-      if (q === pvFindLast) {
-        await (backwards ? prevMatch(ps) : nextMatch(ps));
-        return;
-      }
-      pvFindLast = q;
-      ps.state.searchMode = true;
-      await searchDoc(ps, q);
-    };
-    pvFindInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        pvRunFind(e.shiftKey);
-      } else if (e.key === 'Escape' && pvFindInput.value) {
-        e.preventDefault();
-        e.stopPropagation();
-        pvFindInput.value = '';
-        pvClearFind();
-      }
-    });
-    pvFindInput.addEventListener('input', () => {
-      if (!pvFindInput.value.trim()) pvClearFind();
-    });
 
     /**
      * Release the pane's current document, saving one that holds session edits back to its sidecar.
@@ -527,8 +481,8 @@ export function createPreviewPanes({
       viewer._previewDocName = target.title;
       viewer._announceActiveDoc();
       pvHead.style.display = '';
-      /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
-      pvMeta.textContent = target.badge;
+      pvTitle.textContent = target.title;
+      pvTitle.title = target.title;
       pane.classList.add('scribe-library-pv-plated');
       pvHost.style.display = 'none';
       pvLoading.style.display = 'none';
@@ -613,17 +567,26 @@ export function createPreviewPanes({
       return cover;
     };
 
-    const syncPosMeta = () => {
+    /**
+     * Show page `n` of `count` in the page control.
+     * @param {number} n - One-based page number.
+     * @param {number} count
+     */
+    const setPageNav = (n, count) => {
+      if (!pageNav) return;
+      pageNav.pageNumElem.value = String(n);
+      pageNav.pageCountElem.textContent = String(count);
+    };
+    const syncPageNav = () => {
       const d = paneViewer?.doc;
-      if (d && d.pageMetrics.length) pvMeta.textContent = `Page ${paneViewer.scribe.state.cp.n + 1} of ${d.pageMetrics.length}`;
+      if (d && d.pageMetrics.length) setPageNav(paneViewer.scribe.state.cp.n + 1, d.pageMetrics.length);
     };
 
     /**
      * Preview a page in the embedded viewer, painting match marks when a query is given.
      * A `jump` target lands on far pages by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
-     * `target.meta` seeds the head's position line, which then tracks the reader's page.
      * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
-     *   pageN: number, query: ?string, title: string, meta: string, jump?: boolean}} target
+     *   pageN: number, query: ?string, title: string, jump?: boolean}} target
      */
     const show = async (target) => {
       // A fit run while the surface is hidden commits a nonpositive zoom, which no later resize repairs.
@@ -643,18 +606,13 @@ export function createPreviewPanes({
       // Pending documents all carry an empty hash, so an empty hash identifies a document only together with its path.
       const sameDoc = !!(current && current.hash === target.hash && (target.hash || current.relPath === target.relPath));
       const changed = !sameDoc || !current || current.pageN !== target.pageN || current.query !== target.query;
-      if (!sameDoc) {
-        pvFindInput.value = '';
-        pvFindLast = '';
-      }
+      if (!sameDoc) searchBar?.resetSearch();
       pvHead.style.display = '';
-      /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
+      pvTitle.textContent = target.title;
+      pvTitle.title = target.title;
       // Announced before the swap, so the embedding page never sees the document-less gap between releasing the old preview and opening the new one.
       viewer._previewDocName = target.title;
       viewer._announceActiveDoc();
-      // A host re-render of the already-shown document carries a stale initial position once the reader has scrolled, so the live state wins.
-      if (sameDoc && paneViewer?.doc) syncPosMeta();
-      else pvMeta.textContent = target.meta;
       pvEmpty.style.display = 'none';
       pvLoading.style.display = 'none';
       pane.classList.remove('scribe-library-pv-plated');
@@ -662,20 +620,38 @@ export function createPreviewPanes({
       pvHost.style.display = '';
       if (!paneViewer) {
         paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
-          edit: false, showToolbar: false, showDropZone: false, showSidebar: false,
+          edit: false, showToolbar: false, showDropZone: false, showSidebar: false, fit: 'width',
         });
+        const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
         // The pane must never compete with the main viewer for canvas memory.
-        /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.imageCache.canvasCacheBytes = 64 * 1024 * 1024;
+        ps.imageCache.canvasCacheBytes = 64 * 1024 * 1024;
         /** @type {any} */ (pvHost).scribeViewer = paneViewer;
         // Annotation gestures and comment text edits in the pane checkpoint like tab edits do.
-        /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.onAnnotationsEdited = () => { paneDirty = true; };
+        ps.onAnnotationsEdited = () => { paneDirty = true; };
         pvHost.addEventListener('input', () => { paneDirty = true; }, true);
-        const innerDisplay = paneViewer.scribe.displayPageCallback;
-        paneViewer.scribe.displayPageCallback = () => {
+        pageNav = createPageNav(ps);
+        const navWrap = document.createElement('span');
+        navWrap.className = 'scribe-library-pv-nav';
+        navWrap.append(pageNav.prevElem, pageNav.nextElem, pageNav.pageInputGroup);
+        pvTitle.after(navWrap);
+        const { pageNumElem } = pageNav;
+        pageNumElem.addEventListener('focus', () => pageNumElem.select());
+        // Wrapped because the pair sets its display inline, which would override the width rule that hides it.
+        const zoomWrap = document.createElement('span');
+        zoomWrap.className = 'scribe-library-pv-zoom';
+        zoomWrap.appendChild(createZoomControls(ps).zoomControls);
+        searchBar = createSearchBar(ps, pane);
+        pvTools.prepend(zoomWrap, searchBar.searchElem);
+        pvHead.appendChild(searchBar.findGroupElem);
+        const innerDisplay = ps.displayPageCallback;
+        ps.displayPageCallback = () => {
           innerDisplay?.();
-          syncPosMeta();
+          syncPageNav();
         };
       }
+      // A host re-render of the already-shown document carries a stale initial position once the reader has scrolled, so the live state wins.
+      if (sameDoc && paneViewer.doc) syncPageNav();
+      else setPageNav(target.pageN + 1, target.entry.pageCount || 1);
       lastTarget = target;
       // Background warming yields for the whole show, because the seed build and priming run before any hydration exists to count.
       beginUserLoad();
@@ -860,10 +836,9 @@ export function createPreviewPanes({
           const sc = ps.scrollContainer;
           // Once the reader scrolled away from the anchored spot, hydration must not yank them back.
           const readerMoved = current.anchorTop != null && Math.abs(sc.scrollTop - current.anchorTop) > 2;
-          if (current.query) {
+          if (current.query && searchBar) {
             // The swap rebuilt the word objects, so re-derive the matches from the real document at whatever page the reader has reached.
-            ps.state.searchMode = true;
-            searchDoc(ps, current.query, { navigate: !readerMoved }).then(() => {
+            searchBar.runSearch(current.query, undefined, !readerMoved).then(() => {
               if (!readerMoved && current && current.handle === handle) current.anchorTop = sc.scrollTop;
             }).catch(() => {});
           }
@@ -929,16 +904,22 @@ export function createPreviewPanes({
 
     const self = {
       pane,
-      openBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-open')),
-      closeBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-x')),
+      openBtn,
       /** Which view hosts this pane ('results' | 'list'); reuse is only within a kind. */
       kind: '',
       /** The query the results view last rendered with, so a new search resets the pane. */
       shownQuery: '',
       /** @type {?() => void} Rebound on every host render; a reused pane must never stack listeners. */
       onOpen: null,
-      /** @type {?() => void} */
-      onClose: null,
+      /**
+       * Open the pane's find bar.
+       * Returns false when no document is shown.
+       */
+      openFind: () => {
+        if (!searchBar || !paneViewer?.doc) return false;
+        searchBar.openSearch();
+        return true;
+      },
       show,
       showEmpty,
       showPlate,
@@ -963,8 +944,7 @@ export function createPreviewPanes({
         }
       },
     };
-    self.openBtn.addEventListener('click', () => self.onOpen?.());
-    self.closeBtn.addEventListener('click', () => self.onClose?.());
+    openBtn.addEventListener('click', () => { if (!openBtn.classList.contains('disabled')) self.onOpen?.(); });
     mountedPane = self;
     return self;
   };
