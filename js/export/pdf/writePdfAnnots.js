@@ -300,7 +300,7 @@ const SHAPE_SUBTYPE = {
  * @param {number} startObjNum
  * @param {{ width: number, height: number }} outputDims
  * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
- * @param {boolean} [omitIdentity] - When true (a sanitized export), suppress `/T` and `/CreationDate` on the reply thread.
+ * @param {boolean} [omitIdentity] - When true (a sanitized export), suppress `/T` and `/CreationDate` on the shape and its reply thread.
  * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
  */
 export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, warningHandler, omitIdentity = false) {
@@ -385,6 +385,11 @@ export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, war
       dict += geomStr;
       dict += ` /AP <</N ${apObjNum} 0 R>>`;
       if (annot.comment) dict += ` /Contents <${toUtf16BeHex(annot.comment)}>`;
+      if (!omitIdentity && annot.author) dict += ` /T <${toUtf16BeHex(annot.author)}>`;
+      if (!omitIdentity && annot.createdAt) {
+        const pdfDate = formatPdfDate(annot.createdAt);
+        if (pdfDate) dict += ` /CreationDate (${pdfDate})`;
+      }
       dict += '>>\nendobj\n\n';
 
       let ap = `q\n${br} ${bg} ${bb} RG\n`;

@@ -70,6 +70,9 @@ export function analyzeLayout(pages, opts = {}) {
   const wordSignals = opts.wordSignals || null;
   const outlineHeadings = opts.outlineHeadings || null;
   const fullPageImagePages = opts.fullPageImagePages || null;
+  // On a scan's OCR layer the font family, weight, slant and color are the recognizer's guesses or constants, and the size is fitted per line.
+  // The rules that read them as the author's typography are off there.
+  const ocrText = opts.pdfType === 'ocr' || opts.pdfType === 'image';
   // Phase 1: per-line feature vectors (one entry per line, across all pages).
   /** @type {Array<LineFeat>} */
   const feats = [];
@@ -684,7 +687,7 @@ export function analyzeLayout(pages, opts = {}) {
   }
 
   const boldBodyLines = bodyFeats.filter((f) => f.bold > 0.6).length;
-  const boldHeading = bodyFeats.length >= 8 && boldBodyLines / bodyFeats.length < 0.2;
+  const boldHeading = !ocrText && bodyFeats.length >= 8 && boldBodyLines / bodyFeats.length < 0.2;
 
   /** @type {Map<string, number>} */
   const docColorChars = new Map();
@@ -696,7 +699,7 @@ export function analyzeLayout(pages, opts = {}) {
   }
   let docTopColorChars = 0;
   for (const [, n] of docColorChars) if (n > docTopColorChars) docTopColorChars = n;
-  const colorHeading = docTotalChars > 0 && docTopColorChars / docTotalChars >= 0.6;
+  const colorHeading = !ocrText && docTotalChars > 0 && docTopColorChars / docTotalChars >= 0.6;
   for (const f of feats) f.colorDistinct = colorHeading && f.color !== (pageBodyColor.get(f.page) || '#000000');
 
   // Family is the only heading cue that catches a sub-head marginally larger than body yet neither bold, all-caps, nor colour-distinct.
@@ -708,7 +711,7 @@ export function analyzeLayout(pages, opts = {}) {
   }
   let docTopFamilyChars = 0;
   for (const [, n] of docFamilyChars) if (n > docTopFamilyChars) docTopFamilyChars = n;
-  const familyHeading = docTotalChars > 0 && docTopFamilyChars / docTotalChars >= 0.6;
+  const familyHeading = !ocrText && docTotalChars > 0 && docTopFamilyChars / docTotalChars >= 0.6;
   for (const f of feats) {
     f.familyDistinct = familyHeading && !!f.fontFamily && f.fontFamily !== (pageBodyFamily.get(f.page) || bodyFontFamily);
   }
@@ -741,7 +744,7 @@ export function analyzeLayout(pages, opts = {}) {
   // The 'scanned' half of the gate spares born-digital line-numbered briefs (pdfType 'text') carrying real footnotes.
   // The line-number half spares scanned expert reports whose notes are genuine footnotes.
   let suppressNotes = false;
-  if (opts.pdfType === 'ocr' || opts.pdfType === 'image') {
+  if (ocrText) {
     let lockedLineNumbers = 0;
     let leadingLineNumberLines = 0;
     for (const f of feats) {
@@ -962,13 +965,13 @@ export function analyzeLayout(pages, opts = {}) {
       for (let k = 1; k < feats.length; k++) {
         const a = feats[k - 1]; const b = feats[k];
         if (a.page !== b.page) continue;
-        if (Math.abs(a.size - b.size) > bodySize * 0.1) continue;
+        if (!ocrText && Math.abs(a.size - b.size) > bodySize * 0.1) continue;
         if (b.sizeRatio < 0.92 || b.sizeRatio > 1.08) continue;
         const dy = b.top - a.top;
         if (dy <= bodyPitch * 1.4 || dy > bodyPitch * 3.2) continue;
         bigInBand++;
         const c = feats[k + 1];
-        const nextDy = (c && c.page === b.page && Math.abs(b.size - c.size) <= bodySize * 0.1
+        const nextDy = (c && c.page === b.page && (ocrText || Math.abs(b.size - c.size) <= bodySize * 0.1)
           && c.sizeRatio >= 0.92 && c.sizeRatio <= 1.08) ? c.top - b.top : 0;
         if (nextDy <= bodyPitch * 1.4) isolatedInBand++;
       }
@@ -1310,7 +1313,7 @@ export function analyzeLayout(pages, opts = {}) {
     if (!furniture) {
       // Style alone (short + all-caps or bold) can still match real running content, so the prose guard excludes a mixed-case line that reads as an unfinished sentence.
       const allCapsKey = insts.filter((i) => i.allCaps).length * 2 >= insts.length;
-      const boldKey = insts.filter((i) => i.bold).length * 2 >= insts.length;
+      const boldKey = !ocrText && insts.filter((i) => i.bold).length * 2 >= insts.length;
       const shortMark = insts.every((i) => i.nChar <= 60);
       const rep = insts[0].text.trim();
       const prose = !allCapsKey && rep.split(/\s+/).length >= 4
@@ -1844,7 +1847,9 @@ export function analyzeLayout(pages, opts = {}) {
   /** @type {Map<string, {n: number, short: number, strong: number, weak: number, weakBig: number, enumLed: number, letterDom: number, lowerStart: number, headsBody: number}>} */
   const sigStats = new Map();
   for (const f of feats) {
-    f.sigKey = `${Math.round(f.size * 2) / 2}|${f.bold > 0.6 ? 'b' : ''}${f.italic > 0.6 ? 'i' : ''}${f.allCaps ? 'c' : ''}|${f.fontFamily.replace(/^[A-Z]{6}\+/, '')}|${f.color}`;
+    f.sigKey = ocrText
+      ? `${Math.round(f.size * 2) / 2}|${f.allCaps ? 'c' : ''}||`
+      : `${Math.round(f.size * 2) / 2}|${f.bold > 0.6 ? 'b' : ''}${f.italic > 0.6 ? 'i' : ''}${f.allCaps ? 'c' : ''}|${f.fontFamily.replace(/^[A-Z]{6}\+/, '')}|${f.color}`;
     if (f.lineNum || f.pageNumLine || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
     let s = sigStats.get(f.sigKey);
     if (!s) {
@@ -1857,7 +1862,7 @@ export function analyzeLayout(pages, opts = {}) {
     const col = columnFor(f.left, pageColumns.get(f.page) || null, bodySize);
     if (f.width < (col ? col.width : colWidth) * 0.85) s.short++;
     const st = pageStyleChars.get(f.page);
-    const boldDistinct = f.bold > 0.6 && f.sizeRatio >= 0.95 && (!st || !st.tot || st.bold / st.tot < 0.3);
+    const boldDistinct = !ocrText && f.bold > 0.6 && f.sizeRatio >= 0.95 && (!st || !st.tot || st.bold / st.tot < 0.3);
     // Caps take no size floor because an all-caps line reads as heading-sized even below body size.
     const capsDistinct = f.allCaps && (!st || !st.tot || st.caps / st.tot < 0.3);
     if (f.sizeRatio >= 1.15 || boldDistinct || capsDistinct) s.strong++;
@@ -1904,6 +1909,7 @@ export function analyzeLayout(pages, opts = {}) {
   model.bodyCore = bodyCore;
   model.subBodyBoldFaces = subBodyBoldFaces;
   model.nativeText = opts.pdfType === 'text';
+  model.ocrText = ocrText;
 
   // Classify in reading order so each line sees the already-classified line above it on the same page.
   for (let i = 0; i < feats.length; i++) {
@@ -2719,7 +2725,8 @@ export function analyzeLayout(pages, opts = {}) {
       // A split-off leading line number shifts a transcript turn's left bbox into the testimony column, which reads as a false both-side inset, so lnSplit turns are excluded here.
       // A genuine inset quotation is not line-numbered on its own quoted lines, so it never lands in lnSplitPars and this guard drops no real block quote.
       if (hangMarkerPars.has(par) || lnSplitPars.has(par)) continue;
-      if (structQuotePars.has(par) || geo) par.type = 'blockquote';
+      // A scan's text block shifts from page to page, so on OCR text an ordinary paragraph reads as inset from the document margins.
+      if (!ocrText && (structQuotePars.has(par) || geo)) par.type = 'blockquote';
     }
   }
 
@@ -3037,6 +3044,13 @@ function geometricBreak(f, prev, model, curParFirst) {
   // No real paragraph spans half the page height, so a >half-page downward jump between consecutive lines is always a boundary.
   if (f.topFrac - prev.topFrac > 0.5) return { newPar: true, reason: 'page wrap' };
 
+  // An OCR layer keeps the recognizer's line order, so consecutive lines can come from unrelated regions of a form or a multi-up sheet.
+  // A vertical overlap can be one row the recognizer split in two, so it is left to the same-row fragment rule below.
+  if (model.ocrText && prev.page === f.page
+    && (prev.right < f.left || prev.left > f.right) && (prev.bottom < f.top || prev.top > f.bottom)) {
+    return { newPar: true, reason: 'no overlap' };
+  }
+
   // A hanging marker starts a new paragraph even after a full prior line, where the justified ends-early rule cannot fire.
   if (f.hangMarker) return { newPar: true, reason: 'hanging marker' };
 
@@ -3112,8 +3126,7 @@ function geometricBreak(f, prev, model, curParFirst) {
       || (prev.line && prev.line.words.length >= 2 && prev.line.words[0].text.length <= 3
         && prev.left < f.left - model.bodySize * 0.4
         && Math.abs(prev.line.words[1].bbox.left - f.left) < model.bodySize * 0.5))
-    && f.fontFamily === prev.fontFamily
-    && Math.abs(f.size - prev.size) <= model.bodySize * 0.1
+    && (model.ocrText || (f.fontFamily === prev.fontFamily && Math.abs(f.size - prev.size) <= model.bodySize * 0.1))
     // Advance is judged top-to-top or bottom-to-bottom, whichever is smaller: a single tall glyph in one line inflates the top advance while the baselines still flow at pitch.
     && f.top - prev.top > 0
     && Math.min(f.top - prev.top, (f.top + f.height) - (prev.top + prev.height)) <= flowPitch * 1.3;
@@ -3215,7 +3228,7 @@ function geometricBreak(f, prev, model, curParFirst) {
     }
     // A deeper enumerator-led line in a different weight or slant opens a subordinate heading-ladder level, not a wrap of the heading above.
     // A wrapped heading tail never opens with its own marker, so the marker plus the style change is decisive.
-    if (f.enumerator && f.enumerator.scheme !== 'bullet' && f.enumerator.scheme !== 'sup-ref'
+    if (!model.ocrText && f.enumerator && f.enumerator.scheme !== 'bullet' && f.enumerator.scheme !== 'sup-ref'
         && f.left > prev.left + model.bodySize * 0.5
         && ((f.bold > 0.6) !== (prev.bold > 0.6) || (f.italic > 0.6) !== (prev.italic > 0.6))) {
       return { newPar: true, reason: 'heading ladder step' };
@@ -3357,8 +3370,7 @@ function geometricBreak(f, prev, model, curParFirst) {
     && Math.abs(f.left - prev.left) < model.bodySize * 0.5
     && f.top - prev.top > 0
     && f.top - prev.top <= block.pitch * 1.15
-    && f.fontFamily === prev.fontFamily
-    && Math.abs(f.size - prev.size) <= model.bodySize * 0.1;
+    && (model.ocrText || (f.fontFamily === prev.fontFamily && Math.abs(f.size - prev.size) <= model.bodySize * 0.1));
 
   // Detects the start of a both-side-inset quotation, tagged 'blockquote' downstream by the type pass.
   // classifyRole has no quote role and a double-spaced page blinds the gap rule (pageParaGap = Infinity), so a quote at the body's first-line-indent column would fuse into its lead-in.
@@ -3715,7 +3727,7 @@ function classifyRole(f, model, colWidth, prev) {
     // The marker word is skipped because producers set the enumerator roman and un-underlined, which drags a short heading's whole-line fraction below any threshold.
     // Bracketed lines are excluded: enumerated template lines set placeholder instructions in italic ("[insert other relevant factor]"), and those are not headings.
     let styleSetOff = f.familyDistinct;
-    if (!styleSetOff && !f.text.includes('[')) {
+    if (!styleSetOff && !model.ocrText && !f.text.includes('[')) {
       const rest = f.line.words.slice(1);
       const stHere = model.pageStyleChars && model.pageStyleChars.get(f.page);
       if (rest.length && stHere && stHere.tot) {
@@ -3766,6 +3778,8 @@ function classifyRole(f, model, colWidth, prev) {
       && Math.abs(f.left - model.bodyTextLeft) < model.bodySize * 0.5;
     if (atHangColumn && f.sizeRatio < 1.15 && !f.colorDistinct && !f.familyDistinct
         && prevProse && !prev.endsTerminal) return 'body';
+    // On OCR text the heading cues that remain type labels, cells and fragments as titles more often than real headings.
+    if (model.ocrText) return 'body';
     return 'heading';
   }
   return 'body';
@@ -4108,6 +4122,7 @@ function enumeratedListItemStart(f, model) {
  * @property {string} bodyCore - collapsed family core of the document body face.
  * @property {Set<string>} subBodyBoldFaces - size|family-core groups the document reserves for sub-body bold headings.
  * @property {boolean} nativeText - the document parses as born-digital text (pdfType 'text').
+ * @property {boolean} ocrText - the text is a scan's OCR layer (pdfType 'ocr' or 'image').
  * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageRules - drawn horizontal separator rules per page.
  */
 

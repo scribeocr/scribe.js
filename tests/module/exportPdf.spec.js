@@ -385,11 +385,13 @@ describe('Check export for .pdf files.', () => {
     }]);
     expect(doc.annotations.pages[0].length, 'the note annotation was added').toBe(47);
 
-    // FreeText and shape annotations never write an author of their own, so their reply threads are the only place those types can leak identity through a sanitized export.
+    // A FreeText annotation never writes an author of its own, so its reply thread is the only place that type can leak identity through a sanitized export.
     const ftAnnot = /** @type {AnnotationFreeText} */ (doc.annotations.pages[0].find((a) => a.type === 'freetext'));
     ftAnnot.replies = [{ text: 'Confirmed against the caption block.', author: 'M. Vahl', createdAt: '2026-07-07T12:15:00.000Z' }];
     const squareAnnot = /** @type {AnnotationShapeStyle} */ (doc.annotations.pages[0].find((a) => a.type === 'square'));
     squareAnnot.comment = 'Venue paragraph boxed for review.';
+    squareAnnot.author = 'J. Rondo';
+    squareAnnot.createdAt = '2026-07-06T09:30:00.000Z';
     squareAnnot.replies = [{ text: 'Box the venue paragraph.', author: 'M. Vahl', createdAt: '2026-07-07T12:20:00.000Z' }];
 
     // The underline's groupId collides with the highlight's (both are the first group of their addHighlights call, `hl-0`), so these also guard against cross-type consolidation merges.
@@ -492,6 +494,8 @@ describe('Check export for .pdf files.', () => {
     expect(squares[0].comment, 'the shape comment reaches the model, so the reader can show it').toBe('Venue paragraph boxed for review.');
     expect(squares[0].borderColor, 'the square border color round-trips').toBe('#ff0000');
     expect(squares[0].borderWidth, 'the square border width round-trips in the frame it was authored in').toBeCloseTo(6, 10);
+    expect(squares[0].author, 'the shape comment author survives an unsanitized export, so the reader can filter boxes by who drew them').toBe('J. Rondo');
+    expect(squares[0].createdAt, 'the shape comment creation date survives an unsanitized export').toBe('2026-07-06T09:30:00.000Z');
     const sqReplies = squares[0].replies || [];
     expect(sqReplies.length, 'the shape comment thread round-trips through /IRT annots').toBe(1);
     expect(sqReplies[0].text, 'shape reply text survives').toBe('Box the venue paragraph.');
@@ -574,6 +578,8 @@ describe('Check export for .pdf files.', () => {
     expect(sqS.length, 'the square survives a sanitized export').toBe(1);
     expect((sqS[0].replies || [])[0]?.text, 'a sanitized export keeps the shape reply text').toBe('Box the venue paragraph.');
     expect((sqS[0].replies || [])[0]?.author, 'a sanitized export omits the shape reply author').toBe(undefined);
+    expect(sqS[0].author, 'a sanitized export omits the shape comment author').toBe(undefined);
+    expect(sqS[0].createdAt, 'a sanitized export omits the shape comment timestamp').toBe(undefined);
     const sanitizedText = new TextDecoder('latin1').decode(new Uint8Array(sanitizedBytes));
     expect(sanitizedText.split('/T <').length - 1, 'a sanitized export writes no annotation author anywhere').toBe(0);
     await doc.clear();
