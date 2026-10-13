@@ -248,7 +248,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
 /* Border-box, because script pins a folder card's measured height, border included, as its min-height when a drag hovers it. */
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; box-sizing: border-box; }
-.scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
+.scribe-pdf-viewer .scribe-library-card:not(.folder)::before { content: ''; position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 3 / 4; z-index: 1; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); outline: 1.5px dashed var(--scribe-accent); outline-offset: -7.5px; border-radius: 2px; opacity: 0; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-card.dragging::before { opacity: 1; transition: opacity 140ms ease; }
+@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-card.dragging::before { transition: none; } }
+.scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
 .scribe-library-ghost { position: fixed; z-index: 9999; pointer-events: none; font-size: 14px; color: var(--scribe-ink); }
 .scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
 .scribe-library-ghost .row-ghost .scribe-library-row { border-bottom: none; }
@@ -2222,11 +2225,6 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * @param {string} relPath
-   * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {boolean} [draggable] - False for derived views (the Recent strip, a filtered grid).
-   */
-  /**
    * Drop the index entries and derived data of `paths`.
    * The files themselves stay where they are.
    * @param {string[]} paths
@@ -2278,6 +2276,11 @@ export function createLibraryInstance(viewer, opts) {
     viewer._showToast(`Removed “${name}” from ${folderName}. The original is untouched.`);
   };
 
+  /**
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   * @param {boolean} [draggable] - False for derived views (the Recent strip, a filtered grid).
+   */
   const buildCard = (relPath, entry, draggable = true) => {
     const card = document.createElement('div');
     card.className = 'scribe-library-card';

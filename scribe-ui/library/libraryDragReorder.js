@@ -17,6 +17,8 @@ const AUTOSCROLL_SPEED = 14;
 export const FOLDER_FLY_MS = 240;
 const OVER_TARGET_SCALE = 0.45;
 const OVER_TARGET_MS = 140;
+const LIFT_MS = 140;
+const LIFT_SCALE = 1.03;
 
 /**
  * A press on a card or row in the library grid, from the press through the drag it may become.
@@ -199,6 +201,16 @@ export function createDragReorder({
       d.ghost = buildGhost(cards, tr, d.carried.length);
       d.grabDX = d.startX - tr.left;
       d.grabDY = d.startY - tr.top;
+      // The fan goes in a wrapper of its own because the ghost's transform is the folder shrink.
+      if (!reducedMotion()) {
+        const lift = document.createElement('div');
+        lift.className = 'scribe-ghost-lift';
+        lift.style.cssText = `position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:${d.grabDX}px ${d.grabDY}px`;
+        for (const page of [...d.ghost.querySelectorAll('.scribe-ghost-card')]) lift.appendChild(page);
+        d.ghost.prepend(lift);
+        lift.animate([{ transform: 'scale(1)' }, { transform: `scale(${LIFT_SCALE})` }], { duration: LIFT_MS, easing: 'ease', fill: 'forwards' });
+        for (const page of lift.children) page.animate([{ boxShadow: '0 1px 3px rgba(30, 26, 16, .18)' }, { boxShadow: '0 8px 22px rgba(0, 0, 0, .45)' }], { duration: LIFT_MS, easing: 'ease' });
+      }
     }
     d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
     d.ghost.style.transition = reducedMotion() ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
@@ -323,7 +335,8 @@ export function createDragReorder({
    */
   const ghostPages = (d) => {
     if (!d.ghost || d.isRow) return [];
-    const scale = new DOMMatrix(getComputedStyle(d.ghost).transform).a || 1;
+    const lift = d.ghost.querySelector('.scribe-ghost-lift');
+    const scale = (new DOMMatrix(getComputedStyle(d.ghost).transform).a || 1) * (lift ? new DOMMatrix(getComputedStyle(lift).transform).a || 1 : 1);
     const cards = [...d.ghost.querySelectorAll('.scribe-ghost-card')].reverse();
     /** @type {ReturnType<typeof ghostPages>} */
     const out = [];
