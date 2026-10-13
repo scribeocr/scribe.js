@@ -850,6 +850,13 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     expect(doc.inputData.pdfType).toBe('ocr');
     expect(doc.ocr.active[0]?.lines?.length > 0).toBe(true);
+    expect(doc.ocr.active[0].pars.length, 'the OCR layer of page 1 is grouped by the layout pass').toBe(11);
+    expect(doc.ocr.active[1].pars.length, 'the OCR layer of page 2 is grouped by the layout pass').toBe(7);
+    const stanza = doc.ocr.active[0].lines;
+    expect(stanza[4].par, 'a wrapped line of the first stanza stays in its stanza').toBe(stanza[3].par);
+    expect(doc.ocr.active.flatMap((page) => page.pars).every((par) => par.type === 'body'), 'OCR text gets no heading or quote role').toBe(true);
+    const reflowed = /** @type {string} */ (await doc.exportData('txt', { reflowText: true }));
+    expect((reflowed.match(/\n/g) || []).length, 'reflowed text of a scanned PDF breaks at the layout pass paragraphs').toBe(17);
   });
 
   // This is a distinct test case because the mechanism for hiding OCR text is different.

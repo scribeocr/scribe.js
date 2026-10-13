@@ -103,16 +103,13 @@ export async function extractInternalPDFText(doc, options = {}) {
   }
 
   // Overwrites the per-page assignParagraphs result the workers assigned: no worker sees the whole document.
-  // Native-text only, because analyzeLayout is not yet validated on OCR text.
-  if (type === 'text') {
-    try {
-      const arr = doc.images.pdfData instanceof Uint8Array ? doc.images.pdfData : new Uint8Array(doc.images.pdfData);
-      const objCache = new ObjectCache(arr, parseXref(arr, findXrefOffset(arr)));
-      const rawPages = getPageObjects(objCache);
-      // Passing whole results would also hand over `dataTablePage`, which this path has never fed to the table-region pass.
-      applyDocParagraphLayout(objCache, arr, rawPages, pageResults.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), type);
-    } catch { /* */ }
-  }
+  try {
+    const arr = doc.images.pdfData instanceof Uint8Array ? doc.images.pdfData : new Uint8Array(doc.images.pdfData);
+    const objCache = new ObjectCache(arr, parseXref(arr, findXrefOffset(arr)));
+    const rawPages = getPageObjects(objCache);
+    // Passing whole results would also hand over `dataTablePage`, which this path has never fed to the table-region pass.
+    applyDocParagraphLayout(objCache, arr, rawPages, pageResults.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), type);
+  } catch { /* */ }
 
   assignPageLineNums(doc.ocr.pdf);
 
