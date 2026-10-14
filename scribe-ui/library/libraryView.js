@@ -240,7 +240,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress-stop:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
-.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; scrollbar-gutter: stable; }
+.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; scrollbar-gutter: stable; position: relative; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 7px; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
@@ -256,6 +256,7 @@ const addLibraryStyles = () => {
 .scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
 .scribe-library-ghost .row-ghost .scribe-library-row { border-bottom: none; }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-marquee { position: absolute; z-index: 5; pointer-events: none; box-sizing: border-box; background: color-mix(in srgb, var(--scribe-accent) 20%, transparent); border: 1px solid var(--scribe-accent); }
 /* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
 .scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *), .scribe-pdf-viewer .scribe-library-card:focus-visible { border-color: var(--scribe-accent); outline: none; }
 .scribe-pdf-viewer .scribe-library-card.selected { border-color: var(--scribe-accent); box-shadow: 0 0 0 1px var(--scribe-accent); background: color-mix(in srgb, var(--scribe-accent) 7%, var(--scribe-surface)); }
@@ -1845,6 +1846,117 @@ export function createLibraryInstance(viewer, opts) {
     syncSelectionUI();
   });
 
+  // The thresholds match the Pages room's band, so the two grids sweep the same way.
+  const MARQUEE_THRESHOLD = 4;
+  const MARQUEE_EDGE = 36;
+  const MARQUEE_SPEED = 14;
+  const marqueeElem = document.createElement('div');
+  marqueeElem.className = 'scribe-library-marquee';
+  /** @type {?{originX: number, originY: number, base: Set<string>, started: boolean, lastX: number, lastY: number, autoDir: number, rafId: number}} */
+  let marquee = null;
+
+  /**
+   * Grow the band to (curX, curY) and select every card it touches.
+   * curX/curY are in the body's content space, so the band and its selection track the cards as the body auto-scrolls under a held pointer.
+   * @param {number} curX
+   * @param {number} curY
+   */
+  const updateMarquee = (curX, curY) => {
+    if (!marquee) return;
+    const l = Math.min(marquee.originX, curX);
+    const r = Math.max(marquee.originX, curX);
+    const t = Math.min(marquee.originY, curY);
+    const b = Math.max(marquee.originY, curY);
+    marqueeElem.style.left = `${l}px`;
+    marqueeElem.style.top = `${t}px`;
+    marqueeElem.style.width = `${r - l}px`;
+    marqueeElem.style.height = `${b - t}px`;
+    selectedPaths.clear();
+    for (const p of marquee.base) selectedPaths.add(p);
+    const bodyRect = body.getBoundingClientRect();
+    for (const card of body.querySelectorAll('.scribe-library-card[data-rel-path]')) {
+      const cr = card.getBoundingClientRect();
+      const left = cr.left - bodyRect.left;
+      const top = cr.top - bodyRect.top + body.scrollTop;
+      if (left < r && left + cr.width > l && top < b && top + cr.height > t) selectedPaths.add(/** @type {HTMLElement} */ (card).dataset.relPath ?? '');
+    }
+    syncSelectionUI();
+  };
+
+  const marqueeAutoScroll = () => {
+    if (!marquee || !marquee.started || marquee.autoDir === 0) { if (marquee) marquee.rafId = 0; return; }
+    const max = body.scrollHeight - body.clientHeight;
+    const next = Math.max(0, Math.min(max, body.scrollTop + marquee.autoDir * MARQUEE_SPEED));
+    if (next !== body.scrollTop) {
+      body.scrollTop = next;
+      const rect = body.getBoundingClientRect();
+      updateMarquee(Math.max(0, Math.min(body.clientWidth, marquee.lastX - rect.left)), marquee.lastY - rect.top + body.scrollTop);
+      if (next === 0 || next === max) marquee.autoDir = 0;
+    }
+    marquee.rafId = marquee.autoDir !== 0 ? requestAnimationFrame(marqueeAutoScroll) : 0;
+  };
+
+  /** @param {PointerEvent} e */
+  const onMarqueeMove = (e) => {
+    if (!marquee) return;
+    marquee.lastX = e.clientX;
+    marquee.lastY = e.clientY;
+    const rect = body.getBoundingClientRect();
+    const curX = Math.max(0, Math.min(body.clientWidth, e.clientX - rect.left));
+    const curY = e.clientY - rect.top + body.scrollTop;
+    if (!marquee.started) {
+      if (Math.abs(curX - marquee.originX) + Math.abs(curY - marquee.originY) < MARQUEE_THRESHOLD) return;
+      marquee.started = true;
+    }
+    e.preventDefault();
+    // A render mid-band rebuilds the body, so the band is put back whenever it has been swept away.
+    if (!marqueeElem.isConnected) body.appendChild(marqueeElem);
+    updateMarquee(curX, curY);
+    const nearTop = e.clientY < rect.top + MARQUEE_EDGE && body.scrollTop > 0;
+    const nearBottom = e.clientY > rect.bottom - MARQUEE_EDGE && body.scrollTop < body.scrollHeight - body.clientHeight;
+    marquee.autoDir = nearTop ? -1 : (nearBottom ? 1 : 0);
+    if (marquee.autoDir !== 0 && !marquee.rafId) marquee.rafId = requestAnimationFrame(marqueeAutoScroll);
+  };
+
+  const onMarqueeUp = () => {
+    window.removeEventListener('pointermove', onMarqueeMove);
+    window.removeEventListener('pointerup', onMarqueeUp);
+    window.removeEventListener('pointercancel', onMarqueeUp);
+    const m = marquee;
+    marquee = null;
+    if (!m) return;
+    if (m.rafId) cancelAnimationFrame(m.rafId);
+    if (!m.started) return;
+    marqueeElem.remove();
+    drag.suppressClick();
+    selAnchor = [...body.querySelectorAll('.scribe-library-card[data-rel-path]')].map((card) => /** @type {HTMLElement} */ (card).dataset.relPath ?? '').find((p) => selectedPaths.has(p)) ?? null;
+  };
+
+  body.addEventListener('pointerdown', (e) => {
+    // On touch, a drag in the empty space scrolls the grid.
+    if (e.pointerType === 'touch') return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (viewMode !== 'grid' || fullTextResults || storageOpen || drag.active()) return;
+    if (e.target instanceof Element && e.target.closest(`${SELECTION_KEEP_SELECTOR}, .scribe-library-recent`)) return;
+    const rect = body.getBoundingClientRect();
+    // clientWidth excludes the scrollbar, so a press at or beyond it is on the scrollbar.
+    if (e.clientX - rect.left >= body.clientWidth) return;
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    marquee = {
+      originX: Math.max(0, Math.min(body.clientWidth, e.clientX - rect.left)),
+      originY: e.clientY - rect.top + body.scrollTop,
+      base: additive ? new Set(selectedPaths) : new Set(),
+      started: false,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      autoDir: 0,
+      rafId: 0,
+    };
+    window.addEventListener('pointermove', onMarqueeMove);
+    window.addEventListener('pointerup', onMarqueeUp);
+    window.addEventListener('pointercancel', onMarqueeUp);
+  });
+
   /**
    * Apply the Pages-view click-selection rules to the item at `relPath`.
    * @param {MouseEvent} e
@@ -2504,7 +2616,7 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Replace the fold in `strip` with `fold`, animating the change.
+   * Bring the fold in `strip` to the state of `fold`, animating the change.
    * Papers are matched by document, so a paper in both slides to its new slot and the rest fade in or out where they sit.
    * @param {HTMLElement} strip
    * @param {HTMLElement} fold
@@ -2522,42 +2634,30 @@ export function createLibraryInstance(viewer, opts) {
     const arriving = [];
     /** @type {Array<[HTMLElement, string, string]>} */
     const sliding = [];
+    // The standing fold stays in place and takes the new papers, so its flap eases into the drop state's tilt.
+    const front = /** @type {HTMLElement} */ (old.querySelector('.front'));
     for (const el of fold.querySelectorAll('.paper')) {
       const paper = /** @type {HTMLElement} */ (el);
       const was = leaving.get(keyOf(paper));
       if (!was) {
+        paper.style.opacity = '0';
+        front.before(paper);
         arriving.push(paper);
         continue;
       }
       leaving.delete(keyOf(paper));
-      // Read the drawn position, since a paper caught mid-slide is not yet at its inline one.
-      const from = getComputedStyle(was);
-      if (from.left !== paper.style.left || from.top !== paper.style.top) {
-        sliding.push([paper, paper.style.left, paper.style.top]);
-        paper.style.left = from.left;
-        paper.style.top = from.top;
-      }
+      if (was.style.left !== paper.style.left || was.style.top !== paper.style.top) sliding.push([was, paper.style.left, paper.style.top]);
     }
-    /** @type {HTMLElement[]} */
-    const fading = [];
-    const front = /** @type {HTMLElement} */ (fold.querySelector('.front'));
-    for (const [, paper] of leaving) {
-      const copy = /** @type {HTMLElement} */ (paper.cloneNode(true));
-      copy.classList.add('leaving');
-      front.before(copy);
-      fading.push(copy);
-    }
-    for (const paper of arriving) paper.style.opacity = '0';
-    strip.replaceChildren(fold);
-    // A layout read commits the start styles before the transitions arm.
-    fold.getBoundingClientRect();
+    for (const [, paper] of leaving) paper.classList.add('leaving');
+    // A layout read commits the arrivals' start opacity before the transitions arm.
+    old.getBoundingClientRect();
     for (const paper of arriving) paper.style.opacity = '';
     for (const [paper, left, top] of sliding) {
       paper.style.left = left;
       paper.style.top = top;
     }
-    for (const copy of fading) copy.style.opacity = '0';
-    setTimeout(() => { for (const copy of fading) copy.remove(); }, 200);
+    for (const [, paper] of leaving) paper.style.opacity = '0';
+    setTimeout(() => { for (const [, paper] of leaving) paper.remove(); }, 200);
   };
 
   /**
@@ -2699,7 +2799,8 @@ export function createLibraryInstance(viewer, opts) {
       }
       paper.classList.remove('reserved');
     }
-    if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
+    // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
+    if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */ (a).style.left) - parseFloat(/** @type {HTMLElement} */ (b).style.left)).map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
     const delta = /** @type {?HTMLElement} */ (elem.querySelector('.delta'));
     if (delta) delta.style.opacity = '0';
     elem.classList.add('landed');

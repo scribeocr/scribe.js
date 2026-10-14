@@ -3712,7 +3712,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
       z-index: 40;
       /* Translucent accent fill (not the opaque accent-soft) so the thumbnails under the drag rectangle stay visible. */
-      background: var(--scribe-accent-ring);
+      background: color-mix(in srgb, var(--scribe-accent) 20%, transparent);
       border: 1px solid var(--scribe-accent);
       pointer-events: none;
     }

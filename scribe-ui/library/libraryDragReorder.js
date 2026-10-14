@@ -753,8 +753,11 @@ export function createDragReorder({
       return true;
     },
 
-    /** Whether a drag just ended, so the click that closes it does not also open a card. */
+    /** Whether a drag or another gesture just ended, so the click that closes it does not also open a card. */
     clickSuppressed: () => Date.now() < suppressClickUntil,
+
+    /** Ignore the click another gesture's release is about to fire. */
+    suppressClick: () => { suppressClickUntil = Date.now() + 350; },
 
     /** Whether a touch drag just ended, so the native long-press contextmenu racing it is swallowed. */
     touchDragRecent: () => Date.now() - lastTouchDragT < 500,
