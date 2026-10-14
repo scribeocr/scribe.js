@@ -389,10 +389,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface.split, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv { pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-surface.split > :not(.scribe-library-body), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body > :not(.scribe-library-results), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results > :not(.scribe-library-pv), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv > :not(.scribe-library-pv-stage), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv-stage:not(.live) { pointer-events: auto; }
 .scribe-pdf-viewer .scribe-library-surface.leaving .scribe-library-rlist { opacity: 0; transition: opacity 200ms ease; }
-.scribe-pdf-viewer .scribe-library-surface.leaving .scribe-library-pv-head { opacity: 0; transition: opacity 150ms ease; }
-.scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-rlist, .scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-pv-head { opacity: 0; }
+.scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-rlist { opacity: 0; }
 .scribe-pdf-viewer .scribe-library-surface.entering.arrived .scribe-library-rlist { opacity: 1; transition: opacity 200ms ease; }
-.scribe-pdf-viewer .scribe-library-surface.entering.arrived .scribe-library-pv-head { opacity: 1; transition: opacity 150ms ease 80ms; }
+.scribe-pdf-viewer .scribe-library-bar-ghost { position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: none; z-index: 41; color: var(--scribe-ink); line-height: 28px; }
+.scribe-pdf-viewer .scribe-library-bar-ghost > * { position: absolute; margin: 0; }
 .scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-back { margin-left: auto; border: none; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
@@ -1273,39 +1273,149 @@ export function createLibraryInstance(viewer, opts) {
     requestAnimationFrame(frame);
   });
 
-  /** Morph from the pane to the rail for Open, the document keeping its zoom and its line. */
+  /**
+   * Pin the head at its current width to the pane's right edge.
+   * The pane can then widen around it without moving its controls.
+   * @returns {() => void} Undoes the pin.
+   */
+  const pinHead = () => {
+    const priorPane = pane.style.position;
+    const priorHead = pvHead.style.cssText;
+    const width = pvHead.getBoundingClientRect().width;
+    pane.style.position = 'relative';
+    pvHead.style.position = 'absolute';
+    pvHead.style.top = '0';
+    pvHead.style.right = '0';
+    pvHead.style.width = `${width}px`;
+    return () => {
+      pvHead.style.cssText = priorHead;
+      pane.style.position = priorPane;
+    };
+  };
+
+  /**
+   * Cross-fade the toolbar between its library and viewer forms in place.
+   * @param {HTMLElement[]} leaving - The parts on show, which `swap` hides.
+   * @param {() => HTMLElement[]} swap - Changes the form and returns the parts it shows.
+   * @param {boolean} libraryGhost - Whether `leaving` is the library's parts.
+   * @returns {() => void} Ends the fade.
+   */
+  const crossFadeBar = (leaving, swap, libraryGhost) => {
+    const bar = viewer.toolbarElem;
+    if (!bar) {
+      swap();
+      return () => {};
+    }
+    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
+    const barRect = bar.getBoundingClientRect();
+    const ghost = document.createElement('div');
+    // The library's parts take their narrow-bar styles from the library bar's container queries, so their ghost must be a container of the same name.
+    ghost.className = `scribe-pdf-viewer-toolbar scribe-library-bar-ghost${libraryGhost ? ' scribe-library-bar' : ''}`;
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.style.left = `${barRect.left - rootRect.left}px`;
+    ghost.style.top = `${barRect.top - rootRect.top}px`;
+    ghost.style.width = `${barRect.width}px`;
+    ghost.style.height = `${barRect.height}px`;
+    for (const el of leaving) {
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const clone = /** @type {HTMLElement} */ (el.cloneNode(true));
+      clone.setAttribute('inert', '');
+      clone.removeAttribute('id');
+      for (const inner of clone.querySelectorAll('[id]')) inner.removeAttribute('id');
+      clone.style.left = `${r.left - barRect.left}px`;
+      clone.style.top = `${r.top - barRect.top}px`;
+      clone.style.width = `${r.width}px`;
+      clone.style.height = `${r.height}px`;
+      ghost.appendChild(clone);
+    }
+    viewer.pdfViewerElem.appendChild(ghost);
+    const arriving = swap();
+    for (const el of arriving) {
+      el.style.transition = 'none';
+      el.style.opacity = '0';
+    }
+    // A layout read commits the start opacities before the transitions arm.
+    bar.getBoundingClientRect();
+    ghost.style.transition = `opacity ${MORPH_MS}ms ease`;
+    ghost.style.opacity = '0';
+    for (const el of arriving) {
+      el.style.transition = `opacity ${MORPH_MS}ms ease`;
+      el.style.opacity = '1';
+    }
+    return () => {
+      ghost.remove();
+      for (const el of arriving) {
+        el.style.transition = '';
+        el.style.opacity = '';
+      }
+    };
+  };
+
+  /** Morph from the pane to the rail for Open. */
   const morphOut = async () => {
     const left = splitLeft;
     const start = viewer._docInset;
+    const sc = viewer.scribe.scrollContainer;
     if (!viewer._phoneUi && !viewer._activeSidebar) viewer.showSidebarNow('thumbnails');
-    if (left && start && !viewer._phoneUi && !reducedMotion()) {
+    if (left && start && sc && !viewer._phoneUi && !reducedMotion()) {
       morphing = true;
       const toW = railWidth();
       const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
       if (sash) sash.style.visibility = 'hidden';
+      const scrollStart = sc.scrollTop;
+      const unpinHead = pinHead();
+      // The head's find control is the viewer's own, so it goes back to the toolbar now to fade in with the toolbar's other controls.
+      // A stand-in takes its place in the head for the slide.
+      const bar = viewer._searchBar;
+      const findStand = bar && findHome ? /** @type {HTMLElement} */ (bar.searchElem.cloneNode(true)) : null;
+      if (findStand && bar) {
+        findStand.setAttribute('inert', '');
+        findStand.setAttribute('aria-hidden', 'true');
+        bar.searchElem.before(findStand);
+      }
+      const libraryParts = /** @type {HTMLElement[]} */ ([barTitle, barControls].filter((el) => el));
+      const endBarFade = crossFadeBar(libraryParts, () => {
+        const shown = hiddenBarElems.filter((h) => h.display !== 'none').map((h) => h.el);
+        returnFindBar();
+        swapBarOut();
+        return shown;
+      }, true);
       surface.classList.add('leaving');
       await runMorph((e) => {
         const insetLeft = start.left + (toW - start.left) * e;
+        const insetTop = Math.round(start.top * (1 - e));
         left.style.width = `${Math.max(0, insetLeft - 1)}px`;
-        viewer.setDocInset({ left: Math.round(insetLeft), top: start.top });
+        pvHead.style.transform = `translateY(${insetTop - start.top}px)`;
+        viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
+        sc.scrollTop = Math.max(0, scrollStart - (start.top - insetTop));
       });
       left.style.width = '';
       if (sash) sash.style.visibility = '';
+      findStand?.remove();
+      unpinHead();
+      endBarFade();
       surface.classList.remove('leaving');
       morphing = false;
+      morphPending = false;
+      deactivate();
+      return;
     }
     morphPending = false;
     const top = viewer._docInset ? viewer._docInset.top : 0;
-    const sc = viewer.scribe.scrollContainer;
     deactivate();
     if (sc && top) sc.scrollTop = Math.max(0, sc.scrollTop - top);
   };
 
-  /** Morph from the rail back to the pane for a return, the document keeping its zoom and its line. */
-  const morphIn = async () => {
+  /**
+   * Morph from the rail back to the pane for a return.
+   * @param {() => void} endBarFade - Ends the bar's cross-fade the activation armed.
+   */
+  const morphIn = async (endBarFade) => {
     const left = splitLeft;
     const sc = viewer.scribe.scrollContainer;
     if (!left || !sc || viewer._phoneUi || reducedMotion()) {
+      endBarFade();
       if (viewer._activeSidebar) viewer.hideSidebarNow();
       syncDocInset();
       return;
@@ -1318,12 +1428,14 @@ export function createLibraryInstance(viewer, opts) {
     const toLeft = Math.round(r.left - rootRect.left);
     const topInset = Math.round(r.top - rootRect.top) - viewer._topBarsHeight();
     const hadTop = viewer._docInset ? viewer._docInset.top : 0;
+    const scrollStart = sc.scrollTop;
     const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
     if (sash) sash.style.visibility = 'hidden';
+    const unpinHead = pinHead();
     surface.classList.add('entering');
     left.style.width = `${Math.max(0, fromW - 1)}px`;
-    viewer.setDocInset({ left: fromW, top: topInset });
-    if (topInset !== hadTop) sc.scrollTop += topInset - hadTop;
+    pvHead.style.transform = `translateY(${hadTop - topInset}px)`;
+    viewer.setDocInset({ left: fromW, top: hadTop });
     const strip = viewer._sidebarTabsElem;
     for (const el of [rail?.panelElem, strip]) {
       if (!el) continue;
@@ -1335,11 +1447,16 @@ export function createLibraryInstance(viewer, opts) {
     surface.classList.add('arrived');
     await runMorph((e) => {
       const insetLeft = fromW + (toLeft - fromW) * e;
+      const insetTop = Math.round(hadTop + (topInset - hadTop) * e);
       left.style.width = `${Math.max(0, insetLeft - 1)}px`;
-      viewer.setDocInset({ left: Math.round(insetLeft), top: topInset });
+      pvHead.style.transform = `translateY(${insetTop - topInset}px)`;
+      viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
+      sc.scrollTop = scrollStart + (insetTop - hadTop);
     });
     left.style.width = '';
     if (sash) sash.style.visibility = '';
+    unpinHead();
+    endBarFade();
     surface.classList.remove('entering', 'arrived');
     if (viewer._activeSidebar) viewer.hideSidebarNow();
     for (const el of [rail?.panelElem, strip]) {
@@ -1401,9 +1518,16 @@ export function createLibraryInstance(viewer, opts) {
       viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
       viewer._searchBar?.closeSearch();
     }
-    applyForm();
+    let endBarFade = () => {};
+    if (fromTab && !reducedMotion()) {
+      const libraryParts = /** @type {HTMLElement[]} */ ([barTitle, barControls].filter((el) => el));
+      endBarFade = crossFadeBar(mainBarParts(), () => {
+        applyForm();
+        return libraryParts;
+      }, false);
+    } else applyForm();
     if (doRender) render({ revealSelection: true });
-    if (fromTab) morphIn();
+    if (fromTab) morphIn(endBarFade);
   };
 
   /** Unlight the library's tab, giving a tab's document the front. */
@@ -1456,20 +1580,26 @@ export function createLibraryInstance(viewer, opts) {
     barTitle.style.display = store ? '' : 'none';
     barControls.style.display = store ? '' : 'none';
   };
-  /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu and any shell window controls in place. */
+  /** The toolbar's controls that the library's own replace while the library is lit. */
+  const mainBarParts = () => {
+    /** @type {HTMLElement[]} */
+    const parts = [];
+    for (const el of [...viewer.toolbarElemStart.children]) {
+      if (el !== viewer._appMenu?.menuWrap && el !== barTitle) parts.push(/** @type {HTMLElement} */ (el));
+    }
+    if (viewer._toolbarButtonsElem) parts.push(viewer._toolbarButtonsElem);
+    for (const el of [...viewer.toolbarElemEnd.children]) {
+      if (el !== barControls && !el.classList.contains('scribe-shell-corner')) parts.push(/** @type {HTMLElement} */ (el));
+    }
+    return parts;
+  };
+  /** Replace the toolbar's document controls with the library's own fragments. */
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
     barSwapped = true;
-    const hide = (el) => {
+    for (const el of mainBarParts()) {
       hiddenBarElems.push({ el, display: el.style.display });
       el.style.display = 'none';
-    };
-    for (const el of [...viewer.toolbarElemStart.children]) {
-      if (el !== viewer._appMenu?.menuWrap && el !== barTitle) hide(/** @type {HTMLElement} */ (el));
-    }
-    if (viewer._toolbarButtonsElem) hide(viewer._toolbarButtonsElem);
-    for (const el of [...viewer.toolbarElemEnd.children]) {
-      if (el !== barControls && !el.classList.contains('scribe-shell-corner')) hide(/** @type {HTMLElement} */ (el));
     }
     syncBarForStore();
     // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the library's controls off the edge.
