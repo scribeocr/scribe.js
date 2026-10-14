@@ -740,7 +740,8 @@ export function buildInspectWorkspace(host, container, nav = null) {
       return frag;
     }
     const opts = el('div', 'scribe-am-opts scribe-am-ins-scope');
-    [['page', `This page (${curPage + 1})`], ['doc', 'Whole document']].forEach(([value, label]) => {
+    // A page number in the first label varies in width, so it would move the second option as the current page changes.
+    [['page', 'This page'], ['doc', 'Whole document']].forEach(([value, label]) => {
       const lab = el('label', 'scribe-am-check');
       const input = document.createElement('input');
       input.type = 'radio'; input.name = radioName; input.value = value; input.checked = scope === value;
@@ -758,34 +759,57 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const pageImages = perPage.images.map((i) => inv.images[i]);
     const pageFonts = perPage.fonts.map((i) => inv.fonts[i]);
     const docScope = scope === 'doc';
-    // Size: five categories that sum to the file, or the page's share of it.
-    const sizeRows = (rows, total) => {
+    /** @param {Array<{label: string, bytes: number, count: ?number, pct: string, bar: number, sum?: boolean, part?: boolean}>} rows - `bar` is the fill in percent. */
+    const sizeRows = (rows) => {
       const wrap = el('div', 'scribe-am-ins-size');
-      for (const [label, bytes, count] of rows) {
-        const line = el('div', 'scribe-am-ins-cat');
-        const l = el('span', 'scribe-am-ins-cat-l', label);
-        if (count != null) l.append(el('span', 'scribe-am-ins-cat-n', ` · ${count}`));
-        line.append(l, el('span', 'scribe-am-ins-cat-b', fmtBytes(bytes)), el('span', 'scribe-am-ins-cat-p', `${total ? Math.round((bytes / total) * 100) : 0}%`));
-        const bar = el('div', 'scribe-am-bar scribe-am-ins-bar');
+      for (const row of rows) {
+        const line = el('div', `scribe-am-ins-cat${row.sum ? ' sum' : ''}`);
+        const l = el('span', 'scribe-am-ins-cat-l', row.label);
+        if (row.count != null) l.append(el('span', 'scribe-am-ins-cat-n', ` · ${row.count}`));
+        line.append(l, el('span', 'scribe-am-ins-cat-b', fmtBytes(row.bytes)), el('span', 'scribe-am-ins-cat-p', row.pct));
+        const bar = el('div', `scribe-am-bar scribe-am-ins-bar${row.part ? ' part' : ''}`);
         const fill = document.createElement('i');
-        fill.style.width = `${bytes > 0 && total ? Math.max(1, (bytes / total) * 100).toFixed(1) : 0}%`;
+        fill.style.width = `${row.bytes > 0 ? Math.max(1, row.bar).toFixed(1) : 0}%`;
         bar.append(fill);
         wrap.append(line, bar);
       }
       return wrap;
     };
+    frag.append(catHeader(`Size · ${fmtBytes(inv.fileBytes)}`));
     if (docScope) {
       const k = inv.bytesByKind; const c = inv.countByKind;
-      frag.append(catHeader(`Size · ${fmtBytes(inv.fileBytes)}`), sizeRows([['Images', k.images, c.images], ['Embedded fonts', k.fonts, c.fonts], ['Vector drawings', k.drawings, c.drawings], ['Page content', k.content, c.content], ['Structure & other', k.other, null]], inv.fileBytes));
+      const row = (label, bytes, count) => ({
+        label, bytes, count, pct: `${inv.fileBytes ? Math.round((bytes / inv.fileBytes) * 100) : 0}%`, bar: inv.fileBytes ? (bytes / inv.fileBytes) * 100 : 0,
+      });
+      frag.append(sizeRows([
+        row('Images', k.images, c.images), row('Embedded fonts', k.fonts, c.fonts), row('Vector drawings', k.drawings, c.drawings),
+        row('Page content', k.content, c.content), row('Structure & other', k.other, null),
+      ]));
     } else {
       const imageBytes = pageImages.reduce((a, im) => a + im.bytes, 0);
       const fontBytes = pageFonts.reduce((a, f) => a + f.bytes, 0);
-      frag.append(catHeader(`Size · page ${curPage + 1}: ${fmtBytes(imageBytes + fontBytes + perPage.contentBytes)} of ${fmtBytes(inv.fileBytes)}`), sizeRows([['Images on this page', imageBytes, pageImages.length], ['Embedded fonts here', fontBytes, pageFonts.filter((f) => f.embedded).length], ['Page content', perPage.contentBytes, null]], inv.fileBytes), el('div', 'scribe-am-ins-note', 'Shares of the whole file. A font counts in full on every page that uses it.'));
+      const pageBytes = imageBytes + fontBytes + perPage.contentBytes;
+      const fileShare = inv.fileBytes ? (pageBytes / inv.fileBytes) * 100 : 0;
+      const part = (label, bytes, count) => {
+        const s = pageBytes ? (bytes / pageBytes) * 100 : 0;
+        return {
+          label, bytes, count, pct: bytes > 0 && s < 0.5 ? '<1%' : `${Math.round(s)}%`, bar: s, part: true,
+        };
+      };
+      frag.append(sizeRows([
+        // A page is a sliver of a large file, so its share of the file shows one decimal below 10%.
+        {
+          label: 'This page', bytes: pageBytes, count: null, pct: fileShare < 10 ? `${fileShare.toFixed(1)}%` : `${Math.round(fileShare)}%`, bar: fileShare, sum: true,
+        },
+        part('Images on this page', imageBytes, pageImages.length),
+        part('Embedded fonts here', fontBytes, pageFonts.filter((f) => f.embedded).length),
+        part('Page content', perPage.contentBytes, null),
+      ]), el('div', 'scribe-am-ins-note', "The page's bar is its share of the whole file; the parts are shares of this page. A font counts in full on every page that uses it."));
     }
     const images = docScope ? inv.images : pageImages;
     const imagesHdr = catHeader(`Images${images.length ? ` · ${fmtInt(images.length)}` : ''}`);
     frag.append(imagesHdr);
-    if (!images.length) frag.append(el('div', 'scribe-am-empty scribe-am-ins-empty', docScope ? 'No images in this document.' : `No images on page ${curPage + 1}.`));
+    if (!images.length) frag.append(el('div', 'scribe-am-empty scribe-am-ins-empty', docScope ? 'No images in this document.' : 'No images on this page.'));
     else {
       const table = el('table', 'scribe-am-ins-tbl');
       const widths = docScope ? [30, 34, 19, 17] : [32, 44, 24];
@@ -823,7 +847,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       fontsHead.append(pickBtn);
     } else pickBtn = null;
     frag.append(fontsHead);
-    if (!fonts.length) frag.append(el('div', 'scribe-am-empty scribe-am-ins-empty', docScope ? 'No fonts in this document.' : `No fonts on page ${curPage + 1}.`));
+    if (!fonts.length) frag.append(el('div', 'scribe-am-empty scribe-am-ins-empty', docScope ? 'No fonts in this document.' : 'No fonts on this page.'));
     else {
       const table = el('table', `scribe-am-ins-tbl scribe-am-ins-fonts ${docScope ? 'doc' : 'page'}`);
       const head = el('thead'); const hr = el('tr');

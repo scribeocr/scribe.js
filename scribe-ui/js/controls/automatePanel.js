@@ -330,8 +330,11 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-cat-n { color: var(--scribe-ink-3); }
     .${r} .scribe-am-ins-cat-b { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .${r} .scribe-am-ins-cat-p { color: var(--scribe-ink-3); text-align: right; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-am-ins-cat.sum .scribe-am-ins-cat-l { font-weight: 600; }
+    .${r} .scribe-am-ins-cat.sum .scribe-am-ins-cat-b { color: var(--scribe-ink); }
     .${r} .scribe-am-ins-bar { margin: 3px 0 2px; }
     .${r} .scribe-am-ins-bar > i { transition: none; }
+    .${r} .scribe-am-ins-bar.part > i { background: var(--scribe-ink-3); }
     .${r} .scribe-am-ins-note { font-size: 11px; color: var(--scribe-ink-3); padding: 2px 0 0; }
     .${r} .scribe-am-ins-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; table-layout: fixed; }
     .${r} .scribe-am-ins-tbl th { text-align: left; font-weight: 600; color: var(--scribe-ink-2); padding: 4px 4px; border-bottom: 1px solid var(--scribe-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
