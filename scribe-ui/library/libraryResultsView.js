@@ -7,7 +7,7 @@ import {
   RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
 } from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
-import { buildPreviewSplit, getMatchRects, markOverlayHTML } from './libraryPreviewPane.js';
+import { getMatchRects, markOverlayHTML } from './libraryPreview.js';
 
 /** How many documents, and pages within each, the list shows before a "more" button. */
 const RESULT_DOC_LIMIT = 20;
@@ -18,38 +18,40 @@ const SNIPPET_RADIUS = 70;
 /**
  * Own the search-results view: one retained build at a time, plus the thumbnail pump and warm lane behind it.
  * @param {Object} deps
- * @param {HTMLElement} deps.body - Library surface the results wrap mounts into.
+ * @param {() => HTMLElement} deps.host - The element the hit list mounts into, the split's column or, where no preview is shown, the surface body.
  * @param {import('./docSession.js').DocSessions} deps.sessions
- * @param {ReturnType<typeof import('./libraryPreviewPane.js').createPreviewPanes>} deps.panes
+ * @param {ReturnType<typeof import('./libraryPreview.js').createPreview>} deps.preview
  * @param {() => ?import('./libraryStore.js').LibraryStore} deps.getStore
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => Array<{hash: string, pages: number[]}>} deps.getResults
  * @param {() => string} deps.getQuery
  * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object) => Promise<void>} deps.openEntry
+ * @param {() => boolean} deps.selectOpens - Whether selecting a hit opens its document outright, where no preview is shown.
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
  * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
  */
 export function createResultsView({
-  body, sessions, panes, getStore, getManifest, getResults, getQuery, openEntry, onBack, saveManifestSoon,
+  host, sessions, preview, getStore, getManifest, getResults, getQuery, openEntry, selectOpens, onBack, saveManifestSoon,
 }) {
   /**
    * The retained search-results view: the built DOM plus its interaction state.
    * Keeping it lets an unchanged result set reattach instead of rebuilding.
-   * @type {?{results: Object, pv: Object, wrap: HTMLElement, snapshot: () => void, attach: () => void, repump: () => void, dispose: () => void}}
+   * @type {?{results: Object, wrap: HTMLElement, select: (relPath: ?string, pageN: number) => void, snapshot: () => void, attach: () => void, repump: () => void, dispose: () => void}}
    */
   let resultsView = null;
   /** Abandons in-flight result-row work when a fresh results build replaces the old one. */
   let resultsGen = 0;
-  let resultsListWidth = 400;
+  /** The query the view last rendered with, so a new search clears the preview. */
+  let shownQuery = '';
 
   const renderResults = () => {
     const results = getResults();
     const fullTextQuery = getQuery();
     const manifest = getManifest();
+    const hostEl = host();
     // The same result set reattaches the retained view untouched.
-    if (resultsView && resultsView.results === results && resultsView.pv === panes.mounted()) {
-      body.classList.add('results-mode');
-      body.appendChild(resultsView.wrap);
+    if (resultsView && resultsView.results === results) {
+      hostEl.appendChild(resultsView.wrap);
       resultsView.attach();
       // Rasters may have landed since the rows were built (a preview, a full open), so blank rows retry.
       resultsView.repump();
@@ -60,11 +62,13 @@ export function createResultsView({
       resultsView = null;
     }
     const myGen = ++resultsGen;
-    body.classList.add('results-mode');
-    const { wrap, left: listEl } = buildPreviewSplit(400, () => resultsListWidth, (w) => { resultsListWidth = w; });
-    body.appendChild(wrap);
-    listEl.tabIndex = 0;
-    listEl.setAttribute('aria-label', 'Search results');
+    const wrap = document.createElement('div');
+    wrap.className = 'scribe-library-rwrap';
+    wrap.tabIndex = 0;
+    wrap.setAttribute('aria-label', 'Search results');
+    hostEl.appendChild(wrap);
+    /** The scroller the list sits in at the moment, which can change between the split's column and the surface body. */
+    const scroller = () => wrap.parentElement ?? wrap;
 
     const summary = document.createElement('div');
     summary.className = 'scribe-library-rsummary';
@@ -79,12 +83,10 @@ export function createResultsView({
     backBtn.textContent = '‹ Back';
     backBtn.addEventListener('click', onBack);
     summary.appendChild(backBtn);
-    listEl.appendChild(summary);
+    wrap.appendChild(summary);
 
-    const pv = panes.ensurePane('results', 'Select a result to preview it here');
-    if (pv.shownQuery !== fullTextQuery) pv.showEmpty();
-    pv.shownQuery = fullTextQuery;
-    wrap.appendChild(pv.pane);
+    if (shownQuery !== fullTextQuery) preview.showEmpty();
+    shownQuery = fullTextQuery;
 
     const byHash = new Map();
     if (manifest) for (const [relPath, e] of Object.entries(manifest.docs)) byHash.set(e.hash, { relPath, entry: e });
@@ -92,13 +94,29 @@ export function createResultsView({
     /** @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, count: number, row: HTMLElement}>} */
     const hits = [];
     let active = -1;
+    let opening = false;
+
+    const openActive = async () => {
+      if (active < 0 || opening) return;
+      const h = hits[active];
+      opening = true;
+      try {
+        await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
+      } finally {
+        opening = false;
+      }
+    };
 
     const selectHit = (i) => {
       active = i;
       hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
       const h = hits[i];
       h.row.scrollIntoView({ block: 'nearest' });
-      pv.show({
+      if (selectOpens()) {
+        openActive();
+        return;
+      }
+      preview.show({
         relPath: h.relPath,
         hash: h.hash,
         entry: h.entry,
@@ -109,18 +127,15 @@ export function createResultsView({
       });
     };
 
-    const openActive = async () => {
-      if (active < 0 || pv.openBtn.classList.contains('disabled')) return;
-      const h = hits[active];
-      pv.openBtn.classList.add('disabled');
-      try {
-        await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
-      } finally {
-        pv.openBtn.classList.remove('disabled');
-      }
+    /** Mark the row for `pageN` of `relPath` as the selection without showing it, or no row for a null path. */
+    const selectRowOnly = (relPath, pageN) => {
+      const i = relPath ? hits.findIndex((h) => h.relPath === relPath && h.pageN === pageN) : -1;
+      active = i;
+      hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
+      if (i >= 0) hits[i].row.scrollIntoView({ block: 'nearest' });
     };
-    pv.onOpen = openActive;
-    listEl.addEventListener('keydown', (e) => {
+
+    wrap.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
         if (active < hits.length - 1) selectHit(active + 1);
@@ -211,13 +226,13 @@ export function createResultsView({
           document.addEventListener('visibilitychange', resume);
           break;
         }
-        // A provisional pane showing a stored raster may never hydrate, so it does not count as a user load.
-        if (panes.userLoadActive()) {
-          panes.userLoadIdle().then(resumeWarm);
+        // A provisional preview showing a stored raster may never hydrate, so it does not count as a user load.
+        if (preview.userLoadActive()) {
+          preview.userLoadIdle().then(resumeWarm);
           break;
         }
-        const busyHash = pv.shownHash();
-        const listRect = listEl.getBoundingClientRect();
+        const busyHash = preview.shownHash();
+        const listRect = scroller().getBoundingClientRect();
         let idx = rasterless.findIndex((r) => {
           if (r.warmed || r.hash === busyHash) return false;
           const rect = r.img.getBoundingClientRect();
@@ -250,8 +265,8 @@ export function createResultsView({
           if (!doc) {
             // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive reads and import.
             // A wait here means the timing below would be contended, so the measurement is skipped rather than recorded inflated.
-            const contended = panes.userLoadActive();
-            await panes.userLoadIdle();
+            const contended = preview.userLoadActive();
+            await preview.userLoadIdle();
             if (myGen !== resultsGen) break;
             const t0 = performance.now();
             const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
@@ -265,8 +280,8 @@ export function createResultsView({
           if (doc.pageMetrics.length !== first.entry.pageCount) continue;
           for (const t of batch) {
             if (myGen !== resultsGen) break;
-            if (coldStart !== null && panes.userLoadActive()) coldStart = null;
-            await panes.userLoadIdle();
+            if (coldStart !== null && preview.userLoadActive()) coldStart = null;
+            await preview.userLoadIdle();
             t.warmed = true;
             if (!(await store.readPageRaster(t.hash, t.pageN))) {
               const raster = await renderPageRaster(doc, t.pageN);
@@ -328,7 +343,7 @@ export function createResultsView({
       hits.splice(insertAt, 0, hit);
       row.addEventListener('click', () => {
         selectHit(hits.indexOf(hit));
-        listEl.focus();
+        wrap.focus();
       });
       row.addEventListener('dblclick', (e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -411,9 +426,9 @@ export function createResultsView({
           : '';
         meta.textContent = `${datePart}${d.entry.pageCount} page${d.entry.pageCount === 1 ? '' : 's'} · ${info.total} match${info.total === 1 ? '' : 'es'} on ${info.perPage.length} page${info.perPage.length === 1 ? '' : 's'}`;
         head.appendChild(meta);
-        listEl.appendChild(head);
+        wrap.appendChild(head);
         const shownNow = info.perPage.slice(0, RESULT_PAGES_PER_DOC);
-        for (const pp of shownNow) listEl.appendChild(buildHitRow(d, pp.pageN, pp, hits.length));
+        for (const pp of shownNow) wrap.appendChild(buildHitRow(d, pp.pageN, pp, hits.length));
         const rest = info.perPage.slice(RESULT_PAGES_PER_DOC);
         if (rest.length) {
           const more = document.createElement('button');
@@ -433,7 +448,7 @@ export function createResultsView({
             more.remove();
             pumpThumbs();
           });
-          listEl.appendChild(more);
+          wrap.appendChild(more);
         }
       };
 
@@ -451,38 +466,21 @@ export function createResultsView({
           for (const info of restDocs) appendDocGroup(info);
           pumpThumbs();
         });
-        listEl.appendChild(moreDocs);
+        wrap.appendChild(moreDocs);
       }
       pumpThumbs();
     })();
 
-    const pv2 = panes.mounted();
     let listScrollTop = 0;
-    let paneScrollTop = 0;
-    let paneScrollLeft = 0;
-    const paneScroller = () => {
-      const host = /** @type {any} */ (pv2 && pv2.pane.querySelector('.scribe-library-pv-viewer'));
-      return host?.scribeViewer?.scribe?.scrollContainer ?? null;
-    };
     resultsView = {
       results,
-      pv: pv2,
       wrap,
+      select: selectRowOnly,
       snapshot: () => {
-        listScrollTop = listEl.scrollTop;
-        const sc = paneScroller();
-        if (sc) {
-          paneScrollTop = sc.scrollTop;
-          paneScrollLeft = sc.scrollLeft;
-        }
+        listScrollTop = scroller().scrollTop;
       },
       attach: () => {
-        listEl.scrollTop = listScrollTop;
-        const sc = paneScroller();
-        if (sc) {
-          sc.scrollTop = paneScrollTop;
-          sc.scrollLeft = paneScrollLeft;
-        }
+        scroller().scrollTop = listScrollTop;
       },
       repump: () => {
         if (myGen !== resultsGen || !rasterless.length) return;
@@ -512,5 +510,8 @@ export function createResultsView({
 
     /** Retry the rows left blank at pump time, after rasters landed elsewhere. */
     repump: () => resultsView?.repump(),
+
+    /** Mark the row for `pageN` of `relPath` as the selection, or no row for a null path. */
+    select: (relPath, pageN) => resultsView?.select(relPath, pageN),
   };
 }

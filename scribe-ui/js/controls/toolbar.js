@@ -1343,7 +1343,7 @@ const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
  *   openSearch: (options?: {focus?: boolean}) => Promise<void>, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
- *   updateSearchCounter: () => void, resetSearch: () => void,
+ *   updateSearchCounter: () => void, resetSearch: () => void, rehome: () => void,
  *   installFindShortcut: () => (() => void)
  * }}
  */
@@ -1517,6 +1517,16 @@ export function createSearchBar(scribe, rootElem) {
     searchInputElem.value = '';
   }
 
+  /** Re-place an open bar after its elements moved to another host, such as the library's pane head. */
+  function rehome() {
+    if (findGroupElem.style.display === 'none') return;
+    placeBar();
+    if (barResize && findGroupElem.parentElement) {
+      barResize.disconnect();
+      barResize.observe(findGroupElem.parentElement);
+    }
+  }
+
   searchElem.addEventListener('click', () => {
     if (!scribe.state.searchMode) openSearch();
     else closeSearch();
@@ -1589,6 +1599,7 @@ export function createSearchBar(scribe, rootElem) {
     runSearch,
     updateSearchCounter,
     resetSearch,
+    rehome,
     stepMatch,
     installFindShortcut,
   };

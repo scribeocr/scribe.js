@@ -117,6 +117,7 @@ const SUPPORTED_OPEN_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', '
  * Matches the thumbnail panel's own slide (`SLIDE_MS` in panels.js) so both views animate identically.
  */
 const SIDEBAR_ANIM_MS = 180;
+const SIDEBAR_VIEW_KEYS = /** @type {const} */ (['thumbnails', 'bookmarks', 'comments']);
 
 /** localStorage key for the persisted theme setting ('system' | 'light' | 'dark'). */
 const THEME_STORAGE_KEY = 'scribe-theme';
@@ -853,6 +854,10 @@ class ScribePDFViewer {
     this._sidebarTabsElem = null;
     /** @type {Object<string, HTMLSpanElement>} The strip's tabs by view key. */
     this._sidebarTabElems = {};
+    /** @type {?{left: number, top: number}} The inset of the document area a library sets while its preview pane holds the document. */
+    this._docInset = null;
+    /** True while a preview attaches, so its first fit is to the pane's width. */
+    this._previewFitWidth = false;
     /** @type {?ReturnType<typeof import('../js/controls/automatePanel.js').createAutomatePanel>} The Automate panel (right dock), or null until its module loads. */
     this._automatePanel = null;
     /**
@@ -1391,6 +1396,7 @@ class ScribePDFViewer {
       if (this._bookmarksPanel) this._bookmarksPanel.setActive();
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
       if (this._companionStrip) this._companionStrip.setActive(this.scribe.state.cp.n);
+      for (const inst of this._libraryInstances) inst.pageChanged();
       if (this.scribe.onTablesPageChanged) this.scribe.onTablesPageChanged(this.scribe.state.cp.n);
     };
 
@@ -1804,6 +1810,77 @@ class ScribePDFViewer {
   }
 
   /**
+   * Show `doc` as a library preview, under the library's lit tab rather than a tab of its own.
+   * No lane tab is active while a preview is attached, and the outgoing document is retained for its owner.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {number} initialPage
+   * @param {string} name - The document's display name, which the viewer announces and uses for downloads.
+   * @returns {Promise<void>}
+   */
+  async attachPreview(doc, initialPage, name) {
+    if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
+      const outgoing = this._tabs[this._activeTab];
+      outgoing.lastPage = this.scribe.state.cp.n;
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(outgoing))).catch(() => {});
+    }
+    this._activeTab = -1;
+    this._previewDocName = name;
+    this._renderTabs();
+    this._syncTabNotice();
+    // A tab's document already on screen stays where the reader left it; only the strip changes hands.
+    if (doc !== this.doc) await this._setDoc(doc, initialPage, false, false, { preview: true });
+    else this._announceActiveDoc();
+  }
+
+  /**
+   * Give the attached preview a lane tab of its own and make that tab active.
+   * The document stays attached as it is, so nothing is re-rendered or moved.
+   * @param {string} name
+   * @param {Object} [extra] - Additional fields carried on the tab (e.g. the library's `libraryHash`).
+   * @returns {?Object} The new tab, or null when no preview is attached.
+   */
+  pinPreview(name, extra = {}) {
+    if (this._activeTab >= 0 || !this.doc) return null;
+    const tab = { ...this._newTab(this.doc, name), ...extra, lastPage: this.scribe.state.cp.n };
+    this._tabs.push(tab);
+    this._activeTab = this._tabs.length - 1;
+    this._previewDocName = null;
+    this._renderTabs();
+    this._syncTabNotice();
+    for (const inst of this._libraryInstances) inst.docOpened();
+    this._applyTabResourcePolicy();
+    return tab;
+  }
+
+  /**
+   * Empty the document area under the library's lit tab, leaving the open sidebar view in place.
+   * The document is retained for its owner, a tab's for its tab.
+   * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc} The detached document, or null when none was attached.
+   */
+  detachPreview() {
+    if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
+      const outgoing = this._tabs[this._activeTab];
+      outgoing.lastPage = this.scribe.state.cp.n;
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(outgoing))).catch(() => {});
+    }
+    this._activeTab = -1;
+    this._previewDocName = null;
+    this._renderTabs();
+    this._syncTabNotice();
+    if (!this.doc) return null;
+    return this.detachDoc({ terminate: false, keepSidebar: true });
+  }
+
+  /**
+   * The display name of the document on screen: the active tab's, or the preview's.
+   * @returns {?string}
+   */
+  _shownName() {
+    if (this._activeTab >= 0) return this._tabs[this._activeTab]?.name ?? null;
+    return this.doc ? this._previewDocName : null;
+  }
+
+  /**
    * Import a document into the viewer.
    * The viewer creates and **owns** the resulting document, so it is terminated automatically on the next import, on `detachDoc`, or on `destroy`.
    * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-File `Blob`) are treated as PDFs.
@@ -1832,6 +1909,25 @@ class ScribePDFViewer {
    * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}>}
    */
   async openProvisional(seed) {
+    /** @type {{current: ?Object}} */
+    const holder = { current: null };
+    const {
+      seedDoc, primed, hydrated, cancel,
+    } = this._makeProvisional(seed, holder);
+    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: seed.initialPage ?? 0 });
+    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
+    return { primed, hydrated, cancel };
+  }
+
+  /**
+   * Build the provisional document for `seed` with its hydration wired, for the caller to attach as a tab or as a library preview.
+   * `holder.current` is the record whose `doc` the hydration swap replaces, a tab or a preview record, read at swap time so the document can change hands first.
+   * Hydration starts through the document's `_requestHydration`, which the caller kicks itself for an eager seed.
+   * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
+   * @param {{current: ?Object}} holder
+   * @returns {{seedDoc: SeedDoc, primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}}
+   */
+  _makeProvisional(seed, holder) {
     const seedDoc = new SeedDoc(seed);
     // Fonts back the word-object layer (search marks, carets).
     // The call is memoized process-wide, so it is not awaited here.
@@ -1851,8 +1947,6 @@ class ScribePDFViewer {
     const hydrated = realDocP.then(() => undefined);
     hydrated.catch(() => {});
 
-    const initialPage = seed.initialPage ?? 0;
-    const tab = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: initialPage });
     // Word geometry lands moments after the raster, so the text layer has to be rebuilt when it does.
     const primed = seedDoc.prime().then(() => {
       if (!cancelled && this.doc === seedDoc) this.scribe.displayPage(this.scribe.state.cp.n, false, true);
@@ -1868,7 +1962,8 @@ class ScribePDFViewer {
           realDoc?.close?.().catch(() => {});
           throw new Error('Hydration cancelled.');
         }
-        await this._hydrateSwap(tab, seedDoc, realDoc);
+        if (holder.current) await this._hydrateSwap(holder.current, seedDoc, realDoc);
+        else await seedDoc.close();
         return realDoc;
       })().then(resolveReal, (err) => {
         if (!cancelled) this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
@@ -1896,26 +1991,26 @@ class ScribePDFViewer {
     };
     // A seed closed by a tab close or a viewer destroy must never go on to hydrate.
     seedDoc._onClose = cancel;
-
-    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
-    return { primed, hydrated, cancel };
+    return {
+      seedDoc, primed, hydrated, cancel,
+    };
   }
 
   /**
-   * Replace a provisional tab's seed with the hydrated document in place.
+   * Replace a provisional document's seed with the hydrated document in place.
    * When the seed's geometry was truthful, the swap preserves scroll and zoom exactly and re-anchors a linear text selection whose text survived unchanged.
    * A snapshot of the on-screen canvases veils the viewport until the real render lands.
    * A geometry mismatch degrades to a plain re-open at the current page.
-   * @param {object} tab
+   * @param {{doc: Object, provisional?: boolean, onDocHydrated?: (doc: Object) => void}} holder - The tab or library preview record holding the seed.
    * @param {SeedDoc} seedDoc
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} realDoc
    */
-  async _hydrateSwap(tab, seedDoc, realDoc) {
-    tab.doc = realDoc;
-    tab.provisional = false;
+  async _hydrateSwap(holder, seedDoc, realDoc) {
+    holder.doc = realDoc;
+    holder.provisional = false;
     // Fired synchronously with the adoption rather than on `hydrated`.
     // A mutation arriving during the swap's paint tail must not escape the host's tracking.
-    tab.onDocHydrated?.(realDoc);
+    holder.onDocHydrated?.(realDoc);
     // A successful swap retires the seed on purpose, so its close must not read as a cancel.
     seedDoc._onClose = null;
     // Annotations made on the seed move to the real document, because the pointer UI writes doc.annotations directly.
@@ -1946,7 +2041,8 @@ class ScribePDFViewer {
     const veil = geometryMatches ? this._buildSwapVeil() : null;
 
     try {
-      await this.attachDocument(realDoc, cpN, { terminatePrevious: false });
+      // A preview's swap stays a preview, so the library's tab keeps the front.
+      await this._setDoc(realDoc, cpN, false, false, { preview: this._activeTab < 0 });
       if (geometryMatches) {
         if (this.scribe.zoomLevel !== zoom) {
           this.scribe.zoomLevel = zoom;
@@ -2013,9 +2109,10 @@ class ScribePDFViewer {
    * @param {number} initialPage
    * @param {boolean} owns - Whether the viewer created `doc`.
    * @param {boolean | undefined} terminatePrevious - Explicit override of the outgoing-doc terminate.
+   * @param {{preview?: boolean}} [options] - `preview` marks the document as a library preview.
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
    */
-  async _setDoc(doc, initialPage, owns, terminatePrevious) {
+  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false } = {}) {
     const prev = this.doc;
     const displaced = prev && prev !== doc ? prev : null;
     const terminatePrev = terminatePrevious ?? this._ownsDoc;
@@ -2024,7 +2121,7 @@ class ScribePDFViewer {
     this._ownsDoc = owns;
     this.scribe.doc = doc;
     this.resetSearch();
-    for (const inst of this._libraryInstances) inst.docOpened();
+    if (!preview) for (const inst of this._libraryInstances) inst.docOpened();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -2086,19 +2183,10 @@ class ScribePDFViewer {
     loadedDoc?.textReady?.then(() => { if (this.doc === loadedDoc) this._syncDocGatedControls(); }).catch(() => {});
 
     // A load is not a user toggle, so the reopened rail lands instantly rather than sliding in.
-    if (!prev && !this._phoneUi && this._sidebarWhenLoaded) {
+    // A preview is read in the library's pane, where the sidebar has no place until Open.
+    if (!prev && !preview && !this._phoneUi && this._sidebarWhenLoaded && !this._activeSidebar) {
       const wanted = this._panelFor(this._sidebarWhenLoaded);
-      const key = wanted && wanted.toggleElem.style.display !== 'none' ? this._sidebarWhenLoaded : 'thumbnails';
-      const panel = this._panelFor(key);
-      if (panel) {
-        this._activeSidebar = key;
-        const el = panel.panelElem;
-        el.style.transition = 'none';
-        panel.setVisible(true);
-        requestAnimationFrame(() => { el.style.transition = ''; });
-        // setVisible re-insets the document only for the thumbnail view, so the other views need this relayout.
-        if (this.scribe.scrollContainer) this._relayout();
-      }
+      this.showSidebarNow(wanted && wanted.toggleElem.style.display !== 'none' ? this._sidebarWhenLoaded : 'thumbnails');
     }
     // Loads can change the sidebar's open view and which views a document offers, so the sidebar toggle and strip resync here.
     this._syncSidebarControls();
@@ -2108,8 +2196,14 @@ class ScribePDFViewer {
     if (terminatePrev && displaced) displaced.close().catch(() => {});
 
     this.scribe.runSetInitial = true;
-    // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
-    await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+    // A preview opens at the width of the pane it is read in.
+    this._previewFitWidth = preview;
+    try {
+      // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
+      await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+    } finally {
+      this._previewFitWidth = false;
+    }
 
     this._extractTablesTool?.docChanged?.();
     this._inspectTool?.docChanged?.();
@@ -2149,10 +2243,11 @@ class ScribePDFViewer {
    * @param {object} [options]
    * @param {boolean} [options.terminate] - Force-terminate (`true`) or force-retain (`false`) the detached document,
    *   overriding the default (terminate only a document the viewer created).
+   * @param {boolean} [options.keepSidebar] - Leave the sidebar and the view it reopens with untouched, for a library clearing its preview.
    * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc} The detached document (for the caller to cache or terminate),
    *   or `null` if no document was attached.
    */
-  detachDoc({ terminate } = {}) {
+  detachDoc({ terminate, keepSidebar = false } = {}) {
     const prev = this.doc;
     if (!prev) return null;
     const terminatePrev = terminate ?? this._ownsDoc;
@@ -2175,7 +2270,7 @@ class ScribePDFViewer {
       // Hiding the strip changes the document's bottom inset.
       if (this._phoneUi && this.scribe.scrollContainer) this._relayout();
     }
-    if (!this._phoneUi) {
+    if (!this._phoneUi && !keepSidebar) {
       this._sidebarWhenLoaded = this._activeSidebar;
       const open = this._panelFor(this._activeSidebar);
       this._activeSidebar = null;
@@ -2433,7 +2528,7 @@ class ScribePDFViewer {
     try {
       const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr });
       const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
-      const baseName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || 'Document';
+      const baseName = this._shownName() || 'Document';
       const name = `${baseName.replace(/\.pdf$/i, '')} (extract).pdf`;
       this._tabs.push(this._newTab(doc, name));
       await this._activateTab(this._tabs.length - 1);
@@ -2482,7 +2577,7 @@ class ScribePDFViewer {
   async splitAtBookmarks() {
     const srcDoc = this.scribe.doc;
     if (!srcDoc) return;
-    const leadTitle = `${(this._tabs[this._activeTab]?.name || 'Document').replace(/\.pdf$/i, '')} (front matter)`;
+    const leadTitle = `${(this._shownName() || 'Document').replace(/\.pdf$/i, '')} (front matter)`;
     const segments = outlineSplitSegments(srcDoc.outline || [], srcDoc.pageMetrics.length, leadTitle);
     if (segments.length < 2) return;
     // Build every piece before touching the tab list, so a mid-split failure leaves no partial tabs behind.
@@ -2580,6 +2675,15 @@ class ScribePDFViewer {
     const tab = this._tabs[i];
     this._activeTab = i;
     tab.lastUse = ++this._tabUseCounter;
+    // The tab's document is already on screen, as the library's preview, so activating it changes the strip and not the page.
+    if (tab.doc === this.doc && !tab.asleep) {
+      this._previewDocName = null;
+      this._renderTabs();
+      this._syncTabNotice();
+      for (const inst of this._libraryInstances) inst.docOpened();
+      this._applyTabResourcePolicy();
+      return;
+    }
     if (tab.asleep) tab.waking = true;
     this._renderTabs();
     this._syncTabNotice();
@@ -2679,8 +2783,7 @@ class ScribePDFViewer {
 
   /** Tell the embedding page which document is active. */
   _announceActiveDoc() {
-    const activeName = this._frontSurface() ? this._previewDocName
-      : (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
+    const activeName = this._frontSurface() ? this._previewDocName : this._shownName();
     if (activeName === this._announcedDocName) return;
     this._announcedDocName = activeName;
     // The event must not bubble.
@@ -2738,8 +2841,9 @@ class ScribePDFViewer {
    * @returns {number}
    */
   _topBarsHeight() {
+    // The strip's bottom border lies outside its band, so the document starts a pixel lower than the band's height says.
     return (this._phoneUi ? 0 : this.toolbarHeight)
-      + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0);
+      + (this._tabStripVisible ? TAB_STRIP_HEIGHT + 1 : 0);
   }
 
   /** Stack the overlay banners across the top of the document area, the mode banner above the message banner. */
@@ -3823,19 +3927,23 @@ class ScribePDFViewer {
     if (this._sidebarAnim) return;
     // Inset the document by the open view's width so it centers in the area beside the sidebar, not under it.
     // Keep at least a sliver of document even if the panel is wider than the viewport.
-    const activePanel = this._activeSidebar === 'thumbnails' ? this._thumbnailPanel
-      : (this._activeSidebar === 'bookmarks' ? this._bookmarksPanel
-        : (this._activeSidebar === 'comments' ? this._commentsPanel : null));
+    const activePanel = this._panelFor(this._activeSidebar);
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     if (this._sidebarTabsElem && activePanel) this._sidebarTabsElem.style.width = `${panelW}px`;
-    const inset = Math.min(panelW, Math.max(0, this._width - 80));
+    const docInset = this._docInset;
+    const inset = Math.min(docInset ? docInset.left : panelW, Math.max(0, this._width - 80));
+    const insetTop = docInset ? Math.max(0, docInset.top) : 0;
     const rightW = (this._automatePanel && this._automatePanel.isOpen())
       ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
     // Both overlay tracks are positioned against the full-width container, so each is moved to the document's edge by hand.
-    if (this._vScrollTrack) this._vScrollTrack.style.right = `${rightW}px`;
+    if (this._vScrollTrack) {
+      this._vScrollTrack.style.right = `${rightW}px`;
+      this._vScrollTrack.style.top = insetTop ? `${insetTop}px` : '';
+    }
     if (this._hScrollTrack) this._hScrollTrack.style.left = `${inset}px`;
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-    this.scribe.resize(this._width - inset - rightW, this._height - top - this._docBottomInset());
+    this.scribe.scrollContainer.style.marginTop = insetTop ? `${insetTop}px` : '';
+    this.scribe.resize(this._width - inset - rightW, this._height - top - insetTop - this._docBottomInset());
     // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
     if (this._updateScrollbars && !this._sidebarDragActive) this._updateScrollbars();
   }
@@ -3853,6 +3961,19 @@ class ScribePDFViewer {
   }
 
   /**
+   * Inset the document area to a library's preview pane, or clear the inset with null.
+   * While set, the pane's left edge and head height replace the sidebar's inset, and the document is laid out in the pane.
+   * @param {?{left: number, top: number}} inset
+   */
+  setDocInset(inset) {
+    const prev = this._docInset;
+    if (!inset && !prev) return;
+    if (inset && prev && inset.left === prev.left && inset.top === prev.top) return;
+    this._docInset = inset ? { left: Math.max(0, inset.left), top: Math.max(0, inset.top) } : null;
+    if (this.scribe.scrollContainer) this._relayout();
+  }
+
+  /**
    * Handle a click on a sidebar view's toolbar icon (the radio group with deselect): open the sidebar to `key`,
    * switch to it in place when the other view is open, or close the sidebar when `key` is already the open view.
    * @param {'thumbnails'|'bookmarks'|'comments'} key
@@ -3863,9 +3984,7 @@ class ScribePDFViewer {
     const next = prev === key ? null : key; // clicking the open view closes the sidebar
     if (next === prev) return;
     this._activeSidebar = next;
-    if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.classList.toggle('active', next === 'thumbnails');
-    if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.toggle('active', next === 'bookmarks');
-    if (this._commentsPanel) this._commentsPanel.toggleElem.classList.toggle('active', next === 'comments');
+    for (const k of SIDEBAR_VIEW_KEYS) this._panelFor(k)?.toggleElem.classList.toggle('active', next === k);
     this._transitionSidebar(prev, next);
     this._syncSidebarControls();
     if (this._automatePanel) this._automatePanel.syncSidebar();
@@ -3897,6 +4016,39 @@ class ScribePDFViewer {
     this._bookmarksPanel.panelElem.style.width = `${applied}px`;
     if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
     this._relayout();
+  }
+
+  /**
+   * Open sidebar view `key` without the slide.
+   * @param {'thumbnails'|'bookmarks'|'comments'} key
+   */
+  showSidebarNow(key) {
+    const panel = this._panelFor(key);
+    if (!panel) return;
+    this._activeSidebar = key;
+    for (const k of SIDEBAR_VIEW_KEYS) this._panelFor(k)?.toggleElem.classList.toggle('active', key === k);
+    const el = panel.panelElem;
+    el.style.transition = 'none';
+    panel.setVisible(true);
+    requestAnimationFrame(() => { el.style.transition = ''; });
+    // setVisible re-insets the document only for the thumbnail view, so the other views need this relayout.
+    if (this.scribe.scrollContainer) this._relayout();
+    this._syncSidebarControls();
+  }
+
+  /** Close the open sidebar view without the slide, remembering it for the next load. */
+  hideSidebarNow() {
+    const open = this._panelFor(this._activeSidebar);
+    if (!open) return;
+    this._sidebarWhenLoaded = this._activeSidebar;
+    this._activeSidebar = null;
+    open.toggleElem.classList.remove('active');
+    const el = open.panelElem;
+    el.style.transition = 'none';
+    open.setVisible(false);
+    requestAnimationFrame(() => { el.style.transition = ''; });
+    if (this.scribe.scrollContainer) this._relayout();
+    this._syncSidebarControls();
   }
 
   /**
@@ -3945,15 +4097,12 @@ class ScribePDFViewer {
     // The new setup overwrites the inline styles it was driving, and its transition settles the panels' shown/hidden state.
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
 
-    // A non-thumbnails view adopts the thumbnail view's current width before measuring, so all share one edge.
-    if (nextKey === 'bookmarks' && this._thumbnailPanel && this._bookmarksPanel) {
-      this._bookmarksPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
-    }
-    if (nextKey === 'comments' && this._thumbnailPanel && this._commentsPanel) {
-      this._commentsPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
-    }
     const fromPanel = this._panelFor(prevKey);
     const toPanel = this._panelFor(nextKey);
+    // A non-thumbnails view adopts the thumbnail view's current width before measuring, so all share one edge.
+    if (toPanel && toPanel !== this._thumbnailPanel && this._thumbnailPanel) {
+      toPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
+    }
     const fromEl = fromPanel ? fromPanel.panelElem : null;
     const toEl = toPanel ? toPanel.panelElem : null;
     const fromW = fromEl ? (parseFloat(fromEl.style.width) || 0) : 0;
@@ -4103,7 +4252,8 @@ class ScribePDFViewer {
   /**
    * Close what is in front, for a desktop shell's close-tab shortcut.
    * The target is the active document's tab, or a closable pinned surface such as a portfolio.
-   * Refused when the library itself is in front, or when a viewer without a library would be left with no document.
+   * A library preview is cleared rather than closed.
+   * Refused when the library's browse surface is in front, or when a viewer without a library would be left with no document.
    * @returns {boolean} Whether something was closed.
    */
   closeActiveDocument() {
@@ -4111,6 +4261,12 @@ class ScribePDFViewer {
     if (front) {
       if (!front.close) return false;
       front.close();
+      return true;
+    }
+    if (this._activeTab < 0 && this.doc) {
+      const owner = this._libraryInstances.find((inst) => inst.visible());
+      if (!owner?.clearPreview) return false;
+      owner.clearPreview();
       return true;
     }
     if (this._activeTab < 0 || (!this._libraryInstances.length && this._tabs.length < 2)) return false;
@@ -4235,11 +4391,12 @@ class ScribePDFViewer {
   }
 
   /**
-   * The pinned surface in front of the document, if any.
+   * The pinned surface covering the document, if any.
+   * A library previewing in its pane is lit but leaves the document uncovered.
    * @returns {?import('../library/libraryView.js').LibraryInstance}
    */
   _frontSurface() {
-    return this._libraryInstances.find((inst) => inst.visible()) ?? null;
+    return this._libraryInstances.find((inst) => inst.covering()) ?? null;
   }
 
   /** React to a pinned surface taking or leaving the front. */
@@ -5708,7 +5865,7 @@ class ScribePDFViewer {
 
       // The phone takes width-fit either way.
       const heightFitOverflows = ((stageH - 150) / imgDims.height) * docW > stageW;
-      const widthFitDefault = isDefaultFit && (this._phoneUi || heightFitOverflows);
+      const widthFitDefault = (isDefaultFit && (this._phoneUi || heightFitOverflows)) || !!this._previewFitWidth;
       const effectiveMode = widthFitDefault ? 'width' : fitMode;
 
       let zoom;
@@ -5952,7 +6109,7 @@ class ScribePDFViewer {
    * The active tab's display name, for use as the download filename (the exporter adds the extension).
    */
   _baseName() {
-    return this._tabs[this._activeTab]?.name
+    return this._shownName()
       || this.doc?.inputData?.defaultDownloadFileName
       || 'document';
   }

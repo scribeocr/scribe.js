@@ -15,7 +15,10 @@ import { PortfolioStore } from './portfolioStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
-import { buildPreviewSplit, createPreviewPanes } from './libraryPreviewPane.js';
+import {
+  barIcon, createPageNav, createZoomControls, makeIconButton, makeSeparator,
+} from '../js/controls/toolbar.js';
+import { createPreview } from './libraryPreview.js';
 import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
 import { flyCopies } from '../js/controls/pageReorder.js';
@@ -30,6 +33,7 @@ const FOLDER_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="poin
 const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/></svg>';
 // eslint-disable-next-line max-len
 const FOLDER_ELSEWHERE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><rect x="1" y="8" width="7" height="7" rx="1.5" fill="currentColor" stroke="var(--scribe-surface)" stroke-width="1"/><path d="M3.25 12.75l2.5-2.5M3.75 10.25h2v2" stroke="var(--scribe-surface)" stroke-width="1.5"/></svg>';
+const OPEN_IN_TAB_SVG = barIcon('<path d="M12 7H8.5A2.5 2.5 0 0 0 6 9.5v10A2.5 2.5 0 0 0 8.5 22h10a2.5 2.5 0 0 0 2.5-2.5V16"/><path d="M16 6h6v6M22 6l-9 9"/>');
 // eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
 // Matches FOLDER_SVG's grid and stroke, for the start screen, where the two sit side by side.
@@ -137,6 +141,9 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
  * @property {() => void} show
  * @property {() => void} hide
+ * @property {() => boolean} covering Whether the surface covers the document area, as the browse form does and the split form does not.
+ * @property {() => void} clearPreview Empty the split form's pane and clear its selection.
+ * @property {() => void} pageChanged The viewer moved to another page.
  * @property {() => void} docOpened
  * @property {() => void} emptied
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
@@ -299,11 +306,13 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-lgroup { height: 32px; box-sizing: border-box; display: flex; align-items: flex-end; padding: 0 18px 6px; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: color-mix(in srgb, var(--scribe-ink) 60%, transparent); user-select: none; }
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-row .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-row .nm .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm { gap: 12px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm img { width: 40px; height: 52px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 3px; background: #fff; flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-row.cf .nm .tt { min-width: 0; }
+.scribe-pdf-viewer .scribe-library-row .nm .tt { min-width: 0; }
+/* The title is inline by default, and only a block can end in an ellipsis. */
+.scribe-pdf-viewer .scribe-library-row .nm .tt > .t { display: block; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm .t { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm .m2 { font-size: 12px; color: var(--scribe-ink-3); margin-top: 2px; display: flex; gap: 6px; align-items: center; }
 .scribe-pdf-viewer .scribe-library-row .num { font-variant-numeric: tabular-nums; color: var(--scribe-ink-2); }
@@ -339,7 +348,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-recent .n { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
 /* A stable gutter is reserved even under overflow: hidden. */
-.scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; scrollbar-gutter: auto; }
+.scribe-pdf-viewer .scribe-library-body.results-mode { padding: 0; scrollbar-gutter: auto; }
+.scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; scrollbar-gutter: auto; }
 .scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
 /* Columns the layout dropped to keep the name readable.
    Their tracks are gone, so the cells have to go with them. */
@@ -360,7 +370,30 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rsplit.drag::before { opacity: 1; transition-delay: 0s; }
 .scribe-pdf-viewer .scribe-library-results.rsplit-drag { user-select: none; }
 .scribe-pdf-viewer .scribe-library-results.rsplit-drag * { cursor: col-resize !important; }
-.scribe-pdf-viewer .scribe-library-rsummary { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px 8px; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-rwrap { outline: none; }
+.scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+/* Stacked above the stage, so the find bar that hangs from it paints over the page. */
+.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 2; }
+.scribe-pdf-viewer .scribe-library-pv-head .t { flex: 1 1 0; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-tools { display: inline-flex; align-items: center; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-pv-tools { flex: 1 1 0; justify-content: flex-end; gap: 8px; }
+.scribe-pdf-viewer .scribe-library-pv-tools .vertical-separator { margin: 0; }
+.scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; background: var(--scribe-canvas); }
+.scribe-pdf-viewer .scribe-library-pv-stage.live { background: transparent; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
+.scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
+@keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
+.scribe-pdf-viewer .scribe-library-surface.split { background: transparent; }
+/* The boxes over the document pass the pointer through to it, and pointer-events is inherited, so every other part of the split form takes it back. */
+.scribe-pdf-viewer .scribe-library-surface.split, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv { pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-surface.split > :not(.scribe-library-body), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body > :not(.scribe-library-results), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results > :not(.scribe-library-pv), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv > :not(.scribe-library-pv-stage), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv-stage:not(.live) { pointer-events: auto; }
+.scribe-pdf-viewer .scribe-library-surface.leaving .scribe-library-rlist { opacity: 0; transition: opacity 200ms ease; }
+.scribe-pdf-viewer .scribe-library-surface.leaving .scribe-library-pv-head { opacity: 0; transition: opacity 150ms ease; }
+.scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-rlist, .scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-pv-head { opacity: 0; }
+.scribe-pdf-viewer .scribe-library-surface.entering.arrived .scribe-library-rlist { opacity: 1; transition: opacity 200ms ease; }
+.scribe-pdf-viewer .scribe-library-surface.entering.arrived .scribe-library-pv-head { opacity: 1; transition: opacity 150ms ease 80ms; }
+.scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-back { margin-left: auto; border: none; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-rdoc { padding: 10px 16px 4px; font-weight: 600; }
@@ -379,21 +412,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rmore:hover { text-decoration: underline; }
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
 .scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
-.scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-/* Stacked above the stage, so the find bar that hangs from it paints over the page. */
-.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 2; }
-.scribe-pdf-viewer .scribe-library-pv-head .t { flex: 1 1 0; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-tools { display: inline-flex; align-items: center; flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-pv-tools { flex: 1 1 0; justify-content: flex-end; gap: 8px; }
-.scribe-pdf-viewer .scribe-library-pv-tools .vertical-separator { margin: 0; }
-.scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
-.scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
-.scribe-pdf-viewer .scribe-library-pv.scribe-library-pv-live .scribe-cmt-card { display: none !important; }
-.scribe-pdf-viewer .scribe-library-pv-veil { position: absolute; inset: 0; z-index: 5; background-color: var(--scribe-canvas); background-size: 100% 100%; transition: opacity 0.15s; pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
-.scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
-@keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
 .scribe-pdf-viewer .scribe-library-crumbs { position: relative; display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-crumbs > .scribe-library-crumb:first-child { margin-left: -7px; }
@@ -582,6 +600,56 @@ const addLibraryStyles = () => {
 };
 
 /**
+ * The split shell shared by the search results and the list view's preview.
+ * It holds a resizable left column, a drag sash, and room for the pane the caller appends.
+ * @param {number} defaultWidth
+ * @param {() => number} getWidth
+ * @param {(w: number) => void} setWidth
+ */
+const buildPreviewSplit = (defaultWidth, getWidth, setWidth) => {
+  const wrap = document.createElement('div');
+  wrap.className = 'scribe-library-results';
+  wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
+  const left = document.createElement('div');
+  left.className = 'scribe-library-rlist';
+  wrap.appendChild(left);
+  const sash = document.createElement('div');
+  sash.className = 'scribe-library-rsplit';
+  sash.setAttribute('role', 'separator');
+  sash.setAttribute('aria-orientation', 'vertical');
+  sash.setAttribute('aria-label', 'Resize the preview split');
+  sash.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = left.getBoundingClientRect().width;
+    sash.classList.add('drag');
+    wrap.classList.add('rsplit-drag');
+    const onMove = (/** @type {PointerEvent} */ ev) => {
+      // Clamp to the same bounds as the CSS width clamp so dragging past an edge has no dead travel on the way back.
+      setWidth(Math.round(Math.max(280, Math.min(startW + ev.clientX - startX, wrap.getBoundingClientRect().width - 320))));
+      wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
+    };
+    const onUp = () => {
+      sash.classList.remove('drag');
+      wrap.classList.remove('rsplit-drag');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+  sash.addEventListener('dblclick', () => {
+    setWidth(defaultWidth);
+    wrap.style.setProperty('--scribe-library-rlist-w', `${defaultWidth}px`);
+  });
+  wrap.appendChild(sash);
+  return { wrap, left };
+};
+
+/**
  * One library-style surface: the document library over its folder store, or that same surface over another store, such as a PDF portfolio's embedded files.
  * The folder connection, the resume record and the app-menu items exist only for the library kind.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
@@ -656,15 +724,13 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?Array<{hash: string, pages: number[]}>} Full-text results, or null for the browse grid. */
   let fullTextResults = null;
   let fullTextQuery = '';
-  /** Split width while a list view hosts the preview pane. */
-  let listPreviewWidth = 700;
   let listPreviewOn = opts.previewDefault ?? false;
   if (persistPrefs) {
     try {
       listPreviewOn = window.localStorage.getItem(PREVIEW_STORAGE_KEY) === '1';
     } catch { /* localStorage unavailable. */ }
   }
-  /** @type {?string} Doc shown in the list-view preview pane. */
+  /** @type {?string} The document the list view previews. */
   let listPreviewPath = null;
   let listPreviewPage = 0;
   const sessions = new DocSessions();
@@ -991,10 +1057,392 @@ export function createLibraryInstance(viewer, opts) {
   const resizeObserver = new ResizeObserver(positionSurface);
   resizeObserver.observe(viewer.pdfViewerElem);
 
+  // --- The split form -----------------------------------------------------
+  // The main viewer draws the document in the pane's area, under a head whose controls drive it directly.
+
   /** @type {Array<{el: HTMLElement, display: string}>} */
   let hiddenBarElems = [];
   let barSwapped = false;
   let priorEndZoneFlex = '';
+  let resultsListWidth = 400;
+  let listPreviewWidth = 700;
+  /** @type {?HTMLElement} The split's column, mounted by the render that builds the results or the list. */
+  let splitLeft = null;
+
+  const pane = document.createElement('div');
+  pane.className = 'scribe-library-pv';
+  // The toolbar class applies the toolbar-scoped styles of the find bar and the page input.
+  pane.innerHTML = '<div class="scribe-library-pv-head scribe-pdf-viewer-toolbar" style="display:none;">'
+    + '<span class="t"></span><span class="scribe-library-pv-tools"></span></div>'
+    + '<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty"></div>'
+    + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>';
+  const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
+  const pvTitle = /** @type {HTMLElement} */ (pvHead.querySelector('.t'));
+  const pvTools = /** @type {HTMLElement} */ (pvHead.querySelector('.scribe-library-pv-tools'));
+  const pvStage = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-stage'));
+  const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
+  const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
+  const pvPlate = document.createElement('div');
+  pvPlate.className = 'scribe-library-pv-plate';
+  pvPlate.style.display = 'none';
+  pvStage.appendChild(pvPlate);
+  const pageNav = createPageNav(viewer.scribe);
+  const navWrap = document.createElement('span');
+  navWrap.className = 'scribe-library-pv-nav';
+  navWrap.append(pageNav.prevElem, pageNav.nextElem, pageNav.pageInputGroup);
+  pvTitle.after(navWrap);
+  pageNav.pageNumElem.addEventListener('focus', () => pageNav.pageNumElem.select());
+  // Wrapped because the pair sets its display inline, which would override the width rule that hides it.
+  const zoomWrap = document.createElement('span');
+  zoomWrap.className = 'scribe-library-pv-zoom';
+  zoomWrap.appendChild(createZoomControls(viewer.scribe).zoomControls);
+  const pvOpenBtn = makeIconButton('Open', OPEN_IN_TAB_SVG);
+  const pvSep = makeSeparator();
+  pvTools.append(zoomWrap, pvSep, pvOpenBtn);
+  /** Show the viewer's page in the head's page control. */
+  const syncPaneNav = () => {
+    const d = viewer.doc;
+    if (!d || !d.pageMetrics.length) return;
+    if (document.activeElement !== pageNav.pageNumElem) pageNav.pageNumElem.value = String(viewer.scribe.state.cp.n + 1);
+    pageNav.pageCountElem.textContent = String(d.pageMetrics.length);
+  };
+  /** @type {?{btnParent: ?HTMLElement, btnNext: ?Node, groupParent: ?HTMLElement, groupNext: ?Node}} Where the viewer's find control and bar came from, while the pane head holds them. */
+  let findHome = null;
+  /** Move the viewer's find control and bar into the pane head, so the preview's find is the viewer's own. */
+  const takeFindBar = () => {
+    const bar = viewer._searchBar;
+    if (!bar || findHome) return;
+    findHome = {
+      btnParent: bar.searchElem.parentElement, btnNext: bar.searchElem.nextSibling, groupParent: bar.findGroupElem.parentElement, groupNext: bar.findGroupElem.nextSibling,
+    };
+    pvTools.insertBefore(bar.searchElem, pvSep);
+    bar.searchElem.style.display = '';
+    pvHead.appendChild(bar.findGroupElem);
+    bar.rehome();
+  };
+  const returnFindBar = () => {
+    const bar = viewer._searchBar;
+    if (!bar || !findHome) return;
+    const h = findHome;
+    findHome = null;
+    h.btnParent?.insertBefore(bar.searchElem, h.btnNext && h.btnNext.parentNode === h.btnParent ? h.btnNext : null);
+    h.groupParent?.insertBefore(bar.findGroupElem, h.groupNext && h.groupNext.parentNode === h.groupParent ? h.groupNext : null);
+    // The toolbar's document controls stay hidden while the library bar is in, and the swap out shows them again.
+    if (barSwapped) bar.searchElem.style.display = 'none';
+  };
+
+  /** Whether the library shows the rows' column beside the pane. */
+  const splitForm = () => !!barControls && !viewer._phoneUi && !!store && !!manifest && !storageOpen
+    && (!!fullTextResults || (listPreviewOn && viewMode !== 'grid'));
+
+  /** True while Open or a return morphs between the pane and the rail, so the inset sync leaves the inset to it. */
+  let morphing = false;
+  /** Set ahead of an Open from the pane, so the deactivate the viewer asks for waits for the morph. */
+  let morphPending = false;
+
+  /** Inset the document area to the pane while the split form is up, and clear the inset otherwise. */
+  const syncDocInset = () => {
+    if (morphing) return;
+    if (!visible || !splitForm() || !pvStage.isConnected || surface.style.display === 'none') {
+      viewer.setDocInset(null);
+      return;
+    }
+    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
+    const r = pvStage.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    viewer.setDocInset({ left: Math.round(r.left - rootRect.left), top: Math.round(r.top - rootRect.top) - viewer._topBarsHeight() });
+  };
+  // Relaying out inside the observer's delivery resizes elements other observers watch in the same cycle, which the browser reports as a resize loop.
+  let insetSyncRaf = 0;
+  const stageObserver = new ResizeObserver(() => {
+    cancelAnimationFrame(insetSyncRaf);
+    insetSyncRaf = requestAnimationFrame(() => { insetSyncRaf = 0; syncDocInset(); });
+  });
+  stageObserver.observe(pvStage);
+
+  /** @type {'empty'|'loading'|'ready'|'error'|'plate'} What the pane shows besides the document. */
+  let stageKind = 'empty';
+
+  /** Show the previewed document's name and Open in the pane head, a plate's name alone, or no head without a selection. */
+  const syncPaneHead = () => {
+    const last = preview.lastTarget();
+    const plated = stageKind === 'plate';
+    const title = last ? last.title : (plated && listPreviewPath ? (listPreviewPath.split('/').pop() || listPreviewPath) : null);
+    pvHead.style.display = title ? '' : 'none';
+    pvTitle.textContent = title ?? '';
+    pvTitle.title = title ?? '';
+    pane.classList.toggle('scribe-library-pv-plated', plated);
+    pvOpenBtn.classList.toggle('disabled', !last);
+    if (last) syncPaneNav();
+  };
+
+  /**
+   * Set what the pane shows besides the document.
+   * A load over a seeded page shows the page through the stage too, under the spinner.
+   * @param {'empty'|'loading'|'ready'|'error'|'plate'} kind
+   * @param {string} [text]
+   */
+  const setStage = (kind, text) => {
+    stageKind = kind;
+    pvStage.classList.toggle('live', kind === 'ready' || (kind === 'loading' && !!viewer.doc));
+    pvLoading.style.display = kind === 'loading' ? '' : 'none';
+    pvPlate.style.display = kind === 'plate' ? '' : 'none';
+    pvEmpty.style.display = kind === 'empty' || kind === 'error' ? '' : 'none';
+    if (kind === 'empty') pvEmpty.textContent = fullTextResults ? 'Select a result to preview it here' : 'Select a document to preview it here';
+    else if (kind === 'error') pvEmpty.textContent = text ?? 'This page could not be rendered.';
+    syncPaneHead();
+    syncDocInset();
+  };
+
+  /**
+   * Show a file the viewer cannot render, with its name, its kind and the one action that applies to it.
+   * @param {{title: string, badge: string, icon: string, note: string, action: string, onAction: () => void}} target
+   */
+  const showPlate = (target) => {
+    pvPlate.replaceChildren();
+    pvPlate.insertAdjacentHTML('beforeend', `<span class="fi">${target.icon}</span>`);
+    const nameEl = document.createElement('div');
+    nameEl.className = 'n';
+    nameEl.textContent = target.title;
+    const badgeEl = document.createElement('span');
+    badgeEl.className = 'scribe-library-badge';
+    badgeEl.textContent = target.badge;
+    const noteEl = document.createElement('div');
+    noteEl.className = 'm';
+    noteEl.textContent = target.note;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'scribe-library-btn';
+    btn.textContent = target.action;
+    btn.addEventListener('click', () => target.onAction());
+    pvPlate.append(nameEl, badgeEl, noteEl, btn);
+    setStage('plate');
+  };
+
+  /**
+   * Mount the split's column, sash and pane in the body, and return the column for the rows.
+   * @param {'results'|'list'} kind
+   */
+  const mountSplit = (kind) => {
+    const defaultWidth = kind === 'results' ? 400 : 700;
+    const { wrap, left } = buildPreviewSplit(
+      defaultWidth,
+      () => (kind === 'results' ? resultsListWidth : listPreviewWidth),
+      (w) => { if (kind === 'results') resultsListWidth = w; else listPreviewWidth = w; },
+    );
+    wrap.appendChild(pane);
+    body.appendChild(wrap);
+    body.classList.add('split-mode');
+    splitLeft = left;
+    return left;
+  };
+
+  /** Put the lit library's bar and surface on screen, with the find bar in the pane head in the split form. */
+  const applyForm = () => {
+    if (!visible) return;
+    swapBarIn();
+    surface.style.display = 'flex';
+    const split = splitForm();
+    surface.classList.toggle('split', split);
+    if (split) takeFindBar();
+    else {
+      returnFindBar();
+      viewer.setDocInset(null);
+    }
+    viewer._syncFrontSurface();
+  };
+
+  const MORPH_MS = 200;
+  const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const railWidth = () => parseFloat(viewer._thumbnailPanel?.panelElem.style.width) || 230;
+
+  /**
+   * Run `step(e)` from 0 to 1 over the morph's duration, eased out.
+   * @param {(e: number) => void} step
+   */
+  const runMorph = (step) => new Promise((done) => {
+    /** @type {?number} */
+    let t0 = null;
+    const frame = (/** @type {number} */ ts) => {
+      if (t0 === null) t0 = ts;
+      const p = destroyed ? 1 : Math.min(1, (ts - t0) / MORPH_MS);
+      step(1 - (1 - p) ** 3);
+      if (p < 1) requestAnimationFrame(frame);
+      else done();
+    };
+    requestAnimationFrame(frame);
+  });
+
+  /** Morph from the pane to the rail for Open, the document keeping its zoom and its line. */
+  const morphOut = async () => {
+    const left = splitLeft;
+    const start = viewer._docInset;
+    if (!viewer._phoneUi && !viewer._activeSidebar) viewer.showSidebarNow('thumbnails');
+    if (left && start && !viewer._phoneUi && !reducedMotion()) {
+      morphing = true;
+      const toW = railWidth();
+      const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
+      if (sash) sash.style.visibility = 'hidden';
+      surface.classList.add('leaving');
+      await runMorph((e) => {
+        const insetLeft = start.left + (toW - start.left) * e;
+        left.style.width = `${Math.max(0, insetLeft - 1)}px`;
+        viewer.setDocInset({ left: Math.round(insetLeft), top: start.top });
+      });
+      left.style.width = '';
+      if (sash) sash.style.visibility = '';
+      surface.classList.remove('leaving');
+      morphing = false;
+    }
+    morphPending = false;
+    const top = viewer._docInset ? viewer._docInset.top : 0;
+    const sc = viewer.scribe.scrollContainer;
+    deactivate();
+    if (sc && top) sc.scrollTop = Math.max(0, sc.scrollTop - top);
+  };
+
+  /** Morph from the rail back to the pane for a return, the document keeping its zoom and its line. */
+  const morphIn = async () => {
+    const left = splitLeft;
+    const sc = viewer.scribe.scrollContainer;
+    if (!left || !sc || viewer._phoneUi || reducedMotion()) {
+      if (viewer._activeSidebar) viewer.hideSidebarNow();
+      syncDocInset();
+      return;
+    }
+    morphing = true;
+    const rail = viewer._panelFor(viewer._activeSidebar);
+    const fromW = rail ? railWidth() : 0;
+    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
+    const r = pvStage.getBoundingClientRect();
+    const toLeft = Math.round(r.left - rootRect.left);
+    const topInset = Math.round(r.top - rootRect.top) - viewer._topBarsHeight();
+    const hadTop = viewer._docInset ? viewer._docInset.top : 0;
+    const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
+    if (sash) sash.style.visibility = 'hidden';
+    surface.classList.add('entering');
+    left.style.width = `${Math.max(0, fromW - 1)}px`;
+    viewer.setDocInset({ left: fromW, top: topInset });
+    if (topInset !== hadTop) sc.scrollTop += topInset - hadTop;
+    const strip = viewer._sidebarTabsElem;
+    for (const el of [rail?.panelElem, strip]) {
+      if (!el) continue;
+      el.style.transition = 'opacity 200ms ease';
+      el.style.opacity = '0';
+    }
+    // A layout read commits the start styles before the class arms the fades.
+    left.getBoundingClientRect();
+    surface.classList.add('arrived');
+    await runMorph((e) => {
+      const insetLeft = fromW + (toLeft - fromW) * e;
+      left.style.width = `${Math.max(0, insetLeft - 1)}px`;
+      viewer.setDocInset({ left: Math.round(insetLeft), top: topInset });
+    });
+    left.style.width = '';
+    if (sash) sash.style.visibility = '';
+    surface.classList.remove('entering', 'arrived');
+    if (viewer._activeSidebar) viewer.hideSidebarNow();
+    for (const el of [rail?.panelElem, strip]) {
+      if (!el) continue;
+      el.style.transition = '';
+      el.style.opacity = '';
+    }
+    morphing = false;
+    syncDocInset();
+  };
+
+  /**
+   * Light the library's tab and put its form on screen.
+   * @param {{render?: boolean, attach?: boolean, morph?: boolean}} [options] - `render` rebuilds the body afterwards.
+   *   `attach` puts the split form's selection in the pane.
+   *   `morph` animates the return from a tab's document.
+   */
+  const activate = ({ render: doRender = true, attach = true, morph = false } = {}) => {
+    // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
+    for (const inst of viewer._libraryInstances) {
+      if (inst !== api && inst.visible()) inst.hide();
+    }
+    visible = true;
+    viewer._lastPinned = api;
+    positionSurface();
+    viewer._tabStrip?.setPinnedActive(true);
+    homeTab.classList.add('active');
+    const split = splitForm();
+    const fromTab = morph && split && !!viewer.doc && viewer._activeTab >= 0 && !viewer._phoneUi;
+    if (split) {
+      if (attach) {
+        // The document area keeps a tab's document from the folder, with its row marked; otherwise it shows the last selection, or nothing.
+        const tab = viewer._activeTab >= 0 ? viewer._tabs[viewer._activeTab] : null;
+        const tabEntry = tab && tab.doc === viewer.doc && tab.libraryHash && tab.libraryRelPath && manifest ? manifest.docs[tab.libraryRelPath] : null;
+        const last = preview.lastTarget();
+        if (tabEntry && tab) {
+          const pageN = viewer.scribe.state.cp.n;
+          const adopted = preview.adoptAttached({
+            relPath: tab.libraryRelPath, hash: tab.libraryHash, entry: tabEntry, pageN, query: fullTextResults ? fullTextQuery : null, title: titleOf(tab.libraryRelPath),
+          });
+          if (adopted) {
+            if (fullTextResults) results.select(tab.libraryRelPath, pageN);
+            else {
+              listPreviewPath = tab.libraryRelPath;
+              listPreviewPage = pageN;
+            }
+          }
+        } else if (!last) {
+          viewer.detachPreview();
+          setStage('empty');
+        } else if (preview.adoptAttached(last)) {
+          results.select(last.relPath, viewer.scribe.state.cp.n);
+          if (!fullTextResults) listPreviewPage = viewer.scribe.state.cp.n;
+        } else {
+          preview.show(last);
+        }
+      }
+    } else {
+      viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
+      viewer._searchBar?.closeSearch();
+    }
+    applyForm();
+    if (doRender) render({ revealSelection: true });
+    if (fromTab) morphIn();
+  };
+
+  /** Unlight the library's tab, giving a tab's document the front. */
+  const deactivate = () => {
+    visible = false;
+    closeCardMenu();
+    returnFindBar();
+    swapBarOut();
+    viewer._searchBar?.rehome();
+    viewer._tabStrip?.setPinnedActive(false);
+    homeTab.classList.remove('active');
+    surface.style.display = 'none';
+    surface.classList.remove('split');
+    viewer.setDocInset(null);
+    viewer._syncFrontSurface();
+  };
+
+  /** Light the library in its split form ahead of a document attaching as the preview, leaving the attach to the caller. */
+  const ensureLit = () => {
+    if (!visible) activate({ render: false, attach: false });
+    else applyForm();
+  };
+
+  /** Empty the pane and clear its selection. */
+  const clearPreview = () => {
+    preview.showEmpty();
+    listPreviewPath = null;
+    results.select(null, 0);
+    syncSelectionUI();
+    syncPaneHead();
+  };
+
+  pvOpenBtn.addEventListener('click', () => {
+    if (pvOpenBtn.classList.contains('disabled')) return;
+    const last = preview.lastTarget();
+    if (!last || !manifest) return;
+    const entry = manifest.docs[last.relPath];
+    if (entry) openEntry(last.relPath, entry, { pageN: viewer.scribe.state.cp.n, query: last.query ?? undefined });
+  });
 
   /**
    * This instance as the viewer and the other instances see it.
@@ -1042,36 +1490,6 @@ export function createLibraryInstance(viewer, opts) {
     viewer.toolbarElem?.classList.remove('scribe-library-bar');
     // A resize while the bar was swapped measured hidden controls, so re-shed against the restored bar.
     viewer._syncModeOverflow?.();
-  };
-
-  const showSurface = () => {
-    // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
-    for (const inst of viewer._libraryInstances) {
-      if (inst !== api && inst.visible()) inst.hide();
-    }
-    visible = true;
-    viewer._lastPinned = api;
-    positionSurface();
-    viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
-    viewer._searchBar?.closeSearch();
-    swapBarIn();
-    viewer._tabStrip?.setPinnedActive(true);
-    homeTab.classList.add('active');
-    surface.style.display = 'flex';
-    viewer._syncFrontSurface();
-    // A show that arrived while the surface was hidden only recorded its target, so replay it now that the pane has real dimensions.
-    panes.mounted()?.reshow();
-  };
-  const hideSurface = () => {
-    visible = false;
-    closeCardMenu();
-    swapBarOut();
-    viewer._tabStrip?.setPinnedActive(false);
-    homeTab.classList.remove('active');
-    surface.style.display = 'none';
-    // Leaving the library puts an open tab back in front of the reader, so the pane's document stops standing in for the active one.
-    viewer._previewDocName = null;
-    viewer._syncFrontSurface();
   };
 
   // --- Persistence helpers ------------------------------------------------
@@ -1177,7 +1595,7 @@ export function createLibraryInstance(viewer, opts) {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
-      if (entry) panes.persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
+      if (entry) preview.persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
     }
     if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
     tab.librarySaving = true;
@@ -1581,17 +1999,14 @@ export function createLibraryInstance(viewer, opts) {
     closeCardMenu();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
     results.snapshot();
-    // The body wipe detaches a kept list pane, and a detached scroll container forgets its offset.
-    const keptPane = !fullTextResults && listPreviewOn && viewMode !== 'grid' ? panes.mounted() : null;
-    const keptPaneSc = keptPane && keptPane.kind === 'list' ? keptPane.viewerRef()?.scribe.scrollContainer : null;
-    const keptPaneSpot = keptPaneSc ? { top: keptPaneSc.scrollTop, left: keptPaneSc.scrollLeft, doc: keptPane.viewerRef().doc } : null;
     body.textContent = '';
+    splitLeft = null;
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
-    listPane = null;
-    // Tearing the pane down drops the embedded viewer and its painted pages, so it survives every re-render of a view that still hosts it.
-    const pane = panes.mounted();
-    if (pane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) pane.destroy();
     if (!fullTextResults) results.dispose();
+    // Leaving the split form lets go of the document it previewed.
+    if (!splitForm() && preview.lastTarget()) preview.showEmpty();
+    applyForm();
+    syncPaneHead();
     if (!store || !manifest) {
       // Only the library can be store-less, waiting at its start screen.
       // Every other instance has its store from birth and waits only for its scan.
@@ -1690,6 +2105,8 @@ export function createLibraryInstance(viewer, opts) {
     }
 
     if (fullTextResults) {
+      body.classList.add('results-mode');
+      if (splitForm()) mountSplit('results');
       results.render();
       return;
     }
@@ -1743,12 +2160,6 @@ export function createLibraryInstance(viewer, opts) {
     if (viewMode === 'list' || viewMode === 'compact') {
       drag.setMainGrid(null, []);
       const host = renderList(shownDirs, shown, shownOthers);
-      if (keptPaneSpot && panes.mounted() === keptPane && keptPane.viewerRef()?.doc === keptPaneSpot.doc) {
-        // renderList's re-show of the same spot takes the same-place fast path, which repaints nothing, so only this write-back restores the scroll.
-        const sc = keptPane.viewerRef().scribe.scrollContainer;
-        sc.scrollTop = keptPaneSpot.top;
-        sc.scrollLeft = keptPaneSpot.left;
-      }
       if (emptyNote) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
@@ -3589,29 +4000,7 @@ export function createLibraryInstance(viewer, opts) {
   const renderList = (shownDirs, shown, shownOthers) => {
     body.classList.add('list-mode');
     const comfortable = viewMode === 'list';
-    /** @type {HTMLElement} */
-    let host = body;
-    if (listPreviewOn) {
-      body.classList.add('split-mode');
-      const split = buildPreviewSplit(700, () => listPreviewWidth, (w) => { listPreviewWidth = w; });
-      body.appendChild(split.wrap);
-      listPane = panes.ensurePane('list', 'Select a document to preview it here');
-      split.wrap.appendChild(listPane.pane);
-      const previewEntry = () => (listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null);
-      listPane.onOpen = async () => {
-        const entry = previewEntry();
-        if (!entry || !listPreviewPath) return;
-        const pane = listPane;
-        if (!pane || pane.openBtn.classList.contains('disabled')) return;
-        pane.openBtn.classList.add('disabled');
-        try {
-          await openEntry(listPreviewPath, entry, { pageN: listPreviewPage });
-        } finally {
-          pane.openBtn.classList.remove('disabled');
-        }
-      };
-      host = split.left;
-    }
+    const host = splitForm() ? mountSplit('list') : body;
     const head = document.createElement('div');
     head.className = comfortable ? 'scribe-library-lhead cols-cf' : 'scribe-library-lhead';
     const rows = document.createElement('div');
@@ -3938,7 +4327,7 @@ export function createLibraryInstance(viewer, opts) {
       colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
     });
     colsObserver.observe(host);
-    if (listPane) {
+    if (splitForm()) {
       const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
       if (entry && listPreviewPath) {
         showListPreview(listPreviewPath, entry, Math.min(listPreviewPage, (entry.pageCount || 1) - 1));
@@ -3951,20 +4340,17 @@ export function createLibraryInstance(viewer, opts) {
     return host;
   };
 
-  /** @type {?Object} Preview pane mounted by the list views, or null when absent. */
-  let listPane = null;
-
   /**
-   * Show a document in the list-view preview pane, remembering the spot across re-renders.
+   * Show a document as the list view's preview, remembering the spot across re-renders.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
    */
   const showListPreview = (relPath, entry, pageN) => {
-    if (!listPane) return;
+    if (!splitForm()) return;
     listPreviewPath = relPath;
     listPreviewPage = pageN;
-    listPane.show({
+    preview.show({
       relPath,
       hash: entry.hash,
       entry,
@@ -3976,16 +4362,17 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Show a non-PDF file in the list-view preview pane: its name and kind, and the one thing Scribe can do with it.
+   * Show a non-PDF file's plate in the pane, with its name, its kind and the one thing Scribe can do with it.
    * @param {string} relPath
    */
   const showOtherPreview = (relPath) => {
-    if (!listPane) return;
+    if (!splitForm()) return;
     listPreviewPath = relPath;
     listPreviewPage = 0;
     const name = relPath.split('/').pop() || relPath;
     const dot = name.lastIndexOf('.');
-    listPane.showPlate({
+    preview.showEmpty();
+    showPlate({
       title: name,
       badge: dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE',
       icon: FILE_SVG,
@@ -3998,19 +4385,24 @@ export function createLibraryInstance(viewer, opts) {
   // --- Opening documents --------------------------------------------------
 
   /**
-   * Route every document mutation through a dirty mark so checkpoint saves know this tab has edits.
+   * Route every document mutation through a dirty mark so checkpoint saves know the document's owner has edits.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
-   * @param {Object} tab
+   * @param {{libraryDirty?: boolean, libraryRecognized?: boolean}} target - The tab or preview record that owns the document's dirty state.
    */
-  const wrapMutators = (doc, tab) => {
+  const wrapMutators = (doc, target) => {
+    const d = /** @type {any} */ (doc);
+    // The owner can change hands, a preview's record giving way to its tab, so the wrappers read it from the document at call time.
+    d._libraryDirtyTarget = target;
+    if (d._libraryMutatorsWrapped) return;
+    d._libraryMutatorsWrapped = true;
     for (const name of MUTATOR_METHODS) {
-      const orig = /** @type {any} */ (doc)[name];
+      const orig = d[name];
       if (typeof orig !== 'function') continue;
-      /** @type {any} */ (doc)[name] = function markDirtyWrap(...args) {
-        tab.libraryDirty = true;
+      d[name] = function markDirtyWrap(...args) {
+        if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryDirty = true;
         const result = orig.apply(this, args);
         // A completed recognition is what the next checkpoint stamps as the document's recognition state.
-        if (name === 'recognize') Promise.resolve(result).then(() => { tab.libraryRecognized = true; }).catch(() => {});
+        if (name === 'recognize') Promise.resolve(result).then(() => { if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryRecognized = true; }).catch(() => {});
         return result;
       };
     }
@@ -4029,6 +4421,20 @@ export function createLibraryInstance(viewer, opts) {
     const openKey = entry.hash || relPath;
     if (openingDocs.has(openKey)) return;
     openingDocs.add(openKey);
+    /** Open the viewer's find bar on the query, landing on its first match on the opened page. */
+    const continueFind = async () => {
+      const bar = viewer._searchBar;
+      if (!target.query || !bar) return;
+      bar.searchInputElem.value = '';
+      await bar.openSearch();
+      bar.searchInputElem.value = target.query;
+      await bar.runSearch(target.query, target.pageN);
+    };
+    // A document opened from the pane is read with its own pages beside it.
+    const fromPane = visible && splitForm();
+    const afterOpen = () => {
+      if (fromPane && !target.background && !viewer._phoneUi && !viewer._activeSidebar) viewer.showSidebarNow('thumbnails');
+    };
     try {
       if (entry.portfolio) {
         // A portfolio opens as its own pinned surface, never as a page tab.
@@ -4048,14 +4454,14 @@ export function createLibraryInstance(viewer, opts) {
         }
         /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
         let doc;
-        panes.beginUserLoad();
+        preview.beginUserLoad();
         try {
           doc = await scribeLib.openDocument([pdfFile], { deferText: true });
         } catch (err) {
           viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
           return;
         } finally {
-          panes.endUserLoad();
+          preview.endUserLoad();
         }
         await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
         return;
@@ -4064,14 +4470,35 @@ export function createLibraryInstance(viewer, opts) {
       if (openIdx >= 0) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
+        // The tab's document on screen as the preview stays where the reader is; any other lands on the asked page.
+        const onScreen = viewer._tabs[openIdx].doc === viewer.doc;
+        const morph = onScreen && fromPane;
+        if (morph) morphPending = true;
         await viewer._activateTab(openIdx);
-        if (target.pageN != null) await viewer.scribe.displayPage(target.pageN, true, false);
-        if (target.query && viewer._searchBar) {
-          viewer._searchBar.openSearch();
-          viewer._searchBar.searchInputElem.value = target.query;
-          await viewer._searchBar.runSearch(target.query, target.pageN);
+        if (morph) {
+          await morphOut();
+          return;
         }
+        if (!onScreen) {
+          if (target.pageN != null) await viewer.scribe.displayPage(target.pageN, true, false);
+          await continueFind();
+        }
+        afterOpen();
         return;
+      }
+      // The library's own preview on screen becomes a tab as it stands, with nothing reloaded.
+      const shown = preview.lastTarget();
+      if (!target.background && shown && shown.relPath === relPath && viewer.doc && preview.owns(viewer.doc)) {
+        morphPending = true;
+        const tab = preview.pin(titleOf(relPath), { libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath });
+        if (tab) {
+          entry.lastOpened = Date.now();
+          saveManifestSoon();
+          preview.persistRasterWindow(tab.doc, entry, viewer.scribe.state.cp.n);
+          await morphOut();
+          return;
+        }
+        morphPending = false;
       }
       // The copy a recognition run holds counts as the live copy, so opening mid-run shows its text arriving rather than a second copy.
       const pooled = entry.hash ? (ingest?.adoptRecognizing(entry.hash) ?? sessions.takeLive(entry.hash)) : null;
@@ -4082,37 +4509,10 @@ export function createLibraryInstance(viewer, opts) {
           libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
         });
         wrapMutators(pooled, tab);
-        panes.persistRasterWindow(pooled, entry, target.pageN ?? 0);
-        if (target.query && viewer._searchBar) {
-          viewer._searchBar.openSearch();
-          viewer._searchBar.searchInputElem.value = target.query;
-          await viewer._searchBar.runSearch(target.query, target.pageN);
-        }
+        preview.persistRasterWindow(pooled, entry, target.pageN ?? 0);
+        if (!target.background) await continueFind();
+        afterOpen();
         return;
-      }
-      // A pane already showing this document hands its loaded copy to the tab, so opening never re-imports.
-      const pane = panes.mounted();
-      if (pane && pane.shownHash() === entry.hash) {
-        try {
-          await pane.finishHydration();
-          const handoffDoc = pane.takeHydratedDoc();
-          if (handoffDoc) {
-            entry.lastOpened = Date.now();
-            saveManifestSoon();
-            const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), {
-              libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
-            });
-            if (pane.takeDirty()) tab.libraryDirty = true;
-            wrapMutators(handoffDoc, tab);
-            panes.persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
-            if (target.query && viewer._searchBar) {
-              viewer._searchBar.openSearch();
-              viewer._searchBar.searchInputElem.value = target.query;
-              await viewer._searchBar.runSearch(target.query, target.pageN);
-            }
-            return;
-          }
-        } catch { /* Promotion failed; the seeded open below covers it. */ }
       }
       // Stored page dims, rasters, and sidecar pages paint immediately while the real document hydrates behind them.
       // With no raster for the landing page a seed could only paint blank pages, so the plain open below runs instead.
@@ -4120,18 +4520,18 @@ export function createLibraryInstance(viewer, opts) {
       if (!target.background && entry.pageDims && await store.readPageRaster(entry.hash, target.pageN ?? 0)) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const seed = await panes.makeSeed(relPath, entry, target.pageN ?? 0);
-        panes.beginUserLoad();
+        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0);
+        preview.beginUserLoad();
         const t0 = performance.now();
         /** @type {{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} */
         let handle;
         try {
           handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
         } catch (err) {
-          panes.endUserLoad();
+          preview.endUserLoad();
           throw err;
         }
-        handle.hydrated.catch(() => {}).finally(panes.endUserLoad);
+        handle.hydrated.catch(() => {}).finally(preview.endUserLoad);
         const tab = viewer._tabs[viewer._activeTab];
         tab.libraryOwner = instanceId;
         tab.libraryHash = entry.hash;
@@ -4142,17 +4542,14 @@ export function createLibraryInstance(viewer, opts) {
           viewer._searchBar.openSearch();
           viewer._searchBar.searchInputElem.value = target.query;
         }
+        afterOpen();
         handle.hydrated.then(() => {
           // This hydration ran from a cold open, so open-to-swap is a first paint.
           entry.firstPaintMs = Math.round(performance.now() - t0);
           saveManifestSoon();
-          panes.persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
-          // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here.
-          if (target.query && viewer._searchBar) {
-            viewer._searchBar.openSearch();
-            viewer._searchBar.searchInputElem.value = target.query;
-            viewer._searchBar.runSearch(target.query, target.pageN);
-          }
+          preview.persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
+          // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here, on the full document's matches.
+          continueFind();
         }).catch(() => {});
         return;
       }
@@ -4175,14 +4572,14 @@ export function createLibraryInstance(viewer, opts) {
       }
       /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc;
-      panes.beginUserLoad();
+      preview.beginUserLoad();
       try {
         doc = await scribeLib.openDocument(files, { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
       } finally {
-        panes.endUserLoad();
+        preview.endUserLoad();
       }
       if (doc.attachments.collection) {
         // An entry indexed before the library recorded portfolios shows its nature only now, so the manifest catches up here.
@@ -4201,12 +4598,9 @@ export function createLibraryInstance(viewer, opts) {
       entry.firstPaintMs = Math.round(performance.now() - t0);
       saveManifestSoon();
       wrapMutators(doc, tab);
-      panes.persistRasterWindow(doc, entry, target.pageN ?? 0);
-      if (target.query && viewer._searchBar) {
-        viewer._searchBar.openSearch();
-        viewer._searchBar.searchInputElem.value = target.query;
-        await viewer._searchBar.runSearch(target.query, target.pageN);
-      }
+      preview.persistRasterWindow(doc, entry, target.pageN ?? 0);
+      if (!target.background) await continueFind();
+      afterOpen();
     } finally {
       openingDocs.delete(openKey);
     }
@@ -4239,8 +4633,7 @@ export function createLibraryInstance(viewer, opts) {
       tab.libraryDirty = false;
       viewer._closeTab(i);
     }
-    const pane = panes.mounted();
-    if (pane && pane.shownHash() === hash) pane.showEmpty();
+    if (preview.shownHash() === hash) clearPreview();
     sessions.invalidate(hash);
   };
 
@@ -4407,7 +4800,7 @@ export function createLibraryInstance(viewer, opts) {
     const s = store;
     storageOpen = true;
     storageSizes = null;
-    if (!visible) showSurface();
+    if (!visible) activate({ render: false });
     render();
     s.measure().then((sizes) => {
       if (store !== s || !storageOpen) return;
@@ -4479,7 +4872,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!choice || store !== s || !manifest) return;
     if (choice.keep) {
       ingest?.cancel();
-      panes.mounted()?.destroy();
+      preview.destroy();
       sessions.reset();
       await s.deleteCaches();
       index = new LibraryIndex();
@@ -4800,7 +5193,7 @@ export function createLibraryInstance(viewer, opts) {
   // --- Subsystems ---------------------------------------------------------
 
   // Constructed here rather than beside their first use, because they capture `render`, `openCardMenu`, and `openEntry` by value.
-  const panes = createPreviewPanes({
+  const preview = createPreview({
     viewer,
     sessions,
     getStore: () => store,
@@ -4808,12 +5201,16 @@ export function createLibraryInstance(viewer, opts) {
     onRastersStored: () => results.repump(),
     onSidecarSaved: (hash, doc) => { afterSidecarSaved(hash, doc, false); },
     saveManifestSoon,
+    ensureLit,
+    onState: (kind, text) => setStage(kind, text),
+    trackEdits: wrapMutators,
   });
 
   const results = createResultsView({
-    body,
+    host: () => (splitForm() && splitLeft ? splitLeft : body),
     sessions,
-    panes,
+    preview,
+    selectOpens: () => !splitForm(),
     getStore: () => store,
     getManifest: () => manifest,
     getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults),
@@ -5259,7 +5656,7 @@ export function createLibraryInstance(viewer, opts) {
             viewer._applyTabResourcePolicy();
           }
         }
-        if (toLibrary && !visible && !destroyed) showSurface();
+        if (toLibrary && !visible && !destroyed) activate({ render: false });
       } finally {
         restoringTabs = false;
       }
@@ -5453,7 +5850,7 @@ export function createLibraryInstance(viewer, opts) {
       viewer._showToast(`Couldn't find “${tab?.name ?? 'the document'}” in ${store.root.name}.`);
       return;
     }
-    if (!visible) showSurface();
+    if (!visible) activate({ render: false, attach: false });
     storageOpen = false;
     const previewing = listPreviewOn && viewMode !== 'grid';
     if (previewing) {
@@ -5474,15 +5871,14 @@ export function createLibraryInstance(viewer, opts) {
     selAnchor = relPath;
     render({ revealSelection: true });
     // A render that reconciles the list in place leaves the pane alone, so the preview is asked for directly.
-    if (previewing && listPane) showListPreview(relPath, entry, 0);
+    if (previewing) showListPreview(relPath, entry, 0);
   };
 
   // --- Event wiring -------------------------------------------------------
 
   homeTab.addEventListener('click', () => {
     if (visible) return;
-    showSurface();
-    render({ revealSelection: true });
+    activate({ morph: true });
   });
 
   /**
@@ -5521,7 +5917,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!discardOnClose) store.writeSearchIndex(index.serialize()).catch(() => {});
     }
 
-    panes.mounted()?.destroy();
+    preview.destroy();
     sessions.reset();
     results.dispose();
     selectedPaths.clear();
@@ -5566,7 +5962,7 @@ export function createLibraryInstance(viewer, opts) {
       return;
     }
     await closeFolder();
-    showSurface();
+    activate({ render: false });
     await openLibrary(s);
   };
   /**
@@ -5591,7 +5987,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     await closeFolder();
     await LibraryStore.persistHandle(handle);
-    showSurface();
+    activate({ render: false });
     await openLibrary(s);
   };
   // Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
@@ -6017,13 +6413,13 @@ export function createLibraryInstance(viewer, opts) {
   if (ownsEditHooks) {
     // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty.
     viewer.scribe.onAnnotationsEdited = () => {
-      const tab = viewer._tabs[viewer._activeTab];
-      if (tab?.libraryHash) tab.libraryDirty = true;
+      const target = /** @type {any} */ (viewer.doc)?._libraryDirtyTarget;
+      if (target) target.libraryDirty = true;
     };
-    // A turn can settle after a tab switch, so this hook resolves the tab from the document rather than the active tab.
+    // A turn can settle after a tab switch, so this hook resolves the owner from the document rather than the active tab.
     viewer.onAssistantHistoryEdited = (doc) => {
-      const tab = viewer._tabs.find((t) => t.doc === doc);
-      if (tab?.libraryHash) tab.libraryDirty = true;
+      const target = /** @type {any} */ (doc)?._libraryDirtyTarget;
+      if (target) target.libraryDirty = true;
     };
   }
   const autosaveTimer = window.setInterval(() => {
@@ -6037,18 +6433,21 @@ export function createLibraryInstance(viewer, opts) {
   };
   window.addEventListener('pagehide', onPageHide);
 
-  // Pointer and focus both feed the flag, since clicks on the pane's page land on non-focusable elements and leave focus where it was.
-  let paneEngaged = false;
+  // Pointer and focus both feed the flag, since clicks on the page land on non-focusable elements and leave focus where it was.
+  let docEngaged = false;
   const trackEngagement = (e) => {
-    const pane = panes.mounted();
-    paneEngaged = !!(pane && e.target instanceof Node && pane.pane.contains(e.target));
+    const sc = viewer.scribe.scrollContainer;
+    docEngaged = !!(sc && e.target instanceof Node && (sc.contains(e.target) || viewer._searchBar?.findGroupElem.contains(e.target)));
   };
-  surface.addEventListener('pointerdown', trackEngagement, true);
-  surface.addEventListener('focusin', trackEngagement, true);
+  viewer.pdfViewerElem.addEventListener('pointerdown', trackEngagement, true);
+  viewer.pdfViewerElem.addEventListener('focusin', trackEngagement, true);
 
   const focusSearch = () => {
-    const pane = panes.mounted();
-    if (paneEngaged && pane?.openFind()) return;
+    // A reader working in the previewed document gets its find, not the library's search.
+    if (docEngaged && splitForm() && viewer.doc && viewer._searchBar) {
+      viewer._searchBar.openSearch();
+      return;
+    }
     searchInput.focus();
     searchInput.select();
   };
@@ -6075,7 +6474,7 @@ export function createLibraryInstance(viewer, opts) {
   // Document-level like the find shortcut, so it works with focus anywhere on the surface, never inside a text field.
   /** @param {KeyboardEvent} e */
   const onSelectAll = (e) => {
-    if (!visible || paneEngaged) return;
+    if (!visible || docEngaged) return;
     if (!((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey)) return;
     if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     const paths = new Set([...body.querySelectorAll('.scribe-library-card[data-rel-path], .scribe-library-row[data-rel-path]')]
@@ -6095,6 +6494,7 @@ export function createLibraryInstance(viewer, opts) {
     libraryHash: opts.libraryHash ?? null,
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
+    covering: () => visible && !splitForm(),
     focusSearch,
     ...(isLibrary ? {
       connected: () => !!store,
@@ -6111,21 +6511,23 @@ export function createLibraryInstance(viewer, opts) {
     ...(opts.onClose ? { close: opts.onClose } : {}),
     show: () => {
       if (visible) return;
-      showSurface();
-      render({ revealSelection: true });
+      activate({ morph: true });
     },
     hide: () => {
-      if (visible) hideSurface();
+      if (visible) deactivate();
+    },
+    clearPreview,
+    pageChanged: () => {
+      if (visible && pvHead.style.display !== 'none') syncPaneNav();
     },
     docOpened: () => {
-      if (visible) hideSurface();
+      // An Open from the pane leaves the surface up for the morph that follows it.
+      if (visible && !morphPending) deactivate();
+      preview.displaced();
       writeResumeRecord();
     },
     emptied: () => {
-      if (!visible) {
-        showSurface();
-        render({ revealSelection: true });
-      }
+      if (!visible) activate();
       writeResumeRecord();
     },
     saveTabIfDirty,
@@ -6153,7 +6555,7 @@ export function createLibraryInstance(viewer, opts) {
 
   (async () => {
     if (!isLibrary) {
-      showSurface();
+      activate({ render: false });
       render();
       await openLibrary(/** @type {LibraryStore} */ (/** @type {unknown} */ (opts.store)));
       if (destroyed) return;
@@ -6189,7 +6591,7 @@ export function createLibraryInstance(viewer, opts) {
       const s = await LibraryStore.forHandle(handle);
       if ((await s.permissionState()) === 'granted') {
         if (viewer._tabs.length === 0 && !viewerRestorePending) {
-          showSurface();
+          activate({ render: false });
           render();
         }
         await openLibrary(s, { resumed: true });
@@ -6197,7 +6599,7 @@ export function createLibraryInstance(viewer, opts) {
         if (viewerRestorePending && !destroyed && viewer._tabs.length === 0) {
           if (viewer.dropZone) viewer.dropZone.style.display = '';
           if (!visible) {
-            showSurface();
+            activate({ render: false });
             render();
           }
         }
@@ -6207,7 +6609,7 @@ export function createLibraryInstance(viewer, opts) {
     if (viewer._tabs.length === 0) {
       // No library opens on this path, so the restore never runs and the drop-zone hold is released here.
       if (viewerRestorePending && viewer.dropZone) viewer.dropZone.style.display = '';
-      showSurface();
+      activate({ render: false });
       render();
     }
   })();
@@ -6216,7 +6618,7 @@ export function createLibraryInstance(viewer, opts) {
     destroy() {
       destroyed = true;
       drag.cancel();
-      if (visible) hideSurface();
+      if (visible) deactivate();
       releaseFolderLock?.();
       releaseFolderLock = null;
       closeCardMenu();
@@ -6254,10 +6656,14 @@ export function createLibraryInstance(viewer, opts) {
         indexTimer = null;
         if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
       }
-      panes.mounted()?.destroy();
+      preview.destroy();
       sessions.reset();
       results.dispose();
       surface.remove();
+      stageObserver.disconnect();
+      pane.remove();
+      viewer.pdfViewerElem.removeEventListener('pointerdown', trackEngagement, true);
+      viewer.pdfViewerElem.removeEventListener('focusin', trackEngagement, true);
       barTitle?.remove();
       barControls?.remove();
       if (viewer._tabStrip) {
