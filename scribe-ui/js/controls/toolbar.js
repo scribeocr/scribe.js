@@ -152,6 +152,13 @@ export const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="
  */
 const appMenuIcon = (inner) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
+/**
+ * Wrap SVG shape markup in a stroked icon matching the app's 24-grid line icons, for 24px buttons.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
 export const EDIT_PAGES_SVG = modeIcon('<rect x="2.5" y="2.5" width="5" height="7"/><rect x="9.5" y="7.5" width="5" height="7"/>'
   + '<path d="M9.5 3.5H13M7.5 13.5H4"/><path d="M13 2l2 1.5-2 1.5zM4 12l-2 1.5 2 1.5z" fill="currentColor" stroke="none"/>');
 
@@ -161,6 +168,8 @@ export const RECOGNIZE_SVG = modeIcon('<path d="M2.5 5.5v-2a1 1 0 0 1 1-1h2M11.5
 
 const NAV_PREV_SVG = barIcon('<path d="M17 7l-7 7 7 7"/>');
 const NAV_NEXT_SVG = barIcon('<path d="M11 7l7 7-7 7"/>');
+const TAB_PREV_SVG = lineIcon('<path d="M15 6l-6 6 6 6"/>');
+const TAB_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 
 /**
  * Build prev/next buttons and the page-number input group, wired to `scribe.displayPage`.
@@ -629,6 +638,7 @@ export function createAppMenu(rootClass) {
 const DRAG_THRESHOLD = 5;
 const AUTOSCROLL_EDGE = 24;
 const AUTOSCROLL_SPEED = 6;
+const TAB_FADE_WIDTH = 24;
 
 /**
  * Where a dragged tab would land: a region of the strip and a position among that region's other tabs.
@@ -698,19 +708,40 @@ export function createTabStrip({
 
   const laneElem = document.createElement('div');
   laneElem.className = 'scribe-tab-lane';
+  // The fades sit on the lane's own edges, so neither can run under a pinned tab or an arrow.
+  const laneWrap = document.createElement('div');
+  laneWrap.className = 'scribe-tab-lane-wrap';
+  const fadeLeft = document.createElement('span');
+  fadeLeft.className = 'scribe-tab-fade left';
+  const fadeRight = document.createElement('span');
+  fadeRight.className = 'scribe-tab-fade right';
+  laneWrap.append(fadeLeft, laneElem, fadeRight);
 
   /**
    * @param {string} icon
    * @param {string} label
    * @param {number} dir
+   * @returns {{wrap: HTMLDivElement, paddle: HTMLSpanElement}}
    */
   const makePaddle = (icon, label, dir) => {
+    const wrap = document.createElement('div');
+    wrap.className = `scribe-tab-paddle-wrap ${dir < 0 ? 'left' : 'right'}`;
     const paddle = document.createElement('span');
     paddle.className = 'scribe-tab-paddle';
-    paddle.innerHTML = icon;
+    paddle.innerHTML = `<span class="scribe-tab-icon">${icon}</span>`;
     paddle.role = 'button';
+    paddle.tabIndex = 0;
+    paddle.title = label;
     paddle.ariaLabel = label;
+    // As with the toolbar's buttons, a press never takes focus from the document.
+    paddle.addEventListener('mousedown', (event) => event.preventDefault());
+    paddle.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      paddle.click();
+    });
     paddle.addEventListener('click', () => {
+      if (paddle.classList.contains('disabled')) return;
       // iOS Safari does not clamp smooth programmatic scrolls, so edge taps would strand the lane on blank space past the tabs.
       const target = Math.max(0, Math.min(
         laneElem.scrollWidth - laneElem.clientWidth,
@@ -718,17 +749,14 @@ export function createTabStrip({
       ));
       laneElem.scrollTo({ left: target });
     });
-    return paddle;
+    const sep = document.createElement('span');
+    sep.className = 'scribe-tab-paddle-sep';
+    wrap.append(...(dir < 0 ? [paddle, sep] : [sep, paddle]));
+    return { wrap, paddle };
   };
-  const fadeLeft = document.createElement('span');
-  fadeLeft.className = 'scribe-tab-fade left';
-  const fadeRight = document.createElement('span');
-  fadeRight.className = 'scribe-tab-fade right';
-  tabStripElem.appendChild(makePaddle(NAV_PREV_SVG, 'Scroll tabs left', -1));
-  tabStripElem.appendChild(fadeLeft);
-  tabStripElem.appendChild(laneElem);
-  tabStripElem.appendChild(fadeRight);
-  tabStripElem.appendChild(makePaddle(NAV_NEXT_SVG, 'Scroll tabs right', 1));
+  const prev = makePaddle(TAB_PREV_SVG, 'Scroll tabs left', -1);
+  const next = makePaddle(TAB_NEXT_SVG, 'Scroll tabs right', 1);
+  tabStripElem.append(prev.wrap, laneWrap, next.wrap);
 
   // A vertical wheel scrolls the lane horizontally (trackpad horizontal deltas already work natively).
   laneElem.addEventListener('wheel', (event) => {
@@ -745,10 +773,29 @@ export function createTabStrip({
   /** @type {?HTMLSpanElement} */
   let gapElem = null;
 
+  const syncEdges = () => {
+    const overflowing = tabStripElem.classList.contains('overflowing');
+    const hiddenLeft = overflowing && laneElem.scrollLeft > 0.5;
+    const hiddenRight = overflowing && laneElem.scrollLeft < laneElem.scrollWidth - laneElem.clientWidth - 0.5;
+    prev.paddle.classList.toggle('disabled', !hiddenLeft);
+    prev.paddle.ariaDisabled = String(!hiddenLeft);
+    next.paddle.classList.toggle('disabled', !hiddenRight);
+    next.paddle.ariaDisabled = String(!hiddenRight);
+    fadeLeft.classList.toggle('on', hiddenLeft);
+    fadeRight.classList.toggle('on', hiddenRight);
+    const laneRect = laneElem.getBoundingClientRect();
+    const groupRect = groupElem && groupElem.childElementCount > 0 ? groupElem.getBoundingClientRect() : null;
+    // An arrow carries the folder's bar only while folder tabs sit at its edge of the lane.
+    prev.wrap.classList.toggle('group-bridge', !!groupRect && groupRect.right > laneRect.left + 1);
+    next.wrap.classList.toggle('group-bridge', !!groupRect && groupRect.right > laneRect.right + 1);
+  };
+  laneElem.addEventListener('scroll', syncEdges, { passive: true });
+
   const syncOverflow = () => {
-    tabStripElem.classList.toggle('overflowing', laneElem.scrollWidth > laneElem.clientWidth + 1);
-    // The left fade's CSS offset reads this width, so it starts at the lane instead of under the pinned tab.
-    if (pinnedWrap) tabStripElem.style.setProperty('--scribe-tab-pin-w', `${pinnedWrap.offsetWidth}px`);
+    // Measured against the room the tabs have without the arrows, so the arrows never keep themselves shown.
+    const room = tabStripElem.clientWidth - (pinnedWrap ? pinnedWrap.offsetWidth : 0);
+    tabStripElem.classList.toggle('overflowing', laneElem.scrollWidth > room + 1);
+    syncEdges();
   };
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncOverflow).observe(laneElem);
 
@@ -781,7 +828,6 @@ export function createTabStrip({
     if (pinnedWrap.children.length <= 1) {
       pinnedWrap.remove();
       pinnedWrap = null;
-      tabStripElem.style.removeProperty('--scribe-tab-pin-w');
     }
     syncOverflow();
   }
@@ -1005,8 +1051,19 @@ export function createTabStrip({
       /** @type {HTMLSpanElement} */ (gapElem).classList.toggle('empty', groupedN === 0 || groupedN === tabs.length);
     }
     syncOverflow();
+    // The active tab scrolls fully into view, clear of the fades.
     const activeElem = laneElem.querySelector(`[data-tab-index="${activeIndex}"]`);
-    if (activeElem) activeElem.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (activeElem && laneElem.clientWidth) {
+      const tabElems = laneElem.querySelectorAll('.scribe-tab');
+      const laneRect = laneElem.getBoundingClientRect();
+      const rect = activeElem.getBoundingClientRect();
+      const minLeft = laneRect.left + (activeElem === tabElems[0] ? 0 : TAB_FADE_WIDTH);
+      const maxRight = laneRect.right - (activeElem === tabElems[tabElems.length - 1] ? 0 : TAB_FADE_WIDTH);
+      const delta = rect.left < minLeft ? rect.left - minLeft : Math.max(0, rect.right - maxRight);
+      if (delta) {
+        laneElem.scrollTo({ left: Math.max(0, Math.min(laneElem.scrollWidth - laneElem.clientWidth, laneElem.scrollLeft + delta)) });
+      }
+    }
   }
 
   // --- Drag to reorder ---
@@ -1319,13 +1376,6 @@ export function createTabStrip({
     tabStripElem, render, addPinnedTab, removePinnedTab, pinnedCount, setPinnedActive, showTabNote,
   };
 }
-
-/**
- * Wrap SVG shape markup in a stroked icon matching the app's 24-grid line icons, for 24px buttons.
- * @param {string} inner - Path/shape markup.
- * @returns {string} The SVG markup for the icon.
- */
-const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 const SEARCH_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5"/>');
 // Each stepper carries two chevrons, and CSS shows the 24-grid one in the desktop find bar and the 28-grid one in the phone find bar.
@@ -2697,33 +2747,56 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       .${r} .scribe-tab-lane { scroll-behavior: auto; }
     }
 
+    .${r} .scribe-tab-paddle-wrap {
+      flex: none;
+      display: none;
+      align-items: center;
+      gap: 5px;
+      padding: 0 5px;
+      position: relative;
+    }
+    .${r} .scribe-tab-paddle-wrap.left { padding-right: 0; }
+    .${r} .scribe-tab-paddle-wrap.right { padding-left: 0; }
+    .${r} .scribe-tab-strip.overflowing .scribe-tab-paddle-wrap { display: flex; }
+    .${r} .scribe-tab-paddle-sep { flex: none; width: 1px; height: 16px; background: var(--scribe-line-strong); }
     .${r} .scribe-tab-paddle {
       flex: none;
-      width: 26px;
-      display: none;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       color: var(--scribe-ink-2);
       cursor: pointer;
       user-select: none;
-      z-index: 2;
+      outline: none;
+      -webkit-tap-highlight-color: transparent;
     }
-    .${r} .scribe-tab-paddle svg { width: 16px; height: 16px; }
     .${r} .scribe-tab-paddle:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
-    .${r} .scribe-tab-strip.overflowing .scribe-tab-paddle { display: flex; }
+    .${r} .scribe-tab-paddle:active { color: var(--scribe-ink); background: var(--scribe-plate); }
+    .${r} .scribe-tab-paddle:focus-visible { outline: 2px solid var(--scribe-accent-ring); }
+    .${r} .scribe-tab-paddle.disabled { color: var(--scribe-ink-3); opacity: .45; background: none; cursor: default; pointer-events: none; }
 
+    .${r} .scribe-tab-lane-wrap { position: relative; display: flex; flex: 1 1 auto; min-width: 0; }
     .${r} .scribe-tab-fade {
       position: absolute;
       top: 0;
       bottom: 1px;
-      width: 26px;
+      width: ${TAB_FADE_WIDTH}px;
       pointer-events: none;
-      display: none;
+      opacity: 0;
+      transition: opacity .12s ease;
       z-index: 1;
     }
-    .${r} .scribe-tab-fade.left { left: calc(26px + var(--scribe-tab-pin-w, 0px)); background: linear-gradient(90deg, var(--scribe-canvas), transparent); }
-    .${r} .scribe-tab-fade.right { right: 26px; background: linear-gradient(-90deg, var(--scribe-canvas), transparent); }
-    .${r} .scribe-tab-strip.overflowing .scribe-tab-fade { display: block; }
+    .${r} .scribe-tab-fade.left { left: 0; background: linear-gradient(90deg, var(--scribe-canvas), transparent); }
+    .${r} .scribe-tab-fade.right { right: 0; background: linear-gradient(-90deg, var(--scribe-canvas), transparent); }
+    .${r} .scribe-tab-fade.on { opacity: 1; }
+    /* The folder's bar runs solid through the fade. */
+    .${r} .scribe-tab-strip.grouped .scribe-tab-fade { top: 2px; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-tab-fade { transition: none; }
+    }
 
     .${r} .scribe-tab {
       display: inline-flex;
@@ -2761,7 +2834,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-tab-strip.grouped .scribe-tab-pin-sep { display: none; }
     .${r} .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-group { position: relative; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head::before, .${r} .scribe-tab-group::before {
+    .${r} .scribe-tab-pin.scribe-tab-group-head::before, .${r} .scribe-tab-group::before, .${r} .scribe-tab-paddle-wrap.group-bridge::before {
       content: '';
       position: absolute;
       left: 0;
