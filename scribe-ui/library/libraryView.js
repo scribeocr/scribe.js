@@ -1502,6 +1502,10 @@ export function createLibraryInstance(viewer, opts) {
             else {
               listPreviewPath = tab.libraryRelPath;
               listPreviewPage = pageN;
+              // Without this, rows the reader selected before leaving the library stay marked while the pane shows another document.
+              selectedPaths.clear();
+              selectedPaths.add(tab.libraryRelPath);
+              selAnchor = tab.libraryRelPath;
             }
           }
         } else if (!last) {
