@@ -21,12 +21,8 @@ import {
 import { pulseTable, setActiveTable } from '../viewerLayout.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 import { createDropdown } from './dropdown.js';
+import { barIcon } from './icons.js';
 
-// The head path (`.scribe-hl-tip`) is filled with the selected highlight color to preview the active swatch (see `setTipColor`), while the base bar underneath stays the default ink color.
-const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 20 20" fill="currentColor">
-<path class="scribe-hl-tip" d="M6 13V4.5A2 2 0 0 1 8.9 2.7L13 4.8a2 2 0 0 1 1 1.7V13Z"/>
-<path d="M3 18l.6-1.8A1.7 1.7 0 0 1 5.2 15h9.6a1.7 1.7 0 0 1 1.6 1.2L17 18Z"/>
-</svg>`;
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
 // eslint-disable-next-line max-len
@@ -76,7 +72,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
    */
   let openCommentEditor = null;
 
-  const highlightElem = makeIconButton('Highlight', HIGHLIGHT_SVG);
+  const highlightElem = makeIconButton('Highlight', barIcon('highlighter'));
   const tipPath = highlightElem.querySelector('.scribe-hl-tip');
   const setTipColor = (c) => { if (tipPath && c) tipPath.style.fill = c; };
   setTipColor(highlightColor);

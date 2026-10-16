@@ -10,6 +10,7 @@ import {
 } from './menuStyles.js';
 import { createDropdown } from './dropdown.js';
 import { shortcutLabel } from '../platform.js';
+import { barIcon } from './icons.js';
 
 /**
  * Build a round icon button matching the control stylesheet's `.cr-icon-button`.
@@ -105,7 +106,8 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   toolbarElem.style.zIndex = '40';
   toolbarElem.style.lineHeight = `${iconSize}px`;
   toolbarElem.style.backgroundColor = 'var(--scribe-surface)';
-  toolbarElem.style.borderBottom = '1px solid var(--scribe-line)';
+  // The bottom rule is an inset shadow because a border would leave the default bar 39px to center its 28px buttons in, putting every icon half a pixel low.
+  toolbarElem.style.boxShadow = 'inset 0 -1px 0 var(--scribe-line)';
 
   const toolbarElemStart = document.createElement('div');
   toolbarElemStart.style.flex = '1';
@@ -137,14 +139,6 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
 const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 /**
- * Wrap SVG in a stroked icon for icon buttons at the default toolbar height, where they are 28px.
- * One unit of its 28-unit grid is one pixel, so 2-unit strokes centered on whole units cover whole pixels.
- * @param {string} inner - Path/shape markup.
- * @returns {string} The SVG markup for the icon.
- */
-export const barIcon = (inner) => `<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
-
-/**
  * Wrap SVG in a stroked icon for the app menu's 16px slots.
  * One unit of its 16-unit grid is one pixel, so 1-unit strokes centered on half units cover whole pixels.
  * @param {string} inner - Path/shape markup.
@@ -166,8 +160,6 @@ export const EDIT_PAGES_SVG = modeIcon('<rect x="2.5" y="2.5" width="5" height="
 export const RECOGNIZE_SVG = modeIcon('<path d="M2.5 5.5v-2a1 1 0 0 1 1-1h2M11.5 2.5h2a1 1 0 0 1 1 1v2M14.5 11.5v2a1 1 0 0 1-1 1h-2M5.5 14.5h-2a1 1 0 0 1-1-1v-2"/>'
   + '<path d="M6.5 10.5v-4h4v4M6.5 8.5h4"/>');
 
-const NAV_PREV_SVG = barIcon('<path d="M17 7l-7 7 7 7"/>');
-const NAV_NEXT_SVG = barIcon('<path d="M11 7l7 7-7 7"/>');
 const TAB_PREV_SVG = lineIcon('<path d="M15 6l-6 6 6 6"/>');
 const TAB_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 
@@ -177,8 +169,8 @@ const TAB_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
  * @returns {{ prevElem: HTMLSpanElement, nextElem: HTMLSpanElement, pageInputGroup: HTMLDivElement, pageNumElem: HTMLInputElement, pageCountElem: HTMLSpanElement }}
  */
 export function createPageNav(scribe) {
-  const prevElem = makeIconButton('Previous page', NAV_PREV_SVG);
-  const nextElem = makeIconButton('Next page', NAV_NEXT_SVG);
+  const prevElem = makeIconButton('Previous page', barIcon('prev'));
+  const nextElem = makeIconButton('Next page', barIcon('next'));
   delete prevElem.dataset.tip;
   delete nextElem.dataset.tip;
 
@@ -195,13 +187,14 @@ export function createPageNav(scribe) {
   pageNumElem.className = 'form-control btn-sm';
   pageNumElem.name = 'pageNum';
   pageNumElem.autocomplete = 'off';
-  pageNumElem.style.width = '3.4em';
+  // Widths in this group are whole pixels, or every control after it in the centered cluster lands on a fraction.
+  pageNumElem.style.width = '44px';
   pageNumElem.style.display = 'inline-block';
   pageNumElem.style.fontVariantNumeric = 'tabular-nums';
 
   const pageCountElem = document.createElement('span');
   pageCountElem.style.display = 'inline-block';
-  pageCountElem.style.minWidth = '2.6em';
+  pageCountElem.style.minWidth = '34px';
   pageCountElem.style.textAlign = 'left';
   pageCountElem.style.fontSize = '13px';
   pageCountElem.style.fontVariantNumeric = 'tabular-nums';
@@ -239,9 +232,6 @@ export function createPageNav(scribe) {
   };
 }
 
-export const ZOOM_OUT_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5M10 13h6"/>');
-export const ZOOM_IN_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5M13 10v6M10 13h6"/>');
-
 /**
  * Build the zoom-out/zoom-in control group, wired to `scribe.zoom` about the stage center.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -251,8 +241,8 @@ export function createZoomControls(scribe) {
   const zoomControls = document.createElement('span');
   zoomControls.style.display = 'inline-flex';
   zoomControls.style.alignItems = 'center';
-  const zoomOutElem = makeIconButton('Zoom out', ZOOM_OUT_SVG);
-  const zoomInElem = makeIconButton('Zoom in', ZOOM_IN_SVG);
+  const zoomOutElem = makeIconButton('Zoom out', barIcon('zoomOut'));
+  const zoomInElem = makeIconButton('Zoom in', barIcon('zoomIn'));
 
   zoomControls.appendChild(zoomOutElem);
   zoomControls.appendChild(zoomInElem);
@@ -263,12 +253,6 @@ export function createZoomControls(scribe) {
   return { zoomControls, zoomInElem, zoomOutElem };
 }
 
-export const ROTATE_LEFT_SVG = barIcon('<path d="M6.2 9.5A9 9 0 1 0 14 5"/><path d="M10 5l4-2v4Z" fill="currentColor" stroke="none"/>');
-export const ROTATE_RIGHT_SVG = barIcon('<path d="M21.8 9.5A9 9 0 1 1 14 5"/><path d="M18 5l-4-2v4Z" fill="currentColor" stroke="none"/>');
-
-export const UNDO_SVG = barIcon('<path d="M9 7 5 11l4 4"/><path d="M5 11h11a6 6 0 0 1 0 12h-5"/>');
-export const REDO_SVG = barIcon('<path d="M19 7l4 4-4 4"/><path d="M23 11H12a6 6 0 0 0 0 12h5"/>');
-
 /**
  * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -276,8 +260,11 @@ export const REDO_SVG = barIcon('<path d="M19 7l4 4-4 4"/><path d="M23 11H12a6 6
  */
 export function createRotateControls(scribe) {
   const rotateControls = document.createElement('span');
-  const rotateLeftElem = makeIconButton('Rotate left', ROTATE_LEFT_SVG);
-  const rotateRightElem = makeIconButton('Rotate right', ROTATE_RIGHT_SVG);
+  // Laid out like the zoom pair, by class because the overflow fit clears the inline display to show the pair again.
+  // As an inline span its buttons would ride the text baseline, a quarter pixel below the others.
+  rotateControls.classList.add('scribe-rotate-pair');
+  const rotateLeftElem = makeIconButton('Rotate left', barIcon('rotateLeft'));
+  const rotateRightElem = makeIconButton('Rotate right', barIcon('rotateRight'));
 
   rotateControls.appendChild(rotateLeftElem);
   rotateControls.appendChild(rotateRightElem);
@@ -486,8 +473,6 @@ export function createOpenControls(scribe, rootElem, onFiles) {
   return { openControls, openElem, installOpenShortcut };
 }
 
-const MENU_SVG = barIcon('<path d="M5 8h18M5 14h18M5 20h18"/>');
-
 /**
  * Build the far-left app menu: a hamburger button whose dropdown collects document- and app-level actions.
  * The viewer seeds it with its own actions (Open, Print), and the returned extension API lets the editor append more (Combine, Split, a dark-mode toggle) without knowing the menu internals.
@@ -505,7 +490,7 @@ export function createAppMenu(rootClass) {
   const menuWrap = document.createElement('span');
   menuWrap.className = 'scribe-app-menu-wrap';
 
-  const triggerElem = makeIconButton('Menu', MENU_SVG);
+  const triggerElem = makeIconButton('Menu', barIcon('menu'));
   const menuElem = document.createElement('div');
   menuElem.className = 'scribe-app-menu';
   menuElem.style.display = 'none';
@@ -1377,14 +1362,6 @@ export function createTabStrip({
   };
 }
 
-const SEARCH_SVG = barIcon('<circle cx="13" cy="13" r="7"/><path d="M18 18l5 5"/>');
-// Each stepper carries two chevrons, and CSS shows the 24-grid one in the desktop find bar and the 28-grid one in the phone find bar.
-const SEARCH_PREV_GLYPHS = `<span class="scribe-search-glyph">${lineIcon('<path d="M7 14.5l5-5 5 5"/>')}</span>`
-  + `<span class="scribe-search-glyph-phone">${barIcon('<path d="M7 17l7-7 7 7"/>')}</span>`;
-const SEARCH_NEXT_GLYPHS = `<span class="scribe-search-glyph">${lineIcon('<path d="M7 9.5l5 5 5-5"/>')}</span>`
-  + `<span class="scribe-search-glyph-phone">${barIcon('<path d="M7 11l7 7 7-7"/>')}</span>`;
-const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
-
 /**
  * Build the find/search bar and its behaviors.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -1398,7 +1375,7 @@ const CLOSE_SVG = barIcon('<path d="M7 7l14 14M21 7 7 21"/>');
  * }}
  */
 export function createSearchBar(scribe, rootElem) {
-  const searchElem = makeIconButton('Find', SEARCH_SVG);
+  const searchElem = makeIconButton('Find', barIcon('find'));
   searchElem.dataset.tipKey = shortcutLabel('F');
 
   const findGroupElem = document.createElement('span');
@@ -1428,12 +1405,12 @@ export function createSearchBar(scribe, rootElem) {
   const searchSepElem = document.createElement('span');
   searchSepElem.className = 'scribe-search-sep';
 
-  const searchPrevElem = makeIconButton('Previous match', SEARCH_PREV_GLYPHS);
-  const searchNextElem = makeIconButton('Next match', SEARCH_NEXT_GLYPHS);
+  const searchPrevElem = makeIconButton('Previous match', barIcon('stepUp'));
+  const searchNextElem = makeIconButton('Next match', barIcon('stepDown'));
   searchPrevElem.classList.add('scribe-search-step');
   searchNextElem.classList.add('scribe-search-step');
   // The desktop find bar closes from the Find button or Esc, so only the phone find bar, with no Esc key, shows this control.
-  const searchCloseElem = makeIconButton('Close', CLOSE_SVG);
+  const searchCloseElem = makeIconButton('Close', barIcon('close'));
   searchCloseElem.classList.add('scribe-search-close');
   for (const el of [searchPrevElem, searchNextElem, searchCloseElem]) delete el.dataset.tip;
 
@@ -1766,6 +1743,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       max-width: 100%;
       max-height: 100%;
     }
+    .${r}.scribe-coarse .scribe-bar-glyph { width: calc(var(--scribe-icon-size, 32px) - 2px); height: calc(var(--scribe-icon-size, 32px) - 2px); }
 
     .${r} .cr-icon-button {
       -webkit-tap-highlight-color: transparent;
@@ -2985,6 +2963,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       justify-content: center;
       color: var(--scribe-ink-3);
     }
+    .${r} .scribe-hl-split .scribe-hl-caret svg { margin: -1px 0 0 -1px; }
     /* Slim is fine for a mouse; a finger needs the platform-minimum width on the dropdown half too. */
     .${r}.scribe-coarse .scribe-hl-split .scribe-hl-caret { width: 44px; }
 
@@ -3386,8 +3365,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       height: 17px;
     }
 
-    /* Margins, not text spaces: a leading space in the flex row collapses asymmetrically. */
-    .${r} .scribe-page-sep { margin: 0 4px; }
+    /* A fixed width, not text spaces: a leading space in the flex row collapses asymmetrically. */
+    .${r} .scribe-page-sep { width: 12px; text-align: center; }
+    .${r} .scribe-rotate-pair { display: inline-flex; align-items: center; }
 
     .${r}-toolbar input {
       background: var(--scribe-sunken);
@@ -3482,10 +3462,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-search-count-ghost::before { content: attr(data-text); }
     /* The wrapper dissolves, so the field and the count are the phone find bar's own flex items. */
     .${r} .scribe-search-field { display: contents; }
-    .${r} .scribe-search-sep,
-    .${r} .scribe-search-glyph { display: none; }
-    .${r} .scribe-search-glyph,
-    .${r} .scribe-search-glyph-phone { width: 100%; height: 100%; }
+    .${r} .scribe-search-sep { display: none; }
 
     .${r}-toolbar .scribe-search-field {
       position: relative;
@@ -3533,8 +3510,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 6px;
     }
     .${r}-toolbar .scribe-search-step .cr-icon { width: 100%; height: 100%; }
-    .${r}-toolbar .scribe-search-glyph { display: block; }
-    .${r}-toolbar .scribe-search-glyph-phone,
     .${r}-toolbar .scribe-search-close { display: none; }
 
     .${r} .scribe-scrollbar {
@@ -3929,7 +3904,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       left: 0;
       height: 36px;
       box-sizing: border-box;
-      padding: 4px 6px;
+      padding: 3px 6px 4px;
       background: var(--scribe-canvas);
       border-right: 1px solid var(--scribe-line);
       border-bottom: 1px solid var(--scribe-line);
@@ -3966,8 +3941,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-sbtab svg {
-      width: 15px;
-      height: 15px;
+      width: 16px;
+      height: 16px;
       display: block;
       pointer-events: none;
     }
@@ -4983,7 +4958,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 1px 2px rgba(20, 30, 60, .14);
     }
     /* The mode control's glyphs (modeIcon's, TRACK_VIEW_SVG and TRACK_MENU_SVG) are drawn on a 17-unit pixel grid, so any other size blurs their strokes at 1x. */
-    .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; }
+    .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; margin-top: -1px; }
     .${r} .scribe-mode-track-el .cr-btn-label { font-size: 13px; }
     .${r} .scribe-mode-track-chev { padding: 0 6px; }
     /* Played when a mode is entered from the app menu rather than from the control itself. */

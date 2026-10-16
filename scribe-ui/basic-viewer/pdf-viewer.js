@@ -17,8 +17,9 @@ import {
 } from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
-  createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, UNDO_SVG, REDO_SVG,
+  createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG,
 } from '../js/controls/toolbar.js';
+import { barIcon, slotIcon } from '../js/controls/icons.js';
 import { createRecents } from '../js/controls/recents.js';
 import { MENU_PLATE_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
@@ -71,14 +72,10 @@ const DOCK_EDIT_SVG = '<svg viewBox="0 0 44 44" fill="none" stroke="currentColor
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M6.5 9.5h31M6.5 17.5h18M6.5 25.5h10"/><path d="M32.5 17.5l5 5-13 13h-5v-5z"/></svg>';
 
-const SIDEBAR_TOGGLE_SVG = '<svg viewBox="0 0 20 20" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round"'
-  + ' stroke-linejoin="round" style="pointer-events:none;display:block" aria-hidden="true">'
-  + '<rect x="2.5" y="3.5" width="15" height="13" rx="2"/><path d="M7.5 3.5v13"/></svg>';
-
 /** Contact-sheet grid for the sidebar's thumbnails tab. */
-const SIDEBAR_PAGES_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor">'
-  + '<rect x="2.3" y="2.3" width="5.1" height="5.1" rx="1"/><rect x="8.6" y="2.3" width="5.1" height="5.1" rx="1"/>'
-  + '<rect x="2.3" y="8.6" width="5.1" height="5.1" rx="1"/><rect x="8.6" y="8.6" width="5.1" height="5.1" rx="1"/></svg>';
+const SIDEBAR_PAGES_SVG = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true">'
+  + '<rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/>'
+  + '<rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>';
 
 /** Height of the sidebar's view-switch strip, in px, matching its CSS. */
 const SIDEBAR_TABS_HEIGHT = 36;
@@ -158,12 +155,8 @@ const ICON_EXPORT = appMenuIcon('<path d="M7.5 2.5v7m-3-3 3 3 3-3M3.5 12.5h8"/>'
 const ICON_COMBINE = appMenuIcon('<path d="M2.5 5.5h6v6h-6zM7.5 3.5h6v6"/>');
 const ICON_SPLIT = appMenuIcon('<circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><path d="M5.5 5.5l7 7M5.5 10.5l7-7"/>');
 /** Crescent moon for the app menu's Dark mode toggle. */
-// Its curves render no sharper on the 16px grid, so it keeps its 24-unit drawing.
-const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.5 13.5Z"/>');
+const ICON_DARK = slotIcon('moon16');
 const ICON_FIELDS = appMenuIcon('<rect x="2.5" y="5.5" width="11" height="6" rx="1"/><path d="M4.5 8.5h3"/>');
-/** Open book for the toolbar's two-page (side-by-side) view toggle. */
-const ICON_TWO_PAGE = '<svg viewBox="0 0 28 28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M14 7C12.1 5.5 9 4.8 5 5v16c4-.2 7.1.4 9 2 1.9-1.6 5-2.2 9-2V5c-4-.2-7.1.5-9 2Z"/><path d="M14 7v16"/></svg>';
 /** Facing-page pair for the app menu's cover-page row. */
 const ICON_COVER_ALONE = appMenuIcon('<rect x="2.5" y="3.5" width="5" height="9"/><rect x="9.5" y="3.5" width="5" height="9"/>');
 const ICON_AUTOMATE = appMenuIcon('<path d="M3.5 4.5l3 3-3 3z"/><path d="M9.5 4.5h4M9.5 7.5h4M9.5 10.5h2"/>');
@@ -988,7 +981,7 @@ class ScribePDFViewer {
         toolbarElemStart.appendChild(startSeparator);
         // The panels' own toggle elements never mount, but their `style.display` still says whether a view is offered.
         // That drives the strip's tabs and the phone sheet's buttons.
-        const toggle = makeIconButton('Show sidebar', SIDEBAR_TOGGLE_SVG);
+        const toggle = makeIconButton('Show sidebar', barIcon('sidebar'));
         // The marker class sits the toggle out of the library home's swapped bar alongside the other document controls.
         toggle.classList.add('scribe-sidebar-toggle');
         toggle.addEventListener('click', () => {
@@ -1033,11 +1026,11 @@ class ScribePDFViewer {
       }
 
       if (this._editEnabled) {
-        const undoBtn = makeIconButton('Undo', UNDO_SVG);
+        const undoBtn = makeIconButton('Undo', barIcon('undo'));
         undoBtn.dataset.tipKey = shortcutLabel('Z');
         undoBtn.classList.add('disabled');
         undoBtn.addEventListener('click', () => { if (!undoBtn.classList.contains('disabled')) this._doUndo(false); });
-        const redoBtn = makeIconButton('Redo', REDO_SVG);
+        const redoBtn = makeIconButton('Redo', barIcon('redo'));
         redoBtn.dataset.tipKey = IS_MAC ? shortcutLabel('Z', { shift: true }) : shortcutLabel('Y');
         redoBtn.classList.add('disabled');
         redoBtn.addEventListener('click', () => { if (!redoBtn.classList.contains('disabled')) this._doUndo(true); });
@@ -1062,7 +1055,7 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(zoom.zoomControls);
       // Hidden only by the phone layout, which forces single-page view.
       // Tablets keep it, since no gesture covers a layout switch the way pinch covers zoom.
-      const twoPageBtn = makeIconButton('Two page view', ICON_TWO_PAGE);
+      const twoPageBtn = makeIconButton('Two page view', barIcon('book'));
       twoPageBtn.classList.add('scribe-phone-hide');
       twoPageBtn.addEventListener('click', () => this._togglePageLayout());
       toolbarButtons.appendChild(twoPageBtn);
@@ -1084,6 +1077,18 @@ class ScribePDFViewer {
 
       center.appendChild(toolbarButtons);
       this.pdfViewerElem.appendChild(toolbarElem);
+      // A centered cluster can land on a fractional pixel, which blurs every glyph in it.
+      if (typeof ResizeObserver !== 'undefined') {
+        this._clusterObserver = new ResizeObserver(() => {
+          toolbarButtons.style.left = '';
+          const x = toolbarButtons.getBoundingClientRect().left - toolbarElem.getBoundingClientRect().left;
+          const frac = x - Math.round(x);
+          toolbarButtons.style.position = 'relative';
+          toolbarButtons.style.left = Math.abs(frac) > 0.01 ? `${-frac}px` : '';
+        });
+        this._clusterObserver.observe(toolbarButtons);
+        this._clusterObserver.observe(toolbarElem);
+      }
 
       // Tab strip sits in normal flow directly below the toolbar (so the canvas flows beneath it).
       // It starts hidden and only takes layout space once a second document is opened.
@@ -3929,7 +3934,15 @@ class ScribePDFViewer {
     // Keep at least a sliver of document even if the panel is wider than the viewport.
     const activePanel = this._panelFor(this._activeSidebar);
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
-    if (this._sidebarTabsElem && activePanel) this._sidebarTabsElem.style.width = `${panelW}px`;
+    if (this._sidebarTabsElem && activePanel) {
+      this._sidebarTabsElem.style.width = `${panelW}px`;
+      // Equal shares of the track would center the tabs' glyphs on fractional pixels, so each tab gets an even whole width.
+      // The pixels subtracted are the strip's side padding and right border and the track's padding and gaps, as its CSS sets them.
+      const tabs = Object.values(this._sidebarTabElems).filter((t) => t.style.display !== 'none');
+      const inner = panelW - 12 - 1 - 4 - 2 * (tabs.length - 1);
+      const tabW = Math.max(0, Math.floor(inner / Math.max(1, tabs.length) / 2) * 2);
+      for (const t of tabs) t.style.flex = `0 0 ${tabW}px`;
+    }
     const docInset = this._docInset;
     const inset = Math.min(docInset ? docInset.left : panelW, Math.max(0, this._width - 80));
     const insetTop = docInset ? Math.max(0, docInset.top) : 0;
@@ -4569,7 +4582,8 @@ class ScribePDFViewer {
   _syncDockPageNumWidth() {
     if (!this.pageNumElem) return;
     if (this._phoneUi) this.pageNumElem.style.width = `${Math.max(1, this.pageNumElem.value.length) + 0.4}ch`;
-    else this.pageNumElem.style.width = '3.4em';
+    // A whole-pixel width, or every control after the page box in the centered cluster lands on a fraction.
+    else this.pageNumElem.style.width = '44px';
   }
 
   /**
@@ -4823,9 +4837,9 @@ class ScribePDFViewer {
       if (label) b.appendChild(lbl);
       return b;
     };
-    const vUndo = vb('', UNDO_SVG);
+    const vUndo = vb('', barIcon('undo'));
     vUndo.title = 'Undo';
-    const vRedo = vb('', REDO_SVG);
+    const vRedo = vb('', barIcon('redo'));
     vRedo.title = 'Redo';
     const vEdit = vb('Edit', CM_EDIT_SVG);
     const vBold = vb('', CM_BOLD_SVG);
@@ -5804,6 +5818,7 @@ class ScribePDFViewer {
     }
     for (const inst of [...this._libraryInstances]) inst.destroy();
     if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this._clusterObserver) this._clusterObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }
     if (this._stripRelayoutT) { clearTimeout(this._stripRelayoutT); this._stripRelayoutT = null; }

@@ -230,7 +230,6 @@ const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><pat
 const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 // Color swatch for the touch callout's Highlight button.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
-// Local copy of controls/tools.js's HIGHLIGHT_SVG, not imported because tools.js imports this module.
 const CM_HIGHLIGHT_SVG = '<svg viewBox="0 0 20 20" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">'
   + '<path class="scribe-hl-tip" d="M6 13V4.5A2 2 0 0 1 8.9 2.7L13 4.8a2 2 0 0 1 1 1.7V13Z"/>'
   + '<path d="M3 18l.6-1.8A1.7 1.7 0 0 1 5.2 15h9.6a1.7 1.7 0 0 1 1.6 1.2L17 18Z"/></svg>';

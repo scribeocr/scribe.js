@@ -6,7 +6,7 @@ export const MENU_PLATE_CSS = `
       border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow, 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12));
       font-size: 13px;
-      line-height: 1.4;
+      line-height: 18px;
       color: var(--scribe-ink, #1f2530);
       user-select: none;`;
 

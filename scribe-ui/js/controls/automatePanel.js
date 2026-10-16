@@ -1,4 +1,5 @@
 import { makeIconButton, formatTimestamp } from './toolbar.js';
+import { barIcon } from './icons.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from './menuStyles.js';
 import { createDropdown } from './dropdown.js';
 import {
@@ -855,7 +856,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
   resizeHandle.className = 'scribe-am-resize';
   panelElem.appendChild(resizeHandle);
 
-  const toggleElem = makeIconButton('Automate', AUTOMATE_SVG);
+  // The toggle sits in the toolbar, so it takes the bar family's icon rather than the panel's AUTOMATE_SVG.
+  const toggleElem = makeIconButton('Automate', barIcon('automate'));
   toggleElem.classList.add('cr-labeled-button', 'scribe-automate-toggle', 'scribe-phone-hide');
   const toggleLabel = document.createElement('span');
   toggleLabel.className = 'cr-btn-label';

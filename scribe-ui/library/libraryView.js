@@ -3,6 +3,7 @@
 
 import scribeLib from '../../scribe.js';
 import { saveAs } from '../../js/utils/miscUtils.js';
+import { TEXT_MARKUP_ANNOT_TYPES } from '../../js/addHighlights.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
@@ -16,8 +17,9 @@ import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
 import {
-  barIcon, createPageNav, createZoomControls, makeIconButton, makeSeparator,
+  createPageNav, createZoomControls, makeIconButton, makeSeparator,
 } from '../js/controls/toolbar.js';
+import { barIcon, slotIcon } from '../js/controls/icons.js';
 import { createPreview } from './libraryPreview.js';
 import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
@@ -33,7 +35,6 @@ const FOLDER_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="poin
 const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/></svg>';
 // eslint-disable-next-line max-len
 const FOLDER_ELSEWHERE_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><rect x="1" y="8" width="7" height="7" rx="1.5" fill="currentColor" stroke="var(--scribe-surface)" stroke-width="1"/><path d="M3.25 12.75l2.5-2.5M3.75 10.25h2v2" stroke="var(--scribe-surface)" stroke-width="1.5"/></svg>';
-const OPEN_IN_TAB_SVG = barIcon('<path d="M12 7H8.5A2.5 2.5 0 0 0 6 9.5v10A2.5 2.5 0 0 0 8.5 22h10a2.5 2.5 0 0 0 2.5-2.5V16"/><path d="M16 6h6v6M22 6l-9 9"/>');
 // eslint-disable-next-line max-len
 const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
 // Matches FOLDER_SVG's grid and stroke, for the start screen, where the two sit side by side.
@@ -41,18 +42,14 @@ const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const FILE_16_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.75 2.5a.75.75 0 0 1 .75-.75h4.9l2.85 2.85v8.9a.75.75 0 0 1-.75.75H4.5a.75.75 0 0 1-.75-.75z"/><path d="M9.4 1.75v2.85h2.85"/></svg>';
 // eslint-disable-next-line max-len
 
-// eslint-disable-next-line max-len
-const FIELD_SEARCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
+const FIELD_SEARCH_SVG = slotIcon('search16');
 const FIELD_CLEAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>';
-// eslint-disable-next-line max-len
-const SORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 5v14M7 19l-3-3.2M7 19l3-3.2M17 19V5M17 5l-3 3.2M17 5l3 3.2"/></svg>';
-// eslint-disable-next-line max-len
-const CHEVRON_SVG = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
-const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+const SORT_SVG = slotIcon('sort18');
+const CHEVRON_SVG = slotIcon('chevron12', 'chev');
+const PLUS_SVG = slotIcon('plus18');
 // eslint-disable-next-line max-len
 const FOLDER_PLUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><path d="M8 7.9v3.4M6.3 9.6h3.4"/></svg>';
-// eslint-disable-next-line max-len
-const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M17.3 3v3.7H13.6"/></svg>';
+const REFRESH_SVG = slotIcon('refresh18');
 // eslint-disable-next-line max-len
 const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
 
@@ -70,14 +67,9 @@ const CLOSE_X_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
   + '<path d="M7 7l10 10M17 7L7 17"/></svg>';
 // eslint-disable-next-line max-len
 const MENU_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
-// eslint-disable-next-line max-len
-const VIEW_GRID_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>';
-// eslint-disable-next-line max-len
-const VIEW_LIST_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4.5" width="6.5" height="6.5" rx="1"/><path d="M14 6h6M14 9h4"/><rect x="4" y="13" width="6.5" height="6.5" rx="1"/><path d="M14 14.5h6M14 17.5h4"/></svg>';
-// eslint-disable-next-line max-len
-const VIEW_COMPACT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16M4 9.7h16M4 14.3h16M4 19h16"/></svg>';
-// eslint-disable-next-line max-len
-const PREVIEW_PANEL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M13.5 4.5v15"/></svg>';
+const VIEW_GRID_SVG = slotIcon('grid16');
+const VIEW_LIST_SVG = slotIcon('list16');
+const VIEW_COMPACT_SVG = slotIcon('compact16');
 
 const STORAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<rect x="3.5" y="4.5" width="17" height="6" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>';
@@ -194,7 +186,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-field > svg { width: 15px; height: 15px; color: var(--scribe-ink-3); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-field > svg { width: 16px; height: 16px; color: var(--scribe-ink-3); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-search { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 170px; padding: 0; text-align: left; text-overflow: ellipsis; caret-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-search::placeholder { color: var(--scribe-ink-3); }
 /* The key cap is a block-level flex item here, so without line-height: normal it would size to the toolbar's inherited 28px line-height. */
@@ -211,12 +203,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-clear svg { width: 100%; height: 100%; display: block; }
 .scribe-pdf-viewer .scribe-library-hbtn { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-hbtn:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-hbtn svg { width: 17px; height: 17px; flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-hbtn svg.chev { width: 13px; height: 13px; margin-left: -2px; color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-sort-lbl { display: inline-grid; text-align: left; }
+.scribe-pdf-viewer .scribe-library-hbtn svg { width: 18px; height: 18px; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-hbtn svg.chev { width: 12px; height: 12px; margin-left: -2px; color: var(--scribe-ink-3); }
+/* Fills the slack roundBarButtons adds, so the chevron sits against the button's right padding on a whole pixel. */
+.scribe-pdf-viewer .scribe-library-sort-lbl { display: inline-grid; text-align: left; flex: 1 1 auto; }
+.scribe-pdf-viewer .scribe-library-add-lbl { flex: 1 1 auto; }
 .scribe-pdf-viewer .scribe-library-sort-lbl > span { grid-area: 1 / 1; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-sort-lbl .ghost { visibility: hidden; }
-.scribe-pdf-viewer .scribe-library-hicon { width: 28px; height: 28px; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-hicon { width: 28px; height: 28px; padding: 3px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-hicon:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-hicon svg { width: 100%; height: 100%; display: block; }
 .scribe-pdf-viewer .scribe-library-hicon.on { color: var(--scribe-accent); background: var(--scribe-active); }
@@ -373,7 +367,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rwrap { outline: none; }
 .scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 /* Stacked above the stage, so the find bar that hangs from it paints over the page. */
-.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 2; }
+.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); box-shadow: inset 0 -1px 0 var(--scribe-line); position: relative; z-index: 2; }
 .scribe-pdf-viewer .scribe-library-pv-head .t { flex: 1 1 0; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-tools { display: inline-flex; align-items: center; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-pv-tools { flex: 1 1 0; justify-content: flex-end; gap: 8px; }
@@ -438,10 +432,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold { --fold-back: color-mix(in srgb, var(--scribe-accent) 30%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-accent) 18%, var(--scribe-surface)); --fold-line: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card.folder.drop .scribe-library-fold .front, .scribe-pdf-viewer .scribe-library-row.folder.drop .scribe-library-fold .front { transform: perspective(260px) rotateX(-12deg); }
 .scribe-pdf-viewer .scribe-library-card.folder.landed, .scribe-pdf-viewer .scribe-library-row.folder.landed { transition: background-color 400ms ease, border-color 400ms ease, box-shadow 400ms ease; }
-/* A drop's preview or undo line that wraps can grow the card while it shows, pushing down everything below. */
+/* A drop's undo line that wraps can grow the card while it shows, pushing down everything below. */
 .scribe-pdf-viewer .scribe-library-card.folder .meta.live { opacity: 1; color: var(--scribe-ink-2); flex-wrap: nowrap; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta.live > :last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.scribe-pdf-viewer .scribe-library-card.folder .meta .delta, .scribe-pdf-viewer .scribe-library-row.folder .delta { color: var(--scribe-accent); font-weight: 600; transition: opacity 300ms ease; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo, .scribe-pdf-viewer .scribe-library-row.folder .undo { color: var(--scribe-accent); font-weight: 600; cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo:hover, .scribe-pdf-viewer .scribe-library-row.folder .undo:hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-fold .paper, .scribe-pdf-viewer .scribe-library-fold .paper img, .scribe-pdf-viewer .scribe-library-fold .paper::after, .scribe-pdf-viewer .scribe-library-fold .front { transition: none; } }
@@ -594,7 +587,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-crumb-root { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; margin-left: -6px; border-radius: 6px; border: none; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-crumb-root:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-crumb-root .chev { width: 12px; height: 12px; color: var(--scribe-ink-3); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-crumb-root .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-crumb-root .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
   document.head.appendChild(style);
 };
@@ -890,7 +883,7 @@ export function createLibraryInstance(viewer, opts) {
 
   const previewBtn = document.createElement('button');
   previewBtn.className = 'scribe-library-hicon';
-  previewBtn.innerHTML = PREVIEW_PANEL_SVG;
+  previewBtn.innerHTML = slotIcon('preview22');
   previewBtn.title = 'Preview panel';
   previewBtn.setAttribute('aria-label', 'Preview panel');
   header.appendChild(previewBtn);
@@ -939,7 +932,7 @@ export function createLibraryInstance(viewer, opts) {
 
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'scribe-library-hicon';
-  refreshBtn.innerHTML = REFRESH_SVG;
+  refreshBtn.innerHTML = slotIcon('refresh22');
   refreshBtn.title = 'Re-scan the folder for new, changed, or removed files';
   refreshBtn.setAttribute('aria-label', 'Refresh folder');
   if (!readOnly) header.appendChild(refreshBtn);
@@ -1091,14 +1084,28 @@ export function createLibraryInstance(viewer, opts) {
   navWrap.className = 'scribe-library-pv-nav';
   navWrap.append(pageNav.prevElem, pageNav.nextElem, pageNav.pageInputGroup);
   pvTitle.after(navWrap);
+  // The title and the tools split the head's leftover width, which can land the page controls on a half pixel.
+  let navObserver = null;
+  if (typeof ResizeObserver !== 'undefined') {
+    navObserver = new ResizeObserver(() => {
+      navWrap.style.left = '';
+      const x = navWrap.getBoundingClientRect().left - pvHead.getBoundingClientRect().left;
+      const frac = x - Math.round(x);
+      navWrap.style.position = 'relative';
+      navWrap.style.left = Math.abs(frac) > 0.01 ? `${-frac}px` : '';
+    });
+    navObserver.observe(pvHead);
+  }
   pageNav.pageNumElem.addEventListener('focus', () => pageNav.pageNumElem.select());
   // Wrapped because the pair sets its display inline, which would override the width rule that hides it.
   const zoomWrap = document.createElement('span');
   zoomWrap.className = 'scribe-library-pv-zoom';
   zoomWrap.appendChild(createZoomControls(viewer.scribe).zoomControls);
-  const pvOpenBtn = makeIconButton('Open', OPEN_IN_TAB_SVG);
+  const pvOpenBtn = makeIconButton('Open', barIcon('openInTab'));
   const pvSep = makeSeparator();
-  pvTools.append(zoomWrap, pvSep, pvOpenBtn);
+  const pvFindSep = makeSeparator();
+  pvFindSep.style.display = 'none';
+  pvTools.append(zoomWrap, pvFindSep, pvSep, pvOpenBtn);
   /** Show the viewer's page in the head's page control. */
   const syncPaneNav = () => {
     const d = viewer.doc;
@@ -1117,6 +1124,7 @@ export function createLibraryInstance(viewer, opts) {
     };
     pvTools.insertBefore(bar.searchElem, pvSep);
     bar.searchElem.style.display = '';
+    pvFindSep.style.display = '';
     pvHead.appendChild(bar.findGroupElem);
     bar.rehome();
   };
@@ -1125,6 +1133,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!bar || !findHome) return;
     const h = findHome;
     findHome = null;
+    pvFindSep.style.display = 'none';
     h.btnParent?.insertBefore(bar.searchElem, h.btnNext && h.btnNext.parentNode === h.btnParent ? h.btnNext : null);
     h.groupParent?.insertBefore(bar.findGroupElem, h.groupNext && h.groupNext.parentNode === h.groupParent ? h.groupNext : null);
     // The toolbar's document controls stay hidden while the library bar is in, and the swap out shows them again.
@@ -1598,6 +1607,15 @@ export function createLibraryInstance(viewer, opts) {
     return parts;
   };
   /** Replace the toolbar's document controls with the library's own fragments. */
+  // Text buttons measure fractional widths, which would put every glyph to their left in the right-aligned zone on fractional pixels.
+  const roundBarButtons = () => {
+    for (const el of [sortBtn, newBtn, crumbsElem.querySelector('.scribe-library-crumb-root')]) {
+      if (!el) continue;
+      el.style.width = '';
+      const wd = el.getBoundingClientRect().width;
+      if (wd) el.style.width = `${Math.ceil(wd)}px`;
+    }
+  };
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
     barSwapped = true;
@@ -1606,6 +1624,7 @@ export function createLibraryInstance(viewer, opts) {
       el.style.display = 'none';
     }
     syncBarForStore();
+    roundBarButtons();
     // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the library's controls off the edge.
     priorEndZoneFlex = viewer.toolbarElemEnd.style.flex;
     viewer.toolbarElemEnd.style.flex = '0 1 auto';
@@ -1844,6 +1863,7 @@ export function createLibraryInstance(viewer, opts) {
       /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
       folderDropdown.attachTrigger(rootMenuBtn);
       crumbsElem.appendChild(rootMenuBtn);
+      roundBarButtons();
     } else if (!segs.length) {
       crumbsElem.appendChild(document.createTextNode(rootLabel));
     } else {
@@ -3015,8 +3035,9 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * Counts, aggregates, ingest-state tallies, and cover entries over a folder's direct children.
    * @param {string} dirPath
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} [except] - Children to leave out.
    */
-  const dirStatsOf = (dirPath) => {
+  const dirStatsOf = (dirPath, except = []) => {
     const stats = {
       docs: 0,
       subdirs: 0,
@@ -3036,7 +3057,7 @@ export function createLibraryInstance(viewer, opts) {
     const children = [];
     for (const [p, entry] of Object.entries(manifest.docs)) {
       const cut = p.lastIndexOf('/');
-      if ((cut < 0 ? '' : p.slice(0, cut)) !== dirPath) continue;
+      if ((cut < 0 ? '' : p.slice(0, cut)) !== dirPath || except.includes(entry)) continue;
       children.push([p, entry]);
       stats.docs++;
       stats.pages += entry.pageCount || 0;
@@ -3068,56 +3089,6 @@ export function createLibraryInstance(viewer, opts) {
     const ordered = kept.length ? [...new Set([...kept, ...newest, ...byName])] : [...byName.slice(0, 3 - newest.length), ...newest];
     stats.covers = ordered.slice(0, 3).map(([, entry]) => entry);
     return stats;
-  };
-
-  /**
-   * Fill `host` with a folder's summary line.
-   * @param {HTMLElement} host
-   * @param {ReturnType<typeof dirStatsOf>} stats
-   * @param {number} [incoming] - How many documents a drag carries over the folder, shown as an increment after the count.
-   *    `stats.docs` must already include them.
-   */
-  const fillFolderSummary = (host, stats, incoming = 0) => {
-    const parts = [];
-    if (stats.docs) parts.push(`${stats.docs} document${stats.docs === 1 ? '' : 's'}`);
-    if (stats.subdirs) parts.push(`${stats.subdirs} folder${stats.subdirs === 1 ? '' : 's'}`);
-    if (incoming) {
-      const count = document.createElement('span');
-      count.textContent = parts.shift() ?? '';
-      host.appendChild(count);
-      const delta = document.createElement('span');
-      delta.className = 'delta';
-      delta.textContent = `+${incoming}`;
-      host.appendChild(delta);
-      if (parts.length) {
-        const sep = document.createElement('span');
-        sep.textContent = '·';
-        host.appendChild(sep);
-      }
-    }
-    if (parts.length || !incoming) {
-      const base = document.createElement('span');
-      base.textContent = parts.length ? parts.join(' · ') : 'Empty';
-      host.appendChild(base);
-    }
-    const danger = [];
-    if (stats.failed) danger.push(`${stats.failed} failed`);
-    if (stats.missing) danger.push(`${stats.missing} missing`);
-    const soft = [];
-    if (stats.queued) soft.push(`${stats.queued} queued`);
-    if (stats.changed) soft.push(`${stats.changed} changed`);
-    if (stats.noText) soft.push(`${stats.noText} without text`);
-    for (const [text, bad] of [[danger.join(' · '), true], [soft.join(' · '), false]]) {
-      if (!text) continue;
-      const sep = document.createElement('span');
-      sep.textContent = '·';
-      host.appendChild(sep);
-      const att = document.createElement('span');
-      att.className = bad ? 'att bad' : 'att';
-      att.textContent = /** @type {string} */ (text);
-      host.appendChild(att);
-    }
-    if (danger.length || soft.length) host.classList.add('hasatt');
   };
 
   /**
@@ -3259,7 +3230,30 @@ export function createLibraryInstance(viewer, opts) {
       host.appendChild(undo);
       return;
     }
-    fillFolderSummary(host, stats);
+    const parts = [];
+    if (stats.docs) parts.push(`${stats.docs} document${stats.docs === 1 ? '' : 's'}`);
+    if (stats.subdirs) parts.push(`${stats.subdirs} folder${stats.subdirs === 1 ? '' : 's'}`);
+    const base = document.createElement('span');
+    base.textContent = parts.length ? parts.join(' · ') : 'Empty';
+    host.appendChild(base);
+    const danger = [];
+    if (stats.failed) danger.push(`${stats.failed} failed`);
+    if (stats.missing) danger.push(`${stats.missing} missing`);
+    const soft = [];
+    if (stats.queued) soft.push(`${stats.queued} queued`);
+    if (stats.changed) soft.push(`${stats.changed} changed`);
+    if (stats.noText) soft.push(`${stats.noText} without text`);
+    for (const [text, bad] of [[danger.join(' · '), true], [soft.join(' · '), false]]) {
+      if (!text) continue;
+      const sep = document.createElement('span');
+      sep.textContent = '·';
+      host.appendChild(sep);
+      const att = document.createElement('span');
+      att.className = bad ? 'att bad' : 'att';
+      att.textContent = /** @type {string} */ (text);
+      host.appendChild(att);
+    }
+    if (danger.length || soft.length) host.classList.add('hasatt');
   };
 
   /**
@@ -3271,20 +3265,21 @@ export function createLibraryInstance(viewer, opts) {
   const updateFolderCard = (card, dirPath) => {
     card.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
     // A drop landing here keeps the face its hover showed, even on a card rebuilt mid-flight.
+    // The files may already have moved, so the tallies leave out the documents in flight.
     const inFlight = landings.get(dirPath);
+    const stats = dirStatsOf(dirPath, inFlight);
     if (inFlight) {
       card.classList.add('drop');
       previewFolder(card, dirPath, inFlight);
-      return;
+    } else {
+      if (!(undoInfo && undoInfo.dir === dirPath)) card.style.minHeight = '';
+      morphFold(/** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
     }
-    if (!(undoInfo && undoInfo.dir === dirPath)) card.style.minHeight = '';
-    const stats = dirStatsOf(dirPath);
-    morphFold(/** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
     fillFolderLine(/** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta')), dirPath, stats);
   };
 
   /**
-   * Show a folder as the drag over it will leave it.
+   * Show a folder's fold as the drag over it will leave it.
    * @param {HTMLElement} elem - The folder's card or row.
    * @param {string} dirPath
    * @param {import('./libraryStore.js').LibraryDocEntry[]} entries - The documents in the hand.
@@ -3292,23 +3287,12 @@ export function createLibraryInstance(viewer, opts) {
   const previewFolder = (elem, dirPath, entries) => {
     const isCard = elem.classList.contains('scribe-library-card');
     // The card keeps at least its resting height from the hover until the undo line goes.
-    // Shrinking it would flicker the drop target during the hover and shift the cards below when the undo line appears.
+    // Shrinking it would shift the cards below when the undo line appears.
     if (isCard && !elem.style.minHeight) elem.style.minHeight = `${elem.getBoundingClientRect().height}px`;
     const stats = dirStatsOf(dirPath);
-    // Once the files move, the carried documents are the folder's own, and must be neither counted nor drawn twice.
-    const own = new Set();
-    for (const [p, entry] of Object.entries(manifest?.docs ?? {})) {
-      const cut = p.lastIndexOf('/');
-      if ((cut < 0 ? '' : p.slice(0, cut)) === dirPath) own.add(entry);
-    }
     const strip = /** @type {?HTMLElement} */ (isCard ? elem.querySelector(':scope > .fstrip') : elem.querySelector('.nm > .fthumb'));
+    // Once the files move, the carried documents are the folder's own, and must not be drawn twice.
     if (strip) morphFold(strip, buildFold(stats.covers.filter((entry) => !entries.includes(entry)), !isCard, entries));
-    const line = /** @type {HTMLElement} */ (isCard ? elem.querySelector(':scope > .body > .meta') : elem.querySelector(viewMode === 'list' ? '.nm .m2' : '.nm .cnt'));
-    line.textContent = '';
-    line.classList.remove('hasatt');
-    line.classList.add('live');
-    const incoming = entries.filter((entry) => !own.has(entry)).length;
-    fillFolderSummary(line, { ...stats, docs: stats.docs + incoming }, entries.length);
   };
 
   /**
@@ -3346,12 +3330,14 @@ export function createLibraryInstance(viewer, opts) {
     }
     // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
     if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */ (a).style.left) - parseFloat(/** @type {HTMLElement} */ (b).style.left)).map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
-    const delta = /** @type {?HTMLElement} */ (elem.querySelector('.delta'));
-    if (delta) delta.style.opacity = '0';
     elem.classList.add('landed');
     elem.classList.remove('drop');
+    const priorDir = undoInfo?.dir;
     clearUndo();
     undoInfo = { dir: dirPath, moves };
+    // The folder that showed the last drop's undo line goes back to its tallies, so its Undo cannot take back this drop instead.
+    const prior = priorDir !== undefined && priorDir !== dirPath ? folderElemOf(priorDir) : null;
+    if (prior) (prior.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(prior, prior.dataset.dirTarget ?? '');
     undoTimer = window.setTimeout(() => {
       clearUndo();
       const now = folderElemOf(dirPath);
@@ -3385,6 +3371,9 @@ export function createLibraryInstance(viewer, opts) {
     const restored = [];
     if (!(await store.ensureWritable())) {
       viewer._showToast(`Couldn't move them back — editing ${store.root.name} wasn't allowed.`);
+      // The undo is spent, so the folder shows its tallies rather than an Undo that no longer acts.
+      const now = folderElemOf(info.dir);
+      if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, info.dir);
       return;
     }
     for (const move of info.moves) {
@@ -3692,13 +3681,11 @@ export function createLibraryInstance(viewer, opts) {
     const comfortable = viewMode === 'list';
     row.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
     const inFlight = landings.get(dirPath);
+    const stats = dirStatsOf(dirPath, inFlight);
     if (inFlight) {
       row.classList.add('drop');
       previewFolder(row, dirPath, inFlight);
-      return;
-    }
-    const stats = dirStatsOf(dirPath);
-    if (comfortable) morphFold(/** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
+    } else if (comfortable) morphFold(/** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
     fillFolderLine(/** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt')), dirPath, stats);
     /** @param {number} t */
     const fmtDate = (t) => (t > 0
@@ -5316,7 +5303,22 @@ export function createLibraryInstance(viewer, opts) {
       });
     docPromise.then((doc) => {
       if (myToken !== token) return;
-      const count = (/** @type {any} */ (doc).annotations?.pages || []).reduce((/** @type {number} */ s, /** @type {any[]} */ pg) => s + (pg ? pg.length : 0), 0);
+      // A text markup or redaction is stored as one row per word or quad, all sharing a groupId, so it counts once per group.
+      const seenGroups = new Set();
+      let count = 0;
+      (/** @type {any} */ (doc).annotations?.pages || []).forEach((/** @type {any[]} */ pg, /** @type {number} */ i) => {
+        for (const a of pg || []) {
+          const kind = a.type || 'highlight';
+          if (kind !== 'redact' && !TEXT_MARKUP_ANNOT_TYPES.has(kind)) {
+            count++;
+            continue;
+          }
+          const key = a.groupId ? `${i}|${kind}|${a.groupId}` : `${i}|${kind}|bbox:${a.bbox?.left}:${a.bbox?.top}:${a.bbox?.right}:${a.bbox?.bottom}`;
+          if (seenGroups.has(key)) continue;
+          seenGroups.add(key);
+          count++;
+        }
+      });
       if (count > 0) countLine.textContent = `${count} annotation${count === 1 ? '' : 's'} (highlights, notes, shapes, redactions)`;
       else countLine.remove();
     }).catch(() => {
@@ -6055,6 +6057,7 @@ export function createLibraryInstance(viewer, opts) {
     sessions.reset();
     results.dispose();
     selectedPaths.clear();
+    clearUndo();
     selAnchor = null;
     filterText = '';
     searchInput.value = '';
@@ -6751,6 +6754,7 @@ export function createLibraryInstance(viewer, opts) {
   Object.assign(api, {
     destroy() {
       destroyed = true;
+      navObserver?.disconnect();
       drag.cancel();
       if (visible) deactivate();
       releaseFolderLock?.();

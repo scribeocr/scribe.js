@@ -39,7 +39,6 @@ const ICON_SIGN = paletteIcon('<path d="M4 20c3.5-7.6 6.4-11.1 7.9-9.9 1.6 1.2-3
 const ICON_PLUS = editIcon('<path d="M12 5v14M5 12h14"/>');
 const ICON_GRIP = editIcon('<circle cx="9" cy="7" r="1.2"/><circle cx="15" cy="7" r="1.2"/><circle cx="9" cy="12" r="1.2"/>'
   + '<circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="17" r="1.2"/><circle cx="15" cy="17" r="1.2"/>', 0);
-// Same geometry as the toolbar's UNDO_SVG, redrawn here because importing toolbar.js would close an import cycle.
 const ICON_UNDO = paletteIcon('<path d="M9 7 5 11l4 4"/><path d="M5 11h11a6 6 0 0 1 0 12h-5"/>');
 
 // Check/cross mark strokes in a unit box, scaled to the placement box.
