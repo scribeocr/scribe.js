@@ -444,9 +444,10 @@ class ScribePDFViewer {
    *   behind the Automate panel's assistant, injected by hosts that hold their own credentials.
    *   Without it, the panel offers in-app key entry and constructs the Anthropic adapter from the pasted key.
    *   An adapter that exposes a `models` roster gets the composer's model picker.
-   * @param {boolean} [options.library=false] - Enable the document library: a full-screen surface for browsing,
+   * @param {boolean|{engine?: string}} [options.library=false] - Enable the document library: a full-screen surface for browsing,
    *   searching, and managing a user-chosen local folder of PDFs, with edits persisted to `.scribe` sidecar files.
    *   Requires the File System Access API (Chromium); on other browsers the option is silently ignored.
+   *   The library's search uses the positional index, or the word-per-page index when `engine` is `'shipped'`.
    * @param {number} [options.docMemoryBudgetMB] - Device memory budget for open documents; opening past it is refused.
    *   Defaults to 600 on iOS-class WebKit and unlimited elsewhere.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
@@ -1731,10 +1732,12 @@ class ScribePDFViewer {
 
     // The library is Chromium-only (File System Access API) and dynamically imported so disabled or unsupported viewers never fetch its code or styles.
     if (library && typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
+      const engine = typeof library === 'object' && library.engine === 'shipped' ? null : 'positional';
+      const settings = engine && typeof library === 'object' && library.settings && typeof library.settings === 'object' ? library.settings : null;
       import('../library/libraryView.js')
         .then(({ installLibrary }) => {
           if (this._destroyed) return;
-          this._library = installLibrary(this);
+          this._library = installLibrary(this, { engine, settings });
           this._notifyMenuState();
         })
         .catch((err) => console.error('Failed to load the document library.', err));

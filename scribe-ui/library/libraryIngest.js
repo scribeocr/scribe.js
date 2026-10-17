@@ -84,6 +84,8 @@ export class LibraryIngest {
    * @param {import('./libraryStore.js').LibraryManifest} manifest - Shared with the caller and mutated in place.
    * @param {import('./librarySearch.js').LibraryIndex} index
    * @param {Object} [callbacks]
+   * @param {?ReturnType<typeof import('./search/searchClient.js').createSearchClient>} [callbacks.engine] - The positional search engine.
+   *    A document's pages go to it in place of the text cache and `index`.
    * @param {(state: {done: number, total: number, current: string, kind?: string, pageDone?: number, pageTotal?: number}) => void} [callbacks.onProgress]
    *    `kind` names the running task; recognition tasks also report page progress.
    * @param {(relPath: string) => void} [callbacks.onDocDone] - Fires after a document reaches a terminal status.
@@ -100,11 +102,12 @@ export class LibraryIngest {
    * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
    */
   constructor(store, manifest, index, {
-    onProgress, onDocDone, warmGate, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
+    engine, onProgress, onDocDone, warmGate, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
   } = {}) {
     this.store = store;
     this.manifest = manifest;
     this.index = index;
+    this.engine = engine || null;
     this.onProgress = onProgress;
     this.onDocDone = onDocDone;
     this.warmGate = warmGate || null;
@@ -479,8 +482,13 @@ export class LibraryIngest {
             delete entry.recognizedAt;
           }
 
-          const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
-          await this.store.writeTextCache(hash, pagesText.join('\f'));
+          let pagesText = null;
+          if (this.engine) {
+            await this.engine.addDoc(hash, doc.ocr.active || []);
+          } else {
+            pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
+            await this.store.writeTextCache(hash, pagesText.join('\f'));
+          }
           try {
             const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH);
             if (thumb) await this.store.writeThumb(hash, thumb);
@@ -507,7 +515,7 @@ export class LibraryIngest {
           }, DOC_TIMEOUT_MS);
         }),
       ]);
-      if (result) this.index.addDoc(result.hash, result.pagesText);
+      if (result && result.pagesText) this.index.addDoc(result.hash, result.pagesText);
       entry.status = 'indexed';
       delete entry.error;
       delete entry.errorKind;
@@ -572,9 +580,13 @@ export class LibraryIngest {
         await live.checkpoint(true);
       } else {
         await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
-        const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
-        await this.store.writeTextCache(hash, pagesText.join('\f'));
-        this.index.addDoc(hash, pagesText);
+        if (this.engine) {
+          await this.engine.addDoc(hash, doc.ocr.active || []);
+        } else {
+          const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
+          await this.store.writeTextCache(hash, pagesText.join('\f'));
+          this.index.addDoc(hash, pagesText);
+        }
         entry.recognizedAt = Date.now();
       }
       delete entry.ocrError;
