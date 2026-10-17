@@ -156,7 +156,8 @@ globalThis.addEventListener('message', (e) => {
         result = await engine.query(args.query, args.opts || {});
         if (engine.options.fallbackTiers) {
           globalThis.postMessage({ id, ok: true, result });
-          if (engine.options.tiersSkipBounded && result.bounded) {
+          // A lone word has no near matches: every page holding the word is an exact page.
+          if ((engine.options.tiersSkipBounded && result.bounded) || result.terms.length < 2) {
             globalThis.postMessage({
               id, phase: 'tiers', ok: true, result: null,
             });

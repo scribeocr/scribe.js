@@ -583,6 +583,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         terms: result.terms,
         matches: result.matches,
         bounded: result.bounded,
+        partial: result.partial,
         bound,
         candidates: result.candidates,
         verified: result.verified,

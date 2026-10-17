@@ -192,6 +192,7 @@ export const createSearchClient = (settings = {}) => {
  * @property {string[]} terms
  * @property {number} matches
  * @property {boolean} bounded
+ * @property {boolean} partial - True when a lone word's prefix was cut short in an index file, which the answer then leaves out.
  * @property {number} bound
  * @property {Array<{hash: string, total: number, pages: Array<ResponsePage>}>} docs - Best first, each document's pages best first.
  * @property {{sweep: number, snippets: number, total: number}} ms

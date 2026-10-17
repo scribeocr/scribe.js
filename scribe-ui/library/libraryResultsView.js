@@ -480,7 +480,7 @@ export function createResultsView({
         }).filter(Boolean));
         ranked = tiesByName(ranked, (d) => d.perPage[0], (d) => d.docRef.relPath);
         const count = response.bounded ? `${response.bound}+` : String(response.matches);
-        summaryText = `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
+        summaryText = response.partial ? 'Partial results — narrow your search' : `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
       } else {
         const infos = await Promise.all(results.map(async (result) => {
           const docRef = byHash.get(result.hash);

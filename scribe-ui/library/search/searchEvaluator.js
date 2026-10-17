@@ -218,7 +218,8 @@ export const compareHits = (a, b, rankSpan) => a.tier - b.tier
  * @param {{cancelled: boolean, pause?: () => Promise<void>}} [job] - The fallback mode's run.
  *   Once a slice of work is spent the evaluation awaits `pause`, then stops if `cancelled` was set meanwhile.
  * @returns {Promise<{terms: string[], hits: Hit[], matches: number, bounded: boolean, candidates: number, verified: number,
- *   skips: number, found: number, exactPages: number, cancelled: boolean, plan: ?SweepPlan}>} In the fallback mode `found` counts every page of a lower tier.
+ *   skips: number, found: number, exactPages: number, cancelled: boolean, partial: boolean, plan: ?SweepPlan}>} In the fallback mode `found` counts every page of a lower tier.
+ *   `partial` is set when a lone word's prefix range was cut short in a segment, which the answer then leaves out.
  *   `skips` counts the occurrences found by stepping over a marker.
  */
 export const evaluate = async (segments, query, options, readRecord, job) => {
@@ -232,6 +233,7 @@ export const evaluate = async (segments, query, options, readRecord, job) => {
   let found = 0;
   let exactPages = 0;
   let cancelled = false;
+  let partial = false;
   const { bound, rankSpan } = options;
   const lowerMode = !!options.lower;
   /** @type {?SweepPlan} */
@@ -239,11 +241,12 @@ export const evaluate = async (segments, query, options, readRecord, job) => {
     segments: 0, advanced: 0, sought: 0, rangeMerged: 0, rangeByPage: 0, rangeVerified: 0, rangeReads: 0, rangeTermsOpened: 0, rangeTermsMerged: 0, records: 0,
   } : null;
   const answer = () => ({
-    terms, hits, matches, bounded: lowerMode ? found > bound : hits.length >= bound, candidates, verified, skips, found, exactPages, cancelled, plan,
+    terms, hits, matches, bounded: lowerMode ? found > bound : hits.length >= bound, candidates, verified, skips, found, exactPages, cancelled, partial, plan,
   });
   if (!terms.length) return answer();
   const n = terms.length;
-  const prefixAt = options.prefixLastWord ? n - 1 : -1;
+  // Someone who types a lone one- or two-letter word means exactly that word.
+  const prefixAt = options.prefixLastWord && !(n === 1 && terms[0].length < 3) ? n - 1 : -1;
   const prefix = prefixAt >= 0 ? terms[prefixAt] : '';
   const stepMarkers = options.tokenizer.markersUnpositioned === 'both';
   let sliceStart = performance.now();
@@ -309,7 +312,11 @@ export const evaluate = async (segments, query, options, readRecord, job) => {
           if (plan) plan.rangeMerged++;
         }
       } else {
-        if (others.length === 0) return;
+        // A lone word has no other term to verify its truncated range against.
+        if (others.length === 0) {
+          partial = true;
+          return;
+        }
         if (plan) plan.rangeVerified++;
       }
     }
