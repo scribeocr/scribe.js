@@ -691,6 +691,20 @@ export class LibraryStore {
   }
 
   /**
+   * Move a directory into another directory of the library folder.
+   * A collision in the destination gets a numbered suffix.
+   * @param {string} relPath
+   * @param {string} destDir - Destination directory relative to the root, '' for the root itself.
+   * @param {string} [name] - The name to take in the destination.
+   * @returns {Promise<{relPath: string, mtimes: Map<string, number>}>} The new path, and the timestamp of every transferred file keyed by its new relative path.
+   */
+  async moveDir(relPath, destDir, name = relPath.slice(relPath.lastIndexOf('/') + 1)) {
+    const candidate = await freeFolderNameIn(await this.dirAt(destDir), name);
+    const newRel = destDir ? `${destDir}/${candidate}` : candidate;
+    return { relPath: newRel, mtimes: await this.renameDir(relPath, newRel) };
+  }
+
+  /**
    * @param {string} relPath
    * @returns {Promise<File>}
    */

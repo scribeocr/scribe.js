@@ -6,6 +6,8 @@ import {
 } from '../js/controls/pageReorder.js';
 import { titleOf } from './libraryStore.js';
 
+/** @typedef {import('./libraryView.js').LibraryMove} LibraryMove */
+
 // Card drag thresholds, matching the Pages-view gesture grammar so the two surfaces feel identical.
 const DRAG_THRESHOLD = 5;
 const LIFT_HOLD_MS = 250;
@@ -16,6 +18,7 @@ const AUTOSCROLL_EDGE = 36;
 const AUTOSCROLL_SPEED = 14;
 export const FOLDER_FLY_MS = 240;
 const OVER_TARGET_SCALE = 0.45;
+export const FOLDER_OVER_TARGET_SCALE = 0.7;
 const OVER_TARGET_MS = 140;
 const LIFT_MS = 140;
 const LIFT_SCALE = 1.03;
@@ -23,10 +26,11 @@ const LIFT_SCALE = 1.03;
 /**
  * A press on a card or row in the library grid, from the press through the drag it may become.
  * @typedef {Object} CardDrag
- * @property {string} relPath - The pressed card's document.
+ * @property {string} relPath - The pressed card's document, or a folder key with its trailing slash.
  * @property {HTMLElement} cardElem - The pressed card or row.
  * @property {boolean} isRow - Whether the press is on a list row.
- * @property {string[]} carried - Every document moving, in display order.
+ * @property {boolean} isDir
+ * @property {string[]} carried - Every document and folder moving, in display order.
  * @property {Array<{relPath: string, img: ?HTMLImageElement}>} fan - The documents the ghost shows, front first.
  * @property {number} startX - Pointer clientX at the press.
  * @property {number} startY - Pointer clientY at the press.
@@ -57,7 +61,6 @@ const LIFT_SCALE = 1.03;
  * @param {HTMLElement} deps.body - Scrolling surface the cards live in, and the autoscroll target.
  * @param {Set<string>} deps.selectedPaths
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
- * @param {() => ?import('./libraryStore.js').LibraryStore} deps.getStore
  * @param {() => void} deps.saveManifestSoon
  * @param {() => void} deps.render
  * @param {(clientX: number, clientY: number, relPath: string, card: HTMLElement) => void} deps.openCardMenu
@@ -66,11 +69,13 @@ const LIFT_SCALE = 1.03;
  * @param {(elem: HTMLElement, dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.previewFolder - Show a folder's fold as the hovering drag would leave it.
  * @param {(elem: HTMLElement, dirPath: string) => void} deps.unpreviewFolder - Put a folder back as it is.
  * @param {(dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.startLanding - Begin a drop's landing in a folder.
- * @param {(dirPath: string, moves: Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>) => void} deps.finishLanding - Settle a folder once the pages are in.
+ * @param {(keys: string[], destDir: string) => Promise<{moves: LibraryMove[], failed: string[]}>} deps.moveItems
+ * @param {(dirPath: string, mini: boolean) => HTMLElement} deps.foldFor - A folder's fold at card or list size.
+ * @param {(dirPath: string, moves: LibraryMove[], fromDir: string) => void} deps.finishLanding
  */
 export function createDragReorder({
-  viewer, surface, body, selectedPaths, getManifest, getStore, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
-  previewFolder, unpreviewFolder, startLanding, finishLanding,
+  viewer, surface, body, selectedPaths, getManifest, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
+  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
@@ -91,12 +96,21 @@ export function createDragReorder({
     if (drag?.started) e.preventDefault();
   };
 
-  /**
-   * The card or row for `relPath` beside the pressed one.
-   * @param {CardDrag} d
-   * @param {string} relPath
-   */
-  const elemOf = (d, relPath) => /** @type {?HTMLElement} */ (d.cardElem.parentElement?.querySelector(`[data-rel-path="${CSS.escape(relPath)}"]`) ?? null);
+  // The Recent strip and the Just added shelf repeat cards from the main grid, so a drag reads these bands only.
+  const CARRY_BANDS = ['folders-grid', 'main-grid', 'rows'];
+
+  /** @param {string} relPath */
+  const elemOf = (relPath) => /** @type {?HTMLElement} */(body.querySelector(CARRY_BANDS.map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(relPath)}"]`).join(', ')));
+
+  /** @param {number} n */
+  const countBadge = (n) => {
+    const badge = document.createElement('div');
+    badge.textContent = String(n);
+    badge.style.cssText = 'position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 6px;z-index:10;'
+      + 'display:flex;align-items:center;justify-content:center;border-radius:4px;background:rgba(24,27,30,.92);'
+      + 'border:1px solid rgba(255,255,255,.25);color:#fff;font:600 11px sans-serif;box-sizing:border-box';
+    return badge;
+  };
 
   /**
    * Insertion gap (0..cards.length) for a pointer position.
@@ -154,7 +168,7 @@ export function createDragReorder({
       return clone;
     };
     for (let i = Math.min(d.fan.length - 1, 2); i >= 1; i--) {
-      const behind = elemOf(d, d.fan[i].relPath);
+      const behind = elemOf(d.fan[i].relPath);
       if (!behind) continue;
       const plate = document.createElement('div');
       plate.className = 'row-ghost';
@@ -168,14 +182,60 @@ export function createDragReorder({
     front.appendChild(cloneRow(d.cardElem));
     ghost.appendChild(front);
     if (d.carried.length > 1) {
-      const badge = document.createElement('div');
-      badge.textContent = String(d.carried.length);
-      badge.style.cssText = 'position:absolute;top:-6px;right:-6px;min-width:18px;height:18px;padding:0 6px;z-index:10;'
-        + 'display:flex;align-items:center;justify-content:center;border-radius:4px;background:rgba(24,27,30,.92);'
-        + 'border:1px solid rgba(255,255,255,.25);color:#fff;font:600 11px sans-serif;box-sizing:border-box';
-      ghost.appendChild(badge);
+      ghost.appendChild(countBadge(d.carried.length));
     }
     document.body.appendChild(ghost);
+    return ghost;
+  };
+
+  /**
+   * Build the drag ghost for a folder.
+   * @param {CardDrag} d
+   */
+  const buildFoldGhost = (d) => {
+    const ghost = document.createElement('div');
+    ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
+    const theme = viewer.pdfViewerElem.getAttribute('data-theme');
+    if (theme) ghost.setAttribute('data-theme', theme);
+    ghost.style.fontFamily = getComputedStyle(viewer.pdfViewerElem).fontFamily;
+    const mini = d.isRow;
+    const w = mini ? 40 : 150;
+    const h = mini ? 32 : 68;
+    ghost.style.width = `${w}px`;
+    ghost.style.height = `${h + 30}px`;
+    const home = (d.cardElem.querySelector('.scribe-library-fold') ?? d.cardElem).getBoundingClientRect();
+    d.grabDX = d.startX - home.left;
+    d.grabDY = d.startY - home.top;
+    // A press usually lands on the title below the fold, so a grab-point origin would pull the fold down toward it on every shrink.
+    ghost.style.transformOrigin = `${w / 2}px ${h / 2}px`;
+    // The lift animates a wrapper, because an animation on the hand itself would override its shrink transition while it plays and end with a jump.
+    const lift = document.createElement('div');
+    lift.className = 'scribe-ghost-lift';
+    lift.style.cssText = `position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:${w / 2}px ${h / 2}px`;
+    const behind = d.carried.filter((p) => p.endsWith('/') && p !== d.relPath).slice(0, 2).reverse();
+    behind.forEach((p, i) => {
+      const depth = behind.length - i;
+      const plate = document.createElement('span');
+      plate.className = 'fold-ghost';
+      plate.style.cssText = `transform:translate(${depth * 6}px,${depth * 6}px);z-index:${3 - depth};opacity:.9`;
+      plate.appendChild(foldFor(p.slice(0, -1), mini));
+      lift.appendChild(plate);
+    });
+    const front = document.createElement('span');
+    front.className = 'fold-ghost';
+    front.style.zIndex = '4';
+    front.appendChild(foldFor(d.relPath.slice(0, -1), mini));
+    lift.appendChild(front);
+    const label = document.createElement('span');
+    label.className = 'fold-label';
+    label.style.top = `${h + 8}px`;
+    const name = titleOf(d.relPath.slice(0, -1));
+    label.textContent = d.carried.length > 1 ? `${name} + ${d.carried.length - 1}` : name;
+    lift.appendChild(label);
+    ghost.appendChild(lift);
+    if (d.carried.length > 1) ghost.appendChild(countBadge(d.carried.length));
+    document.body.appendChild(ghost);
+    if (!reducedMotion()) lift.animate([{ transform: 'scale(1)' }, { transform: `scale(${LIFT_SCALE})` }], { duration: LIFT_MS, easing: 'ease', fill: 'forwards' });
     return ghost;
   };
 
@@ -183,21 +243,25 @@ export function createDragReorder({
     d.started = true;
     const manifest = getManifest();
     const group = selectedPaths.has(d.relPath) && selectedPaths.size >= 2;
-    const siblings = [...(d.cardElem.parentElement?.querySelectorAll('[data-rel-path]') ?? [])]
-      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
-    d.carried = group ? siblings.filter((p) => selectedPaths.has(p) && !!manifest?.docs[p]) : [d.relPath];
+    const siblings = [...body.querySelectorAll(CARRY_BANDS.map((b) => `[data-band="${b}"] > [data-rel-path]`).join(', '))]
+      .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
+    d.carried = group ? siblings.filter((p) => selectedPaths.has(p) && (p.endsWith('/') || !!manifest?.docs[p])) : [d.relPath];
     if (!d.carried.includes(d.relPath)) d.carried = [d.relPath];
     d.isRow = d.cardElem.classList.contains('scribe-library-row');
-    d.fan = fanOrder(d.relPath, d.carried).map(({ item }) => ({ relPath: item, img: /** @type {?HTMLImageElement} */ (elemOf(d, item)?.querySelector('img.thumb') ?? null) }));
+    d.isDir = d.relPath.endsWith('/');
+    const docs = d.carried.filter((p) => !p.endsWith('/'));
+    d.fan = d.isDir ? [] : fanOrder(d.relPath, docs).map(({ item }) => ({ relPath: item, img: /** @type {?HTMLImageElement} */ (elemOf(item)?.querySelector('img.thumb') ?? null) }));
     const rect = d.cardElem.getBoundingClientRect();
-    if (d.isRow) {
+    if (d.isDir) {
+      d.ghost = buildFoldGhost(d);
+    } else if (d.isRow) {
       d.ghost = buildRowGhost(d, rect);
       d.grabDX = d.startX - rect.left;
       d.grabDY = d.startY - rect.top;
     } else {
       const thumb = d.cardElem.querySelector('img.thumb');
       const tr = thumb && thumb.getBoundingClientRect().width > 0 ? thumb.getBoundingClientRect() : rect;
-      const cards = fanOrder(d.relPath, d.carried).map(({ item, dir }) => ({ img: /** @type {HTMLImageElement} */ (elemOf(d, item)?.querySelector('img.thumb') ?? document.createElement('img')), dir }));
+      const cards = fanOrder(d.relPath, docs).map(({ item, dir }) => ({ img: /** @type {HTMLImageElement} */ (elemOf(item)?.querySelector('img.thumb') ?? document.createElement('img')), dir }));
       d.ghost = buildGhost(cards, tr, d.carried.length);
       d.grabDX = d.startX - tr.left;
       d.grabDY = d.startY - tr.top;
@@ -212,9 +276,9 @@ export function createDragReorder({
         for (const page of lift.children) page.animate([{ boxShadow: '0 1px 3px rgba(30, 26, 16, .18)' }, { boxShadow: '0 8px 22px rgba(0, 0, 0, .45)' }], { duration: LIFT_MS, easing: 'ease' });
       }
     }
-    d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
+    if (!d.isDir) d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
     d.ghost.style.transition = reducedMotion() ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
-    for (const p of d.carried) elemOf(d, p)?.classList.add('dragging');
+    for (const p of d.carried) elemOf(p)?.classList.add('dragging');
     surface.classList.add('card-drag');
     if (d.canReorder && mainGridElem) {
       d.line = document.createElement('div');
@@ -235,15 +299,20 @@ export function createDragReorder({
 
   /**
    * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination.
-   * The document's own folder never targets, so dropping there reads as a no-op rather than a move.
+   * The item's own folder never targets, so dropping there reads as a no-op.
    * @param {CardDrag} d
    */
   const updateDropTarget = (d) => {
     const under = document.elementFromPoint(d.lastX, d.lastY);
     const target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
-    const cut = d.relPath.lastIndexOf('/');
-    const parent = cut < 0 ? '' : d.relPath.slice(0, cut);
-    const elem = target && target.dataset.dirTarget !== parent ? target : null;
+    const pressed = d.isDir ? d.relPath.slice(0, -1) : d.relPath;
+    const cut = pressed.lastIndexOf('/');
+    const parent = cut < 0 ? '' : pressed.slice(0, cut);
+    let elem = target && target.dataset.dirTarget !== parent ? target : null;
+    if (elem) {
+      const dir = elem.dataset.dirTarget ?? '';
+      if (d.carried.some((p) => p.endsWith('/') && (`${dir}/` === p || dir.startsWith(p)))) elem = null;
+    }
     if (elem !== d.dropElem) {
       if (d.dropElem) {
         d.dropElem.classList.remove('drop');
@@ -258,7 +327,7 @@ export function createDragReorder({
           previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
         }
       }
-      if (d.ghost) d.ghost.style.transform = d.dropElem ? `scale(${OVER_TARGET_SCALE})` : '';
+      if (d.ghost) d.ghost.style.transform = d.dropElem ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
       if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
@@ -327,6 +396,12 @@ export function createDragReorder({
 
   const onDragUp = () => endDrag(true);
   const onDragCancel = () => endDrag(false);
+  /** @param {KeyboardEvent} e */
+  const onDragKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    endDrag(false);
+  };
 
   /**
    * The ghost's pages as they are drawn now, front first.
@@ -334,7 +409,7 @@ export function createDragReorder({
    * @returns {Array<{relPath: string, img: HTMLImageElement, from: {left: number, top: number, width: number, height: number}, rot: number, opacity: number}>}
    */
   const ghostPages = (d) => {
-    if (!d.ghost || d.isRow) return [];
+    if (!d.ghost || d.isRow || d.isDir) return [];
     const lift = d.ghost.querySelector('.scribe-ghost-lift');
     const scale = (new DOMMatrix(getComputedStyle(d.ghost).transform).a || 1) * (lift ? new DOMMatrix(getComputedStyle(lift).transform).a || 1 : 1);
     const cards = [...d.ghost.querySelectorAll('.scribe-ghost-card')].reverse();
@@ -429,7 +504,7 @@ export function createDragReorder({
    * @param {string[]} [still] - Items to leave un-slid.
    */
   const renderWithSlide = (still = []) => {
-    const SEL = '[data-band="main-grid"] > .scribe-library-card, [data-band="rows"] > .scribe-library-row';
+    const SEL = '[data-band="folders-grid"] > .scribe-library-card, [data-band="main-grid"] > .scribe-library-card, [data-band="rows"] > .scribe-library-row';
     const beforeRects = new Map();
     for (const el of body.querySelectorAll(SEL)) beforeRects.set(/** @type {HTMLElement} */ (el).dataset.relPath, el.getBoundingClientRect());
     renderPending = false;
@@ -466,14 +541,15 @@ export function createDragReorder({
    */
   const settleBack = async (d) => {
     const release = () => {
-      for (const p of d.carried) elemOf(d, p)?.classList.remove('dragging');
+      for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
     };
     if (!d.ghost) {
       release();
       return;
     }
-    if (d.isRow) {
-      await glideRowGhost(d, d.cardElem.getBoundingClientRect(), false, REORDER_SLIDE_MS);
+    if (d.isRow || d.isDir) {
+      const home = d.isDir ? (d.cardElem.querySelector('.scribe-library-fold') ?? d.cardElem) : d.cardElem;
+      await glideRowGhost(d, home.getBoundingClientRect(), false, REORDER_SLIDE_MS);
       release();
       return;
     }
@@ -486,7 +562,7 @@ export function createDragReorder({
     /** @type {Parameters<typeof flyCopies>[0]} */
     const flights = [];
     for (const page of pages) {
-      const home = elemOf(d, page.relPath)?.querySelector('img.thumb');
+      const home = elemOf(page.relPath)?.querySelector('img.thumb');
       if (!home) continue;
       flights.push({
         img: page.img, from: page.from, to: home.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain',
@@ -497,25 +573,25 @@ export function createDragReorder({
   };
 
   /**
-   * Move the carried documents into the dropped-on folder or crumb while their pages fly into it.
+   * Move the carried items into the dropped-on folder or crumb while the hand flies into it.
    * @param {CardDrag} d
    */
   const commitMove = async (d) => {
     const target = /** @type {HTMLElement} */ (d.dropElem);
     const destDir = /** @type {string} */ (d.dropDir);
     const manifest = getManifest();
-    const store = getStore();
     const isFolder = target.classList.contains('folder');
+    const docs = d.carried.filter((p) => !p.endsWith('/'));
     if (isFolder) {
-      const entries = d.carried.map((p) => manifest?.docs[p]).filter((e) => !!e);
+      const entries = docs.map((p) => manifest?.docs[p]).filter((e) => !!e);
       startLanding(destDir, /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
     }
     /** @type {Map<string, string>} */
-    const hashByPath = new Map(d.carried.map((p) => [p, manifest?.docs[p]?.hash ?? '']));
+    const hashByPath = new Map(docs.map((p) => [p, manifest?.docs[p]?.hash ?? '']));
     const spotOf = landingSpots(target, hashByPath);
     /** @type {Promise<void>} */
     let flight;
-    if (d.isRow) {
+    if (d.isRow || d.isDir) {
       const spot = spotOf(d.relPath);
       flight = glideRowGhost(d, spot.to, true, FOLDER_FLY_MS);
     } else {
@@ -528,47 +604,16 @@ export function createDragReorder({
         };
       }), FOLDER_FLY_MS);
     }
-    /** @type {Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>} */
-    const moves = [];
-    /** @type {string[]} */
-    const failed = [];
-    if (manifest && store) {
-      let writable = false;
-      try {
-        writable = await store.ensureWritable();
-        if (!writable) viewer._showToast(`Couldn't move ${d.carried.length === 1 ? `“${titleOf(d.relPath)}”` : `${d.carried.length} documents`} — editing ${store.root.name} wasn't allowed.`);
-      } catch (err) {
-        viewer._showToast(`Couldn't move ${d.carried.length === 1 ? `“${titleOf(d.relPath)}”` : `${d.carried.length} documents`} — ${err instanceof Error ? err.message : 'the folder could not be edited'}.`);
-      }
-      const stamp = Date.now();
-      for (const relPath of d.carried) {
-        const entry = manifest.docs[relPath];
-        if (!entry || !writable) {
-          failed.push(relPath);
-          continue;
-        }
-        try {
-          const moved = await store.moveFile(relPath, destDir);
-          delete manifest.docs[relPath];
-          manifest.docs[moved.relPath] = entry;
-          // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
-          entry.mtime = moved.mtime;
-          moves.push({
-            from: relPath, to: moved.relPath, hash: entry.hash, arrivedBefore: entry.arrived ?? null,
-          });
-          entry.arrived = stamp;
-          selectedPaths.delete(relPath);
-        } catch (err) {
-          viewer._showToast(`Couldn't move “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
-          failed.push(relPath);
-        }
-      }
-      if (moves.length) saveManifestSoon();
-    } else failed.push(...d.carried);
+    const pressed = d.isDir ? d.relPath.slice(0, -1) : d.relPath;
+    const cut = pressed.lastIndexOf('/');
+    const fromDir = cut < 0 ? '' : pressed.slice(0, cut);
+    const { moves, failed } = await moveItems(d.carried, destDir);
+    // The render below draws a vacated slot, so a crumb drop records its undo first.
+    if (!isFolder) finishLanding(destDir, moves, fromDir);
     renderWithSlide();
-    for (const p of failed) body.querySelector(`[data-rel-path="${CSS.escape(p)}"]`)?.classList.remove('dragging');
+    for (const p of failed) elemOf(p)?.classList.remove('dragging');
     await flight;
-    if (isFolder) finishLanding(destDir, moves);
+    if (isFolder) finishLanding(destDir, moves, fromDir);
     else target.classList.remove('drop');
   };
 
@@ -628,6 +673,7 @@ export function createDragReorder({
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup', onDragUp);
     window.removeEventListener('pointercancel', onDragCancel);
+    window.removeEventListener('keydown', onDragKey);
     document.removeEventListener('touchmove', blockTouchScroll);
     if (d.rafId) cancelAnimationFrame(d.rafId);
     d.line?.remove();
@@ -650,7 +696,7 @@ export function createDragReorder({
       // A lift released without ever dragging opens the card menu, the touch home for Remove.
       if (commit && !d.moved) {
         d.ghost?.remove();
-        for (const p of d.carried) elemOf(d, p)?.classList.remove('dragging');
+        for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
         if (renderPending) {
           renderPending = false;
           render();
@@ -691,6 +737,7 @@ export function createDragReorder({
       relPath,
       cardElem: card,
       isRow: false,
+      isDir: relPath.endsWith('/'),
       carried: [relPath],
       fan: [],
       startX: e.clientX,
@@ -699,7 +746,7 @@ export function createDragReorder({
       lastY: e.clientY,
       started: false,
       moved: false,
-      canReorder: reorderAllowed(),
+      canReorder: reorderAllowed() && !relPath.endsWith('/'),
       dropDir: null,
       dropElem: null,
       ghost: null,
@@ -725,10 +772,13 @@ export function createDragReorder({
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragUp);
     window.addEventListener('pointercancel', onDragCancel);
+    window.addEventListener('keydown', onDragKey);
   };
 
   return {
     beginCardDrag,
+
+    renderWithSlide: () => renderWithSlide(),
 
     /**
      * Adopt the freshly rendered main grid as the reorder base.

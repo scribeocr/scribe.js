@@ -150,6 +150,12 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  */
 
 /**
+ * One item a drop or a Move to... moved, kept while the move can be taken back.
+ * A folder's `index` is its place among its old siblings, for the placeholder that keeps its slot.
+ * @typedef {{kind: 'doc', from: string, to: string, hash: string, arrivedBefore: ?number} | {kind: 'dir', from: string, to: string, index: number}} LibraryMove
+ */
+
+/**
  * List-view columns, left to right, per view mode.
  * Name carries no `def` because it is sized to fill whatever the other columns leave.
  */
@@ -256,11 +262,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-card:not(.folder)::before { content: ''; position: absolute; left: 0; top: 0; width: 100%; aspect-ratio: 3 / 4; z-index: 1; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); outline: 1.5px dashed var(--scribe-accent); outline-offset: -7.5px; border-radius: 2px; opacity: 0; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-card.dragging::before { opacity: 1; transition: opacity 140ms ease; }
-@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-card.dragging::before { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-card.dragging::before, .scribe-pdf-viewer .scribe-library-card.folder.dragging .fstrip::before { transition: none; } }
 .scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
 .scribe-library-ghost { position: fixed; z-index: 9999; pointer-events: none; font-size: 14px; color: var(--scribe-ink); }
 .scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
 .scribe-library-ghost .row-ghost .scribe-library-row { border-bottom: none; }
+.scribe-library-ghost .fold-ghost { position: absolute; left: 0; top: 0; display: block; }
+.scribe-library-ghost .fold-ghost > .scribe-library-fold { filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .38)); }
+.scribe-library-ghost .fold-label { position: absolute; left: 50%; transform: translateX(-50%); width: max-content; max-width: 190px; padding: 2px 8px; border-radius: 5px; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 12.5px; font-weight: 600; line-height: 18px; box-shadow: 0 1px 2px rgba(20, 30, 60, .14), 0 3px 10px rgba(20, 30, 60, .18); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5; }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-marquee { position: absolute; z-index: 5; pointer-events: none; box-sizing: border-box; background: color-mix(in srgb, var(--scribe-accent) 20%, transparent); border: 1px solid var(--scribe-accent); }
 /* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
@@ -442,7 +451,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.folder.landed, .scribe-pdf-viewer .scribe-library-row.folder.landed { transition: background-color 400ms ease, border-color 400ms ease, box-shadow 400ms ease; }
 /* A drop's undo line that wraps can grow the card while it shows, pushing down everything below. */
 .scribe-pdf-viewer .scribe-library-card.folder .meta.live { opacity: 1; color: var(--scribe-ink-2); flex-wrap: nowrap; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-card.folder .meta.live > :last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta.live > .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta.live > .undo { flex: none; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo, .scribe-pdf-viewer .scribe-library-row.folder .undo { color: var(--scribe-accent); font-weight: 600; cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-card.folder .meta .undo:hover, .scribe-pdf-viewer .scribe-library-row.folder .undo:hover { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-fold .paper, .scribe-pdf-viewer .scribe-library-fold .paper img, .scribe-pdf-viewer .scribe-library-fold .paper::after, .scribe-pdf-viewer .scribe-library-fold .front { transition: none; } }
@@ -459,6 +469,37 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip { position: relative; }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip::before { content: ''; position: absolute; left: calc(50% - 75px); top: 11px; width: 150px; height: 68px; box-sizing: border-box; border: 1.5px dashed var(--scribe-accent); border-radius: 4px; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); opacity: 0; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-card.folder.dragging .fstrip::before { opacity: 1; transition: opacity 140ms ease; }
+.scribe-pdf-viewer .scribe-library-card.folder.dragging .fstrip > .scribe-library-fold { visibility: hidden; }
+.scribe-pdf-viewer .scribe-library-card.folder.vacated { border-style: dashed; cursor: default; }
+.scribe-pdf-viewer .scribe-library-card.folder.vacated:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
+.scribe-pdf-viewer .scribe-library-card.folder.vacated .scribe-library-fold, .scribe-pdf-viewer .scribe-library-row.folder.vacated .scribe-library-fold { opacity: .35; }
+.scribe-pdf-viewer .scribe-library-card.folder.vacated .title, .scribe-pdf-viewer .scribe-library-row.folder.vacated .t { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-row.folder.vacated { cursor: default; }
+.scribe-pdf-viewer .scribe-library-row.folder.vacated:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-picker { position: absolute; z-index: 66; width: 300px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; line-height: 18px; color: var(--scribe-ink); -webkit-user-select: none; user-select: none; }
+.scribe-pdf-viewer .scribe-library-picker .pk-head { display: flex; align-items: center; gap: 8px; padding: 9px 8px 7px 12px; cursor: grab; border-bottom: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-picker .pk-head.dragging { cursor: grabbing; }
+.scribe-pdf-viewer .scribe-library-picker .pk-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-picker .pk-x { width: 22px; height: 22px; border: none; background: none; border-radius: 5px; color: var(--scribe-ink-3); font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-picker .pk-x:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-picker .scribe-library-field { margin: 8px 8px 4px; width: auto; }
+.scribe-pdf-viewer .scribe-library-picker .scribe-library-search { width: 100%; }
+.scribe-pdf-viewer .scribe-library-picker .pk-tree { max-height: 220px; overflow-y: auto; padding: 2px 4px 4px; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px 0 calc(8px + var(--lvl, 0) * 16px); border-radius: 4px; cursor: pointer; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-picker .pk-row.on { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-picker .pk-row.off { color: var(--scribe-ink-3); cursor: default; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row.off:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row .fi { width: 15px; height: 15px; display: inline-flex; color: var(--scribe-ink-2); flex: none; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row.off .fi { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-picker .pk-row .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-picker .pk-row .m { margin-left: auto; font-size: 11.5px; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-picker .pk-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-picker .pk-foot .scribe-library-btn { padding: 5px 12px; }
+.scribe-pdf-viewer .scribe-library-picker .pk-foot .scribe-library-btn:disabled { opacity: .5; cursor: default; }
 .scribe-pdf-viewer .scribe-library-rename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px -4px; width: calc(100% + 8px); min-width: 0; }
 .scribe-pdf-viewer .scribe-library-card .title:has(> .scribe-library-rename), .scribe-pdf-viewer .scribe-library-row .nm:has(.scribe-library-rename) { overflow: visible; }
 .scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { display: block; field-sizing: content; max-height: calc(2lh + 2px); resize: none; overflow: hidden; }
@@ -2123,7 +2164,7 @@ export function createLibraryInstance(viewer, opts) {
     else if (fullTextResults) renderKey = 'results';
     else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
     const renderSig = emptyLib ? 'empty-lib'
-      : `r${recent.length ? 1 : 0}d${shownDirs.length ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
+      : `r${recent.length ? 1 : 0}d${shownDirs.length || vacatedHere() ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
     // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
     if (store && manifest && !fullTextResults && !storageOpen && !emptyLib
@@ -2138,8 +2179,10 @@ export function createLibraryInstance(viewer, opts) {
         const dirGrid = band('folders-grid');
         if (dirGrid) {
           const dirLabel = band('folders-label');
-          if (dirLabel) dirLabel.textContent = `Folders · ${shownDirs.length}`;
-          syncKeyedChildren(dirGrid, shownDirs, (d) => `${d}/`, (d) => buildFolderCard(d), (node, d) => updateFolderCard(node, d));
+          if (dirLabel) dirLabel.textContent = foldersLabel(shownDirs);
+          syncKeyedChildren(dirGrid, withVacated(shownDirs), (d) => (d === VACATED ? VACATED : `${d}/`), (d) => (d === VACATED ? buildVacatedCard() : buildFolderCard(d)), (node, d) => {
+            if (d !== VACATED) updateFolderCard(node, d);
+          });
         }
         const docLabel = band('docs-label');
         if (docLabel) docLabel.textContent = `Documents · ${shown.length}`;
@@ -2155,6 +2198,7 @@ export function createLibraryInstance(viewer, opts) {
         if (rowsElem) {
           syncKeyedChildren(rowsElem, listItems(shownDirs, shown, shownOthers), ([kind, v]) => {
             if (kind === 'head') return v[0];
+            if (kind === 'vacated') return VACATED;
             if (kind === 'dir') return `${v}/`;
             return kind === 'doc' ? v[0] : v;
           }, buildListItem, (node, [kind, v]) => {
@@ -2370,16 +2414,16 @@ export function createLibraryInstance(viewer, opts) {
       }
     }
 
-    if (shownDirs.length) {
+    if (shownDirs.length || vacatedHere()) {
       const dirLabel = document.createElement('div');
       dirLabel.className = 'scribe-library-section-label';
       dirLabel.dataset.band = 'folders-label';
-      dirLabel.textContent = `Folders · ${shownDirs.length}`;
+      dirLabel.textContent = foldersLabel(shownDirs);
       body.appendChild(dirLabel);
       const dirGrid = document.createElement('div');
       dirGrid.className = 'scribe-library-grid folders';
       dirGrid.dataset.band = 'folders-grid';
-      for (const dir of shownDirs) dirGrid.appendChild(buildFolderCard(dir));
+      for (const d of withVacated(shownDirs)) dirGrid.appendChild(d === VACATED ? buildVacatedCard() : buildFolderCard(d));
       body.appendChild(dirGrid);
       if (shown.length) {
         const docLabel = document.createElement('div');
@@ -2745,6 +2789,7 @@ export function createLibraryInstance(viewer, opts) {
     if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
       if (!readOnly) addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
+      if (!readOnly) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
       const docsUnder = Object.keys(manifest.docs).filter((p) => p.startsWith(relPath));
       addIndexItem(docsUnder);
       addRecognizeItem(docsUnder);
@@ -2771,6 +2816,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!paths.length) openItem.classList.add('disabled');
       addItem(all.length === 1 ? 'Save a copy…' : 'Save copies…', false, () => saveCopies(all));
       addItem(all.length === 1 ? 'Copy name' : 'Copy names', false, () => navigator.clipboard?.writeText(all.map(titleOf).join('\n')).catch(() => {}));
+      if (!readOnly && paths.length) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
       addIndexItem(paths);
       addRecognizeItem(paths);
       const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
@@ -3209,8 +3255,9 @@ export function createLibraryInstance(viewer, opts) {
   const landings = new Map();
 
   /**
-   * The move a drag just landed, shown on its folder as "Moved N here · Undo" until the timer runs out.
-   * @type {?{dir: string, moves: Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>}}
+   * The last move, while it can still be taken back.
+   * `slot` is the place a moved folder left when its destination is off screen, where a placeholder carries the undo line.
+   * @type {?{dir: string, moves: LibraryMove[], slot: ?{dir: string, index: number, name: string, text: string}}}
    */
   let undoInfo = null;
   let undoTimer = 0;
@@ -3218,6 +3265,117 @@ export function createLibraryInstance(viewer, opts) {
     window.clearTimeout(undoTimer);
     undoTimer = 0;
     undoInfo = null;
+  };
+
+  // The vacated slot's key starts with NUL, which no path can contain.
+  const VACATED = '\u0000vacated';
+  const vacatedHere = () => (undoInfo?.slot && undoInfo.slot.dir === currentDir ? undoInfo.slot : null);
+  /** @param {string[]} dirs */
+  const withVacated = (dirs) => {
+    const slot = vacatedHere();
+    if (!slot) return dirs;
+    const out = dirs.slice();
+    out.splice(Math.max(0, Math.min(slot.index, out.length)), 0, VACATED);
+    return out;
+  };
+  /** @param {string[]} dirs */
+  const foldersLabel = (dirs) => (dirs.length ? `Folders · ${dirs.length}` : 'Folders');
+
+  /**
+   * @param {HTMLElement} host
+   * @param {string} text
+   */
+  const fillUndoLine = (host, text) => {
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = text;
+    t.title = text;
+    host.appendChild(t);
+    const sep = document.createElement('span');
+    sep.textContent = '·';
+    host.appendChild(sep);
+    const undo = document.createElement('span');
+    undo.className = 'undo';
+    undo.textContent = 'Undo';
+    undo.setAttribute('role', 'button');
+    undo.tabIndex = 0;
+    undo.addEventListener('pointerdown', (e) => e.stopPropagation());
+    undo.addEventListener('click', (e) => {
+      e.stopPropagation();
+      undoMoves();
+    });
+    undo.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        undoMoves();
+      }
+    });
+    host.appendChild(undo);
+  };
+
+  const buildVacatedCard = () => {
+    const slot = /** @type {NonNullable<ReturnType<typeof vacatedHere>>} */ (vacatedHere());
+    const card = document.createElement('div');
+    card.className = 'scribe-library-card folder vacated';
+    card.dataset.key = VACATED;
+    const strip = document.createElement('div');
+    strip.className = 'fstrip';
+    strip.appendChild(buildFold([]));
+    card.appendChild(strip);
+    const cardBody = document.createElement('div');
+    cardBody.className = 'body';
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = slot.name;
+    cardBody.appendChild(title);
+    const meta = document.createElement('div');
+    meta.className = 'meta live';
+    fillUndoLine(meta, slot.text);
+    cardBody.appendChild(meta);
+    card.appendChild(cardBody);
+    return card;
+  };
+
+  const buildVacatedRow = () => {
+    const slot = /** @type {NonNullable<ReturnType<typeof vacatedHere>>} */ (vacatedHere());
+    const comfortable = viewMode === 'list';
+    const row = document.createElement('div');
+    row.className = comfortable ? 'scribe-library-row cf folder vacated' : 'scribe-library-row folder vacated';
+    row.dataset.key = VACATED;
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const title = document.createElement('span');
+    title.className = 't';
+    title.textContent = slot.name;
+    if (comfortable) {
+      const thumb = document.createElement('span');
+      thumb.className = 'fthumb';
+      thumb.appendChild(buildFold([], true));
+      nm.appendChild(thumb);
+      const stack = document.createElement('span');
+      stack.className = 'tt';
+      stack.appendChild(title);
+      const line = document.createElement('span');
+      line.className = 'm2 live';
+      fillUndoLine(line, slot.text);
+      stack.appendChild(line);
+      nm.appendChild(stack);
+    } else {
+      nm.appendChild(title);
+      const line = document.createElement('span');
+      line.className = 'cnt live';
+      fillUndoLine(line, slot.text);
+      nm.appendChild(line);
+    }
+    row.appendChild(nm);
+    for (let i = 0; i < 3; i++) {
+      const cell = document.createElement('span');
+      cell.className = 'none';
+      cell.textContent = '—';
+      row.appendChild(cell);
+    }
+    return row;
   };
 
   /**
@@ -3231,29 +3389,8 @@ export function createLibraryInstance(viewer, opts) {
     host.classList.remove('hasatt', 'live');
     if (undoInfo && undoInfo.dir === dirPath) {
       host.classList.add('live');
-      const n = undoInfo.moves.length;
-      host.appendChild(document.createTextNode(`Moved ${n} here`));
-      const sep = document.createElement('span');
-      sep.textContent = '·';
-      host.appendChild(sep);
-      const undo = document.createElement('span');
-      undo.className = 'undo';
-      undo.textContent = 'Undo';
-      undo.setAttribute('role', 'button');
-      undo.tabIndex = 0;
-      undo.addEventListener('pointerdown', (e) => e.stopPropagation());
-      undo.addEventListener('click', (e) => {
-        e.stopPropagation();
-        undoMoves();
-      });
-      undo.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          e.stopPropagation();
-          undoMoves();
-        }
-      });
-      host.appendChild(undo);
+      const dirs = undoInfo.moves.filter((m) => m.kind === 'dir').length;
+      fillUndoLine(host, dirs === undoInfo.moves.length ? `Moved ${dirs} folder${dirs === 1 ? '' : 's'}` : `Moved ${undoInfo.moves.length} here`);
       return;
     }
     const parts = [];
@@ -3332,59 +3469,78 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Settle a folder once the pages are in.
-   * @param {string} dirPath
-   * @param {Array<{from: string, to: string, hash: string, arrivedBefore: ?number}>} moves - What landed, for the undo line; empty when no file moved.
+   * Record a landed move and show where it can be taken back.
+   * Call it before the render that follows the move, except after a drop on a folder, where it ends the hover face once the flight lands.
+   * @param {string} dirPath - The destination.
+   * @param {LibraryMove[]} moves - Empty when nothing moved.
+   * @param {string} fromDir - The directory the items came from.
    */
-  const finishLanding = (dirPath, moves) => {
+  const finishLanding = (dirPath, moves, fromDir) => {
     landings.delete(dirPath);
     const elem = folderElemOf(dirPath);
-    if (!elem) return;
-    const redraw = () => (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath);
+    const redraw = () => {
+      if (elem) (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath);
+    };
     if (!moves.length) {
-      elem.classList.remove('drop');
+      elem?.classList.remove('drop');
       redraw();
       return;
     }
-    for (const paper of elem.querySelectorAll('.paper.reserved')) {
-      const img = /** @type {?HTMLImageElement} */ (paper.querySelector('img'));
-      if (img) {
-        img.style.opacity = '1';
-        img.style.filter = 'none';
+    if (elem) {
+      for (const paper of elem.querySelectorAll('.paper.reserved')) {
+        const img = /** @type {?HTMLImageElement} */ (paper.querySelector('img'));
+        if (img) {
+          img.style.opacity = '1';
+          img.style.filter = 'none';
+        }
+        paper.classList.remove('reserved');
       }
-      paper.classList.remove('reserved');
+      // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
+      if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */ (a).style.left) - parseFloat(/** @type {HTMLElement} */ (b).style.left)).map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
+      elem.classList.add('landed');
+      elem.classList.remove('drop');
     }
-    // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
-    if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */ (a).style.left) - parseFloat(/** @type {HTMLElement} */ (b).style.left)).map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
-    elem.classList.add('landed');
-    elem.classList.remove('drop');
     const priorDir = undoInfo?.dir;
     clearUndo();
-    undoInfo = { dir: dirPath, moves };
+    const firstDir = moves.find((m) => m.kind === 'dir');
+    undoInfo = {
+      dir: dirPath,
+      moves,
+      slot: !elem && firstDir && fromDir === currentDir
+        ? {
+          dir: fromDir,
+          index: firstDir.index,
+          name: titleOf(firstDir.from),
+          text: `Now in ${[store?.root.name ?? opts.name, ...(dirPath ? dirPath.split('/') : [])].join(' › ')}`,
+        }
+        : null,
+    };
     // The folder that showed the last drop's undo line goes back to its tallies, so its Undo cannot take back this drop instead.
     const prior = priorDir !== undefined && priorDir !== dirPath ? folderElemOf(priorDir) : null;
     if (prior) (prior.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(prior, prior.dataset.dirTarget ?? '');
     undoTimer = window.setTimeout(() => {
       clearUndo();
-      const now = folderElemOf(dirPath);
-      if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, dirPath);
+      // Only a render removes a vacated slot.
+      drag.renderWithSlide();
     }, 8000);
-    window.setTimeout(() => {
-      elem.classList.remove('landed');
-      redraw();
-    }, 420);
+    if (elem) {
+      window.setTimeout(() => {
+        elem.classList.remove('landed');
+        redraw();
+      }, 420);
+    }
   };
 
   /** @param {string} dirPath */
   const folderElemOf = (dirPath) => /** @type {?HTMLElement} */ (body.querySelector(`.scribe-library-card.folder[data-dir-target="${CSS.escape(dirPath)}"], .scribe-library-row.folder[data-dir-target="${CSS.escape(dirPath)}"]`));
 
-  /** Take back the drop the undo line stands for. */
+  /** Take back the move the undo line stands for. */
   const undoMoves = async () => {
     const info = undoInfo;
     if (!info || !store || !manifest || fsOpBusy) return;
     clearUndo();
     const order = coverOrder.get(info.dir);
-    if (order) coverOrder.set(info.dir, order.filter((hash) => !info.moves.some((move) => move.hash === hash)));
+    if (order) coverOrder.set(info.dir, order.filter((hash) => !info.moves.some((move) => move.kind === 'doc' && move.hash === hash)));
     const host = folderElemOf(info.dir);
     /** @type {Map<string, DOMRect>} */
     const starts = new Map();
@@ -3395,19 +3551,37 @@ export function createLibraryInstance(viewer, opts) {
     }
     /** @type {Array<{hash: string, relPath: string}>} */
     const restored = [];
+    /** @type {string[]} */
+    const restoredDirs = [];
     if (!(await store.ensureWritable())) {
       viewer._showToast(`Couldn't move them back — editing ${store.root.name} wasn't allowed.`);
-      // The undo is spent, so the folder shows its tallies rather than an Undo that no longer acts.
-      const now = folderElemOf(info.dir);
-      if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, info.dir);
+      // The undo is spent, so a render takes away its line and any vacated slot.
+      drag.renderWithSlide();
       return;
     }
+    fsOpBusy = true;
+    if (ingest) ingest.paused = true;
+    let partial = false;
     for (const move of info.moves) {
+      const cut = move.from.lastIndexOf('/');
+      const backDir = cut < 0 ? '' : move.from.slice(0, cut);
+      if (move.kind === 'dir') {
+        try {
+          // The folder takes its old name back, unless something else took it meanwhile.
+          const back = await store.moveDir(move.to, backDir, titleOf(move.from));
+          rekeyDirRecords(move.to, back.relPath, back.mtimes);
+          selectedPaths.add(`${back.relPath}/`);
+          restoredDirs.push(back.relPath);
+        } catch (err) {
+          partial = true;
+          viewer._showToast(`Couldn't move “${titleOf(move.to)}” back — ${err instanceof Error ? err.message : 'the folder could not be moved'}.`);
+        }
+        continue;
+      }
       const entry = manifest.docs[move.to];
       if (!entry) continue;
       try {
-        const cut = move.from.lastIndexOf('/');
-        const back = await store.moveFile(move.to, cut < 0 ? '' : move.from.slice(0, cut));
+        const back = await store.moveFile(move.to, backDir);
         delete manifest.docs[move.to];
         manifest.docs[back.relPath] = entry;
         entry.mtime = back.mtime;
@@ -3419,11 +3593,21 @@ export function createLibraryInstance(viewer, opts) {
         viewer._showToast(`Couldn't move “${titleOf(move.to)}” back — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
       }
     }
-    saveManifestSoon();
+    try {
+      await store.writeManifest(manifest);
+    } catch {
+      saveManifestSoon();
+    }
+    if (ingest) ingest.paused = false;
+    // A failed folder transfer may have left a partial tree, and a scan reconciles whatever state the disk is in.
+    if (partial) await ingest?.scan().catch(() => { });
+    fsOpBusy = false;
+    ingest?.start();
     const now = folderElemOf(info.dir);
     if (now) (now.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(now, info.dir);
-    render();
+    drag.renderWithSlide();
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const dir of restoredDirs) folderElemOf(dir)?.animate([{ opacity: 0.2 }, { opacity: 1 }], { duration: FOLDER_FLY_MS, easing: 'ease' });
     /** @type {Parameters<typeof flyCopies>[0]} */
     const flights = [];
     /** @type {HTMLImageElement[]} */
@@ -3455,6 +3639,7 @@ export function createLibraryInstance(viewer, opts) {
     card.dataset.relPath = `${dirPath}/`;
     card.dataset.key = `${dirPath}/`;
     card.dataset.dirTarget = dirPath;
+    card.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, `${dirPath}/`, card));
 
     const strip = document.createElement('div');
     strip.className = 'fstrip';
@@ -3738,6 +3923,7 @@ export function createLibraryInstance(viewer, opts) {
     row.dataset.relPath = `${dirPath}/`;
     row.dataset.key = `${dirPath}/`;
     row.dataset.dirTarget = dirPath;
+    row.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, `${dirPath}/`, row));
 
     const nm = document.createElement('span');
     nm.className = 'nm';
@@ -3872,9 +4058,9 @@ export function createLibraryInstance(viewer, opts) {
    */
   const listItems = (shownDirs, shown, shownOthers) => [
     // Heading keys start with NUL, which no path can contain.
-    ...(shownDirs.length ? [['head', ['\u0000folders', `Folders · ${shownDirs.length}`]]] : []),
-    ...shownDirs.map((d) => ['dir', d]),
-    ...(shownDirs.length && shown.length ? [['head', ['\u0000docs', `Documents · ${shown.length}`]]] : []),
+    ...(shownDirs.length || vacatedHere() ? [['head', ['\u0000folders', foldersLabel(shownDirs)]]] : []),
+    ...withVacated(shownDirs).map((d) => (d === VACATED ? ['vacated', d] : ['dir', d])),
+    ...((shownDirs.length || vacatedHere()) && shown.length ? [['head', ['\u0000docs', `Documents · ${shown.length}`]]] : []),
     ...shown.map((pe) => ['doc', pe]),
     ...(shownOthers.length ? [['head', ['\u0000others', 'Other files']]] : []),
     ...shownOthers.map((p) => ['other', p]),
@@ -3889,6 +4075,7 @@ export function createLibraryInstance(viewer, opts) {
       heading.textContent = v[1];
       return heading;
     }
+    if (kind === 'vacated') return buildVacatedRow();
     if (kind === 'dir') return buildFolderRow(v);
     return kind === 'doc' ? buildRow(v[0], v[1]) : buildOtherRow(v);
   };
@@ -4024,11 +4211,33 @@ export function createLibraryInstance(viewer, opts) {
       ingest?.start();
       return;
     }
+    rekeyDirRecords(oldDirPath, newDirPath, mtimes);
+    try {
+      await store.writeManifest(manifest);
+    } catch {
+      saveManifestSoon();
+    }
+    if (ingest) ingest.paused = false;
+    fsOpBusy = false;
+    render();
+    ingest?.start();
+  };
+
+  /**
+   * Re-key every path-shaped record under `oldDirPath` once the folder lives at `newDirPath` on disk.
+   * @param {string} oldDirPath
+   * @param {string} newDirPath
+   * @param {Map<string, number>} mtimes - Timestamp of every transferred file, keyed by its new relative path.
+   */
+  const rekeyDirRecords = (oldDirPath, newDirPath, mtimes) => {
+    if (!manifest) return;
     /** @param {string} p */
     const rekey = (p) => {
       if (p === oldDirPath) return newDirPath;
       return p.startsWith(`${oldDirPath}/`) ? newDirPath + p.slice(oldDirPath.length) : p;
     };
+    /** @param {string} key */
+    const rekeyKey = (key) => (key.endsWith('/') ? `${rekey(key.slice(0, -1))}/` : rekey(key));
     // No await may land inside this re-key, or the artifact sweep could observe an entry-less hash and delete its data files.
     for (const p of Object.keys(manifest.docs)) {
       const np = rekey(p);
@@ -4044,20 +4253,323 @@ export function createLibraryInstance(viewer, opts) {
     ingest?.renameDirPrefix(oldDirPath, newDirPath);
     const selected = [...selectedPaths];
     selectedPaths.clear();
-    for (const p of selected) selectedPaths.add(p.endsWith('/') ? `${rekey(p.slice(0, -1))}/` : rekey(p));
-    if (selAnchor) selAnchor = selAnchor.endsWith('/') ? `${rekey(selAnchor.slice(0, -1))}/` : rekey(selAnchor);
+    for (const p of selected) selectedPaths.add(rekeyKey(p));
+    if (selAnchor) selAnchor = rekeyKey(selAnchor);
     if (listPreviewPath) listPreviewPath = rekey(listPreviewPath);
     for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath) t.libraryRelPath = rekey(t.libraryRelPath);
     currentDir = rekey(currentDir);
+    for (const a of justAdded) a.relPath = rekey(a.relPath);
+    for (const [dir, order] of [...coverOrder]) {
+      if (rekey(dir) === dir) continue;
+      coverOrder.delete(dir);
+      coverOrder.set(rekey(dir), order);
+    }
+    if (undoInfo) {
+      undoInfo.dir = rekey(undoInfo.dir);
+      for (const m of undoInfo.moves) {
+        m.from = rekey(m.from);
+        m.to = rekey(m.to);
+      }
+      if (undoInfo.slot) undoInfo.slot.dir = rekey(undoInfo.slot.dir);
+    }
+  };
+
+  /**
+   * The card or row for `key` in the bands a drag carries from.
+   * @param {string} key
+   */
+  const bandElemOf = (key) => /** @type {?HTMLElement} */ (body.querySelector(['folders-grid', 'main-grid', 'rows'].map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(key)}"]`).join(', ')));
+
+  /**
+   * Move the documents and folders behind `keys` into `destDir`.
+   * @param {string[]} keys
+   * @param {string} destDir
+   * @returns {Promise<{moves: LibraryMove[], failed: string[]}>}
+   */
+  const moveItems = async (keys, destDir) => {
+    /** @type {LibraryMove[]} */
+    const moves = [];
+    if (!store || !manifest || fsOpBusy) return { moves, failed: keys };
+    const label = keys.length === 1 ? `“${titleOf(keys[0].endsWith('/') ? keys[0].slice(0, -1) : keys[0])}”` : `${keys.length} items`;
+    let writable = false;
     try {
-      await store.writeManifest(manifest);
-    } catch {
-      saveManifestSoon();
+      writable = await store.ensureWritable();
+      if (!writable) viewer._showToast(`Couldn't move ${label} — editing ${store.root.name} wasn't allowed.`);
+    } catch (err) {
+      viewer._showToast(`Couldn't move ${label} — ${err instanceof Error ? err.message : 'the folder could not be edited'}.`);
+    }
+    if (!writable) return { moves, failed: keys };
+    /** @type {string[]} */
+    const failed = [];
+    fsOpBusy = true;
+    if (ingest) ingest.paused = true;
+    const stamp = Date.now();
+    let partial = false;
+    for (const key of keys) {
+      if (key.endsWith('/')) {
+        const dirPath = key.slice(0, -1);
+        // A vacated slot from the last move may still stand in the band, so the index counts real folders only.
+        const elem = bandElemOf(key);
+        const slotIndex = elem ? [...(elem.parentElement?.children ?? [])].filter((c) => c.classList.contains('folder') && !c.classList.contains('vacated')).indexOf(elem) : -1;
+        try {
+          const moved = await store.moveDir(dirPath, destDir);
+          rekeyDirRecords(dirPath, moved.relPath, moved.mtimes);
+          selectedPaths.delete(`${moved.relPath}/`);
+          moves.push({
+            kind: 'dir', from: dirPath, to: moved.relPath, index: slotIndex,
+          });
+        } catch (err) {
+          partial = true;
+          viewer._showToast(`Couldn't move “${titleOf(dirPath)}” — ${err instanceof Error ? err.message : 'the folder could not be moved'}.`);
+          failed.push(key);
+        }
+        continue;
+      }
+      const entry = manifest.docs[key];
+      if (!entry) {
+        failed.push(key);
+        continue;
+      }
+      try {
+        const moved = await store.moveFile(key, destDir);
+        delete manifest.docs[key];
+        manifest.docs[moved.relPath] = entry;
+        // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
+        entry.mtime = moved.mtime;
+        moves.push({
+          kind: 'doc', from: key, to: moved.relPath, hash: entry.hash, arrivedBefore: entry.arrived ?? null,
+        });
+        entry.arrived = stamp;
+        selectedPaths.delete(key);
+      } catch (err) {
+        viewer._showToast(`Couldn't move “${titleOf(key)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
+        failed.push(key);
+      }
+    }
+    if (moves.length) {
+      try {
+        await store.writeManifest(manifest);
+      } catch {
+        saveManifestSoon();
+      }
     }
     if (ingest) ingest.paused = false;
+    // A failed folder transfer may have left a partial tree, and a scan reconciles whatever state the disk is in.
+    if (partial) await ingest?.scan().catch(() => { });
     fsOpBusy = false;
-    render();
     ingest?.start();
+    return { moves, failed };
+  };
+
+  /**
+   * The documents and folders a menu action on `key` applies to.
+   * @param {string} key
+   */
+  const moveSetFor = (key) => {
+    if (!(selectedPaths.has(key) && selectedPaths.size >= 2)) return [key];
+    const chosen = [...body.querySelectorAll('[data-band="folders-grid"] > [data-rel-path], [data-band="main-grid"] > [data-rel-path], [data-band="rows"] > [data-rel-path]')]
+      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '')
+      .filter((p) => selectedPaths.has(p) && (p.endsWith('/') || !!manifest?.docs[p]));
+    return chosen.includes(key) ? chosen : [key];
+  };
+
+  /** @type {?HTMLElement} */
+  let movePicker = null;
+  const closeMovePicker = () => {
+    movePicker?.remove();
+    movePicker = null;
+  };
+
+  /**
+   * @param {string[]} keys
+   * @param {string} destDir
+   */
+  const commitMovePicker = async (keys, destDir) => {
+    const fromDir = currentDir;
+    const elems = keys.map(bandElemOf).filter((e) => !!e);
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      await Promise.all(elems.map((e) => e.animate([{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(.9)' }], { duration: 140, easing: 'ease', fill: 'forwards' }).finished));
+    }
+    const { moves } = await moveItems(keys, destDir);
+    if (!moves.length) {
+      for (const e of elems) for (const a of e.getAnimations()) a.cancel();
+      return;
+    }
+    finishLanding(destDir, moves, fromDir);
+    drag.renderWithSlide();
+  };
+
+  /**
+   * Open the Move to... picker beside `anchorElem`.
+   * @param {string[]} keys
+   * @param {HTMLElement} anchorElem
+   */
+  const openMovePicker = (keys, anchorElem) => {
+    closeMovePicker();
+    if (!store || !manifest || readOnly || renameEditing) return;
+    const fromDir = currentDir;
+    const rootName = store.root.name;
+    const dirKeys = keys.filter((k) => k.endsWith('/')).map((k) => k.slice(0, -1));
+    const panel = document.createElement('div');
+    panel.className = 'scribe-library-picker';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', 'Move to');
+    const head = document.createElement('div');
+    head.className = 'pk-head';
+    const title = document.createElement('span');
+    title.className = 'pk-title';
+    title.textContent = keys.length === 1 ? `Move “${titleOf(keys[0].endsWith('/') ? keys[0].slice(0, -1) : keys[0])}” to` : `Move ${keys.length} items to`;
+    head.appendChild(title);
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'pk-x';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close');
+    close.addEventListener('click', () => closeMovePicker());
+    head.appendChild(close);
+    panel.appendChild(head);
+    const field = document.createElement('div');
+    field.className = 'scribe-library-field';
+    field.innerHTML = FIELD_SEARCH_SVG;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'scribe-library-search';
+    input.placeholder = 'Filter folders';
+    input.setAttribute('aria-label', 'Filter folders');
+    field.appendChild(input);
+    panel.appendChild(field);
+    const tree = document.createElement('div');
+    tree.className = 'pk-tree';
+    tree.setAttribute('role', 'listbox');
+    /** @type {Map<string, string[]>} */
+    const children = new Map();
+    for (const dir of manifest.dirs ?? []) {
+      const cut = dir.lastIndexOf('/');
+      const parent = cut < 0 ? '' : dir.slice(0, cut);
+      children.set(parent, [...(children.get(parent) ?? []), dir]);
+    }
+    /** @type {HTMLElement[]} */
+    const rows = [];
+    /** @type {?HTMLElement} */
+    let current = null;
+    /** @param {?HTMLElement} row */
+    const select = (row) => {
+      for (const r of rows) r.classList.toggle('on', r === row);
+      current = row;
+      move.disabled = !row;
+      row?.scrollIntoView({ block: 'nearest' });
+    };
+    const choices = () => rows.filter((r) => !r.hidden && !r.classList.contains('off'));
+    const commit = () => {
+      if (!current) return;
+      const destDir = current.dataset.dir ?? '';
+      closeMovePicker();
+      commitMovePicker(keys, destDir);
+    };
+    /** @param {string} dir @param {number} level */
+    const addRows = (dir, level) => {
+      const row = document.createElement('div');
+      row.className = 'pk-row';
+      row.style.setProperty('--lvl', String(level));
+      row.dataset.dir = dir;
+      row.setAttribute('role', 'option');
+      const glyph = document.createElement('span');
+      glyph.className = 'fi';
+      glyph.innerHTML = FOLDER_SVG;
+      row.appendChild(glyph);
+      const name = document.createElement('span');
+      name.className = 'n';
+      name.textContent = dir ? titleOf(dir) : rootName;
+      row.appendChild(name);
+      const why = dir === fromDir ? 'current' : dirKeys.includes(dir) ? 'this folder' : dirKeys.some((d) => dir.startsWith(`${d}/`)) ? 'inside it' : '';
+      if (why) {
+        row.classList.add('off');
+        row.setAttribute('aria-disabled', 'true');
+        const m = document.createElement('span');
+        m.className = 'm';
+        m.textContent = why;
+        row.appendChild(m);
+      } else {
+        row.addEventListener('click', () => select(row));
+        row.addEventListener('dblclick', () => commit());
+      }
+      tree.appendChild(row);
+      rows.push(row);
+      for (const child of [...(children.get(dir) ?? [])].sort((a, b) => titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }))) addRows(child, level + 1);
+    };
+    const foot = document.createElement('div');
+    foot.className = 'pk-foot';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'scribe-library-btn';
+    cancel.textContent = 'Cancel';
+    cancel.addEventListener('click', () => closeMovePicker());
+    const move = document.createElement('button');
+    move.type = 'button';
+    move.className = 'scribe-library-btn primary';
+    move.textContent = 'Move';
+    move.disabled = true;
+    move.addEventListener('click', commit);
+    foot.append(cancel, move);
+    addRows('', 0);
+    panel.appendChild(tree);
+    panel.appendChild(foot);
+    input.addEventListener('input', () => {
+      const q = input.value.trim().toLowerCase();
+      for (const r of rows) r.hidden = !!q && !(r.querySelector('.n')?.textContent ?? '').toLowerCase().includes(q);
+      if (current?.hidden) select(choices()[0] ?? null);
+    });
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMovePicker();
+      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const v = choices();
+        if (!v.length) return;
+        const i = current ? v.indexOf(current) : -1;
+        if (i < 0) select(e.key === 'ArrowDown' ? v[0] : v[v.length - 1]);
+        else select(v[(i + (e.key === 'ArrowDown' ? 1 : v.length - 1)) % v.length]);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      }
+      // Without this, Ctrl+A in the filter selects every card.
+      e.stopPropagation();
+    });
+    head.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || (e.target instanceof Element && e.target.closest('button'))) return;
+      e.preventDefault();
+      head.classList.add('dragging');
+      const dx = e.clientX - panel.offsetLeft;
+      const dy = e.clientY - panel.offsetTop;
+      /** @param {PointerEvent} ev */
+      const onMove = (ev) => {
+        panel.style.left = `${ev.clientX - dx}px`;
+        panel.style.top = `${ev.clientY - dy}px`;
+      };
+      const onUp = () => {
+        head.classList.remove('dragging');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    });
+    for (const type of ['pointerdown', 'click', 'dblclick', 'contextmenu']) panel.addEventListener(type, (e) => e.stopPropagation());
+    surface.appendChild(panel);
+    movePicker = panel;
+    const hostRect = surface.getBoundingClientRect();
+    const a = anchorElem.getBoundingClientRect();
+    let left = a.right - hostRect.left + 8;
+    if (left + panel.offsetWidth > hostRect.width - 8) left = a.left - hostRect.left - panel.offsetWidth - 8;
+    if (left < 8) left = Math.max(8, hostRect.width - panel.offsetWidth - 8);
+    const top = Math.max(8, Math.min(a.top - hostRect.top, hostRect.height - panel.offsetHeight - 8));
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    input.focus();
   };
 
   /** Create a placeholder-named folder in the browsed directory and drop its card straight into rename. */
@@ -5399,7 +5911,6 @@ export function createLibraryInstance(viewer, opts) {
     body,
     selectedPaths,
     getManifest: () => manifest,
-    getStore: () => store,
     saveManifestSoon,
     render,
     openCardMenu,
@@ -5408,6 +5919,8 @@ export function createLibraryInstance(viewer, opts) {
     previewFolder,
     unpreviewFolder: (elem, dirPath) => (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath),
     startLanding,
+    moveItems,
+    foldFor: (dirPath, mini) => buildFold(dirStatsOf(dirPath).covers, mini),
     finishLanding,
   });
 
@@ -6075,6 +6588,7 @@ export function createLibraryInstance(viewer, opts) {
   /** Close the open folder, saving and closing the documents open from it. */
   const closeFolder = async () => {
     if (!store) return;
+    closeMovePicker();
     const folderTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
     for (const tab of folderTabs) await saveTabIfDirty(tab);
     ingest?.cancel();
@@ -6891,6 +7405,7 @@ export function createLibraryInstance(viewer, opts) {
       newDropdown.destroy();
       midDropdown?.destroy();
       folderMenu.remove();
+      closeMovePicker();
       viewer.pdfViewerElem.removeEventListener('scribe-menu-state-change', syncFolderRows);
       if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;
       const at = viewer._libraryInstances.indexOf(api);
