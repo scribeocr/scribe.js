@@ -1,4 +1,4 @@
-import { createSearchEngine } from './searchEngine.js';
+import { createSearchEngine, memoryStorage } from './searchEngine.js';
 
 /** @type {?ReturnType<typeof createSearchEngine>} */
 let engine = null;
@@ -133,9 +133,14 @@ globalThis.addEventListener('message', (e) => {
       if (op === 'open') {
         engine?.close();
         engine = null;
-        const root = await navigator.storage.getDirectory();
-        const dir = await (await (await root.getDirectoryHandle('libraries', { create: true })).getDirectoryHandle(args.libraryId, { create: true })).getDirectoryHandle('search', { create: true });
-        const opened = createSearchEngine(opfsStorage(dir), args.settings || {});
+        let storage;
+        if (args.libraryId === null) storage = memoryStorage();
+        else {
+          const root = await navigator.storage.getDirectory();
+          const dir = await (await (await root.getDirectoryHandle('libraries', { create: true })).getDirectoryHandle(args.libraryId, { create: true })).getDirectoryHandle('search', { create: true });
+          storage = opfsStorage(dir);
+        }
+        const opened = createSearchEngine(storage, args.settings || {});
         try {
           await opened.open();
         } catch (err) {
@@ -156,8 +161,7 @@ globalThis.addEventListener('message', (e) => {
         result = await engine.query(args.query, args.opts || {});
         if (engine.options.fallbackTiers) {
           globalThis.postMessage({ id, ok: true, result });
-          // A lone word has no near matches: every page holding the word is an exact page.
-          if ((engine.options.tiersSkipBounded && result.bounded) || result.terms.length < 2) {
+          if (engine.options.tiersSkipBounded && result.bounded) {
             globalThis.postMessage({
               id, phase: 'tiers', ok: true, result: null,
             });

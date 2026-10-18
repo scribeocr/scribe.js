@@ -14,8 +14,8 @@ export const createSearchClient = (settings = {}) => {
   const pending = new Map();
   /** @type {Map<number, (tiers: ?SearchResponse) => void>} */
   const tierHandlers = new Map();
-  /** @type {?string} */
-  let openLibraryId = null;
+  /** @type {?{libraryId: ?string}} */
+  let openArgs = null;
   let reopen = false;
   let terminated = false;
   /** @param {Error} err */
@@ -75,7 +75,7 @@ export const createSearchClient = (settings = {}) => {
       // The worker handles one message at a time, so a call that never settles would stall every later call until the worker is replaced.
       worker?.terminate();
       spawn();
-      reopen = openLibraryId !== null;
+      reopen = openArgs !== null;
       reject(new Error(`search worker: ${op} did not answer in ${Math.round(limit / 1000)} s`));
     }, limit);
     pending.set(id, { resolve, reject, timer });
@@ -98,7 +98,7 @@ export const createSearchClient = (settings = {}) => {
       else if (reopen) {
         reopen = false;
         try {
-          await call('open', { libraryId: openLibraryId, settings });
+          await call('open', { ...openArgs, settings });
         } catch (err) {
           reopen = true;
           throw new Error(`search worker: the replaced worker could not reopen the library: ${err instanceof Error ? err.message : err}`);
@@ -111,9 +111,9 @@ export const createSearchClient = (settings = {}) => {
   };
   return {
     settings,
-    /** @param {string} libraryId */
+    /** @param {?string} libraryId - Null keeps the index in memory, for a surface with no storage of its own. */
     open: (libraryId) => {
-      openLibraryId = libraryId;
+      openArgs = { libraryId };
       return serial('open', { libraryId, settings });
     },
     /**
@@ -156,7 +156,7 @@ export const createSearchClient = (settings = {}) => {
     stats: () => serial('stats'),
     reset: () => serial('reset'),
     close: () => {
-      openLibraryId = null;
+      openArgs = null;
       return serial('close');
     },
     terminate: () => {
@@ -179,9 +179,9 @@ export const createSearchClient = (settings = {}) => {
 /**
  * @typedef {Object} ResponsePage
  * @property {number} page
- * @property {number} tier - 1 the exact phrase, 2 the words in order within the window, 3 any order within it, 4 anywhere on the page.
- * @property {number} count - Occurrences on the page, except in tier 4, where it is the number of query terms.
- * @property {number} score - BM25 in tier 4, 0 elsewhere.
+ * @property {number} tier - 1 the exact phrase, 2 the phrase with a longer word in place of its last, 3 the words in order within the window, 4 any order within it, 5 anywhere on the page.
+ * @property {number} count - Occurrences on the page, except in tier 5, where it is the number of query terms.
+ * @property {number} score - BM25 in tier 5, 0 elsewhere.
  * @property {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
  * @property {?Snippet} snippet
  */
@@ -192,7 +192,7 @@ export const createSearchClient = (settings = {}) => {
  * @property {string[]} terms
  * @property {number} matches
  * @property {boolean} bounded
- * @property {boolean} partial - True when a lone word's prefix was cut short in an index file, which the answer then leaves out.
+ * @property {boolean} partial - Whether the near matches left out an index file whose list of words beginning with the last word was cut short.
  * @property {number} bound
  * @property {Array<{hash: string, total: number, pages: Array<ResponsePage>}>} docs - Best first, each document's pages best first.
  * @property {{sweep: number, snippets: number, total: number}} ms

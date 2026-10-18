@@ -12,9 +12,7 @@ import { getMatchRects, markOverlayHTML } from './libraryPreview.js';
 /** How many documents, and pages within each, the list shows before a "more" button. */
 const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
-/** Characters of page text kept either side of a hit in its snippet. */
-const SNIPPET_RADIUS = 70;
-/** With the positional engine, how long a result set must stand with no query in flight before its thumbnails' sidecar passes and background opens start. */
+/** How long a result set must stand with no query in flight before its thumbnails' sidecar passes and background opens start. */
 const THUMB_QUIET_MS = 1000;
 
 /**
@@ -31,10 +29,10 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => boolean} deps.selectOpens - Whether selecting a hit opens its document outright, where no preview is shown.
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
  * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
- * @param {() => ?ReturnType<typeof import('./search/searchClient.js').createSearchClient>} [deps.getEngine]
- * @param {() => ?import('./search/searchClient.js').SearchResponse} [deps.getEngineResponse]
- * @param {() => ?import('./search/searchClient.js').SearchResponse} [deps.getEngineTiers] - The near matches of the current query, once they arrive.
- * @param {() => ?string} [deps.getEngineError]
+ * @param {() => ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.getEngine
+ * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineResponse
+ * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineTiers
+ * @param {() => ?string} deps.getEngineError
  */
 export function createResultsView({
   host, sessions, preview, getStore, getManifest, getResults, getQuery, openEntry, selectOpens, onBack, saveManifestSoon,
@@ -78,7 +76,7 @@ export function createResultsView({
       resultsView = null;
     }
     const myGen = ++resultsGen;
-    const engine = getEngine ? getEngine() : null;
+    const engine = getEngine();
     const wrap = document.createElement('div');
     wrap.className = 'scribe-library-rwrap';
     wrap.tabIndex = 0;
@@ -91,10 +89,10 @@ export function createResultsView({
     summary.className = 'scribe-library-rsummary';
     const summaryN = document.createElement('span');
     summaryN.className = 'n';
-    const engineError = getEngineError ? getEngineError() : null;
+    const engineError = getEngineError();
     if (engineError) summaryN.textContent = `Search failed for “${fullTextQuery}”, so no matches are shown: ${engineError}`;
     else if (results.length) summaryN.textContent = `${results.length} document${results.length === 1 ? '' : 's'}`;
-    else summaryN.textContent = `No ${engine && getEngineResponse && getEngineResponse()?.fallbackTiers ? 'exact matches' : 'results'} for “${fullTextQuery}”`;
+    else summaryN.textContent = `No ${getEngineResponse()?.fallbackTiers ? 'exact matches' : 'results'} for “${fullTextQuery}”`;
     // Timing tools outside the app read `paintedAt` as the moment the summary took its final text.
     summary.dataset.paintedAt = String(performance.now());
     summary.appendChild(summaryN);
@@ -182,10 +180,10 @@ export function createResultsView({
     const quiet = async () => {
       // A sidecar pass or a background open can hold the main thread for seconds on a long document, delaying the paint of any query answered meanwhile.
       do {
-        if (engine) await engine.queriesSettled();
+        await engine.queriesSettled();
         await new Promise((resolve) => { window.setTimeout(resolve, THUMB_QUIET_MS); });
         await new Promise((resolve) => { requestIdleCallback(() => resolve(undefined)); });
-      } while (engine && engine.querying() && myGen === resultsGen);
+      } while (engine.querying() && myGen === resultsGen);
       return myGen === resultsGen;
     };
     /** @type {Array<ThumbItem>} */
@@ -226,10 +224,8 @@ export function createResultsView({
         const needMarks = batch.filter((b) => b.marks === undefined);
         /** @type {?Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} */
         let sidePass = null;
-        if (needMarks.length && engine) {
+        if (needMarks.length) {
           sidePass = quiet().then((current) => (current ? sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN)) : null)).catch(() => null);
-        } else if (needMarks.length) {
-          sidePass = sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN)).catch(() => null);
         }
         for (const t of batch) {
           if (myGen !== resultsGen) break;
@@ -244,16 +240,13 @@ export function createResultsView({
       }
       thumbsRunning = false;
       if (myGen === resultsGen && rasterless.some((r) => !r.warmed)) {
-        if (engine) {
-          quiet().then((current) => {
-            if (current) warmHits();
-          });
-        } else warmHits();
+        quiet().then((current) => {
+          if (current) warmHits();
+        });
       }
     };
     const pump = () => {
-      if (engine) requestAnimationFrame(() => { window.setTimeout(pumpThumbs, 0); });
-      else pumpThumbs();
+      requestAnimationFrame(() => { window.setTimeout(pumpThumbs, 0); });
     };
 
     // Renders the missing hit-page rasters, one bounded import at a time.
@@ -311,7 +304,7 @@ export function createResultsView({
         let coldStart = null;
         try {
           doc = sessions.peekLive(first.hash);
-          if (!doc && engine) {
+          if (!doc) {
             await new Promise((resolve) => { requestIdleCallback(() => resolve(undefined)); });
             if (engine.querying() && !(await quiet())) break;
             if (myGen !== resultsGen) break;
@@ -333,7 +326,7 @@ export function createResultsView({
           // Stored rasters are keyed by the ingested page order, so a document that no longer matches its entry must stay blank.
           if (doc.pageMetrics.length !== first.entry.pageCount) continue;
           for (const t of batch) {
-            if (engine && engine.querying() && !(await quiet())) break;
+            if (engine.querying() && !(await quiet())) break;
             if (myGen !== resultsGen) break;
             if (coldStart !== null && preview.userLoadActive()) coldStart = null;
             await preview.userLoadIdle();
@@ -424,7 +417,7 @@ export function createResultsView({
       ht.className = 'ht';
       ht.append(`Page ${pageN + 1} `);
       // A page that merely holds the words anywhere has no occurrence count to show.
-      if (info.tier !== 4) {
+      if (info.tier !== 5) {
         const htMeta = document.createElement('span');
         htMeta.className = 'm';
         htMeta.textContent = `· ${info.count} match${info.count === 1 ? '' : 'es'}`;
@@ -459,82 +452,27 @@ export function createResultsView({
     (async () => {
       const store = getStore();
       if (!store || !results.length) return;
-      const response = engine && getEngineResponse ? getEngineResponse() : null;
+      const response = getEngineResponse();
+      if (!response) return;
       /**
        * @type {Array<{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string},
        *   perPage: Array<{pageN: number, count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement}>, total: number}>}
        */
       let ranked;
-      let summaryText;
-      if (response) {
-        ranked = /** @type {typeof ranked} */ (response.docs.map((d) => {
-          const docRef = byHash.get(d.hash);
-          if (!docRef) return null;
-          return {
-            docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash },
-            total: d.total,
-            perPage: d.pages.map((p) => ({
-              pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null,
-            })),
-          };
-        }).filter(Boolean));
-        ranked = tiesByName(ranked, (d) => d.perPage[0], (d) => d.docRef.relPath);
-        const count = response.bounded ? `${response.bound}+` : String(response.matches);
-        summaryText = response.partial ? 'Partial results — narrow your search' : `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
-      } else {
-        const infos = await Promise.all(results.map(async (result) => {
-          const docRef = byHash.get(result.hash);
-          if (!docRef) return null;
-          const text = await store.readTextCache(result.hash).catch(() => null);
-          if (text === null) return null;
-          const pagesText = text.split('\f');
-          const queryLower = fullTextQuery.toLowerCase();
-          const perPage = result.pages.map((pageN) => {
-            const pageText = pagesText[pageN] || '';
-            const lower = pageText.toLowerCase();
-            let needle = queryLower;
-            const starts = [];
-            let at = lower.indexOf(needle);
-            if (at < 0) {
-              needle = queryLower.split(/[^\p{L}\p{N}]+/u).find((t) => t.length >= 2) || '';
-              at = needle ? lower.indexOf(needle) : -1;
-            }
-            while (at >= 0) {
-              starts.push(at);
-              at = lower.indexOf(needle, at + needle.length);
-            }
-            const snippet = document.createDocumentFragment();
-            if (!starts.length) {
-              snippet.append(pageText.slice(0, SNIPPET_RADIUS * 2));
-            } else {
-              const winStart = Math.max(0, starts[0] - SNIPPET_RADIUS);
-              const winEnd = Math.min(pageText.length, starts[0] + needle.length + SNIPPET_RADIUS);
-              let pos = winStart;
-              if (winStart > 0) snippet.append('…');
-              for (const s of starts) {
-                if (s < winStart || s + needle.length > winEnd) continue;
-                snippet.append(pageText.slice(pos, s));
-                const bold = document.createElement('b');
-                bold.textContent = pageText.slice(s, s + needle.length);
-                snippet.appendChild(bold);
-                pos = s + needle.length;
-              }
-              snippet.append(pageText.slice(pos, winEnd));
-              if (winEnd < pageText.length) snippet.append('…');
-            }
-            return { pageN, count: Math.max(starts.length, 1), snippet };
-          });
-          const total = perPage.reduce((sum, pp) => sum + pp.count, 0);
-          return {
-            docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: result.hash }, perPage, total,
-          };
-        }));
-        if (myGen !== resultsGen) return;
-        ranked = /** @type {typeof ranked} */ (infos.filter(Boolean));
-        ranked.sort((a, b) => b.total - a.total);
-        const totalMatches = ranked.reduce((sum, r) => sum + r.total, 0);
-        summaryText = `${totalMatches} match${totalMatches === 1 ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
-      }
+      ranked = /** @type {typeof ranked} */ (response.docs.map((d) => {
+        const docRef = byHash.get(d.hash);
+        if (!docRef) return null;
+        return {
+          docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash },
+          total: d.total,
+          perPage: d.pages.map((p) => ({
+            pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null,
+          })),
+        };
+      }).filter(Boolean));
+      ranked = tiesByName(ranked, (d) => d.perPage[0], (d) => d.docRef.relPath);
+      const count = response.bounded ? `${response.bound}+` : String(response.matches);
+      const summaryText = `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
       if (myGen !== resultsGen) return;
       summaryN.textContent = summaryText;
       summary.dataset.paintedAt = String(performance.now());
@@ -545,7 +483,7 @@ export function createResultsView({
        */
       const fillSnippets = (hash, pps) => {
         const want = pps.filter((pp) => pp.sn);
-        if (!engine || !want.length) return;
+        if (!want.length) return;
         engine.snippets(hash, want.map((pp) => ({ page: pp.pageN, marks: pp.marks || [] }))).then((list) => {
           if (myGen !== resultsGen) return;
           for (const item of list) {
@@ -657,7 +595,7 @@ export function createResultsView({
       // Timing tools outside the app read `tierPages` and `tiersAt`, so both are set even when the near matches hold no page.
       wrap.dataset.tiersAt = String(performance.now());
     };
-    const tiersNow = getEngineTiers ? getEngineTiers() : null;
+    const tiersNow = getEngineTiers();
     if (tiersNow) appendTierSection(tiersNow);
 
     let listScrollTop = 0;

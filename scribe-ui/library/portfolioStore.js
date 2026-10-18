@@ -31,14 +31,10 @@ export class PortfolioStore {
     this.sidecars = new Map();
     /** @type {Map<string, ArrayBuffer>} */
     this.sidecarBackups = new Map();
-    /** @type {Map<string, string>} */
-    this.textCache = new Map();
     /** @type {Map<string, Blob>} */
     this.thumbs = new Map();
     /** @type {Map<string, Map<number, Blob>>} */
     this.rasters = new Map();
-    /** @type {?Object} */
-    this.searchIndex = null;
 
     const { files, collection } = doc.attachments;
     /** @type {Array<string>} The collection's folders as the paths the library keys its subdirectories by, parent-first. */
@@ -82,10 +78,8 @@ export class PortfolioStore {
     this.bytes.clear();
     this.sidecars.clear();
     this.sidecarBackups.clear();
-    this.textCache.clear();
     this.thumbs.clear();
     this.rasters.clear();
-    this.searchIndex = null;
     this.rasterBytes = 0;
   }
 
@@ -194,21 +188,6 @@ export class PortfolioStore {
     this.sidecarBackups.delete(hash);
   }
 
-  /** @param {string} hash @param {string} text */
-  async writeTextCache(hash, text) {
-    this.textCache.set(hash, text);
-  }
-
-  /** @param {string} hash @returns {Promise<?string>} */
-  async readTextCache(hash) {
-    return this.textCache.get(hash) ?? null;
-  }
-
-  /** @param {string} hash */
-  async deleteTextCache(hash) {
-    this.textCache.delete(hash);
-  }
-
   /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     this.thumbs.set(hash, blob);
@@ -248,28 +227,39 @@ export class PortfolioStore {
     this.rasters.delete(hash);
   }
 
-  /** @param {Object} indexData */
-  async writeSearchIndex(indexData) {
-    this.searchIndex = indexData;
-  }
-
-  /** @returns {Promise<?Object>} */
-  async readSearchIndex() {
-    return this.searchIndex;
-  }
-
   /**
    * Drop artifacts no manifest entry references and recount the raster bytes.
    * @param {import('./libraryStore.js').LibraryManifest} manifest
    */
   async sweepArtifacts(manifest) {
     const live = new Set(Object.values(manifest.docs).map((e) => e.hash).filter(Boolean));
-    for (const map of [this.sidecars, this.sidecarBackups, this.textCache, this.thumbs, this.rasters]) {
+    for (const map of [this.sidecars, this.sidecarBackups, this.thumbs, this.rasters]) {
       for (const hash of [...map.keys()]) if (!live.has(hash)) map.delete(hash);
     }
     let total = 0;
     for (const pages of this.rasters.values()) for (const blob of pages.values()) total += blob.size;
     this.rasterBytes = total;
+  }
+
+  /**
+   * A portfolio folder as a stand-in for a `FileSystemDirectoryHandle`.
+   * It implements only the methods the ingest calls.
+   * @param {string} relDir
+   */
+  async dirAt(relDir) {
+    if (relDir && !this.folders.includes(relDir)) throw new Error(`No folder in the portfolio is named “${relDir}”.`);
+    const inDir = [...this.members.values()].filter((m) => (m.relPath.includes('/') ? m.relPath.slice(0, m.relPath.lastIndexOf('/')) : '') === relDir);
+    const nameOf = (/** @type {PortfolioMember} */ m) => m.relPath.slice(m.relPath.lastIndexOf('/') + 1);
+    return {
+      keys: async function* keys() {
+        for (const m of inDir) yield nameOf(m);
+      },
+      getFileHandle: async (/** @type {string} */ name) => {
+        const m = inDir.find((x) => nameOf(x) === name);
+        if (!m) throw new Error(`No file in the portfolio is named “${name}”.`);
+        return { getFile: () => this.readFile(m.relPath) };
+      },
+    };
   }
 
   // A portfolio holds what its author put in it, so the folder operations throw.
@@ -291,11 +281,6 @@ export class PortfolioStore {
 
   // eslint-disable-next-line class-methods-use-this
   async renameDir() {
-    throw new Error('A portfolio is read-only.');
-  }
-
-  // eslint-disable-next-line class-methods-use-this
-  async dirAt() {
     throw new Error('A portfolio is read-only.');
   }
 }

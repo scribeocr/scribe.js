@@ -13,7 +13,6 @@ import {
   LibraryStore, folderNameProblem, sameEntry, titleOf,
 } from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
-import { LibraryIndex } from './librarySearch.js';
 import { createSearchClient } from './search/searchClient.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
@@ -111,7 +110,6 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {?string} [libraryHash] - When a library entry opened this instance: that entry's hash, so it is not opened twice.
  * @property {?number} [libraryOwner] - With `libraryHash`, the library instance the entry belongs to.
  * @property {() => void} [onClose] - Mounted as a close control on the pinned tab.
- * @property {?string} [engine]
  * @property {?Object} [engineSettings]
  */
 
@@ -144,7 +142,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
  * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
  * @property {() => void} [syncResume] Document library only: rewrite the keys a relaunch reads from, once this window is the one it resumes.
- * @property {() => Promise<Object>} [searchStats] The positional engine's own accounting of what it holds and of its index's shape.
+ * @property {() => Promise<Object>} [searchStats] The search engine's own accounting of what it holds and of its index's shape.
  *   A timing harness outside this repository calls it, though nothing in the app does.
  * @property {() => void} destroy
  */
@@ -714,10 +712,7 @@ export function createLibraryInstance(viewer, opts) {
   let store = null;
   /** @type {?import('./libraryStore.js').LibraryManifest} */
   let manifest = null;
-  /** @type {LibraryIndex} */
-  let index = new LibraryIndex();
-  /** @type {?ReturnType<typeof createSearchClient>} */
-  const engine = isLibrary && opts.engine === 'positional' ? createSearchClient(opts.engineSettings || {}) : null;
+  const engine = createSearchClient(opts.engineSettings || {});
   /** @type {?import('./search/searchClient.js').SearchResponse} */
   let engineResponse = null;
   /** @type {?import('./search/searchClient.js').SearchResponse} */
@@ -786,8 +781,6 @@ export function createLibraryInstance(viewer, opts) {
   const sessions = new DocSessions();
   /** @type {?number} */
   let manifestTimer = null;
-  /** @type {?number} */
-  let indexTimer = null;
   let destroyed = false;
   /**
    * The open-tab record the previous page load left in sessionStorage.
@@ -823,7 +816,7 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?string} Pivot card for Shift ranges. */
   let selAnchor = null;
   let storageOpen = false;
-  /** @type {?{previews: number, index: number, notes: number, older: number}} Byte totals the open sheet shows, null while they are being measured. */
+  /** @type {?{previews: number, index: number, notes: number}} */
   let storageSizes = null;
   /** Set while the folder's data is being deleted, so closing the folder does not write it back. */
   let discardOnClose = false;
@@ -1712,14 +1705,6 @@ export function createLibraryInstance(viewer, opts) {
     }, 1000);
   };
 
-  const saveIndexSoon = () => {
-    if (engine || indexTimer !== null) return;
-    indexTimer = window.setTimeout(() => {
-      indexTimer = null;
-      if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
-    }, 2000);
-  };
-
   const buildResumeRecord = () => {
     const activeT = viewer._tabs[viewer._activeTab];
     const libTabs = viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath));
@@ -1774,7 +1759,7 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * Bring the manifest and the search index up to date after a sidecar checkpoint.
    * @param {string} hash
-   * @param {Object} doc
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {boolean} recognized - Whether a recognition run completed since the previous checkpoint.
    */
   const afterSidecarSaved = async (hash, doc, recognized) => {
@@ -1788,14 +1773,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     saveManifestSoon();
     try {
-      if (engine) {
-        await engine.addDoc(hash, /** @type {any} */ (doc).ocr?.active || []);
-        return;
-      }
-      const pagesText = (/** @type {any} */ (doc).ocr?.active || []).map((/** @type {any} */ page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
-      await store.writeTextCache(hash, pagesText.join('\f'));
-      index.addDoc(hash, pagesText);
-      saveIndexSoon();
+      await engine.addDoc(hash, doc.ocr.active);
     } catch { /* The sidecar is saved; a stale index entry is repaired by the next rebuild. */ }
   };
 
@@ -2986,14 +2964,12 @@ export function createLibraryInstance(viewer, opts) {
       // Identical files share a hash and therefore a sidecar, so the data files go only with the last reference to it.
       const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
       if (entry.hash && !shared) {
-        index.removeDoc(entry.hash);
-        if (engine) await engine.removeDoc(entry.hash).catch(() => {});
+        await engine.removeDoc(entry.hash).catch(() => {});
         await Promise.all([
-          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteTextCache(entry.hash),
+          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash),
           store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
         ]).catch(() => {});
         sessions.invalidate(entry.hash);
-        saveIndexSoon();
       }
     }
     await store.writeManifest(manifest);
@@ -5510,12 +5486,11 @@ export function createLibraryInstance(viewer, opts) {
     const beside = !!s.notesBeside;
     const plural = (/** @type {number} */ count) => (count === 1 ? '' : 's');
     const inApp = sizes.previews + sizes.index + (beside ? 0 : sizes.notes);
-    const items = [`Page previews, thumbnails, extracted text and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
+    const items = [`Page previews, thumbnails and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
     if (beside) items.push(`The hidden .scribe folder inside ${name}${edited ? `, holding notes, edits and recognized text for ${edited} document${plural(edited)}` : ''} (${fmtBytes(sizes.notes)})`);
     else if (edited) items.push(`Notes, edits and recognized text for ${edited} document${plural(edited)} (${fmtBytes(sizes.notes)})`);
-    if (sizes.older && !beside) items.push(`The files an older version left inside ${name} (${fmtBytes(sizes.older)})`);
     items.push('Its place in the Recent list');
-    const touchesFolder = beside || sizes.older > 0;
+    const touchesFolder = beside;
     const choice = await openStorageConfirm({
       title: `Delete library data for ${name}?`,
       name,
@@ -5534,9 +5509,7 @@ export function createLibraryInstance(viewer, opts) {
       preview.destroy();
       sessions.reset();
       await s.deleteCaches();
-      index = new LibraryIndex();
-      if (ingest) ingest.index = index;
-      if (engine) await engine.reset().catch(() => {});
+      await engine.reset().catch(() => {});
       storageOpen = false;
       storageSizes = null;
       await rebuildIndex();
@@ -5609,28 +5582,13 @@ export function createLibraryInstance(viewer, opts) {
       storageSizes = await s.measure();
       if (store === s && storageOpen) render();
     });
-    row('Search index, extracted text and thumbnails', 'Rebuilt from the documents and their notes.', sizes?.index ?? 0, 'Rebuild', () => {
+    row('Search index and thumbnails', 'Rebuilt from the documents and their notes.', sizes?.index ?? 0, 'Rebuild', () => {
       closeStorage();
       rebuildIndex();
     });
     row('Notes, edits and recognized text', edited
       ? `${edited} of ${docs} document${docs === 1 ? '' : 's'} ${edited === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`
       : `No document has saved work. Kept ${notesWhere()}.`, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
-    if (sizes?.older) {
-      row('Files an older version left in the folder', `Previews and an index inside ${name}/.scribe that this version no longer uses.`, sizes.older, 'Remove', async () => {
-        if (!(await s.ensureWritable())) {
-          viewer._showToast(`Couldn't remove them — editing ${name} wasn't allowed.`);
-          return;
-        }
-        try {
-          await s.removeOlderFiles();
-        } catch (err) {
-          viewer._showToast(`Couldn't remove them — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the files could not be deleted'}.`);
-        }
-        storageSizes = await s.measure();
-        if (store === s && storageOpen) render();
-      });
-    }
     const loc = document.createElement('div');
     loc.className = 'loc';
     const lt = document.createElement('div');
@@ -6134,28 +6092,14 @@ export function createLibraryInstance(viewer, opts) {
     store = s;
     sessions.connect(s);
     currentDir = '';
-    let rebuildNeeded = false;
     try {
       await store.init();
       manifest = await store.readManifest();
-      if (engine) await engine.open(store.id);
-      index = engine ? new LibraryIndex() : LibraryIndex.deserialize(await store.readSearchIndex());
-      if (engine) {
-        const stats = await engine.stats().catch(() => null);
-        rebuildNeeded = !!stats && !stats.docs && Object.values(manifest.docs).some((e) => e.status === 'indexed' && !!e.hash);
-      } else if (!index.docs.length) {
-        for (const entry of Object.values(manifest.docs)) {
-          if (entry.status !== 'indexed' || !entry.hash) continue;
-          const text = await store.readTextCache(entry.hash);
-          if (text !== null) index.addDoc(entry.hash, text.split('\f'));
-        }
-        if (index.docs.length) saveIndexSoon();
-      }
+      await engine.open(isLibrary ? store.id : null);
     } catch (err) {
       // A folder that cannot be read must not stay half-open, with the bar and menus acting as if it were open.
       store = null;
       manifest = null;
-      index = new LibraryIndex();
       sessions.reset();
       releaseFolderLock?.();
       releaseFolderLock = null;
@@ -6174,7 +6118,7 @@ export function createLibraryInstance(viewer, opts) {
       viewer._notifyMenuState();
       return;
     }
-    ingest = new LibraryIngest(store, manifest, index, {
+    ingest = new LibraryIngest(store, manifest, {
       engine,
       onProgress: ({
         done, total, current, kind, pageDone, pageTotal,
@@ -6212,7 +6156,6 @@ export function createLibraryInstance(viewer, opts) {
         }
       },
       onDocDone: (relPath) => {
-        saveIndexSoon();
         const doneEntry = manifest?.docs[relPath];
         // A tab adopted by a copy into the folder learns its hash once the ingest has computed it.
         if (doneEntry?.hash) for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath === relPath && !t.libraryHash) t.libraryHash = doneEntry.hash;
@@ -6351,8 +6294,6 @@ export function createLibraryInstance(viewer, opts) {
     await ingest.scan();
     render();
     ingest.start();
-    // Documents indexed before the positional engine existed are re-ingested into it.
-    if (rebuildNeeded) await rebuildIndex();
   };
 
   /** @param {File[]} files */
@@ -6600,12 +6541,7 @@ export function createLibraryInstance(viewer, opts) {
       if (manifest && !discardOnClose) store.writeManifest(manifest).catch(() => {});
     }
 
-    if (indexTimer !== null) {
-      window.clearTimeout(indexTimer);
-      indexTimer = null;
-      if (!discardOnClose) store.writeSearchIndex(index.serialize()).catch(() => {});
-    }
-    if (engine) engine.close().catch(() => {});
+    engine.close().catch(() => {});
 
     preview.destroy();
     sessions.reset();
@@ -6625,7 +6561,6 @@ export function createLibraryInstance(viewer, opts) {
     store = null;
     manifest = null;
     ingest = null;
-    index = new LibraryIndex();
     releaseFolderLock?.();
     releaseFolderLock = null;
     // A folder's documents save their notes inside it, so they cannot stay open once it closes.
@@ -6837,37 +6772,31 @@ export function createLibraryInstance(viewer, opts) {
     if (e.key !== 'Enter') return;
     const query = searchInput.value.trim();
     if (!query) return;
-    if (engine) {
-      /** @type {?import('./search/searchClient.js').SearchResponse} */
-      let answered = null;
-      engine.query(query, undefined, (tiers) => {
-        if (destroyed || !tiers || !answered || engineResponse !== answered) return;
-        engineTiers = tiers;
-        results.appendTiers();
-      }).then((response) => {
-        if (destroyed || !store) return;
-        fullTextQuery = query;
-        answered = response;
-        engineResponse = response;
-        engineTiers = null;
-        engineError = null;
-        fullTextResults = response.docs.map((d) => ({ hash: d.hash, pages: d.pages.map((p) => p.page) }));
-        render();
-      }).catch((err) => {
-        console.error('Library search failed.', err);
-        if (destroyed || !store) return;
-        fullTextQuery = query;
-        engineResponse = null;
-        engineTiers = null;
-        engineError = err instanceof Error ? err.message : String(err);
-        fullTextResults = [];
-        render();
-      });
-      return;
-    }
-    fullTextQuery = query;
-    fullTextResults = index.query(query);
-    render();
+    /** @type {?import('./search/searchClient.js').SearchResponse} */
+    let answered = null;
+    engine.query(query, undefined, (tiers) => {
+      if (destroyed || !tiers || !answered || engineResponse !== answered) return;
+      engineTiers = tiers;
+      results.appendTiers();
+    }).then((response) => {
+      if (destroyed || !store) return;
+      fullTextQuery = query;
+      answered = response;
+      engineResponse = response;
+      engineTiers = null;
+      engineError = null;
+      fullTextResults = response.docs.map((d) => ({ hash: d.hash, pages: d.pages.map((p) => p.page) }));
+      render();
+    }).catch((err) => {
+      console.error('Library search failed.', err);
+      if (destroyed || !store) return;
+      fullTextQuery = query;
+      engineResponse = null;
+      engineTiers = null;
+      engineError = err instanceof Error ? err.message : String(err);
+      fullTextResults = [];
+      render();
+    });
   });
   // A blurred input scrolls back to the head of its value, so the browser's own caret placement would land there.
   searchInput.addEventListener('mousedown', (e) => {
@@ -7220,7 +7149,7 @@ export function createLibraryInstance(viewer, opts) {
     focusSearch,
     ...(isLibrary ? {
       connected: () => !!store,
-      ...(engine ? { searchStats: () => engine.stats() } : {}),
+      searchStats: () => engine.stats(),
       openFolder,
       rebuildIndex,
       openStorage,
@@ -7369,21 +7298,15 @@ export function createLibraryInstance(viewer, opts) {
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
       offRecents();
       if (!readOnly) viewer._dragOverlayLabelFor = priorDragLabel;
-      // Flush, don't drop: a cancelled debounce would lose the last manifest/index update.
       if (manifestTimer !== null) {
         window.clearTimeout(manifestTimer);
         manifestTimer = null;
         if (store && manifest) store.writeManifest(manifest).catch(() => {});
       }
-      if (indexTimer !== null) {
-        window.clearTimeout(indexTimer);
-        indexTimer = null;
-        if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
-      }
       preview.destroy();
       sessions.reset();
       results.dispose();
-      engine?.terminate();
+      engine.terminate();
       surface.remove();
       stageObserver.disconnect();
       pane.remove();
@@ -7419,11 +7342,11 @@ export function createLibraryInstance(viewer, opts) {
 /**
  * Install the document library: the pinned Library tab, its folder connection and the app-menu items that go with it.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
- * @param {{engine?: ?string, settings?: ?Object}} [options] - `engine: 'positional'` runs the search on the positional index instead of the word-per-page index.
+ * @param {{settings?: ?Object}} [options] - `settings` adjusts the search engine's defaults, `ENGINE_DEFAULTS` in searchEngine.js.
  */
-export function installLibrary(viewer, { engine = null, settings = null } = {}) {
+export function installLibrary(viewer, { settings = null } = {}) {
   return createLibraryInstance(viewer, {
-    kind: 'library', name: 'Library', glyph: FOLDER_TAB_SVG, persistPrefs: true, engine, engineSettings: settings,
+    kind: 'library', name: 'Library', glyph: FOLDER_TAB_SVG, persistPrefs: true, engineSettings: settings,
   });
 }
 

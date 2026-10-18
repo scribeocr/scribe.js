@@ -7,7 +7,6 @@ const DATA_DIR = '.scribe';
 const APP_DATA_DIR = 'libraries';
 
 const MANIFEST_VERSION = 1;
-const INDEX_FILE = 'search-index.json.gz';
 const MANIFEST_FILE = 'index.json';
 
 /** Byte cap for stored page rasters, enforced by the artifact sweep. */
@@ -47,7 +46,6 @@ export const folderNameProblem = (name) => {
  * @property {number} lastOpened - Epoch ms; 0 when never opened.
  * @property {'pending'|'indexed'|'error'|'missing'|'changed'} status
  * @property {?('text'|'ocr'|'image')} [pdfType] - The import's document verdict.
- *    Absent on entries that predate it, until the upgrade lane backfills them.
  * @property {number} [ocrShallow] - Pages the conservative automatic OCR selection would recognize. Informational only.
  * @property {number} [ocrDeep] - Pages the deep automatic OCR selection would recognize, which drives Recognize eligibility and the queued run's scope.
  *    Never a user-facing claim about the document.
@@ -104,14 +102,6 @@ const idbOp = async (mode, fn) => {
     db.close();
   }
 };
-
-/** @param {string} text */
-const gzip = async (text) => new Uint8Array(
-  await new Response(new Blob([text]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer(),
-);
-
-/** @param {Uint8Array|ArrayBuffer} data */
-const gunzip = (data) => new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'))).text();
 
 /**
  * Whether two directory handles name the same directory.
@@ -212,19 +202,16 @@ export class LibraryStore {
     this.id = id;
     /**
      * Whether the sidecars live in the folder's hidden `.scribe/docs` rather than in the site's storage.
-     * Null until `init` settles it for a folder this version has not opened before.
      * @type {?boolean}
      */
     this.notesBeside = notesBeside;
-    /** @type {?FileSystemDirectoryHandle} The folder's own `.scribe` directory when one exists, whether an older version's leftover or the sidecars' home. */
+    /** @type {?FileSystemDirectoryHandle} */
     this.folderDataDir = null;
     this.persistAsked = false;
     /** @type {?FileSystemDirectoryHandle} */
     this.dataDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.docsDir = null;
-    /** @type {?FileSystemDirectoryHandle} */
-    this.textDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.thumbsDir = null;
     /** @type {?FileSystemDirectoryHandle} */
@@ -288,8 +275,6 @@ export class LibraryStore {
    */
   static async forHandle(handle) {
     const rec = await LibraryStore.recordFor(handle);
-    // A record without an id is from before this version, or from a folder just remembered.
-    // `init` decides where such a folder's data lives.
     return new LibraryStore(handle, { id: rec?.id ?? '', notesBeside: rec?.id ? !!rec.notesBeside : null });
   }
 
@@ -444,34 +429,10 @@ export class LibraryStore {
     if (!this.id) this.id = newFolderId();
     const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR, { create: true });
     this.dataDir = await appRoot.getDirectoryHandle(this.id, { create: true });
-    this.textDir = await this.dataDir.getDirectoryHandle('text', { create: true });
     this.thumbsDir = await this.dataDir.getDirectoryHandle('thumbs', { create: true });
     this.pagesDir = await this.dataDir.getDirectoryHandle('pages', { create: true });
-    this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR).catch(() => null);
-    if (this.notesBeside === null) {
-      this.notesBeside = false;
-      if (this.folderDataDir && !(await readFileIn(this.dataDir, MANIFEST_FILE))) {
-        // A folder an older version opened keeps its data in its own `.scribe` directory, which is copied here once and left for the user to remove.
-        // Page previews are left out, since they are the bulk and are rendered again as pages are viewed.
-        for (const name of [MANIFEST_FILE, INDEX_FILE]) {
-          const file = await readFileIn(this.folderDataDir, name);
-          if (file) await writeFileIn(this.dataDir, name, file);
-        }
-        /** @type {Array<[?FileSystemDirectoryHandle, FileSystemDirectoryHandle]>} */
-        const pairs = [
-          [await this.folderDataDir.getDirectoryHandle('text').catch(() => null), this.textDir],
-          [await this.folderDataDir.getDirectoryHandle('thumbs').catch(() => null), this.thumbsDir],
-          [await this.folderDataDir.getDirectoryHandle('docs').catch(() => null), await this.dataDir.getDirectoryHandle('docs', { create: true })],
-        ];
-        for (const [from, to] of pairs) {
-          if (!from) continue;
-          // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-          for await (const [name, handle] of from.entries()) {
-            if (handle.kind === 'file') await writeFileIn(to, name, await handle.getFile());
-          }
-        }
-      }
-    }
+    // A folder opened without a record keeps the notes it already holds beside its documents.
+    if (this.notesBeside === null) this.notesBeside = !!(await this.root.getDirectoryHandle(DATA_DIR).then((d) => d.getDirectoryHandle('docs')).catch(() => null));
     if (this.notesBeside) {
       this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
       this.docsDir = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
@@ -775,30 +736,6 @@ export class LibraryStore {
     await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
   }
 
-  /**
-   * @param {string} hash
-   * @param {string} text - Full document text, pages separated by form-feed characters.
-   */
-  async writeTextCache(hash, text) {
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.textDir), `${hash}.txt.gz`, await gzip(text));
-  }
-
-  /** @param {string} hash @returns {Promise<?string>} */
-  async readTextCache(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.textDir), `${hash}.txt.gz`);
-    if (!file) return null;
-    try {
-      return await gunzip(await file.arrayBuffer());
-    } catch {
-      return null;
-    }
-  }
-
-  /** @param {string} hash */
-  async deleteTextCache(hash) {
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.textDir), `${hash}.txt.gz`);
-  }
-
   /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.thumbsDir), `${hash}.jpg`, blob);
@@ -843,27 +780,10 @@ export class LibraryStore {
     this.rasterBytes = null;
   }
 
-  /** @param {Object} indexData - Serialized search index. */
-  async writeSearchIndex(indexData) {
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.dataDir), INDEX_FILE, await gzip(JSON.stringify(indexData)));
-  }
-
-  /** @returns {Promise<?Object>} Parsed search index, or null when missing or corrupt. */
-  async readSearchIndex() {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.dataDir), INDEX_FILE);
-    if (!file) return null;
-    try {
-      return JSON.parse(await gunzip(await file.arrayBuffer()));
-    } catch {
-      return null;
-    }
-  }
-
   /**
-   * Byte totals of what the app keeps for the folder, and of what an older version left inside it.
-   * `index` covers the manifest, the search index, the extracted text and the thumbnails.
-   * `older` is the folder's own `.scribe` directory, less the sidecars when they live there.
-   * @returns {Promise<{previews: number, index: number, notes: number, older: number}>}
+   * Byte totals of what the app keeps for the folder.
+   * `index` covers the manifest, the search index and the thumbnails.
+   * @returns {Promise<{previews: number, index: number, notes: number}>}
    */
   async measure() {
     /**
@@ -885,7 +805,6 @@ export class LibraryStore {
       previews: await sizeOf(this.pagesDir),
       index: await sizeOf(this.dataDir, new Set(['pages', 'docs'])),
       notes: await sizeOf(this.docsDir),
-      older: await sizeOf(this.folderDataDir, new Set(this.notesBeside ? ['docs'] : [])),
     };
   }
 
@@ -899,7 +818,7 @@ export class LibraryStore {
   }
 
   /**
-   * Delete the derived data: the search index, the extracted text, the thumbnails and the previews.
+   * Delete the derived data: the search index, the thumbnails and the previews.
    * The manifest stays, so each document keeps its record of edits and recognition.
    * A rebuild then regenerates the rest from the sidecars.
    */
@@ -909,14 +828,13 @@ export class LibraryStore {
     // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
     for await (const name of dataDir.keys()) if (name !== 'docs' && name !== MANIFEST_FILE) names.push(name);
     for (const name of names) await dataDir.removeEntry(name, { recursive: true }).catch(() => {});
-    this.textDir = await dataDir.getDirectoryHandle('text', { create: true });
     this.thumbsDir = await dataDir.getDirectoryHandle('thumbs', { create: true });
     this.pagesDir = await dataDir.getDirectoryHandle('pages', { create: true });
     this.rasterBytes = 0;
   }
 
   /**
-   * Delete everything the app keeps for the folder, and any `.scribe` directory inside it.
+   * Delete everything the app keeps for the folder, and the folder's `.scribe` directory when the notes live in it.
    * Removing that directory needs write access to the folder, without which it silently stays.
    */
   async deleteAll() {
@@ -951,24 +869,6 @@ export class LibraryStore {
   }
 
   /**
-   * Remove what an older version left in the folder's `.scribe` directory, sparing the sidecars when they live there.
-   * Requires write access to the folder.
-   */
-  async removeOlderFiles() {
-    const dir = this.folderDataDir;
-    if (!dir) return;
-    if (!this.notesBeside) {
-      await this.root.removeEntry(DATA_DIR, { recursive: true });
-      this.folderDataDir = null;
-      return;
-    }
-    const names = [];
-    // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
-    for await (const name of dir.keys()) if (name !== 'docs') names.push(name);
-    for (const name of names) await dir.removeEntry(name, { recursive: true });
-  }
-
-  /**
    * Move the sidecars into the folder's hidden `.scribe/docs` directory, or back into the site's storage.
    * Moving into the folder requires write access to it.
    * @param {boolean} beside
@@ -993,15 +893,8 @@ export class LibraryStore {
     this.docsDir = to;
     this.notesBeside = beside;
     if (!beside && this.folderDataDir) {
-      // The folder keeps its `.scribe` directory only while an older version's files are still in it.
-      let rest = 0;
-      // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const name of this.folderDataDir.keys()) if (name !== 'docs') rest++;
-      if (rest) await this.folderDataDir.removeEntry('docs', { recursive: true }).catch(() => {});
-      else {
-        await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
-        this.folderDataDir = null;
-      }
+      await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
+      this.folderDataDir = null;
     }
     await LibraryStore.updateRecord(this.root, { notesBeside: beside });
   }
@@ -1020,7 +913,7 @@ export class LibraryStore {
       if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
     }
     const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
-      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.textDir, '.txt.gz'], [this.thumbsDir, '.jpg'],
+      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.thumbsDir, '.jpg'],
     ]);
     for (const [dir, ext] of flatDirs) {
       if (!dir) continue;

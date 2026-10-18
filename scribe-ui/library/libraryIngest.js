@@ -82,10 +82,8 @@ export class LibraryIngest {
   /**
    * @param {import('./libraryStore.js').LibraryStore} store
    * @param {import('./libraryStore.js').LibraryManifest} manifest - Shared with the caller and mutated in place.
-   * @param {import('./librarySearch.js').LibraryIndex} index
-   * @param {Object} [callbacks]
-   * @param {?ReturnType<typeof import('./search/searchClient.js').createSearchClient>} [callbacks.engine] - The positional search engine.
-   *    A document's pages go to it in place of the text cache and `index`.
+   * @param {Object} callbacks
+   * @param {ReturnType<typeof import('./search/searchClient.js').createSearchClient>} callbacks.engine
    * @param {(state: {done: number, total: number, current: string, kind?: string, pageDone?: number, pageTotal?: number}) => void} [callbacks.onProgress]
    *    `kind` names the running task; recognition tasks also report page progress.
    * @param {(relPath: string) => void} [callbacks.onDocDone] - Fires after a document reaches a terminal status.
@@ -101,13 +99,12 @@ export class LibraryIngest {
    *    A copy without one is handed over until `releaseLiveDoc`.
    * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
    */
-  constructor(store, manifest, index, {
+  constructor(store, manifest, {
     engine, onProgress, onDocDone, warmGate, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
-  } = {}) {
+  }) {
     this.store = store;
     this.manifest = manifest;
-    this.index = index;
-    this.engine = engine || null;
+    this.engine = engine;
     this.onProgress = onProgress;
     this.onDocDone = onDocDone;
     this.warmGate = warmGate || null;
@@ -124,7 +121,7 @@ export class LibraryIngest {
     this.recognizing = null;
     /** @type {Array<{relPath: string, kind: 'ingest'|'verify', resetSidecar?: boolean}>} Explicit user requests. Always drained first. */
     this.userLane = [];
-    /** @type {Array<{relPath: string, kind: 'ingest'|'verify'|'upgrade'}>} Scan-discovered work. */
+    /** @type {Array<{relPath: string, kind: 'ingest'|'verify'}>} Scan-discovered work. */
     this.discoveryLane = [];
     /** @type {Array<{relPath: string, kind: 'recognize', explicit: boolean}>} Text recognition, drained after the index lanes and gated separately. */
     this.recognizeLane = [];
@@ -143,7 +140,7 @@ export class LibraryIngest {
     this.warmCancelled = false;
     /** When set, start() stops draining after the in-flight task, so a folder operation can run against a quiet queue. */
     this.paused = false;
-    /** @type {?{relPath: string, kind: 'ingest'|'verify'|'upgrade'|'recognize'}} */
+    /** @type {?{relPath: string, kind: 'ingest'|'verify'|'recognize'}} */
     this.current = null;
   }
 
@@ -191,8 +188,6 @@ export class LibraryIngest {
         this.discoveryLane.push({ relPath: f.relPath, kind: 'ingest' });
       } else if (entry.size !== f.size || entry.mtime !== f.mtime) {
         this.discoveryLane.push({ relPath: f.relPath, kind: 'verify' });
-      } else if (entry.status === 'indexed' && (!entry.pageDims || entry.pdfType === undefined)) {
-        this.discoveryLane.push({ relPath: f.relPath, kind: 'upgrade' });
       }
       // A recognition request survives a reload, so it resumes here as non-explicit work that waits for an idle machine.
       if (entry?.ocrQueued && !this.recognizeLane.some((r) => r.relPath === f.relPath)) {
@@ -316,7 +311,6 @@ export class LibraryIngest {
           });
           try {
             if (task.kind === 'verify') await this._verify(task.relPath);
-            else if (task.kind === 'upgrade') await this._upgrade(task.relPath);
             else if (task.kind === 'recognize') await this._recognize(task.relPath);
             else await this._ingest(task.relPath, !!task.resetSidecar);
           } catch (err) {
@@ -378,31 +372,6 @@ export class LibraryIngest {
   }
 
   /**
-   * Backfill the per-page dims and the text signals for a legacy entry that predates them.
-   * The sidecar, text cache, and search index may hold later user edits, so they are never touched here.
-   * @param {string} relPath
-   */
-  async _upgrade(relPath) {
-    const entry = this.manifest.docs[relPath];
-    if (!entry || !entry.hash || (entry.pageDims && entry.pdfType !== undefined)) return;
-    /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
-    let doc = null;
-    try {
-      const files = [await this.store.readFile(relPath)];
-      const sidecar = await this.store.readSidecar(entry.hash);
-      if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
-      doc = await scribeLib.openDocument(files, { skipFontOpt: true, pdfWorkerN: 1 });
-      entry.pageDims = doc.pageMetrics.map((pm) => [
-        Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
-      ]);
-      recordTextSignals(entry, doc);
-    } catch { /* The next scan retries. */
-    } finally {
-      await doc?.close();
-    }
-  }
-
-  /**
    * Import a document and rebuild everything derived from it.
    * An existing sidecar for the same bytes holds the user's edits, so it is opened alongside the source and left in place.
    * @param {string} relPath
@@ -416,7 +385,7 @@ export class LibraryIngest {
     /** @type {?number} */
     let timer = null;
     try {
-      const result = await Promise.race([
+      await Promise.race([
         (async () => {
           const file = await this.store.readFile(relPath);
           const buf = await file.arrayBuffer();
@@ -431,7 +400,7 @@ export class LibraryIngest {
                 ...oldEntry, size: file.size, mtime: file.lastModified, status: 'indexed',
               };
               delete this.manifest.docs[oldPath];
-              return null;
+              return;
             }
           }
 
@@ -482,13 +451,7 @@ export class LibraryIngest {
             delete entry.recognizedAt;
           }
 
-          let pagesText = null;
-          if (this.engine) {
-            await this.engine.addDoc(hash, doc.ocr.active || []);
-          } else {
-            pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
-            await this.store.writeTextCache(hash, pagesText.join('\f'));
-          }
+          await this.engine.addDoc(hash, doc.ocr.active || []);
           try {
             const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH);
             if (thumb) await this.store.writeThumb(hash, thumb);
@@ -505,7 +468,6 @@ export class LibraryIngest {
               entry.sidecarError = err instanceof Error ? err.message : String(err);
             }
           }
-          return { hash, pagesText };
         })(),
         new Promise((resolve, reject) => {
           timer = setTimeout(() => {
@@ -515,7 +477,6 @@ export class LibraryIngest {
           }, DOC_TIMEOUT_MS);
         }),
       ]);
-      if (result && result.pagesText) this.index.addDoc(result.hash, result.pagesText);
       entry.status = 'indexed';
       delete entry.error;
       delete entry.errorKind;
@@ -580,13 +541,7 @@ export class LibraryIngest {
         await live.checkpoint(true);
       } else {
         await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
-        if (this.engine) {
-          await this.engine.addDoc(hash, doc.ocr.active || []);
-        } else {
-          const pagesText = (doc.ocr.active || []).map((page) => (page ? scribeLib.utils.ocr.getPageText(page) : ''));
-          await this.store.writeTextCache(hash, pagesText.join('\f'));
-          this.index.addDoc(hash, pagesText);
-        }
+        await this.engine.addDoc(hash, doc.ocr.active || []);
         entry.recognizedAt = Date.now();
       }
       delete entry.ocrError;

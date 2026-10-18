@@ -57,6 +57,28 @@ const CHUNK = 1 << 16;
  */
 
 /**
+ * @returns {SearchStorage}
+ */
+export const memoryStorage = () => {
+  /** @type {Map<string, Uint8Array>} */
+  const files = new Map();
+  return {
+    list: async () => [...files.keys()],
+    open: async (name) => {
+      const bytes = files.get(name);
+      if (!bytes) throw new Error(`NotFoundError: ${name}`);
+      return { size: bytes.length, read: (offset, length) => bytes.subarray(offset, offset + length), close: () => {} };
+    },
+    write: async (name, bytes) => {
+      files.set(name, bytes.slice());
+    },
+    remove: async (name) => {
+      files.delete(name);
+    },
+  };
+};
+
+/**
  * @typedef {Object} ManifestSegment
  * @property {string} name
  * @property {number} bytes
@@ -86,7 +108,7 @@ export const createSearchEngine = (storage, settings = {}) => {
   let markerSkips = 0;
   let readBytes = 0;
   const planned = {
-    queries: 0, segments: 0, advanced: 0, sought: 0, rangeMerged: 0, rangeByPage: 0, rangeVerified: 0, rangeReads: 0, rangeTermsOpened: 0, rangeTermsMerged: 0, records: 0,
+    queries: 0, segments: 0, advanced: 0, sought: 0, rangeMerged: 0,
   };
   /**
    * A file's cached view.
@@ -545,7 +567,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         seekCostBytes: options.seekCostBytes,
         tokenizer: indexRules,
         collection: { pages: collection.pages, avgLength: collection.pages ? collection.positions / collection.pages : 1 },
-      }, readRecord, job);
+      }, job);
       if (result.cancelled) return null;
       const sweepMs = performance.now() - t0;
       if (!lower) {
@@ -586,12 +608,11 @@ export const createSearchEngine = (storage, settings = {}) => {
         partial: result.partial,
         bound,
         candidates: result.candidates,
-        verified: result.verified,
         skips: result.skips,
         plan: result.plan,
         docs: docs.map((d) => ({
           hash: d.hash,
-          total: d.pages.reduce((sum, h) => sum + (h.tier === 4 ? 1 : h.count), 0),
+          total: d.pages.reduce((sum, h) => sum + (h.tier === 5 ? 1 : h.count), 0),
           pages: d.pages.map((h) => ({
             page: h.page, tier: h.tier, count: h.count, score: h.score, marks: h.marks, snippet: snippets.get(h) ?? null,
           })),
