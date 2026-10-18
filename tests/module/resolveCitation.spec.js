@@ -120,7 +120,8 @@ describe('four-up native transcript', () => {
   });
 });
 
-// The fixture is a court filing with no readable text of its own: a cover page, an index page and three trial transcript pages printed 62 to 64.
+// The fixture is a court filing with no readable text of its own.
+// Its cover and index pages print 1 and 2, and its three trial transcript pages print 62 to 64.
 describe('scanned transcript with an imported Textract layer', () => {
   /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
   let doc;
@@ -129,7 +130,7 @@ describe('scanned transcript with an imported Textract layer', () => {
   test('the Textract layer resolves citations without a recognition run', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2.pdf`, `${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2-AwsTextractLayoutSync.json`]);
     if (doc._textReadySettle) await doc.textReady;
-    expect(pageNums(doc), 'the transcript pages are printed 62 to 64, not the "Page 3 of 5" of the filing stamp, and the cover and index carry nothing').toEqual([[], [], ['62'], ['63'], ['64']]);
+    expect(pageNums(doc), 'a direct import numbers only the pages with a line-number column: 62 to 64 from their printed numbers, not the filing stamp\'s "Page 3 of 5", and nothing on the cover and index').toEqual([[], [], ['62'], ['63'], ['64']]);
     expect(doc.ocr.active.map((pg) => pg.lines.filter((l) => l.lineNum != null).length), 'numbered lines per page').toEqual([0, 0, 50, 50, 50]);
     const first = doc.resolveCitation('62:1');
     expect([first[0].page, texts(first[0])], 'row 1 of page 62').toEqual([2, ['1', 'So, if Mr. Goldstein was playing poker at the end of 2016,']]);
@@ -150,7 +151,8 @@ describe('scanned transcript with an imported Textract layer', () => {
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     await reDoc.textReady;
     expect(reDoc.ocr.active.map((pg) => pg.lines[0].orientation), 'the turned page imports sideways, its neighbors upright').toEqual([0, 0, 0, 1, 0]);
-    expect(pageNums(reDoc), 'every page keeps its printed page number when one page is turned').toEqual([[], [], ['62'], ['63'], ['64']]);
+    // The re-import also runs the page-number pass, which reads the "1" and "2" printed in the same corner as the 62 to 64.
+    expect(pageNums(reDoc), 'after the round trip every sheet carries its printed page number, the cover\'s and the index\'s included, when one page is turned').toEqual([['1'], ['2'], ['62'], ['63'], ['64']]);
     const row = reDoc.resolveCitation('63:25');
     expect([row[0].page, row[0].first, row[0].last, texts(row[0])], 'row 25 of the turned page').toEqual([3, 25, 25, ['25', 'you’re going to hear from these people at different points in']]);
     expect(box(row[0]), 'the box lies where the row is drawn on the turned page').toEqual({

@@ -261,6 +261,7 @@ describe('Extract CLI command.', () => {
 
   // Regression gate: cli/extract.js must enable `usePDFText.ocr.main` so OCR-layer PDFs
   // (image pages with an invisible text layer) actually surface their text.
+  // The output's line breaks follow paragraph detection, which this gate does not guard, so the assertions count words.
   it('Should extract text from a PDF whose pages are images with an invisible OCR layer.', async () => {
     // Reset to defaults so the CLI is forced to enable extraction itself rather than
     // inheriting `usePDFText.ocr.main = true` from a prior test.
@@ -271,11 +272,10 @@ describe('Extract CLI command.', () => {
 
     await extractCLI(`${ASSETS_PATH}/scribe_test_pdf1.pdf`, outputPath, { format: 'txt' });
 
-    expect(fs.existsSync(outputPath)).toBe(true);
-    const lines = fs.readFileSync(outputPath, 'utf8').split('\n');
-    expect(lines.length).toBe(25);
-    expect(lines[0]).toBe('henry’s grave.');
-    expect(lines[2]).toBe('HENRY’S GRAVE. Standing beside the consecrated mound,');
+    expect(fs.existsSync(outputPath), 'extracting an OCR-layer PDF must write its output file').toBe(true);
+    const words = fs.readFileSync(outputPath, 'utf8').split(/\s+/).filter(Boolean);
+    expect(words.length, 'the extract command must surface all 407 words of the invisible OCR layer; an empty file means cli/extract.js no longer enables usePDFText.ocr.main').toBe(407);
+    expect(words.slice(0, 3), 'the text opens with the running head and page number of page 1').toEqual(['henry’s', 'grave.', '115']);
   }, 15000);
 
   it('Should extract a directory recursively, mirroring the tree and skipping unreadable files.', async () => {
@@ -285,11 +285,12 @@ describe('Extract CLI command.', () => {
     fs.mkdirSync(`${inputDir}/nested`, { recursive: true });
     fs.copyFileSync(`${ASSETS_PATH}/academic_article_1.pdf`, `${inputDir}/one.pdf`);
     fs.copyFileSync(`${ASSETS_PATH}/academic_article_1.pdf`, `${inputDir}/nested/two.pdf`);
+    fs.copyFileSync(`${ASSETS_PATH}/scribe_test_pdf1.pdf`, `${inputDir}/ocr-layer.pdf`);
     fs.writeFileSync(`${inputDir}/broken.pdf`, ''); // 0-byte: must be skipped, never fatal
 
     const summary = await scribe.extractTextDir(inputDir, outputDir, { recursive: true, workers: 2 });
 
-    expect(summary.extracted, 'both readable PDFs (top-level + nested) must extract').toBe(2);
+    expect(summary.extracted, 'all three readable PDFs (two native, one OCR-layer) must extract').toBe(3);
     expect(summary.skipped, 'the 0-byte file must be skipped, not abort the batch').toBe(1);
     expect(summary.failures.length, 'exactly one failure recorded').toBe(1);
     expect(summary.failures[0].inputPath.endsWith('broken.pdf'), 'the skipped file is broken.pdf').toBe(true);
@@ -300,6 +301,8 @@ describe('Extract CLI command.', () => {
     expect(fs.existsSync(`${outputDir}/nested/two.txt`), 'nested output mirrors the input tree').toBe(true);
     expect(fs.existsSync(`${outputDir}/broken.txt`), 'a skipped input produces no output file').toBe(false);
     expect(fs.readFileSync(`${outputDir}/nested/two.txt`, 'utf8'), 'nested file text extracted correctly').toContain('WHISTLEBLOWERS');
+    const ocrLayerWords = fs.readFileSync(`${outputDir}/ocr-layer.txt`, 'utf8').split(/\s+/).filter(Boolean);
+    expect(ocrLayerWords.length, 'the batch path must surface all 407 words of an invisible OCR layer; an empty file means extractTextDirWorker no longer enables usePDFText.ocr.main').toBe(407);
   }, 20000);
 
   it('Should default the --dir output to a new <input>-<format> directory instead of the cwd.', async () => {
