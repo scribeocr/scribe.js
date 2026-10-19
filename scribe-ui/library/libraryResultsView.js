@@ -7,6 +7,7 @@ import { markOverlayHTML } from './libraryPreview.js';
 /** How many documents, and pages within each, the list shows before a "more" button. */
 const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
+const RESULT_PAGES_PER_CLICK = 10;
 /** How long a result set must stand with no query in flight before its background opens start. */
 const THUMB_QUIET_MS = 1000;
 
@@ -447,13 +448,15 @@ export function createResultsView({
             let prev = more.previousElementSibling;
             while (prev && !prev.classList.contains('scribe-library-hit')) prev = prev.previousElementSibling;
             let at = prev ? hits.findIndex((h) => h.row === prev) + 1 : hits.length;
-            for (const pp of rest) {
+            const batch = rest.splice(0, RESULT_PAGES_PER_CLICK);
+            for (const pp of batch) {
               const row = buildHitRow(d, pp.pageN, pp, at);
               more.before(row);
               at++;
             }
-            more.remove();
-            fillSnippets(d.hash, rest);
+            if (rest.length) more.textContent = `+ ${rest.length} more page${rest.length === 1 ? '' : 's'}`;
+            else more.remove();
+            fillSnippets(d.hash, batch);
             pump();
           });
           wrap.insertBefore(more, tierSection);
