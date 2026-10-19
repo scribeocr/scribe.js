@@ -1,5 +1,7 @@
 import { compareHits, evaluate } from './searchEvaluator.js';
-import { encodePageRecords, readPageRecord } from './searchPageRecords.js';
+import {
+  encodePageRecords, readPageBoxes, readPageRecord, readPageView,
+} from './searchPageRecords.js';
 import {
   PAGE_KEY_SPAN, compareBytes, openSegment, readAllPostings, writeSegment,
 } from './searchSegment.js';
@@ -82,7 +84,7 @@ export const memoryStorage = () => {
  * @typedef {Object} ManifestSegment
  * @property {string} name
  * @property {number} bytes
- * @property {Array<{hash: string, pages: number, records: string, ingestSeq: number}>} docs
+ * @property {Array<{hash: string, pages: number, records: string, recordBytes?: number, ingestSeq: number}>} docs
  * @property {number[]} dead
  */
 
@@ -477,14 +479,16 @@ export const createSearchEngine = (storage, settings = {}) => {
   /**
    * @param {string} hash
    * @param {number} page
+   * @returns {Promise<{rec: ?import('./searchPageRecords.js').PageRecord, boxes: ?{dims: {width: number, height: number}, boxes: Array<import('./searchPageRecords.js').Box>}}>}
    */
-  const readRecord = async (hash, page) => {
+  const readPage = async (hash, page) => {
     const live = findLive(hash);
-    if (!live) return null;
+    if (!live) return { rec: null, boxes: null };
     const name = live.seg.docs[live.ord].records;
     const file = await acquire(name);
     try {
-      return await readPageRecord(file, page);
+      const rec = await readPageRecord(file, page);
+      return { rec, boxes: rec ? await readPageBoxes(file, page) : null };
     } finally {
       release(name);
     }
@@ -492,13 +496,13 @@ export const createSearchEngine = (storage, settings = {}) => {
 
   /**
    * @param {import('./searchPageRecords.js').PageRecord} rec
-   * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
+   * @returns {(v: number) => number}
    */
-  const snippetOf = (rec, marks) => {
-    // The record's tokens in (position << 1 | span) order, which emission order is not: a joined hyphenation (2p + 1) comes before its first half (2p).
+  const tokenIndexOf = (rec) => {
     const values = rec.pos.map((p, i) => (p << 1) | rec.span[i]);
+    // Emission order is not value order: a joined hyphenation (2p + 1) comes before its first half (2p).
     const order = values.map((v, i) => i).sort((a, b) => values[a] - values[b]);
-    const indexOf = (v) => {
+    return (v) => {
       let lo = 0;
       let hi = order.length;
       while (lo < hi) {
@@ -508,6 +512,42 @@ export const createSearchEngine = (storage, settings = {}) => {
       }
       return lo < order.length && values[order[lo]] === v ? order[lo] : -1;
     };
+  };
+
+  /**
+   * @template T
+   * @param {import('./searchPageRecords.js').PageRecord} rec
+   * @param {Array<T>} perWord
+   * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
+   * @param {(v: number) => number} indexOf
+   * @returns {Array<Array<T>>}
+   */
+  const wordsOf = (rec, perWord, marks, indexOf) => {
+    const groups = [];
+    // A word with no token, such as a line number right after a line-end hyphenation, lies inside an occurrence's range without being part of it.
+    const tokenWords = new Set(rec.wordIndex);
+    for (const [a, b] of marks) {
+      const i = indexOf(a);
+      const j = indexOf(b);
+      if (i < 0 || j < 0) continue;
+      const from = rec.wordIndex[i];
+      // A joined hyphenation's second half is the token two after the joined one, and its word need not be the next word.
+      const last = rec.span[j] && j + 2 < rec.wordIndex.length ? rec.wordIndex[j + 2] : rec.wordIndex[j];
+      const to = Math.min(perWord.length - 1, last);
+      if (from > to) continue;
+      const group = [];
+      for (let k = from; k <= to; k++) if (tokenWords.has(k)) group.push(perWord[k]);
+      if (group.length) groups.push(group);
+    }
+    return groups;
+  };
+
+  /**
+   * @param {import('./searchPageRecords.js').PageRecord} rec
+   * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
+   * @param {(v: number) => number} indexOf
+   */
+  const snippetOf = (rec, marks, indexOf) => {
     const ranges = [];
     for (const [a, b] of marks) {
       const i = indexOf(a);
@@ -593,11 +633,19 @@ export const createSearchEngine = (storage, settings = {}) => {
       const t1 = performance.now();
       /** @type {Map<import('./searchEvaluator.js').Hit, ?ReturnType<typeof snippetOf>>} */
       const snippets = new Map();
+      /** @type {Map<import('./searchEvaluator.js').Hit, ?{dims: {width: number, height: number}, rects: Array<Array<import('./searchPageRecords.js').Box>>}>} */
+      const rects = new Map();
       // The results view shows every page of the fallback tiers and fetches none of their snippets later.
       await Promise.all(docs.slice(0, lower ? docs.length : options.firstScreenDocs).map(async (d) => {
         await Promise.all(d.pages.slice(0, lower ? d.pages.length : options.firstScreenPages).map(async (h) => {
-          const rec = await readRecord(h.hash, h.page);
-          snippets.set(h, rec ? snippetOf(rec, h.marks) : null);
+          const { rec, boxes } = await readPage(h.hash, h.page);
+          if (!rec) {
+            snippets.set(h, null);
+            return;
+          }
+          const indexOf = tokenIndexOf(rec);
+          snippets.set(h, snippetOf(rec, h.marks, indexOf));
+          if (boxes) rects.set(h, { dims: boxes.dims, rects: wordsOf(rec, boxes.boxes, h.marks, indexOf) });
         }));
       }));
       return {
@@ -614,7 +662,7 @@ export const createSearchEngine = (storage, settings = {}) => {
           hash: d.hash,
           total: d.pages.reduce((sum, h) => sum + (h.tier === 5 ? 1 : h.count), 0),
           pages: d.pages.map((h) => ({
-            page: h.page, tier: h.tier, count: h.count, score: h.score, marks: h.marks, snippet: snippets.get(h) ?? null,
+            page: h.page, tier: h.tier, count: h.count, score: h.score, marks: h.marks, snippet: snippets.get(h) ?? null, rects: rects.get(h)?.rects ?? null, dims: rects.get(h)?.dims ?? null,
           })),
         })),
         ms: { sweep: sweepMs, snippets: performance.now() - t1, total: performance.now() - t0 },
@@ -639,7 +687,7 @@ export const createSearchEngine = (storage, settings = {}) => {
       const t0 = performance.now();
       if (!manifest.segments.length) indexRules = { ...options.tokenizer };
       const streams = pages.map((p) => tokenizePage(p, indexRules));
-      const records = await encodePageRecords(streams);
+      const records = await encodePageRecords(streams, pages);
       /** @type {Map<string, Map<number, number[]>>} */
       const byTerm = new Map();
       let positions = 0;
@@ -694,7 +742,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         name: segName,
         bytes: segment.length,
         docs: [{
-          hash, pages: streams.length, records: recordsName, ingestSeq,
+          hash, pages: streams.length, records: recordsName, recordBytes: records.length, ingestSeq,
         }],
         dead: [],
       });
@@ -758,9 +806,91 @@ export const createSearchEngine = (storage, settings = {}) => {
     async snippets(hash, pages) {
       await openIndex();
       return Promise.all(pages.map(async (p) => {
-        const rec = await readRecord(hash, p.page);
-        return { page: p.page, snippet: rec ? snippetOf(rec, p.marks) : null };
+        const { rec, boxes } = await readPage(hash, p.page);
+        if (!rec) {
+          return {
+            page: p.page, snippet: null, rects: null, dims: null,
+          };
+        }
+        const indexOf = tokenIndexOf(rec);
+        return {
+          page: p.page, snippet: snippetOf(rec, p.marks, indexOf), rects: boxes ? wordsOf(rec, boxes.boxes, p.marks, indexOf) : null, dims: boxes ? boxes.dims : null,
+        };
       }));
+    },
+
+    /**
+     * @param {string} hash
+     * @param {number[]} pageNs
+     * @returns {Promise<Array<?import('./searchPageRecords.js').PageView>>}
+     */
+    async pages(hash, pageNs) {
+      await openIndex();
+      const live = findLive(hash);
+      if (!live) return pageNs.map(() => null);
+      const name = live.seg.docs[live.ord].records;
+      const file = await acquire(name);
+      try {
+        const out = [];
+        for (const n of pageNs) {
+          const rec = await readPageRecord(file, n);
+          out.push(rec ? await readPageView(file, n, rec.text) : null);
+        }
+        return out;
+      } finally {
+        release(name);
+      }
+    },
+
+    /**
+     * @param {string} hash
+     * @param {string} query
+     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
+     */
+    async find(hash, query) {
+      await openIndex();
+      const live = findLive(hash);
+      if (!live) return { pages: [] };
+      const { seg } = live;
+      await acquire(seg.name);
+      /** @type {Awaited<ReturnType<typeof evaluate>>} */
+      let result;
+      try {
+        const { reader, dead } = await readerOf(seg);
+        result = await evaluate([{
+          reader,
+          dead,
+          pageLength: (/** @type {number} */ ord, /** @type {number} */ page) => reader.docs[ord].pageLengths[page] || 1,
+          ingestSeq: (/** @type {number} */ ord) => seg.docs[ord].ingestSeq,
+        }], query, {
+          bound: Number.POSITIVE_INFINITY,
+          doc: live.ord,
+          marksPerPage: Number.POSITIVE_INFINITY,
+          prefixLastWord: options.prefixLastWord,
+          rankSpan: options.rankSpan,
+          sweepByCost: options.sweepByCost,
+          seekCostBytes: options.seekCostBytes,
+          tokenizer: indexRules,
+          collection: { pages: collection.pages, avgLength: collection.pages ? collection.positions / collection.pages : 1 },
+        });
+      } finally {
+        release(seg.name);
+      }
+      const name = seg.docs[live.ord].records;
+      const file = await acquire(name);
+      try {
+        const pages = [];
+        for (const h of result.hits) {
+          const rec = await readPageRecord(file, h.page);
+          const view = rec ? await readPageView(file, h.page, rec.text) : null;
+          if (!rec || !view) continue;
+          const ids = view.lines.flatMap((l) => l.words.map((w) => w.id));
+          pages.push({ page: h.page, count: h.count, matches: wordsOf(rec, ids, h.marks, tokenIndexOf(rec)) });
+        }
+        return { pages };
+      } finally {
+        release(name);
+      }
     },
 
     /**
@@ -777,6 +907,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         terms += r.reader.termCount;
       }
       let bytes = 0;
+      let recordBytes = 0;
       /** @type {Record<string, number>} */
       const encodings = {};
       for (const s of liveSegments()) {
@@ -787,6 +918,7 @@ export const createSearchEngine = (storage, settings = {}) => {
           if (s.dead.includes(i)) continue;
           docs++;
           pages += s.docs[i].pages;
+          recordBytes += s.docs[i].recordBytes || 0;
         }
       }
       const chunkHeap = chunks.size * (HEAP_TYPED_ARRAY + HEAP_STRING + 40);
@@ -802,6 +934,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         pages,
         terms,
         segmentBytes: bytes,
+        recordBytes,
         encodings,
         openFiles: open.size,
         pinnedFiles: pins.size,

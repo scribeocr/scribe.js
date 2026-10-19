@@ -31,6 +31,10 @@ export class PortfolioStore {
     this.sidecars = new Map();
     /** @type {Map<string, ArrayBuffer>} */
     this.sidecarBackups = new Map();
+    /** @type {Map<string, ArrayBuffer>} */
+    this.changes = new Map();
+    /** @type {Map<string, ArrayBuffer>} */
+    this.changesBackups = new Map();
     /** @type {Map<string, Blob>} */
     this.thumbs = new Map();
     /** @type {Map<string, Map<number, Blob>>} */
@@ -78,6 +82,8 @@ export class PortfolioStore {
     this.bytes.clear();
     this.sidecars.clear();
     this.sidecarBackups.clear();
+    this.changes.clear();
+    this.changesBackups.clear();
     this.thumbs.clear();
     this.rasters.clear();
     this.rasterBytes = 0;
@@ -188,6 +194,43 @@ export class PortfolioStore {
     this.sidecarBackups.delete(hash);
   }
 
+  /** @param {string} hash @param {ArrayBuffer|Blob} data */
+  async writeChanges(hash, data) {
+    this.changes.set(hash, data instanceof Blob ? await data.arrayBuffer() : data);
+  }
+
+  /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
+  async readChanges(hash) {
+    return this.changes.get(hash) ?? null;
+  }
+
+  /** @param {string} hash */
+  async deleteChanges(hash) {
+    this.changes.delete(hash);
+  }
+
+  /** @param {string} hash @returns {Promise<boolean>} */
+  async backupChanges(hash) {
+    const data = this.changes.get(hash);
+    if (!data) return false;
+    this.changesBackups.set(hash, data);
+    return true;
+  }
+
+  /** @param {string} hash @returns {Promise<boolean>} */
+  async restoreChangesBackup(hash) {
+    const data = this.changesBackups.get(hash);
+    if (!data) return false;
+    this.changes.set(hash, data);
+    this.changesBackups.delete(hash);
+    return true;
+  }
+
+  /** @param {string} hash */
+  async deleteChangesBackup(hash) {
+    this.changesBackups.delete(hash);
+  }
+
   /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     this.thumbs.set(hash, blob);
@@ -233,7 +276,7 @@ export class PortfolioStore {
    */
   async sweepArtifacts(manifest) {
     const live = new Set(Object.values(manifest.docs).map((e) => e.hash).filter(Boolean));
-    for (const map of [this.sidecars, this.sidecarBackups, this.thumbs, this.rasters]) {
+    for (const map of [this.sidecars, this.sidecarBackups, this.changes, this.changesBackups, this.thumbs, this.rasters]) {
       for (const hash of [...map.keys()]) if (!live.has(hash)) map.delete(hash);
     }
     let total = 0;

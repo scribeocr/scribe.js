@@ -1,34 +1,13 @@
 // The library's preview of the selected document, which the main viewer shows in the library's pane.
-// Seeding from stored page rasters and sidecars is what lets a reader flip through documents without paying for a full load each time.
 
-import scribeLib from '../../scribe.js';
-import { openDocumentFromFile } from '../js/controls/tools.js';
-import {
-  RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
-} from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
 
-/**
- * Word boxes for every occurrence of the query on a page, for painting match marks over a render.
- * Accepts a live `OcrPage` or a raw sidecar page.
- * @param {?{n: number, lines: Array<{words: Array<{id: string, text: string, bbox: {left: number, top: number, right: number, bottom: number}}>}>, dims?: {width: number, height: number}}} page
- * @param {?{width: number, height: number}} dims - Page dimensions when the page object carries none.
- * @param {string} query
- * @returns {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}}
- */
-export const getMatchRects = (page, dims, query) => {
-  if (!page || !Array.isArray(page.lines) || !dims) return null;
-  const matches = scribeLib.utils.ocr.getDocMatches(query, [page]);
-  if (!matches.length) return null;
-  const boxes = new Map();
-  for (const line of page.lines) for (const w of (line.words || [])) if (w && w.bbox) boxes.set(w.id, w.bbox);
-  const rects = [];
-  for (const m of matches) for (const id of m.wordIds) if (boxes.has(id)) rects.push(boxes.get(id));
-  return { dims: page.dims || dims, rects, per: matches[0].wordIds.length };
-};
+/** Width of a thumbnail rail image, as the image store renders one. */
+const THUMBNAIL_W = 300;
 
 /**
- * @param {?ReturnType<typeof getMatchRects>} m
+ * @param {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}} m
+ *   The first `per` of `rects` belong to the first occurrence.
  * @returns {string} Absolutely positioned percent-unit mark spans, the first occurrence in the active color.
  */
 export const markOverlayHTML = (m) => {
@@ -52,7 +31,6 @@ export const markOverlayHTML = (m) => {
  * @property {number} pageN
  * @property {?string} query
  * @property {string} title
- * @property {boolean} [jump] - Land on a far page by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
  */
 
 /**
@@ -64,7 +42,6 @@ export const markOverlayHTML = (m) => {
  * @property {boolean} libraryDirty
  * @property {?Object} tab - The lane tab that owns the document, when the preview shows a tab's document.
  * @property {?{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} handle
- * @property {?{from: number, to: number}} window - The seeded page window.
  * @property {?{current: ?Object}} [holderRef] - The hydration swap's holder reference, moved onto the tab when the preview is pinned.
  * @property {(doc: Object) => void} [onDocHydrated]
  */
@@ -74,34 +51,18 @@ export const markOverlayHTML = (m) => {
  * @param {Object} deps
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} deps.viewer
  * @param {import('./docSession.js').DocSessions} deps.sessions
+ * @param {ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.engine
  * @param {() => ?import('./libraryStore.js').LibraryStore} deps.getStore
- * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
- * @param {() => void} deps.onRastersStored - Fires after a raster window lands, so blank rows elsewhere can retry.
- * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
  * @param {(hash: string, doc: Object) => void} [deps.onSidecarSaved] - Fires after a preview checkpoint writes a sidecar, so the manifest and search index can follow the edited document.
  * @param {() => void} deps.ensureLit - Light the library's tab in its split form before a document is attached as the preview.
  * @param {(state: 'empty'|'loading'|'ready'|'error', text?: string) => void} deps.onState - The document area's state, for the host's hint over it.
  * @param {(doc: Object, target: PreviewRecord) => void} deps.trackEdits - Route the document's mutations to `target.libraryDirty`.
  */
 export function createPreview({
-  viewer, sessions, getStore, getManifest, onRastersStored, saveManifestSoon, onSidecarSaved, ensureLit, onState, trackEdits,
+  viewer, sessions, engine, getStore, onSidecarSaved, ensureLit, onState, trackEdits,
 }) {
   /**
-   * The pooled live document for a legacy entry that cannot seed (no stored pageDims), loading it on first use.
-   * @param {string} relPath
-   * @param {string} hash
-   */
-  const sessionDoc = (relPath, hash) => sessions.liveDocOrLoad(
-    // Pending entries all carry an empty hash, and one shared pool key would hand every one of them the first loaded document.
-    hash || relPath,
-    () => /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readFile(relPath).then((file) => openDocumentFromFile(file)),
-  );
-
-  /** @type {?Promise<void>} Import of the in-flight preview hydration, so upgrades start at most one at a time. */
-  let hydrationBusy = null;
-
-  /**
-   * Count of imports the user is actively waiting on, such as a preview hydration or an open.
+   * Count of loads the user is actively waiting on.
    * Background raster work pauses while this is nonzero.
    */
   let userLoadsActive = 0;
@@ -115,13 +76,9 @@ export function createPreview({
   const userLoadIdle = () => (userLoadsActive === 0 ? Promise.resolve() : new Promise((resolve) => { userIdleWaiters.push(resolve); }));
 
   /**
-   * Count a provisional document's eventual hydration as a user-facing load, and measure it.
-   * Wraps `_requestHydration` so every trigger (selection, scroll, promotion, save) pauses background warming for its duration.
-   * A hydration request runs a cold open through to the first render, so its duration is recorded as the document's `firstPaintMs`.
    * @param {Object} seedDoc
-   * @param {{relPath: string}} target
    */
-  const countHydration = (seedDoc, target) => {
+  const countHydration = (seedDoc) => {
     const inner = seedDoc._requestHydration;
     if (!inner) return;
     let counted = false;
@@ -130,113 +87,68 @@ export function createPreview({
       if (!counted) {
         counted = true;
         beginUserLoad();
-        const t0 = performance.now();
-        const track = Promise.resolve(p).then(() => {
-          const entry = getManifest()?.docs[target.relPath];
-          if (entry) {
-            entry.firstPaintMs = Math.round(performance.now() - t0);
-            saveManifestSoon();
-          }
-        }).catch(() => {}).finally(() => {
-          endUserLoad();
-          if (hydrationBusy === track) hydrationBusy = null;
-        });
-        hydrationBusy = track;
+        Promise.resolve(p).catch(() => {}).finally(endUserLoad);
       }
       return p;
     };
   };
 
   /**
-   * Persist the two pages either side of `pageN` from an open document, so the next open of that spot paints instantly.
-   * Skipped when the document's pages were edited, since stored rasters are keyed by the ingested page order.
-   * @param {Object} doc
+   * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
    */
-  const persistRasterWindow = (doc, entry, pageN) => {
-    const d = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (doc);
+  const persistRasterWindow = (relPath, entry, pageN) => {
     const store = getStore();
-    if (!store || !entry?.hash || !d || d.id < 0) return;
-    if (d.pageMetrics.length !== entry.pageCount) return;
-    // These renders run on an already-open document, so timing them here would understate a cold first paint.
-    if (entry.firstPaintMs !== undefined && entry.firstPaintMs < RASTER_STORE_MIN_MS) return;
-    if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) return;
-    const s = store;
-    const { hash, pageCount } = entry;
+    if (!store || !entry?.hash || !entry.pageDims) return;
+    const ref = { relPath, entry, hash: entry.hash };
+    const pageCount = entry.pageDims.length;
     (async () => {
       for (let n = Math.max(0, pageN - 2); n <= Math.min(pageCount - 1, pageN + 2); n++) {
         await userLoadIdle();
-        if (await s.readPageRaster(hash, n)) continue;
-        const raster = await renderPageRaster(d, n);
-        if (raster) await s.writePageRaster(hash, n, raster);
+        await sessions.raster(ref, n, true);
       }
-      // Freshly persisted pages may belong to blank search-result rows.
-      onRastersStored();
     })().catch(() => {});
   };
 
   /**
    * Build a provisional seed for a page of a library document.
-   * Hydration stays on-demand so that flipping through documents never pays for a full import.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
    * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
    */
   const makeSeed = async (relPath, entry, pageN) => {
-    const load = async () => {
-      const pdfFile = await /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readFile(relPath);
-      const files = [pdfFile];
-      if (entry.hash) {
-        const sidecar = await /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readSidecar(entry.hash);
-        if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
-      }
-      return files;
-    };
-    if (entry.pageDims && !sessions.hasLive(entry.hash)) {
-      const pageCount = entry.pageDims.length;
-      const from = Math.max(0, pageN - 2);
-      const to = Math.min(pageCount - 1, pageN + 2);
-      // One pass warms the whole seed window, so the per-page reads below hit the cache instead of each re-reading the sidecar.
-      sessions.sidecarPages(entry.hash, Array.from({ length: to - from + 1 }, (_, i) => from + i)).catch(() => {});
-      return {
-        pageCount,
-        pageDims: entry.pageDims.map(([width, height, rotation]) => ({ width, height, rotation })),
-        initialPage: pageN,
-        window: { from, to },
-        name: titleOf(relPath),
-        raster: (n) => /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readPageRaster(entry.hash, n),
-        ocr: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => m.get(n)?.ocr ?? null),
-        // Copies, never the cached arrays: seed session edits must not leak into the cache.
-        annots: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => {
-          const side = m.get(n);
-          return side ? (side.annotations ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })) : null;
-        }),
-        load,
-        hydration: 'on-demand',
-      };
-    }
-    beginUserLoad();
-    /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
-    let doc;
-    try {
-      doc = await sessionDoc(relPath, entry.hash);
-    } finally {
-      endUserLoad();
-    }
-    const pageCount = doc.pageMetrics.length;
+    const { hash } = entry;
+    if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
+    const ref = { relPath, entry, hash };
+    const [changes, pixels] = await Promise.all([sessions.changes(hash), sessions.pixels(ref)]);
+    const pageCount = entry.pageDims.length;
+    /** @param {Object} a */
+    const copyAnnot = (a) => ({ ...a, bbox: { ...a.bbox } });
     return {
       pageCount,
-      pageDims: doc.pageMetrics.map((pm) => ({ width: pm.dims.width, height: pm.dims.height, rotation: pm.rotation || 0 })),
+      pageDims: entry.pageDims.map(([width, height, rotation]) => ({ width, height, rotation })),
       initialPage: pageN,
       window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
       name: titleOf(relPath),
-      raster: (n) => sessions.pageImage(entry.hash, n),
-      ocr: async (n) => (await sessionDoc(relPath, entry.hash)).ocr.active?.[n] ?? null,
-      annots: async (n) => ((await sessionDoc(relPath, entry.hash)).annotations.pages[n] ?? [])
-        .map((a) => ({ ...a, bbox: { ...a.bbox } })),
-      load,
+      raster: (n) => sessions.raster(ref, n, true),
+      render: (n, width) => sessions.renderAt(ref, n, width),
+      ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
+      // Copies, never the parsed arrays: seed session edits must not leak into the cache.
+      // A page the changes file lists, even as empty, replaces the real page at the swap, so removals count.
+      // Without a changes file the page appends its session additions instead.
+      annots: (n) => Promise.resolve(changes?.annotations ? (changes.annotations[n] ?? []).map(copyAnnot) : null),
+      thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
+      find: (query) => engine.find(hash, query).then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })))),
+      outline: changes?.outline ?? pixels.outline ?? [],
+      load: async () => {
+        const store = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
+        const files = [await store.readFile(relPath)];
+        const sidecar = await store.readSidecar(hash);
+        if (sidecar) files.push(new File([sidecar], `${hash}.scribe`));
+        return files;
+      },
       hydration: 'on-demand',
     };
   };
@@ -258,7 +170,7 @@ export function createPreview({
    * @returns {PreviewRecord}
    */
   const recordFor = (doc, tab = null) => ({
-    doc, provisional: doc.id < 0, libraryDirty: false, tab, handle: null, window: null,
+    doc, provisional: doc.id < 0, libraryDirty: false, tab, handle: null,
   });
 
   /**
@@ -290,7 +202,8 @@ export function createPreview({
       try {
         real = doc.id < 0 ? await /** @type {any} */ (doc)._requestHydration() : doc;
         await store.writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
-        sessions.dropSidecar(hash);
+        await store.writeChanges(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
+        sessions.dropChanges(hash);
         sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
         onSidecarSaved?.(hash, /** @type {Object} */ (real));
       } catch {
@@ -328,7 +241,6 @@ export function createPreview({
 
   /**
    * Land on the target page and paint (or clear) the query's match marks.
-   * A seeded document only has words for its window pages, so the marks stay partial until hydration re-runs this.
    * @param {{pageN: number, query: ?string}} target
    */
   const applyQueryAndPage = async (target) => {
@@ -345,40 +257,6 @@ export function createPreview({
       if (s._searchState.matchList.length) return;
     } else if (s.state.searchMode && bar) bar.closeSearch();
     await s.displayPage(target.pageN, true, false);
-  };
-
-  /**
-   * Start the shown provisional document's full load, deferring while another preview hydration is still importing.
-   * @param {number} t
-   * @param {{hash: string, pageN: number}} target
-   */
-  const hydrate = (t, target) => {
-    if (!(t === token && current && viewer.doc === current.record.doc && current.record.doc.id < 0)) return;
-    if (hydrationBusy) {
-      hydrationBusy.then(() => hydrate(t, target));
-      return;
-    }
-    getStore()?.readPageRaster(target.hash, target.pageN).then((raster) => {
-      if (!raster && t === token && current && viewer.doc === current.record.doc && current.record.doc.id < 0) onState('loading');
-    }).catch(() => {});
-    /** @type {any} */ (current.record.doc)._requestHydration?.();
-  };
-
-  /**
-   * Start the shown target's upgrade to the real document.
-   * The stored raster keeps painting, and hydration swaps the real render in underneath.
-   * A document past the warm-lane size caps never loads automatically, so its preview waits for an explicit Open.
-   * @param {PreviewTarget} target
-   * @param {number} t
-   */
-  const requestUpgrade = async (target, t) => {
-    const store = getStore();
-    if (!store || !current || current.record.doc.id >= 0) return;
-    if (target.entry.size > WARM_PDF_LIMIT) return;
-    const sidecarBytes = await store.sidecarSize(target.hash);
-    if (sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) return;
-    if (t !== token) return;
-    hydrate(t, target);
   };
 
   /** Clear the preview, emptying the pane and letting go of the shown document. */
@@ -416,11 +294,7 @@ export function createPreview({
     beginUserLoad();
     try {
       const s = viewer.scribe;
-      // Clicking a result on a far page of the same provisional document re-seeds around that page instead of forcing the full load.
-      const jumpOutsideSeed = !!(current && sameDoc && current.record.doc.id < 0
-        && target.jump && current.record.window
-        && (target.pageN < current.record.window.from || target.pageN > current.record.window.to));
-      if (current && sameDoc && viewer.doc === current.record.doc && !jumpOutsideSeed && s.zoomLevel > 0) {
+      if (current && sameDoc && viewer.doc === current.record.doc && s.zoomLevel > 0) {
         // A re-render landing on the same page and query must leave the reader's scroll and paint untouched.
         const samePlace = !changed;
         current.pageN = target.pageN;
@@ -432,9 +306,6 @@ export function createPreview({
         if (t !== token) return;
         await applyQueryAndPage(target);
         current.anchorTop = s.scrollContainer.scrollTop;
-        const entry = getManifest()?.docs[target.relPath];
-        if (current.record.doc.id >= 0 && entry) persistRasterWindow(current.record.doc, entry, target.pageN);
-        else if (!current.record.tab) requestUpgrade(target, t);
         return;
       }
       const prevHash = current ? current.hash : null;
@@ -453,8 +324,6 @@ export function createPreview({
         await applyQueryAndPage(target);
         current.anchorTop = s.scrollContainer.scrollTop;
         onState('ready');
-        const entry = getManifest()?.docs[target.relPath];
-        if (entry && liveTab.doc.id >= 0) persistRasterWindow(liveTab.doc, entry, target.pageN);
         return;
       }
       const pooled = sessions.takeLive(target.hash);
@@ -469,58 +338,7 @@ export function createPreview({
         await applyQueryAndPage(target);
         current.anchorTop = s.scrollContainer.scrollTop;
         onState('ready');
-        const entry = getManifest()?.docs[target.relPath];
-        if (entry) persistRasterWindow(pooled, entry, target.pageN);
-        return;
-      }
-      // With no raster for the target page a seed could only paint blank pages, so the real document loads directly instead.
-      const rastered = target.hash
-        ? await /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readPageRaster(target.hash, target.pageN)
-        : null;
-      if (t !== token) return;
-      if (!rastered) {
-        onState('loading');
-        // Serialized so that a flip storm can never hold several full imports at once.
-        while (hydrationBusy) {
-          await hydrationBusy;
-          if (t !== token) return;
-        }
-        const t0 = performance.now();
-        const loadP = (async () => {
-          const st = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
-          const files = [await st.readFile(target.relPath)];
-          if (target.hash) {
-            const sidecar = await st.readSidecar(target.hash);
-            if (sidecar) files.push(new File([sidecar], `${target.hash}.scribe`));
-          }
-          return scribeLib.openDocument(files, { deferText: true });
-        })();
-        const track = loadP.then(() => {}, () => {}).finally(() => { if (hydrationBusy === track) hydrationBusy = null; });
-        hydrationBusy = track;
-        const doc = await loadP;
-        if (t !== token) {
-          // Abandoned by a later selection, so the document is pooled to keep a return to it free.
-          // A pending document has no hash to pool it under and closes instead.
-          if (target.hash) sessions.adoptLive(target.hash, doc);
-          else doc.close().catch(() => {});
-          return;
-        }
-        const rec = recordFor(doc);
-        trackEdits(doc, rec);
-        current = {
-          relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, record: rec,
-        };
-        await attach(rec, target, prevHash);
-        if (t !== token) return;
-        await applyQueryAndPage(target);
-        current.anchorTop = s.scrollContainer.scrollTop;
-        onState('ready');
-        const entry = getManifest()?.docs[target.relPath];
-        if (entry) {
-          entry.firstPaintMs = Math.round(performance.now() - t0);
-          saveManifestSoon();
-          persistRasterWindow(doc, entry, target.pageN);
-        }
+        persistRasterWindow(target.relPath, target.entry, target.pageN);
         return;
       }
       const seed = await makeSeed(target.relPath, target.entry, target.pageN);
@@ -550,28 +368,22 @@ export function createPreview({
       const rec = recordFor(made.seedDoc);
       rec.libraryDirty = !!carried;
       rec.handle = made;
-      rec.window = seed.window;
       rec.holderRef = holder;
       // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
       rec.onDocHydrated = (d) => trackEdits(d, rec);
       holder.current = rec;
       trackEdits(made.seedDoc, rec);
-      countHydration(made.seedDoc, target);
+      countHydration(made.seedDoc);
       current = {
         relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, record: rec,
       };
       await attach(rec, target, prevHash);
       if (t !== token) return;
-      // Started before priming rather than after, because priming can stream megabytes of sidecar for a big document.
-      requestUpgrade(target, t);
       await made.primed;
       if (t !== token) return;
       await applyQueryAndPage(target);
       current.anchorTop = s.scrollContainer.scrollTop;
       onState('ready');
-      made.hydrated.finally(() => {
-        if (t === token) onState('ready');
-      }).catch(() => {});
       made.hydrated.then(() => {
         if (!(current && current.record === rec && viewer.doc === rec.doc)) return;
         const sc = s.scrollContainer;
@@ -583,8 +395,6 @@ export function createPreview({
             if (!readerMoved && current && current.record === rec) current.anchorTop = sc.scrollTop;
           }).catch(() => {});
         }
-        const entry = getManifest()?.docs[current.relPath];
-        if (entry) persistRasterWindow(rec.doc, entry, s.state.cp.n);
       }).catch(() => {});
     } catch {
       if (t === token) onState('error', 'This page could not be rendered.');

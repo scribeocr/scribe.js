@@ -1,6 +1,6 @@
 /* eslint-disable import/no-cycle */
 import scribe from '../scribe.js';
-import { search } from './js/viewerSearch.js';
+import { pageMatchIds, search } from './js/viewerSearch.js';
 import {
   UiDataColumn, UiLayout, UiRegion, layout,
 } from './js/viewerLayout.js';
@@ -3703,7 +3703,7 @@ export class ScribeViewer {
     const angle = this.doc.pageMetrics[page.n].angle || 0;
     const imageRotated = Math.abs(angle) > 0.05;
     const pageAnnotations = this.doc.annotations.pages[page.n] || [];
-    const matchIdArr = this.state.searchMode ? scribe.utils.ocr.getMatchingWordIds(this._searchState.search, this.doc.ocr.active[page.n]) : [];
+    const matchIdArr = this.state.searchMode ? pageMatchIds(this, page.n) : [];
     const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
     const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
 
@@ -3790,7 +3790,7 @@ export class ScribeViewer {
     }
     if (this.useCustomSelection) this._wordObjMaps[page.n] = null;
 
-    const matchIdArr = this.state.searchMode ? scribe.utils.ocr.getMatchingWordIds(this._searchState.search, this.doc.ocr.active[page.n]) : [];
+    const matchIdArr = this.state.searchMode ? pageMatchIds(this, page.n) : [];
 
     // Word IDs of the currently-focused match, computed only when that match is on this page, so it renders distinctly from the others.
     const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;

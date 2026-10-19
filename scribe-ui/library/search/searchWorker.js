@@ -184,6 +184,10 @@ globalThis.addEventListener('message', (e) => {
         }
       } else if (op === 'snippets') {
         result = await engine.snippets(args.hash, args.pages);
+      } else if (op === 'pages') {
+        result = await engine.pages(args.hash, args.pageNs);
+      } else if (op === 'find') {
+        result = await engine.find(args.hash, args.query);
       } else if (op === 'stats') {
         result = engine.stats();
       } else if (op === 'reset') {

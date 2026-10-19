@@ -1905,22 +1905,22 @@ class ScribePDFViewer {
   }
 
   /**
-   * Open a document provisionally, painting it from pre-rendered assets before the real document exists.
-   * The real document later replaces the seed in place, at the same scroll and zoom.
-   * Pages outside the seed's window show placeholders until hydration, and scrolling to one forces the load immediately.
-   * Resolves at first paint.
+   * Open a document provisionally, painting it from the seed's rasters and words before the real document exists.
+   * The real document replaces the seed in place, at the same scroll and zoom, when a verb needs it or when the seed is eager.
+   * Resolves at first paint, or once the tab exists when it opens in the background.
    * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
    * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
+   * @param {{activate?: boolean}} [opts]
    * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}>}
    */
-  async openProvisional(seed) {
+  async openProvisional(seed, { activate = true } = {}) {
     /** @type {{current: ?Object}} */
     const holder = { current: null };
     const {
       seedDoc, primed, hydrated, cancel,
     } = this._makeProvisional(seed, holder);
-    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: seed.initialPage ?? 0 });
+    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: seed.initialPage ?? 0, activate });
     if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
     return { primed, hydrated, cancel };
   }
@@ -1979,20 +1979,25 @@ class ScribePDFViewer {
     };
     seedDoc._requestHydration = start;
 
-    // Only user-visible navigation accelerates hydration, so the viewer's own render-ahead reaching outside the window resolves to placeholders instead.
-    const sc = this.scribe.scrollContainer;
-    const onScroll = () => {
-      const n = this.scribe.state.cp.n;
-      // Through `_requestHydration` rather than `start` directly, so a host that wrapped the hook sees every trigger.
-      if (this.doc === seedDoc && (n < seed.window.from || n > seed.window.to)) seedDoc._requestHydration?.();
+    seedDoc._onPageText = (n) => {
+      if (cancelled || this.doc !== seedDoc) return;
+      const cp = this.scribe.state.cp.n;
+      if (n !== cp && !this.scribe.windowPages(cp).includes(n)) return;
+      // Highlights hang on the page's word objects, so they are drawn once the words are.
+      this.scribe.renderWords(n).then(() => {
+        if (cancelled || this.doc !== seedDoc) return;
+        this.scribe.renderHighlights?.(n);
+        this.scribe.renderNotes?.(n);
+      }).catch(() => {});
     };
-    sc.addEventListener('scroll', onScroll);
-    realDocP.catch(() => {}).finally(() => sc.removeEventListener('scroll', onScroll));
+    seedDoc._onPageRaster = (n) => {
+      if (cancelled || this.doc !== seedDoc) return;
+      this.scribe.refreshPageRaster(n).catch(() => {});
+    };
 
     const cancel = () => {
       if (cancelled) return;
       cancelled = true;
-      sc.removeEventListener('scroll', onScroll);
       rejectReal(new Error('Hydration cancelled.'));
     };
     // A seed closed by a tab close or a viewer destroy must never go on to hydrate.
@@ -5750,13 +5755,15 @@ class ScribePDFViewer {
       fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
+    // A provisional document loads the real one when one of these tools opens, so the gates read the real document's stores alone.
+    const provisional = !!this.doc && this.doc.id < 0 && !!this.doc._requestHydration;
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
     const editBtn = this._editTextTool?.toolbarElem;
     if (editBtn) {
-      const editable = !disabled && !!this.doc.ocr?.active?.some((page) => {
+      const editable = !disabled && (provisional || !!this.doc.ocr?.active?.some((page) => {
         const nt = this.doc ? nativeTextForPage(this.doc, page) : {};
         return page?.lines?.some((line) => line.words.some((w) => nt[w.id]));
-      });
+      }));
       if (!editable && editBtn.classList.contains('active')) editBtn.click();
       editBtn.classList.toggle('disabled', !editable);
       editBtn.ariaDisabled = !editable ? 'true' : 'false';
@@ -5764,16 +5771,16 @@ class ScribePDFViewer {
     }
     const graphicsBtn = this._graphicsEditTool?.toolbarElem;
     if (graphicsBtn) {
-      // The area cut mirrors the tool's own picker, so the button never enables where nothing can be selected.
+      // The area cut mirrors the tool's own picker, so on a real document the button never enables where nothing can be selected.
       let pathsIneligibleSomewhere = false;
-      const hasGraphics = !disabled && !!this.doc?.fillShapes?.pages.some((shapes, n) => {
+      const hasGraphics = !disabled && (provisional || !!this.doc?.fillShapes?.pages.some((shapes, n) => {
         const dims = this.doc?.pageMetrics?.[n]?.dims;
         if (!shapes || !dims) return false;
         if (pagePathsIneligible(this.doc, n)) pathsIneligibleSomewhere = true;
         const areaCap = dims.width * dims.height * 0.95;
         return pageImagePlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
           || pagePathPlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
-      });
+      }));
       if (!disabled && pathsIneligibleSomewhere) {
         graphicsBtn.dataset.modeHint = 'Click or drag to select images and shapes · Some pages have too many shapes to edit';
       } else {

@@ -1,17 +1,25 @@
 // Per-document sessions for the library: one owner for the in-memory state of each content hash.
-// Persistent artifacts stay in LibraryStore, so a surface rebuild never discards live documents, parsed sidecar pages, or decoded image URLs.
+
+import scribeLib from '../../scribe.js';
+import { PageMetrics } from '../../js/objects/pageMetricsObjects.js';
+import { renderPageRaster } from './libraryIngest.js';
 
 /** How many idle live documents the pool keeps open before evicting the least recently used. */
 const MAX_IDLE_LIVE = 2;
-/** How many parsed sidecar pages stay cached across all sessions. Must comfortably exceed one read-ahead window. */
-const MAX_SIDECAR_PAGES = 64;
-/**
- * Decompressed character cap for parsing a single-JSON sidecar whole.
- * Documents past it yield no sidecar data rather than a renderer-sized JSON graph.
- */
-const SIDECAR_JSON_CHAR_LIMIT = 64 * 1024 * 1024;
+// A pixel source is cheap to reopen, 2 to 8 ms, so the pool is small.
+const MAX_PIXEL_SOURCES = 3;
 /** How many page-image object URLs stay alive across all sessions. */
 const MAX_PAGE_URLS = 400;
+const NO_TEXT = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
+
+/**
+ * A document's changes: the document-level blocks of its `.scribe` export, without the text.
+ * @typedef {Object} DocChanges
+ * @property {Array<Array<Object>>} [annotations]
+ * @property {Array<Object>} [outline]
+ * @property {Array<number>} [pageRotations]
+ * @property {{contentEdits?: Array<?Array<Object>>, pageSourceIndices?: Array<?number>}} [session]
+ */
 
 /**
  * An object URL over a copy of `blob`'s bytes.
@@ -20,6 +28,16 @@ const MAX_PAGE_URLS = 400;
  * @returns {Promise<string>}
  */
 const stableUrl = async (blob) => URL.createObjectURL(new Blob([await blob.arrayBuffer()], { type: blob.type }));
+
+/** @param {DocSession} s */
+const closePixels = (s) => {
+  const doc = s.pixelsDoc;
+  const pending = s.pixelsPromise;
+  s.pixelsDoc = null;
+  s.pixelsPromise = null;
+  if (doc) doc.close().catch(() => {});
+  else if (pending) pending.then((d) => d.close()).catch(() => {});
+};
 
 class DocSession {
   /** @param {string} hash */
@@ -30,24 +48,32 @@ class DocSession {
     this.livePromise = null;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} Resolved pool document, null while loading or absent. */
     this.liveDoc = null;
-    /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
-    this.sidecarPages = new Map();
-    /** @type {?Promise<void>} Tail of the serialized sidecar-read chain, so concurrent page requests share one pass. */
-    this.sidecarPass = null;
-    /** Bumped when the stored sidecar changes, so an in-flight pass never caches stale pages. */
-    this.sidecarEpoch = 0;
-    /** Whether the stored sidecar was missing or unparseable. */
-    this.sidecarBroken = false;
-    /** Whether the sidecar's single-JSON form exceeds the parse budget. */
-    this.sidecarTooBig = false;
+    /** @type {?Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>} */
+    this.pixelsPromise = null;
+    /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
+    this.pixelsDoc = null;
+    this.pixelsUse = 0;
+    /** @type {?Promise<?DocChanges>} */
+    this.changesPromise = null;
     /** @type {?string} */
     this.coverUrl = null;
     /** @type {?Promise<?string>} */
     this.coverPromise = null;
-    /** @type {Map<number, string>} Page -> object URL over the stored raster. */
+    /** @type {Map<number, string>} Page -> object URL over the page's raster, stored or rendered this session. */
     this.pageUrls = new Map();
+    /** @type {Map<number, Blob>} Rasters rendered this session and not stored, kept so a later view of the page can store them. */
+    this.pageBlobs = new Map();
+    /** @type {Map<number, Promise<?string>>} */
+    this.rasterPending = new Map();
   }
 }
+
+/**
+ * @typedef {Object} DocRef
+ * @property {string} hash
+ * @property {string} relPath
+ * @property {import('./libraryStore.js').LibraryDocEntry} entry
+ */
 
 export class DocSessions {
   constructor() {
@@ -56,8 +82,6 @@ export class DocSessions {
     /** @type {?import('./libraryStore.js').LibraryStore} */
     this.store = null;
     this.useTick = 0;
-    /** @type {Array<{session: DocSession, n: number}>} Sidecar-page cache order, oldest first. */
-    this.sidecarPageOrder = [];
     /** @type {Array<{session: DocSession, n: number}>} Page-URL creation order, oldest first. */
     this.urlOrder = [];
   }
@@ -90,11 +114,6 @@ export class DocSessions {
    */
   peekLive(hash) {
     return this.map.get(hash)?.liveDoc ?? null;
-  }
-
-  /** @param {string} hash @returns {boolean} Whether a live document exists or is loading. */
-  hasLive(hash) {
-    return !!this.map.get(hash)?.livePromise;
   }
 
   /**
@@ -149,179 +168,81 @@ export class DocSessions {
   }
 
   /**
-   * Parsed sidecar content for selected pages: raw OCR page objects and annotation arrays, for seeds, previews, and match marks.
-   * Requesting pages one at a time is cheap, since misses are batched into a streaming read that never retains a whole-document sidecar graph.
-   * A page with no readable sidecar data is absent from the result.
+   * The document's changes, or null when it has none saved.
+   * Callers share one parsed object.
    * @param {string} hash
-   * @param {number[]} pageNs
-   * @returns {Promise<Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>}
+   * @returns {Promise<?DocChanges>}
    */
-  async sidecarPages(hash, pageNs) {
+  changes(hash) {
     const s = this.session(hash);
-    /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
-    const result = new Map();
-    /** @type {number[]} */
-    let missing = [];
-    const collect = () => {
-      missing = [];
-      for (const n of pageNs) {
-        if (result.has(n)) continue;
-        const entry = s.sidecarPages.get(n);
-        if (entry) result.set(n, entry);
-        else missing.push(n);
-      }
-    };
-    collect();
-    if (!missing.length || s.sidecarBroken || s.sidecarTooBig || !this.store) return result;
-    const pass = (s.sidecarPass || Promise.resolve()).then(async () => {
-      collect();
-      if (!missing.length || s.sidecarBroken || s.sidecarTooBig) return;
-      // A pass costs a full decompression however few pages it keeps, so each miss drags a read-ahead window into the same pass.
-      // Large batches already amortize that cost, so they are not padded.
-      let wanted = missing;
-      if (missing.length <= 8) {
-        const padded = new Set();
-        for (const n of missing) for (let k = Math.max(0, n - 2); k <= n + 29; k++) padded.add(k);
-        if (padded.size <= 48) wanted = [...padded];
-      }
-      const epoch = s.sidecarEpoch;
-      /** @type {?ReadableStreamDefaultReader<Uint8Array>} */
-      let reader = null;
-      /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
-      const found = new Map();
-      try {
-        const data = this.store ? await this.store.readSidecar(s.hash) : null;
-        if (!data) {
-          s.sidecarBroken = true;
-          return;
-        }
+    if (!s.changesPromise) {
+      const store = this.store;
+      if (!store) return Promise.resolve(null);
+      const p = store.readChanges(hash).then(async (data) => {
+        if (!data) return null;
         const bytes = new Uint8Array(data);
-        const isGzipped = bytes[0] === 0x1F && bytes[1] === 0x8B;
         let stream = new Blob([bytes]).stream();
-        if (isGzipped) stream = stream.pipeThrough(new DecompressionStream('gzip'));
-        reader = stream.getReader();
-        const decoder = new TextDecoder('utf-8');
-
-        const SEG_SNIFF = '{"scribeSegments"';
-        let buf = '';
-        let part = await reader.read();
-        while (!part.done && buf.length < SEG_SNIFF.length) {
-          buf += decoder.decode(part.value, { stream: true });
-          part = await reader.read();
-        }
-
-        if (buf.startsWith(SEG_SNIFF)) {
-          // Segmented layout: a header line of doc-level fields (annotations included), then one JSON record per page.
-          const want = new Set(wanted);
-          /** @type {?Array<Array<Object>>} */
-          let headerAnnots = null;
-          let gotHeader = false;
-          /** @type {string[]} Decoded text since the last completed line. */
-          let pending = [];
-          /** @param {string} line */
-          const feedLine = (line) => {
-            if (!gotHeader) {
-              gotHeader = true;
-              const header = line ? JSON.parse(line) : {};
-              headerAnnots = Array.isArray(header.annotations) ? header.annotations : null;
-              // Read-ahead can pad past the last page, and those pages are never found, so the read would run to the end of the file waiting for them.
-              if (Number.isInteger(header.pageCount)) {
-                for (const p of [...want]) if (p >= header.pageCount) want.delete(p);
-              }
-              return;
-            }
-            const m = /^\{"i":(\d+)[,}]/.exec(line);
-            if (!m || !want.has(+m[1])) return;
-            const rec = JSON.parse(line);
-            found.set(rec.i, { ocr: rec.ocr ?? null, annotations: null });
-            want.delete(rec.i);
-          };
-          // Lines are page-sized while chunks are small, so concatenating per chunk re-copies each line once per chunk, which is quadratic.
-          let pendingLen = 0;
-          /** @param {string} chunk */
-          const feedText = (chunk) => {
-            pending.push(chunk);
-            pendingLen += chunk.length;
-            if (pendingLen > SIDECAR_JSON_CHAR_LIMIT) throw new Error('Sidecar record exceeds the parse budget.');
-            if (!chunk.includes('\n')) return;
-            const lines = pending.join('').split('\n');
-            pending = [lines.pop() ?? ''];
-            pendingLen = pending[0].length;
-            for (const line of lines) feedLine(line);
-          };
-          feedText(buf);
-          while (!part.done && (!gotHeader || want.size)) {
-            feedText(decoder.decode(part.value, { stream: true }));
-            part = await reader.read();
-          }
-          if (part.done) {
-            pending.push(decoder.decode());
-            const tail = pending.join('');
-            if (tail) feedLine(tail);
-          }
-          for (const n of wanted) {
-            const entry = found.get(n) || { ocr: null, annotations: null };
-            entry.annotations = headerAnnots?.[n] ?? null;
-            found.set(n, entry);
-          }
-        } else {
-          // The single-JSON layout has no per-page boundaries, so the whole graph must be parsed and then dropped once the wanted pages are plucked.
-          const parts = [buf];
-          let total = buf.length;
-          while (total <= SIDECAR_JSON_CHAR_LIMIT && !part.done) {
-            const chunk = decoder.decode(part.value, { stream: true });
-            total += chunk.length;
-            parts.push(chunk);
-            part = await reader.read();
-          }
-          if (total > SIDECAR_JSON_CHAR_LIMIT) {
-            s.sidecarTooBig = true;
-            return;
-          }
-          parts.push(decoder.decode());
-          const json = JSON.parse(parts.join(''));
-          const ocrArr = Array.isArray(json.ocr) ? json.ocr : null;
-          const annotsArr = Array.isArray(json.annotations) ? json.annotations : null;
-          for (const n of wanted) found.set(n, { ocr: ocrArr?.[n] ?? null, annotations: annotsArr?.[n] ?? null });
-        }
-      } catch {
-        s.sidecarBroken = true;
-        found.clear();
-      } finally {
-        reader?.cancel().catch(() => {});
-      }
-      if (s.sidecarEpoch === epoch) {
-        for (const [n, entry] of found) {
-          if (!s.sidecarPages.has(n)) {
-            this.sidecarPageOrder.push({ session: s, n });
-            while (this.sidecarPageOrder.length > MAX_SIDECAR_PAGES) {
-              const old = /** @type {{session: DocSession, n: number}} */ (this.sidecarPageOrder.shift());
-              old.session.sidecarPages.delete(old.n);
-            }
-          }
-          s.sidecarPages.set(n, entry);
-        }
-      }
-      for (const [n, entry] of found) result.set(n, entry);
-    });
-    s.sidecarPass = pass.then(() => {}, () => {});
-    await pass;
-    collect();
-    return result;
+        if (bytes[0] === 0x1F && bytes[1] === 0x8B) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+        return /** @type {DocChanges} */ (JSON.parse(await new Response(stream).text()));
+      }).catch(() => null);
+      s.changesPromise = p;
+    }
+    return s.changesPromise;
   }
 
   /**
-   * Drop the cached sidecar parse.
-   * Call after writing a new sidecar so the next read sees it.
+   * Forget the parsed changes and the pixel source built from them.
+   * Call after the changes file is written or deleted.
    * @param {string} hash
    */
-  dropSidecar(hash) {
+  dropChanges(hash) {
     const s = this.map.get(hash);
     if (!s) return;
-    s.sidecarPages.clear();
-    s.sidecarEpoch++;
-    s.sidecarBroken = false;
-    s.sidecarTooBig = false;
+    s.changesPromise = null;
+    closePixels(s);
+  }
+
+  /**
+   * The document's pixel source: the PDF open in the worker with no text parse.
+   * It shows the pages as the document's changes arrange them: their order and content edits.
+   * The pixel source stays in the pool, so it is shared by every caller and closed by pool eviction.
+   * @param {DocRef} ref
+   * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
+   */
+  pixels(ref) {
+    const s = this.session(ref.hash);
+    s.pixelsUse = ++this.useTick;
+    if (!s.pixelsPromise) {
+      const store = this.store;
+      if (!store) return Promise.reject(new Error('No library is open.'));
+      const p = (async () => {
+        const [file, changes] = await Promise.all([store.readFile(ref.relPath), this.changes(ref.hash)]);
+        const doc = await scribeLib.openDocument([file], {
+          usePDFText: NO_TEXT, keepPDFTextAlways: false, skipFontOpt: true, pdfWorkerN: 1,
+        });
+        const dims = ref.entry.pageDims;
+        if (dims) {
+          const sources = changes?.session?.pageSourceIndices;
+          const metrics = dims.map(([width, height], i) => {
+            const pm = new PageMetrics({ width, height });
+            pm.sourcePageN = sources?.[i] ?? i;
+            return pm;
+          });
+          doc.pageMetrics.splice(0, doc.pageMetrics.length, ...metrics);
+          doc.inputData.pageCount = metrics.length;
+        }
+        if (changes?.session?.contentEdits) doc.contentEdits.pages = changes.session.contentEdits;
+        if (s.pixelsPromise === p) s.pixelsDoc = doc;
+        else doc.close().catch(() => {});
+        return doc;
+      })();
+      p.catch(() => {
+        if (s.pixelsPromise === p) s.pixelsPromise = null;
+      });
+      s.pixelsPromise = p;
+      this.#evictPixels(s);
+    }
+    return s.pixelsPromise;
   }
 
   /**
@@ -356,8 +277,7 @@ export class DocSessions {
   }
 
   /**
-   * Object URL over the stored raster of one page, or null when absent.
-   * Never renders and never imports, so an absent raster leaves the caller to show a placeholder.
+   * Object URL over one page's raster, stored or rendered this session, or null when there is none.
    * @param {string} hash
    * @param {number} n
    * @returns {Promise<?string>}
@@ -378,16 +298,63 @@ export class DocSessions {
   }
 
   /**
-   * Cache a freshly rendered page image so it serves like a stored raster, without writing it to disk.
-   * For documents measured too fast to keep rasters stored, where a search-hit row still needs its image.
-   * @param {string} hash
+   * Object URL over one page's raster.
+   * The raster is this session's, else the stored one, else a render through the pixel source.
+   * With `persist`, a page rendered here is also stored, as a page the reader viewed, while the raster budget allows.
+   * @param {DocRef} ref
    * @param {number} n
-   * @param {Blob} blob
+   * @param {boolean} persist
+   * @returns {Promise<?string>}
    */
-  adoptPageImage(hash, n, blob) {
-    const s = this.session(hash);
-    if (s.pageUrls.has(n)) return;
-    this.#rememberUrl(s, n, URL.createObjectURL(blob));
+  raster(ref, n, persist) {
+    const s = this.session(ref.hash);
+    const store = this.store;
+    const storeBlob = (/** @type {Blob} */ blob) => {
+      if (!store || (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget)) return;
+      s.pageBlobs.delete(n);
+      store.writePageRaster(ref.hash, n, blob).catch(() => {});
+    };
+    const cached = s.pageUrls.get(n);
+    if (cached) {
+      const unstored = s.pageBlobs.get(n);
+      if (persist && unstored) storeBlob(unstored);
+      return Promise.resolve(cached);
+    }
+    const pending = s.rasterPending.get(n);
+    if (pending) return pending;
+    const p = (async () => {
+      const stored = await this.pageImage(ref.hash, n);
+      if (stored) return stored;
+      const doc = await this.pixels(ref);
+      const blob = await renderPageRaster(doc, n);
+      if (!blob) return null;
+      const again = s.pageUrls.get(n);
+      if (again) return again;
+      const url = URL.createObjectURL(blob);
+      this.#rememberUrl(s, n, url);
+      if (persist) storeBlob(blob);
+      else s.pageBlobs.set(n, blob);
+      return url;
+    })().catch(() => null);
+    s.rasterPending.set(n, p);
+    p.finally(() => {
+      if (s.rasterPending.get(n) === p) s.rasterPending.delete(n);
+    });
+    return p;
+  }
+
+  /**
+   * One page rendered through the pixel source at `width` pixels.
+   * The caller owns the bitmap.
+   * @param {DocRef} ref
+   * @param {number} n
+   * @param {number} width
+   * @returns {Promise<?ImageBitmap>}
+   */
+  async renderAt(ref, n, width) {
+    const doc = await this.pixels(ref);
+    const wrapper = await doc.images.renderViewerRaster(n, width, false);
+    return wrapper && typeof wrapper === 'object' && 'imageBitmap' in wrapper ? wrapper.imageBitmap : null;
   }
 
   /**
@@ -405,6 +372,7 @@ export class DocSessions {
       if (oldUrl) {
         URL.revokeObjectURL(oldUrl);
         old.session.pageUrls.delete(old.n);
+        old.session.pageBlobs.delete(old.n);
       }
     }
   }
@@ -418,6 +386,7 @@ export class DocSessions {
     const s = this.map.get(hash);
     if (!s) return;
     if (s.liveDoc) s.liveDoc.close().catch(() => {});
+    closePixels(s);
     for (const url of s.pageUrls.values()) URL.revokeObjectURL(url);
     if (s.coverUrl) URL.revokeObjectURL(s.coverUrl);
     this.map.delete(hash);
@@ -427,12 +396,19 @@ export class DocSessions {
   reset() {
     for (const s of this.map.values()) {
       if (s.liveDoc) s.liveDoc.close().catch(() => {});
+      closePixels(s);
       for (const url of s.pageUrls.values()) URL.revokeObjectURL(url);
       if (s.coverUrl) URL.revokeObjectURL(s.coverUrl);
     }
     this.map.clear();
-    this.sidecarPageOrder.length = 0;
     this.urlOrder.length = 0;
+  }
+
+  /** @param {DocSession} keep */
+  #evictPixels(keep) {
+    const open = [...this.map.values()].filter((s) => s.pixelsPromise && s !== keep);
+    open.sort((a, b) => a.pixelsUse - b.pixelsUse);
+    while (open.length > MAX_PIXEL_SOURCES - 1) closePixels(/** @type {DocSession} */ (open.shift()));
   }
 
   /**

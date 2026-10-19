@@ -12,26 +12,11 @@ import { openDocumentFromFile, filesNamedForPdf } from '../js/controls/tools.js'
 const THUMB_WIDTH = 300;
 /** Stored page rasters stand in for the live preview, so they need its pane width rather than thumbnail width. */
 export const PAGE_RASTER_WIDTH = 900;
-/** How many of the most recently added documents the warm lane cushions, and how many leading pages each gets. */
-export const CUSHION_DOCS = 150;
-export const CUSHION_PAGES = 3;
-/**
- * First-paint cost (structural open plus first-page render, ms) at or above which a document's page rasters are stored.
- * A document that paints faster than this gains nothing from a stored stand-in.
- */
-export const RASTER_STORE_MIN_MS = 500;
-/**
- * Sidecar and PDF sizes past which no speculative import runs.
- * The results warmer leaves the hit row blank, and the preview pane waits for an explicit Open.
- * The PDF cap admits 500+ page books, which run 25-45MB and top the ranking for generic queries.
- */
-export const WARM_SIDECAR_LIMIT = 16 * 1024 * 1024;
-export const WARM_PDF_LIMIT = 64 * 1024 * 1024;
 /** WebP quality for pages routed lossy. In Chromium, quality 1.0 switches the encoder to lossless, so 0.9 is the top lossy setting. */
 const RASTER_LOSSY_QUALITY = 0.9;
 /**
  * Byte cap for a lossless page raster. A page past it re-encodes lossy.
- * Catches gradient-heavy synthetic pages, which the geometry rule cannot see.
+ * Catches gradient-heavy synthetic pages, which the geometry rule cannot see, and every photograph when a page comes without statistics.
  */
 const RASTER_LOSSLESS_CAP = 250 * 1024;
 /** Page-area fraction covered by a single image at or above which a page's raster encodes lossy. */
@@ -50,8 +35,8 @@ export const renderPageRaster = async (doc, n) => {
   const stats = doc.inputData.pageStats?.[n];
   // Image-coverage geometry rather than readable-text detection, because what makes lossless win is a synthetic render.
   // A Type3 or outline-text page has no readable characters yet encodes like a text page.
-  // Unknown geometry routes lossy, whose error costs only status-quo quality, where lossless on a photograph costs several times the bytes.
-  const lossy = !stats || stats.largestImageFrac >= RASTER_LOSSY_IMAGE_FRAC;
+  // Without the geometry, as from the pixel source, a page encodes lossless and the byte cap below catches the photographs.
+  const lossy = !!stats && stats.largestImageFrac >= RASTER_LOSSY_IMAGE_FRAC;
   const blob = await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, lossy ? RASTER_LOSSY_QUALITY : 1.0, true, 'webp');
   if (blob && !lossy && blob.size > RASTER_LOSSLESS_CAP) {
     return (await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, RASTER_LOSSY_QUALITY, true, 'webp')) ?? blob;
@@ -87,8 +72,6 @@ export class LibraryIngest {
    * @param {(state: {done: number, total: number, current: string, kind?: string, pageDone?: number, pageTotal?: number}) => void} [callbacks.onProgress]
    *    `kind` names the running task; recognition tasks also report page progress.
    * @param {(relPath: string) => void} [callbacks.onDocDone] - Fires after a document reaches a terminal status.
-   * @param {() => boolean} [callbacks.warmGate] - Permission check for speculative warm-lane work.
-   *    Omitting it disables warm work entirely.
    * @param {(explicit: boolean) => boolean} [callbacks.recognizeGate] - Permission check before each recognition task.
    *    `explicit` is true for a request made this session, false for one resumed from the manifest.
    *    Omitting it disables recognition entirely.
@@ -100,14 +83,13 @@ export class LibraryIngest {
    * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
    */
   constructor(store, manifest, {
-    engine, onProgress, onDocDone, warmGate, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
+    engine, onProgress, onDocDone, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
   }) {
     this.store = store;
     this.manifest = manifest;
     this.engine = engine;
     this.onProgress = onProgress;
     this.onDocDone = onDocDone;
-    this.warmGate = warmGate || null;
     this.recognizeGate = recognizeGate || null;
     this.langs = langs || null;
     this.recognizeMode = recognizeMode || null;
@@ -125,19 +107,8 @@ export class LibraryIngest {
     this.discoveryLane = [];
     /** @type {Array<{relPath: string, kind: 'recognize', explicit: boolean}>} Text recognition, drained after the index lanes and gated separately. */
     this.recognizeLane = [];
-    /**
-     * Cushion candidates for the warm lane.
-     * Null means the plan is stale and is rebuilt when the other lanes drain.
-     * An empty array means there is nothing left to cushion.
-     * @type {?Array<{relPath: string, hash: string, pages: number}>}
-     */
-    this.warmLane = null;
     this.running = false;
     this.done = 0;
-    /** @type {number} Pages rendered by the warm lane since construction, for the gate's session cap. */
-    this.warmPagesDone = 0;
-    /** Keeps warm work off after a cancel, since an enqueue resets the plan and would otherwise revive it. */
-    this.warmCancelled = false;
     /** When set, start() stops draining after the in-flight task, so a folder operation can run against a quiet queue. */
     this.paused = false;
     /** @type {?{relPath: string, kind: 'ingest'|'verify'|'recognize'}} */
@@ -200,8 +171,6 @@ export class LibraryIngest {
     this.manifest.dirs = dirs.sort();
     this.manifest.others = others.sort();
     await this.store.writeManifest(this.manifest);
-    this.warmLane = null;
-    this.warmCancelled = false;
     this.store.sweepArtifacts(this.manifest).catch(() => {});
   }
 
@@ -227,7 +196,6 @@ export class LibraryIngest {
       status: 'pending',
     };
     if (existing?.order !== undefined) entry.order = existing.order;
-    if (existing?.firstPaintMs !== undefined) entry.firstPaintMs = existing.firstPaintMs;
     if (!resetSidecar) {
       if (existing?.editedAt) entry.editedAt = existing.editedAt;
       if (existing?.recognizedAt) entry.recognizedAt = existing.recognizedAt;
@@ -235,7 +203,6 @@ export class LibraryIngest {
     this.manifest.docs[relPath] = entry;
     if (writeManifest) await this.store.writeManifest(this.manifest);
     this.userLane.push({ relPath, kind: 'ingest', resetSidecar });
-    this.warmLane = null;
   }
 
   /**
@@ -264,8 +231,6 @@ export class LibraryIngest {
       if (entry) delete entry.ocrQueued;
     }
     this.recognizeLane.length = 0;
-    this.warmLane = [];
-    this.warmCancelled = true;
     this.done = 0;
   }
 
@@ -282,14 +247,13 @@ export class LibraryIngest {
     for (const t of this.userLane) t.relPath = rekey(t.relPath);
     for (const t of this.discoveryLane) t.relPath = rekey(t.relPath);
     for (const t of this.recognizeLane) t.relPath = rekey(t.relPath);
-    this.warmLane = null;
     if (this.current && rekey(this.current.relPath) !== this.current.relPath) {
       this.discoveryLane.unshift({ relPath: rekey(this.current.relPath), kind: this.current.kind });
     }
   }
 
   /**
-   * Process the lanes serially: user, then discovery, then recognition (when its gate allows), then warm.
+   * Process the lanes serially: user, then discovery, then recognition (when its gate allows).
    * Safe to call when already running.
    */
   async start() {
@@ -333,10 +297,7 @@ export class LibraryIngest {
           manifestPending = false;
           await this.store.writeManifest(this.manifest);
         }
-        // Warm rounds record `firstPaintMs` measurements on entries, so they mark the manifest dirty too.
-        const warmed = await this._warmNext();
-        if (warmed) manifestPending = true;
-        idle = !warmed;
+        idle = true;
       }
     } finally {
       this.running = false;
@@ -449,6 +410,7 @@ export class LibraryIngest {
           if (resetSidecar) {
             delete entry.editedAt;
             delete entry.recognizedAt;
+            await this.store.deleteChanges(hash);
           }
 
           await this.engine.addDoc(hash, doc.ocr.active || []);
@@ -468,6 +430,8 @@ export class LibraryIngest {
               entry.sidecarError = err instanceof Error ? err.message : String(err);
             }
           }
+          // Even an unedited document gets a changes file, because a provisional document takes the PDF's own annotations from it.
+          await this.store.writeChanges(hash, await doc.exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
         })(),
         new Promise((resolve, reject) => {
           timer = setTimeout(() => {
@@ -541,6 +505,7 @@ export class LibraryIngest {
         await live.checkpoint(true);
       } else {
         await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
+        await this.store.writeChanges(hash, await doc.exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
         await this.engine.addDoc(hash, doc.ocr.active || []);
         entry.recognizedAt = Date.now();
       }
@@ -569,61 +534,5 @@ export class LibraryIngest {
     if (!r || r.hash !== hash || !r.doc || r.inTab || r.adopted) return null;
     r.adopted = true;
     return r.doc;
-  }
-
-  /**
-   * Render the first-open cushion for one recently added document, if the gate and budget allow.
-   * One document per call, so the lanes and the gate are re-checked between documents.
-   * Doubles as the measurement pass, recording `firstPaintMs` and storing the rendered pages only when it clears the store gate.
-   * @returns {Promise<boolean>} Whether a document was processed. False ends the run.
-   */
-  async _warmNext() {
-    if (this.warmCancelled || !this.warmGate || !this.warmGate()) return false;
-    if (this.warmLane === null) {
-      this.warmLane = Object.entries(this.manifest.docs)
-        .filter(([, e]) => e.status === 'indexed' && e.hash && e.pageDims && e.pageCount > 0)
-        .sort((a, b) => b[1].added - a[1].added)
-        .slice(0, CUSHION_DOCS)
-        .map(([relPath, e]) => ({ relPath, hash: e.hash, pages: Math.min(CUSHION_PAGES, e.pageCount) }));
-    }
-    while (this.warmLane.length) {
-      const cand = /** @type {{relPath: string, hash: string, pages: number}} */ (this.warmLane.shift());
-      const entry = this.manifest.docs[cand.relPath];
-      if (!entry || entry.status !== 'indexed' || entry.hash !== cand.hash) continue;
-      // Skipped rather than re-measured, so a fast document does not spend a render on every warm pass.
-      if (entry.firstPaintMs !== undefined && entry.firstPaintMs < RASTER_STORE_MIN_MS) continue;
-      if (this.store.rasterBytes !== null && this.store.rasterBytes > this.store.rasterBudget) return false;
-      if (await this.store.readPageRaster(cand.hash, 0)) continue;
-      /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
-      let doc = null;
-      try {
-        const t0 = performance.now();
-        const files = [await this.store.readFile(cand.relPath)];
-        const sidecar = await this.store.readSidecar(cand.hash);
-        if (sidecar) files.push(new File([sidecar], `${cand.hash}.scribe`));
-        // Skipping text extraction is safe here because the sidecar already carries this document's text.
-        doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
-        // This read, open, and render are the same sequence a preview of this document would pay, so they double as the measurement.
-        const raster0 = await renderPageRaster(doc, 0).catch(() => null);
-        this.warmPagesDone++;
-        const firstPaintMs = Math.round(performance.now() - t0);
-        if (raster0) {
-          entry.firstPaintMs = firstPaintMs;
-          if (firstPaintMs < RASTER_STORE_MIN_MS) return true;
-          await this.store.writePageRaster(cand.hash, 0, raster0);
-        }
-        // A failed page-0 render falls through here unmeasured, so the document is treated as slow rather than recorded fast.
-        for (let n = 1; n < cand.pages; n++) {
-          const raster = await renderPageRaster(doc, n);
-          this.warmPagesDone++;
-          if (raster) await this.store.writePageRaster(cand.hash, n, raster);
-        }
-      } catch { /* Cushions are best-effort, so a failure leaves the document indexed. */
-      } finally {
-        await doc?.close();
-      }
-      return true;
-    }
-    return false;
   }
 }

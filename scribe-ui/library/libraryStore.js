@@ -63,7 +63,6 @@ export const folderNameProblem = (name) => {
  * @property {number} [order] - Manual position under the Custom sort; absent until the user first drag-reorders.
  * @property {number} [arrived] - Epoch ms when a drag last moved the document into its current folder; absent until then.
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
- * @property {number} [firstPaintMs] - Measured cost, in ms, of a cold open of this document plus its first-page render.
  *    Recorded only from an open the app performs anyway, never from one run to measure.
  * @property {number} [pageRasterW] - Pixel width of the stored page rasters.
  *    Read from older manifests, never written.
@@ -736,6 +735,55 @@ export class LibraryStore {
     await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
   }
 
+  /**
+   * Store the document's changes file, its `.scribe` export without the text.
+   * A provisional document reads it in place of the sidecar, so every save that writes the sidecar writes it too.
+   * @param {string} hash
+   * @param {ArrayBuffer|Uint8Array|Blob} data
+   */
+  async writeChanges(hash, data) {
+    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`, data);
+  }
+
+  /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
+  async readChanges(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
+    return file ? file.arrayBuffer() : null;
+  }
+
+  /** @param {string} hash */
+  async deleteChanges(hash) {
+    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
+  }
+
+  /**
+   * @param {string} hash
+   * @returns {Promise<boolean>} Whether there was a changes file to back up.
+   */
+  async backupChanges(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
+    if (!file) return false;
+    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`, file);
+    return true;
+  }
+
+  /**
+   * @param {string} hash
+   * @returns {Promise<boolean>} Whether a backup existed.
+   */
+  async restoreChangesBackup(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
+    if (!file) return false;
+    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`, file);
+    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
+    return true;
+  }
+
+  /** @param {string} hash */
+  async deleteChangesBackup(hash) {
+    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
+  }
+
   /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.thumbsDir), `${hash}.jpg`, blob);
@@ -913,7 +961,7 @@ export class LibraryStore {
       if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
     }
     const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
-      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.thumbsDir, '.jpg'],
+      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.docsDir, '.changes'], [this.docsDir, '.changes.bak'], [this.thumbsDir, '.jpg'],
     ]);
     for (const [dir, ext] of flatDirs) {
       if (!dir) continue;

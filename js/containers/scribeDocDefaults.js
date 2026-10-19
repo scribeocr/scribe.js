@@ -125,6 +125,10 @@ export const scribeDocDefaults = {
    * Include per-character bounding boxes (`word.chars`) in `.scribe` exports..
    */
   includeCharBoxesScribe: true,
+  /**
+   * Include the pages' OCR data, the `ocr` block, in `.scribe` exports.
+   */
+  includeOcrScribe: true,
 
   /**
    * Allow compressed `.scribe` exports above `scribeSegmentThreshold` to use the segmented layout (a header line plus one JSON record per page) instead of a single JSON document.

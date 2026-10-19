@@ -91,7 +91,7 @@ const mergePostings = (reader, entries, merged) => {
  * @property {number} count - Occurrences on the page, or the matched terms' count in tier 5.
  * @property {number} span
  * @property {number} score
- * @property {Array<[number, number]>} marks - The occurrences to highlight, as (position << 1 | span) values of their first and last token, at most 20.
+ * @property {Array<[number, number]>} marks - The occurrences to highlight, as (position << 1 | span) values of their first and last token, at most `marksPerPage`.
  */
 
 /**
@@ -130,6 +130,8 @@ export const compareHits = (a, b, rankSpan) => a.tier - b.tier
  * @param {Object} options
  * @param {number} options.bound - The exact mode keeps the first this many exact hit pages in ingest order.
  *   The fallback mode keeps this many pages, the best.
+ * @param {number} [options.doc] - Sweep this document alone, by its ordinal in the one segment given.
+ * @param {number} [options.marksPerPage]
  * @param {boolean} options.prefixLastWord
  * @param {boolean} [options.lower] - Run the fallback mode, which ranks the pages without the exact phrase in tiers 2 to 5.
  * @param {boolean} options.rankSpan
@@ -158,6 +160,7 @@ export const evaluate = async (segments, query, options, job) => {
   let partial = false;
   const { bound, rankSpan } = options;
   const lowerMode = !!options.lower;
+  const marksPerPage = options.marksPerPage ?? 20;
   /** @type {?SweepPlan} */
   const plan = options.sweepByCost ? {
     segments: 0, advanced: 0, sought: 0, rangeMerged: 0,
@@ -378,7 +381,7 @@ export const evaluate = async (segments, query, options, job) => {
         if (stepped) skips++;
         count++;
         if (firstOnly) break;
-        if (marks.length < 20) marks.push([chain[0], chain[n - 1]]);
+        if (marks.length < marksPerPage) marks.push([chain[0], chain[n - 1]]);
       }
       return { count, marks };
     };
@@ -390,6 +393,10 @@ export const evaluate = async (segments, query, options, job) => {
       }
       const { key } = anchorCursor;
       const ordinal = Math.floor(key / PAGE_KEY_SPAN);
+      if (options.doc !== undefined) {
+        if (ordinal < options.doc) continue;
+        if (ordinal > options.doc) break;
+      }
       if (seg.dead.has(ordinal)) continue;
       let present = true;
       for (let k = 0; k < order.length && present; k++) {
@@ -468,7 +475,7 @@ export const evaluate = async (segments, query, options, job) => {
         if (width <= WINDOW) {
           count++;
           if (!span || width < span) span = width;
-          if (marks.length < 20) marks.push([p0 << 1, last << 1]);
+          if (marks.length < marksPerPage) marks.push([p0 << 1, last << 1]);
         }
       }
       if (count) tier = 3;
@@ -488,7 +495,7 @@ export const evaluate = async (segments, query, options, job) => {
               lastStart = all[lo][0];
               count++;
               if (!span || w < span) span = w;
-              if (marks.length < 20) marks.push([all[lo][0] << 1, all[hi][0] << 1]);
+              if (marks.length < marksPerPage) marks.push([all[lo][0] << 1, all[hi][0] << 1]);
             }
             if (--have[all[lo][1]] === 0) distinct--;
             lo++;
@@ -499,7 +506,7 @@ export const evaluate = async (segments, query, options, job) => {
           tier = 5;
           span = seg.pageLength(ordinal, page);
           count = n;
-          for (let j = 0; j < n; j++) if (marks.length < 20 && pos[j].length) marks.push([pos[j][0] << 1, pos[j][0] << 1]);
+          for (let j = 0; j < n; j++) if (marks.length < marksPerPage && pos[j].length) marks.push([pos[j][0] << 1, pos[j][0] << 1]);
         }
       }
       let score = 0;

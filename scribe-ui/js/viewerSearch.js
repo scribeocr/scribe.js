@@ -4,6 +4,21 @@ import scribe from '../../scribe.js';
 import { parseCitation } from '../../js/resolveCitation.js';
 
 /**
+ * The ids of the words the current search matches on page `n`.
+ * A provisional document's matches come from the library's index, and the plain matcher would not reproduce them, so its list is read instead.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n
+ * @returns {string[]}
+ */
+export function pageMatchIds(viewer, n) {
+  const s = viewer._searchState;
+  if (!s.search) return [];
+  if (viewer.doc.findMatches) return s.matchList.filter((m) => m.pageN === n).flatMap((m) => m.wordIds);
+  const page = viewer.doc.ocr.active[n];
+  return page ? scribe.utils.ocr.getMatchingWordIds(s.search, page) : [];
+}
+
+/**
  * Repaint match highlights from `_searchState` on every page that holds word objects.
  * @param {import('../viewer.js').ScribeViewer} viewer
  */
@@ -19,9 +34,7 @@ function applyHighlights(viewer) {
   // Pages kept built off-screen hold the previous query's highlights too.
   viewer._wordObjs.forEach((pageWords, n) => {
     if (!pageWords) return;
-    const matchIds = s.search && viewer.doc.ocr.active[n]
-      ? new Set(scribe.utils.ocr.getMatchingWordIds(s.search, viewer.doc.ocr.active[n]))
-      : new Set();
+    const matchIds = new Set(pageMatchIds(viewer, n));
     for (const kw of pageWords) {
       if (kw._destroyed) continue;
       const isActive = activeIds.has(kw.word.id);
@@ -51,20 +64,33 @@ function repaintCitation(viewer, previous) {
 }
 
 /**
+ * Find `text` in the document and paint its matches.
+ * A later find on the same viewer supersedes this one.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {string} text
+ * @returns {Promise<boolean>} Whether this find's matches are the ones painted.
  */
-export function findText(viewer, text) {
+export async function findText(viewer, text) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const s = _viewer._searchState;
+  const { doc } = _viewer;
+  const query = text.trim();
+  s.findSeq = (s.findSeq || 0) + 1;
+  const seq = s.findSeq;
+  let matchList = [];
+  if (query && doc.findMatches) {
+    matchList = await doc.findMatches(query).catch(() => []);
+    if (s.findSeq !== seq || _viewer.doc !== doc) return false;
+  } else if (query) matchList = scribe.utils.ocr.getDocMatches(query, doc.ocr.active);
   const previous = _viewer._citationIds;
   _viewer._citationIds = new Set();
-  s.search = text.trim();
-  s.matchList = s.search ? scribe.utils.ocr.getDocMatches(s.search, _viewer.doc.ocr.active) : [];
+  s.search = query;
+  s.matchList = matchList;
   // Selecting a match belongs to goToMatch, so a recompute can refresh highlights without adopting one.
   s.activeMatch = -1;
   applyHighlights(_viewer);
   repaintCitation(_viewer, previous);
+  return true;
 }
 
 /**
@@ -92,6 +118,8 @@ export async function goToMatch(viewer, index, { navigate = true, glide = false 
   // so advancing to an on-screen page just moves the image rather than rebuilding every word shape.
   // Pages drawn fresh here already pick up the correct highlights from the renderer.
   if (navigate) {
+    // A provisional document's page has its words only once asked for, and the scroll to the match below needs them.
+    if (_viewer.doc.pageText) await _viewer.doc.pageText(match.pageN);
     await _viewer.displayPage(match.pageN, false, false);
     // The search can close, or run a new query, while the page renders, and then this match must not light up.
     if (_viewer._searchState.matchList[n] !== match) return;
@@ -141,7 +169,8 @@ export async function searchDoc(viewer, query, { pageN, navigate = true } = {}) 
     if (viewer.doc !== doc) return;
   }
   if (!viewer.state.searchMode) return;
-  findText(viewer, query);
+  if (!(await findText(viewer, query))) return;
+  if (viewer.doc !== doc) return;
   if (!navigate) return;
   const { matchList } = viewer._searchState;
   if (!matchList.length) return;

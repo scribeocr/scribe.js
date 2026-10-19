@@ -1,18 +1,13 @@
 // The library's full-text search results: ranked hit rows with snippets and page thumbnails, beside a preview pane.
 // The built view is retained rather than rebuilt, so returning to an unchanged result set restores scroll and paint intact.
-// Hit thumbnails come from stored rasters; a background warmer renders the missing ones one bounded import at a time.
 
-import scribeLib from '../../scribe.js';
-import {
-  RASTER_STORE_MIN_MS, renderPageRaster, WARM_PDF_LIMIT, WARM_SIDECAR_LIMIT,
-} from './libraryIngest.js';
 import { titleOf } from './libraryStore.js';
-import { getMatchRects, markOverlayHTML } from './libraryPreview.js';
+import { markOverlayHTML } from './libraryPreview.js';
 
 /** How many documents, and pages within each, the list shows before a "more" button. */
 const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
-/** How long a result set must stand with no query in flight before its thumbnails' sidecar passes and background opens start. */
+/** How long a result set must stand with no query in flight before its background opens start. */
 const THUMB_QUIET_MS = 1000;
 
 /**
@@ -28,14 +23,13 @@ const THUMB_QUIET_MS = 1000;
  * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object) => Promise<void>} deps.openEntry
  * @param {() => boolean} deps.selectOpens - Whether selecting a hit opens its document outright, where no preview is shown.
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
- * @param {() => void} deps.saveManifestSoon - Debounced manifest write, for measurements recorded on entries.
  * @param {() => ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.getEngine
  * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineResponse
  * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineTiers
  * @param {() => ?string} deps.getEngineError
  */
 export function createResultsView({
-  host, sessions, preview, getStore, getManifest, getResults, getQuery, openEntry, selectOpens, onBack, saveManifestSoon,
+  host, sessions, preview, getStore, getManifest, getResults, getQuery, openEntry, selectOpens, onBack,
   getEngine, getEngineResponse, getEngineTiers, getEngineError,
 }) {
   /**
@@ -147,7 +141,6 @@ export function createResultsView({
         pageN: h.pageN,
         query: fullTextQuery,
         title: titleOf(h.relPath),
-        jump: true,
       });
     };
 
@@ -172,13 +165,12 @@ export function createResultsView({
     });
 
     /**
-     * One hit row's thumbnail work item. `marks` caches the overlay HTML after the first sidecar read;
+     * One hit row's thumbnail work item.
      * `warmed` records that the background warmer already spent its one render attempt on this page.
      * @typedef {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement, marks?: string, warmed?: boolean}} ThumbItem
      */
     /** @returns {Promise<boolean>} */
     const quiet = async () => {
-      // A sidecar pass or a background open can hold the main thread for seconds on a long document, delaying the paint of any query answered meanwhile.
       do {
         await engine.queriesSettled();
         await new Promise((resolve) => { window.setTimeout(resolve, THUMB_QUIET_MS); });
@@ -192,51 +184,18 @@ export function createResultsView({
     /** @type {Array<ThumbItem>} Rows whose stored raster was absent at pump time, kept for the warmer and for repump retries. */
     const rasterless = [];
     let warmRunning = false;
-    /**
-     * Overlay a row's match marks once its document's sidecar pass lands, over whatever raster already painted.
-     * @param {ThumbItem} t
-     * @param {?string} url
-     * @param {Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} sidePass
-     */
-    const paintLateMarks = (t, url, sidePass) => {
-      sidePass.then((side) => {
-        if (myGen !== resultsGen || t.marks !== undefined) return;
-        const page = side?.get(t.pageN)?.ocr ?? null;
-        const pd = t.entry.pageDims?.[t.pageN];
-        t.marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
-        if (t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks}`;
-      });
-    };
-    // The pump never imports a document: it paints stored rasters and sidecar marks, and leaves missing rasters to warmHits.
     const pumpThumbs = async () => {
       if (thumbsRunning) return;
       thumbsRunning = true;
       while (thumbQueue.length) {
         if (myGen !== resultsGen) break;
-        const first = /** @type {NonNullable<typeof thumbQueue[0]>} */ (thumbQueue.shift());
-        // Every queued page of this document reads in one sidecar pass.
-        const batch = [first];
-        for (let i = 0; i < thumbQueue.length;) {
-          if (thumbQueue[i].hash === first.hash) batch.push(thumbQueue.splice(i, 1)[0]);
-          else i++;
-        }
-        // Stored rasters paint before the sidecar pass lands, because a multi-MB sidecar must not hold up rows that already have images.
-        const needMarks = batch.filter((b) => b.marks === undefined);
-        /** @type {?Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} */
-        let sidePass = null;
-        if (needMarks.length) {
-          sidePass = quiet().then((current) => (current ? sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN)) : null)).catch(() => null);
-        }
-        for (const t of batch) {
+        const t = /** @type {ThumbItem} */ (thumbQueue.shift());
+        try {
+          const url = await sessions.pageImage(t.hash, t.pageN);
           if (myGen !== resultsGen) break;
-          try {
-            const url = await sessions.pageImage(t.hash, t.pageN);
-            if (myGen !== resultsGen) break;
-            if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks || ''}`;
-            if (!url && !rasterless.includes(t)) rasterless.push(t);
-            if (t.marks === undefined && sidePass) paintLateMarks(t, url, sidePass);
-          } catch { /* A failed read leaves the placeholder page blank. */ }
-        }
+          if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks || ''}`;
+          if (!url && !rasterless.includes(t)) rasterless.push(t);
+        } catch { /* A failed read leaves the placeholder page blank. */ }
       }
       thumbsRunning = false;
       if (myGen === resultsGen && rasterless.some((r) => !r.warmed)) {
@@ -249,8 +208,7 @@ export function createResultsView({
       requestAnimationFrame(() => { window.setTimeout(pumpThumbs, 0); });
     };
 
-    // Renders the missing hit-page rasters, one bounded import at a time.
-    // Each import restores that document's whole sidecar, so the gates below keep warming from running alongside a load the reader is waiting on.
+    // A render runs in the worker, but a pixel source's open touches the main thread, so warming waits for queries to settle and for the reader's loads.
     const resumeWarm = () => {
       if (myGen === resultsGen) warmHits();
     };
@@ -258,8 +216,6 @@ export function createResultsView({
       if (warmRunning) return;
       warmRunning = true;
       while (myGen === resultsGen && getStore()) {
-        const store = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
-        if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) break;
         if (document.visibilityState !== 'visible') {
           const resume = () => {
             document.removeEventListener('visibilitychange', resume);
@@ -268,7 +224,6 @@ export function createResultsView({
           document.addEventListener('visibilitychange', resume);
           break;
         }
-        // A provisional preview showing a stored raster may never hydrate, so it does not count as a user load.
         if (preview.userLoadActive()) {
           preview.userLoadIdle().then(resumeWarm);
           break;
@@ -282,77 +237,15 @@ export function createResultsView({
         });
         if (idx < 0) idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
         if (idx < 0) break;
-        const first = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
-        const batch = [first];
-        for (let i = 0; i < rasterless.length;) {
-          if (!rasterless[i].warmed && rasterless[i].hash === first.hash) batch.push(rasterless.splice(i, 1)[0]);
-          else i++;
-        }
-        const sidecarBytes = await store.sidecarSize(first.hash);
-        if ((sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) || first.entry.size > WARM_PDF_LIMIT) {
-          // Too big to import in the background, but the rows stay tracked so a preview or open can still fill them.
-          for (const t of batch) {
-            t.warmed = true;
-            rasterless.push(t);
-          }
-          continue;
-        }
-        /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
-        let doc = null;
-        let owned = false;
-        /** @type {?number} Start of a cold open, cleared once the first render completes the first-paint measurement. */
-        let coldStart = null;
+        const t = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
+        if (engine.querying() && !(await quiet())) break;
+        if (myGen !== resultsGen) break;
+        t.warmed = true;
         try {
-          doc = sessions.peekLive(first.hash);
-          if (!doc) {
-            await new Promise((resolve) => { requestIdleCallback(() => resolve(undefined)); });
-            if (engine.querying() && !(await quiet())) break;
-            if (myGen !== resultsGen) break;
-          }
-          if (!doc) {
-            // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive reads and import.
-            // A wait here means the timing below would be contended, so the measurement is skipped rather than recorded inflated.
-            const contended = preview.userLoadActive();
-            await preview.userLoadIdle();
-            if (myGen !== resultsGen) break;
-            const t0 = performance.now();
-            const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
-            const sidecar = await store.readSidecar(first.hash);
-            if (sidecar) files.push(new File([sidecar], `${first.hash}.scribe`));
-            doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
-            owned = true;
-            if (!contended) coldStart = t0;
-          }
-          // Stored rasters are keyed by the ingested page order, so a document that no longer matches its entry must stay blank.
-          if (doc.pageMetrics.length !== first.entry.pageCount) continue;
-          for (const t of batch) {
-            if (engine.querying() && !(await quiet())) break;
-            if (myGen !== resultsGen) break;
-            if (coldStart !== null && preview.userLoadActive()) coldStart = null;
-            await preview.userLoadIdle();
-            t.warmed = true;
-            if (!(await store.readPageRaster(t.hash, t.pageN))) {
-              const raster = await renderPageRaster(doc, t.pageN);
-              if (coldStart !== null) {
-                // Only the first render of the batch measures a first paint. The rest run on the open document and are warm.
-                first.entry.firstPaintMs = Math.round(performance.now() - coldStart);
-                coldStart = null;
-                saveManifestSoon();
-              }
-              if (!raster) continue;
-              if (first.entry.firstPaintMs !== undefined && first.entry.firstPaintMs < RASTER_STORE_MIN_MS) {
-                sessions.adoptPageImage(t.hash, t.pageN, raster);
-              } else {
-                await store.writePageRaster(t.hash, t.pageN, raster);
-              }
-            }
-            thumbQueue.push(t);
-            pumpThumbs();
-          }
-        } catch { /* A document that fails to open leaves its rows blank. */
-        } finally {
-          if (owned && doc) await doc.close().catch(() => {});
-        }
+          await sessions.raster({ hash: t.hash, relPath: t.relPath, entry: t.entry }, t.pageN, false);
+        } catch { /* A page that fails to render leaves its row blank. */ }
+        thumbQueue.push(t);
+        pumpThumbs();
       }
       warmRunning = false;
     };
@@ -398,9 +291,18 @@ export function createResultsView({
     };
 
     /**
+     * @param {{rects?: ?Array<Array<import('./search/searchClient.js').Box>>, dims?: ?{width: number, height: number}}} info
+     */
+    const marksOf = (info) => (info.rects && info.dims && info.rects.length
+      ? markOverlayHTML({ dims: info.dims, rects: info.rects.flat(), per: info.rects[0].length }) : undefined);
+
+    /**
      * @param {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}} docRef
      * @param {number} pageN
-     * @param {{count: number, snippet: ?DocumentFragment, tier?: number, sn?: HTMLElement}} info - A null `snippet` leaves the snippet span empty and hands it back in `sn` to fill later.
+     * @param {{count: number, snippet: ?DocumentFragment, tier?: number, sn?: HTMLElement, rects?: ?Array<Array<import('./search/searchClient.js').Box>>,
+     *   dims?: ?{width: number, height: number}, thumb?: ThumbItem}} info
+     *   A null `snippet` leaves the snippet span empty and hands it back in `sn` to fill later.
+     *   The row's thumbnail item is handed back in `thumb`, for marks that arrive later.
      * @param {number} insertAt - Position in `hits`, so expanded rows keep list order for stepping.
      * @param {boolean} [lowerTier]
      * @returns {HTMLElement}
@@ -443,9 +345,13 @@ export function createResultsView({
         selectHit(hits.indexOf(hit));
         openActive();
       });
-      thumbQueue.push({
-        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, img: ph,
-      });
+      /** @type {ThumbItem} */
+      const thumb = {
+        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, img: ph, marks: marksOf(info),
+      };
+      if (thumb.marks) ph.innerHTML = thumb.marks;
+      info.thumb = thumb;
+      thumbQueue.push(thumb);
       return row;
     };
 
@@ -456,7 +362,8 @@ export function createResultsView({
       if (!response) return;
       /**
        * @type {Array<{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string},
-       *   perPage: Array<{pageN: number, count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement}>, total: number}>}
+       *   perPage: Array<{pageN: number, count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement,
+       *   rects?: ?Array<Array<import('./search/searchClient.js').Box>>, dims?: ?{width: number, height: number}, thumb?: ThumbItem}>, total: number}>}
        */
       let ranked;
       ranked = /** @type {typeof ranked} */ (response.docs.map((d) => {
@@ -466,7 +373,7 @@ export function createResultsView({
           docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash },
           total: d.total,
           perPage: d.pages.map((p) => ({
-            pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null,
+            pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
           })),
         };
       }).filter(Boolean));
@@ -479,7 +386,7 @@ export function createResultsView({
 
       /**
        * @param {string} hash
-       * @param {Array<{pageN: number, marks?: Array<[number, number]>, sn?: HTMLElement}>} pps
+       * @param {Array<{pageN: number, marks?: Array<[number, number]>, sn?: HTMLElement, thumb?: ThumbItem}>} pps
        */
       const fillSnippets = (hash, pps) => {
         const want = pps.filter((pp) => pp.sn);
@@ -488,9 +395,17 @@ export function createResultsView({
           if (myGen !== resultsGen) return;
           for (const item of list) {
             const pp = want.find((w) => w.pageN === item.page);
-            if (!pp || !pp.sn || !item.snippet) continue;
-            pp.sn.replaceChildren(snippetFragment(item.snippet));
-            pp.sn = undefined;
+            if (!pp) continue;
+            if (pp.sn && item.snippet) {
+              pp.sn.replaceChildren(snippetFragment(item.snippet));
+              pp.sn = undefined;
+            }
+            const marks = marksOf(item);
+            if (marks && pp.thumb && !pp.thumb.marks) {
+              pp.thumb.marks = marks;
+              const img = pp.thumb.img.querySelector('img');
+              pp.thumb.img.innerHTML = `${img ? img.outerHTML : ''}${marks}`;
+            }
           }
         }).catch(() => {});
       };
@@ -585,7 +500,7 @@ export function createResultsView({
           tierSection.appendChild(docHead);
           for (const p of d.pages) {
             tierSection.appendChild(buildHitRow(ref, p.page, {
-              count: p.count, tier: p.tier, snippet: p.snippet ? snippetFragment(p.snippet) : null,
+              count: p.count, tier: p.tier, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
             }, hits.length, true));
           }
         }

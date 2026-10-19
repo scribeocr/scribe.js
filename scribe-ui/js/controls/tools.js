@@ -1458,6 +1458,21 @@ export function refreshEditedPages(scribe, pages) {
 }
 
 /**
+ * Load the real document behind a provisional one.
+ * @param {?Object} doc
+ * @returns {Promise<boolean>} Whether the document on screen is usable: the real one, or one that just loaded.
+ */
+export const hydrateIfProvisional = async (doc) => {
+  if (!doc || doc.id >= 0 || !doc._requestHydration) return true;
+  try {
+    await doc._requestHydration();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * The "Edit Text" mode tool.
  * While the mode is active, lines of visible native PDF text are selectable objects that can be edited in place or deleted.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -1489,7 +1504,8 @@ export function createEditTextTool(scribe) {
   /** @param {?import('../../../js/objects/ocrObjects.js').OcrLine} line */
   const lineEligible = (line) => nativeLineEligible(scribe.doc, line);
 
-  toolbarElem.addEventListener('click', () => {
+  toolbarElem.addEventListener('click', async () => {
+    if (!editMode && !(await hydrateIfProvisional(scribe.doc))) return;
     editMode = !editMode;
     scribe._editTextActive = editMode;
     toolbarElem.classList.toggle('active', editMode);
@@ -2947,7 +2963,8 @@ export function createGraphicsEditTool(scribe) {
     removeMarquee();
   };
 
-  toolbarElem.addEventListener('click', () => {
+  toolbarElem.addEventListener('click', async () => {
+    if (!graphicsMode && !(await hydrateIfProvisional(scribe.doc))) return;
     graphicsMode = !graphicsMode;
     scribe._graphicsEditActive = graphicsMode;
     toolbarElem.classList.toggle('active', graphicsMode);
@@ -3510,8 +3527,9 @@ export function createExtractTablesTool(app) {
       app._automatePanel?.closeTablesWorkspace();
     }
   };
-  toolbarElem.addEventListener('click', () => {
+  toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
+    if (!active && !(await hydrateIfProvisional(app.scribe.doc))) return;
     setActive(!active);
   });
 
@@ -3742,8 +3760,9 @@ export function createInspectDocumentTool(app) {
       app._closeInspectSheet?.();
     }
   };
-  toolbarElem.addEventListener('click', () => {
+  toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
+    if (!active && !(await hydrateIfProvisional(app.scribe.doc))) return;
     setActive(!active);
   });
 

@@ -150,9 +150,22 @@ export const createSearchClient = (settings = {}) => {
     /**
      * @param {string} hash
      * @param {Array<{page: number, marks: Array<[number, number]>}>} pages
-     * @returns {Promise<Array<{page: number, snippet: ?Snippet}>>}
+     * @returns {Promise<Array<{page: number, snippet: ?Snippet, rects: ?Array<Array<Box>>, dims: ?{width: number, height: number}}>>}
      */
     snippets: (hash, pages) => serial('snippets', { hash, pages }),
+    /**
+     * @param {string} hash
+     * @param {number[]} pageNs
+     * @returns {Promise<Array<?import('./searchPageRecords.js').PageView>>}
+     */
+    pages: (hash, pageNs) => serial('pages', { hash, pageNs }),
+    /**
+     * Every page of one document holding the query's phrase, in page order, with the ids of each occurrence's words.
+     * @param {string} hash
+     * @param {string} query
+     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
+     */
+    find: (hash, query) => serial('find', { hash, query }),
     stats: () => serial('stats'),
     reset: () => serial('reset'),
     close: () => {
@@ -184,7 +197,10 @@ export const createSearchClient = (settings = {}) => {
  * @property {number} score - BM25 in tier 5, 0 elsewhere.
  * @property {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
  * @property {?Snippet} snippet
+ * @property {?Array<Array<Box>>} rects - Null for a page off the first screen.
+ * @property {?{width: number, height: number}} dims
  */
+/** @typedef {bbox} Box */
 
 /**
  * @typedef {Object} SearchResponse

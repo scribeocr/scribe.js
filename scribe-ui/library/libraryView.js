@@ -1771,6 +1771,11 @@ export function createLibraryInstance(viewer, opts) {
       entry.recognizedAt = Date.now();
       delete entry.ocrError;
     }
+    // A save can delete, insert or rotate pages, and a provisional document lays its pages out from these.
+    entry.pageCount = doc.pageMetrics.length;
+    entry.pageDims = doc.pageMetrics.map((pm) => [
+      Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
+    ]);
     saveManifestSoon();
     try {
       await engine.addDoc(hash, doc.ocr.active);
@@ -1787,7 +1792,7 @@ export function createLibraryInstance(viewer, opts) {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
-      if (entry) preview.persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
+      if (entry && tab.libraryRelPath) preview.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */ (tab).lastPage ?? 0);
     }
     if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
     tab.librarySaving = true;
@@ -1797,7 +1802,8 @@ export function createLibraryInstance(viewer, opts) {
       // They opt into the segmented layout so a session of any size stays reloadable.
       const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, scribeSegments: true, includeCharBoxesScribe: false });
       await store.writeSidecar(tab.libraryHash, data);
-      sessions.dropSidecar(tab.libraryHash);
+      await store.writeChanges(tab.libraryHash, await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
+      sessions.dropChanges(tab.libraryHash);
       const recognized = !!tab.libraryRecognized;
       tab.libraryRecognized = false;
       await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
@@ -2966,7 +2972,7 @@ export function createLibraryInstance(viewer, opts) {
       if (entry.hash && !shared) {
         await engine.removeDoc(entry.hash).catch(() => {});
         await Promise.all([
-          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash),
+          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteChanges(entry.hash), store.deleteChangesBackup(entry.hash),
           store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
         ]).catch(() => {});
         sessions.invalidate(entry.hash);
@@ -4992,7 +4998,6 @@ export function createLibraryInstance(viewer, opts) {
       pageN,
       query: null,
       title: titleOf(relPath),
-      jump: true,
     });
   };
 
@@ -5129,7 +5134,7 @@ export function createLibraryInstance(viewer, opts) {
         if (tab) {
           entry.lastOpened = Date.now();
           saveManifestSoon();
-          preview.persistRasterWindow(tab.doc, entry, viewer.scribe.state.cp.n);
+          preview.persistRasterWindow(relPath, entry, viewer.scribe.state.cp.n);
           await morphOut();
           return;
         }
@@ -5144,53 +5149,33 @@ export function createLibraryInstance(viewer, opts) {
           libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
         });
         wrapMutators(pooled, tab);
-        preview.persistRasterWindow(pooled, entry, target.pageN ?? 0);
+        preview.persistRasterWindow(relPath, entry, target.pageN ?? 0);
         if (!target.background) await continueFind();
         afterOpen();
         return;
       }
-      // Stored page dims, rasters, and sidecar pages paint immediately while the real document hydrates behind them.
-      // With no raster for the landing page a seed could only paint blank pages, so the plain open below runs instead.
-      // The tab also exists from the first click, so repeats activate it instead of starting another import.
-      if (!target.background && entry.pageDims && await store.readPageRaster(entry.hash, target.pageN ?? 0)) {
+      if (entry.hash && entry.pageDims) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0);
-        preview.beginUserLoad();
-        const t0 = performance.now();
-        /** @type {{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} */
-        let handle;
-        try {
-          handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
-        } catch (err) {
-          preview.endUserLoad();
-          throw err;
-        }
-        handle.hydrated.catch(() => {}).finally(preview.endUserLoad);
-        const tab = viewer._tabs[viewer._activeTab];
+        const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, { activate: !target.background });
+        const tab = /** @type {any} */ (viewer._tabs[viewer._tabs.length - 1]);
         tab.libraryOwner = instanceId;
         tab.libraryHash = entry.hash;
         tab.libraryRelPath = relPath;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
         tab.onDocHydrated = (d) => wrapMutators(d, tab);
-        if (target.query && viewer._searchBar) {
-          viewer._searchBar.openSearch();
-          viewer._searchBar.searchInputElem.value = target.query;
+        wrapMutators(tab.doc, tab);
+        handle.hydrated.catch(() => {});
+        if (!target.background) {
+          await handle.primed;
+          await continueFind();
         }
         afterOpen();
-        handle.hydrated.then(() => {
-          // This hydration ran from a cold open, so open-to-swap is a first paint.
-          entry.firstPaintMs = Math.round(performance.now() - t0);
-          saveManifestSoon();
-          preview.persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
-          // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here, on the full document's matches.
-          continueFind();
-        }).catch(() => {});
         return;
       }
       /** @type {File} */
       let pdfFile;
-      const t0 = performance.now();
       try {
         pdfFile = await store.readFile(relPath);
       } catch {
@@ -5200,16 +5185,11 @@ export function createLibraryInstance(viewer, opts) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — the file is no longer at ${relPath}.`);
         return;
       }
-      const files = [pdfFile];
-      if (entry.hash) {
-        const sidecar = await store.readSidecar(entry.hash);
-        if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
-      }
       /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc;
       preview.beginUserLoad();
       try {
-        doc = await scribeLib.openDocument(files, { deferText: true });
+        doc = await scribeLib.openDocument([pdfFile], { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
@@ -5230,10 +5210,7 @@ export function createLibraryInstance(viewer, opts) {
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), {
         libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
       });
-      entry.firstPaintMs = Math.round(performance.now() - t0);
-      saveManifestSoon();
       wrapMutators(doc, tab);
-      preview.persistRasterWindow(doc, entry, target.pageN ?? 0);
       if (!target.background) await continueFind();
       afterOpen();
     } finally {
@@ -5281,6 +5258,7 @@ export function createLibraryInstance(viewer, opts) {
     const entry = manifest?.docs[relPath];
     if (!store || !ingest || !entry || !entry.hash) return;
     await store.backupSidecar(entry.hash);
+    await store.backupChanges(entry.hash);
     closeTabsFor(entry.hash);
     revertUndo = {
       relPath, hash: entry.hash, editedAt: entry.editedAt, recognizedAt: entry.recognizedAt, phase: 'reverting',
@@ -5299,6 +5277,7 @@ export function createLibraryInstance(viewer, opts) {
     const entry = manifest.docs[relPath];
     if (!entry || entry.hash !== hash) return;
     if (!(await store.restoreSidecarBackup(hash))) return;
+    await store.restoreChangesBackup(hash);
     closeTabsFor(hash);
     if (editedAt) entry.editedAt = editedAt;
     if (recognizedAt) entry.recognizedAt = recognizedAt;
@@ -5829,11 +5808,9 @@ export function createLibraryInstance(viewer, opts) {
   const preview = createPreview({
     viewer,
     sessions,
+    engine,
     getStore: () => store,
-    getManifest: () => manifest,
-    onRastersStored: () => results.repump(),
     onSidecarSaved: (hash, doc) => { afterSidecarSaved(hash, doc, false); },
-    saveManifestSoon,
     ensureLit,
     onState: (kind, text) => setStage(kind, text),
     trackEdits: wrapMutators,
@@ -5853,7 +5830,6 @@ export function createLibraryInstance(viewer, opts) {
     getEngineTiers: () => engineTiers,
     getEngineError: () => engineError,
     openEntry,
-    saveManifestSoon,
     onBack: () => {
       fullTextResults = null;
       searchInput.value = '';
@@ -6016,7 +5992,6 @@ export function createLibraryInstance(viewer, opts) {
   let ingestRenderTimer = null;
 
   const WARM_IDLE_MS = 30 * 1000;
-  const WARM_SESSION_PAGES = 150;
   let lastInteraction = Date.now();
   const noteInteraction = () => { lastInteraction = Date.now(); };
   document.addEventListener('pointerdown', noteInteraction, true);
@@ -6031,7 +6006,7 @@ export function createLibraryInstance(viewer, opts) {
   });
   const onVisibilityChange = () => { ingest?.start(); };
   document.addEventListener('visibilitychange', onVisibilityChange);
-  // The gate opening is not an event, so a slow tick is what resumes warm work once the reader goes idle.
+  // The gate opening is not an event, so a slow tick is what resumes queued recognition once the reader goes idle.
   const warmTimer = window.setInterval(() => { ingest?.start(); }, 15 * 1000);
 
   /** @type {?(() => void)} */
@@ -6136,9 +6111,9 @@ export function createLibraryInstance(viewer, opts) {
               ? 'Text recognition didn’t finish for 1 document. It was left unchanged.'
               : `Text recognition didn’t finish for ${n} documents. They were left unchanged.`);
           }
-          // The queue also drains here after idle ticks and warm-only passes, which change nothing a card or row displays.
+          // The queue also drains here after idle ticks, which change nothing a card or row displays.
           if (done > 0) render();
-          // Warmed rasters can fill result rows that were blank at pump time.
+          // Rasters stored meanwhile can fill result rows that were blank at pump time.
           else results.repump();
           return;
         }
@@ -6159,8 +6134,8 @@ export function createLibraryInstance(viewer, opts) {
         const doneEntry = manifest?.docs[relPath];
         // A tab adopted by a copy into the folder learns its hash once the ingest has computed it.
         if (doneEntry?.hash) for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath === relPath && !t.libraryHash) t.libraryHash = doneEntry.hash;
-        // Ingest and recognition write sidecars of their own, so cached sidecar pages must not outlive them.
-        if (doneEntry?.hash) sessions.dropSidecar(doneEntry.hash);
+        // Ingest and recognition write changes files of their own, so the parsed changes must not outlive them.
+        if (doneEntry?.hash) sessions.dropChanges(doneEntry.hash);
         if (recognizingPath === relPath && doneEntry?.ocrError) runRecognizeFailures++;
         if (revertUndo && revertUndo.relPath === relPath) {
           if (revertUndo.phase === 'reverting') {
@@ -6180,14 +6155,7 @@ export function createLibraryInstance(viewer, opts) {
           }, 300);
         }
       },
-      warmGate: () => {
-        if (document.visibilityState !== 'visible') return false;
-        if (Date.now() - lastInteraction < WARM_IDLE_MS) return false;
-        if (onBattery === true) return false;
-        if (onBattery === null && ingest && ingest.warmPagesDone >= WARM_SESSION_PAGES) return false;
-        return true;
-      },
-      // A request made this session runs while the user watches; one resumed after a reload waits for an idle machine like warm work.
+      // A request made this session runs while the user watches; one resumed after a reload waits for an idle machine.
       recognizeGate: (explicit) => {
         if (document.visibilityState !== 'visible') return false;
         if (onBattery === true) return false;
