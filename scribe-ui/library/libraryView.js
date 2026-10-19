@@ -394,9 +394,6 @@ const addLibraryStyles = () => {
 /* The boxes over the document pass the pointer through to it, and pointer-events is inherited, so every other part of the split form takes it back. */
 .scribe-pdf-viewer .scribe-library-surface.split, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv { pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-surface.split > :not(.scribe-library-body), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body > :not(.scribe-library-results), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results > :not(.scribe-library-pv), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv > :not(.scribe-library-pv-stage), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv-stage:not(.live) { pointer-events: auto; }
-.scribe-pdf-viewer .scribe-library-surface.leaving .scribe-library-rlist { opacity: 0; transition: opacity 200ms ease; }
-.scribe-pdf-viewer .scribe-library-surface.entering .scribe-library-rlist { opacity: 0; }
-.scribe-pdf-viewer .scribe-library-surface.entering.arrived .scribe-library-rlist { opacity: 1; transition: opacity 200ms ease; }
 .scribe-pdf-viewer .scribe-library-bar-ghost { position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: none; z-index: 41; color: var(--scribe-ink); line-height: 28px; }
 .scribe-pdf-viewer .scribe-library-bar-ghost > * { position: absolute; margin: 0; }
 .scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
@@ -1441,15 +1438,22 @@ export function createLibraryInstance(viewer, opts) {
         return shown;
       }, true);
       surface.classList.add('leaving');
+      // The column's content keeps its width, so the narrowing column clips it.
+      const contentW = left.clientWidth;
+      const pinned = /** @type {HTMLElement[]} */ ([...left.children]);
+      for (const el of pinned) el.style.width = `${contentW}px`;
       await runMorph((e) => {
         const insetLeft = start.left + (toW - start.left) * e;
         const insetTop = Math.round(start.top * (1 - e));
         left.style.width = `${Math.max(0, insetLeft - 1)}px`;
+        left.style.opacity = String(1 - e);
         pvHead.style.transform = `translateY(${insetTop - start.top}px)`;
         viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
         sc.scrollTop = Math.max(0, scrollStart - (start.top - insetTop));
       });
       left.style.width = '';
+      left.style.opacity = '';
+      for (const el of pinned) el.style.width = '';
       if (sash) sash.style.visibility = '';
       findStand?.remove();
       unpinHead();
@@ -1469,8 +1473,9 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * Morph from the rail back to the pane for a return.
    * @param {() => void} endBarFade - Ends the bar's cross-fade the activation armed.
+   * @param {number} hadTop - The document's top inset as read before the render that lays out the split.
    */
-  const morphIn = async (endBarFade) => {
+  const morphIn = async (endBarFade, hadTop) => {
     const left = splitLeft;
     const sc = viewer.scribe.scrollContainer;
     if (!left || !sc || viewer._phoneUi || reducedMotion()) {
@@ -1486,43 +1491,36 @@ export function createLibraryInstance(viewer, opts) {
     const r = pvStage.getBoundingClientRect();
     const toLeft = Math.round(r.left - rootRect.left);
     const topInset = Math.round(r.top - rootRect.top) - viewer._topBarsHeight();
-    const hadTop = viewer._docInset ? viewer._docInset.top : 0;
     const scrollStart = sc.scrollTop;
     const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
     if (sash) sash.style.visibility = 'hidden';
     const unpinHead = pinHead();
     surface.classList.add('entering');
+    // The content is pinned at its resting width before the column narrows, so the widening column uncovers it.
+    const contentW = left.clientWidth;
+    const pinned = /** @type {HTMLElement[]} */ ([...left.children]);
+    for (const el of pinned) el.style.width = `${contentW}px`;
     left.style.width = `${Math.max(0, fromW - 1)}px`;
+    left.style.opacity = '0';
     pvHead.style.transform = `translateY(${hadTop - topInset}px)`;
     viewer.setDocInset({ left: fromW, top: hadTop });
-    const strip = viewer._sidebarTabsElem;
-    for (const el of [rail?.panelElem, strip]) {
-      if (!el) continue;
-      el.style.transition = 'opacity 200ms ease';
-      el.style.opacity = '0';
-    }
-    // A layout read commits the start styles before the class arms the fades.
-    left.getBoundingClientRect();
-    surface.classList.add('arrived');
     await runMorph((e) => {
       const insetLeft = fromW + (toLeft - fromW) * e;
       const insetTop = Math.round(hadTop + (topInset - hadTop) * e);
       left.style.width = `${Math.max(0, insetLeft - 1)}px`;
+      left.style.opacity = String(e);
       pvHead.style.transform = `translateY(${insetTop - topInset}px)`;
       viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
       sc.scrollTop = scrollStart + (insetTop - hadTop);
     });
     left.style.width = '';
+    left.style.opacity = '';
+    for (const el of pinned) el.style.width = '';
     if (sash) sash.style.visibility = '';
     unpinHead();
     endBarFade();
-    surface.classList.remove('entering', 'arrived');
+    surface.classList.remove('entering');
     if (viewer._activeSidebar) viewer.hideSidebarNow();
-    for (const el of [rail?.panelElem, strip]) {
-      if (!el) continue;
-      el.style.transition = '';
-      el.style.opacity = '';
-    }
     morphing = false;
     syncDocInset();
   };
@@ -1534,6 +1532,8 @@ export function createLibraryInstance(viewer, opts) {
    *   `morph` animates the return from a tab's document.
    */
   const activate = ({ render: doRender = true, attach = true, morph = false } = {}) => {
+    // Read before the render below, which lays out the split and overwrites the inset the return morph starts from.
+    const hadTop = viewer._docInset ? viewer._docInset.top : 0;
     // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
     for (const inst of viewer._libraryInstances) {
       if (inst !== api && inst.visible()) inst.hide();
@@ -1590,7 +1590,7 @@ export function createLibraryInstance(viewer, opts) {
       }, false);
     } else applyForm();
     if (doRender) render({ revealSelection: true });
-    if (fromTab) morphIn(endBarFade);
+    if (fromTab) morphIn(endBarFade, hadTop);
   };
 
   /** Unlight the library's tab, giving a tab's document the front. */
@@ -4958,11 +4958,12 @@ export function createLibraryInstance(viewer, opts) {
     // The sash and the window resize without a render, so width changes reach the columns through this observer.
     colsObserver?.disconnect();
     colsObserver = new ResizeObserver(() => {
-      if (colDragActive) return;
+      // The morph resizes the column under pinned content, so the columns must not refit to its passing widths.
+      if (colDragActive || morphing) return;
       // Painting inside the observer callback re-triggers it in the same delivery, which the browser reports as a resize-loop error.
       cancelAnimationFrame(colProjectRaf);
       colProjectRaf = requestAnimationFrame(() => {
-        if (!colDragActive) projectCols(availCols());
+        if (!colDragActive && !morphing) projectCols(availCols());
       });
       window.clearTimeout(colSettleTimer);
       colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
