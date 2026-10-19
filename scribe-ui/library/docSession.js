@@ -84,6 +84,8 @@ export class DocSessions {
     this.useTick = 0;
     /** @type {Array<{session: DocSession, n: number}>} Page-URL creation order, oldest first. */
     this.urlOrder = [];
+    /** @type {Set<(hash: string, n: number) => void>} */
+    this.rasterListeners = new Set();
   }
 
   /**
@@ -289,7 +291,7 @@ export class DocSessions {
     const store = this.store;
     if (!store) return null;
     const blob = await store.readPageRaster(hash, n).catch(() => null);
-    if (!blob) return null;
+    if (!blob) return s.pageUrls.get(n) ?? null;
     const again = s.pageUrls.get(n);
     if (again) return again;
     const url = await stableUrl(blob);
@@ -365,6 +367,7 @@ export class DocSessions {
    */
   #rememberUrl(s, n, url) {
     s.pageUrls.set(n, url);
+    for (const listener of this.rasterListeners) listener(s.hash, n);
     this.urlOrder.push({ session: s, n });
     while (this.urlOrder.length > MAX_PAGE_URLS) {
       const old = /** @type {{session: DocSession, n: number}} */ (this.urlOrder.shift());

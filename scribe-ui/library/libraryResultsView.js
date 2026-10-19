@@ -60,7 +60,7 @@ export function createResultsView({
     if (resultsView && resultsView.results === results) {
       hostEl.appendChild(resultsView.wrap);
       resultsView.attach();
-      // Rasters may have landed since the rows were built (a preview, a full open), so blank rows retry.
+      // Rasters stored while the view was away fill blank rows on this retry.
       resultsView.repump();
       resultsView.tiers();
       return;
@@ -181,7 +181,7 @@ export function createResultsView({
     /** @type {Array<ThumbItem>} */
     const thumbQueue = [];
     let thumbsRunning = false;
-    /** @type {Array<ThumbItem>} Rows whose stored raster was absent at pump time, kept for the warmer and for repump retries. */
+    /** @type {Array<ThumbItem>} */
     const rasterless = [];
     let warmRunning = false;
     const pumpThumbs = async () => {
@@ -207,6 +207,13 @@ export function createResultsView({
     const pump = () => {
       requestAnimationFrame(() => { window.setTimeout(pumpThumbs, 0); });
     };
+    const onRaster = (hash, n) => {
+      const idx = rasterless.findIndex((r) => r.hash === hash && r.pageN === n);
+      if (idx < 0) return;
+      thumbQueue.push(/** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]));
+      pump();
+    };
+    sessions.rasterListeners.add(onRaster);
 
     // A render runs in the worker, but a pixel source's open touches the main thread, so warming waits for queries to settle and for the reader's loads.
     const resumeWarm = () => {
@@ -228,14 +235,13 @@ export function createResultsView({
           preview.userLoadIdle().then(resumeWarm);
           break;
         }
-        const busyHash = preview.shownHash();
         const listRect = scroller().getBoundingClientRect();
         let idx = rasterless.findIndex((r) => {
-          if (r.warmed || r.hash === busyHash) return false;
+          if (r.warmed) return false;
           const rect = r.img.getBoundingClientRect();
           return rect.bottom > listRect.top && rect.top < listRect.bottom && rect.height > 0;
         });
-        if (idx < 0) idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
+        if (idx < 0) idx = rasterless.findIndex((r) => !r.warmed);
         if (idx < 0) break;
         const t = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
         if (engine.querying() && !(await quiet())) break;
@@ -535,6 +541,7 @@ export function createResultsView({
       },
       dispose: () => {
         resultsGen++;
+        sessions.rasterListeners.delete(onRaster);
       },
     };
   };
