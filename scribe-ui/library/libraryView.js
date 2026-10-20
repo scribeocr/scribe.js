@@ -396,6 +396,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface.split > :not(.scribe-library-body), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body > :not(.scribe-library-results), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results > :not(.scribe-library-pv), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv > :not(.scribe-library-pv-stage), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv-stage:not(.live) { pointer-events: auto; }
 .scribe-pdf-viewer .scribe-library-bar-ghost { position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: none; z-index: 41; color: var(--scribe-ink); line-height: 28px; }
 .scribe-pdf-viewer .scribe-library-bar-ghost > * { position: absolute; margin: 0; }
+.scribe-pdf-viewer .scribe-library-find-lift { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 42; color: var(--scribe-ink); line-height: 28px; }
 .scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-back { margin-left: auto; border: none; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
@@ -1186,6 +1187,48 @@ export function createLibraryInstance(viewer, opts) {
     // The toolbar's document controls stay hidden while the library bar is in, and the swap out shows them again.
     if (barSwapped) bar.searchElem.style.display = 'none';
   };
+  /** @param {NonNullable<typeof viewer._searchBar>} bar */
+  const findBarPos = (bar) => {
+    const root = viewer.pdfViewerElem.getBoundingClientRect();
+    const r = bar.findGroupElem.getBoundingClientRect();
+    return { x: r.left - root.left, y: r.top - root.top };
+  };
+  /**
+   * Take the open find bar out of the home it has just been placed in, to glide there in a straight line from `from` as a morph plays.
+   * @param {NonNullable<typeof viewer._searchBar>} bar
+   * @param {{x: number, y: number}} from - Where the bar hung before it changed homes, in the viewer's coordinates.
+   * @returns {{step: (e: number) => void, land: () => void}} `step` places the bar at the morph's eased progress.
+   *   `land` puts it back in its home.
+   */
+  const liftFindBar = (bar, from) => {
+    const group = bar.findGroupElem;
+    const to = findBarPos(bar);
+    const parent = /** @type {HTMLElement} */ (group.parentElement);
+    const next = group.nextSibling;
+    // The library surface clips anything above its top edge, where a bar bound for the pane head starts its glide.
+    const lift = document.createElement('div');
+    // The find bar's desktop styles are scoped to the toolbar class, so the layer carries it.
+    lift.className = 'scribe-pdf-viewer-toolbar scribe-library-find-lift';
+    lift.appendChild(group);
+    viewer.pdfViewerElem.appendChild(lift);
+    group.style.right = 'auto';
+    const step = (/** @type {number} */ e) => {
+      group.style.left = `${Math.round(from.x + (to.x - from.x) * e)}px`;
+      group.style.top = `${Math.round(from.y + (to.y - from.y) * e)}px`;
+    };
+    step(0);
+    return {
+      step,
+      land: () => {
+        group.style.left = '';
+        group.style.top = '';
+        group.style.right = '';
+        parent.insertBefore(group, next && next.parentNode === parent ? next : null);
+        lift.remove();
+        bar.rehome();
+      },
+    };
+  };
 
   /** Whether the library shows the rows' column beside the pane. */
   const splitForm = () => !!barControls && !viewer._phoneUi && !!store && !!manifest && !storageOpen
@@ -1420,10 +1463,12 @@ export function createLibraryInstance(viewer, opts) {
       const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
       if (sash) sash.style.visibility = 'hidden';
       const scrollStart = sc.scrollTop;
+      const bar = viewer._searchBar;
+      // Where the open find bar hangs from the head, before the swap below moves it to the toolbar.
+      const findFrom = bar && findHome && bar.findGroupElem.style.display !== 'none' ? findBarPos(bar) : null;
       const unpinHead = pinHead();
       // The head's find control is the viewer's own, so it goes back to the toolbar now to fade in with the toolbar's other controls.
       // A stand-in takes its place in the head for the slide.
-      const bar = viewer._searchBar;
       const findStand = bar && findHome ? /** @type {HTMLElement} */ (bar.searchElem.cloneNode(true)) : null;
       if (findStand && bar) {
         findStand.setAttribute('inert', '');
@@ -1437,6 +1482,12 @@ export function createLibraryInstance(viewer, opts) {
         swapBarOut();
         return shown;
       }, true);
+      let glide = null;
+      if (findFrom && bar) {
+        // The glide ends where the bar hangs when lifted, so it is re-placed at its toolbar offset first.
+        bar.rehome();
+        glide = liftFindBar(bar, findFrom);
+      }
       surface.classList.add('leaving');
       // The column's content keeps its width, so the narrowing column clips it.
       const contentW = left.clientWidth;
@@ -1450,6 +1501,7 @@ export function createLibraryInstance(viewer, opts) {
         pvHead.style.transform = `translateY(${insetTop - start.top}px)`;
         viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
         sc.scrollTop = Math.max(0, scrollStart - (start.top - insetTop));
+        glide?.step(e);
       });
       left.style.width = '';
       left.style.opacity = '';
@@ -1457,6 +1509,7 @@ export function createLibraryInstance(viewer, opts) {
       if (sash) sash.style.visibility = '';
       findStand?.remove();
       unpinHead();
+      glide?.land();
       endBarFade();
       surface.classList.remove('leaving');
       morphing = false;
@@ -1474,8 +1527,9 @@ export function createLibraryInstance(viewer, opts) {
    * Morph from the rail back to the pane for a return.
    * @param {() => void} endBarFade - Ends the bar's cross-fade the activation armed.
    * @param {number} hadTop - The document's top inset as read before the render that lays out the split.
+   * @param {?{x: number, y: number}} findFrom - Where the open find bar hung from the toolbar before the activation moved it into the head, or null while it is closed.
    */
-  const morphIn = async (endBarFade, hadTop) => {
+  const morphIn = async (endBarFade, hadTop, findFrom) => {
     const left = splitLeft;
     const sc = viewer.scribe.scrollContainer;
     if (!left || !sc || viewer._phoneUi || reducedMotion()) {
@@ -1494,6 +1548,13 @@ export function createLibraryInstance(viewer, opts) {
     const scrollStart = sc.scrollTop;
     const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
     if (sash) sash.style.visibility = 'hidden';
+    // The glide ends where the bar hangs when lifted, so it is re-placed under the head and lifted before the head is moved up for the slide.
+    const bar = viewer._searchBar;
+    let glide = null;
+    if (findFrom && bar && findHome) {
+      bar.rehome();
+      glide = liftFindBar(bar, findFrom);
+    }
     const unpinHead = pinHead();
     surface.classList.add('entering');
     // The content is pinned at its resting width before the column narrows, so the widening column uncovers it.
@@ -1512,12 +1573,14 @@ export function createLibraryInstance(viewer, opts) {
       pvHead.style.transform = `translateY(${insetTop - topInset}px)`;
       viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
       sc.scrollTop = scrollStart + (insetTop - hadTop);
+      glide?.step(e);
     });
     left.style.width = '';
     left.style.opacity = '';
     for (const el of pinned) el.style.width = '';
     if (sash) sash.style.visibility = '';
     unpinHead();
+    glide?.land();
     endBarFade();
     surface.classList.remove('entering');
     if (viewer._activeSidebar) viewer.hideSidebarNow();
@@ -1534,6 +1597,8 @@ export function createLibraryInstance(viewer, opts) {
   const activate = ({ render: doRender = true, attach = true, morph = false } = {}) => {
     // Read before the render below, which lays out the split and overwrites the inset the return morph starts from.
     const hadTop = viewer._docInset ? viewer._docInset.top : 0;
+    // Likewise where the open find bar hangs from the toolbar, which the form change below moves into the head.
+    const findFrom = morph && viewer._searchBar && viewer._searchBar.findGroupElem.style.display !== 'none' ? findBarPos(viewer._searchBar) : null;
     // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
     for (const inst of viewer._libraryInstances) {
       if (inst !== api && inst.visible()) inst.hide();
@@ -1590,7 +1655,7 @@ export function createLibraryInstance(viewer, opts) {
       }, false);
     } else applyForm();
     if (doRender) render({ revealSelection: true });
-    if (fromTab) morphIn(endBarFade, hadTop);
+    if (fromTab) morphIn(endBarFade, hadTop, findFrom);
   };
 
   /** Unlight the library's tab, giving a tab's document the front. */
