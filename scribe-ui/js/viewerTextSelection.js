@@ -666,7 +666,7 @@ export class PageTextIndex {
 export class TextSelection {
   /** @param {import('../viewer.js').ScribeViewer} viewer */
   constructor(viewer) {
-    /** Engine discriminator consumed by the viewer's engine seam (`viewer._sel()`). */
+    /** @type {'custom'} */
     this.kind = 'custom';
     this.viewer = viewer;
 
@@ -804,6 +804,49 @@ export class TextSelection {
     if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
   }
 
+  /**
+   * Whether the selection is at least partly inside the document viewport.
+   * @returns {boolean}
+   */
+  isInView() {
+    if (this.isEmpty()) return false;
+    const range = /** @type {NonNullable<typeof this.range>} */ (this.range);
+    const { viewer } = this;
+    const sc = viewer.scrollContainer;
+    if (!sc) return false;
+    const zoom = viewer.zoomLevel || 1;
+    const { clientWidth, clientHeight } = viewer._scrollMetrics();
+    const { scrollTop, scrollLeft } = sc;
+    const viewLeft = scrollLeft / zoom;
+    const viewRight = (scrollLeft + clientWidth) / zoom;
+    const viewTop = scrollTop / zoom;
+    const viewBottom = (scrollTop + clientHeight) / zoom;
+    const first = range.kind === 'box' ? range.n : range.start.n;
+    const last = range.kind === 'box' ? range.n : range.end.n;
+    for (let n = first; n <= last; n++) {
+      const top = viewer.getPageStop(n);
+      const dims = viewer.getDisplayDims(n);
+      if (top === null || !dims || top + dims.height < viewTop || top > viewBottom) continue;
+      const idx = this.index(n);
+      if (!idx) continue;
+      const rects = range.kind === 'box'
+        ? idx.boxSelection(range.orientation, range.box).rects
+        : idx.rects(n === range.start.n ? range.start.off : 0, n === range.end.n ? range.end.off : idx.length);
+      for (const rect of rects) {
+        let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+        for (const [x, y] of [[rect.left, rect.top], [rect.right, rect.top], [rect.left, rect.bottom], [rect.right, rect.bottom]]) {
+          const p = viewer.localToContent(n, rect.orientation, x, y);
+          if (p.x < minX) minX = p.x;
+          if (p.x > maxX) maxX = p.x;
+          if (p.y < minY) minY = p.y;
+          if (p.y > maxY) maxY = p.y;
+        }
+        if (maxX > viewLeft && minX < viewRight && maxY > viewTop && minY < viewBottom) return true;
+      }
+    }
+    return false;
+  }
+
   /** Pages the selection touches, endpoints and everything between. @returns {Set<number>} */
   pages() {
     const out = new Set();
@@ -936,7 +979,8 @@ export class TextSelection {
    * @returns {Array<import('./viewerWordObjects.js').UiOcrWord>}
    */
   getWords() {
-    if (!this.range) return [];
+    // A collapsed caret selects nothing, but wordIds over its empty interval still returns the word it sits in.
+    if (!this.range || this.isEmpty()) return [];
     /** @type {Array<import('./viewerWordObjects.js').UiOcrWord>} */
     const out = [];
     /** @param {number} n @param {Array<string>} ids */

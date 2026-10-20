@@ -146,6 +146,7 @@ function installDocumentHandlers() {
 export class DomSelectionEngine {
   /** @param {ScribeViewer} viewer */
   constructor(viewer) {
+    /** @type {'dom'} */
     this.kind = 'dom';
     this.viewer = viewer;
     /** @type {?HTMLDivElement} */
@@ -197,7 +198,7 @@ export class DomSelectionEngine {
     window.getSelection()?.removeAllRanges();
   }
 
-  /** The viewer's word objects under the native selection. @returns {Array<any>} */
+  /** The viewer's word objects under the native selection. @returns {Array<import('../viewerWordObjects.js').UiOcrWord>} */
   getWords() {
     const viewer = this.viewer;
     const sel = window.getSelection();
@@ -222,8 +223,18 @@ export class DomSelectionEngine {
     return viewer.getUiWords().filter((kw) => idSet.has(kw.word.id));
   }
 
-  hasSelection() {
-    return this.getWords().length > 0;
+  /**
+   * Whether the native selection covers one of this viewer's words that lies at least partly inside the document viewport.
+   */
+  isInView() {
+    const sc = this.viewer.scrollContainer;
+    if (!sc) return false;
+    const box = sc.getBoundingClientRect();
+    for (const kw of this.getWords()) {
+      const r = kw.el?.getBoundingClientRect();
+      if (r && r.right > box.left && r.left < box.right && r.bottom > box.top && r.top < box.bottom) return true;
+    }
+    return false;
   }
 
   /** Page indices spanned by the native selection. @returns {Set<number>} */

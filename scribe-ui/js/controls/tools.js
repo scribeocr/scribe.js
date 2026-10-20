@@ -43,6 +43,21 @@ const TB_DELETE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 2
 const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="15.5" rx="2.5"/><path d="M9.5 4v15.5"/></svg>';
 
 /**
+ * @param {HTMLElement} el
+ * @param {string} label
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ */
+function nameForSelection(el, label, scribe) {
+  const sync = () => {
+    const name = scribe.hasTextSelection() ? `${label} selection` : label;
+    el.dataset.tip = name;
+    el.ariaLabel = name;
+  };
+  el.addEventListener('mouseenter', sync);
+  el.addEventListener('focus', sync);
+}
+
+/**
  * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment marks.
  * The toolbar DOM is built immediately. The selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -73,6 +88,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   let openCommentEditor = null;
 
   const highlightElem = makeIconButton('Highlight', barIcon('highlighter'));
+  nameForSelection(highlightElem, 'Highlight', scribe);
   const tipPath = highlightElem.querySelector('.scribe-hl-tip');
   const setTipColor = (c) => { if (tipPath && c) tipPath.style.fill = c; };
   setTipColor(highlightColor);
@@ -1075,6 +1091,7 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
       if (!redactMode) return;
       if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
       applyToSelection();
+  nameForSelection(toolbarElem, 'Redact', scribe);
     };
     document.addEventListener('mouseup', mouseupHandler);
 

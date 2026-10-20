@@ -1581,7 +1581,7 @@ export const contextMenuFunc = (viewer, event) => {
     viewer.contextMenuPointer = pointerRelative;
 
     // Copy, Highlight, and markup are read-only-safe, so none is gated on the editor-only enableCanvasSelection flag.
-    // Keyed on whether a selection exists, not its resolved words: resolving a whole-document selection would build every page's word objects just to grey out a menu item.
+    // Gating on getWordsUnderTextSelection() would build every page's word objects when the whole document is selected.
     const hasTextSelection = !viewer.state.layoutMode && viewer.hasTextSelection();
     const enableCopy = hasTextSelection;
     const enableHighlight = hasTextSelection && !!viewer._highlightColor;

@@ -35,6 +35,30 @@ import { DEBUG_RENDER_SCHED } from '../tess/TessScheduler.js';
 import { parIsFurniture } from '../js/objects/ocrObjects.js';
 
 /**
+ * @typedef {{left: number, right: number, top: number, bottom: number}} FillTerritory
+ */
+
+/**
+ * @typedef {Object} SelectionEngine
+ * @property {'custom'|'dom'} kind
+ * @property {() => void} install
+ * @property {() => void} clear
+ * @property {() => Array<UiOcrWord>} getWords
+ * @property {() => boolean} isInView
+ * @property {() => Set<number>} pages
+ * @property {() => void} [uninstall]
+ * @property {(speed: number) => void} [onScroll]
+ * @property {() => void} [endScrollHide]
+ * @property {() => void} [startInteractionHide]
+ * @property {(renderedLines: Array<OcrLine>, colExtents: Map<OcrLine, {left: number, right: number}>, pageDims: dims) => Map<OcrLine, FillTerritory>} [computeFillLimits]
+ * @property {(lineDiv: HTMLDivElement, lim: FillTerritory|undefined, angleAdjLine: {x: number, y: number}, selectText: boolean) => (hitL: number, hitR: number) => void} [makeLineFiller]
+ */
+
+/**
+ * @typedef {{kind: 'custom'|'dom', attach: (viewer: ScribeViewer) => SelectionEngine}} SelectionEngineRegistration
+ */
+
+/**
  * Per-viewer canvas controller. Owns its own scroll container, document, selection, and event state.
  * Multiple instances can coexist on the same page. Each operates independently.
  *
@@ -112,7 +136,7 @@ export class ScribeViewer {
     this.CanvasSelection = new CanvasSelection(this);
     /**
      * The selection engine, resolved by `_sel()` from what the build registered: the model-driven engine, the invisible-text DOM engine, or null when `enableHTMLOverlay` is off.
-     * @type {?{kind: string}}
+     * @type {?SelectionEngine}
      */
     this._selEngine = null;
     /** Latch for `_sel()`: the engine choice is made once, on first use after `init`. */
@@ -635,11 +659,11 @@ export class ScribeViewer {
   /**
    * The selection engines available to viewers, each registered by importing its module
    * (`js/selection/customSelectionEngine.js`, `js/selection/domSelectionEngine.js`), so a bundle ships only the engines it imports.
-   * @type {{dom: ?{kind: string, attach: (viewer: ScribeViewer) => any}, custom: ?{kind: string, attach: (viewer: ScribeViewer) => any}}}
+   * @type {{dom: ?SelectionEngineRegistration, custom: ?SelectionEngineRegistration}}
    */
   static _selectionEngines = { dom: null, custom: null };
 
-  /** @param {{kind: 'dom'|'custom', attach: (viewer: ScribeViewer) => any}} engine */
+  /** @param {SelectionEngineRegistration} engine */
   static registerSelectionEngine(engine) {
     ScribeViewer._selectionEngines[engine.kind] = engine;
   }
@@ -653,14 +677,14 @@ export class ScribeViewer {
 
   /**
    * This viewer's selection engine, resolved and installed on first use rather than at `init`.
-   * @returns {?any}
+   * @returns {?SelectionEngine}
    */
   _sel() {
     // Lazy because apps set enableHTMLOverlay/enableCanvasSelection after construction; the first render or pointer gesture is the first moment the choice is needed.
     if (!this._selEngineInit && this.elem) {
       this._selEngineInit = true;
       this._selEngine = this._resolveSelectionEngine();
-      /** @type {any} */ (this._selEngine)?.install?.();
+      this._selEngine?.install();
     }
     return this._selEngine;
   }
@@ -690,7 +714,7 @@ export class ScribeViewer {
   setSelectionEngineDebug(kind) {
     if (this._sel()?.kind === kind) return;
     this.clearTextSelection();
-    /** @type {any} */ (this._selEngine)?.uninstall?.();
+    this._selEngine?.uninstall?.();
     this.textSel?.destroy();
     this.textSel = null;
     this._selEngine = null;
@@ -1649,8 +1673,7 @@ export class ScribeViewer {
    * @returns {Set<number>}
    */
   _selectionPages() {
-    if (this.useCustomSelection) return /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).pages();
-    return /** @type {any} */ (this._sel())?.pages?.() ?? new Set();
+    return this._sel()?.pages() ?? new Set();
   }
 
   /**
@@ -1660,14 +1683,14 @@ export class ScribeViewer {
    */
   _updateScrollTextHide(speed) {
     // Only the DOM engine puts text in the DOM, so only it has word/filler elements to stop compositing mid-scroll.
-    /** @type {any} */ (this._sel())?.onScroll?.(speed);
+    this._sel()?.onScroll?.(speed);
   }
 
   /**
    * Restore every hidden text layer and reset the scroll gesture.
    */
   _endScrollTextHide() {
-    /** @type {any} */ (this._sel())?.endScrollHide?.();
+    this._sel()?.endScrollHide?.();
   }
 
   /**
@@ -1675,7 +1698,7 @@ export class ScribeViewer {
    * Without hiding them, a host interaction that moves or re-clips the content repaints every built word each frame.
    */
   startInteractionTextHide() {
-    /** @type {any} */ (this._sel())?.startInteractionHide?.();
+    this._sel()?.startInteractionHide?.();
   }
 
   /** Restore the text layers hidden by `startInteractionTextHide`; sharing the scroll-hide restore keeps either hide source from leaving a group stuck hidden. */
@@ -3506,24 +3529,24 @@ export class ScribeViewer {
 
   /** Drop the current text selection, whichever engine holds it. */
   clearTextSelection() {
-    if (this.useCustomSelection) /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).clear();
-    else /** @type {any} */ (this._sel())?.clear?.();
-  }
-
-  /** Whether any of this viewer's text is currently selected. */
-  hasTextSelection() {
-    if (this.useCustomSelection) return !(/** @type {NonNullable<typeof this.textSel>} */ (this.textSel).isEmpty());
-    // The native selection is window-global, so it only counts when it covers this viewer's own words.
-    return /** @type {any} */ (this._sel())?.hasSelection?.() ?? false;
+    this._sel()?.clear();
   }
 
   /**
-   * The overlay words under the current text selection, scoped to this viewer.
+   * Whether this viewer has a text selection at least partly inside the document viewport.
+   */
+  hasTextSelection() {
+    return this._sel()?.isInView() ?? false;
+  }
+
+  /**
+   * The overlay words under this viewer's text selection.
+   * Empty when the selection lies wholly outside the document viewport.
    * @returns {Array<UiOcrWord>}
    */
   getWordsUnderTextSelection() {
-    if (this.useCustomSelection) return /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).getWords();
-    return /** @type {any} */ (this._sel())?.getWords?.() ?? [];
+    const sel = this._sel();
+    return sel?.isInView() ? sel.getWords() : [];
   }
 
   getUiRegions() {
@@ -3830,7 +3853,7 @@ export class ScribeViewer {
 
     // Filler territories exist only for native selection, so only the DOM engine computes them.
     /** @type {Map<OcrLine, {left: number, right: number, top: number, bottom: number}>} */
-    const fillLimits = /** @type {any} */ (this._sel())?.computeFillLimits?.(renderedLines, colExtents, pageDims)
+    const fillLimits = this._sel()?.computeFillLimits?.(renderedLines, colExtents, pageDims)
       ?? new Map();
     // The custom engine owns hit-testing and selection, so its glyph spans must not be natively selectable.
     const selectText = this.state.displayMode === 'invis' && !this.useCustomSelection;
@@ -3874,7 +3897,7 @@ export class ScribeViewer {
       const lineWords = lineObj.words.filter((w) => w.text);
       const lim = fillLimits.get(lineObj);
       /** @type {(hitL: number, hitR: number) => void} */
-      const appendFiller = /** @type {any} */ (this._sel())?.makeLineFiller?.(lineDiv, lim, angleAdjLine, selectText)
+      const appendFiller = this._sel()?.makeLineFiller?.(lineDiv, lim, angleAdjLine, selectText)
         ?? (() => {});
       let lineWordIdx = 0;
 
@@ -4390,7 +4413,7 @@ export class ScribeViewer {
     this.stopAutoScroll(false);
     this._linkConfirmHide(false);
     this._endScrollTextHide();
-    /** @type {any} */ (this._selEngine)?.uninstall?.();
+    this._selEngine?.uninstall?.();
     this.textSel?.destroy();
     this._clearPageDom();
     if (this.scrollContainer && this.scrollContainer.parentNode) this.scrollContainer.parentNode.removeChild(this.scrollContainer);
