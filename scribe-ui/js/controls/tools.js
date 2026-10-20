@@ -341,6 +341,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     let cmtEditOrig = '';
     /** @type {?() => void} */
     let cmtDragEnd = null;
+    /** @type {?{dx: number, dy: number}} */
+    let cmtAnchorOff = null;
 
     const cmtGrow = () => { cmtText.style.height = 'auto'; cmtText.style.height = `${cmtText.scrollHeight}px`; };
 
@@ -376,6 +378,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       }
       const rect = cmtTarget.slot === 'line' ? kw.markupRectElem : kw.highlightRectElem;
       return rect ? [rect] : [];
+    };
+
+    const cmtAnchorRects = (target) => {
+      // A highlight's comment mark appears only once a comment is posted, so it is left out to keep the anchor still under an open card.
+      const noteMark = target.kind === 'highlight' ? null : cmtMarkEl(target);
+      return noteMark ? [noteMark.getBoundingClientRect()] : cmtBands().map((b) => b.getBoundingClientRect());
     };
 
     /** Ink-edge the pinned highlight's bands (the selected-object telltale the old card had). */
@@ -506,10 +514,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
      * @returns {boolean} false when the anchor has no on-screen rects, leaving the card unplaced.
      */
     const cmtPlace = (target) => {
-      // A highlight's comment mark is left out of the geometry: it appears only once a comment is posted,
-      // so including it would jump the card the moment the writer commits a line.
-      const noteMark = target.kind === 'highlight' ? null : cmtMarkEl(target);
-      const rects = noteMark ? [noteMark.getBoundingClientRect()] : cmtBands().map((b) => b.getBoundingClientRect());
+      const rects = cmtAnchorRects(target);
       if (rects.length === 0) return false;
       // Every band is kept clear, not just the last line, so a multi-line group is never straddled.
       const anchor = rects[rects.length - 1];
@@ -547,6 +552,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtCard.style.left = `${spot.left - base.left}px`;
       cmtCard.style.top = `${spot.top - base.top}px`;
       cmtCard.style.visibility = '';
+      cmtAnchorOff = { dx: spot.left - anchor.left, dy: spot.top - anchor.top };
       return true;
     };
 
@@ -866,6 +872,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       const h = (scribe.scrollContainer || editorHost).getBoundingClientRect();
       const dx = e.clientX - r.left;
       const dy = e.clientY - r.top;
+      const anchorRects = cmtTarget ? cmtAnchorRects(cmtTarget) : [];
+      const anchor = anchorRects[anchorRects.length - 1];
       // Measured-origin correction, as in cmtPlace: the host may not be the containing block.
       cmtCard.style.left = '0px';
       cmtCard.style.top = '0px';
@@ -875,6 +883,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         const top = Math.max(h.top + 4, Math.min(ev.clientY - dy, h.bottom - r.height - 4));
         cmtCard.style.left = `${left - base.left}px`;
         cmtCard.style.top = `${top - base.top}px`;
+        if (anchor) cmtAnchorOff = { dx: left - anchor.left, dy: top - anchor.top };
       };
       move(e);
       const up = () => {
@@ -922,11 +931,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     cmtPanelBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       if (!cmtTarget || !scribe._revealCommentInPanel) return;
-      const t = cmtTarget;
-      scribe._revealCommentInPanel(t.kind === 'highlight' ? t.kw : t.annot);
-      // Opening the sidebar tweens the document inset, shifting the anchor under the still-open card.
-      // Once that settles, follow the anchor to its new spot.
-      setTimeout(() => { if (cmtTarget === t && cmtPinned) cmtPlace(t); }, 230);
+      scribe._revealCommentInPanel(cmtTarget.kind === 'highlight' ? cmtTarget.kw : cmtTarget.annot);
     });
     cmtDelete.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -968,6 +973,27 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
     scribe.scrollContainer?.addEventListener('scroll', cmtScrollDismiss, { passive: true });
     document.addEventListener('wheel', cmtScrollDismiss, { passive: true, capture: true });
+    // A sidebar's glide or drag moves and resizes the document area on every frame, which shifts the pages under the card.
+    const cmtFollow = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
+      if (!cmtTarget || !cmtAnchorOff || cmtCard.style.display === 'none') return;
+      const rects = cmtAnchorRects(cmtTarget);
+      if (rects.length === 0) return;
+      const anchor = rects[rects.length - 1];
+      const r = cmtCard.getBoundingClientRect();
+      const view = (scribe.scrollContainer || editorHost).getBoundingClientRect();
+      const left = Math.max(view.left + 4, Math.min(anchor.left + cmtAnchorOff.dx, view.right - r.width - 4));
+      const top = Math.max(view.top + 4, Math.min(anchor.top + cmtAnchorOff.dy, view.bottom - r.height - 4));
+      // Only an overlap the clamp caused gets a fresh placement, so a card the user dragged onto its text keeps its spot.
+      if (left !== anchor.left + cmtAnchorOff.dx || top !== anchor.top + cmtAnchorOff.dy) {
+        const covers = left < Math.max(...rects.map((b) => b.right)) && left + r.width > Math.min(...rects.map((b) => b.left))
+          && top < Math.max(...rects.map((b) => b.bottom)) && top + r.height > Math.min(...rects.map((b) => b.top));
+        if (covers) { cmtPlace(cmtTarget); return; }
+      }
+      // Moved by the difference from where it sits, so the host need not be the containing block.
+      cmtCard.style.left = `${(parseFloat(cmtCard.style.left) || 0) + left - r.left}px`;
+      cmtCard.style.top = `${(parseFloat(cmtCard.style.top) || 0) + top - r.top}px`;
+    });
+    cmtFollow?.observe(scribe.scrollContainer || editorHost);
 
     openCommentEditor = (words) => {
       if (!words || words.length === 0) return;
@@ -1002,6 +1028,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       document.removeEventListener('mouseup', mouseupHandler);
       closePalette();
       commentObserver.disconnect();
+      cmtFollow?.disconnect();
       scribe.elem.removeEventListener('mouseover', cmtOver);
       scribe.elem.removeEventListener('mouseout', cmtOut);
       scribe.elem.removeEventListener('mousemove', cmtMove);
