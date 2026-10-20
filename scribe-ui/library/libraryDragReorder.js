@@ -22,6 +22,11 @@ export const FOLDER_OVER_TARGET_SCALE = 0.7;
 const OVER_TARGET_MS = 140;
 const LIFT_MS = 140;
 const LIFT_SCALE = 1.03;
+const CHIP_EDGE = 8;
+const CHIP_GRIP_TOP = 6;
+const GATHER_MS = 170;
+const FLICK_PX = 24;
+const FLICK_MS = 60;
 
 /**
  * A press on a card or row in the library grid, from the press through the drag it may become.
@@ -51,6 +56,10 @@ const LIFT_SCALE = 1.03;
  * @property {boolean} isTouch - Whether the press came from touch.
  * @property {number} grabDX - Offset of the grab point within the ghost.
  * @property {number} grabDY
+ * @property {boolean} chip - Whether the hand is the list's name chip (a document row's drag).
+ * @property {number} pageW - The chip's page size at rest.
+ * @property {number} pageH
+ * @property {boolean} overBar - Whether the pointer has reached the bar at any time during the drag.
  */
 
 /**
@@ -72,10 +81,12 @@ const LIFT_SCALE = 1.03;
  * @param {(keys: string[], destDir: string) => Promise<{moves: LibraryMove[], failed: string[]}>} deps.moveItems
  * @param {(dirPath: string, mini: boolean) => HTMLElement} deps.foldFor - A folder's fold at card or list size.
  * @param {(dirPath: string, moves: LibraryMove[], fromDir: string) => void} deps.finishLanding
+ * @param {(img: HTMLImageElement, relPath: string) => void} deps.thumbFor - Point an image at a document's thumbnail.
+ * @param {(reached: boolean, afterCrumbDrop: boolean) => void} deps.barApproach - Unfold a folded path when the pointer reaches the bar mid-drag, or fold it back when that drag ends.
  */
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
-  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding,
+  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
@@ -136,56 +147,214 @@ export function createDragReorder({
   };
 
   /**
-   * Build the drag ghost for a list row.
+   * Build the list's hand for a document row.
    * @param {CardDrag} d
-   * @param {DOMRect} rect - The pressed row's box.
    */
-  const buildRowGhost = (d, rect) => {
-    // On document.body the ghost sits outside the viewer root, so it carries the scope class, theme, and font itself for the scoped row rules and tokens to apply.
+  const buildChipGhost = (d) => {
     const ghost = document.createElement('div');
-    ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
+    ghost.className = 'scribe-library-ghost chip scribe-pdf-viewer';
     const theme = viewer.pdfViewerElem.getAttribute('data-theme');
     if (theme) ghost.setAttribute('data-theme', theme);
     ghost.style.fontFamily = getComputedStyle(viewer.pdfViewerElem).fontFamily;
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.height = `${rect.height}px`;
-    // A row's track widths and its dropped columns are both decided by the list host the ghost is about to leave behind.
-    // Neither follows a clone to document.body, so both are carried over from what the source row resolved to.
-    const rowStyle = getComputedStyle(d.cardElem);
-    const hiddenCells = [...d.cardElem.children].map((cell) => getComputedStyle(cell).display === 'none');
-    /** @param {HTMLElement} row */
-    const cloneRow = (row) => {
-      const clone = /** @type {HTMLElement} */ (row.cloneNode(true));
-      clone.classList.remove('dragging', 'selected', 'context');
-      clone.style.width = '100%';
-      clone.style.boxSizing = 'border-box';
-      if (rowStyle.display === 'grid') {
-        clone.style.gridTemplateColumns = rowStyle.gridTemplateColumns;
-        [...clone.children].forEach((cell, i) => {
-          if (hiddenCells[i]) /** @type {HTMLElement} */ (cell).style.display = 'none';
-        });
-      }
-      return clone;
-    };
-    for (let i = Math.min(d.fan.length - 1, 2); i >= 1; i--) {
-      const behind = elemOf(d.fan[i].relPath);
-      if (!behind) continue;
-      const plate = document.createElement('div');
-      plate.className = 'row-ghost';
-      plate.style.cssText = `height:${rect.height}px;transform:translate(${i * 6}px,${i * 6}px);z-index:${3 - i}`;
-      plate.appendChild(cloneRow(behind));
-      ghost.appendChild(plate);
-    }
-    const front = document.createElement('div');
-    front.className = 'row-ghost';
-    front.style.cssText = `height:${rect.height}px;z-index:3`;
-    front.appendChild(cloneRow(d.cardElem));
-    ghost.appendChild(front);
-    if (d.carried.length > 1) {
-      ghost.appendChild(countBadge(d.carried.length));
-    }
+    const rowImg = d.cardElem.querySelector(':scope > .nm > img');
+    // A portfolio's cover sheet is never shown, so a row whose image is hidden lifts a chip with the name alone.
+    const page = rowImg && rowImg.getBoundingClientRect().width > 0 ? document.createElement('img') : null;
+    if (page) {
+      page.className = 'pg';
+      page.alt = '';
+      page.draggable = false;
+      if (rowImg instanceof HTMLImageElement && rowImg.src) page.src = rowImg.src;
+      else thumbFor(page, d.relPath);
+    } else ghost.classList.add('nopage');
+    const col = document.createElement('span');
+    col.className = 'col';
+    const name = document.createElement('span');
+    name.className = 'n';
+    name.textContent = titleOf(d.relPath);
+    const dest = document.createElement('span');
+    dest.className = 'dest';
+    dest.appendChild(document.createElement('span'));
+    col.appendChild(name);
+    col.appendChild(dest);
+    if (page) ghost.appendChild(page);
+    ghost.appendChild(col);
+    if (d.carried.length > 1) ghost.appendChild(countBadge(d.carried.length));
     document.body.appendChild(ghost);
+    d.pageW = page ? page.offsetWidth : 0;
+    d.pageH = page ? page.offsetHeight : 0;
     return ghost;
+  };
+
+  /**
+   * Set where the pointer holds the chip.
+   * @param {CardDrag} d
+   */
+  const chipGrip = (d) => {
+    const ghost = /** @type {HTMLElement} */ (d.ghost);
+    const handW = ghost.offsetWidth;
+    const title = /** @type {HTMLElement} */ (d.cardElem.querySelector('.nm .t'));
+    const range = document.createRange();
+    range.selectNodeContents(title);
+    const tr = range.getBoundingClientRect();
+    const rowImg = d.cardElem.querySelector(':scope > .nm > img');
+    const pr = rowImg && rowImg.getBoundingClientRect().width > 0 ? rowImg.getBoundingClientRect() : null;
+    const hr = ghost.getBoundingClientRect();
+    const chipPage = ghost.querySelector('img.pg');
+    const cr = chipPage ? chipPage.getBoundingClientRect() : null;
+    const pageL = cr ? cr.left - hr.left : 0;
+    const pageR = cr ? pageL + cr.width : 0;
+    const textL = cr ? pageR + 10 : /** @type {HTMLElement} */ (ghost.querySelector('.n')).getBoundingClientRect().left - hr.left;
+    const textR = handW - 12;
+    const x = d.startX;
+    const leftEdge = pr ? pr.left : tr.left;
+    let ox;
+    if (x > tr.right) ox = handW - CHIP_EDGE;
+    else if (x < leftEdge) ox = CHIP_EDGE;
+    else if (pr && x <= pr.right) ox = pageL + ((x - pr.left) / pr.width) * (pageR - pageL);
+    else if (x < tr.left) ox = pageR + ((x - (pr ? pr.right : tr.left)) / Math.max(1, tr.left - (pr ? pr.right : tr.left))) * (textL - pageR);
+    else ox = textL + ((x - tr.left) / Math.max(1, tr.width)) * (textR - textL);
+    d.grabDX = Math.max(CHIP_EDGE, Math.min(handW - CHIP_EDGE, ox));
+    d.grabDY = CHIP_GRIP_TOP;
+  };
+
+  /**
+   * The chip's place with its page on the row's page, or its name on the row's name when the row shows no page.
+   * @param {CardDrag} d
+   */
+  const chipHome = (d) => {
+    const ghost = /** @type {HTMLElement} */ (d.ghost);
+    const page = ghost.querySelector('img.pg');
+    const hr = ghost.getBoundingClientRect();
+    const rowImg = d.cardElem.querySelector(':scope > .nm > img');
+    if (page && rowImg && rowImg.getBoundingClientRect().width > 0) {
+      const cr = page.getBoundingClientRect();
+      const r = rowImg.getBoundingClientRect();
+      return {
+        left: r.left - (cr.left - hr.left), top: r.top - (cr.top - hr.top), pageW: r.width, pageH: r.height, gap: 12,
+      };
+    }
+    const nameL = /** @type {HTMLElement} */ (ghost.querySelector('.n')).getBoundingClientRect().left - hr.left;
+    const r = /** @type {HTMLElement} */ (d.cardElem.querySelector('.nm .t')).getBoundingClientRect();
+    return {
+      left: r.left - nameL, top: r.top + r.height / 2 - hr.height / 2, pageW: d.pageW, pageH: d.pageH, gap: page ? 10 : 0,
+    };
+  };
+
+  /**
+   * Animate the chip's lift out of its row.
+   * @param {CardDrag} d
+   */
+  const gatherIn = (d) => {
+    const ghost = /** @type {HTMLElement} */ (d.ghost);
+    if (reducedMotion()) {
+      ghost.style.width = `${ghost.offsetWidth}px`;
+      return;
+    }
+    const page = ghost.querySelector('img.pg');
+    const home = chipHome(d);
+    const cs = getComputedStyle(ghost);
+    const plate = { backgroundColor: cs.backgroundColor, borderColor: cs.borderTopColor, boxShadow: cs.boxShadow };
+    if (page) {
+      page.animate([{ width: `${home.pageW}px`, height: `${home.pageH}px` }, { width: `${d.pageW}px`, height: `${d.pageH}px` }], { duration: GATHER_MS, easing: 'ease' });
+      ghost.animate([{ columnGap: `${home.gap}px` }, { columnGap: cs.columnGap }], { duration: GATHER_MS, easing: 'ease' });
+    }
+    ghost.animate([{ backgroundColor: 'transparent', borderColor: 'transparent', boxShadow: 'none' }, plate], { duration: GATHER_MS, easing: 'ease' });
+    const t0 = performance.now();
+    /** @param {number} now */
+    const step = (now) => {
+      if (drag !== d || !d.ghost) return;
+      const p = Math.max(0, Math.min(1, (now - t0) / GATHER_MS));
+      const e = 1 - (1 - p) ** 3;
+      const curLeft = d.lastX - d.grabDX;
+      const curTop = d.lastY - d.grabDY;
+      ghost.style.transform = `translate(${(home.left - curLeft) * (1 - e)}px, ${(home.top - curTop) * (1 - e)}px)`;
+      if (p < 1) {
+        requestAnimationFrame(step);
+        return;
+      }
+      ghost.style.transform = '';
+      // Pinned once the page is at rest, so the destination line opening under the name never widens the chip.
+      ghost.style.width = `${ghost.offsetWidth}px`;
+    };
+    requestAnimationFrame(step);
+  };
+
+  /**
+   * Animate the chip back into its row when a drag ends without a drop.
+   * @param {CardDrag} d
+   */
+  const gatherOut = (d) => {
+    const ghost = /** @type {HTMLElement} */ (d.ghost);
+    const row = d.cardElem;
+    const nm = /** @type {?HTMLElement} */ (row.querySelector(':scope > .nm'));
+    const release = () => {
+      ghost.remove();
+      if (nm) nm.style.opacity = '';
+      for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
+    };
+    if (reducedMotion()) {
+      release();
+      return Promise.resolve();
+    }
+    const page = ghost.querySelector('img.pg');
+    const r = ghost.getBoundingClientRect();
+    const pr = page ? page.getBoundingClientRect() : null;
+    const cs = getComputedStyle(ghost);
+    const from = {
+      bg: cs.backgroundColor, bd: cs.borderTopColor, sh: cs.boxShadow, gap: cs.columnGap, w: pr ? pr.width : 0, h: pr ? pr.height : 0,
+    };
+    for (const a of ghost.getAnimations({ subtree: true })) a.cancel();
+    ghost.classList.remove('has-dest');
+    ghost.style.transform = 'none';
+    ghost.style.left = `${r.left}px`;
+    ghost.style.top = `${r.top}px`;
+    // The chip may widen as its page grows on the way back, but never shrink.
+    ghost.style.width = '';
+    ghost.style.minWidth = `${r.width}px`;
+    const home = chipHome(d);
+    if (nm) nm.style.opacity = '0';
+    const gone = { backgroundColor: 'transparent', borderColor: 'transparent', boxShadow: 'none' };
+    const anims = [
+      ghost.animate([{ transform: 'none' }, { transform: `translate(${home.left - r.left}px, ${home.top - r.top}px)` }], { duration: GATHER_MS, easing: 'ease', fill: 'forwards' }),
+      ghost.animate([{ backgroundColor: from.bg, borderColor: from.bd, boxShadow: from.sh }, { ...gone, offset: 0.7 }, gone], { duration: GATHER_MS, easing: 'ease', fill: 'forwards' }),
+    ];
+    if (page) {
+      anims.push(page.animate([{ width: `${from.w}px`, height: `${from.h}px` }, { width: `${home.pageW}px`, height: `${home.pageH}px` }], { duration: GATHER_MS, easing: 'ease', fill: 'forwards' }));
+      anims.push(ghost.animate([{ columnGap: from.gap }, { columnGap: `${home.gap}px` }], { duration: GATHER_MS, easing: 'ease', fill: 'forwards' }));
+    }
+    return Promise.all(anims.map((a) => a.finished)).then(() => {
+      release();
+      for (const cell of row.querySelectorAll(':scope > :not(.nm)')) cell.animate([{ opacity: 0.3 }, { opacity: 1 }], { duration: 100, easing: 'ease' });
+    }, release);
+  };
+
+  /**
+   * Flick the chip toward the drop target as it fades out.
+   * @param {CardDrag} d
+   * @param {HTMLElement} target
+   */
+  const flickInto = (d, target) => {
+    const ghost = /** @type {HTMLElement} */ (d.ghost);
+    if (reducedMotion()) {
+      ghost.remove();
+      return Promise.resolve();
+    }
+    const pr = /** @type {HTMLElement} */ (ghost.querySelector('img.pg') ?? ghost.querySelector('.n')).getBoundingClientRect();
+    const icon = target.querySelector('.scribe-library-fold') ?? target.querySelector('.fi');
+    let aimX;
+    if (icon) {
+      const ir = icon.getBoundingClientRect();
+      aimX = ir.left + ir.width / 2;
+    } else if (target.classList.contains('scribe-library-crumb')) aimX = target.getBoundingClientRect().left + 16;
+    else aimX = (target.querySelector('.nm .t') ?? target).getBoundingClientRect().left + 8;
+    const away = aimX - (pr.left + pr.width / 2);
+    const dx = Math.abs(away) > FLICK_PX ? Math.sign(away) * FLICK_PX : away;
+    // A drop during the lift composes the flick with the gather's offset rather than snapping the chip to the pointer.
+    const cur = getComputedStyle(ghost).transform;
+    const base = cur === 'none' ? '' : ` ${cur}`;
+    const anim = ghost.animate([{ transform: cur, opacity: 1 }, { transform: `translate(${dx}px, 0)${base}`, opacity: 0 }], { duration: FLICK_MS, easing: 'ease', fill: 'forwards' });
+    const done = () => ghost.remove();
+    return anim.finished.then(done, done);
   };
 
   /**
@@ -255,9 +424,9 @@ export function createDragReorder({
     if (d.isDir) {
       d.ghost = buildFoldGhost(d);
     } else if (d.isRow) {
-      d.ghost = buildRowGhost(d, rect);
-      d.grabDX = d.startX - rect.left;
-      d.grabDY = d.startY - rect.top;
+      d.chip = true;
+      d.ghost = buildChipGhost(d);
+      chipGrip(d);
     } else {
       const thumb = d.cardElem.querySelector('img.thumb');
       const tr = thumb && thumb.getBoundingClientRect().width > 0 ? thumb.getBoundingClientRect() : rect;
@@ -277,9 +446,11 @@ export function createDragReorder({
       }
     }
     if (!d.isDir) d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
-    d.ghost.style.transition = reducedMotion() ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
+    // The chip's position is driven per frame while it gathers, which a transition on its transform would smear.
+    d.ghost.style.transition = reducedMotion() || d.chip ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
     for (const p of d.carried) elemOf(p)?.classList.add('dragging');
     surface.classList.add('card-drag');
+    if (d.chip) surface.classList.add('chip-drag');
     if (d.canReorder && mainGridElem) {
       d.line = document.createElement('div');
       d.line.className = 'scribe-library-insert-line';
@@ -287,6 +458,7 @@ export function createDragReorder({
       updateGap(d, true);
     }
     positionGhost(d);
+    if (d.chip) gatherIn(d);
     updateDropTarget(d);
   };
 
@@ -304,7 +476,19 @@ export function createDragReorder({
    */
   const updateDropTarget = (d) => {
     const under = document.elementFromPoint(d.lastX, d.lastY);
-    const target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
+    let target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
+    if (!target && viewer.toolbarElem) {
+      const bar = viewer.toolbarElem.getBoundingClientRect();
+      if (d.lastY >= bar.top && d.lastY <= bar.bottom && d.lastX >= bar.left && d.lastX <= bar.right) {
+        for (const crumb of viewer.toolbarElem.querySelectorAll('.scribe-library-crumb[data-dir-target]')) {
+          const r = crumb.getBoundingClientRect();
+          if (r.width && d.lastX >= r.left - 3 && d.lastX <= r.right + 3) {
+            target = /** @type {HTMLElement} */ (crumb);
+            break;
+          }
+        }
+      }
+    }
     const pressed = d.isDir ? d.relPath.slice(0, -1) : d.relPath;
     const cut = pressed.lastIndexOf('/');
     const parent = cut < 0 ? '' : pressed.slice(0, cut);
@@ -327,7 +511,13 @@ export function createDragReorder({
           previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
         }
       }
-      if (d.ghost) d.ghost.style.transform = d.dropElem ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
+      if (d.ghost && !d.chip) d.ghost.style.transform = d.dropElem ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
+      if (d.ghost && d.chip) {
+        const up = d.dropElem && !d.dropElem.classList.contains('folder');
+        const line = /** @type {HTMLElement} */ (d.ghost.querySelector('.dest > span'));
+        if (up) line.textContent = `Move to ${(d.dropElem?.textContent ?? '').trim()}`;
+        d.ghost.classList.toggle('has-dest', !!up);
+      }
       if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
@@ -385,6 +575,13 @@ export function createDragReorder({
     }
     positionGhost(d);
     updateGap(d);
+    if (!d.overBar && viewer.toolbarElem) {
+      const bar = viewer.toolbarElem.getBoundingClientRect();
+      if (e.clientY >= bar.top - 2 && e.clientY <= bar.bottom + 2 && e.clientX >= bar.left && e.clientX <= bar.right) {
+        d.overBar = true;
+        barApproach(true, false);
+      }
+    }
     updateDropTarget(d);
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > MENU_SLOP) d.moved = true;
     const bodyRect = body.getBoundingClientRect();
@@ -547,6 +744,10 @@ export function createDragReorder({
       release();
       return;
     }
+    if (d.chip) {
+      await gatherOut(d);
+      return;
+    }
     if (d.isRow || d.isDir) {
       const home = d.isDir ? (d.cardElem.querySelector('.scribe-library-fold') ?? d.cardElem) : d.cardElem;
       await glideRowGhost(d, home.getBoundingClientRect(), false, REORDER_SLIDE_MS);
@@ -591,7 +792,9 @@ export function createDragReorder({
     const spotOf = landingSpots(target, hashByPath);
     /** @type {Promise<void>} */
     let flight;
-    if (d.isRow || d.isDir) {
+    if (d.chip) {
+      flight = flickInto(d, target);
+    } else if (d.isRow || d.isDir) {
       const spot = spotOf(d.relPath);
       flight = glideRowGhost(d, spot.to, true, FOLDER_FLY_MS);
     } else {
@@ -677,7 +880,8 @@ export function createDragReorder({
     document.removeEventListener('touchmove', blockTouchScroll);
     if (d.rafId) cancelAnimationFrame(d.rafId);
     d.line?.remove();
-    surface.classList.remove('card-drag');
+    surface.classList.remove('card-drag', 'chip-drag');
+    if (d.overBar) barApproach(false, commit && !!d.dropElem && d.dropDir != null && !d.dropElem.classList.contains('folder'));
     if (!d.started) {
       if (renderPending) {
         renderPending = false;
@@ -759,6 +963,10 @@ export function createDragReorder({
       isTouch,
       grabDX: 0,
       grabDY: 0,
+      chip: false,
+      pageW: 0,
+      pageH: 0,
+      overBar: false,
     };
     if (isTouch) {
       drag.holdTimer = window.setTimeout(() => {

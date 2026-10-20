@@ -189,9 +189,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* Only the field yields under bar pressure, so the rungs below decide what else goes. */
+/* Only the field yields under bar pressure, so syncCrumbs decides what else goes. */
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 auto; width: 320px; min-width: 106px; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 auto; width: 320px; min-width: 180px; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
@@ -263,11 +263,19 @@ const addLibraryStyles = () => {
 @media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-card.dragging::before, .scribe-pdf-viewer .scribe-library-card.folder.dragging .fstrip::before { transition: none; } }
 .scribe-pdf-viewer .scribe-library-row.dragging { opacity: .3; }
 .scribe-library-ghost { position: fixed; z-index: 9999; pointer-events: none; font-size: 14px; color: var(--scribe-ink); }
-.scribe-library-ghost .row-ghost { position: absolute; left: 0; top: 0; width: 100%; box-sizing: border-box; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; }
-.scribe-library-ghost .row-ghost .scribe-library-row { border-bottom: none; }
 .scribe-library-ghost .fold-ghost { position: absolute; left: 0; top: 0; display: block; }
 .scribe-library-ghost .fold-ghost > .scribe-library-fold { filter: drop-shadow(0 10px 18px rgba(0, 0, 0, .38)); }
 .scribe-library-ghost .fold-label { position: absolute; left: 50%; transform: translateX(-50%); width: max-content; max-width: 190px; padding: 2px 8px; border-radius: 5px; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 12.5px; font-weight: 600; line-height: 18px; box-shadow: 0 1px 2px rgba(20, 30, 60, .14), 0 3px 10px rgba(20, 30, 60, .18); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; z-index: 5; }
+.scribe-library-ghost.chip { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; max-width: 260px; padding: 2px 12px 2px 3px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line-strong); border-radius: 7px; box-shadow: 0 6px 18px rgba(20, 30, 60, .22); white-space: nowrap; }
+.scribe-library-ghost.chip[data-theme="dark"] { box-shadow: 0 6px 18px rgba(0, 0, 0, .55); }
+.scribe-library-ghost.chip img.pg { width: 26px; height: 34px; box-sizing: border-box; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 2px; background: #fff; flex: none; }
+.scribe-library-ghost.chip.nopage { padding-left: 12px; }
+.scribe-library-ghost.chip .col { display: flex; flex-direction: column; min-width: 0; }
+.scribe-library-ghost.chip .n { font-size: 13px; font-weight: 600; line-height: 18px; overflow: hidden; text-overflow: ellipsis; }
+.scribe-library-ghost.chip .dest { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 120ms ease; font-size: 12px; font-weight: 500; line-height: 16px; color: var(--scribe-accent); }
+.scribe-library-ghost.chip .dest > span { min-height: 0; overflow: hidden; text-overflow: ellipsis; }
+.scribe-library-ghost.chip.has-dest .dest { grid-template-rows: 1fr; }
+@media (prefers-reduced-motion: reduce) { .scribe-library-ghost.chip .dest { transition: none; } }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-marquee { position: absolute; z-index: 5; pointer-events: none; box-sizing: border-box; background: color-mix(in srgb, var(--scribe-accent) 20%, transparent); border: 1px solid var(--scribe-accent); }
 /* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
@@ -425,7 +433,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-crumb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
-.scribe-pdf-viewer .scribe-library-crumbs .cur { padding-left: 7px; overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-crumbs .cur { flex: 0 1 auto; padding-left: 7px; overflow: hidden; text-overflow: ellipsis; }
 .scribe-pdf-viewer .scribe-library-crumbs .scribe-library-crumb-ghost { position: absolute; margin: 0; box-sizing: border-box; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; justify-content: center; align-items: center; min-height: 89px; box-sizing: border-box; padding: 11px 10px 10px; }
 .scribe-pdf-viewer .scribe-library-fold { position: relative; display: block; flex: none; --fold-back: color-mix(in srgb, var(--scribe-ink) 12%, var(--scribe-surface)); --fold-front: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-surface)); --fold-line: color-mix(in srgb, var(--scribe-ink) 22%, transparent); }
@@ -475,6 +483,11 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.folder.vacated .title, .scribe-pdf-viewer .scribe-library-row.folder.vacated .t { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-row.folder.vacated { cursor: default; }
 .scribe-pdf-viewer .scribe-library-row.folder.vacated:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-row.vacated.doc { cursor: default; }
+.scribe-pdf-viewer .scribe-library-row.vacated.doc:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-row.vacated.doc .nm img { opacity: .35; }
+.scribe-pdf-viewer .scribe-library-row.vacated.doc .nm .t { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-row.vacated.doc .nm .cnt { margin-left: 8px; }
 .scribe-pdf-viewer .scribe-library-picker { position: absolute; z-index: 66; width: 300px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; line-height: 18px; color: var(--scribe-ink); -webkit-user-select: none; user-select: none; }
 .scribe-pdf-viewer .scribe-library-picker .pk-head { display: flex; align-items: center; gap: 8px; padding: 9px 8px 7px 12px; cursor: grab; border-bottom: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-picker .pk-head.dragging { cursor: grabbing; }
@@ -518,6 +531,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
 /* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
 .scribe-pdf-viewer .scribe-library-surface.card-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag * { cursor: grabbing; }
+.scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag * { cursor: default; }
 /* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
 .scribe-pdf-viewer .scribe-library-pv-head { container: scribe-pv / inline-size; }
 @container scribe-pv (max-width: 472px) {
@@ -530,22 +544,12 @@ const addLibraryStyles = () => {
 @container scribe-pv (max-width: 352px) {
   .scribe-pdf-viewer .scribe-library-pv-nav { display: none; }
 }
-.scribe-pdf-viewer .scribe-library-bar { container: scribe-bar / inline-size; }
-@container scribe-bar (max-width: 820px) {
-  .scribe-pdf-viewer .scribe-library-sort-lbl { display: none; }
-}
-@container scribe-bar (max-width: 730px) {
-  .scribe-pdf-viewer .scribe-library-add-lbl { display: none; }
-  .scribe-pdf-viewer .scribe-library-new svg.chev { display: none; }
-}
-@container scribe-bar (max-width: 560px) {
-  .scribe-pdf-viewer .scribe-library-bar-controls { gap: 5px; }
-  .scribe-pdf-viewer .scribe-library-bar-controls .vertical-separator { display: none; }
-  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { min-width: 84px; }
-  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field > svg { display: none; }
-  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-seg button { width: 26px; }
-  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-hbtn { padding: 0 7px; }
-}
+.scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-sort-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-add-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only svg.chev { display: none; }
+.scribe-pdf-viewer .scribe-library-hbtn.icon-only { padding: 0 5px; }
+.scribe-pdf-viewer .scribe-library-bar-controls[hidden], .scribe-pdf-viewer .scribe-library-bar-controls > [hidden] { display: none !important; }
+.scribe-pdf-viewer .scribe-library-menu-head { padding: 5px 10px 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--scribe-ink-3); user-select: none; }
+.scribe-pdf-viewer .scribe-library-more-menu .scribe-library-menu-item.ic svg { visibility: visible; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.popped { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 260px; min-width: 0; z-index: 5; box-shadow: var(--scribe-menu-shadow); }
 .scribe-pdf-viewer .scribe-library-card .meta.fb { opacity: 1; }
 .scribe-pdf-viewer .scribe-library-surface .meta .err, .scribe-pdf-viewer .scribe-library-surface .m2 .err, .scribe-pdf-viewer .scribe-library-row .err { color: var(--scribe-danger); }
 .scribe-pdf-viewer .scribe-library-surface .undo { font: inherit; font-size: 12px; font-weight: 600; line-height: inherit; color: var(--scribe-accent); background: none; border: none; padding: 0 5px; margin: 0; border-radius: 4px; cursor: pointer; vertical-align: baseline; }
@@ -985,6 +989,28 @@ export function createLibraryInstance(viewer, opts) {
   refreshBtn.setAttribute('aria-label', 'Refresh folder');
   if (!readOnly) header.appendChild(refreshBtn);
 
+  const findBtn = document.createElement('button');
+  findBtn.className = 'scribe-library-hicon';
+  findBtn.innerHTML = slotIcon('search22');
+  findBtn.title = 'Search or filter by name';
+  findBtn.setAttribute('aria-label', 'Search or filter by name');
+  findBtn.hidden = true;
+  const moreWrap = document.createElement('span');
+  moreWrap.className = 'scribe-library-sort scribe-library-more';
+  moreWrap.hidden = true;
+  const moreBtn = document.createElement('button');
+  moreBtn.className = 'scribe-library-hicon';
+  moreBtn.innerHTML = slotIcon('more22');
+  moreBtn.title = 'More';
+  moreBtn.setAttribute('aria-label', 'More controls');
+  moreBtn.setAttribute('aria-haspopup', 'menu');
+  const moreMenu = document.createElement('div');
+  moreMenu.className = 'scribe-library-menu scribe-library-more-menu';
+  moreMenu.setAttribute('role', 'menu');
+  moreMenu.style.display = 'none';
+  moreWrap.appendChild(moreBtn);
+  moreWrap.appendChild(moreMenu);
+
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
   fileInput.multiple = true;
@@ -1039,7 +1065,10 @@ export function createLibraryInstance(viewer, opts) {
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
     // A read-only store (a portfolio) has nothing to add or rescan, so its bar ends at the preview toggle.
-    for (const el of readOnly ? [searchField, viewSeg, sortWrap, previewBtn] : [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) barControls.appendChild(el);
+    const barParts = readOnly
+      ? [searchField, findBtn, viewSeg, sortWrap, previewBtn, moreWrap]
+      : [searchField, findBtn, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn, moreWrap];
+    for (const el of barParts) barControls.appendChild(el);
     // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
@@ -1745,6 +1774,7 @@ export function createLibraryInstance(viewer, opts) {
     viewer.toolbarElemEnd.style.flex = '0 1 auto';
     viewer.toolbarElemEnd.style.minWidth = '0';
     viewer.toolbarElem?.classList.add('scribe-library-bar');
+    syncCrumbs();
   };
   const swapBarOut = () => {
     if (!barSwapped) return;
@@ -1954,12 +1984,16 @@ export function createLibraryInstance(viewer, opts) {
     }
     return items;
   };
-  /** Rebuild the header breadcrumbs for `currentDir`; ancestors are links and drag-drop targets. */
-  const syncCrumbs = () => {
-    for (const a of crumbsElem.getAnimations({ subtree: true })) a.finish();
-    for (const ghost of crumbsElem.querySelectorAll('.scribe-library-crumb-ghost')) ghost.remove();
-    const before = crumbFadeDue && visible && !window.matchMedia('(prefers-reduced-motion: reduce)').matches ? measureCrumbs() : null;
-    crumbFadeDue = false;
+  // --- The bar under pressure --------------------------------------------------
+
+  /** The search field's CSS min-width. */
+  const FIELD_FLOOR = 180;
+  const CUR_FLOOR = 127;
+  let crumbHidden = 0;
+  let dragUnfolded = false;
+
+  /** Rebuild the header breadcrumbs for `currentDir` at the current fold. */
+  const buildCrumbs = () => {
     crumbsElem.replaceChildren();
     midDropdown?.destroy();
     midDropdown = null;
@@ -1982,28 +2016,29 @@ export function createLibraryInstance(viewer, opts) {
     } else if (!segs.length) {
       crumbsElem.appendChild(document.createTextNode(rootLabel));
     } else {
-      const rootBtn = document.createElement('button');
-      rootBtn.className = 'scribe-library-crumb';
-      rootBtn.textContent = rootLabel;
-      rootBtn.dataset.dirTarget = '';
-      rootBtn.addEventListener('click', () => openDir(''));
-      crumbsElem.appendChild(rootBtn);
       const addSep = () => {
         const sep = document.createElement('span');
         sep.className = 'sep';
         sep.textContent = '›';
         crumbsElem.appendChild(sep);
       };
-      // Collapsed ancestors stop being drop targets, the tradeoff for bounding the crumb width at any depth.
-      const hidden = segs.length >= 3 ? segs.length - 2 : 0;
-      if (hidden) {
-        addSep();
+      const hidden = Math.min(crumbHidden, segs.length);
+      /** @type {Array<{label: string, path: string}>} */
+      const folded = hidden ? [{ label: rootLabel, path: '' }, ...segs.slice(0, hidden - 1).map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') }))] : [];
+      if (!hidden) {
+        const rootBtn = document.createElement('button');
+        rootBtn.className = 'scribe-library-crumb';
+        rootBtn.textContent = rootLabel;
+        rootBtn.dataset.dirTarget = '';
+        rootBtn.addEventListener('click', () => openDir(''));
+        crumbsElem.appendChild(rootBtn);
+      } else {
         const midWrap = document.createElement('span');
         midWrap.className = 'scribe-library-sort';
         const midBtn = document.createElement('button');
         midBtn.className = 'scribe-library-crumb';
         midBtn.textContent = '…';
-        midBtn.title = segs.slice(0, hidden).join(' › ');
+        midBtn.title = folded.map((f) => f.label).join(' › ');
         midBtn.setAttribute('aria-label', 'Hidden folders');
         midBtn.setAttribute('aria-haspopup', 'menu');
         const midMenu = document.createElement('div');
@@ -2021,15 +2056,14 @@ export function createLibraryInstance(viewer, opts) {
           rows: '.scribe-library-menu-item',
         });
         midDropdown = dropdown;
-        for (let i = 0; i < hidden; i++) {
+        for (const { label, path } of folded) {
           const item = document.createElement('div');
           item.className = 'scribe-library-menu-item';
           item.setAttribute('role', 'menuitem');
           item.innerHTML = FOLDER_SVG;
           // The shared folder glyph carries inline 100% sizing for card use, which would balloon in a menu row.
           /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
-          item.appendChild(document.createTextNode(segs[i]));
-          const path = segs.slice(0, i + 1).join('/');
+          item.appendChild(document.createTextNode(label));
           item.addEventListener('click', () => {
             dropdown.close();
             openDir(path);
@@ -2041,13 +2075,14 @@ export function createLibraryInstance(viewer, opts) {
         midWrap.appendChild(midMenu);
         crumbsElem.appendChild(midWrap);
       }
-      for (let i = hidden; i < segs.length; i++) {
+      for (let i = Math.max(0, hidden - 1); i < segs.length; i++) {
         addSep();
         if (i === segs.length - 1) {
           const cur = document.createElement('span');
           cur.className = 'cur';
           cur.textContent = segs[i];
           crumbsElem.appendChild(cur);
+          cur.style.minWidth = `${Math.min(CUR_FLOOR, cur.scrollWidth)}px`;
         } else {
           const btn = document.createElement('button');
           btn.className = 'scribe-library-crumb';
@@ -2060,8 +2095,14 @@ export function createLibraryInstance(viewer, opts) {
       }
     }
     crumbsDir = currentDir;
-    if (!before) return;
+  };
 
+  /**
+   * Fade the crumbs that moved between `before` and the crumbs as built now.
+   * The current name slides instead when only its place changed.
+   * @param {ReturnType<typeof measureCrumbs>} before
+   */
+  const crumbsTransition = (before) => {
     const after = measureCrumbs();
     const beforeBy = new Map(before.map((it) => [it.key, it]));
     const afterBy = new Map(after.map((it) => [it.key, it]));
@@ -2069,8 +2110,14 @@ export function createLibraryInstance(viewer, opts) {
     // Names move only when ancestors collapse into the hidden-folders crumb.
     /** @param {{textLeft: number}} a @param {{textLeft: number} | undefined} b */
     const stays = (a, b) => !!b && Math.abs(a.textLeft - b.textLeft) <= 1;
-    const leaving = before.filter((it) => !stays(it, afterBy.get(it.key)));
-    const coming = after.filter((it) => !stays(it, beforeBy.get(it.key)));
+    const curKey = `dir:${crumbsDir}`;
+    const curWas = beforeBy.get(curKey);
+    const curNow = afterBy.get(curKey);
+    const isCur = (/** @type {{node: Node}} */ it) => it.node instanceof Element && it.node.classList.contains('cur');
+    const slideCur = !!curWas && !!curNow && isCur(curWas) && isCur(curNow) && Math.abs(curWas.left - curNow.left) > 1;
+    if (slideCur) /** @type {Element} */ (curNow.node).animate([{ transform: `translateX(${curWas.left - curNow.left}px)` }, { transform: 'none' }], { duration: 140, easing: 'ease' });
+    const leaving = before.filter((it) => !(slideCur && it.key === curKey) && !stays(it, afterBy.get(it.key)));
+    const coming = after.filter((it) => !(slideCur && it.key === curKey) && !stays(it, beforeBy.get(it.key)));
     for (const it of after) {
       const was = beforeBy.get(it.key);
       if (!stays(it, was) || !was) continue;
@@ -2107,6 +2154,236 @@ export function createLibraryInstance(viewer, opts) {
     for (const it of coming) {
       if (it.node instanceof Element) it.node.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: through ? 80 : 40, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'backwards' });
     }
+  };
+
+  const barRoom = () => {
+    const bar = /** @type {HTMLElement} */ (viewer.toolbarElem);
+    const menu = viewer._appMenu;
+    const menuW = menu && menu.menuWrap.parentElement === viewer.toolbarElemStart ? menu.menuWrap.getBoundingClientRect().width : 0;
+    const corner = viewer.toolbarElemEnd?.querySelector('.scribe-shell-corner');
+    const cornerW = corner ? corner.getBoundingClientRect().width : 0;
+    return bar.clientWidth - menuW - cornerW - 8 - 12;
+  };
+  const crumbsNeed = () => {
+    let w = 0;
+    for (const el of crumbsElem.children) {
+      const c = /** @type {HTMLElement} */ (el);
+      if (c.classList.contains('scribe-library-crumb-ghost')) continue;
+      w += (c.classList.contains('cur') ? Math.min(CUR_FLOOR, c.scrollWidth) : c.getBoundingClientRect().width) + 1;
+    }
+    return w + 1 + 8;
+  };
+  const controlsNeed = () => {
+    const host = /** @type {HTMLElement} */ (barControls);
+    if (host.hidden) return 0;
+    let w = 0;
+    let n = 0;
+    for (const el of host.children) {
+      const c = /** @type {HTMLElement} */ (el);
+      if (c.hidden || (c === searchField && c.classList.contains('popped'))) continue;
+      n += 1;
+      w += c === searchField ? FIELD_FLOOR : c.getBoundingClientRect().width;
+    }
+    return w + Math.max(0, n - 1) * 8;
+  };
+  /** Fit the path and the controls to the room the bar has. */
+  const syncCrumbs = () => {
+    for (const a of crumbsElem.getAnimations({ subtree: true })) a.finish();
+    for (const ghost of crumbsElem.querySelectorAll('.scribe-library-crumb-ghost')) ghost.remove();
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const before = visible && !reduced ? measureCrumbs() : null;
+    const due = crumbFadeDue;
+    crumbFadeDue = false;
+    const prevHidden = crumbHidden;
+    const segs = currentDir ? currentDir.split('/') : [];
+    if (!barControls || !barSwapped || !viewer.toolbarElem) {
+      crumbHidden = segs.length >= 3 ? segs.length - 1 : 0;
+      buildCrumbs();
+      if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
+      return;
+    }
+    const controls = barControls;
+    sortBtn.classList.remove('icon-only');
+    newBtn.classList.remove('icon-only');
+    // The text buttons carry a pinned width from their last form, which would measure as that form.
+    sortBtn.style.width = '';
+    newBtn.style.width = '';
+    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) el.hidden = false;
+    const popped = searchField.classList.contains('popped');
+    findBtn.hidden = !popped;
+    moreWrap.hidden = true;
+    controls.hidden = dragUnfolded;
+    crumbHidden = 0;
+    buildCrumbs();
+    // The root and every ancestor below it can fold, but not the current name.
+    const foldable = segs.length;
+    const fits = () => crumbsNeed() + controlsNeed() <= barRoom();
+    const foldOne = () => {
+      if (crumbHidden >= foldable) return false;
+      crumbHidden += 1;
+      buildCrumbs();
+      return true;
+    };
+    const steps = [
+      () => sortBtn.classList.add('icon-only'),
+      () => newBtn.classList.add('icon-only'),
+      foldOne,
+      () => { refreshBtn.hidden = true; },
+      () => { newWrap.hidden = true; headerSep.hidden = true; },
+      () => { previewBtn.hidden = true; },
+      foldOne,
+      () => { sortWrap.hidden = true; },
+      foldOne,
+      () => { viewSeg.hidden = true; },
+      () => { if (!popped) { searchField.hidden = true; findBtn.hidden = false; } },
+    ];
+    for (const step of steps) {
+      if (fits()) break;
+      step();
+    }
+    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb */ }
+    moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || previewBtn.hidden || sortWrap.hidden || viewSeg.hidden);
+    roundBarButtons();
+    if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
+  };
+
+  const buildMoreMenu = () => {
+    moreMenu.replaceChildren();
+    let sections = 0;
+    /** @param {string} title */
+    const section = (title) => {
+      if (sections) {
+        const sep = document.createElement('div');
+        sep.className = 'scribe-library-menu-sep';
+        moreMenu.appendChild(sep);
+      }
+      sections += 1;
+      if (!title) return;
+      const head = document.createElement('div');
+      head.className = 'scribe-library-menu-head';
+      head.textContent = title;
+      moreMenu.appendChild(head);
+    };
+    /**
+     * @param {string} label
+     * @param {{on?: boolean, role?: string, icon?: string}} how
+     * @param {() => void} act
+     */
+    const item = (label, how, act) => {
+      const it = document.createElement('div');
+      it.className = `scribe-library-menu-item${how.on ? ' on' : ''}${how.icon ? ' ic' : ''}`;
+      it.setAttribute('role', how.role ?? 'menuitem');
+      if (how.role === 'menuitemcheckbox' || how.role === 'menuitemradio') it.setAttribute('aria-checked', String(!!how.on));
+      it.innerHTML = how.icon ?? MENU_CHECK_SVG;
+      const svg = it.querySelector('svg');
+      if (svg && how.icon) svg.style.cssText = 'width:15px;height:15px;';
+      it.appendChild(document.createTextNode(label));
+      it.addEventListener('click', () => {
+        moreDropdown.close();
+        act();
+      });
+      moreMenu.appendChild(it);
+    };
+    if (viewSeg.hidden) {
+      section('View');
+      for (const [mode, label] of [['grid', 'Grid'], ['list', 'List'], ['compact', 'Compact']]) {
+        item(label, { on: viewMode === mode, role: 'menuitemradio' }, () => setViewMode(/** @type {'grid' | 'list' | 'compact'} */ (mode)));
+      }
+    }
+    if (sortWrap.hidden) {
+      section('Sort by');
+      for (const sortItem of sortItems) {
+        const mode = /** @type {keyof typeof SORT_LABELS} */ (sortItem.dataset.mode);
+        item(SORT_LABELS[mode], { on: sortMode === mode, role: 'menuitemradio' }, () => sortItem.click());
+      }
+      const sep = document.createElement('div');
+      sep.className = 'scribe-library-menu-sep';
+      moreMenu.appendChild(sep);
+      item('Show other files', { on: showOthers, role: 'menuitemcheckbox' }, () => othersItem.click());
+    }
+    if (previewBtn.hidden && viewMode !== 'grid') {
+      section('');
+      item('Preview panel', { on: listPreviewOn, role: 'menuitemcheckbox' }, () => previewBtn.click());
+    }
+    if (newWrap.hidden && !readOnly) {
+      section('New');
+      item('New folder', { icon: FOLDER_PLUS_SVG }, () => newFolderItem.click());
+      item('New PDF from images…', { icon: IMAGE_SVG }, () => newPdfItem.click());
+      item('Add PDFs…', { icon: IMPORT_SVG }, () => addPdfsItem.click());
+    }
+    if (refreshBtn.hidden && !readOnly) {
+      section('');
+      item('Refresh folder', { icon: slotIcon('refresh22') }, () => refreshBtn.click());
+    }
+  };
+  const moreDropdown = createDropdown({
+    show: () => {
+      buildMoreMenu();
+      moreMenu.style.display = '';
+      return moreMenu;
+    },
+    hide: () => {
+      moreMenu.style.display = 'none';
+    },
+    rows: '.scribe-library-menu-item',
+  });
+  moreDropdown.attachTrigger(moreBtn);
+
+  findBtn.addEventListener('click', () => {
+    searchField.hidden = false;
+    searchField.classList.add('popped');
+    findBtn.hidden = true;
+    searchInput.focus();
+  });
+  const unpopField = () => {
+    if (!searchField.classList.contains('popped') || searchInput.value || document.activeElement === searchInput) return;
+    searchField.classList.remove('popped');
+    syncCrumbs();
+  };
+  searchInput.addEventListener('blur', () => window.setTimeout(unpopField, 0));
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && searchField.classList.contains('popped') && !searchInput.value) {
+      searchInput.blur();
+      unpopField();
+    }
+  });
+  if (viewer.toolbarElem) {
+    const barObserver = new ResizeObserver(() => {
+      if (barSwapped) syncCrumbs();
+    });
+    barObserver.observe(viewer.toolbarElem);
+  }
+
+  const unfoldForDrag = () => {
+    if (dragUnfolded || !barControls || !barSwapped || !viewer.toolbarElem || !crumbHidden) return;
+    dragUnfolded = true;
+    const bar = viewer.toolbarElem;
+    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      const r = barControls.getBoundingClientRect();
+      const br = bar.getBoundingClientRect();
+      const copy = /** @type {HTMLElement} */ (barControls.cloneNode(true));
+      copy.setAttribute('inert', '');
+      copy.setAttribute('aria-hidden', 'true');
+      for (const inner of copy.querySelectorAll('[id]')) inner.removeAttribute('id');
+      copy.style.cssText = `position:absolute;left:${r.left - br.left}px;top:${r.top - br.top}px;width:${r.width}px;height:${r.height}px;display:flex;pointer-events:none;z-index:1`;
+      bar.appendChild(copy);
+      const fade = copy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease', fill: 'forwards' });
+      fade.finished.then(() => copy.remove(), () => copy.remove());
+    }
+    crumbFadeDue = true;
+    syncCrumbs();
+  };
+  /** @param {boolean} afterCrumbDrop */
+  const refoldAfterDrag = (afterCrumbDrop) => {
+    if (!dragUnfolded) return;
+    const back = () => {
+      dragUnfolded = false;
+      crumbFadeDue = true;
+      syncCrumbs();
+      if (barControls && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) barControls.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease' });
+    };
+    if (afterCrumbDrop) window.setTimeout(back, 300);
+    else back();
   };
 
   /**
@@ -2213,7 +2490,7 @@ export function createLibraryInstance(viewer, opts) {
     else if (fullTextResults) renderKey = 'results';
     else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
     const renderSig = emptyLib ? 'empty-lib'
-      : `r${recent.length ? 1 : 0}d${shownDirs.length || vacatedHere() ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
+      : `r${recent.length ? 1 : 0}d${shownDirs.length || vacatedHere() ? 1 : 0}v${vacatedDocHere() ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
     // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
     if (store && manifest && !fullTextResults && !storageOpen && !emptyLib
@@ -3304,7 +3581,8 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * The last move, while it can still be taken back.
    * `slot` is the place a moved folder left when its destination is off screen, where a placeholder carries the undo line.
-   * @type {?{dir: string, moves: LibraryMove[], slot: ?{dir: string, index: number, name: string, text: string}}}
+   * A `doc` slot is the row a document left.
+   * @type {?{dir: string, moves: LibraryMove[], slot: ?{kind: 'dir' | 'doc', dir: string, index: number, name: string, text: string, to: string}}}
    */
   let undoInfo = null;
   let undoTimer = 0;
@@ -3316,7 +3594,20 @@ export function createLibraryInstance(viewer, opts) {
 
   // The vacated slot's key starts with NUL, which no path can contain.
   const VACATED = '\u0000vacated';
-  const vacatedHere = () => (undoInfo?.slot && undoInfo.slot.dir === currentDir ? undoInfo.slot : null);
+  const vacatedHere = () => (undoInfo?.slot && undoInfo.slot.kind === 'dir' && undoInfo.slot.dir === currentDir ? undoInfo.slot : null);
+  const vacatedDocHere = () => (undoInfo?.slot && undoInfo.slot.kind === 'doc' && undoInfo.slot.dir === currentDir ? undoInfo.slot : null);
+  /**
+   * @param {Array<[string, import('./libraryStore.js').LibraryDocEntry]>} shown
+   * @returns {Array<[string, import('./libraryStore.js').LibraryDocEntry] | string>}
+   */
+  const withVacatedDoc = (shown) => {
+    const slot = vacatedDocHere();
+    if (!slot) return shown;
+    /** @type {Array<[string, import('./libraryStore.js').LibraryDocEntry] | string>} */
+    const out = shown.slice();
+    out.splice(Math.max(0, Math.min(slot.index, out.length)), 0, VACATED);
+    return out;
+  };
   /** @param {string[]} dirs */
   const withVacated = (dirs) => {
     const slot = vacatedHere();
@@ -3361,6 +3652,8 @@ export function createLibraryInstance(viewer, opts) {
     host.appendChild(undo);
   };
 
+  const slotTooltip = () => (undoInfo ? undoInfo.moves.map((m) => titleOf(m.from)).join('\n') : '');
+
   const buildVacatedCard = () => {
     const slot = /** @type {NonNullable<ReturnType<typeof vacatedHere>>} */ (vacatedHere());
     const card = document.createElement('div');
@@ -3375,6 +3668,7 @@ export function createLibraryInstance(viewer, opts) {
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = slot.name;
+    title.title = slotTooltip();
     cardBody.appendChild(title);
     const meta = document.createElement('div');
     meta.className = 'meta live';
@@ -3395,6 +3689,7 @@ export function createLibraryInstance(viewer, opts) {
     const title = document.createElement('span');
     title.className = 't';
     title.textContent = slot.name;
+    title.title = slotTooltip();
     if (comfortable) {
       const thumb = document.createElement('span');
       thumb.className = 'fthumb';
@@ -3417,6 +3712,50 @@ export function createLibraryInstance(viewer, opts) {
     }
     row.appendChild(nm);
     for (let i = 0; i < 3; i++) {
+      const cell = document.createElement('span');
+      cell.className = 'none';
+      cell.textContent = '—';
+      row.appendChild(cell);
+    }
+    return row;
+  };
+
+  const buildVacatedDocRow = () => {
+    const slot = /** @type {NonNullable<ReturnType<typeof vacatedDocHere>>} */ (vacatedDocHere());
+    const comfortable = viewMode === 'list';
+    const row = document.createElement('div');
+    row.className = comfortable ? 'scribe-library-row cf vacated doc' : 'scribe-library-row vacated doc';
+    row.dataset.key = VACATED;
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const title = document.createElement('span');
+    title.className = 't';
+    title.textContent = slot.name;
+    title.title = slotTooltip();
+    if (comfortable) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.draggable = false;
+      const entry = manifest?.docs[slot.to];
+      if (entry) setThumbSrc(img, entry);
+      nm.appendChild(img);
+      const stack = document.createElement('span');
+      stack.className = 'tt';
+      stack.appendChild(title);
+      const line = document.createElement('span');
+      line.className = 'm2 live';
+      fillUndoLine(line, slot.text);
+      stack.appendChild(line);
+      nm.appendChild(stack);
+    } else {
+      nm.appendChild(title);
+      const line = document.createElement('span');
+      line.className = 'cnt live';
+      fillUndoLine(line, slot.text);
+      nm.appendChild(line);
+    }
+    row.appendChild(nm);
+    for (let i = 0; i < (comfortable ? 3 : 4); i++) {
       const cell = document.createElement('span');
       cell.className = 'none';
       cell.textContent = '—';
@@ -3550,18 +3889,31 @@ export function createLibraryInstance(viewer, opts) {
     const priorDir = undoInfo?.dir;
     clearUndo();
     const firstDir = moves.find((m) => m.kind === 'dir');
-    undoInfo = {
-      dir: dirPath,
-      moves,
-      slot: !elem && firstDir && fromDir === currentDir
-        ? {
-          dir: fromDir,
-          index: firstDir.index,
-          name: titleOf(firstDir.from),
-          text: `Now in ${[store?.root.name ?? opts.name, ...(dirPath ? dirPath.split('/') : [])].join(' › ')}`,
-        }
-        : null,
-    };
+    const firstDoc = moves.find((m) => m.kind === 'doc');
+    const nowIn = `Now in ${[store?.root.name ?? opts.name, ...(dirPath ? dirPath.split('/') : [])].join(' › ')}`;
+    const dirCount = moves.filter((m) => m.kind === 'dir').length;
+    const docCount = moves.length - dirCount;
+    const tally = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+    const slotName = moves.length === 1 ? titleOf(moves[0].from)
+      : dirCount && docCount ? `${tally(dirCount, 'folder')} and ${tally(docCount, 'document')}`
+        : dirCount ? tally(dirCount, 'folder') : tally(docCount, 'document');
+    /** @type {NonNullable<typeof undoInfo>['slot']} */
+    let slot = null;
+    if (!elem && fromDir === currentDir) {
+      if (firstDir) {
+        slot = {
+          kind: 'dir', dir: fromDir, index: firstDir.index, name: slotName, text: nowIn, to: firstDir.to,
+        };
+      } else if (firstDoc && viewMode !== 'grid') {
+        // The row stays in place until the render that follows, so its index among the documents is read off the list.
+        const rows = [...body.querySelectorAll('[data-band="rows"] > .scribe-library-row:not(.folder):not(.vacated)')];
+        const index = rows.findIndex((r) => /** @type {HTMLElement} */ (r).dataset.relPath === firstDoc.from);
+        slot = {
+          kind: 'doc', dir: fromDir, index: Math.max(0, index), name: slotName, text: nowIn, to: firstDoc.to,
+        };
+      }
+    }
+    undoInfo = { dir: dirPath, moves, slot };
     // The folder that showed the last drop's undo line goes back to its tallies, so its Undo cannot take back this drop instead.
     const prior = priorDir !== undefined && priorDir !== dirPath ? folderElemOf(priorDir) : null;
     if (prior) (prior.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(prior, prior.dataset.dirTarget ?? '');
@@ -4108,7 +4460,7 @@ export function createLibraryInstance(viewer, opts) {
     ...(shownDirs.length || vacatedHere() ? [['head', ['\u0000folders', foldersLabel(shownDirs)]]] : []),
     ...withVacated(shownDirs).map((d) => (d === VACATED ? ['vacated', d] : ['dir', d])),
     ...((shownDirs.length || vacatedHere()) && shown.length ? [['head', ['\u0000docs', `Documents · ${shown.length}`]]] : []),
-    ...shown.map((pe) => ['doc', pe]),
+    ...withVacatedDoc(shown).map((pe) => (pe === VACATED ? ['vacdoc', pe] : ['doc', pe])),
     ...(shownOthers.length ? [['head', ['\u0000others', 'Other files']]] : []),
     ...shownOthers.map((p) => ['other', p]),
   ];
@@ -4123,6 +4475,7 @@ export function createLibraryInstance(viewer, opts) {
       return heading;
     }
     if (kind === 'vacated') return buildVacatedRow();
+    if (kind === 'vacdoc') return buildVacatedDocRow();
     if (kind === 'dir') return buildFolderRow(v);
     return kind === 'doc' ? buildRow(v[0], v[1]) : buildOtherRow(v);
   };
@@ -5922,6 +6275,11 @@ export function createLibraryInstance(viewer, opts) {
     moveItems,
     foldFor: (dirPath, mini) => buildFold(dirStatsOf(dirPath).covers, mini),
     finishLanding,
+    thumbFor: (img, relPath) => {
+      const entry = manifest?.docs[relPath];
+      if (entry) setThumbSrc(img, entry);
+    },
+    barApproach: (reached, afterCrumbDrop) => (reached ? unfoldForDrag() : refoldAfterDrag(afterCrumbDrop)),
   });
 
   // --- Ingest wiring ------------------------------------------------------
