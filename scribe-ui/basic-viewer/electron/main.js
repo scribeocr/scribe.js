@@ -463,6 +463,7 @@ function buildAppMenu(closeLabel, closeTab) {
         { id: 'dark-mode', label: 'Dark Mode', type: 'checkbox', click: send('dark-mode') },
         { type: 'separator' },
         { role: 'togglefullscreen' },
+        ...(app.isPackaged ? [] : [{ type: 'separator' }, { role: 'toggleDevTools' }]),
       ],
     },
     { role: 'windowMenu' },
