@@ -2050,25 +2050,17 @@ class ScribePDFViewer {
       ? { start: { ...textSel.range.start }, end: { ...textSel.range.end }, text: textSel.getText() }
       : null;
     const veil = geometryMatches ? this._buildSwapVeil() : null;
+    // Restoring the zoom after the open would attach rasters rendered at the fit, which the compositor then scales and blurs.
+    if (geometryMatches) this._restoreView = { zoom, sx: scrollLeft, sy: scrollTop };
 
     try {
       // A preview's swap stays a preview, so the library's tab keeps the front.
       await this._setDoc(realDoc, cpN, false, false, { preview: this._activeTab < 0 });
-      if (geometryMatches) {
-        if (this.scribe.zoomLevel !== zoom) {
-          this.scribe.zoomLevel = zoom;
-          this.scribe._applyZoomTransform(zoom);
-          this.scribe.calcPageLayout();
-        }
-        sc.scrollTop = scrollTop;
-        sc.scrollLeft = scrollLeft;
-        await this.scribe.displayPage(cpN, false, true);
-        if (sel && this.scribe.textSel) {
-          const ts = this.scribe.textSel;
-          ts.range = { kind: 'linear', start: sel.start, end: sel.end };
-          ts._renderAll();
-          if (ts.getText() !== sel.text) ts.clear();
-        }
+      if (sel && this.scribe.textSel) {
+        const ts = this.scribe.textSel;
+        ts.range = { kind: 'linear', start: sel.start, end: sel.end };
+        ts._renderAll();
+        if (ts.getText() !== sel.text) ts.clear();
       }
       await seedDoc.close();
       if (veil) {
@@ -2077,6 +2069,8 @@ class ScribePDFViewer {
         await new Promise((r) => { requestAnimationFrame(() => r(null)); });
       }
     } finally {
+      // An open that failed before its fit ran must not leak the view onto whatever attaches next.
+      this._restoreView = null;
       veil?.remove();
     }
   }
