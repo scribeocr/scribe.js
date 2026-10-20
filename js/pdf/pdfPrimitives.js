@@ -255,6 +255,10 @@ export function extractDictFromBytes(bytes, start) {
     } else if (bytes[i] === 0x3C && i + 1 < len && bytes[i + 1] === 0x3C) {
       depth++;
       i += 2;
+    } else if (bytes[i] === 0x3C) {
+      // Hex string '<...>': skip to its closing '>' so it cannot pair with a following '>' and close the dict early.
+      const close = bytes.indexOf(0x3E, i + 1);
+      i = close === -1 ? len : close + 1;
     } else if (bytes[i] === 0x3E && i + 1 < len && bytes[i + 1] === 0x3E) {
       depth--;
       i += 2;
@@ -366,6 +370,10 @@ export function extractDict(text, start) {
     } else if (text[i] === '<' && text[i + 1] === '<') {
       depth++;
       i += 2;
+    } else if (text[i] === '<') {
+      // Hex string '<...>': skip to its closing '>' so it cannot pair with a following '>' and close the dict early.
+      const close = text.indexOf('>', i + 1);
+      i = close === -1 ? text.length : close + 1;
     } else if (text[i] === '>' && text[i + 1] === '>') {
       depth--;
       i += 2;

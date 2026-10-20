@@ -1420,6 +1420,8 @@ describe('Check addHighlights and clearHighlights.', () => {
 describe('Check intra-word style runs survive a visible-text PDF export -> import round-trip.', () => {
   /** @type {string} */
   let pdfText;
+  /** @type {ArrayBuffer} */
+  let overlayExport;
 
   beforeAll(async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
@@ -1437,6 +1439,9 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     };
 
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+
+    // The overlay export keeps the source /Info, which the visible-text export below does not carry, so the /Info regression test reads this one.
+    overlayExport = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { docInfo: { Subject: 'Hex-tail override' } }));
 
     scribe.ScribeDoc.defaults.displayMode = 'ebook';
     const pdfData = await doc.exportData('pdf');
@@ -1483,6 +1488,13 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     expect(bboxRounded, 'the highlight bbox scales with the page, landing at its 300-DPI position').toEqual({
       left: 852, top: 301, right: 1698, bottom: 357,
     });
+  });
+
+  // Regression: the dictionary scanner took this /Title's closing '>' and the next '>' for the dictionary's '>>', so the copied /Title lost its '>' and the override was written inside it.
+  test('A docInfo override reaches the exported /Info of a source whose last /Info value is a hex string closed directly by >>', () => {
+    const info = getMetadata(new Uint8Array(overlayExport)).info;
+    expect(info?.Subject, 'the docInfo override is missing from the exported /Info').toBe('Hex-tail override');
+    expect(info?.Title, 'the source /Title, the last /Info value, changed on an export with a docInfo override').toBe('Microsoft Word - Complaint.doc');
   });
 
   afterAll(async () => {
