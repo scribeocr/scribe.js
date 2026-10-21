@@ -160,12 +160,13 @@ export const createSearchClient = (settings = {}) => {
      */
     pages: (hash, pageNs) => serial('pages', { hash, pageNs }),
     /**
-     * Every page of one document holding the query's phrase, in page order, with the ids of each occurrence's words.
+     * Every page of one document holding the query's phrase, as typed or with a longer last word, in page order, with the ids of each occurrence's words.
      * @param {string} hash
      * @param {string} query
+     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Near matches of the document to return with its matches, as the results list shows them.
      * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
      */
-    find: (hash, query) => serial('find', { hash, query }),
+    find: (hash, query, near = []) => serial('find', { hash, query, near }),
     stats: () => serial('stats'),
     reset: () => serial('reset'),
     close: () => {
@@ -192,7 +193,8 @@ export const createSearchClient = (settings = {}) => {
 /**
  * @typedef {Object} ResponsePage
  * @property {number} page
- * @property {number} tier - 1 the exact phrase, 2 the phrase with a longer word in place of its last, 3 the words in order within the window, 4 any order within it, 5 anywhere on the page.
+ * @property {number} tier - 1 the phrase as typed and 2 the phrase with a longer word in place of its last, both in the answer.
+ *   3 the words in order within the window, 4 any order within it and 5 anywhere on the page, the near matches.
  * @property {number} count - Occurrences on the page, except in tier 5, where it is the number of query terms.
  * @property {number} score - BM25 in tier 5, 0 elsewhere.
  * @property {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
@@ -208,7 +210,7 @@ export const createSearchClient = (settings = {}) => {
  * @property {string[]} terms
  * @property {number} matches
  * @property {boolean} bounded
- * @property {boolean} partial - Whether the near matches left out an index file whose list of words beginning with the last word was cut short.
+ * @property {boolean} partial - Whether an index file was left out because its list of words beginning with the last word was cut short.
  * @property {number} bound
  * @property {Array<{hash: string, total: number, pages: Array<ResponsePage>}>} docs - Best first, each document's pages best first.
  * @property {{sweep: number, snippets: number, total: number}} ms

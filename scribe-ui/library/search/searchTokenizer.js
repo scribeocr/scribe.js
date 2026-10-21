@@ -84,9 +84,8 @@ export const MARKER_TERM = '\u0000marker';
 const SYMBOL_TOKENS = new Set(['§', '¶', '%', '$']);
 const APOSTROPHES = new Set(["'", '’', '‘', 'ʼ', '′']);
 const MARK_RE = /\p{M}+/gu;
-const ALNUM_RE = /^[\p{L}\p{N}]$/u;
-// A symbol such as ™ is left out, since NFKD would expand it into letters glued to the word.
-const NORMALIZABLE_RE = /^[\p{L}\p{N}\p{M}]$/u;
+// A symbol such as the trademark sign is left out, since NFKD would expand it into letters glued to the word.
+const WORD_CHAR_RE = /^[\p{L}\p{N}\p{M}]$/u;
 const HYPHEN_END_RE = /[\p{L}][-‐‑­]$/u;
 const LOWER_START_RE = /^\p{Ll}/u;
 const LINE_NUMBER_RE = /^\d{1,2}$/;
@@ -109,14 +108,21 @@ const normalizeWord = (raw, compat) => {
       break;
     }
   }
-  if (ascii || !compat) return { norm: raw.toLowerCase(), rawAt: null, rawEnd: null };
+  if (ascii) return { norm: raw.toLowerCase(), rawAt: null, rawEnd: null };
+  if (!compat) {
+    const lower = raw.toLowerCase();
+    // Only "İ" lowercases to more than one character ("i" and a combining dot).
+    if (lower.length === raw.length) return { norm: lower, rawAt: null, rawEnd: null };
+  }
   let norm = '';
   const rawAt = [];
   const rawEnd = [];
   for (let i = 0; i < raw.length; i++) {
     const code = /** @type {number} */ (raw.codePointAt(i));
     const ch = String.fromCodePoint(code);
-    const n = NORMALIZABLE_RE.test(ch) ? ch.normalize('NFKD').replace(MARK_RE, '').toLowerCase() : ch;
+    let n = ch;
+    if (!compat) n = ch.toLowerCase();
+    else if (WORD_CHAR_RE.test(ch)) n = ch.normalize('NFKD').replace(MARK_RE, '').toLowerCase();
     const end = i + (code > 0xffff ? 2 : 1);
     for (let j = 0; j < n.length; j++) {
       rawAt.push(i);
@@ -145,7 +151,8 @@ const splitWord = (norm, rules) => {
   for (let i = 0; i < norm.length; i++) {
     const ch = norm[i];
     const code = norm.charCodeAt(i);
-    const alnum = (code >= 48 && code <= 57) || (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code > 0x7e && ALNUM_RE.test(ch));
+    // The apostrophe set is left out of the letter class, since U+02BC is a letter to Unicode and an apostrophe on a page.
+    const alnum = (code >= 48 && code <= 57) || (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || (code > 0x7e && WORD_CHAR_RE.test(ch) && !APOSTROPHES.has(ch));
     if (alnum) {
       if (start < 0) start = i;
       term += ch;

@@ -8,6 +8,7 @@ import { markOverlayHTML } from './libraryPreview.js';
 const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
 const RESULT_PAGES_PER_CLICK = 10;
+const PARTIAL_SUMMARY = 'Partial results — narrow your search';
 /** How long a result set must stand with no query in flight before its background opens start. */
 const THUMB_QUIET_MS = 1000;
 
@@ -85,9 +86,11 @@ export function createResultsView({
     const summaryN = document.createElement('span');
     summaryN.className = 'n';
     const engineError = getEngineError();
+    const response = getEngineResponse();
     if (engineError) summaryN.textContent = `Search failed for “${fullTextQuery}”, so no matches are shown: ${engineError}`;
+    else if (response?.partial) summaryN.textContent = PARTIAL_SUMMARY;
     else if (results.length) summaryN.textContent = `${results.length} document${results.length === 1 ? '' : 's'}`;
-    else summaryN.textContent = `No ${getEngineResponse()?.fallbackTiers ? 'exact matches' : 'results'} for “${fullTextQuery}”`;
+    else summaryN.textContent = `No ${response?.fallbackTiers ? 'exact matches' : 'results'} for “${fullTextQuery}”`;
     // Timing tools outside the app read `paintedAt` as the moment the summary took its final text.
     summary.dataset.paintedAt = String(performance.now());
     summary.appendChild(summaryN);
@@ -104,7 +107,10 @@ export function createResultsView({
     const byHash = new Map();
     if (manifest) for (const [relPath, e] of Object.entries(manifest.docs)) byHash.set(e.hash, { relPath, entry: e });
 
-    /** @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, count: number, row: HTMLElement, lowerTier?: boolean}>} */
+    /**
+     * @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, count: number, row: HTMLElement,
+     *   lowerTier?: boolean, tier?: number, marks?: Array<[number, number]>}>}
+     */
     const hits = [];
     let active = -1;
     let opening = false;
@@ -120,7 +126,13 @@ export function createResultsView({
       const h = hits[active];
       opening = true;
       try {
-        await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
+        await openEntry(h.relPath, h.entry, {
+          pageN: h.pageN,
+          query: fullTextQuery,
+          near: h.lowerTier && h.marks ? [{
+            page: h.pageN, tier: /** @type {number} */ (h.tier), count: h.count, marks: h.marks,
+          }] : [],
+        });
       } finally {
         opening = false;
       }
@@ -141,6 +153,9 @@ export function createResultsView({
         entry: h.entry,
         pageN: h.pageN,
         query: fullTextQuery,
+        near: h.lowerTier && h.marks ? [{
+          page: h.pageN, tier: /** @type {number} */ (h.tier), count: h.count, marks: h.marks,
+        }] : [],
         title: titleOf(h.relPath),
       });
     };
@@ -306,7 +321,7 @@ export function createResultsView({
     /**
      * @param {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}} docRef
      * @param {number} pageN
-     * @param {{count: number, snippet: ?DocumentFragment, tier?: number, sn?: HTMLElement, rects?: ?Array<Array<import('./search/searchClient.js').Box>>,
+     * @param {{count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement, rects?: ?Array<Array<import('./search/searchClient.js').Box>>,
      *   dims?: ?{width: number, height: number}, thumb?: ThumbItem}} info
      *   A null `snippet` leaves the snippet span empty and hands it back in `sn` to fill later.
      *   The row's thumbnail item is handed back in `thumb`, for marks that arrive later.
@@ -340,7 +355,7 @@ export function createResultsView({
       hm.appendChild(sn);
       row.appendChild(hm);
       const hit = {
-        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, count: info.count, row, lowerTier,
+        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, count: info.count, row, lowerTier, tier: info.tier, marks: info.marks,
       };
       hits.splice(insertAt, 0, hit);
       row.addEventListener('click', () => {
@@ -364,9 +379,7 @@ export function createResultsView({
 
     (async () => {
       const store = getStore();
-      if (!store || !results.length) return;
-      const response = getEngineResponse();
-      if (!response) return;
+      if (!store || !results.length || !response) return;
       /**
        * @type {Array<{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string},
        *   perPage: Array<{pageN: number, count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement,
@@ -386,7 +399,7 @@ export function createResultsView({
       }).filter(Boolean));
       ranked = tiesByName(ranked, (d) => d.perPage[0], (d) => d.docRef.relPath);
       const count = response.bounded ? `${response.bound}+` : String(response.matches);
-      const summaryText = `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
+      const summaryText = response.partial ? PARTIAL_SUMMARY : `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
       if (myGen !== resultsGen) return;
       summaryN.textContent = summaryText;
       summary.dataset.paintedAt = String(performance.now());
@@ -494,6 +507,8 @@ export function createResultsView({
       );
       const pages = groups.reduce((sum, g) => sum + g.d.pages.length, 0);
       wrap.dataset.tierPages = String(pages);
+      // The first paint said there were no exact matches, which misleads once the near matches are in and empty too.
+      if (!pages && !results.length && !getEngineError() && !tiers.partial && !response?.partial) summaryN.textContent = `No matches for “${fullTextQuery}”`;
       if (pages) {
         tierSection = document.createElement('div');
         tierSection.className = 'scribe-library-rtiers';
@@ -509,7 +524,7 @@ export function createResultsView({
           tierSection.appendChild(docHead);
           for (const p of d.pages) {
             tierSection.appendChild(buildHitRow(ref, p.page, {
-              count: p.count, tier: p.tier, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
+              count: p.count, tier: p.tier, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
             }, hits.length, true));
           }
         }

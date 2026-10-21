@@ -1445,7 +1445,7 @@ export function createSearchBar(scribe, rootElem) {
    * Search from the bar, keeping the counter in step.
    * Does nothing while the bar is closed.
    * @param {string} query
-   * @param {number} [targetPageN] - Land on the first match at or after this page rather than the page in view.
+   * @param {number} [targetPageN] - Land on this page, on its first match or on the page itself when none is there, rather than on the first match from the page in view.
    * @param {boolean} [navigate] - Pass false to refresh the matches and highlights without moving the view.
    */
   async function runSearch(query, targetPageN, navigate = true) {

@@ -23,6 +23,10 @@ export const ENGINE_DEFAULTS = Object.freeze({
   maxOpenFiles: 48,
   mergeTarget: 30,
   mergeFactor: 10,
+  /**
+   * The last word is read as a prefix too.
+   * The pages holding a longer word in its place follow the pages holding it as typed.
+   */
   prefixLastWord: true,
   fallbackTiers: true,
   tierBound: 20,
@@ -843,11 +847,14 @@ export const createSearchEngine = (storage, settings = {}) => {
     },
 
     /**
+     * The document's matches of a query, in page order, with the ids of each occurrence's words.
      * @param {string} hash
      * @param {string} query
+     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Near matches of the document to return with its matches, as the results list shows them.
+     *   A page that merely holds every word (tier 5) is one match of all its marked words.
      * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
      */
-    async find(hash, query) {
+    async find(hash, query, near = []) {
       await openIndex();
       const live = findLive(hash);
       if (!live) return { pages: [] };
@@ -879,13 +886,23 @@ export const createSearchEngine = (storage, settings = {}) => {
       const name = seg.docs[live.ord].records;
       const file = await acquire(name);
       try {
+        const listed = new Set(result.hits.map((h) => h.page));
+        const wanted = [
+          ...result.hits.map((h) => ({
+            page: h.page, count: h.count, marks: h.marks, whole: false,
+          })),
+          ...near.filter((p) => !listed.has(p.page)).map((p) => ({
+            page: p.page, count: p.tier === 5 ? 1 : p.count, marks: p.marks, whole: p.tier === 5,
+          })),
+        ].sort((a, b) => a.page - b.page);
         const pages = [];
-        for (const h of result.hits) {
+        for (const h of wanted) {
           const rec = await readPageRecord(file, h.page);
           const view = rec ? await readPageView(file, h.page, rec.text) : null;
           if (!rec || !view) continue;
           const ids = view.lines.flatMap((l) => l.words.map((w) => w.id));
-          pages.push({ page: h.page, count: h.count, matches: wordsOf(rec, ids, h.marks, tokenIndexOf(rec)) });
+          const groups = wordsOf(rec, ids, h.marks, tokenIndexOf(rec));
+          pages.push({ page: h.page, count: h.count, matches: h.whole ? [groups.flat()] : groups });
         }
         return { pages };
       } finally {

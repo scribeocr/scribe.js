@@ -161,7 +161,8 @@ globalThis.addEventListener('message', (e) => {
         result = await engine.query(args.query, args.opts || {});
         if (engine.options.fallbackTiers) {
           globalThis.postMessage({ id, ok: true, result });
-          if (engine.options.tiersSkipBounded && result.bounded) {
+          // A lone word has no near matches: every page holding it, or a longer word beginning with it, is in the answer.
+          if ((engine.options.tiersSkipBounded && result.bounded) || result.terms.length < 2) {
             globalThis.postMessage({
               id, phase: 'tiers', ok: true, result: null,
             });
@@ -187,7 +188,7 @@ globalThis.addEventListener('message', (e) => {
       } else if (op === 'pages') {
         result = await engine.pages(args.hash, args.pageNs);
       } else if (op === 'find') {
-        result = await engine.find(args.hash, args.query);
+        result = await engine.find(args.hash, args.query, args.near || []);
       } else if (op === 'stats') {
         result = engine.stats();
       } else if (op === 'reset') {

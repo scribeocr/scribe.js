@@ -156,7 +156,8 @@ export async function goToMatch(viewer, index, { navigate = true, glide = false 
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {string} query
  * @param {object} [options]
- * @param {number} [options.pageN] - Land on the first match at or after this page rather than the page in view.
+ * @param {number} [options.pageN] - Land on this page: on its first match, or on the page itself when none of the matches is there.
+ *   Without it the search lands on the first match at or after the page in view.
  * @param {boolean} [options.navigate=true] - Pass false to refresh the matches and highlights without moving the view.
  * @returns {Promise<void>}
  */
@@ -174,8 +175,13 @@ export async function searchDoc(viewer, query, { pageN, navigate = true } = {}) 
   if (!navigate) return;
   const { matchList } = viewer._searchState;
   if (!matchList.length) return;
-  const from = pageN ?? viewer.state.cp.n;
-  const idx = matchList.findIndex((m) => m.pageN >= from);
+  if (pageN !== undefined) {
+    const onPage = matchList.findIndex((m) => m.pageN === pageN);
+    if (onPage >= 0) await goToMatch(viewer, onPage);
+    else await viewer.displayPage(pageN, true, false);
+    return;
+  }
+  const idx = matchList.findIndex((m) => m.pageN >= viewer.state.cp.n);
   await goToMatch(viewer, idx >= 0 ? idx : 0);
 }
 

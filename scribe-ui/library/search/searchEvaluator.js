@@ -87,7 +87,8 @@ const mergePostings = (reader, entries, merged) => {
  * @property {string} hash
  * @property {number} page
  * @property {number} ingestSeq
- * @property {number} tier - 1 the exact phrase, 2 the phrase with a longer word in place of its last, 3 the words in order within the window, 4 any order within it, 5 anywhere on the page.
+ * @property {number} tier - 1 the phrase as typed and 2 the phrase with a longer word in place of its last, both in the answer.
+ *   3 the words in order within the window, 4 any order within it and 5 anywhere on the page, the near matches.
  * @property {number} count - Occurrences on the page, or the matched terms' count in tier 5.
  * @property {number} span
  * @property {number} score
@@ -128,12 +129,14 @@ export const compareHits = (a, b, rankSpan) => a.tier - b.tier
  * @param {LiveSegment[]} segments
  * @param {string} query
  * @param {Object} options
- * @param {number} options.bound - The exact mode keeps the first this many exact hit pages in ingest order.
+ * @param {number} options.bound - The answer keeps the first this many hit pages in ingest order.
+ *   The pages holding the last word as typed come before those holding a longer word in its place.
  *   The fallback mode keeps this many pages, the best.
  * @param {number} [options.doc] - Sweep this document alone, by its ordinal in the one segment given.
  * @param {number} [options.marksPerPage]
- * @param {boolean} options.prefixLastWord
- * @param {boolean} [options.lower] - Run the fallback mode, which ranks the pages without the exact phrase in tiers 2 to 5.
+ * @param {boolean} options.prefixLastWord - Read the last word as a prefix too.
+ *   The pages holding a longer word in its place follow the pages holding it as typed.
+ * @param {boolean} [options.lower] - Run the fallback mode, which ranks the pages without the phrase, as typed or with a longer last word, in tiers 3 to 5.
  * @param {boolean} options.rankSpan
  * @param {import('./searchTokenizer.js').TokenizerRules} options.tokenizer - The rules the index was built under.
  * @param {{pages: number, avgLength: number}} options.collection - Live pages and their mean length in positions, for BM25.
@@ -143,8 +146,9 @@ export const compareHits = (a, b, rankSpan) => a.tier - b.tier
  * @param {{cancelled: boolean, pause?: () => Promise<void>}} [job] - The fallback mode's run.
  *   Once a slice of work is spent the evaluation awaits `pause`, then stops if `cancelled` was set meanwhile.
  * @returns {Promise<{terms: string[], hits: Hit[], matches: number, bounded: boolean, candidates: number,
- *   skips: number, found: number, exactPages: number, cancelled: boolean, partial: boolean, plan: ?SweepPlan}>} In the fallback mode `found` counts every page of a lower tier.
- *   `partial` is set in the fallback mode when a segment was left out because its range of the last word was cut short.
+ *   skips: number, found: number, exactPages: number, cancelled: boolean, partial: boolean, plan: ?SweepPlan}>}
+ *   In the fallback mode `found` counts every page of a lower tier and `exactPages` the pages the answer lists.
+ *   `partial` is set when a segment was left out because its range of the last word was cut short.
  *   `skips` counts the occurrences found by stepping over a marker.
  */
 export const evaluate = async (segments, query, options, job) => {
@@ -170,12 +174,11 @@ export const evaluate = async (segments, query, options, job) => {
   });
   if (!terms.length) return answer();
   const n = terms.length;
-  // Only the fallback mode reads the last word as a prefix, since a page holding a longer word in its place is a near match.
   // Someone who types a lone one- or two-letter word means exactly that word.
-  const prefixAt = lowerMode && options.prefixLastWord && !(n === 1 && terms[0].length < 3) ? n - 1 : -1;
+  const prefixAt = options.prefixLastWord && !(n === 1 && terms[0].length < 3) ? n - 1 : -1;
   const prefix = prefixAt >= 0 ? terms[prefixAt] : '';
-  // Every page holding a lone word read as itself is an exact page.
-  if (lowerMode && n === 1 && prefixAt < 0) return answer();
+  // Every page holding a lone word, as typed or as a longer word, is in the answer.
+  if (lowerMode && n === 1) return answer();
   const stepMarkers = options.tokenizer.markersUnpositioned === 'both';
   let sliceStart = performance.now();
   const paused = async () => {
@@ -202,14 +205,17 @@ export const evaluate = async (segments, query, options, job) => {
 
   /**
    * @param {LiveSegment} seg
+   * @param {boolean} longer - Read the last word as a prefix.
+   *   Outside the fallback mode the sweep then yields the pages holding the phrase with a longer word in place of the last, and not as typed.
    * @returns {AsyncGenerator<Hit, void, void>}
    */
-  async function* sweep(seg) {
+  async function* sweep(seg, longer) {
     const { reader } = seg;
+    const rangeAt = longer ? prefixAt : -1;
     const pre = looked.get(seg);
-    const entries = pre ? pre.entries : terms.map((t, i) => (i === prefixAt ? null : reader.lookup(t)));
-    if (entries.some((e, i) => i !== prefixAt && !e)) return;
-    const range = pre ? pre.range : (prefixAt >= 0 ? reader.prefix(prefix, PREFIX_MAX_TERMS, PREFIX_MAX_BYTES) : null);
+    const entries = pre ? pre.entries : terms.map((t, i) => (i === rangeAt ? null : reader.lookup(t)));
+    if (entries.some((e, i) => i !== rangeAt && !e)) return;
+    const range = pre ? pre.range : (rangeAt >= 0 ? reader.prefix(prefix, PREFIX_MAX_TERMS, PREFIX_MAX_BYTES) : null);
     /** @type {?ListCursor} */
     let prefixList = null;
     /** @type {?import('./searchSegment.js').PostingsCursor} */
@@ -217,7 +223,7 @@ export const evaluate = async (segments, query, options, job) => {
     const others = entries.filter(Boolean);
     const minDf = others.length ? Math.min(...others.map((e) => /** @type {import('./searchSegment.js').TermEntry} */ (e).df)) : Infinity;
     if (range) {
-      // The near matches need every position of the prefix on a page, so a range cut short would misplace them.
+      // A sweep over a range cut short could miss a page or rank a near match too low.
       if (range.truncated) {
         partial = true;
         return;
@@ -410,7 +416,7 @@ export const evaluate = async (segments, query, options, job) => {
       pageKey = key;
       values = cursors.map((c) => c.values);
       pageMarkers = null;
-      if (!lowerMode) {
+      if (!lowerMode && !longer) {
         const { count, marks } = occurrences(false);
         if (count) {
           yield {
@@ -419,25 +425,30 @@ export const evaluate = async (segments, query, options, job) => {
         }
         continue;
       }
-      // A page holding the phrase with the last word itself is an exact page, which the exact answer lists.
       let exact = false;
-      if (prefixAt < 0) exact = occurrences(true).count > 0;
+      if (rangeAt < 0) exact = occurrences(true).count > 0;
       else if (lastWordItself && lastWordItself.advance(key) && lastWordItself.key === key) {
-        const rangeValues = values[prefixAt];
-        values[prefixAt] = lastWordItself.values;
+        const rangeValues = values[rangeAt];
+        values[rangeAt] = lastWordItself.values;
         exact = occurrences(true).count > 0;
-        values[prefixAt] = rangeValues;
+        values[rangeAt] = rangeValues;
       }
       if (exact) {
-        exactPages++;
+        if (lowerMode) exactPages++;
         continue;
       }
-      if (prefixAt >= 0) {
-        const longer = occurrences(false);
-        if (longer.count) {
-          yield {
-            hash, page, ingestSeq: seg.ingestSeq(ordinal), tier: 2, count: longer.count, span: n, score: 0, marks: longer.marks,
-          };
+      if (rangeAt >= 0) {
+        if (!lowerMode) {
+          const { count, marks } = occurrences(false);
+          if (count) {
+            yield {
+              hash, page, ingestSeq: seg.ingestSeq(ordinal), tier: 2, count, span: n, score: 0, marks,
+            };
+          }
+          continue;
+        }
+        if (occurrences(true).count) {
+          exactPages++;
           continue;
         }
       }
@@ -527,7 +538,7 @@ export const evaluate = async (segments, query, options, job) => {
 
   if (lowerMode) {
     for (const seg of segments) {
-      for await (const hit of sweep(seg)) {
+      for await (const hit of sweep(seg, prefixAt >= 0)) {
         found++;
         if (hits.length < bound || compareHits(hit, hits[hits.length - 1], rankSpan) < 0) {
           let at = hits.length;
@@ -542,29 +553,32 @@ export const evaluate = async (segments, query, options, job) => {
     return answer();
   }
   // Every segment yields its hits in ingest order, so merging their heads keeps the first `bound` pages in that order, however the documents are cut into segments.
-  /** @type {Array<{it: AsyncGenerator<Hit, void, void>, hit: Hit}>} */
-  const heads = [];
-  for (const seg of segments) {
-    const it = sweep(seg);
-    const first = await it.next();
-    if (!first.done) heads.push({ it, hit: first.value });
-  }
-  while (heads.length) {
-    let best = 0;
-    for (let s = 1; s < heads.length; s++) {
-      const a = heads[s].hit;
-      const b = heads[best].hit;
-      if (a.ingestSeq < b.ingestSeq || (a.ingestSeq === b.ingestSeq && a.page < b.page)) best = s;
-    }
-    const head = heads[best];
-    hits.push(head.hit);
-    matches += head.hit.count;
+  for (const longer of prefixAt >= 0 ? [false, true] : [false]) {
     if (hits.length >= bound) break;
-    const next = await head.it.next();
-    if (next.done) heads.splice(best, 1);
-    else head.hit = next.value;
+    /** @type {Array<{it: AsyncGenerator<Hit, void, void>, hit: Hit}>} */
+    const heads = [];
+    for (const seg of segments) {
+      const it = sweep(seg, longer);
+      const first = await it.next();
+      if (!first.done) heads.push({ it, hit: first.value });
+    }
+    while (heads.length) {
+      let best = 0;
+      for (let s = 1; s < heads.length; s++) {
+        const a = heads[s].hit;
+        const b = heads[best].hit;
+        if (a.ingestSeq < b.ingestSeq || (a.ingestSeq === b.ingestSeq && a.page < b.page)) best = s;
+      }
+      const head = heads[best];
+      hits.push(head.hit);
+      matches += head.hit.count;
+      if (hits.length >= bound) break;
+      const next = await head.it.next();
+      if (next.done) heads.splice(best, 1);
+      else head.hit = next.value;
+    }
+    // The sweeps left unfinished at the bound end here, which settles their counters.
+    for (const head of heads) await head.it.return(undefined);
   }
-  // The sweeps left unfinished at the bound end here, which settles their counters.
-  for (const head of heads) await head.it.return(undefined);
   return answer();
 };

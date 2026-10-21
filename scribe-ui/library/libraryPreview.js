@@ -30,6 +30,8 @@ export const markOverlayHTML = (m) => {
  * @property {import('./libraryStore.js').LibraryDocEntry} entry
  * @property {number} pageN
  * @property {?string} query
+ * @property {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - The near matches of the clicked row.
+ *   The find bar marks them beside the document's matches of the query.
  * @property {string} title
  */
 
@@ -111,16 +113,21 @@ export function createPreview({
     })().catch(() => {});
   };
 
+  /** @type {?{hash: string, query: string, near: NonNullable<PreviewTarget['near']>}} The query and the near matches the library last handed over with a document, which the document's find reads. */
+  let handoff = null;
+
   /**
    * Build a provisional seed for a page of a library document.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
+   * @param {?{query: string, near: NonNullable<PreviewTarget['near']>}} [handedOver] - The query the document opens on, with the near matches of the clicked row.
    * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
    */
-  const makeSeed = async (relPath, entry, pageN) => {
+  const makeSeed = async (relPath, entry, pageN, handedOver = null) => {
     const { hash } = entry;
     if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
+    if (handedOver) handoff = { hash, ...handedOver };
     const ref = { relPath, entry, hash };
     const [changes, pixels] = await Promise.all([sessions.changes(hash), sessions.pixels(ref)]);
     const pageCount = entry.pageDims.length;
@@ -140,7 +147,9 @@ export function createPreview({
       // Without a changes file the page appends its session additions instead.
       annots: (n) => Promise.resolve(changes?.annotations ? (changes.annotations[n] ?? []).map(copyAnnot) : null),
       thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
-      find: (query) => engine.find(hash, query).then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })))),
+      // The near marks handed over belong to the library's query, so a query typed into the find bar afterward goes without them.
+      find: (query) => engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : [])
+        .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })))),
       outline: changes?.outline ?? pixels.outline ?? [],
       load: async () => {
         const store = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
@@ -290,6 +299,7 @@ export function createPreview({
     const sameDoc = !!(current && current.hash === target.hash && (target.hash || current.relPath === target.relPath));
     const changed = !sameDoc || !current || current.pageN !== target.pageN || current.query !== target.query;
     lastTarget = target;
+    if (target.query) handoff = { hash: target.hash, query: target.query, near: target.near ?? [] };
     // Background warming yields for the whole show, because the seed build and priming run before any hydration exists to count.
     beginUserLoad();
     try {

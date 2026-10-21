@@ -1756,7 +1756,7 @@ export function createLibraryInstance(viewer, opts) {
     const last = preview.lastTarget();
     if (!last || !manifest) return;
     const entry = manifest.docs[last.relPath];
-    if (entry) openEntry(last.relPath, entry, { pageN: viewer.scribe.state.cp.n, query: last.query ?? undefined });
+    if (entry) openEntry(last.relPath, entry, { pageN: viewer.scribe.state.cp.n, query: last.query ?? undefined, near: last.near });
   });
 
   /**
@@ -5499,7 +5499,8 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {{pageN?: number, query?: string, background?: boolean}} [target] - `background` opens the tab without activating it.
+   * @param {{pageN?: number, query?: string, near?: import('./libraryPreview.js').PreviewTarget['near'], background?: boolean}} [target] - `background` opens the tab without activating it.
+   *   `near` holds the near matches of the clicked row, which the find bar marks beside the document's matches of `query`.
    */
   const openEntry = async (relPath, entry, target = {}) => {
     if (!store || !manifest) return;
@@ -5602,7 +5603,7 @@ export function createLibraryInstance(viewer, opts) {
       if (entry.hash && entry.pageDims) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0);
+        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0, target.query ? { query: target.query, near: target.near ?? [] } : null);
         const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, { activate: !target.background });
         const tab = /** @type {any} */ (viewer._tabs[viewer._tabs.length - 1]);
         tab.libraryOwner = instanceId;
