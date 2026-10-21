@@ -1577,7 +1577,7 @@ class ScribePDFViewer {
         row1.className = 'scribe-mode-track-row1';
         const more = document.createElement('div');
         more.className = 'scribe-mode-track-more';
-        const chev = makeIconButton('More tools', TRACK_MENU_SVG);
+        const chev = makeIconButton('Show more tools', TRACK_MENU_SVG);
         chev.classList.add('scribe-mode-track-chev');
         chev.addEventListener('click', () => this._setModeTrackOpen(!this._modeTrackOpen));
         row1.appendChild(chev);
@@ -4418,7 +4418,8 @@ class ScribePDFViewer {
     if (on && chev.classList.contains('disabled')) return;
     this._modeTrackOpen = on;
     track.classList.toggle('open', on);
-    chev.dataset.tip = on ? 'Hide extra tools' : 'More tools';
+    chev.dataset.tip = on ? 'Hide extra tools' : 'Show more tools';
+    chev.ariaLabel = chev.dataset.tip;
   }
 
   /**

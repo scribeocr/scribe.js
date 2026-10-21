@@ -901,7 +901,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     const st = app.doc ? docStates.get(app.doc) : null;
     hdTitle.textContent = rest ? 'Automate'
       : chatsList ? 'Chats'
-        : next === 'tables' ? 'Extract tables'
+        : next === 'tables' ? 'Extract Tables'
           : next === 'inspect' ? 'Inspect Document'
             : next === 'redact' ? 'Redactions'
               : next === 'bulk' ? 'Bulk Edit'

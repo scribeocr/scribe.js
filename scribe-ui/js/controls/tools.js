@@ -178,7 +178,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     // A slim caret (not a full icon button) so the dropdown half stays visually subordinate to the marker.
     caretElem = document.createElement('span');
     caretElem.className = 'cr-icon-button scribe-hl-caret';
-    caretElem.dataset.tip = 'Highlight color';
+    caretElem.dataset.tip = 'Choose highlight color';
     caretElem.role = 'button';
     caretElem.tabIndex = 0;
     caretElem.ariaLabel = 'Choose highlight color';
@@ -1086,6 +1086,7 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
   scribe._redactEnabled = true;
 
   const toolbarElem = makeIconButton('Redact', REDACT_SVG);
+  nameForSelection(toolbarElem, 'Redact', scribe);
 
   function updateRedactCursor() {
     if (scribe.useCustomSelection && scribe.textSel) {
@@ -1122,7 +1123,6 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
       if (!redactMode) return;
       if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
       applyToSelection();
-  nameForSelection(toolbarElem, 'Redact', scribe);
     };
     document.addEventListener('mouseup', mouseupHandler);
 
