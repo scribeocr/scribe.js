@@ -33,6 +33,7 @@ const FLICK_MS = 60;
  * @typedef {Object} CardDrag
  * @property {string} relPath - The pressed card's document, or a folder key with its trailing slash.
  * @property {HTMLElement} cardElem - The pressed card or row.
+ * @property {HTMLElement} scroller - What scrolls the pressed item: the list's column, or the body for the grid.
  * @property {boolean} isRow - Whether the press is on a list row.
  * @property {boolean} isDir
  * @property {string[]} carried - Every document and folder moving, in display order.
@@ -67,7 +68,7 @@ const FLICK_MS = 60;
  * @param {Object} deps
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} deps.viewer
  * @param {HTMLElement} deps.surface - Library root, flagged with a class for the length of a drag.
- * @param {HTMLElement} deps.body - Scrolling surface the cards live in, and the autoscroll target.
+ * @param {HTMLElement} deps.body - The surface the cards and rows live in, which scrolls the grid.
  * @param {Set<string>} deps.selectedPaths
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => void} deps.saveManifestSoon
@@ -550,7 +551,7 @@ export function createDragReorder({
       if (d) d.rafId = 0;
       return;
     }
-    body.scrollTop += d.autoDir * AUTOSCROLL_SPEED;
+    d.scroller.scrollTop += d.autoDir * AUTOSCROLL_SPEED;
     d.sinceGap += AUTOSCROLL_SPEED;
     updateGap(d);
     updateDropTarget(d);
@@ -584,9 +585,9 @@ export function createDragReorder({
     }
     updateDropTarget(d);
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > MENU_SLOP) d.moved = true;
-    const bodyRect = body.getBoundingClientRect();
-    if (e.clientY < bodyRect.top + AUTOSCROLL_EDGE) d.autoDir = -1;
-    else if (e.clientY > bodyRect.bottom - AUTOSCROLL_EDGE) d.autoDir = 1;
+    const scrollRect = d.scroller.getBoundingClientRect();
+    if (e.clientY < scrollRect.top + AUTOSCROLL_EDGE) d.autoDir = -1;
+    else if (e.clientY > scrollRect.bottom - AUTOSCROLL_EDGE) d.autoDir = 1;
     else d.autoDir = 0;
     if (d.autoDir && !d.rafId) d.rafId = requestAnimationFrame(autoScrollTick);
   };
@@ -940,6 +941,7 @@ export function createDragReorder({
     drag = {
       relPath,
       cardElem: card,
+      scroller: /** @type {HTMLElement} */ (card.closest('.scribe-library-rlist') ?? body),
       isRow: false,
       isDir: relPath.endsWith('/'),
       carried: [relPath],

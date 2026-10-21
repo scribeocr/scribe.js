@@ -378,6 +378,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 5px; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+.scribe-pdf-viewer .scribe-library-results.solo .scribe-library-rlist { width: 100%; border-right: none; }
+.scribe-pdf-viewer .scribe-library-results.solo .scribe-library-rsplit { display: none; }
 .scribe-pdf-viewer .scribe-library-rsplit { flex: 0 0 7px; margin: 0 -3px; position: relative; z-index: 4; cursor: col-resize; touch-action: none; }
 .scribe-pdf-viewer .scribe-library-rsplit::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
 .scribe-pdf-viewer .scribe-library-rsplit:hover::before { opacity: 1; transition-delay: 0.25s; }
@@ -1348,7 +1350,7 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Mount the split's column, sash and pane in the body, and return the column for the rows.
+   * Mount the split's column and sash in the body, and return the column for the rows.
    * @param {'results'|'list'} kind
    */
   const mountSplit = (kind) => {
@@ -1358,11 +1360,41 @@ export function createLibraryInstance(viewer, opts) {
       () => (kind === 'results' ? resultsListWidth : listPreviewWidth),
       (w) => { if (kind === 'results') resultsListWidth = w; else listPreviewWidth = w; },
     );
-    wrap.appendChild(pane);
     body.appendChild(wrap);
     body.classList.add('split-mode');
     splitLeft = left;
+    if (kind === 'results') {
+      wrap.appendChild(pane);
+      syncDocInset();
+    }
     return left;
+  };
+
+  /**
+   * Put the pane beside the list's column while the split form is up, and take it away otherwise.
+   * The pane then shows the remembered preview.
+   */
+  const syncListPane = () => {
+    const wrap = splitLeft?.parentElement;
+    if (!wrap) return;
+    const split = splitForm();
+    wrap.classList.toggle('solo', !split);
+    if (!split) {
+      if (pane.parentElement === wrap) pane.remove();
+      syncDocInset();
+      return;
+    }
+    if (pane.parentElement !== wrap) wrap.appendChild(pane);
+    syncDocInset();
+    const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
+    if (entry && listPreviewPath) {
+      showListPreview(listPreviewPath, entry, Math.min(listPreviewPage, (entry.pageCount || 1) - 1));
+    } else if (listPreviewPath && body.querySelector(`.scribe-library-row.other[data-rel-path="${CSS.escape(listPreviewPath)}"]`)) {
+      showOtherPreview(listPreviewPath);
+    } else {
+      listPreviewPath = null;
+      if (!preview.lastTarget()) setStage('empty');
+    }
   };
 
   /** Put the lit library's bar and surface on screen, with the find bar in the pane head in the split form. */
@@ -1706,6 +1738,8 @@ export function createLibraryInstance(viewer, opts) {
   const ensureLit = () => {
     if (!visible) activate({ render: false, attach: false });
     else applyForm();
+    // The attach fits the page to the document area the moment it runs, so the inset cannot wait for the stage observer's frame.
+    syncDocInset();
   };
 
   /** Empty the pane and clear its selection. */
@@ -2488,7 +2522,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!store || !manifest) renderKey = 'wall';
     else if (storageOpen) renderKey = 'storage';
     else if (fullTextResults) renderKey = 'results';
-    else renderKey = `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filter}`;
+    else renderKey = `browse|${currentDir}|${viewMode}|${sortMode}|${sortDir}|${filter}`;
     const renderSig = emptyLib ? 'empty-lib'
       : `r${recent.length ? 1 : 0}d${shownDirs.length || vacatedHere() ? 1 : 0}v${vacatedDocHere() ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
@@ -5059,7 +5093,8 @@ export function createLibraryInstance(viewer, opts) {
   const renderList = (shownDirs, shown, shownOthers) => {
     body.classList.add('list-mode');
     const comfortable = viewMode === 'list';
-    const host = splitForm() ? mountSplit('list') : body;
+    // The rows live in the split's column whether or not the pane is up, so the two forms share one look and the toggle keeps the rows.
+    const host = mountSplit('list');
     const head = document.createElement('div');
     head.className = comfortable ? 'scribe-library-lhead cols-cf' : 'scribe-library-lhead';
     const rows = document.createElement('div');
@@ -5387,16 +5422,7 @@ export function createLibraryInstance(viewer, opts) {
       colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
     });
     colsObserver.observe(host);
-    if (splitForm()) {
-      const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
-      if (entry && listPreviewPath) {
-        showListPreview(listPreviewPath, entry, Math.min(listPreviewPage, (entry.pageCount || 1) - 1));
-      } else if (listPreviewPath && shownOthers.includes(listPreviewPath)) {
-        showOtherPreview(listPreviewPath);
-      } else {
-        listPreviewPath = null;
-      }
-    }
+    syncListPane();
     return host;
   };
 
@@ -7290,7 +7316,17 @@ export function createLibraryInstance(viewer, opts) {
       } catch { /* localStorage unavailable. */ }
     }
     syncViewUI();
-    if (!fullTextResults) render();
+    if (fullTextResults) return;
+    if (!splitLeft || !body.classList.contains('list-mode')) {
+      render();
+      return;
+    }
+    // Only the pane comes or goes, so the rows keep their scroll and focus.
+    if (!splitForm() && preview.lastTarget()) preview.showEmpty();
+    applyForm();
+    syncListPane();
+    syncSelectionUI();
+    syncPaneHead();
   });
 
   const newDropdown = createDropdown({
