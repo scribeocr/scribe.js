@@ -2866,10 +2866,10 @@ class ScribePDFViewer {
   _positionBanners() {
     const top = this._topBarsHeight();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
-    // The automate panel shares the banner's band, so the banner gives up that width rather than overdrawing it.
-    if (this._modeBanner) {
-      this._modeBanner.style.right = (!this._phoneUi && this._automatePanel?.isOpen()) ? `${this._automatePanel.width}px` : '0px';
-    }
+    // The automate panel shares the banners' band, so they give up that width rather than overdrawing its header.
+    const bannerRight = (!this._phoneUi && this._automatePanel?.isOpen()) ? `${this._automatePanel.width}px` : '0px';
+    if (this._modeBanner) this._modeBanner.style.right = bannerRight;
+    if (this._banner) this._banner.style.right = bannerRight;
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
@@ -4115,6 +4115,7 @@ class ScribePDFViewer {
     const prev = this._activeSidebar;
     const next = prev === key ? null : key; // clicking the open view closes the sidebar
     if (next === prev) return;
+    if (prev === 'thumbnails' && this._editPagesTool?.isActive()) this._editPagesTool.toolbarElem.click();
     this._activeSidebar = next;
     for (const k of SIDEBAR_VIEW_KEYS) this._panelFor(k)?.toggleElem.classList.toggle('active', next === k);
     this._transitionSidebar(prev, next);
@@ -4308,6 +4309,8 @@ class ScribePDFViewer {
       if (startTs === null) startTs = ts;
       const p = Math.min(1, (ts - startTs) / SIDEBAR_ANIM_MS);
       const e = 1 - (1 - p) ** 3; // ease-out, ~matching the panel's CSS `ease`
+      // A closing rail can still be gliding narrower when an Edit Pages exit undoes its widening, so the slide-out follows its live width.
+      const outW = (!isSwitch && !toEl && fromEl) ? (parseFloat(fromEl.style.width) || fromW) : fromW;
       if (isSwitch) {
         if (toEl) toEl.style.opacity = String(e);
         if (fromEl) fromEl.style.opacity = String(1 - e);
@@ -4315,10 +4318,10 @@ class ScribePDFViewer {
         toEl.style.transform = `translateX(-${toW * (1 - e)}px)`; // slide the incoming view in
         if (strip) strip.style.transform = toEl.style.transform;
       } else if (fromEl) {
-        fromEl.style.transform = `translateX(-${fromW * e}px)`; // slide the outgoing view out
-        if (strip) strip.style.transform = fromEl.style.transform;
+        fromEl.style.transform = `translateX(-${outW * e}px)`; // slide the outgoing view out
+        if (strip) { strip.style.width = `${outW}px`; strip.style.transform = fromEl.style.transform; }
       }
-      setInset(fromW + (toW - fromW) * e);
+      setInset(outW + (toW - outW) * e);
       // Keep looping only while this transition is still the current one; an interrupt/destroy replaces or nulls it.
       if (p < 1) { if (this._sidebarAnim === anim) anim.raf = requestAnimationFrame(frame); } else cleanup();
     };
