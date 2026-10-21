@@ -599,6 +599,26 @@ function replaceLigatures(text) {
 
 const LIGATURE_INVERSE = Object.fromEntries(Object.entries(LIGATURE_MAP).map(([lig, expansion]) => [expansion, lig]));
 
+// The two character classes and the map all hold the soft hyphen (U+00AD), which has no visible glyph, after the minus sign.
+const ASCII_PUNCT_ANY_RE = /[‘’‚‛′`´“”„‟″‐‑‒–—−­…]/;
+const ASCII_PUNCT_ALL_RE = /[‘’‚‛′`´“”„‟″‐‑‒–—−­…]/g;
+const ASCII_PUNCT_MAP = {
+  '‘': "'", '’': "'", '‚': "'", '‛': "'", '′': "'", '`': "'", '´': "'",
+  '“': '"', '”': '"', '„': '"', '‟': '"', '″': '"',
+  '‐': '-', '‑': '-', '‒': '-', '–': '-', '—': '-', '−': '-', '­': '-',
+  '…': '...',
+};
+
+/**
+ * Replaces typographic punctuation with its ASCII form.
+ * @param {string} text
+ * @returns {string}
+ */
+function asciiPunctuation(text) {
+  if (!ASCII_PUNCT_ANY_RE.test(text)) return text;
+  return text.replace(ASCII_PUNCT_ALL_RE, (m) => ASCII_PUNCT_MAP[m]);
+}
+
 /**
  * The ligature codepoint that is, or expands to, `text`.
  * @param {string} text
@@ -1297,6 +1317,7 @@ const ocr = {
   rotateLine,
   deletePageWords,
   replaceLigatures,
+  asciiPunctuation,
   ligatureForText,
   scaleLine,
   scalePage,

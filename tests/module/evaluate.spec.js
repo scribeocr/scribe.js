@@ -20,13 +20,25 @@ describe('Check evaluate function.', () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.hocr`]);
     await doc.importFilesSupp([`${ASSETS_PATH}/complaint_1.truth.hocr`], 'Ground Truth');
 
+    // The ternary's first branch holds the soft hyphen (U+00AD), which has no visible glyph.
+    let retyped = 0;
+    let hyphenated = 0;
+    for (const line of doc.ocr['Ground Truth'][0].lines) {
+      for (const word of line.words) {
+        if (/[‘’“”]/.test(word.text)) { word.text = word.text.replace(/[‘’]/g, "'").replace(/[“”]/g, '"'); retyped++; }
+        if (/[A-Za-z]-[A-Za-z]/.test(word.text)) { word.text = word.text.replace('-', hyphenated % 2 ? '­' : '–'); hyphenated++; }
+      }
+    }
+    expect(retyped, 'the ground truth holds words with curly quotes to retype').toBe(12);
+    expect(hyphenated, 'the ground truth holds hyphenated words to retype').toBe(2);
+
     const res = await doc.compareOCR(doc.ocr.active, doc.ocr['Ground Truth']);
 
     const evalStatsDoc = scribe.utils.calcEvalStatsDoc(res.metrics);
 
-    expect(evalStatsDoc.total).toBe(654);
-    expect(evalStatsDoc.correct).toBe(650);
-    expect(evalStatsDoc.incorrect).toBe(4);
+    expect(evalStatsDoc.total, 'every ground-truth word is counted').toBe(654);
+    expect(evalStatsDoc.correct, 'a word that differs from the ground truth only in quote or dash style counts as correct').toBe(650);
+    expect(evalStatsDoc.incorrect, 'only the words that differ in letters or digits count as incorrect').toBe(4);
     expect(evalStatsDoc.missed).toBe(0);
     expect(evalStatsDoc.extra).toBe(0);
   });

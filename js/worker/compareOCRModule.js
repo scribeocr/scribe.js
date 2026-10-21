@@ -557,7 +557,7 @@ export async function compareOCRPageImp({
 
   // Punctuation next to a number is never ignored, as it is usually substantive there ("-$1,000" vs "$1,000", "$100" vs "$1.00").
   const compText = (text) => {
-    let t = ocr.replaceLigatures(text);
+    let t = ocr.asciiPunctuation(ocr.replaceLigatures(text));
     if (ignorePunct) t = t.replace(/(^|\D)[\W_]($|\D)/g, '$1$2');
     if (ignoreCap) t = t.toLowerCase();
     return t;
@@ -1085,8 +1085,8 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
   let wordTextA = wordsA.map((x) => x.text).join(' ');
   let wordTextB = res.text.trim();
 
-  wordTextA = ocr.replaceLigatures(wordTextA);
-  wordTextB = ocr.replaceLigatures(wordTextB);
+  wordTextA = ocr.asciiPunctuation(ocr.replaceLigatures(wordTextA));
+  wordTextB = ocr.asciiPunctuation(ocr.replaceLigatures(wordTextB));
 
   if (ignorePunct) {
     // Punctuation next to numbers is not ignored, even if this setting is enabled, as punctuation differences are
