@@ -1870,6 +1870,8 @@ export function detectPdfType(pdfBytes) {
  * Only the fields that text edits read are listed.
  * @typedef {{
  *   fontObjNum: ?number,
+ *   baseName: string,
+ *   familyName: string,
  *   toUnicode: Map<number, string>,
  *   encodingUnicode: Map<number, string>,
  *   widths: Map<number, number>,

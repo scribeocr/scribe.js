@@ -3,6 +3,7 @@ import { pageImagePlacements, pagePathPlacements } from './fillSign.js';
 import { ensureGlyphSetForText } from './fontContainerMain.js';
 import ocr, { OcrWord, OcrChar } from './objects/ocrObjects.js';
 import { getRandomAlphanum } from './utils/miscUtils.js';
+import { EDIT_FACE_FAMILIES, EDIT_FACE_FAMILY_NAMES } from './pdf/textPatch.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 /** @typedef {import('./objects/ocrObjects.js').OcrLine} OcrLine */
@@ -251,17 +252,28 @@ export async function deleteTextLines(doc, lines, label = 'Deleted text') {
   return out;
 }
 
-export { FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW } from './pdf/textPatch.js';
+export {
+  FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW, EDIT_FACE_FAMILIES, EDIT_FACE_FAMILY_NAMES,
+} from './pdf/textPatch.js';
 
 /**
  * Replace a line's text with `newText`.
  * Records one undoable step in `doc.contentEditHistory`.
  * @param {ScribeDoc} doc
  * @param {OcrLine} lineIn - A line of a `doc.ocr.active` page, or a handle whose words that page's line carries.
- * @param {string} newText - The line's replacement text; empty deletes the line.
- * @param {{wordStyles?: Array<?{bold?: boolean, italic?: boolean, color?: string}>}} [opts] - Per-word style toggles, index-aligned with the whitespace-split words of `newText`.
+ * @param {string} newText - The line's replacement text.
+ *   Empty text deletes the line.
+ * @param {{wordStyles?: Array<?{bold?: boolean, italic?: boolean, color?: string, font?: string, fontObjNum?: number}>}} [opts] - Per-word style toggles.
+ *   `wordStyles` is index-aligned with the whitespace-split words of `newText`.
  *   Null entries inherit.
  *   `color` is the word's new ink as `#rrggbb`.
+ *   `font` is a family of `EDIT_FACE_FAMILIES`.
+ *   The word is redrawn in that family's program for its weight and lean.
+ *   The word's `style.font` then reads the family's name in `EDIT_FACE_FAMILY_NAMES`.
+ *   `fontObjNum` is the object number of one of the page's own fonts, as `doc.nativeText` records it for each word.
+ *   The word is retyped in that font.
+ *   The edit is refused when that font lacks one of the word's characters.
+ *   `font` wins when both are given.
  *   A toggle a word already has, by its font or by an earlier edit, changes nothing.
  * @returns {Promise<?{pages: Array<number>, groupId: string} | {refused: string}>} The page changed and the action's group id, or null when the edit changes nothing.
  *   `refused` carries the reason when the page cannot be rewritten safely.
@@ -286,14 +298,28 @@ export async function replaceTextLine(doc, lineIn, newText, opts) {
   const styles = newTexts.map((t, m) => {
     const ov = wordStylesIn?.[m];
     if (!ov) return null;
-    /** @type {{ color?: string, bold?: boolean, italic?: boolean }} */
+    /** @type {{ color?: string, bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }} */
     const st = {};
     if (typeof ov.color === 'string' && /^#[0-9a-f]{6}$/i.test(ov.color)) st.color = ov.color.toLowerCase();
     if (ov.bold !== undefined) st.bold = ov.bold;
     if (ov.italic !== undefined) st.italic = ov.italic;
+    if (typeof ov.font === 'string' && EDIT_FACE_FAMILIES.includes(ov.font)) st.font = ov.font;
+    else if (Number.isInteger(ov.fontObjNum) && /** @type {number} */ (ov.fontObjNum) >= 0) st.fontObjNum = ov.fontObjNum;
     return Object.keys(st).length > 0 ? st : null;
   });
   const oldWords = line.words.slice();
+  if (newTexts.length === oldWords.length) {
+    styles.forEach((st, m) => {
+      if (!st || newTexts[m] !== oldWords[m].text) return;
+      const w = oldWords[m];
+      if (st.bold !== undefined && !!w.style.bold === st.bold) delete st.bold;
+      if (st.italic !== undefined && !!w.style.italic === st.italic) delete st.italic;
+      // A toggle still needs the face, which makes the toggle select the face's program rather than a page font or a faux stroke or shear.
+      if (st.font && st.bold === undefined && st.italic === undefined && w.style.font === EDIT_FACE_FAMILY_NAMES[st.font]) delete st.font;
+      if (st.fontObjNum !== undefined && nt[w.id]?.fontObjNum === st.fontObjNum) delete st.fontObjNum;
+      if (Object.keys(st).length === 0) styles[m] = null;
+    });
+  }
   if (newTexts.length === oldWords.length && newTexts.every((t, m) => t === oldWords[m].text) && styles.every((st) => !st)) return null;
   if (oldWords.some((w) => !nt[w.id].penX)) return { refused: 'A word has no recorded pens.' };
 

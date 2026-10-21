@@ -150,16 +150,17 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null, m
  * @param {?number} embeddedObjIndex - Object number of the embedded font file, or null for a font that is not embedded.
  * @param {?{ascent: number, descent: number}} [metrics] - Ascent and descent to declare instead of the program's own, per 1000 em.
  */
-function fontDescriptorDict(font, italic, embeddedObjIndex, metrics = null) {
+function fontDescriptorDict(font, italic, embeddedObjIndex, metrics = null, bold = false) {
   let objOut = '<</Type/FontDescriptor';
 
   const namesTable = font.names.windows || font.names;
 
   objOut += `/FontName/${namesTable.postScriptName.en}`;
 
+  const k = 1000 / font.unitsPerEm;
   const headTable = font.tables.head;
   if (headTable) {
-    objOut += `/FontBBox[${[font.tables.head.xMin, font.tables.head.yMin, font.tables.head.xMax, font.tables.head.yMax].join(' ')}]`;
+    objOut += `/FontBBox[${[headTable.xMin, headTable.yMin, headTable.xMax, headTable.yMax].map((v) => Math.round(v * k)).join(' ')}]`;
   } else {
     // Not all fonts have a head table, so we set the FontBBox to 0, which per the PDF specification appears to be acceptable.
     // "If all four elements of the rectangle are zero, no assumptions are made based
@@ -178,21 +179,22 @@ function fontDescriptorDict(font, italic, embeddedObjIndex, metrics = null) {
     objOut += '/ItalicAngle 0';
   }
 
-  objOut += `/Ascent ${String(metrics ? metrics.ascent : font.ascender)}`;
+  objOut += `/Ascent ${String(metrics ? metrics.ascent : Math.round(font.ascender * k))}`;
 
-  objOut += `/Descent ${String(metrics ? metrics.descent : font.descender)}`;
+  objOut += `/Descent ${String(metrics ? metrics.descent : Math.round(font.descender * k))}`;
 
   // StemV is a required field, however it is not already in the opentype font, and does not appear to matter.
   // Therefore, we set to 0.08 * em to mimic the behavior of other programs.
   // https://www.verypdf.com/document/pdf-format-reference/pg_0457.htm
   // https://stackoverflow.com/questions/35485179/stemv-value-of-the-truetype-font
-  objOut += `/StemV ${String(Math.round(0.08 * font.unitsPerEm))}`;
+  objOut += '/StemV 80';
 
   const category = determineSansSerif(namesTable.postScriptName.en);
   const symbolic = category === 'SymbolDefault';
   const serif = !symbolic && category !== 'SansDefault';
 
-  objOut += `/Flags ${String(generateFontFlags(serif, italic, false, symbolic))}`;
+  objOut += `/Flags ${String(generateFontFlags(serif, italic, false, symbolic) | (bold ? 262144 : 0))}`;
+  if (bold) objOut += '/FontWeight 700';
 
   if (embeddedObjIndex === null || embeddedObjIndex === undefined) return `${objOut}>>`;
 
@@ -286,14 +288,15 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
  * @param {opentypeFont} options.font
  * @param {number} options.firstObjIndex
  * @param {boolean} [options.italic=false]
+ * @param {boolean} [options.bold=false]
  * @param {Map<number, string>} [options.toUnicodeOverride] - Per-GID ToUnicode override.
  *   Values may be multi-codepoint strings (e.g. "fi" for a ligature).
  *   GIDs absent from the map fall back to `glyph.unicode`.
  * @param {number} [options.widthScale=1] - Advance-width multiplier for a width-scaled variant.
  * @param {number} [options.baseDescriptorObjN] - For a width-scaled variant, the object number of the base font's shared FontDescriptor.
- * @param {number} [options.baseToUnicodeObjN] - The object number of a base font's shared ToUnicode CMap.
- * @param {number} [options.baseWidthsObjN] - The object number of a base font's shared `/W` array.
- * @param {number} [options.baseFontFileObjN] - The object number of a base font's shared FontFile.
+ * @param {number} [options.baseToUnicodeObjN]
+ * @param {number} [options.baseWidthsObjN]
+ * @param {number} [options.baseFontFileObjN]
  * @param {ArrayBuffer|Uint8Array} [options.rawFontBytes] - Embed these bytes verbatim as the font file instead of re-serializing `font`.
  *   Used for edited native text, where the embedded program must be byte-identical to the one the renderer rasterizes with.
  * @param {?{ascent: number, descent: number}} [options.metrics] - Ascent and descent to declare in the descriptor instead of the program's own, per 1000 em.
@@ -302,7 +305,7 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
  *   A stream object carries its data and the dictionary entries that go beside the `/Length` and `/Filter` the encoder writes.
  */
 export function type0FontObjectParts({
-  font, firstObjIndex, italic = false, toUnicodeOverride,
+  font, firstObjIndex, italic = false, bold = false, toUnicodeOverride,
   widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN, baseWidthsObjN, baseFontFileObjN, rawFontBytes, metrics = null,
 }) {
   const descriptorObjN = baseDescriptorObjN || firstObjIndex + 1;
@@ -316,7 +319,7 @@ export function type0FontObjectParts({
 
   const type0 = { text: `<</Type/Font/Subtype/Type0/BaseFont/${postScriptName}/Encoding/Identity-H/ToUnicode ${String(toUnicodeObjN)} 0 R/DescendantFonts[${String(firstObjIndex + 4)} 0 R]>>` };
 
-  const descriptor = baseDescriptorObjN ? null : { text: fontDescriptorDict(font, italic, fontFileObjN, metrics) };
+  const descriptor = baseDescriptorObjN ? null : { text: fontDescriptorDict(font, italic, fontFileObjN, metrics, bold) };
 
   // Emit CIDFontType2 glyph widths as [firstGlyphIndex [w0 w1 ...]].
   // The widths must be present and accurate or glyphs render wrong, but need not be packed efficiently (no run grouping).

@@ -5,6 +5,10 @@
  */
 import { ensureGlyphSetForText } from '../../js/fontContainerMain.js';
 import { GlobalFonts } from '../../js/containers/fontContainer.js';
+import { EDIT_FACE_FAMILY_NAMES } from '../../js/pdf/textPatch.js';
+import {
+  FACE_FAMILIES, docFontDisplayName, docFontIdOf, docFontObjNumOf, faceIdOf, faceNameOf, loadPageFonts, pageHasSiblingWithout,
+} from './editTextStyle.js';
 import ocr from '../../js/objects/ocrObjects.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
 import { nativeTextForPage } from '../../js/textEdits.js';
@@ -30,12 +34,12 @@ import { nativeTextForPage } from '../../js/textEdits.js';
  * @property {number} lineStartX - The pen of the line's first glyph, where the caret of an empty line sits.
  * @property {string} text
  * @property {string} origText
- * @property {Array<PreviewWord>} words - The line as the worker last previewed it.
+ * @property {Array<PreviewWord>} words
  * @property {string} wordsText - The text `words` previews; `text` runs a keystroke ahead of it while a preview is in flight.
- * @property {Array<PreviewWord>} origWords - The line as the page draws it, which a closed session shows again.
+ * @property {Array<PreviewWord>} origWords
  * @property {Map<number|undefined, {program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string}>} fonts - The page fonts the glyphs draw with, by font object number.
  * @property {boolean} previewBusy
- * @property {boolean} previewStale - The text or toggles changed while a preview was in flight.
+ * @property {boolean} previewStale
  * @property {?Promise<void>} [previewDone] - Settles when the preview in flight has been drawn.
  * @property {number} caret
  * @property {?number} selAnchor
@@ -49,11 +53,12 @@ import { nativeTextForPage } from '../../js/textEdits.js';
  * @property {boolean} composing
  * @property {string} [fieldColor]
  * @property {?string} [previewInk]
- * @property {?Set<number>} [previewWords] - Word indices of `text` that `previewInk` draws on.
+ * @property {?Set<number>} [previewWords] - Word indices of `text` that `previewInk` or `previewFont` draws on.
+ * @property {?string} [previewFont] - The plate row id of the font drawn on `previewWords`.
  */
 
-/** @typedef {{bold?: boolean, italic?: boolean, color?: string}} WordToggle */
-/** @typedef {{bold: boolean, italic: boolean, stroked: boolean, skewed: boolean, color: string}} WordBase */
+/** @typedef {{bold?: boolean, italic?: boolean, color?: string, font?: string, fontObjNum?: number}} WordToggle */
+/** @typedef {{bold: boolean, italic: boolean, stroked: boolean, skewed: boolean, color: string, font: string, fontObjNum: ?number}} WordBase */
 /** @typedef {{text: string, caret: number, styleOv: Map<number, WordToggle>, wordBase: Map<number, WordBase>}} EditSnapshot */
 
 /**
@@ -330,16 +335,23 @@ export function createLineEditor(scribe, {
     const styles = newTexts.map((t, k) => {
       const o = s.styleOv.get(k);
       const ink = s.previewInk && s.previewWords?.has(k) ? s.previewInk : o?.color;
-      /** @type {{ color?: string, bold?: boolean, italic?: boolean }} */
+      const face = s.previewFont && s.previewWords?.has(k) ? s.previewFont : null;
+      /** @type {{ color?: string, bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }} */
       const style = {};
       if (ink) style.color = ink;
       if (o?.bold !== undefined) style.bold = o.bold;
       if (o?.italic !== undefined) style.italic = o.italic;
+      if (face) {
+        const objNum = docFontObjNumOf(face);
+        if (objNum !== null) style.fontObjNum = objNum; else style.font = face;
+      } else if (o?.font) style.font = o.font;
+      else if (o?.fontObjNum !== undefined) style.fontObjNum = o.fontObjNum;
       return Object.keys(style).length > 0 ? style : null;
     });
     /** @type {import('../../js/pdf/textPatch.js').TextEditRequest} */
     const req = {
       kind: 'replace',
+      tolerant: !!s.previewFont,
       words: s.line.words.map((w) => ({
         id: w.id, text: w.text, penX: nt[w.id]?.penX || [], baselineY: nt[w.id]?.baselineY,
       })),
@@ -359,6 +371,12 @@ export function createLineEditor(scribe, {
         if (st !== s) return;
         s.words = res.words;
         s.wordsText = text;
+        return;
+      }
+      if (s.previewFont) {
+        s.previewFont = null;
+        s.previewWords = null;
+        s.previewStale = true;
         return;
       }
       // The commit would refuse this text too, so the change that produced it is undone along with any change typed on top of it.
@@ -617,11 +635,12 @@ export function createLineEditor(scribe, {
    * @returns {WordBase}
    */
   const baseOf = (s, k) => s.wordBase.get(k) || {
-    bold: false, italic: false, stroked: false, skewed: false, color: '#000000',
+    bold: false, italic: false, stroked: false, skewed: false, color: '#000000', font: '', fontObjNum: null,
   };
 
   /**
-   * The bold / italic state of the words a toggle would act on: on when every word has it, locked when the style is baked into every word's face.
+   * The bold / italic state of the words a toggle would act on.
+   * It is on when every word has the style, and locked when every word's font bakes the style in and the page has no font of that family without it.
    * @param {'bold'|'italic'} prop
    */
   const wordStyleState = (prop) => {
@@ -634,11 +653,16 @@ export function createLineEditor(scribe, {
       return o && o[prop] !== undefined ? !!o[prop] : !!baseOf(s, k)[prop];
     };
     const on = targets.every(eff);
+    let unknown = false;
     const locked = on && targets.every((k) => {
       const b = baseOf(s, k);
       const o = s.styleOv.get(k);
-      return b[prop] && (!o || o[prop] === undefined) && !(prop === 'bold' ? b.stroked : b.skewed);
-    });
+      if (!(b[prop] && (!o || o[prop] === undefined) && !(prop === 'bold' ? b.stroked : b.skewed))) return false;
+      const sibling = pageHasSiblingWithout(scribe, s.n, b.fontObjNum, prop);
+      if (sibling === null) unknown = true;
+      return !sibling;
+    }) && !unknown;
+    if (unknown) loadPageFonts(scribe, s.n).then(() => { if (st === s) onCaretChanged?.(); }).catch(() => {});
     return { present: true, on, locked };
   };
   /** The ink of the words a color action would act on. */
@@ -649,6 +673,108 @@ export function createLineEditor(scribe, {
     if (targets.length === 0) return { present: false, color: null, mixed: false };
     const inks = [...new Set(targets.map((k) => s.styleOv.get(k)?.color || baseOf(s, k).color))];
     return { present: true, color: inks[0], mixed: inks.length > 1 };
+  };
+  /** The font of the words a font action would act on. */
+  const wordFontState = () => {
+    const none = {
+      present: false, fontId: null, family: null, fontObjNum: null, name: null, mixed: false,
+    };
+    if (!st) return none;
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return none;
+    const ids = [...new Set(targets.map((k) => {
+      const o = s.styleOv.get(k);
+      const b = baseOf(s, k);
+      if (o?.font) return o.font;
+      if (o?.fontObjNum !== undefined) return docFontIdOf(o.fontObjNum);
+      return faceIdOf(b.font) || (b.fontObjNum !== null ? docFontIdOf(b.fontObjNum) : '');
+    }))];
+    const one = ids.length === 1 && ids[0] ? ids[0] : null;
+    const objNum = one ? docFontObjNumOf(one) : null;
+    let name = null;
+    if (ids.length === 1) {
+      const base = objNum !== null ? scribe.doc.images.getEditFontSync(s.n, objNum)?.program?.baseName : null;
+      if (base) name = docFontDisplayName(base);
+      else name = one && objNum === null ? faceNameOf(EDIT_FACE_FAMILY_NAMES[one]) : baseOf(s, targets[0]).font;
+    }
+    return {
+      present: true, fontId: one, family: one && objNum === null ? one : null, fontObjNum: objNum, name, mixed: ids.length > 1,
+    };
+  };
+  /**
+   * Redraw the words under the selection (or the caret's word) in the font a plate row names.
+   * @param {string} id
+   */
+  const setWordFont = (id) => {
+    if (!st) return;
+    const s = st;
+    const targets = targetWords(s);
+    if (targets.length === 0) return;
+    s.previewFont = null;
+    s.previewWords = null;
+    pushUndo();
+    const objNum = docFontObjNumOf(id);
+    for (const k of targets) {
+      /** @type {WordToggle} */
+      const o = { ...(s.styleOv.get(k) || {}) };
+      const b = baseOf(s, k);
+      delete o.font;
+      delete o.fontObjNum;
+      if (objNum !== null) { if (b.fontObjNum !== objNum || faceIdOf(b.font)) o.fontObjNum = objNum; } else if (faceIdOf(b.font) !== id) o.font = id;
+      if (o.bold === undefined && o.italic === undefined && o.color === undefined && o.font === undefined && o.fontObjNum === undefined) s.styleOv.delete(k);
+      else s.styleOv.set(k, o);
+    }
+    requestPreview();
+    draw();
+  };
+  /**
+   * Draw the target words in the font a plate row names without committing anything.
+   * Null lifts the preview.
+   * @param {?string} id
+   */
+  const previewWordFont = (id) => {
+    if (!st) return;
+    st.previewFont = id || null;
+    st.previewWords = id ? new Set(targetWords(st)) : null;
+    requestPreview();
+    draw();
+  };
+  /**
+   * Which of the plate's fonts the target words can take with the text as typed.
+   * @param {Array<string>} [ids] - The plate's row ids.
+   * @returns {Promise<Record<string, {fits: boolean, reason?: string}>>}
+   */
+  const fontFits = async (ids = FACE_FAMILIES.map((f) => f.id)) => {
+    /** @type {Record<string, {fits: boolean, reason?: string}>} */
+    const out = {};
+    if (!st) return out;
+    const s = st;
+    const targets = new Set(targetWords(s));
+    const newTexts = s.text.trim().split(/\s+/).filter((t) => t.length > 0);
+    const nt = nativeTextForPage(scribe.doc, s.line.page);
+    const words = s.line.words.map((w) => ({
+      id: w.id, text: w.text, penX: nt[w.id]?.penX || [], baselineY: nt[w.id]?.baselineY,
+    }));
+    await Promise.all(ids.map(async (id) => {
+      const objNum = docFontObjNumOf(id);
+      const styles = newTexts.map((t, k) => {
+        const o = s.styleOv.get(k) || {};
+        /** @type {{ color?: string, bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }} */
+        const style = { ...o };
+        if (targets.has(k)) {
+          delete style.font;
+          delete style.fontObjNum;
+          if (objNum !== null) style.fontObjNum = objNum; else style.font = id;
+        }
+        return Object.keys(style).length > 0 ? style : null;
+      });
+      const res = await scribe.doc.images.previewTextEdit(s.n, {
+        kind: 'replace', words, newTexts, styles,
+      }).catch((e) => ({ refused: String(e?.message || e) }));
+      out[id] = res && res.refused ? { fits: false, reason: res.refused } : { fits: true };
+    }));
+    return out;
   };
   /**
    * Set the ink of the words under the selection (or the caret's word); one typing-level undo step.
@@ -666,7 +792,7 @@ export function createLineEditor(scribe, {
       /** @type {WordToggle} */
       const o = { ...(s.styleOv.get(k) || {}) };
       if (hex === baseOf(s, k).color) delete o.color; else o.color = hex;
-      if (o.bold === undefined && o.italic === undefined && o.color === undefined) s.styleOv.delete(k);
+      if (o.bold === undefined && o.italic === undefined && o.color === undefined && o.font === undefined && o.fontObjNum === undefined) s.styleOv.delete(k);
       else s.styleOv.set(k, o);
     }
     requestPreview();
@@ -710,7 +836,6 @@ export function createLineEditor(scribe, {
 
   /**
    * Toggle bold/italic on the words under the selection (or the caret's word), word-processor style.
-   * A style baked into the word's face cannot toggle off; such words are left unchanged.
    * @param {'bold'|'italic'} prop
    */
   const toggleWordStyle = (prop) => {
@@ -732,11 +857,11 @@ export function createLineEditor(scribe, {
       const b = base(k);
       /** @type {WordToggle} */
       const o = { ...(s.styleOv.get(k) || {}) };
+      // A style off goes to the planner even when the word's font bakes the style in.
+      // The planner retypes the word in the page's font of that family without the style, or the preview is refused and the toggle is undone.
       if (target === !!b[prop]) delete o[prop];
-      else if (target) o[prop] = true;
-      else if (prop === 'bold' ? b.stroked : b.skewed) o[prop] = false;
-      else delete o[prop];
-      if (o.bold === undefined && o.italic === undefined && o.color === undefined) s.styleOv.delete(k);
+      else o[prop] = target;
+      if (o.bold === undefined && o.italic === undefined && o.color === undefined && o.font === undefined && o.fontObjNum === undefined) s.styleOv.delete(k);
       else s.styleOv.set(k, o);
     }
     requestPreview();
@@ -855,7 +980,7 @@ export function createLineEditor(scribe, {
     const {
       line, n, text, origText, styleOv,
     } = st;
-    const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined || o.color !== undefined);
+    const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined || o.color !== undefined || o.font !== undefined || o.fontObjNum !== undefined);
     if ((text.trim() === origText || text.trim() === origText.trim()) && !hasToggles) {
       close();
       return;
@@ -863,7 +988,7 @@ export function createLineEditor(scribe, {
     const wordStyles = hasToggles
       ? tokenSpans(text).map((value, k) => {
         const o = styleOv.get(k);
-        return o && (o.bold !== undefined || o.italic !== undefined || o.color !== undefined) ? o : null;
+        return o && (o.bold !== undefined || o.italic !== undefined || o.color !== undefined || o.font !== undefined || o.fontObjNum !== undefined) ? o : null;
       })
       : null;
     session.committing = true;
@@ -1186,6 +1311,8 @@ export function createLineEditor(scribe, {
         stroked: !!g0?.renderMode,
         skewed: !!g0?.skew,
         color: (w.style.color || '#000000').toLowerCase(),
+        font: w.style.font || '',
+        fontObjNum: typeof nt[w.id]?.fontObjNum === 'number' ? nt[w.id].fontObjNum : null,
       });
     });
 
@@ -1364,6 +1491,11 @@ export function createLineEditor(scribe, {
     colorState: wordColorState,
     setColor: setWordColor,
     previewColor: previewWordColor,
+    fontState: wordFontState,
+    setFont: setWordFont,
+    previewFont: previewWordFont,
+    fontFits,
+    pageN: () => (st ? st.n : null),
     bandClientRect,
     // The plate takes focus while it is up; a pick or a close hands the keyboard back here.
     focus: () => { if (st) hiddenInput.focus({ preventScroll: true }); },

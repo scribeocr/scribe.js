@@ -17,6 +17,20 @@ import { getCIDToUnicodeMap } from './cidToUnicode.js';
 import { cffStandardEncoding, standardNames } from '../../font-parser/src/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
+/**
+ * @param {string} [name]
+ */
+export const normalizeFamilyForMatch = (name = '') => name.toLowerCase().replace(/psmt$|ps$|mt$/, '');
+/**
+ * Whether two normalized family names count as one family.
+ * @param {string} a
+ * @param {string} b
+ */
+export const familiesCompatible = (a, b) => {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b) || b.startsWith(a);
+};
+
 const identityShiftChecked = new WeakSet();
 
 const LAZY_BFRANGE_MIN = 4096;
@@ -2527,11 +2541,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     if (fontObjNum !== null) objCache.fontCache.set(fontObjNum, fontInfo);
   }
 
-  const normalizeFamilyForMatch = (name = '') => name.toLowerCase().replace(/psmt$|ps$|mt$/, '');
-  const familiesCompatible = (a, b) => {
-    if (!a || !b) return false;
-    return a === b || a.startsWith(b) || b.startsWith(a);
-  };
   const type0StyleKey = (baseName = '') => {
     const clean = baseName.replace(/^[A-Z]{6}\+/, '');
     const parts = clean.split('-').filter(Boolean);

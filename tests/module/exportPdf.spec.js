@@ -1935,7 +1935,6 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     await editDoc.replaceTextLine(line, line.words.map((w, i) => (i === 18 ? '隔' : w.text)).join(' '));
     // A second edit of the same line folds the first record, so word 18 now redraws from its post-edit entry rather than the source stream.
     await editDoc.replaceTextLine(line, line.words.map((w, i) => (i === 21 ? '利' : w.text)).join(' '));
-    // Style-only toggles on plain words: bold synthesizes the faux-bold stroke, italic synthesizes the standard shear.
     const boldLine = page.lines[18];
     await editDoc.replaceTextLine(boldLine, lineText(boldLine), { wordStyles: boldLine.words.map((w, i) => (i === 4 ? { bold: true } : null)) });
     const italicLine = page.lines[17];
@@ -2019,17 +2018,18 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     expect(state?.words[4]?.glyphs[0].skew, 'the synthesized shear ratio must round-trip through the exported text matrix').toBe(0.25);
   });
 
-  // A style-only edit must not re-typeset the word.
-  // Redrawing from the font's natural advances re-spaces a line set with character spacing, and tight glyph bounds shrink the selection box.
-  test('Style-only toggles leave the toggled word and its neighbors where the page drew them', () => {
+  test('A bold toggle retypes the word in the page\'s own bold font, and an italic toggle with no italic font on the page leaves every box where the page drew it', () => {
     const boldWords = editDoc.ocr.active[0].lines[18].words;
-    expect(boldWords[4].bbox, 'a bold toggle must not move or resize the word box').toEqual({
-      left: 813, top: 1484, right: 874, bottom: 1539,
+    const nt = editDoc.nativeText.pages[0];
+    expect(boldWords.slice(3, 6).map((w) => nt[w.id].fontObjNum), 'the bold toggle must draw the word in the page\'s Times New Roman Bold, object 135, and leave its neighbors in object 132')
+      .toEqual([132, 135, 132]);
+    expect(boldWords[4].bbox, 'the word in the page\'s bold font must take that font\'s width').toEqual({
+      left: 813, top: 1484, right: 879, bottom: 1539,
     });
-    expect(boldWords[4].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'a bold toggle must keep every glyph box')
-      .toEqual([[813, 827, 1484, 1539], [827, 852, 1484, 1539], [852, 874, 1484, 1539]]);
-    expect(boldWords[5].bbox, 'the word after a bold toggle must stay where the page drew it').toEqual({
-      left: 887, top: 1484, right: 1081, bottom: 1539,
+    expect(boldWords[4].chars.map((c) => [c.bbox.left, c.bbox.right, c.bbox.top, c.bbox.bottom]), 'the glyph boxes must span the bold font\'s widths')
+      .toEqual([[813, 829, 1484, 1539], [829, 857, 1484, 1539], [857, 879, 1484, 1539]]);
+    expect(boldWords[5].bbox, 'the word after the bold-toggled word must move by the width the bold font adds').toEqual({
+      left: 892, top: 1484, right: 1087, bottom: 1539,
     });
     const italicWords = editDoc.ocr.active[0].lines[17].words;
     expect(italicWords[4].bbox, 'an italic toggle must not move or resize the word box').toEqual({
@@ -2075,11 +2075,10 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     });
   });
 
-  test('Style-only toggles set the synthesized stroke and shear around the word\'s own codes in the page stream', () => {
+  test('A bold toggle draws the word\'s codes in the page\'s own bold font, and an italic toggle sets the synthesized shear around the word\'s own codes in the page stream', () => {
     const flat = exportRaw.replace(/\s+/g, ' ');
-    // The synthesized pen is 0.025 em at the word's 50px size, which is 1.25 page pixels or 0.3 units in the page's content space.
-    expect(flat.includes('2 Tr 0.3 w 0 G [<0057004b0048>] TJ 0 Tr 1 w 0 G '),
-      'the bold toggle must stroke the word\'s own codes and restore the page\'s render mode, pen and stroke color after them').toBe(true);
+    expect(flat.includes('] TJ /F4 12 Tf [<746865>] TJ /F3 12 Tf ['),
+      'the bold toggle must switch to the page\'s bold font for the word\'s codes and restore the page\'s font after them').toBe(true);
     expect(flat.includes('1 0 0.25 1 147.432 495.19 Tm [<0047004c005600480044> 5 <0056> -10 <0048>] TJ 1 0 0 1 62.424 495.19 Tm [-9977 -5 <0003>'),
       'the italic toggle must shear the text matrix at the word\'s pen, draw its own codes, and carry the pen back to where the word ended').toBe(true);
   });

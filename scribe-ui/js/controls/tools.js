@@ -10,9 +10,13 @@ import {
 import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
-import { createStyleCluster } from '../editTextStyle.js';
+import {
+  createStyleCluster, FACE_FAMILIES, faceIdOf, faceNameOf, docFontDisplayName, docFontIdOf, docFontObjNumOf, loadPageFonts, pageHasSiblingWithout,
+} from '../editTextStyle.js';
 import { createFillSignPalette } from '../viewerFillSign.js';
 import { nativeTextForPage, wordDrawBox } from '../../../js/textEdits.js';
+import { GlobalFonts } from '../../../js/containers/fontContainer.js';
+import { resolveReplacementChar } from '../../../js/pdf/glyphResolve.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
 import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.js';
 import {
@@ -1920,6 +1924,7 @@ export function createEditTextTool(scribe) {
       let total = 0;
       let onAll = true;
       let clearable = false;
+      let unknown = false;
       for (const line of lines) {
         const nt = nativeTextForPage(scribe.doc, line.page);
         for (const w of line.words) {
@@ -1930,10 +1935,13 @@ export function createEditTextTool(scribe) {
           if (e && (prop === 'bold'
             ? ((e.renderMode === 1 || e.renderMode === 2) && !!e.strokeWidthPx)
             : !!(e.skew && e.skew.some((v) => v)))) clearable = true;
+          const sibling = clearable ? true : pageHasSiblingWithout(scribe, line.page.n, e?.fontObjNum ?? null, prop);
+          if (sibling === null) unknown = true;
+          else if (sibling) clearable = true;
         }
       }
-      // Locked means every word already has the style baked into its face, so there is nothing a toggle could remove.
-      return { present: total > 0, on: total > 0 && onAll, locked: total > 0 && onAll && !clearable };
+      if (unknown) Promise.all(lines.map((line) => loadPageFonts(scribe, line.page.n))).then(() => syncStyleUi()).catch(() => {});
+      return { present: total > 0, on: total > 0 && onAll, locked: total > 0 && onAll && !clearable && !unknown };
     };
     /** @param {'bold'|'italic'} prop */
     const toggleSelectionStyle = (prop) => {
@@ -1978,6 +1986,261 @@ export function createEditTextTool(scribe) {
       for (const line of lines) for (const w of line.words) inks.add((w.style.color || '#000000').toLowerCase());
       const list = [...inks];
       return { present: lines.length > 0, color: list[0] || null, mixed: list.length > 1 };
+    };
+    const fontState = () => {
+      const fs = editor?.isOpen() ? editor.fontState() : selectedFontState();
+      // A page font's name comes from its program, so until that loads the state names the family alone.
+      const n = editor?.isOpen() ? editor.pageN() : eligibleSelectedLines()[0]?.page.n;
+      if (fs.fontObjNum !== null && typeof n === 'number' && scribe.doc.images.getEditFontSync(n, fs.fontObjNum) === undefined) {
+        scribe.doc.images.getEditFont(n, fs.fontObjNum).then(() => syncStyleUi()).catch(() => {});
+      }
+      return fs;
+    };
+    const selectedFontState = () => {
+      const lines = eligibleSelectedLines();
+      const ids = new Set();
+      let name = null;
+      for (const line of lines) {
+        const nt = scribe.doc.nativeText.pages[line.page.n] || {};
+        for (const w of line.words) {
+          const face = faceIdOf(w.style.font || '');
+          const objNum = face ? null : (nt[w.id]?.fontObjNum ?? null);
+          ids.add(face || (objNum !== null ? docFontIdOf(objNum) : ''));
+          if (face) name = faceNameOf(w.style.font || '');
+          else if (objNum !== null) {
+            const base = scribe.doc.images.getEditFontSync(line.page.n, objNum)?.program?.baseName;
+            name = base ? docFontDisplayName(base) : (w.style.font || '');
+          } else name = w.style.font || '';
+        }
+      }
+      const list = [...ids];
+      const one = list.length === 1 && list[0] ? list[0] : null;
+      return {
+        present: lines.length > 0,
+        fontId: one,
+        family: one && docFontObjNumOf(one) === null ? one : null,
+        fontObjNum: one ? docFontObjNumOf(one) : null,
+        name: list.length === 1 ? name : null,
+        mixed: list.length > 1,
+      };
+    };
+    /**
+     * The page's own embedded fonts the target's pages draw with, most used first.
+     * @returns {Promise<Array<{ id: string, fontObjNum: number, name: string, raw: string, lines: number, css: ?string }>>}
+     */
+    const docFonts = async () => {
+      const edN = editor?.isOpen() ? editor.pageN() : null;
+      const pages = new Set(typeof edN === 'number' ? [edN] : eligibleSelectedLines().map((l) => l.page.n));
+      /** @type {Map<number, { lines: Set<import('../../../js/objects/ocrObjects.js').OcrLine>, n: number }>} */
+      const used = new Map();
+      for (const n of pages) {
+        const page = scribe.doc.ocr.active?.[n];
+        const nt = scribe.doc.nativeText.pages[n] || {};
+        if (!page) continue;
+        for (const line of page.lines) {
+          for (const w of line.words) {
+            if (faceIdOf(w.style.font || '')) continue;
+            const fo = nt[w.id]?.fontObjNum;
+            if (typeof fo !== 'number' || !Number.isFinite(fo)) continue;
+            let e = used.get(fo);
+            if (!e) { e = { lines: new Set(), n }; used.set(fo, e); }
+            e.lines.add(line);
+          }
+        }
+      }
+      /** @type {Array<{ id: string, fontObjNum: number, name: string, raw: string, lines: number, css: ?string }>} */
+      const out = [];
+      for (const [fo, e] of used) {
+        const ef = await scribe.doc.images.getEditFont(e.n, fo).catch(() => null);
+        const program = ef?.program;
+        if (!program?.font) continue;
+        const raw = program.baseName || `font ${fo}`;
+        const name = docFontDisplayName(raw);
+        const showable = !!ef?.faceName && [...name].every((ch) => ch === ' ' || resolveReplacementChar(ch, program, {}).kind === 'orig');
+        out.push({
+          id: docFontIdOf(fo), fontObjNum: fo, name, raw, lines: e.lines.size, css: showable && ef?.faceName ? `"${ef.faceName}"` : null,
+        });
+      }
+      out.sort((a, b) => b.lines - a.lines || a.name.localeCompare(b.name));
+      return out;
+    };
+    /** @param {string} id */
+    const fontStyleOf = (id) => {
+      const objNum = docFontObjNumOf(id);
+      return objNum !== null ? { fontObjNum: objNum } : { font: id };
+    };
+    /**
+     * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
+     * @param {string} id
+     * @param {boolean} tolerant
+     * @returns {import('../../../js/pdf/textPatch.js').TextEditRequest}
+     */
+    const fontRequest = (line, id, tolerant) => {
+      const nt = nativeTextForPage(scribe.doc, line.page);
+      return {
+        kind: 'replace',
+        tolerant,
+        words: line.words.map((w) => ({
+          id: w.id, text: w.text, penX: nt[w.id]?.penX || [], baselineY: nt[w.id]?.baselineY,
+        })),
+        newTexts: line.words.map((w) => w.text),
+        styles: line.words.map(() => fontStyleOf(id)),
+      };
+    };
+    /**
+     * @returns {Promise<Record<string, {fits: boolean, reason?: string}>>}
+     */
+    const fontFits = async () => {
+      const ids = [...FACE_FAMILIES.map((f) => f.id), ...(await docFonts()).map((d) => d.id)];
+      if (editor?.isOpen()) return editor.fontFits(ids);
+      const targets = orderedSelection();
+      /** @type {Record<string, {fits: boolean, reason?: string}>} */
+      const out = {};
+      await Promise.all(ids.map(async (id) => {
+        for (const { line, n } of targets) {
+          const res = await scribe.doc.images.previewTextEdit(n, fontRequest(line, id, false)).catch((e) => ({ refused: String(e?.message || e) }));
+          if (res && res.refused) { out[id] = { fits: false, reason: res.refused }; return; }
+        }
+        out[id] = { fits: true };
+      }));
+      return out;
+    };
+    /** @type {?HTMLDivElement} */
+    let refusedElem = null;
+    let refusedTimer = 0;
+    /**
+     * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
+     * @param {string} reason
+     */
+    const showRefusal = (line, reason) => {
+      refusedElem?.remove();
+      refusedElem = null;
+      if (refusedTimer) clearTimeout(refusedTimer);
+      const found = entryFor(line);
+      const group = found ? scribe.getTextGroup(found.n, 0) : null;
+      if (!found || !group) return;
+      const lb = lineDrawBox(line, found.e.lbox);
+      const el = document.createElement('div');
+      el.className = 'scribe-edit-text-refused';
+      el.textContent = reason;
+      el.style.left = `${lb.left}px`;
+      el.style.top = `${lb.bottom + 4}px`;
+      group.appendChild(el);
+      refusedElem = el;
+      refusedTimer = window.setTimeout(() => { el.remove(); if (refusedElem === el) refusedElem = null; }, 2600);
+    };
+    /** @type {Array<HTMLCanvasElement>} */
+    const fontPreviewEls = [];
+    let fontPreviewSeq = 0;
+    const clearFontPreview = () => {
+      fontPreviewSeq += 1;
+      for (const el of fontPreviewEls) el.remove();
+      fontPreviewEls.length = 0;
+    };
+    /**
+     * @param {?string} id
+     */
+    const previewFont = (id) => {
+      if (editor?.isOpen()) { editor.previewFont(id); return; }
+      clearFontPreview();
+      if (!id) return;
+      const seq = fontPreviewSeq;
+      (async () => {
+        for (const { line, n, e } of orderedSelection()) {
+          if (e.orientation) continue;
+          const res = await scribe.doc.images.previewTextEdit(n, fontRequest(line, id, true)).catch(() => null);
+          if (seq !== fontPreviewSeq) return;
+          const group = scribe.getTextGroup(n, 0);
+          if (!res || !res.words || !group) continue;
+          const glyphs = res.words.flatMap((w) => w.glyphs);
+          if (glyphs.length === 0) continue;
+          /** @type {Map<number|undefined, ?{program: ?import('../../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string}>} */
+          const editFonts = new Map();
+          for (const g of glyphs) {
+            const f = g.face ? undefined : (g.fontObjNum ?? undefined);
+            if (f === undefined || editFonts.has(f)) continue;
+            editFonts.set(f, (await scribe.doc.images.getEditFont(n, f)) || null);
+          }
+          if (seq !== fontPreviewSeq) return;
+          const lb = lineDrawBox(line, e.lbox);
+          const pad = 2;
+          let left = lb.left - pad;
+          let right = lb.right + pad;
+          let top = lb.top - pad;
+          let bottom = lb.bottom + pad;
+          for (const g of glyphs) {
+            left = Math.min(left, g.penX - pad);
+            right = Math.max(right, g.penX + g.widthPx + pad);
+            top = Math.min(top, g.penY - 1.1 * g.sizePx);
+            bottom = Math.max(bottom, g.penY + 0.4 * g.sizePx);
+          }
+          const zoom = parseFloat(getComputedStyle(group).getPropertyValue('--scribe-zoom')) || scribe.zoomLevel || 1;
+          const k = (window.devicePixelRatio || 1) * zoom;
+          const cv = document.createElement('canvas');
+          cv.width = Math.max(1, Math.ceil((right - left) * k));
+          cv.height = Math.max(1, Math.ceil((bottom - top) * k));
+          cv.className = 'scribe-edit-text-fontpreview';
+          Object.assign(cv.style, {
+            position: 'absolute', left: `${left}px`, top: `${top}px`, width: `${right - left}px`, height: `${bottom - top}px`, pointerEvents: 'none',
+          });
+          const cx = cv.getContext('2d');
+          if (!cx) continue;
+          cx.scale(k, k);
+          cx.translate(-left, -top);
+          cx.fillStyle = '#ffffff';
+          cx.fillRect(lb.left - pad, lb.top - pad, lb.right - lb.left + 2 * pad, lb.bottom - lb.top + 2 * pad);
+          cx.textBaseline = 'alphabetic';
+          for (const g of glyphs) {
+            let drawn = g.text;
+            if (g.face) {
+              const raw = GlobalFonts.raw?.[g.face.family]?.[g.face.styleKey] || GlobalFonts.raw?.[g.face.family]?.normal;
+              if (!raw?.fontFaceName) continue;
+              cx.font = `${raw.fontFaceStyle || 'normal'} ${raw.fontFaceWeight || 'normal'} ${g.sizePx}px "${raw.fontFaceName}"`;
+            } else {
+              const ef = editFonts.get(g.fontObjNum ?? undefined);
+              if (!ef?.faceName || !ef.program) continue;
+              // Some fonts map their visible hyphen glyph to a soft hyphen (U+00AD), which a canvas draws as nothing.
+              drawn = g.text.replace(/\u00ad/g, '-');
+              const program = ef.program;
+              if ([...drawn].some((ch) => resolveReplacementChar(ch, program, {}).kind !== 'orig')) continue;
+              cx.font = `${g.sizePx}px "${ef.faceName}"`;
+            }
+            cx.fillStyle = g.fillColor;
+            cx.fillText(drawn, g.penX, g.penY);
+          }
+          group.appendChild(cv);
+          fontPreviewEls.push(cv);
+        }
+      })().catch((err) => console.error('Edit Text: font preview failed:', err));
+    };
+    /**
+     * @param {string} id
+     */
+    const setFont = (id) => {
+      if (editor?.isOpen()) {
+        editor.setFont(id);
+        syncStyleUi();
+        return;
+      }
+      const lines = eligibleSelectedLines();
+      clearFontPreview();
+      if (lines.length === 0) {
+        syncStyleUi();
+        return;
+      }
+      (async () => {
+        const pages = new Set();
+        for (const line of lines) {
+          const res = await scribe.doc.replaceTextLine(line, line.words.map((w) => w.text).join(' '), { wordStyles: line.words.map(() => fontStyleOf(id)) });
+          if (res && 'refused' in res && res.refused) showRefusal(line, res.refused);
+          else if (res && res.pages) for (const p of res.pages) pages.add(p);
+        }
+        if (pages.size > 0) {
+          refreshPages([...pages]);
+          renderFrames();
+        }
+        syncStyleUi();
+      })().catch((err) => console.error('Edit Text: font change failed:', err));
     };
     /** @type {Array<HTMLCanvasElement>} */
     const previewEls = [];
@@ -2305,6 +2568,11 @@ export function createEditTextTool(scribe) {
     scribe._editTextPreviewColor = previewColor;
     scribe._editTextSample = startSampling;
     scribe._editTextInkState = () => ({ cur: inkCur, applied: inksApplied });
+    scribe._editTextFontState = fontState;
+    scribe._editTextSetFont = setFont;
+    scribe._editTextPreviewFont = previewFont;
+    scribe._editTextFontFits = fontFits;
+    scribe._editTextDocFonts = docFonts;
 
     /** @type {?{info: NonNullable<ReturnType<import('../viewerTextSelection.js').TextSelection['lineInfoAt']>>, x: number, y: number}} */
     let menuTarget = null;
@@ -2343,6 +2611,7 @@ export function createEditTextTool(scribe) {
       onOpenChanged: (open) => {
         if (open) hideBar();
         clearPreview();
+        clearFontPreview();
         syncStyleUi();
         scribe._editTextEditorOpenChanged?.(open);
       },
@@ -2829,6 +3098,11 @@ export function createEditTextTool(scribe) {
       scribe._editTextPreviewColor = null;
       scribe._editTextSample = null;
       scribe._editTextInkState = null;
+      scribe._editTextFontState = null;
+      scribe._editTextSetFont = null;
+      scribe._editTextPreviewFont = null;
+      scribe._editTextFontFits = null;
+      scribe._editTextDocFonts = null;
       scribe._editTextMenuShown = null;
       scribe._editTextMenuHidden = null;
       scribe._editTextMenuHolds = null;

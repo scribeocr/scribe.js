@@ -2200,7 +2200,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 0 6px; box-sizing: border-box;
       background: var(--scribe-surface);
       border-top: 1px solid var(--scribe-line);
+      overflow-x: auto; scrollbar-width: none;
     }
+    .${r} .scribe-vbar::-webkit-scrollbar { display: none; }
     .${r}.scribe-phone .scribe-vbar.on { display: flex; }
     .${r} .scribe-vbtn {
       min-height: 44px; min-width: 44px; padding: 0 9px;
@@ -3033,6 +3035,26 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tc-crow .scribe-tc-sw { width: 16px; height: 16px; pointer-events: none; }
     .${r} .scribe-tc-crow .scribe-tc-sw.scribe-tc-custom::before { inset: 4px; }
     .${r} .scribe-tc-crow .scribe-tc-chev { margin-left: auto; width: 12px; height: 12px; color: var(--scribe-ink-2); opacity: .75; }
+    /* Font control */
+    .${r} .scribe-tc-gap { width: 1px; height: 16px; background: var(--scribe-line-strong); margin: 0 3px; flex: none; }
+    .${r} .scribe-tc-font-pop { min-width: 208px; }
+    .${r} .scribe-tc-font-row { display: flex; align-items: center; gap: 8px; margin: 0 -6px; padding: 3px 6px; border-radius: 5px; font-size: 14px; color: var(--scribe-ink); cursor: pointer; white-space: nowrap; min-height: 22px; }
+    .${r} .scribe-tc-font-row:hover { background: var(--scribe-hover); }
+    .${r} .scribe-tc-font-row:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: -2px; }
+    .${r} .scribe-tc-font-row.active { color: var(--scribe-accent); }
+    .${r} .scribe-tc-font-row.disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-tc-font-chk { width: 14px; height: 14px; flex: none; color: var(--scribe-accent); visibility: hidden; }
+    .${r} .scribe-tc-font-row.active .scribe-tc-font-chk { visibility: visible; }
+    .${r} .scribe-tc-font-nm { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-tc-font-ct { flex: none; margin-left: auto; padding-left: 10px; font-size: 11px; font-family: inherit; color: var(--scribe-ink-3); }
+    .${r} .scribe-edit-text-refused { position: absolute; z-index: 6; pointer-events: none; white-space: nowrap; font-family: -apple-system, system-ui, "Segoe UI", sans-serif; font-size: calc(12px / var(--scribe-zoom, 1)); line-height: 1.3; padding: calc(3px / var(--scribe-zoom, 1)) calc(8px / var(--scribe-zoom, 1)); border-radius: calc(5px / var(--scribe-zoom, 1)); border: calc(1px / var(--scribe-zoom, 1)) solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-danger); box-shadow: var(--scribe-menu-shadow); }
+    .${r} .scribe-font-sheet { height: auto; bottom: calc(108px + env(safe-area-inset-bottom, 0px)); padding: 0 18px 10px; box-sizing: border-box; }
+    .${r} .scribe-font-sheet .scribe-sheet-hd { padding: 10px 0 4px; margin: 0 -18px; }
+    .${r} .scribe-font-sheet .scribe-tc-pkhd { font-size: 15px; margin: 2px 0 8px; }
+    .${r} .scribe-font-sheet .scribe-tc-font-row { font-size: 17px; min-height: 34px; padding: 4px 8px; margin: 0; }
+    .${r} .scribe-font-sheet .scribe-tc-font-chk { width: 18px; height: 18px; }
+    .${r} .scribe-font-sheet .scribe-tc-font-ct { font-size: 13px; }
+    .${r} .scribe-font-sheet .scribe-tc-hd { margin: 6px 8px 4px; }
     /* The picker page the plate turns into: a saturation / value square, a hue strip, the hex field with the loupe and the wells. */
     .${r} .scribe-tc-pk { display: flex; flex-direction: column; gap: 8px; width: 202px; }
     .${r} .scribe-tc-pkhd { display: flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 600; color: var(--scribe-ink); margin: -2px 0 0; }

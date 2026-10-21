@@ -121,6 +121,12 @@ const round3 = (v) => Math.round(v * 1000) / 1000;
 export const FAUX_BOLD_STROKE_EM = 0.025;
 /** The shear an italic toggle gives a word that its font draws upright. */
 export const FAUX_OBLIQUE_SKEW = 0.25;
+/** The built-in families a word can be redrawn in. */
+export const EDIT_FACE_FAMILIES = ['Carlito', 'Century', 'Garamond', 'NimbusMono', 'NimbusRoman', 'NimbusSans', 'Palatino', 'Gothic'];
+/** The family name the parser reads back for a word drawn in each built-in family, from the program's PostScript name. */
+export const EDIT_FACE_FAMILY_NAMES = {
+  Carlito: 'Carlito', Century: 'C059', Garamond: 'EBGaramond', NimbusMono: 'NimbusMonoPS', NimbusRoman: 'NimbusRoman', NimbusSans: 'NimbusSans', Palatino: 'P052', Gothic: 'URWGothic',
+};
 
 /**
  * Find each requested word among a glyph-op map's words.
@@ -407,9 +413,8 @@ export function drawnPen(op, tx, ty) {
 
 /**
  * Whether a glyph lies inside the region its operator paints.
- * That region is the page box cut down by the clips and form boxes in force.
  * @param {ShowOp} op
- * @param {NonNullable<PositionedChar['_src']>} src
+ * @param {{ tx: number, ty: number, adv: number }} src - A glyph's source, or a pen and advance in the op's text space.
  */
 export function glyphVisible(op, src) {
   const box = op.visible;
@@ -627,11 +632,22 @@ export const tailShift = (newEnd, oldEnd, nextStart, minGap = 0, stopGap = Infin
  * @property {'delete'|'replace'} kind
  * @property {Array<TextEditWordSpec>} words - The line's words to act on.
  * @property {Array<string>} [newTexts] - A replacement's new words for the line, in order.
- * @property {Array<?{ color?: string, bold?: boolean, italic?: boolean }>} [styles] - A replacement's toggles, aligned with `newTexts`.
+ * @property {Array<?{ color?: string, bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }>} [styles] - A replacement's toggles, aligned with `newTexts`.
  *   A style toggle alone is a replacement whose words are unchanged.
+ *   `font` names a family of `EDIT_FACE_FAMILIES`.
+ *   `fontObjNum` names a font of the page by its object number.
+ *   A weight or lean toggle alone retypes the word in the page's own font of its family at that weight and lean when the page has one that draws the word.
  * @property {(fontObj: PageFont) => ?Map<string, FontCode>} [codeTable] - A replacement's code table per font, null when the font cannot be typed in.
  * @property {(fontObj: PageFont, text: string) => ?SubstituteGlyph} [substituteFor] - A replacement's glyph for a character no page font of the line draws, from the face standing in for `fontObj`.
- *   Null when there is none.
+ * @property {(family: string, styleKey: string, text: string) => ?SubstituteGlyph} [chosenGlyph] - A replacement's glyph for a character in a face the request chose, at the face's own metrics.
+ * @property {(fontObj: PageFont) => ?{ family: string, styleKey: string }} [faceOf] - The built-in face a page font is, when the font was synthesized for an earlier edit.
+ * @property {(fontObjNum: number, streamIdx: number) => ?{ fontObj: PageFont, tag: string }} [pageFont] - A font of the page by object number, under the tag a stream's resources list it by.
+ *   Null when the stream does not list it.
+ * @property {(own: PageFont, bold: boolean, italic: boolean, text: string, streamIdx: number) => ?{ fontObj: PageFont, tag: string }} [siblingFont]
+ *   The page's font of `own`'s family at a weight and lean, whose codes draw `text`.
+ *   Null when the stream lists none.
+ * @property {boolean} [tolerant] - Whether a preview keeps a word that would run past the edge of what the page shows.
+ *   A commit never does.
  */
 
 /**
@@ -661,6 +677,7 @@ export const tailShift = (newEnd, oldEnd, nextStart, minGap = 0, stopGap = Infin
  * @property {string} text
  * @property {[number, number]} pen - The text-space pen the word's first glyph is drawn at after the edit.
  * @property {number} op - The show op whose matrices place that pen on the page.
+ * @property {number} adv - The distance from the pen to the word's far end after the edit, in that op's text space.
  */
 
 /**
@@ -955,6 +972,60 @@ export function planTextEdit(glyphOpMap, req) {
     const cop = glyphOpMap.ops[c._src.op];
     return glyphEnd(c) - excessOf(cop, lsOf(j)) * kOf(cop);
   };
+  /** The text-matrix shear of an operator, 0 under the parser's italic threshold. */
+  const shearOf = (/** @type {ShowOp} */ op) => {
+    const den = op.tm[0] * op.tm[0] + op.tm[1] * op.tm[1];
+    const raw = den > 0 ? (op.tm[0] * op.tm[2] + op.tm[1] * op.tm[3]) / den : 0;
+    return Math.abs(raw) > 0.05 ? raw : 0;
+  };
+  /**
+   * The built-in face or page font a word's style retypes it in.
+   * Null leaves the word in its font, with any toggle drawn as a stroke or a shear.
+   * @param {?{ bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }} style
+   * @param {ShowOp} op
+   * @param {string} text - The word as it will read.
+   * @returns {?{ family: string, styleKey: string } | { fontObj: PageFont, tag: string } | { error: string }}
+   */
+  const chosenOf = (style, op, text) => {
+    if (!style) return null;
+    const bold = style.bold ?? !!(op.font?.bold || op.tr === 1 || op.tr === 2);
+    const italic = style.italic ?? !!(op.font?.italic || shearOf(op));
+    if (style.font) return { family: style.font, styleKey: bold ? (italic ? 'boldItalic' : 'bold') : (italic ? 'italic' : 'normal') };
+    if (Number.isFinite(style.fontObjNum)) {
+      const pf = req.pageFont ? req.pageFont(/** @type {number} */ (style.fontObjNum), op.streamIdx) : null;
+      return pf || { error: `The page does not list font object ${style.fontObjNum} for this text.` };
+    }
+    if ((style.bold === undefined && style.italic === undefined) || !op.font) return null;
+    const face = req.faceOf ? req.faceOf(op.font) : null;
+    if (face) {
+      const styleKey = bold ? (italic ? 'boldItalic' : 'bold') : (italic ? 'italic' : 'normal');
+      return styleKey === face.styleKey ? null : { family: face.family, styleKey };
+    }
+    if (!req.siblingFont) return null;
+    if (bold === !!op.font.bold && italic === !!op.font.italic) return null;
+    const sibling = req.siblingFont(op.font, bold, italic, text, op.streamIdx);
+    if (sibling) return sibling;
+    const stroked = op.tr === 1 || op.tr === 2;
+    if (style.bold === false && op.font.bold && !stroked) return { error: `No regular-weight font of this family on the page draws "${text}".` };
+    if (style.italic === false && op.font.italic && !shearOf(op)) return { error: `No upright font of this family on the page draws "${text}".` };
+    return null;
+  };
+  /**
+   * The toggles styleOps writes around a word's codes.
+   * @param {?{ color?: string, bold?: boolean, italic?: boolean, font?: string, fontObjNum?: number }} style
+   * @param {ShowOp} op
+   * @param {ReturnType<typeof chosenOf>} chosen
+   */
+  const opsSpecOf = (style, op, chosen) => {
+    if (!style || !chosen || 'error' in chosen) return style;
+    // A retyped word takes its weight and lean from its new program, so any faux stroke or shear the page gave it comes off and none is added.
+    /** @type {{ color?: string, bold?: boolean, italic?: boolean }} */
+    const spec = {};
+    if (style.color) spec.color = style.color;
+    if (op.tr === 1 || op.tr === 2) spec.bold = false;
+    if (shearOf(op)) spec.italic = false;
+    return spec;
+  };
   const olen = words.length;
   const nlen = newTexts.length;
   let i0 = 0;
@@ -962,13 +1033,17 @@ export function planTextEdit(glyphOpMap, req) {
   let k = 0;
   while (k < olen - i0 && k < nlen - i0 && words[olen - 1 - k].spec.text === newTexts[nlen - 1 - k]) k += 1;
   const pairs = Math.min(olen - i0 - k, nlen - i0 - k);
-  /** @type {Array<{ kind: 'keep'|'change'|'insert', old: number, text: string, style: ?{ color?: string, bold?: boolean, italic?: boolean }, deletedBefore: Array<number> }>} */
+  /** @type {Array<{ kind: 'keep'|'change'|'insert', old: number, text: string, style: ?{ color?: string, bold?: boolean, italic?: boolean, font?: string }, deletedBefore: Array<number> }>} */
   const items = [];
   for (let i = 0; i < nlen; i++) {
     const style = styles[i] || null;
+    // A font choice redraws the word in the chosen face or page font, as does a weight or lean the page's own fonts can give it, so an unchanged word that carries one is a change.
+    const oldJ = i < i0 ? i : (i >= nlen - k ? i - (nlen - olen) : -1);
+    const c0 = oldJ >= 0 && oldJ < olen ? words[oldJ].chars[0] : null;
+    const keepKind = style && c0 && c0._src && chosenOf(style, glyphOpMap.ops[c0._src.op], newTexts[i]) ? 'change' : 'keep';
     if (i < i0) {
       items.push({
-        kind: 'keep', old: i, text: newTexts[i], style, deletedBefore: [],
+        kind: keepKind, old: i, text: newTexts[i], style, deletedBefore: [],
       });
     } else if (i < i0 + pairs) {
       items.push({
@@ -980,7 +1055,7 @@ export function planTextEdit(glyphOpMap, req) {
       });
     } else {
       items.push({
-        kind: 'keep', old: i - (nlen - olen), text: newTexts[i], style, deletedBefore: [],
+        kind: keepKind, old: i - (nlen - olen), text: newTexts[i], style, deletedBefore: [],
       });
     }
   }
@@ -1015,20 +1090,29 @@ export function planTextEdit(glyphOpMap, req) {
    * Codes for a text in the font and state of an operator.
    * A character the font lacks is typed in another font.
    * Such a text is returned in segments.
+   * With a chosen face, a character draws in that face when the face has it, and otherwise falls back through the page's fonts as an unchosen text does.
+   * With a chosen page font, every character draws in that font, and a character it lacks is an error.
    * @param {ShowOp} op
    * @param {string} text
+   * @param {ReturnType<typeof chosenOf>} [chosen]
    * @returns {{ hex: string, adv: number, codes: Array<FontCode & { text: string, canon?: string }>, segments?: Array<CodeSegment>, faces?: Array<SubstituteGlyph> } | { error: string }}
    */
-  const codesIn = (op, text) => {
+  const codesIn = (op, text, chosen = null) => {
     if (!op.font) return { error: 'The word has no font.' };
     if (op.font.type3) return { error: 'Text in a Type 3 font is not replaced.' };
     if (op.font.verticalMode) return { error: 'Vertical text is not replaced.' };
+    if (chosen && 'error' in chosen) return { error: chosen.error };
+    const chosenFace = chosen && 'family' in chosen ? chosen : null;
+    const chosenFont = chosen && 'fontObj' in chosen ? chosen : null;
     const table = req.codeTable ? req.codeTable(op.font) : null;
-    if (!table) return { error: 'The font cannot be typed in.' };
+    if (!table && !chosen) return { error: 'The font cannot be typed in.' };
     const state = {
       size: op.fontSize, tc: op.tc, tw: op.tw, tz: op.tz,
     };
-    const whole = codesForText(table, text);
+    if (chosenFace && !req.chosenGlyph) return { error: `${chosenFace.family} is not available.` };
+    const chosenTable = chosenFont && req.codeTable ? req.codeTable(chosenFont.fontObj) : null;
+    if (chosenFont && !chosenTable) return { error: `${chosenFont.fontObj.baseName || 'The chosen font'} cannot be typed in.` };
+    const whole = chosen || !table ? null : codesForText(table, text);
     if (whole) {
       const hex = whole.map((c) => c.code.toString(16).padStart(c.nBytes * 2, '0')).join('');
       return { hex, adv: typedAdvance(whole, state), codes: whole };
@@ -1037,7 +1121,35 @@ export function planTextEdit(glyphOpMap, req) {
     const runs = [];
     for (const ch of [...text]) {
       let placed = false;
-      const own = codesForText(table, ch);
+      if (chosenFont && chosenTable) {
+        const codes = codesForText(chosenTable, ch);
+        if (!codes) return { error: `${chosenFont.fontObj.baseName || 'The chosen font'} has no glyph for "${ch}".` };
+        const last = runs[runs.length - 1];
+        if (last && last.kind === 'font' && last.fontObj === chosenFont.fontObj) last.codes.push(...codes);
+        else {
+          runs.push({
+            kind: 'font', fontObj: chosenFont.fontObj, tag: chosenFont.tag, size: op.fontSize, tz: op.tz, codes,
+          });
+        }
+        placed = true;
+      }
+      if (chosenFace && req.chosenGlyph) {
+        const face = req.chosenGlyph(chosenFace.family, chosenFace.styleKey, ch);
+        if (face) {
+          const code = {
+            code: face.gid, nBytes: 2, advEm: face.advEm, used: false, text: ch,
+          };
+          const last = runs[runs.length - 1];
+          if (last && last.kind === 'face' && last.tag === face.tag) last.codes.push(code);
+          else {
+            runs.push({
+              kind: 'face', tag: face.tag, size: op.fontSize, tz: op.tz, codes: [code], face,
+            });
+          }
+          placed = true;
+        }
+      }
+      const own = placed || !table ? null : codesForText(table, ch);
       if (own) {
         const last = runs[runs.length - 1];
         if (last && last.kind === 'page') last.codes.push(...own);
@@ -1081,7 +1193,7 @@ export function planTextEdit(glyphOpMap, req) {
           placed = true;
         }
       }
-      if (!placed) return { error: `The font has no glyph for "${ch}".` };
+      if (!placed) return { error: chosenFace ? `Neither ${chosenFace.family} nor the page's fonts have a glyph for "${ch}".` : `The font has no glyph for "${ch}".` };
     }
     /** @type {Array<CodeSegment>} */
     const segments = [];
@@ -1235,7 +1347,7 @@ export function planTextEdit(glyphOpMap, req) {
       if (it.style) applyStyle(words[j].chars, { ...words[j].spec, ...it.style }, s);
       const c0 = words[j].chars[0];
       predictedWords.push({
-        oldId: words[j].spec.id, text: it.text, pen: penAt(glyphOpMap.ops[c0._src.op], c0._src.tx, c0._src.ty, s), op: c0._src.op,
+        oldId: words[j].spec.id, text: it.text, pen: penAt(glyphOpMap.ops[c0._src.op], c0._src.tx, c0._src.ty, s), op: c0._src.op, adv: (wordEnd(j) - wordStart(j)) / kOf(glyphOpMap.ops[c0._src.op]),
       });
       prevEndNew = wordEnd(j) + s;
       prevOld = j;
@@ -1248,7 +1360,7 @@ export function planTextEdit(glyphOpMap, req) {
       if (!anchorChar || !anchorChar._src) return { ...none, refused: 'An inserted word has no neighbor to type beside.' };
       const how = prevTail ? 'insertAfter' : 'insertBefore';
       const op = glyphOpMap.ops[anchorChar._src.op];
-      const r = codesIn(op, it.text);
+      const r = codesIn(op, it.text, chosenOf(it.style, op, it.text));
       if ('error' in r) return { ...none, refused: r.error };
       const sp = spacedInsert(r, op, lineLetterSpacing, false);
       const advUser = (sp.adv - sp.trailing) * kOf(op);
@@ -1257,7 +1369,7 @@ export function planTextEdit(glyphOpMap, req) {
         const act = actionOf(d);
         if (!act) continue;
         const dop = glyphOpMap.ops[d._src.op];
-        const rd = d === anchorChar ? r : codesIn(dop, it.text);
+        const rd = d === anchorChar ? r : codesIn(dop, it.text, chosenOf(it.style, dop, it.text));
         if ('error' in rd) return { ...none, refused: rd.error };
         if (rd.faces) for (const f of rd.faces) facesUsed.set(f.tag, f);
         const spd = d === anchorChar ? sp : spacedInsert(rd, dop, lineLetterSpacing, false);
@@ -1268,12 +1380,11 @@ export function planTextEdit(glyphOpMap, req) {
         const ins = { ...spd.ins, gap: lead === null ? 0 : insertGap / kOf(dop) - lead };
         if (how === 'insertBefore') ins.shift = shiftOf(dop, s);
         if (it.style) {
-          const ops = styleOps(dop, { id: '', penX: [], ...it.style }, null);
+          const spec = /** @type {{ color?: string, bold?: boolean, italic?: boolean }} */ (opsSpecOf(it.style, dop, chosenOf(it.style, dop, it.text)));
+          const ops = styleOps(dop, { id: '', penX: [], ...spec }, null);
           // The lean is written as a text matrix at the insertion's pen when its codes are emitted, so styleOps gets no target here.
-          const shearDen = dop.tm[0] * dop.tm[0] + dop.tm[1] * dop.tm[1];
-          const shearRaw = shearDen > 0 ? (dop.tm[0] * dop.tm[2] + dop.tm[1] * dop.tm[3]) / shearDen : 0;
-          const shearNow = Math.abs(shearRaw) > 0.05 ? shearRaw : 0;
-          const lean = it.style.italic === true && !shearNow ? FAUX_OBLIQUE_SKEW : (it.style.italic === false && shearNow ? -shearNow : 0);
+          const shearNow = shearOf(dop);
+          const lean = spec.italic === true && !shearNow ? FAUX_OBLIQUE_SKEW : (spec.italic === false && shearNow ? -shearNow : 0);
           if (ops.before.length > 0 || ops.after.length > 0 || lean) ins.wrap = { before: ops.before, after: ops.after, lean: lean || undefined };
         }
         chainInsert(act, how, ins);
@@ -1286,6 +1397,7 @@ export function planTextEdit(glyphOpMap, req) {
         text: 'codes' in r ? r.codes.map((fc) => fc.canon ?? fc.text).join('') : it.text,
         pen: penAt(op, anchorChar._src.tx, anchorChar._src.ty, dAlong),
         op: anchorChar._src.op,
+        adv: advUser / kOf(op),
       });
       prevEndNew = end;
       // The words after move by the line's growth past the previous word's old end, not by the whole inserted word, since a changed word before the insert may have shrunk.
@@ -1317,7 +1429,7 @@ export function planTextEdit(glyphOpMap, req) {
     const anchor = dropped[0] || chars[pre] || chars[pre - 1];
     const op = glyphOpMap.ops[anchor._src.op];
     const kU = kOf(op);
-    const r = middle.length > 0 ? codesIn(op, middle) : { hex: '', adv: 0, codes: [] };
+    const r = middle.length > 0 ? codesIn(op, middle, chosenOf(it.style, op, it.text)) : { hex: '', adv: 0, codes: [] };
     if ('error' in r) return { ...none, refused: r.error };
     const appendAfter = dropped.length === 0 && suf === 0 && pre > 0 ? chars[pre - 1] : null;
     const lsU = lsOf(j);
@@ -1344,7 +1456,7 @@ export function planTextEdit(glyphOpMap, req) {
         const act = actionOf(d);
         if (!act) continue;
         const dop = glyphOpMap.ops[d._src.op];
-        const rd = d === c ? r : (middle.length > 0 ? codesIn(dop, middle) : { hex: '', adv: 0, codes: [] });
+        const rd = d === c ? r : (middle.length > 0 ? codesIn(dop, middle, chosenOf(it.style, dop, it.text)) : { hex: '', adv: 0, codes: [] });
         if ('error' in rd) return rd.error;
         if ('faces' in rd && rd.faces) for (const f of rd.faces) facesUsed.set(f.tag, f);
         const spd = d === c ? sp : spacedInsert(rd, dop, lsU, how === 'insertAfter');
@@ -1383,7 +1495,7 @@ export function planTextEdit(glyphOpMap, req) {
         const act = actionOf(d);
         if (!act) continue;
         const dop = glyphOpMap.ops[d._src.op];
-        const ops = styleOps(dop, { ...words[j].spec, ...it.style }, penAt(dop, d._src.tx, d._src.ty, s));
+        const ops = styleOps(dop, { ...words[j].spec, ...opsSpecOf(it.style, dop, chosenOf(it.style, dop, it.text)) }, penAt(dop, d._src.tx, d._src.ty, s));
         act.before = [...(act.before || []), ...ops.before];
         act.after = [...(act.after || []), ...ops.after];
         act.shift = shiftOf(dop, s);
@@ -1398,6 +1510,7 @@ export function planTextEdit(glyphOpMap, req) {
       text: it.text.slice(0, preLen) + middleRecorded + it.text.slice(it.text.length - sufLen),
       pen: penAt(glyphOpMap.ops[chars[0]._src.op], chars[0]._src.tx, chars[0]._src.ty, s),
       op: chars[0]._src.op,
+      adv: (wordEnd(j) - wordStart(j) + delta) / kOf(glyphOpMap.ops[chars[0]._src.op]),
     });
     // A margin over the parser's word-split threshold of 0.15 of the font size, which a gap must exceed to read as a word break.
     const minGap = 0.16 * op.fontSize * kU;

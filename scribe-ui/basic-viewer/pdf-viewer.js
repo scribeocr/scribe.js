@@ -29,7 +29,7 @@ import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPanel.js';
 import {
-  createColorPicker, docInkGroup, inkName, STANDARD_INKS, TEXT_COLOR_SVG,
+  createColorPicker, docInkGroup, inkName, STANDARD_INKS, TEXT_COLOR_SVG, FONT_SVG, FACE_FAMILIES, faceCssFamily, setDocFontFace,
 } from '../js/editTextStyle.js';
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
@@ -618,6 +618,8 @@ class ScribePDFViewer {
     this._redoBtnElem = null;
     /** @type {?HTMLElement} Mode the baseline below was captured for, so repeated syncs of one mode do not recapture it. */
     this._modeSessionBtn = null;
+    /** @type {?MutationObserver} */
+    this._modeBtnObserver = null;
     /** @type {number} Unified-history depth at mode entry, or -1 outside an editing-mode session. */
     this._modeBaseline = -1;
     /** @type {?HTMLDivElement} The phone bottom dock, built on first phone-mode entry. */
@@ -641,6 +643,8 @@ class ScribePDFViewer {
     this._colorSheetElem = null;
     /** @type {?HTMLDivElement} */
     this._colorSheetHost = null;
+    /** @type {?HTMLDivElement} */
+    this._fontSheetElem = null;
     /** @type {?HTMLDivElement} The dock's mode bar, shown in place of the navigation row while a mode runs. */
     this._dockModeRow = null;
     /** @type {?{ic: HTMLSpanElement, nm: HTMLSpanElement, status: HTMLSpanElement}} */
@@ -1691,6 +1695,13 @@ class ScribePDFViewer {
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
         this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
+      // A tool that awaits before activating can mark its button active after the click listener below has synced the banner, so the banner follows the class itself.
+      // Without this the session's history baseline waits for the next sync from elsewhere, and an edit made before it counts as nothing to save.
+      if (typeof MutationObserver !== 'undefined') {
+        this._modeBtnObserver?.disconnect();
+        this._modeBtnObserver = new MutationObserver(() => this._syncModeBanner());
+        for (const btn of exclusiveToolBtns) this._modeBtnObserver.observe(btn, { attributes: true, attributeFilter: ['class'] });
+      }
       for (const btn of exclusiveToolBtns) {
         btn.addEventListener('click', () => {
           if (btn.classList.contains('active')) {
@@ -3582,6 +3593,7 @@ class ScribePDFViewer {
       p.bold.style.display = kind === 'text' ? '' : 'none';
       p.italic.style.display = kind === 'text' ? '' : 'none';
       p.copy.style.display = kind === 'text' && !sessionOn ? '' : 'none';
+      p.font.style.display = kind === 'text' ? '' : 'none';
       p.sep.style.display = '';
       const sepAnchor = sessionOn ? p.hint : kind !== 'text' ? p.deselect : p.del;
       if (p.sep.nextSibling !== sepAnchor) bar.insertBefore(p.sep, sepAnchor);
@@ -3624,20 +3636,23 @@ class ScribePDFViewer {
       const targetLines = kind === 'text' ? (sv._editTextSelectedLines?.() || []) : [];
       p.color.style.display = kind === 'text' ? '' : 'none';
       p.color.disabled = !(sessionOn || targetLines.length > 0);
+      p.font.disabled = p.color.disabled;
       p.color.style.setProperty('--scribe-text-ink', sv._editTextInkState?.().cur || '#000000');
       const colorRow = kind === 'text' && !!this._phoneColorRow && !p.color.disabled;
       this._phoneColorRow = colorRow;
       p.color.classList.toggle('active', colorRow);
       for (const el of [p.back, p.strip, p.custom, p.rowDone]) el.style.display = colorRow ? '' : 'none';
       if (colorRow) {
-        for (const el of [p.undo, p.redo, p.edit, p.bold, p.italic, p.color, p.copy, p.sep, p.del, p.deselect, p.hint, p.done]) el.style.display = 'none';
+        for (const el of [p.undo, p.redo, p.edit, p.bold, p.italic, p.color, p.font, p.copy, p.sep, p.del, p.deselect, p.hint, p.done]) el.style.display = 'none';
         this._fillPhoneColorStrip();
       } else if (this._colorSheetElem?.classList.contains('open')) {
         this._closePhoneColorSheet(true);
       }
+      if (colorRow || kind !== 'text') this._closePhoneFontSheet();
     } else {
       this._phoneColorRow = false;
       if (this._colorSheetElem?.classList.contains('open')) this._closePhoneColorSheet(true);
+      this._closePhoneFontSheet();
     }
     this._syncUndoState();
     if (was !== !!kind && this.scribe.scrollContainer) this._relayout();
@@ -3715,6 +3730,110 @@ class ScribePDFViewer {
   _closePhoneColorSheet(revert) {
     if (revert) this.scribe._editTextPreviewColor?.(null);
     const sheet = this._colorSheetElem;
+    if (!sheet) return;
+    sheet.classList.remove('open', 'dragging');
+    sheet.style.transform = '';
+  }
+
+  _openPhoneFontSheet() {
+    const sv = this.scribe;
+    if (!this._fontSheetElem) {
+      const sheet = document.createElement('div');
+      sheet.className = 'scribe-sheet scribe-font-sheet scribe-edit-text-tools';
+      const hd = document.createElement('div');
+      hd.className = 'scribe-sheet-hd';
+      const pill = document.createElement('div');
+      pill.className = 'scribe-sheet-pill';
+      hd.appendChild(pill);
+      const host = document.createElement('div');
+      sheet.append(hd, host);
+      this.pdfViewerElem.appendChild(sheet);
+      attachSheetDrag(sheet, hd, { host: this.pdfViewerElem, resizable: false, onDismiss: () => this._closePhoneFontSheet() });
+      this._fontSheetElem = sheet;
+    }
+    const sheet = this._fontSheetElem;
+    const host = /** @type {HTMLDivElement} */ (sheet.lastElementChild);
+    host.replaceChildren();
+    const title = document.createElement('div');
+    title.className = 'scribe-tc-pkhd';
+    title.textContent = 'Font';
+    host.appendChild(title);
+    const fs = sv._editTextFontState?.() || { present: false, fontId: null, mixed: false };
+    const cur = fs.mixed ? null : (fs.fontId || null);
+    /** @type {Array<HTMLDivElement>} */
+    const rows = [];
+    /**
+     * @param {string} id
+     * @param {string} name
+     * @param {?string} css
+     * @param {?number} count
+     */
+    const mkRow = (id, name, css, count) => {
+      const row = document.createElement('div');
+      row.className = `scribe-tc-font-row${id === cur ? ' active' : ''}`;
+      row.setAttribute('role', 'option');
+      row.dataset.family = id;
+      const chk = document.createElement('span');
+      chk.className = 'scribe-tc-font-chk';
+      chk.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
+        + ' style="display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>';
+      const nm = document.createElement('span');
+      nm.className = 'scribe-tc-font-nm';
+      nm.textContent = name;
+      if (css && count !== null) setDocFontFace(nm, css, 17, 24);
+      else if (css) nm.style.fontFamily = css;
+      row.append(chk, nm);
+      if (count !== null) {
+        const ct = document.createElement('span');
+        ct.className = 'scribe-tc-font-ct';
+        ct.textContent = `${count} line${count === 1 ? '' : 's'}`;
+        row.appendChild(ct);
+      }
+      row.addEventListener('click', () => {
+        if (row.classList.contains('disabled')) return;
+        this._closePhoneFontSheet();
+        sv._editTextSetFont?.(id);
+      });
+      rows.push(row);
+      return row;
+    };
+    const builtInHd = document.createElement('div');
+    builtInHd.className = 'scribe-tc-hd';
+    builtInHd.textContent = 'Built-in';
+    builtInHd.style.display = 'none';
+    host.appendChild(builtInHd);
+    for (const f of FACE_FAMILIES) host.appendChild(mkRow(f.id, f.name, faceCssFamily(f.id), null));
+    sheet.classList.add('open');
+    /** @type {?Record<string, {fits: boolean, reason?: string}>} */
+    let fits = null;
+    const applyFits = () => {
+      if (!fits) return;
+      for (const row of rows) {
+        const r = fits[/** @type {string} */ (row.dataset.family)];
+        if (r && !r.fits) { row.classList.add('disabled'); row.title = r.reason || ''; }
+      }
+    };
+    sv._editTextFontFits?.().then((result) => {
+      if (!sheet.classList.contains('open') || !result) return;
+      fits = result;
+      applyFits();
+    }).catch(() => {});
+    sv._editTextDocFonts?.().then((docs) => {
+      if (!sheet.classList.contains('open') || !docs || docs.length === 0) return;
+      const dhd = document.createElement('div');
+      dhd.className = 'scribe-tc-hd';
+      dhd.textContent = 'In this document';
+      const frag = document.createDocumentFragment();
+      frag.appendChild(dhd);
+      for (const d of docs) frag.appendChild(mkRow(d.id, d.name, d.css, d.lines));
+      host.insertBefore(frag, builtInHd);
+      builtInHd.style.display = '';
+      applyFits();
+    }).catch(() => {});
+  }
+
+  _closePhoneFontSheet() {
+    const sheet = this._fontSheetElem;
     if (!sheet) return;
     sheet.classList.remove('open', 'dragging');
     sheet.style.transform = '';
@@ -4865,6 +4984,9 @@ class ScribePDFViewer {
     vCustom.addEventListener('click', () => this._openPhoneColorSheet());
     const vCopy = vb('', CM_COPY_SVG);
     vCopy.title = 'Copy';
+    const vFont = vb('', FONT_SVG);
+    vFont.title = 'Font';
+    vFont.addEventListener('click', () => this._openPhoneFontSheet());
     const vSep = document.createElement('span');
     vSep.className = 'scribe-vbar-sep';
     const vDel = vb('', CM_TRASH_SVG, 'danger');
@@ -4914,7 +5036,7 @@ class ScribePDFViewer {
     vDone.addEventListener('click', () => {
       this.scribe._editTextLineEditor?.commit().catch((e) => console.error('Edit Text: commit failed:', e));
     });
-    vbar.append(vUndo, vRedo, vEdit, vBold, vItalic, vColor, vCopy, vSep, vDel, vDeselect, vHint, vDone, vBack, vStrip, vCustom, vRowDone);
+    vbar.append(vUndo, vRedo, vEdit, vBold, vItalic, vColor, vCopy, vFont, vSep, vDel, vDeselect, vHint, vDone, vBack, vStrip, vCustom, vRowDone);
     this.pdfViewerElem.appendChild(vbar);
     this._vbarElem = vbar;
     this._vbarParts = {
@@ -4925,6 +5047,7 @@ class ScribePDFViewer {
       italic: vItalic,
       color: vColor,
       copy: vCopy,
+      font: vFont,
       sep: vSep,
       del: vDel,
       deselect: vDeselect,
@@ -5809,6 +5932,8 @@ class ScribePDFViewer {
    * @param {boolean} [options.resume=true] - Whether this viewer's window is the one a relaunch resumes.
    */
   async destroy({ terminateDoc, resume = true } = {}) {
+    this._modeBtnObserver?.disconnect();
+    this._modeBtnObserver = null;
     this._destroyed = true;
     for (const inst of this._libraryInstances) {
       // Flush unsaved library sidecars while the docs are still alive.

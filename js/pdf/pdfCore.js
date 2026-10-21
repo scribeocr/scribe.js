@@ -1,7 +1,9 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
 import { ObjectCache } from './objectCache.js';
-import { buildType3OpentypeFont, enumerateType3Fonts, parsePageFonts } from './fonts/parsePdfFonts.js';
+import {
+  buildType3OpentypeFont, enumerateType3Fonts, familiesCompatible, normalizeFamilyForMatch, parsePageFonts,
+} from './fonts/parsePdfFonts.js';
 import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import ocr from '../objects/ocrObjects.js';
@@ -10,7 +12,7 @@ import {
 } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
 import {
-  charStateKey, drawnPen, editsFromPlans, fontCodeTable, glyphCopies, glyphVisible, locateWords, planTextEdit, rewriteShowOperator, segmentAt,
+  charStateKey, codesForText, drawnPen, editsFromPlans, fontCodeTable, glyphCopies, glyphVisible, locateWords, planTextEdit, rewriteShowOperator, segmentAt,
 } from './textPatch.js';
 import {
   builtInFit, parseEditFontPayload, resolveReplacementChar, substituteFaceFor,
@@ -116,18 +118,31 @@ export class PdfCore {
   }
 
   /**
-   * The planner's `codeTable` and `substituteFor` for the fonts the found words draw with, each computed once per op-mapped page.
+   * The planner's font lookups for a replacement of the found words.
    * @param {OpMappedPage} entry
    * @param {number} pageIndex
    * @param {Array<?import('./textPatch.js').LocatedWord>} found
+   * @param {Array<?{ font?: string, fontObjNum?: number, bold?: boolean, italic?: boolean }>} [styles]
    */
-  async #codeInputs(entry, pageIndex, found) {
+  async #codeInputs(entry, pageIndex, found, styles) {
+    /** @type {Set<import('./parsePdfDoc.js').PageFont>} */
     const fontObjs = new Set();
     for (const w of found) {
       for (const c of w ? w.chars : []) {
         for (const d of glyphCopies(entry.glyphOpMap, c)) {
           if (d._font) fontObjs.add(d._font);
         }
+      }
+    }
+    // The planner can retype a word in a page font the request names, or in a font of the word's family for a weight or lean toggle, so those fonts get code tables too.
+    const streamFonts = entry.glyphOpMap.streams.map((st) => st.fonts);
+    const wantedObjNums = new Set((styles || []).filter((s) => s && Number.isFinite(s.fontObjNum)).map((s) => /** @type {number} */ (s.fontObjNum)));
+    const ownFamilies = [...fontObjs].map((f) => normalizeFamilyForMatch(f.familyName));
+    for (const fonts of streamFonts) {
+      for (const f of fonts.values()) {
+        if (fontObjs.has(f)) continue;
+        const fam = normalizeFamilyForMatch(f.familyName);
+        if (wantedObjNums.has(/** @type {number} */ (f.fontObjNum)) || ownFamilies.some((own) => familiesCompatible(own, fam))) fontObjs.add(f);
       }
     }
     for (const fontObj of fontObjs) {
@@ -166,8 +181,59 @@ export class PdfCore {
       }
       entry.fonts.set(fontObj, { table, substitute });
     }
+    // Every variant of each chosen family, and of each family a found word already draws in, is loaded so a word draws its weight and lean in the real program.
+    /** @type {Map<string, import('./substituteFaces.js').SubstituteFaceEntry>} */
+    const chosen = new Map();
+    const families = new Set((styles || []).filter((s) => s && s.font).map((s) => /** @type {string} */ (s.font)));
+    for (const fontObj of fontObjs) {
+      const face = substituteFaceByObjNum(this.#objCache, fontObj.fontObjNum);
+      if (face) families.add(face.family);
+    }
+    for (const family of families) {
+      for (const styleKey of ['normal', 'bold', 'italic', 'boldItalic']) {
+        try {
+          chosen.set(`${family}/${styleKey}`, await ensureSubstituteFace(this.#objCache, family, styleKey, null));
+        } catch (e) {
+          console.warn(`[applyTextEdit] page ${pageIndex + 1}: the face ${family}/${styleKey} is unavailable: ${e?.message || e}`);
+        }
+      }
+    }
     return {
+      chosenGlyph: (/** @type {string} */ family, /** @type {string} */ styleKey, /** @type {string} */ text) => {
+        const fb = chosen.get(`${family}/${styleKey}`);
+        if (!fb || [...text].length !== 1) return null;
+        const gid = fb.font.charToGlyphIndex(text);
+        if (!(gid > 0)) return null;
+        const glyph = fb.font.glyphs.get(gid);
+        if (!glyph || !(glyph.advanceWidth >= 0)) return null;
+        // The writer declares widths to the thousandth of an em, so the planner must count the advance the parser will read back.
+        return {
+          tag: fb.tag, gid, advEm: Math.round((glyph.advanceWidth * 1000) / fb.font.unitsPerEm) / 1000, sizeMult: 1, stretch: 1, family, styleKey,
+        };
+      },
       codeTable: (/** @type {import('./parsePdfDoc.js').PageFont} */ fontObj) => entry.fonts.get(fontObj)?.table ?? null,
+      faceOf: (/** @type {import('./parsePdfDoc.js').PageFont} */ fontObj) => substituteFaceByObjNum(this.#objCache, fontObj.fontObjNum),
+      pageFont: (/** @type {number} */ fontObjNum, /** @type {number} */ streamIdx) => {
+        for (const [tag, f] of streamFonts[streamIdx] || []) if (f.fontObjNum === fontObjNum) return { fontObj: f, tag };
+        return null;
+      },
+      siblingFont: (
+        /** @type {import('./parsePdfDoc.js').PageFont} */ own,
+        /** @type {boolean} */ bold,
+        /** @type {boolean} */ italic,
+        /** @type {string} */ text,
+        /** @type {number} */ streamIdx,
+      ) => {
+        const fam = normalizeFamilyForMatch(own.familyName);
+        for (const [tag, f] of streamFonts[streamIdx] || []) {
+          if (f === own || f.type3 || f.verticalMode || !!f.bold !== bold || !!f.italic !== italic) continue;
+          if (!familiesCompatible(fam, normalizeFamilyForMatch(f.familyName))) continue;
+          const table = entry.fonts.get(f)?.table;
+          if (!table || !codesForText(table, text)) continue;
+          return { fontObj: f, tag };
+        }
+        return null;
+      },
       substituteFor: (/** @type {import('./parsePdfDoc.js').PageFont} */ fontObj, /** @type {string} */ text) => {
         const fb = entry.fonts.get(fontObj)?.substitute;
         if (!fb || [...text].length !== 1) return null;
@@ -178,7 +244,7 @@ export class PdfCore {
         return {
           tag: fb.tag,
           gid,
-          advEm: glyph.advanceWidth / fb.font.unitsPerEm,
+          advEm: Math.round((glyph.advanceWidth * 1000) / fb.font.unitsPerEm) / 1000,
           sizeMult: fb.sizeMult,
           stretch: fb.stretch,
           family: fb.family,
@@ -266,7 +332,7 @@ export class PdfCore {
     if (found.some((w) => !w)) return { refused: `The page's stream has no glyphs at the pens of ${req.words.filter((w, i) => !found[i]).map((w) => w.id).join(', ')}.` };
     const {
       plans, predictedWords, refused, faces,
-    } = planTextEdit(glyphOpMap, { ...req, ...(await this.#codeInputs(entry, pageIndex, found)) });
+    } = planTextEdit(glyphOpMap, { ...req, ...(await this.#codeInputs(entry, pageIndex, found, req.styles)) });
     if (refused) return { refused };
     const { scale } = glyphOpMap;
     const extraFonts = faces && faces.length > 0
@@ -338,7 +404,7 @@ export class PdfCore {
         spelled += ocr.replaceLigatures(c.text).toLowerCase();
       }
       if (spelled !== target) return { refused: `"${p.text}" previews as "${spelled}".` };
-      if (glyphs.some((c, k) => c._src && !glyphVisible(opsOf[k][c._src.op], c._src))) return { refused: `"${p.text}" would run past the edge of what the page shows.` };
+      if (!req.tolerant && glyphs.some((c, k) => c._src && !glyphVisible(opsOf[k][c._src.op], c._src))) return { refused: `"${p.text}" would run past the edge of what the page shows.` };
       words.push({ text: p.text, oldId: p.oldId, glyphs: glyphs.map((c) => this.#lineGlyph(c)) });
     }
     return { words };
@@ -359,7 +425,7 @@ export class PdfCore {
     const foundWords = locateWords(glyphOpMap, req.words);
     const missingIds = req.words.filter((w, i) => !foundWords[i]).map((w) => w.id);
     if (missingIds.length > 0) return { refused: `The page's stream has no glyphs at the pens of ${missingIds.join(', ')}.` };
-    const request = req.kind === 'replace' ? { ...req, ...(await this.#codeInputs(before, pageIndex, foundWords)) } : req;
+    const request = req.kind === 'replace' ? { ...req, ...(await this.#codeInputs(before, pageIndex, foundWords, req.styles)) } : req;
     const {
       plans, located, twinIds, dropped, wordGlyphs, predictedWords, refused, faces,
     } = planTextEdit(glyphOpMap, request);
@@ -484,6 +550,8 @@ export class PdfCore {
     /** @type {Array<string>} */
     const lineWordIds = [];
     for (const p of predictedWords || []) {
+      // The parse drops glyphs past the page's edge, so a word that runs past it would otherwise read back truncated.
+      if (!glyphVisible(glyphOpMap.ops[p.op], { tx: p.pen[0], ty: p.pen[1], adv: p.adv })) return { refused: `"${p.text}" would run past the edge of what the page shows.` };
       const pen = drawnPen(glyphOpMap.ops[p.op], p.pen[0], p.pen[1]);
       const k = Math.round(pen[0] * 1000);
       const candidates = [k - 1, k, k + 1].flatMap((key) => byFirstPen.get(key) || [])

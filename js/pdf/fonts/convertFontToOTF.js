@@ -63,8 +63,8 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     const fm = (fdFm && fdFm[0] > 0 && fdFm[0] < 1) ? fdFm : topFm;
     const unitsPerEm = fm && fm[0] > 0 && fm[0] < 1 ? Math.round(1 / fm[0]) : 1000;
     fontShell.unitsPerEm = unitsPerEm;
-    const ascent = fontObj.ascent || Math.round(unitsPerEm * 0.8);
-    const rawDescent = fontObj.descent || Math.round(unitsPerEm * -0.2);
+    const ascent = fontObj.ascent ? Math.round((fontObj.ascent * unitsPerEm) / 1000) : Math.round(unitsPerEm * 0.8);
+    const rawDescent = fontObj.descent ? Math.round((fontObj.descent * unitsPerEm) / 1000) : Math.round(unitsPerEm * -0.2);
     // PDF Descent values are sometimes positive (spec says negative); opentype.js requires negative.
     const descent = rawDescent > 0 ? -rawDescent : rawDescent;
 
