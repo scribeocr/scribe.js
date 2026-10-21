@@ -433,6 +433,11 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
     }
   }
 
+  test('A recognition model\'s hOCR paragraph reaches the saved session, without the raw markup', () => {
+    expect(filledFile.ocr[1].pars.length, 'the paragraph of a model\'s hOCR page is missing from the saved session').toBe(1);
+    expect(JSON.stringify(filledFile.ocr[1]).includes('ocrx_word'), 'the raw hOCR markup is saved into the session').toBe(false);
+  });
+
   // A store that is empty in the filled state passes the comparison above without being tested, since nothing equals nothing.
   test('The filled state fills every store the standard file holds', () => {
     const grew = 'the standard file gained or lost a store: fill it in the filled state above, then list it here';

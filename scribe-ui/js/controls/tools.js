@@ -1340,6 +1340,7 @@ export function filesNamedForPdf(pdfName, names) {
       else if (/^\.(?:hocr|xml|html|htm|stext|json)(?:\.gz)?$/.test(rest)) ranked.push([0, name]);
       else if (/^_abbyy\.(?:gz|xml)$/.test(rest)) ranked.push([1, name]);
       else if (/^_hocr\.html?(?:\.gz)?$/.test(rest)) ranked.push([2, name]);
+      else if (/^_chocr\.html?(?:\.gz)?$/.test(rest)) ranked.push([3, name]);
     }
   }
   ranked.sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : 1));

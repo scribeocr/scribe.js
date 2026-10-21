@@ -20,13 +20,19 @@ const standardizeOCRPages = (ocrArr) => {
   const ocrArrCopy = ocrArr.map((x) => scribe.utils.ocr.clonePage(x));
 
   ocrArrCopy.forEach((page) => {
-    // HOCR carries no paragraphs and no importer tag.
     // The page angle is recomputed from rounded baselines on import, so it does not round-trip exactly.
     page.angle = 0;
-    page.pars = [];
     page.textSource = null;
+    page.pars.forEach((par) => {
+      par.id = '';
+      par.reason = '';
+      par.debug = new scribe.utils.ocr.ParDebugInfo();
+      par.bbox.left = Math.round(par.bbox.left);
+      par.bbox.top = Math.round(par.bbox.top);
+      par.bbox.right = Math.round(par.bbox.right);
+      par.bbox.bottom = Math.round(par.bbox.bottom);
+    });
     page.lines.forEach((line) => {
-      line.par = null;
       // HOCR does not preserve line IDs
       line.id = '';
       line.debug = new scribe.utils.ocr.LineDebugInfo();
@@ -54,6 +60,9 @@ describe('Check .hocr export function.', () => {
   test('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
     const doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.abbyy.xml`]);
 
+    // One word gets a drop cap, whose nested span the importer must read without ending the line early.
+    doc.ocr.active[0].lines[0].words[0].style.dropcap = true;
+
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     const hocrOutStrArr = splitHOCRStr(writeHocr({
@@ -70,7 +79,7 @@ describe('Check .hocr export function.', () => {
 
     const ocrAllComp2 = standardizeOCRPages(pagesArr);
 
-    expect(ocrAllComp1).toEqual(ocrAllComp2);
+    expect(ocrAllComp2, 'the hOCR export and re-import changed the text, boxes, styles or paragraphs').toEqual(ocrAllComp1);
   });
 
   test('Exporting to .hocr and reimporting should restore layout tables without modification', async () => {
@@ -92,6 +101,12 @@ describe('Check .hocr export function.', () => {
 
     await scribe.terminate();
     const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
+
+    const page2 = doc2.ocr.active[0];
+    expect(page2.pars.length, 'the paragraph count changed on hOCR export and re-import').toBe(51);
+    expect(page2.pars.map((x) => x.lines.length).slice(0, 6), 'paragraph membership changed on hOCR export and re-import').toEqual([1, 1, 1, 1, 12, 1]);
+    expect(page2.lines[5].par, 'a re-imported line left the paragraph it was exported in').toBe(page2.lines[11].par);
+    expect(page2.lines[3].par, 'two paragraphs merged on hOCR export and re-import').not.toBe(page2.lines[4].par);
 
     const layoutTables2 = structuredClone(doc2.layoutDataTables.pages);
 

@@ -18,6 +18,7 @@ describe('Check evaluate function.', () => {
 
   test('Should correctly compare page to ground truth', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.hocr`]);
+    expect(doc.ocr.active[0].pars.length, 'a Scribe-written hOCR file without ocr_par must import paragraph-less').toBe(0);
     await doc.importFilesSupp([`${ASSETS_PATH}/complaint_1.truth.hocr`], 'Ground Truth');
 
     // The ternary's first branch holds the soft hyphen (U+00AD), which has no visible glyph.

@@ -1,6 +1,7 @@
 import ocr from '../objects/ocrObjects.js';
 
 import {
+  calcBboxUnion,
   getTextScript,
   unescapeXml,
 } from '../utils/miscUtils.js';
@@ -10,7 +11,7 @@ import { pass2, pass3 } from './convertPageShared.js';
 import { detectTablesInPage, makeTableFromBbox } from '../utils/detectTables.js';
 
 // If enabled, raw strings are saved in OCR objects for debugging purposes.
-const debugMode = true;
+const debugMode = false;
 
 /**
  * @param {Object} params
@@ -43,6 +44,7 @@ export async function convertPageHocr({
   if (!pageDims) throw new Error('Failed to parse page dimensions.');
 
   const pageObj = new ocr.OcrPage(n, pageDims);
+  pageObj.textSource = 'hocr';
 
   // Test whether character-level data (class="ocrx_cinfo" in Tesseract) is present.
   const charMode = !!/ocrx_cinfo/.test(ocrStr);
@@ -50,29 +52,29 @@ export async function convertPageHocr({
   // The JavaScript regex engine does not support matching start/end tags (some other engines do), so the end of words and lines are detected
   // through a hard-coded number of </span> end tags.  The only difference charMode should make on the expressions below is the number of
   // consecutive </span> tags required.
-  let lineRegex = /<span class=["']ocr_line[\s\S]+?(?:<\/span>\s*){2}/ig;
+  // Tesseract names a line's span by its block's type (`ocr_header`, `ocr_caption` and `ocr_textfloat` beside `ocr_line`).
+  // Those types are not identified accurately or consistently enough to treat the lines differently, so all four are read as lines.
+  // A wordless line is matched by its own alternative first, since the general form would run on into the next line and take its words.
+  let lineRegex = /<span class=["']ocr_(?:line|header|caption|textfloat)["'][^>]*>\s*<\/span>|<span class=["']ocr_(?:line|header|caption|textfloat)["'][\s\S]+?(?:<\/span>\s*){2}/ig;
   if (charMode) {
-    lineRegex = /<span class=["']ocr_line[\s\S]+?(?:<\/span>\s*)(?:<\/em>\s*)?(?:<\/span>\s*){2}/ig;
+    lineRegex = /<span class=["']ocr_(?:line|header|caption|textfloat)["'][^>]*>\s*<\/span>|<span class=["']ocr_(?:line|header|caption|textfloat)["'][\s\S]+?(?:<\/span>\s*)(?:<\/em>\s*)?(?:<\/span>\s*){2}/ig;
   }
 
   const wordRegexCharLevel = /<span class=["']ocrx_word[\s\S]+?(?:<\/span>\s*)(?:<\/em>\s*)?(?:<\/span>\s*){1}/ig;
   const wordRegex = /<span class=["']ocrx_word[\s\S]+?(?:<\/span>\s*)/ig;
 
-  const charRegex = /<span class=["']ocrx_cinfo["'] title='([^'"]+)["']>([^<]*)<\/span>/ig;
+  const charRegex = /<span class=["']ocrx_cinfo["'] title=["']([^'"]+)["']>([^<]*)<\/span>/ig;
 
   // Remove all bold/italics tags.  These complicate the syntax and are unfortunately virtually always wrong anyway (coming from Tesseract).
   // This does not impact re-uploads of .hocr files created with Scribe.
   ocrStr = ocrStr.replaceAll(/<\/?strong>/ig, '');
   ocrStr = ocrStr.replaceAll(/<\/?em>/ig, '');
 
+  // The line and word expressions end at a count of closing span tags, so a drop cap's nested span is turned into a plain tag first.
+  ocrStr = ocrStr.replaceAll(/<span class=["']ocr_dropcap["']>([^<]*)<\/span>/ig, '<dropcap>$1</dropcap>');
+
   // Delete namespace to simplify xpath
   ocrStr = ocrStr.replace(/<html[^>]*>/i, '<html>');
-
-  // Replace various classes with "ocr_line" class for simplicity
-  // At least in Tesseract, these elements are not identified accurately or consistently enough to warrent different treatment.
-  ocrStr = ocrStr.replace(/(class=')ocr_caption/ig, '$1ocr_line');
-  ocrStr = ocrStr.replace(/(class=')ocr_textfloat/ig, '$1ocr_line');
-  ocrStr = ocrStr.replace(/(class=')ocr_header/ig, '$1ocr_line');
 
   // Delete additional elements created by the `lstm_choice_mode` option in Tesseract
   const lstmChoiceMode1 = !!/id='timestep1/.test(ocrStr);
@@ -93,7 +95,9 @@ export async function convertPageHocr({
     const titleStrLine = match.match(/title=['"]([^'"]+)/)?.[1];
     if (!titleStrLine) return '';
 
-    const linebox1 = [...titleStrLine.matchAll(/bbox(?:es)?(\s+[\d.-]+)(\s+[\d.-]+)?(\s+[\d.-]+)?(\s+[\d.-]+)?/g)][0].slice(1, 5).map((x) => parseInt(x));
+    const lineboxMatch = [...titleStrLine.matchAll(/bbox(?:es)?(\s+[\d.-]+)(\s+[\d.-]+)?(\s+[\d.-]+)?(\s+[\d.-]+)?/g)][0];
+    if (!lineboxMatch) return '';
+    const linebox1 = lineboxMatch.slice(1, 5).map((x) => parseInt(x));
 
     const linebox = {
       left: linebox1[0], top: linebox1[1], right: linebox1[2], bottom: linebox1[3],
@@ -165,8 +169,6 @@ export async function convertPageHocr({
         wordConf = parseInt(confMatchStr);
       }
 
-      const italic = /<\/em>\s*<\/span>/.test(match);
-
       const wordID = match.match(/id=['"]([^'"]*)['"]/i)?.[1] || `word_${n + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
 
       const wordLangRaw = match.match(/lang=['"]([^'"]*)['"]/i)?.[1];
@@ -174,8 +176,8 @@ export async function convertPageHocr({
       let fontName = match.match(/^[^>]+?x_font\s*([^'";]+)/)?.[1];
       if (fontName) fontName = fontName.trim();
 
-      const it = match.matchAll(charRegex);
-      const letterArr = [...it];
+      // Archive.org's character-level hOCR ends most words with a character span holding a bare space.
+      const letterArr = [...match.matchAll(charRegex)].filter((x) => x[2].trim() !== '');
 
       const bboxes = letterArr.map((x) => x[1].match(/(\d+) (\d+) (\d+) (\d+)/).slice(1, 5).map((y) => parseInt(y)));
 
@@ -251,7 +253,6 @@ export async function convertPageHocr({
         wordObj.debug.raw = match;
       }
 
-      if (italic) wordObj.style.italic = true;
       if (fontName) wordObj.style.font = fontName;
 
       wordObj.conf = wordConf;
@@ -268,13 +269,13 @@ export async function convertPageHocr({
       const wordID = match.match(/id=['"]([^'"]*)['"]/i)?.[1] || `word_${n + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
 
       const wordSup = /<sup>/i.test(match);
-      const wordDropCap = /<span class=['"]ocr_dropcap['"]>/i.test(match);
+      const wordDropCap = /<dropcap>/i.test(match);
 
       let wordText;
       if (wordSup) {
         wordText = match.replace(/\s*<sup>/i, '').replace(/<\/sup>\s*/i, '').match(/>([^>]*)</)?.[1];
       } else if (wordDropCap) {
-        wordText = match.replace(/\s*<span class=['"]ocr_dropcap['"]>/i, '').match(/>([^>]*)</)?.[1];
+        wordText = match.replace(/\s*<dropcap>/i, '').replace(/<\/dropcap>\s*/i, '').match(/>([^>]*)</)?.[1];
       } else {
         wordText = match.match(/>([^>]*)</)?.[1];
       }
@@ -282,6 +283,9 @@ export async function convertPageHocr({
       if (!wordText) return '';
 
       wordText = unescapeXml(wordText);
+
+      wordText = wordText.trim();
+      if (!wordText) return '';
 
       const titleStrWord = match.match(/title=['"]([^'"]+)/)?.[1];
 
@@ -329,6 +333,7 @@ export async function convertPageHocr({
       }
 
       if (wordSup) wordObj.style.sup = true;
+      if (wordDropCap) wordObj.style.dropcap = true;
 
       if (fontName) wordObj.style.font = fontName;
 
@@ -345,6 +350,8 @@ export async function convertPageHocr({
       match = match.replaceAll(wordRegex, convertWord);
     }
 
+    if (lineObj.words.length === 0) return '';
+
     pageObj.lines.push(lineObj);
 
     return '';
@@ -356,13 +363,26 @@ export async function convertPageHocr({
   const convertPar = (match) => {
     const parLang = match.match(/^.+?lang=['"]([^'"]*)['"]/i)?.[1];
     if (parLang) currentLang = parLang;
+    const lineCountBefore = pageObj.lines.length;
     match.replaceAll(lineRegex, convertLine);
+    const parLines = pageObj.lines.slice(lineCountBefore);
+    if (parLines.length === 0) return '';
+
+    const parObj = new ocr.OcrPar(pageObj, calcBboxUnion(parLines.map((x) => x.bbox)));
+    const lineClass = match.match(/<span class=["']ocr_(header|caption|textfloat)["']/i)?.[1];
+    if (lineClass) parObj.debug.sourceType = `ocr_${lineClass}`;
+
+    parLines.forEach((x) => {
+      x.par = parObj;
+    });
+    parObj.lines = parLines;
+    pageObj.pars.push(parObj);
     return '';
   };
 
-  ocrStr = ocrStr.replaceAll(/<p class=["']ocr_par[\s\S]+?(?:<\/p>\s*)/ig, convertPar);
-
-  ocrStr = ocrStr.replaceAll(lineRegex, convertLine);
+  // Paragraphs and the lines outside any paragraph are read in one document-order pass, so `page.lines` keeps the file's line order.
+  const parOrLineRegex = new RegExp(`<p class=["']ocr_par[\\s\\S]+?(?:<\\/p>\\s*)|${lineRegex.source}`, 'ig');
+  ocrStr.replaceAll(parOrLineRegex, (match) => (/^<p/i.test(match) ? convertPar(match) : convertLine(match)));
 
   const warn = { char: charMode ? '' : 'char_warning' };
 
