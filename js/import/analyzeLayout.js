@@ -2924,6 +2924,33 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
 
+  // Exporters end a paragraph wherever a line's paragraph differs from the previous line's, so line numbers left between the rows would split each text paragraph at every row.
+  for (let p = 0; p < pages.length; p++) {
+    const page = pages[p];
+    const lnLines = page.lines.filter((l) => l.par && l.par.type === 'linenum');
+    if (lnLines.length === 0) continue;
+    /** @type {Array<Array<OcrLine>>} */
+    const columns = [];
+    for (const l of [...lnLines].sort((a, b) => a.bbox.left - b.bbox.left)) {
+      const col = columns[columns.length - 1];
+      if (col && l.bbox.left - col[0].bbox.left <= bodySize) col.push(l);
+      else columns.push([l]);
+    }
+    const columnPars = columns.map((col) => {
+      col.sort((a, b) => a.bbox.top - b.bbox.top);
+      const par = new OcrPar(page, calcBboxUnion(col.map((l) => l.bbox)));
+      par.type = 'linenum';
+      par.reason = 'line-number column';
+      par.debug.sourceType = 'linenum';
+      par.lines = col;
+      for (const l of col) l.par = par;
+      return par;
+    });
+    const lnSet = new Set(lnLines);
+    page.pars = [...columnPars, ...page.pars.filter((par) => par.type !== 'linenum')];
+    page.lines = [...columnPars.flatMap((par) => par.lines), ...page.lines.filter((l) => !lnSet.has(l))];
+  }
+
   if (opts.debug) return { model, feats };
   return model;
 }

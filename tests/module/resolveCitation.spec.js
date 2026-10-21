@@ -11,6 +11,8 @@ const wordsWithLineNum = (doc) => doc.ocr.active.reduce((a, pg) => a + pg.lines.
 
 // The fixture is a court filing whose pages 0 to 7 are a hearing transcript printed 36 to 43.
 // Its pages 8 to 11 are scans and its pages 12 to 15 text in an unreadable font, none of them numbered paper.
+const parsConsecutive = (page) => page.pars.every((par) => par.lines.every((l, k) => k === 0 || page.lines.indexOf(l) === page.lines.indexOf(par.lines[k - 1]) + 1));
+
 describe('one-up native transcript', () => {
   /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
   let doc;
@@ -87,6 +89,13 @@ describe('one-up native transcript', () => {
     expect([older36[0].page, older36[0].first, older36[0].lines.length], 'the fields are computed on restore of an older file').toEqual([0, 1, 2]);
     expect(wordsWithLineNum(doc), 'the stale word flag is dropped on restore').toBe(0);
   });
+  test('the number column is one paragraph ahead of the page\'s text, and every paragraph keeps its lines together', () => {
+    const page = doc.ocr.active[0];
+    expect(page.pars.map((p) => p.type).slice(0, 3), 'the number column is not the first paragraph of the page').toEqual(['linenum', 'footer', 'pagenum']);
+    expect(page.pars[0].lines.length, 'the number column does not hold its 25 numbers').toBe(25);
+    expect(parsConsecutive(page), 'a paragraph holds lines that are not consecutive in the page\'s line order').toBe(true);
+    expect(page.pars.length, 'the paragraph count changed').toBe(12);
+  });
 });
 
 describe('four-up native transcript', () => {
@@ -115,8 +124,16 @@ describe('four-up native transcript', () => {
     expect([left[0].page, texts(left[0])], 'row 1 of page 10, the upper left quadrant').toEqual([0, ['1', 'roof redone.']]);
     const range = doc.resolveCitation('19:14-16');
     expect([range[0].page, texts(range[0])], 'rows 14 to 16 of page 19, the lower left quadrant of the third sheet')
-      .toEqual([2, ['14', 'fascia incident or issue?', '15', 'A No.', '16', 'Q Was that handled by Mr. Welsh?']]);
+      .toEqual([2, ['14', '15', '16', 'fascia incident or issue?', 'A No.', 'Q Was that handled by Mr. Welsh?']]);
     expect(doc.resolveCitation('26:1'), 'page 26 is not in the document').toEqual([]);
+  });
+
+  test('the number column is one paragraph ahead of the sheet\'s text, and every paragraph keeps its lines together', () => {
+    const page = doc.ocr.active[0];
+    expect(parsConsecutive(page), 'a paragraph holds lines that are not consecutive in the page\'s line order').toBe(true);
+    expect(page.pars[0].type, 'the number column is not the first paragraph of the sheet').toBe('linenum');
+    expect(page.pars.filter((p) => p.type === 'linenum').map((p) => p.lines.length), 'the margin numbers are not gathered into one paragraph per column').toEqual([50]);
+    expect(page.pars.length, 'the paragraph count changed').toBe(24);
   });
 });
 
