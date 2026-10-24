@@ -710,6 +710,7 @@ export function createLibraryInstance(viewer, opts) {
   const ownsTab = (tab) => !!tab && tab.libraryOwner === instanceId;
 
   const shell = /** @type {any} */ (window).electronAPI;
+  const revealLabel = shell?.platform === 'darwin' ? 'Show in Finder' : shell?.platform === 'win32' ? 'Show in Explorer' : 'Show in file manager';
   // The desktop app's record must survive a relaunch, while each browser tab restores only the documents it had open.
   const resumeStorage = shell ? window.localStorage : window.sessionStorage;
   /** @type {?LibraryStore} */
@@ -3086,6 +3087,7 @@ export function createLibraryInstance(viewer, opts) {
    */
   const openCardMenu = (clientX, clientY, relPath, card) => {
     if (!store || !manifest) return;
+    const canReveal = isLibrary && !!shell?.revealFile && folderDirs.has(store.root.name);
     closeCardMenu();
     card.classList.add('context');
     menuTargetElem = card;
@@ -3153,6 +3155,7 @@ export function createLibraryInstance(viewer, opts) {
       const docsUnder = Object.keys(manifest.docs).filter((p) => p.startsWith(relPath));
       addIndexItem(docsUnder);
       addRecognizeItem(docsUnder);
+      if (canReveal) addItem(revealLabel, false, () => { if (store) shell.revealFile(store.root.name, relPath.slice(0, -1)); });
     } else {
       const multi = selectedPaths.has(relPath) && selectedPaths.size >= 2;
       // Folder keys in a mixed selection drop out here, because these actions are document and file verbs.
@@ -3179,6 +3182,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!readOnly && paths.length) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
       addIndexItem(paths);
       addRecognizeItem(paths);
+      if (canReveal && all.length === 1) addItem(revealLabel, false, () => { if (store) shell.revealFile(store.root.name, all[0]); });
       const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
       const revertPath = single && single.status === 'indexed' && single.hash && single.editedAt ? paths[0] : null;
       // Removal is the library's own verb, because a portfolio's files are what the portfolio holds.
@@ -7103,7 +7107,7 @@ export function createLibraryInstance(viewer, opts) {
     folderMenu.appendChild(sep);
   };
   if (isLibrary && shell?.revealFolder) {
-    revealItem = addFolderMenuItem(REVEAL_SVG, shell.platform === 'darwin' ? 'Reveal in Finder' : shell.platform === 'win32' ? 'Show in Explorer' : 'Show in file manager', () => {
+    revealItem = addFolderMenuItem(REVEAL_SVG, revealLabel, () => {
       if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name);
     });
   }

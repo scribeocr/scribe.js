@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch { return ''; } },
   getFolderPath: (name) => ipcRenderer.invoke('folder-path', name),
   revealFolder: (name) => ipcRenderer.send('reveal-folder', name),
+  revealFile: (name, relPath) => ipcRenderer.send('reveal-file', name, relPath),
   focusFolderWindow: (name) => ipcRenderer.send('focus-folder-window', name),
   newWindow: () => ipcRenderer.send('new-window'),
   onWindowFocused: (callback) => ipcRenderer.on('window-focused', (_event, on) => callback(on)),

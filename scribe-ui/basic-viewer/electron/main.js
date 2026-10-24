@@ -556,7 +556,7 @@ ipcMain.on('focus-folder-window', (_event, /** @type {string} */ name) => {
 });
 ipcMain.on('new-window', () => createWindow({ fresh: true }));
 
-// These channels take a folder's name, never a path, so the renderer cannot point the shell at arbitrary files.
+// These channels take a folder's name, and at most a path inside that folder, so the renderer cannot point the shell at arbitrary files.
 /** @param {string} name */
 const folderPathFor = (name) => (typeof name === 'string' && name ? shellState.recentFolders.find((p) => path.basename(p) === name) ?? null : null);
 ipcMain.handle('folder-path', (_event, name) => {
@@ -569,6 +569,14 @@ ipcMain.handle('folder-path', (_event, name) => {
 ipcMain.on('reveal-folder', (_event, name) => {
   const p = folderPathFor(name);
   if (p) shell.showItemInFolder(p);
+});
+ipcMain.on('reveal-file', (_event, name, relPath) => {
+  const folder = folderPathFor(name);
+  if (!folder || typeof relPath !== 'string' || !relPath || relPath.includes('\0')) return;
+  const root = path.resolve(folder);
+  const target = path.resolve(root, relPath);
+  if (!target.startsWith(root + path.sep)) return;
+  shell.showItemInFolder(target);
 });
 
 // Power state feeds the library's warm-lane gate, so speculative rendering never runs on battery.
