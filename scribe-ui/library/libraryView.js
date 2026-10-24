@@ -443,7 +443,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pathitem { display: inline-flex; align-items: center; height: 20px; padding: 0 5px; border: none; border-radius: 4px; background: none; font: inherit; color: inherit; white-space: nowrap; cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-pathitem:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pathitem:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
-.scribe-pdf-viewer .scribe-library-pathitem.cur { color: var(--scribe-ink); font-weight: 600; cursor: default; }
+.scribe-pdf-viewer .scribe-library-pathitem.cur { color: var(--scribe-ink); text-shadow: 0 0 0.4px currentColor; cursor: default; }
 .scribe-pdf-viewer .scribe-library-pathitem.cur:hover { background: none; }
 .scribe-pdf-viewer .scribe-library-pathitem.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pathbar .sep { color: var(--scribe-ink-3); padding: 0 3px; }
