@@ -119,6 +119,16 @@ export class DocSessions {
   }
 
   /**
+   * The pixel source for `hash` while one is open or opening, or null.
+   * Never opens one.
+   * @param {string} hash
+   * @returns {?Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
+   */
+  peekPixels(hash) {
+    return this.map.get(hash)?.pixelsPromise ?? null;
+  }
+
+  /**
    * Get-or-start the live document for `hash`.
    * The document stays in the idle pool, so it is shared by later callers and closed by pool eviction.
    * @param {string} hash
