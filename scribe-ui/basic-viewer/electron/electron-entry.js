@@ -20,7 +20,7 @@ const dragOptOut = document.createElement('style');
 dragOptOut.textContent = '.scribe-shell-drag-zone > *, .scribe-shell-drag-zone > * *, .col-md, .col-md *, '
   + '.scribe-search-group, .scribe-search-group * { -webkit-app-region: no-drag; }'
   + ' .scribe-library-bar-title, .scribe-library-bar-title * { -webkit-app-region: drag; }'
-  + ' .scribe-library-bar-title button, .scribe-library-bar-title button *,'
+  + ' .scribe-library-bar-title button, .scribe-library-bar-title button *, .scribe-library-title, .scribe-library-title *,'
   + ' .scribe-library-bar-title .scribe-library-menu, .scribe-library-bar-title .scribe-library-menu * { -webkit-app-region: no-drag; }';
 document.head.appendChild(dragOptOut);
 
@@ -31,6 +31,7 @@ if (platform === 'darwin') {
   pdfViewer.toolbarElemStart.style.paddingLeft = '96px';
   // The system menu bar carries the app commands there, so the in-window menu button retires.
   pdfViewer.setMenuButtonVisible(false);
+  pdfViewer.setLibraryBar('finder');
 } else if (platform === 'win32') {
   // Windows draws the native caption buttons over the bar (Window Controls Overlay), so the end zone stays clear of them.
   // The env() fallback keeps the bar's stock 8px inset anywhere the overlay is off.

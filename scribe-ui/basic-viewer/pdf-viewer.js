@@ -773,6 +773,8 @@ class ScribePDFViewer {
     this._libraryInstances = [];
     /** @type {?import('../library/libraryView.js').LibraryInstance} The pinned surface shown most recently, which an emptied tab strip returns to. */
     this._lastPinned = null;
+    /** @type {'crumbs'|'finder'} */
+    this._libraryBar = 'crumbs';
     /** @type {?('focused'|'global'|'off')} The keyboard scope a pinned surface in front displaced, restored when it leaves. */
     this._keyboardScopeBehindSurface = null;
     /**
@@ -1746,7 +1748,7 @@ class ScribePDFViewer {
       import('../library/libraryView.js')
         .then(({ installLibrary }) => {
           if (this._destroyed) return;
-          this._library = installLibrary(this, { settings });
+          this._library = installLibrary(this, { settings, bar: this._libraryBar });
           this._notifyMenuState();
         })
         .catch((err) => console.error('Failed to load the document library.', err));
@@ -4353,6 +4355,16 @@ class ScribePDFViewer {
    */
   setMenuButtonVisible(visible) {
     this.pdfViewerElem.classList.toggle('scribe-menu-button-hidden', !visible);
+  }
+
+  /**
+   * Choose the document library's toolbar form.
+   * 'finder' shows Back, Forward and the folder's name in the toolbar and the path in a bar under the contents, as a Finder window does.
+   * It applies to the library and to portfolios opened after the call.
+   * @param {'crumbs'|'finder'} bar
+   */
+  setLibraryBar(bar) {
+    this._libraryBar = bar;
   }
 
   /**

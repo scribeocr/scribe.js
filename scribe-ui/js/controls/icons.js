@@ -46,6 +46,8 @@ const SLOT = {
   refresh22: { size: 22, paths: '<path d="M18.5 11A7.5 7.5 0 1 1 17.6 7.44L17.5 7.5"/><path d="M17.5 3.5V7.5H13.5"/>' },
   more22: { size: 22, paths: '<path d="M5.5 11H5.52M11 11H11.02M16.5 11H16.52" stroke-width="2.6"/>' },
   search22: { size: 22, paths: '<circle cx="10" cy="10" r="5.5"/><path d="M14.2 14.2L18.5 18.5"/>' },
+  back22: { size: 22, paths: '<path d="M13.5 5L7.5 11L13.5 17"/>' },
+  forward22: { size: 22, paths: '<path d="M8.5 5L14.5 11L8.5 17"/>' },
   chevron12: { size: 12, paths: '<path d="M3 4.5L6 7.5L9 4.5"/>' },
   moon16: { size: 16, paths: '<path d="M8 2.5A3.9 3.9 0 0 0 13.5 8A5.5 5.5 0 1 1 8 2.5Z"/>' },
   window16: { size: 16, paths: '<rect x="2.5" y="3.5" width="11" height="9" rx="1"/><path d="M2.5 6.5h11M6.5 6.5v6"/>' },

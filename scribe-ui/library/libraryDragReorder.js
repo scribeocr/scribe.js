@@ -346,7 +346,7 @@ export function createDragReorder({
     if (icon) {
       const ir = icon.getBoundingClientRect();
       aimX = ir.left + ir.width / 2;
-    } else if (target.classList.contains('scribe-library-crumb')) aimX = target.getBoundingClientRect().left + 16;
+    } else if (target.classList.contains('scribe-library-crumb') || target.classList.contains('scribe-library-pathitem')) aimX = target.getBoundingClientRect().left + 16;
     else aimX = (target.querySelector('.nm .t') ?? target).getBoundingClientRect().left + 8;
     const away = aimX - (pr.left + pr.width / 2);
     const dx = Math.abs(away) > FLICK_PX ? Math.sign(away) * FLICK_PX : away;
