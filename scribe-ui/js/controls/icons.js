@@ -42,13 +42,29 @@ const SLOT = {
   compact16: { size: 16, paths: '<path d="M2.5 3.5H13.5M2.5 6.5H13.5M2.5 9.5H13.5M2.5 12.5H13.5"/>' },
   sort18: { size: 18, paths: '<path d="M5.5 3.5V14.5M3.25 12.25L5.5 14.5L7.75 12.25M12.5 3.5V14.5M10.25 5.75L12.5 3.5L14.75 5.75"/>' },
   plus18: { size: 18, paths: '<path d="M4.5 9.5H14.5M9.5 4.5V14.5"/>' },
-  refresh18: { size: 18, paths: '<path d="M14.5 9.5A5 5 0 1 1 13.5 6.5"/><path d="M13.5 3.5V6.5H10.5"/>' },
   preview22: { size: 22, paths: '<rect x="2.5" y="4.5" width="17" height="13" rx="2"/><path d="M13.5 4.5V17.5"/>' },
   refresh22: { size: 22, paths: '<path d="M18.5 11A7.5 7.5 0 1 1 17.6 7.44L17.5 7.5"/><path d="M17.5 3.5V7.5H13.5"/>' },
   more22: { size: 22, paths: '<path d="M5.5 11H5.52M11 11H11.02M16.5 11H16.52" stroke-width="2.6"/>' },
   search22: { size: 22, paths: '<circle cx="10" cy="10" r="5.5"/><path d="M14.2 14.2L18.5 18.5"/>' },
   chevron12: { size: 12, paths: '<path d="M3 4.5L6 7.5L9 4.5"/>' },
   moon16: { size: 16, paths: '<path d="M8 2.5A3.9 3.9 0 0 0 13.5 8A5.5 5.5 0 1 1 8 2.5Z"/>' },
+  window16: { size: 16, paths: '<rect x="2.5" y="3.5" width="11" height="9" rx="1"/><path d="M2.5 6.5h11M6.5 6.5v6"/>' },
+  folderOpen16: { size: 16, paths: '<path d="M2.5 12.5v-8a1 1 0 0 1 1-1h2l1 1h5a1 1 0 0 1 1 1v3"/><path d="M2.5 12.5l1.5-4h10l-1.5 4z"/>' },
+  refresh16: { size: 16, paths: '<path d="M12.5 8.5A5 5 0 1 1 11.5 5.5"/><path d="M11.5 2.5v3h-3"/>' },
+  books16: {
+    size: 16,
+    paths: '<rect x="2.5" y="2.5" width="3" height="11" rx=".5"/><rect x="7.5" y="2.5" width="3" height="11" rx=".5"/>'
+      + '<path d="M11.2 3.3l2.2-.5 1.8 9.9-2.2.5z"/>',
+  },
+  drawers16: {
+    size: 16,
+    paths: '<rect x="2.5" y="3.5" width="11" height="4" rx="1"/><rect x="2.5" y="8.5" width="11" height="4" rx="1"/>'
+      + '<path d="M4.5 5.5h1.5M4.5 10.5h1.5"/>',
+  },
+  close16: { size: 16, paths: '<path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/>' },
+  folderPlus16: { size: 16, paths: '<path d="M2.5 4.5a1 1 0 0 1 1-1h2l1 1h6a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1Z"/><path d="M7.5 6.5v4M5.5 8.5h4"/>' },
+  image16: { size: 16, paths: '<rect x="2.5" y="3.5" width="11" height="9" rx="1"/><circle cx="6" cy="6.5" r="1"/><path d="M2.5 10.5l3-2.5 2.5 2 2-1.5 3.5 2.5"/>' },
+  import16: { size: 16, paths: '<path d="M7.5 2.5v7M4.5 6.5l3 3 3-3"/><path d="M2.5 10.5v1a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1"/>' },
 };
 
 /**

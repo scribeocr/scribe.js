@@ -25,9 +25,6 @@ import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
 import { flyCopies } from '../js/controls/pageReorder.js';
 
-// Filled rather than stroked because outlined spines collapse into double-line mush at the pinned tab's 16px.
-// eslint-disable-next-line max-len
-const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="3" y="3.5" width="3.8" height="17" rx="0.9"/><rect x="8.8" y="3.5" width="3.8" height="17" rx="0.9"/><path d="M13.7 3.9 17.4 3.1 20.9 19.7 17.2 20.5Z"/></svg>';
 // eslint-disable-next-line max-len
 const FOLDER_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M1 4a1 1 0 0 1 1-1h3.59a1 1 0 0 1 .7.29L8 5h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1z"/></svg>';
 // Drawn on a 16-unit grid with 1.5px strokes because it is only shown at 15-18px, where a 24-unit outline thins to a hairline and its tab all but disappears.
@@ -47,11 +44,6 @@ const FIELD_CLEAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
 const SORT_SVG = slotIcon('sort18');
 const CHEVRON_SVG = slotIcon('chevron12', 'chev');
 const PLUS_SVG = slotIcon('plus18');
-// eslint-disable-next-line max-len
-const FOLDER_PLUS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.75 4.5a.75.75 0 0 1 .75-.75h3.1l1.75 2h6.15a.75.75 0 0 1 .75.75v6a.75.75 0 0 1-.75.75H2.5a.75.75 0 0 1-.75-.75z"/><path d="M8 7.9v3.4M6.3 9.6h3.4"/></svg>';
-const REFRESH_SVG = slotIcon('refresh18');
-// eslint-disable-next-line max-len
-const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
 
 // A PDF portfolio, drawn as two stacked sheets.
 // Stroked at 24 for rows and cards, and filled at 16 for the pinned tab, as the library's own glyph is.
@@ -59,20 +51,23 @@ const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" s
 const PORTFOLIO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M8 4.5h9a1.5 1.5 0 0 1 1.5 1.5v9.5"/><rect x="4.5" y="8" width="11" height="12" rx="1.5"/><path d="M7.5 12.5h5M7.5 15.5h5"/></svg>';
 // eslint-disable-next-line max-len
 const PORTFOLIO_TAB_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="5.5" y="2" width="8" height="9" rx="1" opacity=".55"/><rect x="2.5" y="5" width="8" height="9.5" rx="1"/></svg>';
-// eslint-disable-next-line max-len
-const IMAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="8.8" cy="9.3" r="1.6"/><path d="M3.5 16.5l5.2-4.6 3.9 3.4 3.1-2.6 4.8 4"/></svg>';
-const REVEAL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 9.5h17M8 4.5v5"/></svg>';
-const CLOSE_X_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">'
-  + '<path d="M7 7l10 10M17 7L7 17"/></svg>';
+// Menu rows take the app menu's icon set, drawn on a 16-unit grid for the 16px box.
+// The other glyphs in this file are drawn for other sizes and weigh differently in a menu row.
+const MENU_REVEAL_SVG = slotIcon('window16');
+const MENU_FOLDER_SVG = slotIcon('folderOpen16');
+const MENU_FOLDER_PLUS_SVG = slotIcon('folderPlus16');
+const MENU_IMAGE_SVG = slotIcon('image16');
+const MENU_IMPORT_SVG = slotIcon('import16');
+const MENU_REFRESH_SVG = slotIcon('refresh16');
+const MENU_LIBRARY_SVG = slotIcon('books16');
+const MENU_STORAGE_SVG = slotIcon('drawers16');
+const MENU_CLOSE_SVG = slotIcon('close16');
 // eslint-disable-next-line max-len
 const MENU_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
 const VIEW_GRID_SVG = slotIcon('grid16');
 const VIEW_LIST_SVG = slotIcon('list16');
 const VIEW_COMPACT_SVG = slotIcon('compact16');
 
-const STORAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<rect x="3.5" y="4.5" width="17" height="6" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>';
 const BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>';
 
 // ScribeDoc methods that mutate persisted state.
@@ -229,7 +224,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 30; min-width: 178px; ${MENU_PLATE_CSS} }
 .scribe-pdf-viewer .scribe-library-menu-item { display: flex; align-items: center; gap: 9px; cursor: pointer; ${MENU_ROW_CSS} }
 .scribe-pdf-viewer .scribe-library-menu-item:hover, .scribe-pdf-viewer .scribe-library-menu-item:focus { background: var(--scribe-hover); outline: none; }
-.scribe-pdf-viewer .scribe-library-menu-item svg { width: 15px; height: 15px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-menu-item svg { width: 16px; height: 16px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
 .scribe-pdf-viewer .scribe-library-menu-sep { ${MENU_SEP_CSS} }
 /* Verb and crumb menus show their row icons outright, unlike the sort menu's hidden-until-checked marks. */
@@ -958,13 +953,13 @@ export function createLibraryInstance(viewer, opts) {
   const newFolderItem = document.createElement('div');
   newFolderItem.className = 'scribe-library-menu-item';
   newFolderItem.setAttribute('role', 'menuitem');
-  newFolderItem.innerHTML = FOLDER_PLUS_SVG;
+  newFolderItem.innerHTML = MENU_FOLDER_PLUS_SVG;
   newFolderItem.appendChild(document.createTextNode('New folder'));
   newMenu.appendChild(newFolderItem);
   const newPdfItem = document.createElement('div');
   newPdfItem.className = 'scribe-library-menu-item';
   newPdfItem.setAttribute('role', 'menuitem');
-  newPdfItem.innerHTML = IMAGE_SVG;
+  newPdfItem.innerHTML = MENU_IMAGE_SVG;
   newPdfItem.appendChild(document.createTextNode('New PDF from images…'));
   newMenu.appendChild(newPdfItem);
   const newMenuSep = document.createElement('div');
@@ -973,7 +968,7 @@ export function createLibraryInstance(viewer, opts) {
   const addPdfsItem = document.createElement('div');
   addPdfsItem.className = 'scribe-library-menu-item';
   addPdfsItem.setAttribute('role', 'menuitem');
-  addPdfsItem.innerHTML = IMPORT_SVG;
+  addPdfsItem.innerHTML = MENU_IMPORT_SVG;
   addPdfsItem.appendChild(document.createTextNode('Add PDFs…'));
   newMenu.appendChild(addPdfsItem);
   newWrap.appendChild(newBtn);
@@ -2284,8 +2279,6 @@ export function createLibraryInstance(viewer, opts) {
       it.setAttribute('role', how.role ?? 'menuitem');
       if (how.role === 'menuitemcheckbox' || how.role === 'menuitemradio') it.setAttribute('aria-checked', String(!!how.on));
       it.innerHTML = how.icon ?? MENU_CHECK_SVG;
-      const svg = it.querySelector('svg');
-      if (svg && how.icon) svg.style.cssText = 'width:15px;height:15px;';
       it.appendChild(document.createTextNode(label));
       it.addEventListener('click', () => {
         moreDropdown.close();
@@ -2316,13 +2309,13 @@ export function createLibraryInstance(viewer, opts) {
     }
     if (newWrap.hidden && !readOnly) {
       section('New');
-      item('New folder', { icon: FOLDER_PLUS_SVG }, () => newFolderItem.click());
-      item('New PDF from images…', { icon: IMAGE_SVG }, () => newPdfItem.click());
-      item('Add PDFs…', { icon: IMPORT_SVG }, () => addPdfsItem.click());
+      item('New folder', { icon: MENU_FOLDER_PLUS_SVG }, () => newFolderItem.click());
+      item('New PDF from images…', { icon: MENU_IMAGE_SVG }, () => newPdfItem.click());
+      item('Add PDFs…', { icon: MENU_IMPORT_SVG }, () => addPdfsItem.click());
     }
     if (refreshBtn.hidden && !readOnly) {
       section('');
-      item('Refresh folder', { icon: slotIcon('refresh22') }, () => refreshBtn.click());
+      item('Refresh folder', { icon: MENU_REFRESH_SVG }, () => refreshBtn.click());
     }
   };
   const moreDropdown = createDropdown({
@@ -7065,8 +7058,6 @@ export function createLibraryInstance(viewer, opts) {
     item.className = 'scribe-library-menu-item';
     item.setAttribute('role', 'menuitem');
     item.innerHTML = svg;
-    const glyph = item.querySelector('svg');
-    if (glyph) glyph.style.cssText = 'width:15px;height:15px;';
     item.appendChild(document.createTextNode(label));
     item.addEventListener('click', () => {
       folderDropdown.close();
@@ -7081,19 +7072,19 @@ export function createLibraryInstance(viewer, opts) {
     folderMenu.appendChild(sep);
   };
   if (isLibrary && shell?.revealFolder) {
-    revealItem = addFolderMenuItem(REVEAL_SVG, revealLabel, () => {
+    revealItem = addFolderMenuItem(MENU_REVEAL_SVG, revealLabel, () => {
       if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name);
     });
   }
   if (isLibrary) {
-    addFolderMenuItem(FOLDER_SVG, 'Open Another Folder…', () => openFolder());
+    addFolderMenuItem(MENU_FOLDER_SVG, 'Open Another Folder…', () => openFolder());
     addFolderMenuSep();
-    addFolderMenuItem(REFRESH_SVG, 'Refresh Folder', () => refreshBtn.click());
-    addFolderMenuItem(LIBRARY_SVG, 'Rebuild Search Index', () => rebuildIndex());
-    addFolderMenuItem(STORAGE_SVG, 'Library Storage…', () => openStorage());
+    addFolderMenuItem(MENU_REFRESH_SVG, 'Refresh Folder', () => refreshBtn.click());
+    addFolderMenuItem(MENU_LIBRARY_SVG, 'Rebuild Search Index', () => rebuildIndex());
+    addFolderMenuItem(MENU_STORAGE_SVG, 'Library Storage…', () => openStorage());
     addFolderMenuSep();
   }
-  const folderMenuCloseItem = isLibrary ? addFolderMenuItem(CLOSE_X_SVG, 'Close Folder', () => closeFolder()) : null;
+  const folderMenuCloseItem = isLibrary ? addFolderMenuItem(MENU_CLOSE_SVG, 'Close Folder', () => closeFolder()) : null;
   folderMenuCloseItem?.addEventListener('mouseenter', () => previewClose(true));
   folderMenuCloseItem?.addEventListener('mouseleave', () => previewClose(false));
   /** @type {?HTMLElement} */
@@ -7105,16 +7096,16 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?HTMLElement} */
   let storageItem = null;
   if (viewer._appMenu && isLibrary) {
-    openFolderItem = viewer._appMenu.addAction('Open folder', FOLDER_SVG, openFolder);
+    openFolderItem = viewer._appMenu.addAction('Open folder', MENU_FOLDER_SVG, openFolder);
     // Sits directly under "Open file".
     viewer._appMenu.menuElem.insertBefore(openFolderItem, viewer._appMenu.menuElem.children[1] ?? null);
-    closeFolderItem = viewer._appMenu.addAction('Close folder', CLOSE_X_SVG, () => { if (store) closeFolder(); });
+    closeFolderItem = viewer._appMenu.addAction('Close folder', MENU_CLOSE_SVG, () => { if (store) closeFolder(); });
     viewer._appMenu.menuElem.insertBefore(closeFolderItem, openFolderItem.nextSibling);
     closeFolderItem.addEventListener('mouseenter', () => { if (store) previewClose(true); });
     closeFolderItem.addEventListener('mouseleave', () => previewClose(false));
-    rebuildItem = viewer._appMenu.addAction('Rebuild search index', LIBRARY_SVG, () => { if (store) rebuildIndex(); });
+    rebuildItem = viewer._appMenu.addAction('Rebuild search index', MENU_LIBRARY_SVG, () => { if (store) rebuildIndex(); });
     viewer._appMenu.menuElem.insertBefore(rebuildItem, closeFolderItem.nextSibling);
-    storageItem = viewer._appMenu.addAction('Library storage…', STORAGE_SVG, () => { if (store) openStorage(); });
+    storageItem = viewer._appMenu.addAction('Library storage…', MENU_STORAGE_SVG, () => { if (store) openStorage(); });
     viewer._appMenu.menuElem.insertBefore(storageItem, rebuildItem.nextSibling);
   }
   const folderDocCount = () => viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath)).length;
