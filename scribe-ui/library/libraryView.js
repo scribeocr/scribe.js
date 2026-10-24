@@ -2163,11 +2163,10 @@ export function createLibraryInstance(viewer, opts) {
 
   const barRoom = () => {
     const bar = /** @type {HTMLElement} */ (viewer.toolbarElem);
-    const menu = viewer._appMenu;
-    const menuW = menu && menu.menuWrap.parentElement === viewer.toolbarElemStart ? menu.menuWrap.getBoundingClientRect().width : 0;
     const corner = viewer.toolbarElemEnd?.querySelector('.scribe-shell-corner');
     const cornerW = corner ? corner.getBoundingClientRect().width : 0;
-    return bar.clientWidth - menuW - cornerW - 8 - 12;
+    const barRect = bar.getBoundingClientRect();
+    return barRect.width - (crumbsElem.getBoundingClientRect().left - barRect.left) - cornerW - 8;
   };
   const crumbsNeed = () => {
     let w = 0;
@@ -2181,15 +2180,15 @@ export function createLibraryInstance(viewer, opts) {
   const controlsNeed = () => {
     const host = /** @type {HTMLElement} */ (barControls);
     if (host.hidden) return 0;
-    let w = 0;
-    let n = 0;
-    for (const el of host.children) {
-      const c = /** @type {HTMLElement} */ (el);
-      if (c.hidden || (c === searchField && c.classList.contains('popped'))) continue;
-      n += 1;
-      w += c === searchField ? FIELD_FLOOR : c.getBoundingClientRect().width;
-    }
-    return w + Math.max(0, n - 1) * 8;
+    // Measured as laid out, so the dividers' margins and the gaps are included.
+    const width = searchField.style.width;
+    const flex = searchField.style.flex;
+    searchField.style.width = `${FIELD_FLOOR}px`;
+    searchField.style.flex = 'none';
+    const w = host.scrollWidth;
+    searchField.style.width = width;
+    searchField.style.flex = flex;
+    return w;
   };
   /** Fit the path and the controls to the room the bar has. */
   const syncCrumbs = () => {
@@ -2222,7 +2221,12 @@ export function createLibraryInstance(viewer, opts) {
     buildCrumbs();
     // The root and every ancestor below it can fold, but not the current name.
     const foldable = segs.length;
-    const fits = () => crumbsNeed() + controlsNeed() <= barRoom();
+    const syncMore = () => { moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || previewBtn.hidden || sortWrap.hidden || viewSeg.hidden); };
+    // The More button is decided before each measurement, so its width counts once something has folded into it.
+    const fits = () => {
+      syncMore();
+      return crumbsNeed() + controlsNeed() <= barRoom();
+    };
     const foldOne = () => {
       if (crumbHidden >= foldable) return false;
       crumbHidden += 1;
@@ -2247,7 +2251,7 @@ export function createLibraryInstance(viewer, opts) {
       step();
     }
     while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb */ }
-    moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || previewBtn.hidden || sortWrap.hidden || viewSeg.hidden);
+    syncMore();
     roundBarButtons();
     if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
   };
