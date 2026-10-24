@@ -629,16 +629,11 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-grid.shelf .scribe-library-card { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card .shelf-act { margin-top: 6px; padding: 0; border: none; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-accent); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-card .shelf-act:hover { text-decoration: underline; }
-/* The folder's own menu, reached from its name in the bar and from the chevron on its tab. */
 .scribe-pdf-viewer .scribe-library-folder-menu { left: 0; right: auto; min-width: 230px; z-index: 60; }
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled svg { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled:hover { background: none; }
-.scribe-pdf-viewer .scribe-library-crumb-root { display: inline-flex; align-items: center; gap: 5px; padding: 2px 6px; margin-left: -6px; border-radius: 6px; border: none; background: none; color: inherit; font: inherit; font-weight: 600; cursor: pointer; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-crumb-root:hover { background: var(--scribe-hover); }
-.scribe-pdf-viewer .scribe-library-crumb-root .chev { width: 12px; height: 12px; color: var(--scribe-ink-3); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-crumb-root .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
   document.head.appendChild(style);
 };
@@ -1788,8 +1783,7 @@ export function createLibraryInstance(viewer, opts) {
   /** Replace the toolbar's document controls with the library's own fragments. */
   // Text buttons measure fractional widths, which would put every glyph to their left in the right-aligned zone on fractional pixels.
   const roundBarButtons = () => {
-    for (const el of [sortBtn, newBtn, crumbsElem.querySelector('.scribe-library-crumb-root')]) {
-      if (!el) continue;
+    for (const el of [sortBtn, newBtn]) {
       el.style.width = '';
       const wd = el.getBoundingClientRect().width;
       if (wd) el.style.width = `${Math.ceil(wd)}px`;
@@ -1975,12 +1969,10 @@ export function createLibraryInstance(viewer, opts) {
 
   /** @type {?ReturnType<typeof createDropdown>} */
   let midDropdown = null;
-  /** @type {?HTMLButtonElement} */
-  let rootMenuBtn = null;
   let crumbFadeDue = false;
   // `currentDir` already names the destination when the old trail is measured, so the trail keeps the directory it was built for.
   let crumbsDir = '';
-  /** @returns {Array<{node: Node, key: string, left: number, top: number, width: number, height: number, textLeft: number, color: string, chev: ?DOMRect, chevOnly?: boolean}>} */
+  /** @returns {Array<{node: Node, key: string, left: number, top: number, width: number, height: number, textLeft: number, color: string}>} */
   const measureCrumbs = () => {
     const base = crumbsElem.getBoundingClientRect();
     const items = [];
@@ -1990,8 +1982,6 @@ export function createLibraryInstance(viewer, opts) {
       let rect;
       let color;
       let textLeft;
-      /** @type {?DOMRect} */
-      let chev = null;
       if (node instanceof Text) {
         const range = document.createRange();
         range.selectNodeContents(node);
@@ -2007,14 +1997,10 @@ export function createLibraryInstance(viewer, opts) {
         if (node.classList.contains('sep')) key = `sep${++seps}`;
         else if (node.classList.contains('cur')) key = `dir:${crumbsDir}`;
         else if (node.classList.contains('scribe-library-sort')) key = 'dots';
-        else if (node.classList.contains('scribe-library-crumb-root')) {
-          key = 'root';
-          const c = /** @type {SVGElement} */ (node.querySelector('svg')).getBoundingClientRect();
-          chev = new DOMRect(c.left - base.left, c.top - base.top, c.width, c.height);
-        } else key = node.dataset.dirTarget ? `dir:${node.dataset.dirTarget}` : 'root';
+        else key = node.dataset.dirTarget ? `dir:${node.dataset.dirTarget}` : 'root';
       } else continue;
       items.push({
-        node, key, left: rect.left - base.left, top: rect.top - base.top, width: rect.width, height: rect.height, textLeft: textLeft - base.left, color, chev,
+        node, key, left: rect.left - base.left, top: rect.top - base.top, width: rect.width, height: rect.height, textLeft: textLeft - base.left, color,
       });
     }
     return items;
@@ -2034,22 +2020,11 @@ export function createLibraryInstance(viewer, opts) {
     midDropdown = null;
     const segs = currentDir ? currentDir.split('/') : [];
     const rootLabel = isLibrary && store ? store.root.name : opts.name;
-    if (!segs.length && isLibrary) {
-      // The folder menu releases a detached trigger only when it opens or closes, so a button built per render would accumulate there with its listeners.
-      if (!rootMenuBtn) {
-        rootMenuBtn = document.createElement('button');
-        rootMenuBtn.type = 'button';
-        rootMenuBtn.className = 'scribe-library-crumb-root';
-        rootMenuBtn.setAttribute('aria-haspopup', 'menu');
-        rootMenuBtn.innerHTML = `<span class="nm"></span>${CHEVRON_SVG}`;
-        folderDropdown.attachTrigger(rootMenuBtn);
-      }
-      rootMenuBtn.title = rootLabel;
-      /** @type {HTMLElement} */ (rootMenuBtn.querySelector('.nm')).textContent = rootLabel;
-      crumbsElem.appendChild(rootMenuBtn);
-      roundBarButtons();
-    } else if (!segs.length) {
-      crumbsElem.appendChild(document.createTextNode(rootLabel));
+    if (!segs.length) {
+      // An element rather than a text node, so the fold counts the name's width.
+      const home = document.createElement('span');
+      home.textContent = rootLabel;
+      crumbsElem.appendChild(home);
     } else {
       const addSep = () => {
         const sep = document.createElement('span');
@@ -2157,19 +2132,14 @@ export function createLibraryInstance(viewer, opts) {
       const was = beforeBy.get(it.key);
       if (!stays(it, was) || !was) continue;
       if (was.color !== it.color && it.node instanceof Element) it.node.animate([{ color: was.color }, { color: it.color }], { duration: 160, easing: 'cubic-bezier(.4, 0, .2, 1)' });
-      if (was.chev && !it.chev) leaving.push({ ...was, chevOnly: true });
-      if (it.chev && !was.chev) coming.push({ ...it, node: /** @type {Element} */ (/** @type {Element} */ (it.node).querySelector('svg')), left: it.chev.x, width: it.chev.width });
     }
     // Where a leaving crumb and an arriving one share space, the arrival waits for the departure, so two names never show through each other.
-    /** @param {{left: number, width: number, chev: ?DOMRect, chevOnly?: boolean}} it */
-    const span = (it) => (it.chevOnly && it.chev ? [it.chev.x, it.chev.x + it.chev.width] : [it.left, it.left + it.width]);
-    const through = leaving.some((l) => coming.some((c) => span(l)[0] < span(c)[1] - 1 && span(c)[0] < span(l)[1] - 1));
+    const through = leaving.some((l) => coming.some((c) => l.left < c.left + c.width - 1 && c.left < l.left + l.width - 1));
     for (const it of leaving) {
       /** @type {HTMLElement} */
       let ghost;
       if (it.node instanceof HTMLElement) {
         ghost = /** @type {HTMLElement} */ (it.node.cloneNode(true));
-        if (it.chevOnly) /** @type {HTMLElement} */ (ghost.querySelector('.nm')).style.visibility = 'hidden';
       } else {
         ghost = document.createElement('span');
         ghost.textContent = it.node.textContent;
