@@ -119,16 +119,6 @@ export class DocSessions {
   }
 
   /**
-   * The pixel source for `hash` while one is open or opening, or null.
-   * Never opens one.
-   * @param {string} hash
-   * @returns {?Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
-   */
-  peekPixels(hash) {
-    return this.map.get(hash)?.pixelsPromise ?? null;
-  }
-
-  /**
    * Get-or-start the live document for `hash`.
    * The document stays in the idle pool, so it is shared by later callers and closed by pool eviction.
    * @param {string} hash
@@ -417,11 +407,21 @@ export class DocSessions {
     this.urlOrder.length = 0;
   }
 
-  /** @param {DocSession} keep */
+  /**
+   * Close idle pixel sources past the pool cap, least recently used first.
+   * @param {DocSession} keep - The session that must survive this eviction.
+   */
   #evictPixels(keep) {
     const open = [...this.map.values()].filter((s) => s.pixelsPromise && s !== keep);
     open.sort((a, b) => a.pixelsUse - b.pixelsUse);
-    while (open.length > MAX_PIXEL_SOURCES - 1) closePixels(/** @type {DocSession} */ (open.shift()));
+    let excess = open.length - (MAX_PIXEL_SOURCES - 1);
+    for (const s of open) {
+      if (excess <= 0) break;
+      // Closing a source settles its staged and running renders as skipped, so one still opening or rendering waits for a later pass.
+      if (!s.pixelsDoc || s.pixelsDoc.images.pdfScheduler?.busy) continue;
+      closePixels(s);
+      excess -= 1;
+    }
   }
 
   /**

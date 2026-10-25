@@ -261,7 +261,7 @@ export function flyCopies(flights, ms) {
       + `box-shadow:0 8px 22px rgba(0,0,0,.45);pointer-events:none;z-index:${9999 - i};transform-origin:50% 50%;`
       + `left:${f.from.left}px;top:${f.from.top}px;width:${f.from.width}px;height:${f.from.height}px;`
       + `transform:rotate(${f.rot || 0}deg);opacity:${f.opacity ?? 1}`;
-    const imgClone = /** @type {HTMLImageElement} */ (f.img.cloneNode(true));
+    const imgClone = pictureCopy(f.img);
     // A rotated page carries inline sizing already.
     // An upright one relies on a scoped rule that does not reach document.body.
     if (!imgClone.style.width) { imgClone.style.width = '100%'; imgClone.style.height = '100%'; }
@@ -360,6 +360,29 @@ export function fanOrder(primary, items, usable = () => true) {
 }
 
 /**
+ * A free-standing copy of a row's picture, carrying the row image's inline styles.
+ * @param {HTMLImageElement} img
+ * @returns {HTMLImageElement | HTMLCanvasElement}
+ */
+function pictureCopy(img) {
+  // A copied element would fetch its URL again, which fails once the document that owned the picture has revoked it.
+  if (img.complete && img.naturalWidth > 0) {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx2d = canvas.getContext('2d');
+    if (ctx2d) {
+      try {
+        ctx2d.drawImage(img, 0, 0);
+        canvas.style.cssText = img.style.cssText;
+        return canvas;
+      } catch { /* An undrawable picture falls back to the element copy below. */ }
+    }
+  }
+  return /** @type {HTMLImageElement} */ (img.cloneNode(true));
+}
+
+/**
  * Build the floating drag ghost on document.body: a fan of up to three page images, front on top, with a count badge.
  * @param {Array<{img: HTMLImageElement, dir: number}>} cards - Cards front first (already capped by the caller).
  *   dir is -1 for a page before the grabbed one (fans left), 1 for after (fans right), 0 for the front card.
@@ -391,7 +414,7 @@ export function buildGhost(cards, rect, badgeCount) {
       + `transform:translate(${dir * off}px,${off}px) rotate(${rot}deg);z-index:${cardCount - i}`;
     const srcImg = cards[i].img;
     if (srcImg) {
-      const img = /** @type {HTMLImageElement} */ (srcImg.cloneNode(true));
+      const img = pictureCopy(srcImg);
       // A rotated page carries inline sizing already.
       // The upright case relies on the scoped rule, which does not reach `document.body`, so give it the same fit explicitly.
       if (!img.style.width) { img.style.width = '100%'; img.style.height = '100%'; }
@@ -464,6 +487,16 @@ export function installPageReorder(ctx) {
   }
 
   /**
+   * Content top of the insertion line for gap `g`.
+   * @param {number} g @returns {number}
+   */
+  function insertLineTop(g) {
+    const last = ctx.pageCount - 1;
+    if (g < ctx.pageCount) return ctx.offsets[g];
+    return ctx.gridCols <= 1 ? ctx.offsets[last] + ctx.heights[last] : ctx.offsets[last];
+  }
+
+  /**
    * Position an insertion-indicator line for gap `g`.
    * Takes the `line` element because the reorder drag and the file-drop preview each own a separate `.scribe-thumb-insert`.
    * @param {HTMLElement} line
@@ -472,13 +505,12 @@ export function installPageReorder(ctx) {
   function placeInsertLineAt(line, g) {
     if (ctx.gridCols <= 1) {
       // Rail: a horizontal line over the single column, aligned to the thumbnail (which the panel can now be wider than).
-      const y = g < ctx.pageCount ? ctx.offsets[g] : ctx.offsets[ctx.pageCount - 1] + ctx.heights[ctx.pageCount - 1];
       line.classList.remove('vertical');
       line.style.left = `${ctx.PAD}px`;
       line.style.right = 'auto';
       line.style.width = `${ctx.THUMB_W}px`;
       line.style.height = '';
-      line.style.top = `${ctx.PAD + y}px`;
+      line.style.top = `${ctx.PAD + insertLineTop(g)}px`;
       return;
     }
     const cols = ctx.gridCols;
@@ -487,7 +519,7 @@ export function installPageReorder(ctx) {
     const cellLeft = ctx.PAD + (idx % cols) * (ctx.THUMB_W + ctx.GRID_GAP);
     line.classList.add('vertical');
     line.style.left = `${atEnd ? cellLeft + ctx.THUMB_W + ctx.GRID_GAP / 2 : cellLeft - ctx.GRID_GAP / 2}px`;
-    line.style.top = `${ctx.PAD + ctx.offsets[idx]}px`;
+    line.style.top = `${ctx.PAD + insertLineTop(g)}px`;
     line.style.height = `${ctx.rowStrides[Math.floor(idx / cols)] - ctx.GRID_GAP}px`;
     line.style.width = '';
   }
@@ -498,42 +530,38 @@ export function installPageReorder(ctx) {
    * Returns null for any other drop, which keeps the plain absolute restore.
    * @param {Set<number>} movedOld - Old indices of the pages being moved.
    * @param {Array<[number, ThumbRow]>} snapshot - The mounted [oldIndex, row] pairs at drop time.
-   * @returns {?{anchorOld: number, anchorTop: number, tops: Map<number, number>, lefts: Map<number, number>}}
-   *   The anchor's old index and row top, plus each mounted row's old top/left for the slide-suppression check.
+   * @param {number} gap - The drop gap (0..pageCount).
+   * @returns {?{lineTop: number, tops: Map<number, number>, lefts: Map<number, number>}}
+   *   The insertion line's content top, plus each mounted row's old top/left for the slide-suppression check.
    */
-  function farMoveAnchor(movedOld, snapshot) {
+  function farMoveAnchor(movedOld, snapshot, gap) {
     const vTop = ctx.scrollElem.scrollTop - ctx.PAD;
     for (const m of movedOld) {
       if (ctx.offsets[m] + ctx.heights[m] > vTop) return null;
     }
-    let anchorOld = -1;
-    for (let n = 0; n < ctx.pageCount; n++) {
-      if (!movedOld.has(n) && ctx.offsets[n] + ctx.heights[n] > vTop) { anchorOld = n; break; }
-    }
-    if (anchorOld < 0) return null;
     const tops = new Map();
     const lefts = new Map();
     for (const [oi] of snapshot) {
       tops.set(oi, ctx.offsets[oi]);
       lefts.set(oi, ctx.lefts[oi]);
     }
-    return {
-      anchorOld, anchorTop: ctx.offsets[anchorOld], tops, lefts,
-    };
+    return { lineTop: insertLineTop(gap), tops, lefts };
   }
 
   /**
    * Scroll target and slide-suppression set for a far drop, from the pre-move `farMoveAnchor` capture.
    * Rows the compensation already holds in place on screen must not also slide, while rows near the seam still do.
-   * @param {{anchorOld: number, anchorTop: number, tops: Map<number, number>, lefts: Map<number, number>}} far
+   * @param {{lineTop: number, tops: Map<number, number>, lefts: Map<number, number>}} far
    * @param {number} keepScroll - The scroll position at drop time.
    * @param {Array<[number, ThumbRow]>} snapshot
    * @param {Set<number>} movedOld
    * @param {(oi: number) => number} remap - Old index to new index for this move.
+   * @param {number} to - New index of the first dropped page.
    * @returns {{scrollTarget: number, noSlide: Set<number>}}
    */
-  function farMoveScroll(far, keepScroll, snapshot, movedOld, remap) {
-    const delta = ctx.offsets[remap(far.anchorOld)] - far.anchorTop;
+  function farMoveScroll(far, keepScroll, snapshot, movedOld, remap, to) {
+    // Floored at scroll 0, so the slide-suppression check below sees the scroll that actually lands.
+    const delta = Math.max(-keepScroll, ctx.offsets[to] - far.lineTop);
     const noSlide = new Set();
     for (const [oi] of snapshot) {
       if (movedOld.has(oi)) continue;
@@ -550,15 +578,16 @@ export function installPageReorder(ctx) {
    * `updateWindow` then settles the visible set, reusing each kept row's image and rendering only genuinely-new positions.
    * @param {number} from
    * @param {number} to
+   * @param {number} gap - The drop gap the move was derived from, where the insertion line stood.
    * @returns {Array<ThumbRow>} The dragged row, now placed (hidden) at its destination slot, for the ghost to settle onto.
    */
-  function reorderPages(from, to) {
+  function reorderPages(from, to, gap) {
     ctx.cancelCut();
     const keepScroll = ctx.scrollElem.scrollTop;
     const snapshot = [...ctx.mounted];
     const movedOld = new Set([from]);
     // Captured before the move rewrites the geometry arrays.
-    const far = farMoveAnchor(movedOld, snapshot);
+    const far = farMoveAnchor(movedOld, snapshot, gap);
     ctx.mounted.clear();
 
     ctx.scribe.movePage(from, to);
@@ -567,7 +596,7 @@ export function installPageReorder(ctx) {
     if (ctx.activePage >= 0) ctx.activePage = newIndexFor(ctx.activePage, from, to);
     ctx.remapSelection((s) => newIndexFor(s, from, to));
 
-    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => newIndexFor(oi, from, to)) : null;
+    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => newIndexFor(oi, from, to), to) : null;
     // The pages the drop displaces slide around it (the dragged page itself is flown in by the ghost on release).
     slideRows(snapshot, movedOld, landing && landing.noSlide);
     /** @type {Array<ThumbRow>} */
@@ -604,7 +633,7 @@ export function installPageReorder(ctx) {
     const snapshot = [...ctx.mounted];
     const movedOld = new Set(sortedSel);
     // Captured before the move rewrites the geometry arrays.
-    const far = farMoveAnchor(movedOld, snapshot);
+    const far = farMoveAnchor(movedOld, snapshot, gap);
     ctx.mounted.clear();
 
     ctx.scribe.movePages(sortedSel, to);
@@ -612,7 +641,7 @@ export function installPageReorder(ctx) {
     if (ctx.activePage >= 0) ctx.activePage = multiMoveIndex(ctx.activePage, sortedSel, to);
     ctx.remapSelection((s) => multiMoveIndex(s, sortedSel, to));
 
-    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => multiMoveIndex(oi, sortedSel, to)) : null;
+    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => multiMoveIndex(oi, sortedSel, to), to) : null;
     // The pages the drop displaces slide around them (the dragged pages are flown in by the ghost on release).
     slideRows(snapshot, movedOld, landing && landing.noSlide);
     /** @type {Array<ThumbRow>} */
@@ -758,16 +787,25 @@ export function installPageReorder(ctx) {
   }
 
   /** @param {PointerEvent} e */
-  function onDragUp(e) {
+  async function onDragUp(e) {
     window.removeEventListener('pointermove', onDragMove);
     window.removeEventListener('pointerup', onDragUp);
     const d = ctx.drag;
-    ctx.drag = null;
-    if (!d || !d.started || d.scrollMode) return;
+    if (!d || !d.started || d.scrollMode) { ctx.drag = null; return; }
     // Keep the ghost (it lives on document.body, so the panel does not clip it) and fly it into the drop slot, with the placed row hidden until it lands.
     // Animating the ghost rather than the in-rail row keeps the part of the page dragged out over the viewer from being clipped at the panel edge mid-animation.
     endDragVisuals(d, true);
     const gap = insertionGapAt(e.clientX, e.clientY);
+    if (!ctx.scribe._pageEditable()) {
+      // The drag stays registered through the wait, so `updateWindow` keeps the dragged rows mounted for the landing.
+      const ok = await ctx.scribe._awaitPageEditable();
+      if (!ok || ctx.drag !== d) {
+        if (d.ghost) d.ghost.remove();
+        if (ctx.drag === d) ctx.drag = null;
+        return;
+      }
+    }
+    ctx.drag = null;
     let moved;
     if (gap === d.from || gap === d.from + 1) {
       // Released over the grabbed page's own slot, so the drag is a no-op.
@@ -779,7 +817,7 @@ export function installPageReorder(ctx) {
     } else {
       // `movePage`'s target is the index after the page is removed, so a gap below the source shifts down by one.
       const to = gap <= d.from ? gap : gap - 1;
-      moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(d.from, to);
+      moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(d.from, to, gap);
     }
     if (!moved) {
       // Nothing reordered: settle the ghost back onto the dragged page's existing slot.
@@ -1344,7 +1382,7 @@ export function installPageReorder(ctx) {
    * @param {boolean} [commit=true] - Whether a dragged lift applies its move.
    *   False on interruption (pointercancel), which puts the page(s) back instead of committing the hovered gap.
    */
-  function dropTouch(allowMenu, commit = true) {
+  async function dropTouch(allowMenu, commit = true) {
     if (!touch) return;
     stopTouchAuto();
     if (touch.reflowT) { clearTimeout(touch.reflowT); touch.reflowT = 0; }
@@ -1371,8 +1409,15 @@ export function installPageReorder(ctx) {
       return;
     }
     const gap = touch.gap;
+    let apply = commit;
+    if (apply && !ctx.scribe._pageEditable()) {
+      const held = touch;
+      const ok = await ctx.scribe._awaitPageEditable();
+      if (touch !== held) return;
+      apply = ok;
+    }
     let moved;
-    if (!commit) {
+    if (!apply) {
       moved = undefined; // interrupted: the no-move path below slides everything home
     } else if (group) {
       moved = moveSelection(gap);
@@ -1380,7 +1425,7 @@ export function installPageReorder(ctx) {
       moved = undefined;
     } else {
       const to = gap <= primaryN ? gap : gap - 1;
-      moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(primaryN, to);
+      moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(primaryN, to, gap);
     }
     if (!moved) {
       restoreReflow();

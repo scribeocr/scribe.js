@@ -3634,6 +3634,8 @@ export function createEditPagesTool(app) {
     // The open animation reads the panel width when it starts, so this order slides the rail in at the mode's final width.
     app._thumbnailPanel?.setPageEditMode(active);
     if (active && app._activeSidebar !== 'thumbnails') app._requestSidebar('thumbnails');
+    // A page edit waits for the real document behind a provisional one, so its load starts here, ahead of the first edit.
+    if (active) hydrateIfProvisional(app.scribe.doc);
   };
   toolbarElem.addEventListener('click', () => {
     if (toolbarElem.classList.contains('disabled')) return;

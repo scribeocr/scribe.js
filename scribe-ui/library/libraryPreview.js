@@ -147,9 +147,6 @@ export function createPreview({
       // Without a changes file the page appends its session additions instead.
       annots: (n) => Promise.resolve(changes?.annotations ? (changes.annotations[n] ?? []).map(copyAnnot) : null),
       thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
-      // The focus reaches the pixel source only while one is open, since a report with nothing to render must not reopen one.
-      thumbFocus: (n) => { sessions.peekPixels(hash)?.then((d) => d.images.pdfScheduler?.setThumbFocus(n)).catch(() => {}); },
-      viewerFocus: (n) => { sessions.peekPixels(hash)?.then((d) => d.images.pdfScheduler?.setViewerFocus(n)).catch(() => {}); },
       // The near marks handed over belong to the library's query, so a query typed into the find bar afterward goes without them.
       find: (query) => engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : [])
         .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })))),

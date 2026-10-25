@@ -1438,6 +1438,8 @@ class ScribePDFViewer {
       // Edits change the counts the sheet and room headers show.
       if (this._sheetOpen) this._syncSheetHeader();
       if (this._roomOpen) this._syncRoomHeader();
+      // A page op can land with no pointer release or key after it, from a click handler or the API, so the undo controls and the Save button re-read the history here.
+      this._syncUndoState();
       // A bookmark edit can change the top-level bookmark count, so refresh the Split action.
       if (this._editEnabled) this._updateSplitButton();
     };
@@ -2068,7 +2070,7 @@ class ScribePDFViewer {
 
     try {
       // A preview's swap stays a preview, so the library's tab keeps the front.
-      await this._setDoc(realDoc, cpN, false, false, { preview: this._activeTab < 0 });
+      await this._setDoc(realDoc, cpN, false, false, { preview: this._activeTab < 0, samePages: geometryMatches });
       if (sel && this.scribe.textSel) {
         const ts = this.scribe.textSel;
         ts.range = { kind: 'linear', start: sel.start, end: sel.end };
@@ -2127,10 +2129,11 @@ class ScribePDFViewer {
    * @param {number} initialPage
    * @param {boolean} owns - Whether the viewer created `doc`.
    * @param {boolean | undefined} terminatePrevious - Explicit override of the outgoing-doc terminate.
-   * @param {{preview?: boolean}} [options] - `preview` marks the document as a library preview.
+   * @param {{preview?: boolean, samePages?: boolean}} [options] - `preview` marks the document as a library preview.
+   *   `samePages` marks a hydration swap whose document holds the pages the rail shows, in the same order, so the rail re-keys its rows instead of rebuilding.
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
    */
-  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false } = {}) {
+  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false, samePages = false } = {}) {
     const prev = this.doc;
     const displaced = prev && prev !== doc ? prev : null;
     const terminatePrev = terminatePrevious ?? this._ownsDoc;
@@ -2149,7 +2152,8 @@ class ScribePDFViewer {
     if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
     // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
     // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
-    if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
+    if (this._thumbnailPanel && samePages) this._thumbnailPanel.rebind();
+    else if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
     if (this._companionStrip) {
       this._companionStrip.rebuild(initialPage);
       this._companionStrip.setVisible(this._phoneUi);
@@ -2643,9 +2647,9 @@ class ScribePDFViewer {
    * @returns {Promise<void>}
    */
   async insertPagesFromFiles(files, index) {
-    const targetDoc = this.scribe.doc;
     const list = Array.from(files || []);
-    if (!targetDoc || list.length === 0) return;
+    if (list.length === 0 || !(await this.scribe._awaitPageEditable())) return;
+    const targetDoc = this.scribe.doc;
     const isPdf = (f) => /\.pdf$/i.test(f.name || '') || f.type === 'application/pdf';
     const pdfs = list.filter(isPdf);
     const images = list.filter((f) => !isPdf(f));
@@ -3895,8 +3899,7 @@ class ScribePDFViewer {
 
   /**
    * Swap the mode row and banner's exit buttons between Done and Save/Discard.
-   * Only Edit Text and Edit Graphics take Save/Discard.
-   * Entering one captures the history baseline its dirty state is measured against.
+   * Entering a mode captures the history baseline its dirty state is measured against.
    * @param {?HTMLElement} activeBtn
    */
   _syncModeExitButtons(activeBtn) {
@@ -3905,7 +3908,8 @@ class ScribePDFViewer {
       this._modeBaseline = activeBtn && this.scribe.doc ? this.scribe.doc.docHistory.undoStack.length : -1;
     }
     const sessionExit = !!activeBtn
-      && (activeBtn === this._editTextTool?.toolbarElem || activeBtn === this._graphicsEditTool?.toolbarElem);
+      && (activeBtn === this._editTextTool?.toolbarElem || activeBtn === this._graphicsEditTool?.toolbarElem
+        || activeBtn === this._editPagesTool?.toolbarElem);
     for (const parts of [this._dockModeParts, this._modeBannerParts]) {
       if (!parts || !parts.save) continue;
       parts.save.style.display = sessionExit ? '' : 'none';
@@ -3924,13 +3928,18 @@ class ScribePDFViewer {
     if (ed?.isOpen()) ed.revert();
     const doc = this.scribe.doc;
     if (doc && this._modeBaseline >= 0) {
+      const stack = doc.docHistory.undoStack;
+      // A page op's viewer-level undo rebuilds every page, so a session of page ops alone rebuilds once, on the last undo.
+      // A text or graphics edit refreshes just its own pages, so a session holding one unwinds every step at the viewer level.
+      const pagesOnly = stack.slice(this._modeBaseline).every((e) => e.surface === 'page');
       let guard = 200;
-      while (doc.docHistory.undoStack.length > this._modeBaseline && guard > 0) {
+      while (stack.length > this._modeBaseline && guard > 0) {
         guard -= 1;
-        if (!this.scribe.undo()) break;
+        const viewerStep = !pagesOnly || stack.length === this._modeBaseline + 1;
+        if (!(viewerStep ? this.scribe.undo() : doc.undo())) break;
       }
       // The depth sits below the baseline when the session undid edits made before it began.
-      while (doc.docHistory.undoStack.length < this._modeBaseline && guard > 0) {
+      while (stack.length < this._modeBaseline && guard > 0) {
         guard -= 1;
         if (!this.scribe.redo()) break;
       }

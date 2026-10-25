@@ -121,7 +121,7 @@ function clearPageClipboard() {
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
  *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void,
  *   setPageEditMode: (on: boolean) => void, setTopInset: (px: number) => void, clearSelection: () => void,
- *   beginStructureSlide: () => (() => void), refit: () => void,
+ *   beginStructureSlide: () => (() => void), refit: () => void, rebind: () => void,
  *   getResizeBounds: () => { min: number, max: number },
  *   gridGeometry: () => { count: number, cols: number, cellW: number, pad: number, strideX: number,
  *     boxLeft: (n: number) => number, boxTop: (n: number) => number, boxH: (n: number) => number, thumbTop: (n: number) => number },
@@ -850,13 +850,15 @@ export function createThumbnailPanel(scribe, {
     const gen = generation;
     doc.images.thumbnailUrl(n).then((url) => {
       if (destroyed || gen !== generation) return;
-      if (mounted.get(n) !== entry) return;
+      // A reorder, delete or insert may have re-keyed the row meanwhile, so it is looked up by its element rather than by `n`.
+      const now = Number(entry.thumbElem.dataset.page);
+      if (mounted.get(now) !== entry) return;
       if (!url) { entry.pending = false; return; }
       entry.url = url;
-      entry.pm = (doc.pageMetrics && doc.pageMetrics[n]) || null;
+      entry.pm = (doc.pageMetrics && doc.pageMetrics[now]) || null;
       entry.imgElem.src = url;
     }).catch(() => {
-      if (mounted.get(n) === entry) entry.pending = false;
+      if (mounted.get(Number(entry.thumbElem.dataset.page)) === entry) entry.pending = false;
     });
   }
 
@@ -1417,6 +1419,28 @@ export function createThumbnailPanel(scribe, {
     if (visible) updateWindow(true);
   }
 
+  /**
+   * Re-key the mounted rows to the document that replaced the one they were built for.
+   * Every picture, the selection and the scroll position stay.
+   * The new document must hold the same pages in the same order, as after a hydration swap.
+   */
+  function rebind() {
+    // The replaced document revokes its thumbnail URLs when it closes, so each row fetches its picture from the new document.
+    generation += 1;
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    measureViewport();
+    computeGeometry();
+    for (const [n, entry] of mounted) {
+      if (n >= pageCount) { unmountRow(n, entry); continue; }
+      entry.url = null;
+      entry.pending = false;
+      entry.pm = null;
+      restyleRow(entry, n);
+    }
+    scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH));
+    if (visible) updateWindow(true);
+  }
+
   // Drag the right-edge handle to resize the panel between one column (the docked rail) and MAX_COLS columns.
   // Thumbnail size is fixed, so the width only changes how many columns fit.
   let resizeStartX = 0;
@@ -1689,6 +1713,7 @@ export function createThumbnailPanel(scribe, {
    * @param {number} [deg=90]
    */
   function onRotate(n, deg = 90) {
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) onRotate(n, deg); }); return; }
     scribe.rotatePage(n, deg);
     computeGeometry();
     for (const [i, entry] of mounted) restyleRow(entry, i);
@@ -1703,6 +1728,7 @@ export function createThumbnailPanel(scribe, {
    */
   function onDelete(n) {
     if (!scribe.doc || scribe.doc.pageMetrics.length <= 1) return;
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) onDelete(n); }); return; }
     cancelCut();
     const playSlide = beginStructureSlide();
     const snapshot = [...mounted];
@@ -2262,6 +2288,7 @@ export function createThumbnailPanel(scribe, {
    */
   function rotateSelection(deg = 90) {
     if (selected.size === 0) return;
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) rotateSelection(deg); }); return; }
     scribe.rotatePages([...selected], deg);
     computeGeometry();
     for (const [i, entry] of mounted) restyleRow(entry, i);
@@ -2275,6 +2302,7 @@ export function createThumbnailPanel(scribe, {
    */
   function deleteSelection(animate = true) {
     if (selected.size === 0 || !scribe.doc) return;
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) deleteSelection(animate); }); return; }
     cancelCut();
     let toDelete = [...selected].filter((i) => i < pageCount).sort((a, b) => a - b);
     if (toDelete.length >= pageCount) toDelete = toDelete.slice(0, pageCount - 1);
@@ -2337,6 +2365,7 @@ export function createThumbnailPanel(scribe, {
     if (!scribe.doc) return;
     const targets = [...new Set(indices)].filter((i) => i >= 0 && i < pageCount).sort((a, b) => a - b);
     if (targets.length === 0) return;
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) copySelection(indices, mode); }); return; }
     pageClipboard.payloads = scribe.doc.copyPages(targets);
     pageClipboard.mode = mode;
     pageClipboard.sourceDocId = scribe.doc.id;
@@ -2363,6 +2392,7 @@ export function createThumbnailPanel(scribe, {
    */
   function pasteAt(insertIndex) {
     if (!canPaste()) return;
+    if (!scribe._pageEditable()) { scribe._awaitPageEditable().then((ok) => { if (ok && !destroyed) pasteAt(insertIndex); }); return; }
     const wasCut = pageClipboard.mode === 'cut';
     const range = scribe.pastePages(
       pageClipboard.payloads,
@@ -2676,6 +2706,7 @@ export function createThumbnailPanel(scribe, {
     clearSelection,
     beginStructureSlide,
     refit,
+    rebind,
     getResizeBounds,
     gridGeometry,
     dropIndicator,

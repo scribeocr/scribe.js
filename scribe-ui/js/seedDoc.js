@@ -30,8 +30,6 @@ const MAX_EXACT_RASTERS = 4;
  *   A page that resolves, even to `[]`, replaces the real document's page at the swap, so removals count.
  *   Pages that do not resolve append their session additions instead.
  * @property {(n: number) => Promise<?string>} [thumb]
- * @property {(n: ?number) => void} [thumbFocus] - Receives the page at the center of the thumbnail rail, or null while the rail is idle.
- * @property {(n: number) => void} [viewerFocus] - Receives the page the view is on.
  * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - The document's matches of a query, in page order.
  *   Its word ids must be those `ocr` gives, since the viewer marks the words by id.
  * @property {Array<Object>} [outline]
@@ -228,11 +226,6 @@ export class SeedDoc {
       getNative: (n) => rasterWrapper(n, 0),
       getBinary: (n) => rasterWrapper(n, 0),
       renderThumbnail: async () => null,
-      // The rail and the view report their focus here, as on a real document's scheduler, for the seed to hand to its renderer.
-      pdfScheduler: seed.thumbFocus || seed.viewerFocus ? {
-        setThumbFocus: (n) => seed.thumbFocus?.(n),
-        setViewerFocus: (n) => seed.viewerFocus?.(n),
-      } : null,
       thumbnailUrl: (n) => {
         if (this._cancelled || !seed.thumb) return Promise.resolve(null);
         let p = this._thumbs.get(n);

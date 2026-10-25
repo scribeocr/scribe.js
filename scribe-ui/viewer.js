@@ -1236,23 +1236,11 @@ export class ScribeViewer {
 
   /**
    * Rotate page `n` by `deltaDeg` (a multiple of 90), updating its user rotation.
-   * A 90/270 step swaps the displayed dimensions and shifts every following page's stop, so the cached layout is rebuilt and the current view re-rendered.
-   * The rotation is a display transform. Export persists it as the page's /Rotate.
    * @param {number} n
    * @param {number} deltaDeg
    */
   rotatePage(n, deltaDeg) {
-    const pm = this.doc.pageMetrics[n];
-    if (!pm) return;
-    pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
-
-    this._clearPageDom();
-    this._invalidateLayout();
-    this.imageCache.clear();
-
-    this.calcPageLayout();
-    this.displayPage(this.state.cp.n, false, true);
-    if (this.onPageEditCallback) this.onPageEditCallback('rotate');
+    this.rotatePages([n], deltaDeg);
   }
 
   /**
@@ -1284,12 +1272,42 @@ export class ScribeViewer {
   }
 
   /**
+   * Whether the document can take a page edit now.
+   * @returns {boolean}
+   */
+  _pageEditable() {
+    // A provisional document applies a page edit only after its real document has loaded.
+    // A real document ignores page edits while its deferred text import runs.
+    return !!this.doc && this.doc.id >= 0 && !this.doc._textReadySettle;
+  }
+
+  /**
+   * Resolve once the document can take a page edit.
+   * For a provisional document, calling it starts the real document's load.
+   * @returns {Promise<boolean>} False when no document is open, the load failed, or another document took the view meanwhile.
+   */
+  async _awaitPageEditable() {
+    const doc = this.doc;
+    if (!doc) return false;
+    if (doc.id < 0) {
+      const seed = /** @type {{_requestHydration?: () => Promise<unknown>}} */ (/** @type {unknown} */ (doc));
+      if (!seed._requestHydration) return false;
+      try { await seed._requestHydration(); } catch { return false; }
+    }
+    const real = this.doc;
+    if (!real || real.id < 0) return false;
+    if (real.textReady) await real.textReady.catch(() => {});
+    return this.doc === real;
+  }
+
+  /**
    * Delete page `n` from the document and rebuild the view. The last remaining page cannot be deleted.
    * @param {number} n
    */
   deletePage(n) {
     if (!this.doc || n < 0 || n >= this.doc.pageMetrics.length) return;
     if (this.doc.pageMetrics.length <= 1) return;
+    if (!this._pageEditable()) { this._awaitPageEditable().then((ok) => { if (ok) this.deletePage(n); }); return; }
     this.doc.deletePage(n);
     let cp = this.state.cp.n;
     if (n < cp) cp -= 1;
@@ -1307,6 +1325,7 @@ export class ScribeViewer {
     if (!this.doc) return;
     const len = this.doc.pageMetrics.length;
     if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
+    if (!this._pageEditable()) { this._awaitPageEditable().then((ok) => { if (ok) this.movePage(from, to); }); return; }
     this.doc.movePage(from, to);
     // Follow the shown page when it is the one being moved, so the view chases it to its new slot.
     const followed = this.state.cp.n === from;
@@ -1328,6 +1347,7 @@ export class ScribeViewer {
     let valid = [...new Set(indices)].filter((i) => i >= 0 && i < len).sort((a, b) => a - b);
     if (valid.length >= len) valid = valid.slice(0, len - 1); // keep at least one page
     if (valid.length === 0) return;
+    if (!this._pageEditable()) { this._awaitPageEditable().then((ok) => { if (ok) this.deletePages(indices); }); return; }
     this.doc.deletePages(valid);
     // Shift the current page up by the deletions below it; if it was itself deleted this lands on the page that follows the deleted block.
     const removedBelow = valid.filter((i) => i < this.state.cp.n).length;
@@ -1346,6 +1366,7 @@ export class ScribeViewer {
     const len = this.doc.pageMetrics.length;
     const valid = [...new Set(indices)].filter((i) => i >= 0 && i < len).sort((a, b) => a - b);
     if (valid.length === 0) return;
+    if (!this._pageEditable()) { this._awaitPageEditable().then((ok) => { if (ok) this.movePages(indices, to); }); return; }
     const cpIndexInBlock = valid.indexOf(this.state.cp.n);
     this.doc.movePages(valid, to);
     // The displayed page follows its content: into the moved block if it was selected, else by the net shift.
@@ -1369,10 +1390,16 @@ export class ScribeViewer {
    * @param {{ removeSourceIndices?: Array<number>, keepCurrentPage?: boolean }} [options]
    * @returns {?{ start: number, count: number, cp: number }} The inserted range and the page landed on (`cp`), or `null` if nothing was pasted.
    *   Callers doing an in-place rail splice need `cp` because `state.cp.n` updates asynchronously (the rebuild's `displayPage` is not awaited), so it is stale right after this returns.
+   *   A document that cannot take the edit yet also returns `null`.
+   *   The paste then lands once the document can take it.
    */
   pastePages(snapshots, to, { removeSourceIndices, keepCurrentPage } = {}) {
     if (!this.doc || !this.opt.enablePageEditing) return null;
     if (!Array.isArray(snapshots) || snapshots.length === 0) return null;
+    if (!this._pageEditable()) {
+      this._awaitPageEditable().then((ok) => { if (ok) this.pastePages(snapshots, to, { removeSourceIndices, keepCurrentPage }); });
+      return null;
+    }
     const count = snapshots.length;
     const insertAt = Math.max(0, Math.min(to, this.doc.pageMetrics.length));
     // Remember the page in view before the insert shifts indices, so `keepCurrentPage` can stay on the same page.
@@ -1415,6 +1442,7 @@ export class ScribeViewer {
    */
   rotatePages(indices, deltaDeg) {
     if (!this.doc) return;
+    if (!this._pageEditable()) { this._awaitPageEditable().then((ok) => { if (ok) this.rotatePages(indices, deltaDeg); }); return; }
     if (!this.doc.rotatePages(indices, deltaDeg)) return;
     this._clearPageDom();
     this._invalidateLayout();
