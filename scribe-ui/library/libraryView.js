@@ -230,8 +230,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-menu-item svg { width: 16px; height: 16px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
 .scribe-pdf-viewer .scribe-library-menu-sep { ${MENU_SEP_CSS} }
-/* Verb and crumb menus show their row icons outright, unlike the sort menu's hidden-until-checked marks. */
-.scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg, .scribe-pdf-viewer .scribe-library-crumb-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-crumb-menu { left: 0; right: auto; }
 .scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; box-sizing: border-box; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
 .scribe-pdf-viewer .scribe-library-seg button { width: 32px; border: none; background: none; color: var(--scribe-ink-3); padding: 5px 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
@@ -2168,9 +2167,6 @@ export function createLibraryInstance(viewer, opts) {
           const item = document.createElement('div');
           item.className = 'scribe-library-menu-item';
           item.setAttribute('role', 'menuitem');
-          item.innerHTML = FOLDER_SVG;
-          // The shared folder glyph carries inline 100% sizing for card use, which would balloon in a menu row.
-          /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
           item.appendChild(document.createTextNode(label));
           item.addEventListener('click', () => {
             dropdown.close();
@@ -7718,8 +7714,6 @@ export function createLibraryInstance(viewer, opts) {
         const item = document.createElement('div');
         item.className = 'scribe-library-menu-item';
         item.setAttribute('role', 'menuitem');
-        item.innerHTML = FOLDER_SVG;
-        /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
         item.appendChild(document.createTextNode(label));
         item.addEventListener('click', () => {
           titleDropdown.close();
