@@ -272,6 +272,7 @@ function attachSheetDrag(sheet, handle, {
   /** @type {?number} */
   let dragFullH = null;
   let pinned = false;
+  /** @type {?ReturnType<typeof setTimeout>} */
   let unpinT = null;
   const pull = createPullDismiss();
   handle.addEventListener('pointerdown', (e) => {
@@ -503,7 +504,7 @@ class ScribePDFViewer {
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
     this._activeTab = -1;
-    /** Last active-document name announced via the `scribe-active-doc-change` event, or null when none was open. */
+    /** @type {?string} Last active-document name announced via the `scribe-active-doc-change` event, or null when none was open. */
     this._announcedDocName = null;
     /**
      * Name of the document the library's preview pane is showing.
@@ -647,8 +648,13 @@ class ScribePDFViewer {
     this._fontSheetElem = null;
     /** @type {?HTMLDivElement} The dock's mode bar, shown in place of the navigation row while a mode runs. */
     this._dockModeRow = null;
-    /** @type {?{ic: HTMLSpanElement, nm: HTMLSpanElement, status: HTMLSpanElement}} */
+    /** @type {?{ic: HTMLSpanElement, nm: HTMLSpanElement, status: HTMLSpanElement, save: HTMLButtonElement, discard: HTMLButtonElement, done: HTMLButtonElement}} */
     this._dockModeParts = null;
+    /**
+     * @type {?{ic: HTMLSpanElement, name: HTMLSpanElement, hint: HTMLSpanElement, done: HTMLButtonElement,
+     *   save: HTMLButtonElement, discard: HTMLButtonElement, exit: HTMLSpanElement}}
+     */
+    this._modeBannerParts = null;
     /** @type {WeakMap<object, string>} Documents recognized this session, keyed to the run's language signature, and never exported. */
     this._recognizeRuns = new WeakMap();
     /**
@@ -664,7 +670,12 @@ class ScribePDFViewer {
     this._fsBarOn = false;
     /** @type {?HTMLElement} The Fill & Sign palette's phone undo button. */
     this._fsUndoBtn = null;
-    /** @type {?Object<string, HTMLElement>} */
+    /**
+     * @type {?{undo: HTMLButtonElement, redo: HTMLButtonElement, edit: HTMLButtonElement, bold: HTMLButtonElement, italic: HTMLButtonElement,
+     *   color: HTMLButtonElement, copy: HTMLButtonElement, font: HTMLButtonElement, sep: HTMLSpanElement, del: HTMLButtonElement,
+     *   deselect: HTMLButtonElement, hint: HTMLSpanElement, done: HTMLButtonElement, back: HTMLButtonElement, strip: HTMLSpanElement,
+     *   custom: HTMLButtonElement, rowDone: HTMLButtonElement}}
+     */
     this._vbarParts = null;
     this._phoneLineEditing = false;
     /** @type {?{zoom: number, left: number, top: number}} The reading position a line edit's zoom must restore. */
@@ -3117,7 +3128,7 @@ class ScribePDFViewer {
       return;
     }
     if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
-    if (!this._modeBanner) {
+    if (!this._modeBanner || !this._modeBannerParts) {
       const banner = document.createElement('div');
       banner.className = 'scribe-mode-banner';
       const ic = document.createElement('span');
@@ -3158,7 +3169,7 @@ class ScribePDFViewer {
     this._modeBannerBtn = activeBtn;
     this._modeBannerParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
     this._modeBannerParts.name.textContent = activeBtn.ariaLabel;
-    this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
+    this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint ?? '';
     this._modeBannerParts.hint.classList.remove('scribe-mode-banner-hint-armed');
 
     // The lines above just wrote the mode's own hint, so an armed tool's instruction has to be put back.
@@ -3580,7 +3591,8 @@ class ScribePDFViewer {
    */
   _syncPhoneVerbBar() {
     const bar = this._vbarElem;
-    if (!bar) return;
+    const p = this._vbarParts;
+    if (!bar || !p) return;
     const sv = this.scribe;
     const editing = !!sv._editTextLineEditor?.isOpen();
     const kind = !this._phoneUi ? null
@@ -3591,7 +3603,6 @@ class ScribePDFViewer {
     bar.classList.toggle('on', !!kind);
     this.pdfViewerElem.classList.toggle('scribe-vbar-on', !!kind);
     if (kind) {
-      const p = this._vbarParts;
       const sessionOn = kind === 'text' && editing;
       p.undo.style.display = '';
       p.redo.style.display = '';
@@ -6411,7 +6422,7 @@ class ScribePDFViewer {
     if (this._twoPageBtn?.classList.contains('disabled')) return;
     const two = this.scribe.state.pagesPerRow !== 2;
     const cover = this._pageLayoutSetting.endsWith('-cover');
-    this._pageLayoutSetting = (two ? 'double' : 'single') + (cover ? '-cover' : '');
+    this._pageLayoutSetting = two ? (cover ? 'double-cover' : 'double') : (cover ? 'single-cover' : 'single');
     this._writePageLayoutSetting();
     this._setPageLayout(two ? 2 : 1, cover);
   }
@@ -6420,7 +6431,7 @@ class ScribePDFViewer {
   _toggleCoverAlone() {
     const two = this.scribe.state.pagesPerRow === 2;
     const cover = !this._pageLayoutSetting.endsWith('-cover');
-    this._pageLayoutSetting = (two ? 'double' : 'single') + (cover ? '-cover' : '');
+    this._pageLayoutSetting = two ? (cover ? 'double-cover' : 'double') : (cover ? 'single-cover' : 'single');
     this._writePageLayoutSetting();
     if (two) this._setPageLayout(2, cover);
   }

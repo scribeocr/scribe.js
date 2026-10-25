@@ -407,17 +407,14 @@ export class DocSessions {
     this.urlOrder.length = 0;
   }
 
-  /**
-   * Close idle pixel sources past the pool cap, least recently used first.
-   * @param {DocSession} keep - The session that must survive this eviction.
-   */
+  /** @param {DocSession} keep */
   #evictPixels(keep) {
     const open = [...this.map.values()].filter((s) => s.pixelsPromise && s !== keep);
     open.sort((a, b) => a.pixelsUse - b.pixelsUse);
     let excess = open.length - (MAX_PIXEL_SOURCES - 1);
     for (const s of open) {
       if (excess <= 0) break;
-      // Closing a source settles its staged and running renders as skipped, so one still opening or rendering waits for a later pass.
+      // Closing a source drops the renders queued on it or waiting for it to open, so a busy or still-opening source waits for a later pass.
       if (!s.pixelsDoc || s.pixelsDoc.images.pdfScheduler?.busy) continue;
       closePixels(s);
       excess -= 1;
