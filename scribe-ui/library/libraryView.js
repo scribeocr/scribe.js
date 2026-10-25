@@ -133,6 +133,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} hide
  * @property {() => boolean} covering Whether the surface covers the document area, as the browse form does and the split form does not.
  * @property {() => void} clearPreview Empty the split form's pane and clear its selection.
+ * @property {() => void} phoneUiChanged
  * @property {() => void} pageChanged The viewer moved to another page.
  * @property {() => void} docOpened
  * @property {() => void} emptied
@@ -156,8 +157,14 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  */
 const LIST_COLUMNS = {
   list: [{ min: 180 }, { min: 56, def: 90 }, { min: 56, def: 130 }, { min: 56, def: 130 }],
-  compact: [{ min: 140 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
+  compact: [{ min: 200 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
 };
+
+/**
+ * How far past its box a row's title may run and still be shown whole.
+ * It must not exceed the name cell's side padding, past which the cell clips the title with no ellipsis.
+ */
+const SNUG_OVERFLOW_PX = 8;
 
 /**
  * Column indexes in the order the layout drops them when there is no room left, least useful first.
@@ -318,6 +325,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-lgroup { height: 32px; box-sizing: border-box; display: flex; align-items: flex-end; padding: 0 18px 6px; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: color-mix(in srgb, var(--scribe-ink) 60%, transparent); user-select: none; }
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-row .nm .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-row .nm .t.snug { overflow: visible; text-overflow: clip; }
 .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm { gap: 12px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm img { width: 40px; height: 52px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 3px; background: #fff; flex-shrink: 0; }
@@ -477,7 +485,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.folder .roll { color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .scribe-pdf-viewer .scribe-library-row.folder .roll.pg { font-size: 13px; }
 /* The folder name outranks its tally, so the tally gives up all of its width before the name gives up any. */
-.scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex-shrink: 1000; min-width: 0; overflow: hidden; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex: 1 1 0; min-width: 0; overflow: hidden; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row .fi { width: 18px; height: 18px; color: var(--scribe-ink-2); flex-shrink: 0; }
 /* 42px is a page thumbnail's width with its border, so names start on one edge whatever fills the slot. */
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb { width: 42px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); flex-shrink: 0; }
@@ -775,6 +783,14 @@ export function createLibraryInstance(viewer, opts) {
   let filterText = '';
   /** Directory shown while browsing, relative to the library root; '' is the root itself. */
   let currentDir = '';
+  /**
+   * @param {string} relPath
+   */
+  const browseListed = (relPath) => {
+    const filter = filterText.trim().toLowerCase();
+    if (filter) return relPath.toLowerCase().includes(filter);
+    return relPath.slice(0, Math.max(0, relPath.lastIndexOf('/'))) === currentDir;
+  };
   /** @type {?Array<{hash: string, pages: number[]}>} Full-text results, or null for the browse grid. */
   let fullTextResults = null;
   let fullTextQuery = '';
@@ -1343,10 +1359,7 @@ export function createLibraryInstance(viewer, opts) {
       viewer.setDocInset(null);
       return;
     }
-    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
-    const r = pvStage.getBoundingClientRect();
-    if (!r.width || !r.height) return;
-    viewer.setDocInset({ left: Math.round(r.left - rootRect.left), top: Math.round(r.top - rootRect.top) - viewer._topBarsHeight() });
+    viewer.setDocInset(pvStage);
   };
   // Relaying out inside the observer's delivery resizes elements other observers watch in the same cycle, which the browser reports as a resize loop.
   let insetSyncRaf = 0;
@@ -1736,38 +1749,53 @@ export function createLibraryInstance(viewer, opts) {
     viewer._tabStrip?.setPinnedActive(true);
     homeTab.classList.add('active');
     const split = splitForm();
-    const fromTab = morph && split && !!viewer.doc && viewer._activeTab >= 0 && !viewer._phoneUi;
+    const listed = (/** @type {string} */ relPath, /** @type {?string} */ hash) => (fullTextResults
+      ? fullTextResults.some((r) => r.hash === hash)
+      : browseListed(relPath));
+    const tab = viewer._activeTab >= 0 ? viewer._tabs[viewer._activeTab] : null;
+    const tabEntry = tab && tab.doc === viewer.doc && ownsTab(tab) && tab.libraryHash && tab.libraryRelPath && manifest ? manifest.docs[tab.libraryRelPath] : null;
+    const tabShown = !!(tab && tabEntry && tabEntry.hash === tab.libraryHash && listed(tab.libraryRelPath, tab.libraryHash));
+    if (attach && tab && tab.doc === viewer.doc) {
+      selectedPaths.clear();
+      selAnchor = tabShown && tab.libraryRelPath ? tab.libraryRelPath : null;
+      if (selAnchor) selectedPaths.add(selAnchor);
+    }
+    let fromTab = false;
     if (split) {
       if (attach) {
-        // The document area keeps a tab's document from the folder, with its row marked; otherwise it shows the last selection, or nothing.
-        const tab = viewer._activeTab >= 0 ? viewer._tabs[viewer._activeTab] : null;
-        const tabEntry = tab && tab.doc === viewer.doc && tab.libraryHash && tab.libraryRelPath && manifest ? manifest.docs[tab.libraryRelPath] : null;
         const last = preview.lastTarget();
-        if (tabEntry && tab) {
+        if (tabShown && tab) {
           const pageN = viewer.scribe.state.cp.n;
           const adopted = preview.adoptAttached({
             relPath: tab.libraryRelPath, hash: tab.libraryHash, entry: tabEntry, pageN, query: fullTextResults ? fullTextQuery : null, title: titleOf(tab.libraryRelPath),
           });
           if (adopted) {
+            fromTab = morph && !viewer._phoneUi;
             if (fullTextResults) results.select(tab.libraryRelPath, pageN);
             else {
               listPreviewPath = tab.libraryRelPath;
               listPreviewPage = pageN;
-              // Without this, rows the reader selected before leaving the library stay marked while the pane shows another document.
-              selectedPaths.clear();
-              selectedPaths.add(tab.libraryRelPath);
-              selAnchor = tab.libraryRelPath;
             }
           }
         } else if (!last) {
-          viewer.detachPreview();
-          setStage('empty');
+          preview.showEmpty();
+          results.select(null, 0);
+          // The pane may have shown a plate, and the render below usually updates the rows in place without restoring it.
+          if (!fullTextResults) syncListPane();
         } else if (preview.adoptAttached(last)) {
           results.select(last.relPath, viewer.scribe.state.cp.n);
-          if (!fullTextResults) listPreviewPage = viewer.scribe.state.cp.n;
+          if (!fullTextResults) {
+            listPreviewPath = last.relPath;
+            listPreviewPage = viewer.scribe.state.cp.n;
+          }
         } else {
           preview.show(last);
+          if (!fullTextResults) {
+            listPreviewPath = last.relPath;
+            listPreviewPage = last.pageN;
+          }
         }
+        if (!fullTextResults) syncSelectionUI();
       }
     } else {
       viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
@@ -2620,12 +2648,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     const entries = manifest ? Object.entries(manifest.docs) : [];
     const filter = filterText.trim().toLowerCase();
-    const shown = filter
-      ? entries.filter(([relPath]) => relPath.toLowerCase().includes(filter))
-      : entries.filter(([relPath]) => {
-        const cut = relPath.lastIndexOf('/');
-        return (cut < 0 ? '' : relPath.slice(0, cut)) === currentDir;
-      });
+    const shown = entries.filter(([relPath]) => browseListed(relPath));
     shown.sort(([pa, a], [pb, b]) => {
       let d = 0;
       if (sortMode === 'added') d = a.added - b.added;
@@ -2641,11 +2664,8 @@ export function createLibraryInstance(viewer, opts) {
       const cut = dir.lastIndexOf('/');
       return (cut < 0 ? '' : dir.slice(0, cut)) === currentDir;
     }).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }) * (sortMode === 'name' ? sortDir : 1));
-    const shownOthers = !showOthers || !manifest ? [] : (manifest.others ?? []).filter((p) => {
-      if (filter) return p.toLowerCase().includes(filter);
-      const cut = p.lastIndexOf('/');
-      return (cut < 0 ? '' : p.slice(0, cut)) === currentDir;
-    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b, undefined, { numeric: true }));
+    const shownOthers = !showOthers || !manifest ? [] : (manifest.others ?? []).filter((p) => browseListed(p))
+      .sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b, undefined, { numeric: true }));
     const recent = viewMode === 'grid' && currentDir === '' && !filter && sortMode !== 'opened'
       ? entries.filter(([, e]) => e.lastOpened > 0).sort(([, a], [, b]) => b.lastOpened - a.lastOpened).slice(0, 5)
       : [];
@@ -5264,6 +5284,13 @@ export function createLibraryInstance(viewer, opts) {
       for (let j = 1; j < cols.length; j++) host.classList.toggle(`scribe-library-cols-drop-${j}`, colHidden.has(j));
       host.classList.toggle('scribe-library-cols-dropped', colHidden.size > 0);
       [...head.children].forEach((cell, j) => cell.querySelector('.scribe-library-hres')?.setAttribute('aria-valuenow', String(eff[j])));
+      // The integer scrollWidth can round away a sub-pixel overflow, which still gets an ellipsis.
+      const range = document.createRange();
+      for (const t of rows.querySelectorAll('.scribe-library-row .nm .t')) {
+        range.selectNodeContents(t);
+        const over = range.getBoundingClientRect().width - t.getBoundingClientRect().width;
+        t.classList.toggle('snug', over > 0 && over <= SNUG_OVERFLOW_PX);
+      }
     };
     /**
      * Lay the stored widths out across the visible width.
@@ -7808,6 +7835,14 @@ export function createLibraryInstance(viewer, opts) {
     clearPreview,
     pageChanged: () => {
       if (visible && pvHead.style.display !== 'none') syncPaneNav();
+    },
+    phoneUiChanged: () => {
+      if (!visible) return;
+      if (!splitForm() && preview.lastTarget()) preview.showEmpty();
+      applyForm();
+      syncListPane();
+      syncSelectionUI();
+      syncPaneHead();
     },
     docOpened: () => {
       // An Open from the pane leaves the surface up for the morph that follows it.

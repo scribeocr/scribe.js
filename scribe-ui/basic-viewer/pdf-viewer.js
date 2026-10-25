@@ -79,6 +79,10 @@ const SIDEBAR_PAGES_SVG = '<svg viewBox="0 0 16 16" width="16" height="16" fill=
 
 /** Height of the sidebar's view-switch strip, in px, matching its CSS. */
 const SIDEBAR_TABS_HEIGHT = 36;
+/** The highest zoom the automatic fit may choose for a PDF, in CSS pixels per PDF point. */
+const AUTO_FIT_MAX_SCALE = 1.25;
+/** The widest raster, in device pixels, the automatic fit zooms to. */
+const AUTO_FIT_MAX_RASTER_PX = 3500;
 
 /** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
 const MODE_BANNER_HEIGHT = 40;
@@ -866,6 +870,8 @@ class ScribePDFViewer {
     this._sidebarTabElems = {};
     /** @type {?{left: number, top: number}} The inset of the document area a library sets while its preview pane holds the document. */
     this._docInset = null;
+    /** @type {?HTMLElement} */
+    this._docInsetElem = null;
     /** True while a preview attaches, so its first fit is to the pane's width. */
     this._previewFitWidth = false;
     /** @type {?ReturnType<typeof import('../js/controls/automatePanel.js').createAutomatePanel>} The Automate panel (right dock), or null until its module loads. */
@@ -4084,6 +4090,8 @@ class ScribePDFViewer {
       const tabW = Math.max(0, Math.floor(inner / Math.max(1, tabs.length) / 2) * 2);
       for (const t of tabs) t.style.flex = `0 0 ${tabW}px`;
     }
+    // Measured at every relayout because the pane can move without resizing, as a narrowing window slides it along at its minimum width.
+    if (this._docInsetElem) this._measureDocInset();
     const docInset = this._docInset;
     const inset = Math.min(docInset ? docInset.left : panelW, Math.max(0, this._width - 80));
     const insetTop = docInset ? Math.max(0, docInset.top) : 0;
@@ -4117,14 +4125,45 @@ class ScribePDFViewer {
   /**
    * Inset the document area to a library's preview pane, or clear the inset with null.
    * While set, the pane's left edge and head height replace the sidebar's inset, and the document is laid out in the pane.
-   * @param {?{left: number, top: number}} inset
+   * A stage element has the inset measured from it at every relayout.
+   * Numbers fix the inset until the next call.
+   * @param {?{left: number, top: number} | HTMLElement} inset
    */
   setDocInset(inset) {
+    if (inset instanceof Element) {
+      const fresh = inset !== this._docInsetElem;
+      this._docInsetElem = inset;
+      if (!this.scribe.scrollContainer) return;
+      const prevLeft = this._docInset ? this._docInset.left : null;
+      const moved = this._measureDocInset();
+      if (!fresh && !moved) return;
+      this._relayout();
+      if (!fresh && prevLeft !== null && this._docInset && this._docInset.left !== prevLeft) this._refitAuto();
+      return;
+    }
     const prev = this._docInset;
+    const wasMeasured = !!this._docInsetElem;
+    this._docInsetElem = null;
     if (!inset && !prev) return;
-    if (inset && prev && inset.left === prev.left && inset.top === prev.top) return;
+    if (!wasMeasured && inset && prev && inset.left === prev.left && inset.top === prev.top) return;
     this._docInset = inset ? { left: Math.max(0, inset.left), top: Math.max(0, inset.top) } : null;
     if (this.scribe.scrollContainer) this._relayout();
+  }
+
+  /**
+   * Measure the pane's stage into the inset, and report whether the inset moved.
+   * @returns {boolean}
+   */
+  _measureDocInset() {
+    const el = this._docInsetElem;
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    const rootRect = this.pdfViewerElem.getBoundingClientRect();
+    const next = { left: Math.max(0, Math.round(r.left - rootRect.left)), top: Math.max(0, Math.round(r.top - rootRect.top) - this._topBarsHeight()) };
+    const prev = this._docInset;
+    this._docInset = next;
+    return !prev || prev.left !== next.left || prev.top !== next.top;
   }
 
   /**
@@ -4710,24 +4749,36 @@ class ScribePDFViewer {
     this._syncModeOverflow();
     // _relayout places the drop zone, sizes the canvas and panel (its width is user-owned) and insets the document by the panel's width.
     this._relayout();
+    this._refitAuto();
+  }
 
-    // Re-run the automatic fit only when width-fit is involved on either side of the resize and the user is still at that fit, so a user zoom is never overridden.
-    // Zooming in place (rather than re-running the fit) keeps the current reading position.
+  /**
+   * The highest zoom an automatic fit may choose.
+   * @param {number} docW
+   * @returns {number}
+   */
+  _autoFitCap(docW) {
+    const raster = docW > 0 ? AUTO_FIT_MAX_RASTER_PX / (docW * (window.devicePixelRatio || 1)) : Infinity;
+    const scale = this.doc?.inputData?.pdfMode ? AUTO_FIT_MAX_SCALE * (72 / 300) : Infinity;
+    return Math.min(raster, scale);
+  }
+
+  _refitAuto() {
     const af = this._autoFit;
-    if (af && af.isDefaultFit && this.scribe.scrollContainer && af.zoom > 0
-      && Math.abs(this.scribe.zoomLevel - af.zoom) / af.zoom < 0.05) {
-      const sc = this.scribe.scrollContainer;
-      const docW = this.scribe._contentWidth || af.docW;
-      const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
-      const widthMode = this._phoneUi || hZoom * docW > sc.clientWidth;
-      if (widthMode || af.widthMode) {
-        const target = widthMode ? sc.clientWidth / docW : hZoom;
-        if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
-          this.scribe.zoom(target / this.scribe.zoomLevel);
-          af.zoom = target;
-          af.widthMode = widthMode;
-        }
-      }
+    if (!af || !af.isDefaultFit || !this.scribe.scrollContainer || !(af.zoom > 0)
+      || Math.abs(this.scribe.zoomLevel - af.zoom) / af.zoom >= 0.05) return;
+    const sc = this.scribe.scrollContainer;
+    const docW = this.scribe._contentWidth || af.docW;
+    const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
+    const widthMode = this._phoneUi || hZoom * docW > sc.clientWidth || (!!this._docInsetElem && af.widthMode);
+    if (!widthMode && !af.widthMode) return;
+    const target = Math.min(this._autoFitCap(docW), widthMode ? sc.clientWidth / docW : hZoom);
+    if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
+      // Refits anchor at the top edge because a center-anchored zoom-out near the document's start clamps scrollTop at zero, so zooming back in would not restore the view.
+      const rect = sc.getBoundingClientRect();
+      this.scribe.zoom(target / this.scribe.zoomLevel, { x: rect.left + rect.width / 2, y: rect.top });
+      af.zoom = target;
+      af.widthMode = widthMode;
     }
   }
 
@@ -4846,6 +4897,7 @@ class ScribePDFViewer {
     // A mode can be running through the flip, so its bar moves between the banner and the dock.
     this._syncModeBanner();
     this.scribe._editTextRefreshFrames?.();
+    for (const inst of this._libraryInstances) inst.phoneUiChanged();
     if (this.scribe.scrollContainer) this._relayout();
   }
 
@@ -6066,6 +6118,11 @@ class ScribePDFViewer {
         const bottomMarginHeight = 50;
         zoom = (stageH - interfaceHeight - bottomMarginHeight) / imgDims.height;
         y = interfaceHeight;
+      }
+      const cap = this._autoFitCap(docW);
+      if (zoom > cap) {
+        zoom = cap;
+        if (effectiveMode === 'page') y = Math.max(30, (stageH - imgDims.height * zoom) / 2);
       }
 
       this.scribe.zoomLevel = zoom;
