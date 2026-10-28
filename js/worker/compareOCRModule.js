@@ -56,6 +56,8 @@ export async function drawWordActual(words, imageBinaryBit, angle) {
   const height = Math.round(fontAsc - fontDesc);
   const width = Math.round(wordBoxUnion.right - wordBoxUnion.left + 1);
 
+  if (!(width >= 1) || !(height >= 1)) return null;
+
   const cropY = linebox.bottom + baseline[1] - fontAsc - 1;
   const cropYAdj = cropY + angleAdjLine.y;
 
@@ -232,9 +234,11 @@ export async function evalWords({
   const baselineA = wordsA[0].line.baseline;
 
   // Draw the actual words (from the user-provided image)
+  const drawn = await drawWordActual([...wordsA, ...wordsB], binaryImageBit, angle);
+  if (!drawn) return { metricA: 1, metricB: 1, debug: null };
   const {
     canvas, cropY, width, height,
-  } = await drawWordActual([...wordsA, ...wordsB], binaryImageBit, angle);
+  } = drawn;
 
   const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
 
@@ -1071,7 +1075,9 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
   // Draw the actual words (from the user-provided image)
   const angle = imageRotated ? (pageMetricsObj.angle || 0) : 0;
   // const ctxViewArr = view ? [{ canvas: viewCanvas0, ctx: viewCtx0 }, { canvas: viewCanvas1, ctx: viewCtx1 }, { canvas: viewCanvas2, ctx: viewCtx2 }] : undefined;
-  const { canvas } = await drawWordActual(wordsA, binaryImage, angle);
+  const drawn = await drawWordActual(wordsA, binaryImage, angle);
+  if (!drawn) return { match: false };
+  const { canvas } = drawn;
 
   const extraConfig = {
     lstm: true,
