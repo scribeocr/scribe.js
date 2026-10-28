@@ -1122,10 +1122,20 @@ class ScribePDFViewer {
           const kept = this._tabs[i];
           if (!kept) return;
           // Activate the survivor first, so closing the active tab never loads a document that is about to be closed too.
-          if (i !== this._activeTab) await this._activateTab(i);
+          // While a library previews in its pane no lane tab is active, so there is nothing to activate first.
+          // Activating the kept tab anyway would replace the pane's preview with its document.
+          if (this._activeTab >= 0 && i !== this._activeTab) await this._activateTab(i, { keepSurface: true });
           for (let j = this._tabs.length - 1; j >= 0; j--) {
             if (this._tabs[j] !== kept) this._closeTab(j);
           }
+        },
+        onCloseAll: () => {
+          // The active tab closes last, so closing it never attaches the next tab's document only to close it in turn.
+          const active = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+          for (let j = this._tabs.length - 1; j >= 0; j--) {
+            if (this._tabs[j] !== active) this._closeTab(j);
+          }
+          if (active) this._closeTab(this._tabs.indexOf(active));
         },
         onMove: (from, to) => this._moveTab(from, to),
         onCopyInto: (from, to) => { this._library?.copyTabIntoFolder?.(this._tabs[from], to); },
@@ -2146,11 +2156,12 @@ class ScribePDFViewer {
    * @param {number} initialPage
    * @param {boolean} owns - Whether the viewer created `doc`.
    * @param {boolean | undefined} terminatePrevious - Explicit override of the outgoing-doc terminate.
-   * @param {{preview?: boolean, samePages?: boolean}} [options] - `preview` marks the document as a library preview.
+   * @param {{preview?: boolean, keepSurface?: boolean, samePages?: boolean}} [options] - `preview` marks the document as a library preview.
+   *   `keepSurface` leaves a lit library in front of a tab's document.
    *   `samePages` marks a hydration swap whose document holds the pages the rail shows, in the same order, so the rail re-keys its rows instead of rebuilding.
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
    */
-  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false, samePages = false } = {}) {
+  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false, keepSurface = false, samePages = false } = {}) {
     const prev = this.doc;
     const displaced = prev && prev !== doc ? prev : null;
     const terminatePrev = terminatePrevious ?? this._ownsDoc;
@@ -2159,7 +2170,7 @@ class ScribePDFViewer {
     this._ownsDoc = owns;
     this.scribe.doc = doc;
     this.resetSearch();
-    if (!preview) for (const inst of this._libraryInstances) inst.docOpened();
+    if (!preview) for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -2701,9 +2712,10 @@ class ScribePDFViewer {
    * Make tab `i` the active document, first saving the outgoing tab's current page so returning to it restores position.
    * Retains the outgoing document (tabs stay loaded until closed).
    * @param {number} i
+   * @param {{keepSurface?: boolean}} [options] - `keepSurface` leaves a lit library in front of the tab's document.
    * @returns {Promise<void>}
    */
-  async _activateTab(i) {
+  async _activateTab(i, { keepSurface = false } = {}) {
     if (i < 0 || i >= this._tabs.length) return;
     if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
       this._tabs[this._activeTab].lastPage = this.scribe.state.cp.n;
@@ -2719,7 +2731,7 @@ class ScribePDFViewer {
       this._previewDocName = null;
       this._renderTabs();
       this._syncTabNotice();
-      for (const inst of this._libraryInstances) inst.docOpened();
+      for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
       this._applyTabResourcePolicy();
       return;
     }
@@ -2735,7 +2747,7 @@ class ScribePDFViewer {
       });
       await Promise.race([respawn, new Promise((resolve) => { setTimeout(resolve, 10000); })]);
     }
-    await this.attachDocument(tab.doc, tab.lastPage, { terminatePrevious: false });
+    await this._setDoc(tab.doc, tab.lastPage, false, false, { keepSurface });
     if (tab.waking) {
       tab.waking = false;
       tab.asleep = false;
@@ -2753,6 +2765,8 @@ class ScribePDFViewer {
     if (i < 0 || i >= this._tabs.length) return;
     const wasActive = i === this._activeTab;
     const [removed] = this._tabs.splice(i, 1);
+    // A document on screen while its tab is not active is a lit library's preview of it.
+    if (this._activeTab < 0 && this.doc === removed.doc) this._libraryInstances.find((inst) => inst.visible())?.clearPreview();
     // A library tab with unsaved edits writes its sidecar first, and closes only once that settles.
     Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(removed))).catch(() => {})
       .then(() => removed.doc.close().catch(() => {}));
@@ -2761,15 +2775,17 @@ class ScribePDFViewer {
       this._activeTab = -1;
       this._renderTabs();
       this._syncTabNotice();
-      this.detachDoc({ terminate: false });
+      // A library's preview of a document with no tab stays on screen.
+      if (wasActive || this.doc === removed.doc) this.detachDoc({ terminate: false });
       // The pinned surface shown most recently takes the empty strip, else the first (the library's, when it is installed).
       (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
       return;
     }
     if (wasActive) {
       // The removed tab is gone. Clear the active marker so `_activateTab` doesn't save a page into it.
+      // A tab closing is no request to see the next one, so a lit library stays in front.
       this._activeTab = -1;
-      this._activateTab(Math.min(i, this._tabs.length - 1));
+      this._activateTab(Math.min(i, this._tabs.length - 1), { keepSurface: true });
     } else {
       if (i < this._activeTab) this._activeTab -= 1;
       this._renderTabs();

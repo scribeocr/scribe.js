@@ -135,7 +135,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} clearPreview Empty the split form's pane and clear its selection.
  * @property {() => void} phoneUiChanged
  * @property {() => void} pageChanged The viewer moved to another page.
- * @property {() => void} docOpened
+ * @property {(options?: {keepSurface?: boolean}) => void} docOpened The viewer put a tab's document on screen.
+ *   The surface yields the front unless `keepSurface` is set.
  * @property {() => void} emptied
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
  * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
@@ -7844,9 +7845,9 @@ export function createLibraryInstance(viewer, opts) {
       syncSelectionUI();
       syncPaneHead();
     },
-    docOpened: () => {
+    docOpened: ({ keepSurface = false } = {}) => {
       // An Open from the pane leaves the surface up for the morph that follows it.
-      if (visible && !morphPending) deactivate();
+      if (visible && !morphPending && !keepSurface) deactivate();
       preview.displaced();
       writeResumeRecord();
     },

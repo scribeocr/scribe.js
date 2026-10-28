@@ -677,6 +677,7 @@ const TAB_FADE_WIDTH = 24;
  * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
  * @param {(index: number) => void} cfg.onCloseOthers - Called when the context menu's "Close Others" is picked, with the tab to keep.
+ * @param {() => void} cfg.onCloseAll - Called when the context menu's "Close All" is picked.
  * @param {(from: number, to: number) => void} [cfg.onMove] - Called when a drag reorders a tab: remove it at `from`, then insert it at `to`.
  * @param {(from: number, to: number) => void} [cfg.onCopyInto] - Called when a freestanding tab is dropped into the folder group, with the same indices as `onMove`.
  * @param {(index: number) => Array<{label: string, onPick: () => void}>} [cfg.extraMenuItems] - Rows appended to a tab's context menu after a separator.
@@ -686,7 +687,7 @@ const TAB_FADE_WIDTH = 24;
  *   showTabNote: (index: number, message: string, options?: {actionLabel?: string, onAction?: () => void}) => void }}
  */
 export function createTabStrip({
-  onSelect, onClose, onCloseOthers, onMove, onCopyInto, extraMenuItems,
+  onSelect, onClose, onCloseOthers, onCloseAll, onMove, onCopyInto, extraMenuItems,
 }) {
   const tabStripElem = document.createElement('div');
   tabStripElem.className = 'scribe-tab-strip';
@@ -880,7 +881,10 @@ export function createTabStrip({
     };
     addItem('Copy Name', () => navigator.clipboard?.writeText(name));
     addItem('Close', () => onClose(index));
-    if (tabCount > 1) addItem('Close Others', () => onCloseOthers(index));
+    if (tabCount > 1) {
+      addItem('Close Others', () => onCloseOthers(index));
+      addItem('Close All', () => onCloseAll());
+    }
     const extras = extraMenuItems ? extraMenuItems(index) : [];
     if (extras.length) {
       const sep = document.createElement('div');
