@@ -602,6 +602,17 @@ export function createDragReorder({
   };
 
   /**
+   * The look a flying copy arrives in to match `thumb` in its card.
+   * @param {Element} cardElem
+   * @param {Element} thumb
+   */
+  const landingLook = (cardElem, thumb) => {
+    const cs = getComputedStyle(cardElem);
+    const r = Math.max(0, parseFloat(cs.borderTopLeftRadius) - parseFloat(cs.borderLeftWidth));
+    return { boxShadow: 'none', borderRadius: `${r}px ${r}px 0 0`, backgroundColor: getComputedStyle(thumb).backgroundColor };
+  };
+
+  /**
    * The ghost's pages as they are drawn now, front first.
    * @param {CardDrag} d
    * @returns {Array<{relPath: string, img: HTMLImageElement, from: {left: number, top: number, width: number, height: number}, rot: number, opacity: number}>}
@@ -764,10 +775,11 @@ export function createDragReorder({
     /** @type {Parameters<typeof flyCopies>[0]} */
     const flights = [];
     for (const page of pages) {
-      const home = elemOf(page.relPath)?.querySelector('img.thumb');
-      if (!home) continue;
+      const cardElem = elemOf(page.relPath);
+      const home = cardElem?.querySelector('img.thumb');
+      if (!cardElem || !home) continue;
       flights.push({
-        img: page.img, from: page.from, to: home.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain',
+        img: page.img, from: page.from, to: home.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain', land: landingLook(cardElem, home),
       });
     }
     await flyCopies(flights, REORDER_SLIDE_MS);
@@ -854,12 +866,13 @@ export function createDragReorder({
     /** @type {Parameters<typeof flyCopies>[0]} */
     const flights = [];
     for (const page of pages) {
-      const img = /** @type {?HTMLImageElement} */ (body.querySelector(`[data-band="main-grid"] > [data-rel-path="${CSS.escape(page.relPath)}"] img.thumb`));
-      if (!img) continue;
+      const cardElem = body.querySelector(`[data-band="main-grid"] > [data-rel-path="${CSS.escape(page.relPath)}"]`);
+      const img = /** @type {?HTMLImageElement} */ (cardElem?.querySelector('img.thumb') ?? null);
+      if (!cardElem || !img) continue;
       img.style.opacity = '0';
       hidden.push(img);
       flights.push({
-        img: page.img, from: page.from, to: img.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain',
+        img: page.img, from: page.from, to: img.getBoundingClientRect(), rot: page.rot, opacity: page.opacity, fit: 'contain', land: landingLook(cardElem, img),
       });
     }
     await flyCopies(flights, REORDER_SLIDE_MS);

@@ -244,6 +244,7 @@ function slideRows(snapshot, movedOld, noSlide) {
  * @property {number} [opacity] - Opacity at the start.
  * @property {boolean} [fade] - Fade out on the way.
  * @property {'contain'|'cover'} [fit] - How the image fills the copy.
+ * @property {{boxShadow: string, borderRadius: string, backgroundColor: string}} [land] - The look the copy arrives in, transitioned from the lifted look over the flight.
  */
 
 /**
@@ -282,13 +283,19 @@ export function flyCopies(flights, ms) {
   if (clones.length) clones[0].getBoundingClientRect();
   clones.forEach((clone, i) => {
     const f = flights[i];
-    clone.style.transition = `left ${ms}ms ease, top ${ms}ms ease, width ${ms}ms ease, height ${ms}ms ease, transform ${ms}ms ease, opacity ${ms}ms ease`;
+    const eased = ['left', 'top', 'width', 'height', 'transform', 'opacity', ...(f.land ? ['box-shadow', 'border-radius', 'background-color'] : [])];
+    clone.style.transition = eased.map((p) => `${p} ${ms}ms ease`).join(', ');
     clone.style.left = `${f.to.left}px`;
     clone.style.top = `${f.to.top}px`;
     clone.style.width = `${f.to.width}px`;
     clone.style.height = `${f.to.height}px`;
     clone.style.transform = 'rotate(0deg)';
     clone.style.opacity = f.fade ? '0' : '1';
+    if (f.land) {
+      clone.style.boxShadow = f.land.boxShadow;
+      clone.style.borderRadius = f.land.borderRadius;
+      clone.style.backgroundColor = f.land.backgroundColor;
+    }
   });
   return new Promise((resolve) => {
     setTimeout(() => {
