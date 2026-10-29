@@ -27,7 +27,8 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
  * @param {() => ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.getEngine
  * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineResponse
- * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineTiers
+ * @param {() => ?import('./search/searchClient.js').SearchResponse|undefined} deps.getEngineTiers - The ranked pass's answer.
+ *   Undefined while the pass runs, null once none will come.
  * @param {() => ?string} deps.getEngineError
  */
 export function createResultsView({
@@ -87,12 +88,10 @@ export function createResultsView({
     summaryN.className = 'n';
     const engineError = getEngineError();
     const response = getEngineResponse();
-    if (engineError) summaryN.textContent = `Search failed for “${fullTextQuery}”, so no matches are shown: ${engineError}`;
-    else if (response?.partial) summaryN.textContent = PARTIAL_SUMMARY;
-    else if (results.length) summaryN.textContent = `${results.length} document${results.length === 1 ? '' : 's'}`;
-    else summaryN.textContent = `No ${response?.fallbackTiers ? 'exact matches' : 'results'} for “${fullTextQuery}”`;
-    // Timing tools outside the app read `paintedAt` as the moment the summary took its final text.
-    summary.dataset.paintedAt = String(performance.now());
+    if (engineError) {
+      summaryN.textContent = `Search failed for “${fullTextQuery}”, so no matches are shown: ${engineError}`;
+      summary.dataset.paintedAt = String(performance.now());
+    }
     summary.appendChild(summaryN);
     const backBtn = document.createElement('button');
     backBtn.className = 'scribe-library-back';
@@ -114,13 +113,6 @@ export function createResultsView({
     const hits = [];
     let active = -1;
     let opening = false;
-    /**
-     * The near matches' section, once appended.
-     * Exact rows added later go above it, on screen and in `hits`.
-     * @type {?HTMLElement}
-     */
-    let tierSection = null;
-
     const openActive = async () => {
       if (active < 0 || opening) return;
       const h = hits[active];
@@ -377,165 +369,217 @@ export function createResultsView({
       return row;
     };
 
-    (async () => {
-      const store = getStore();
-      if (!store || !results.length || !response) return;
-      /**
-       * @type {Array<{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string},
-       *   perPage: Array<{pageN: number, count: number, snippet: ?DocumentFragment, tier?: number, marks?: Array<[number, number]>, sn?: HTMLElement,
-       *   rects?: ?Array<Array<import('./search/searchClient.js').Box>>, dims?: ?{width: number, height: number}, thumb?: ThumbItem}>, total: number}>}
-       */
-      let ranked;
-      ranked = /** @type {typeof ranked} */ (response.docs.map((d) => {
-        const docRef = byHash.get(d.hash);
-        if (!docRef) return null;
-        return {
-          docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash },
-          total: d.total,
-          perPage: d.pages.map((p) => ({
-            pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
-          })),
-        };
-      }).filter(Boolean));
-      ranked = tiesByName(ranked, (d) => d.perPage[0], (d) => d.docRef.relPath);
-      const count = response.bounded ? `${response.bound}+` : String(response.matches);
-      const summaryText = response.partial ? PARTIAL_SUMMARY : `${count} match${count === '1' ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
-      if (myGen !== resultsGen) return;
-      summaryN.textContent = summaryText;
-      summary.dataset.paintedAt = String(performance.now());
+    /**
+     * @typedef {{pageN: number, count: number, tier: number, score: number, marks: Array<[number, number]>, snippet: ?DocumentFragment, sn?: HTMLElement,
+     *   rects?: ?Array<Array<import('./search/searchClient.js').Box>>, dims?: ?{width: number, height: number}, thumb?: ThumbItem}} ListedPage
+     */
+    /**
+     * @typedef {{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}, head: HTMLElement, meta: HTMLElement, datePart: string,
+     *   pages: ListedPage[], shown: number, more: ?HTMLButtonElement, lastRow: ?HTMLElement}} DocGroup
+     */
+    /** @type {Map<string, DocGroup>} */
+    const groups = new Map();
+    /** @type {Array<{docRef: DocGroup['docRef'], perPage: ListedPage[]}>} */
+    const restDocs = [];
+    /** @type {?HTMLButtonElement} */
+    let moreDocs = null;
+    /** @type {?import('./search/searchClient.js').SearchResponse|undefined} */
+    let second = response && response.tiersPending ? undefined : null;
+    let secondDone = false;
 
-      /**
-       * @param {string} hash
-       * @param {Array<{pageN: number, marks?: Array<[number, number]>, sn?: HTMLElement, thumb?: ThumbItem}>} pps
-       */
-      const fillSnippets = (hash, pps) => {
-        const want = pps.filter((pp) => pp.sn);
-        if (!want.length) return;
-        engine.snippets(hash, want.map((pp) => ({ page: pp.pageN, marks: pp.marks || [] }))).then((list) => {
-          if (myGen !== resultsGen) return;
-          for (const item of list) {
-            const pp = want.find((w) => w.pageN === item.page);
-            if (!pp) continue;
-            if (pp.sn && item.snippet) {
-              pp.sn.replaceChildren(snippetFragment(item.snippet));
-              pp.sn = undefined;
-            }
-            const marks = marksOf(item);
-            if (marks && pp.thumb && !pp.thumb.marks) {
-              pp.thumb.marks = marks;
-              const img = pp.thumb.img.querySelector('img');
-              pp.thumb.img.innerHTML = `${img ? img.outerHTML : ''}${marks}`;
-            }
+    /** @param {import('./search/searchClient.js').ResponsePage} p @returns {ListedPage} */
+    const listedPage = (p) => ({
+      pageN: p.page, count: p.count, tier: p.tier, score: p.score, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
+    });
+    /** @param {{hash: string, pages: Array<import('./search/searchClient.js').ResponsePage>}} d */
+    const docInfo = (d) => {
+      const docRef = byHash.get(d.hash);
+      return docRef ? { docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash }, perPage: d.pages.map(listedPage) } : null;
+    };
+    /** @param {Array<{tier: number, count: number}>} pages */
+    const matchesOn = (pages) => pages.reduce((sum, p) => sum + (p.tier === 5 ? 1 : p.count), 0);
+
+    const summaryText = () => {
+      if (!response) return '';
+      if (response.partial || (second && second.partial)) return PARTIAL_SUMMARY;
+      const docCount = groups.size + restDocs.length;
+      const total = response.matches + (second ? second.docs.reduce((sum, d) => sum + matchesOn(d.pages), 0) : 0);
+      if (response.bounded) return `${response.bound}+ matches · ${docCount} document${docCount === 1 ? '' : 's'}`;
+      const queryShown = /["“”„‟＂]/.test(fullTextQuery) ? fullTextQuery : `“${fullTextQuery}”`;
+      if (!total) return second === undefined ? 'Searching…' : `No matches for ${queryShown}`;
+      return `${total} match${total === 1 ? '' : 'es'} · ${docCount} document${docCount === 1 ? '' : 's'}${second === undefined ? ' · searching…' : ''}`;
+    };
+
+    /**
+     * @param {string} hash
+     * @param {Array<{pageN: number, marks?: Array<[number, number]>, sn?: HTMLElement, thumb?: ThumbItem}>} pps
+     */
+    const fillSnippets = (hash, pps) => {
+      const want = pps.filter((pp) => pp.sn);
+      if (!want.length) return;
+      engine.snippets(hash, want.map((pp) => ({ page: pp.pageN, marks: pp.marks || [] }))).then((list) => {
+        if (myGen !== resultsGen) return;
+        for (const item of list) {
+          const pp = want.find((w) => w.pageN === item.page);
+          if (!pp) continue;
+          if (pp.sn && item.snippet) {
+            pp.sn.replaceChildren(snippetFragment(item.snippet));
+            pp.sn = undefined;
           }
-        }).catch(() => {});
-      };
-
-      const appendDocGroup = (info) => {
-        const d = info.docRef;
-        const head = document.createElement('div');
-        head.className = 'scribe-library-rdoc';
-        head.append(`${titleOf(d.relPath)} `);
-        const meta = document.createElement('span');
-        meta.className = 'm';
-        const dateMatch = /^(\d{4})-(\d{2})-(\d{2})[ _]/.exec(d.relPath.split('/').pop() || '');
-        const datePart = dateMatch
-          ? `${new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · `
-          : '';
-        meta.textContent = `${datePart}${d.entry.pageCount} page${d.entry.pageCount === 1 ? '' : 's'} · ${info.total} match${info.total === 1 ? '' : 'es'} on ${info.perPage.length} page${info.perPage.length === 1 ? '' : 's'}`;
-        head.appendChild(meta);
-        wrap.insertBefore(head, tierSection);
-        const shownNow = info.perPage.slice(0, RESULT_PAGES_PER_DOC);
-        for (const pp of shownNow) {
-          const firstLower = hits.findIndex((h) => h.lowerTier);
-          wrap.insertBefore(buildHitRow(d, pp.pageN, pp, firstLower < 0 ? hits.length : firstLower), tierSection);
+          const marks = marksOf(item);
+          if (marks && pp.thumb && !pp.thumb.marks) {
+            pp.thumb.marks = marks;
+            const img = pp.thumb.img.querySelector('img');
+            pp.thumb.img.innerHTML = `${img ? img.outerHTML : ''}${marks}`;
+          }
         }
-        fillSnippets(d.hash, shownNow);
-        const rest = info.perPage.slice(RESULT_PAGES_PER_DOC);
-        if (rest.length) {
-          const more = document.createElement('button');
-          more.className = 'scribe-library-rmore';
-          more.type = 'button';
-          more.textContent = `+ ${rest.length} more page${rest.length === 1 ? '' : 's'}`;
-          more.addEventListener('click', () => {
-            // Anchor on the preceding row at click time: earlier expansions shift positions in `hits`.
-            let prev = more.previousElementSibling;
-            while (prev && !prev.classList.contains('scribe-library-hit')) prev = prev.previousElementSibling;
-            let at = prev ? hits.findIndex((h) => h.row === prev) + 1 : hits.length;
-            const batch = rest.splice(0, RESULT_PAGES_PER_CLICK);
-            for (const pp of batch) {
-              const row = buildHitRow(d, pp.pageN, pp, at);
-              more.before(row);
-              at++;
-            }
-            if (rest.length) more.textContent = `+ ${rest.length} more page${rest.length === 1 ? '' : 's'}`;
-            else more.remove();
-            fillSnippets(d.hash, batch);
-            pump();
-          });
-          wrap.insertBefore(more, tierSection);
-        }
-      };
+      }).catch(() => {});
+    };
 
-      const firstBatch = ranked.slice(0, RESULT_DOC_LIMIT);
-      for (const info of firstBatch) appendDocGroup(info);
-      const restDocs = ranked.slice(RESULT_DOC_LIMIT);
-      if (restDocs.length) {
-        const moreDocs = document.createElement('button');
-        moreDocs.className = 'scribe-library-rmore';
-        moreDocs.type = 'button';
-        moreDocs.style.paddingLeft = '16px';
-        moreDocs.textContent = `+ ${restDocs.length} more document${restDocs.length === 1 ? '' : 's'}`;
-        moreDocs.addEventListener('click', () => {
-          moreDocs.remove();
-          for (const info of restDocs) appendDocGroup(info);
+    /**
+     * @param {Element} el
+     */
+    const hitIndexAfter = (el) => {
+      /** @type {?Element} */
+      let prev = el;
+      while (prev && !prev.classList.contains('scribe-library-hit')) prev = prev.previousElementSibling;
+      return prev ? hits.findIndex((h) => h.row === prev) + 1 : 0;
+    };
+
+    /**
+     * @param {DocGroup} g @param {number} upTo
+     */
+    const showPages = (g, upTo) => {
+      /** @type {ListedPage[]} */
+      const batch = [];
+      while (g.shown < Math.min(upTo, g.pages.length)) {
+        const pp = g.pages[g.shown++];
+        const after = g.lastRow ?? g.head;
+        const row = buildHitRow(g.docRef, pp.pageN, pp, hitIndexAfter(after), pp.tier >= 3);
+        after.after(row);
+        g.lastRow = row;
+        batch.push(pp);
+      }
+      fillSnippets(g.docRef.hash, batch);
+      const rest = g.pages.length - g.shown;
+      if (rest && !g.more) {
+        const more = document.createElement('button');
+        more.className = 'scribe-library-rmore';
+        more.type = 'button';
+        more.addEventListener('click', () => {
+          showPages(g, g.shown + RESULT_PAGES_PER_CLICK);
           pump();
         });
-        wrap.insertBefore(moreDocs, tierSection);
+        /** @type {HTMLElement} */ (g.lastRow ?? g.head).after(more);
+        g.more = more;
       }
-      pump();
-    })();
+      if (rest) /** @type {HTMLButtonElement} */ (g.more).textContent = `+ ${rest} more page${rest === 1 ? '' : 's'}`;
+      else if (g.more) {
+        g.more.remove();
+        g.more = null;
+      }
+      const total = matchesOn(g.pages);
+      const { pageCount } = g.docRef.entry;
+      g.meta.textContent = `${g.datePart}${pageCount} page${pageCount === 1 ? '' : 's'} · ${total} match${total === 1 ? '' : 'es'} on ${g.pages.length} page${g.pages.length === 1 ? '' : 's'}`;
+    };
 
-    let tiersShown = false;
-    /** @param {import('./search/searchClient.js').SearchResponse} tiers */
-    const appendTierSection = (tiers) => {
-      if (tiersShown) return;
-      tiersShown = true;
-      const groups = tiesByName(
-        tiers.docs.map((d) => ({ d, docRef: byHash.get(d.hash) })).filter((g) => g.docRef),
-        (g) => g.d.pages[0],
-        (g) => g.docRef.relPath,
+    /**
+     * @param {{docRef: DocGroup['docRef'], perPage: ListedPage[]}} info @param {?Element} before
+     */
+    const appendGroup = (info, before) => {
+      const d = info.docRef;
+      const head = document.createElement('div');
+      head.className = 'scribe-library-rdoc';
+      head.append(`${titleOf(d.relPath)} `);
+      const meta = document.createElement('span');
+      meta.className = 'm';
+      head.appendChild(meta);
+      wrap.insertBefore(head, before);
+      const dateMatch = /^(\d{4})-(\d{2})-(\d{2})[ _]/.exec(d.relPath.split('/').pop() || '');
+      const datePart = dateMatch
+        ? `${new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · `
+        : '';
+      /** @type {DocGroup} */
+      const g = {
+        docRef: d, head, meta, datePart, pages: info.perPage, shown: 0, more: null, lastRow: null,
+      };
+      groups.set(d.hash, g);
+      showPages(g, RESULT_PAGES_PER_DOC);
+    };
+
+    const syncMoreDocs = () => {
+      if (!restDocs.length) {
+        if (moreDocs) moreDocs.remove();
+        moreDocs = null;
+        return;
+      }
+      if (!moreDocs) {
+        const button = document.createElement('button');
+        button.className = 'scribe-library-rmore';
+        button.type = 'button';
+        button.style.paddingLeft = '16px';
+        button.addEventListener('click', () => {
+          for (const info of restDocs.splice(0)) appendGroup(info, button);
+          syncMoreDocs();
+          pump();
+        });
+        wrap.appendChild(button);
+        moreDocs = button;
+      }
+      moreDocs.textContent = `+ ${restDocs.length} more document${restDocs.length === 1 ? '' : 's'}`;
+    };
+
+    if (getStore() && response) {
+      const ranked = tiesByName(
+        /** @type {Array<NonNullable<ReturnType<typeof docInfo>>>} */ (response.docs.map(docInfo).filter(Boolean)),
+        (d) => d.perPage[0],
+        (d) => d.docRef.relPath,
       );
-      const pages = groups.reduce((sum, g) => sum + g.d.pages.length, 0);
-      wrap.dataset.tierPages = String(pages);
-      // The first paint said there were no exact matches, which misleads once the near matches are in and empty too.
-      if (!pages && !results.length && !getEngineError() && !tiers.partial && !response?.partial) summaryN.textContent = `No matches for “${fullTextQuery}”`;
-      if (pages) {
-        tierSection = document.createElement('div');
-        tierSection.className = 'scribe-library-rtiers';
-        for (const { d, docRef } of groups) {
-          const ref = { relPath: docRef.relPath, entry: docRef.entry, hash: d.hash };
-          const docHead = document.createElement('div');
-          docHead.className = 'scribe-library-rtdoc';
-          docHead.append(`${titleOf(ref.relPath)} `);
-          const docMeta = document.createElement('span');
-          docMeta.className = 'm';
-          docMeta.textContent = `${ref.entry.pageCount} page${ref.entry.pageCount === 1 ? '' : 's'}`;
-          docHead.appendChild(docMeta);
-          tierSection.appendChild(docHead);
-          for (const p of d.pages) {
-            tierSection.appendChild(buildHitRow(ref, p.page, {
-              count: p.count, tier: p.tier, marks: p.marks, snippet: p.snippet ? snippetFragment(p.snippet) : null, rects: p.rects, dims: p.dims,
-            }, hits.length, true));
+      for (const info of ranked.slice(0, RESULT_DOC_LIMIT)) appendGroup(info, null);
+      restDocs.push(...ranked.slice(RESULT_DOC_LIMIT));
+      syncMoreDocs();
+      summaryN.textContent = summaryText();
+      // Timing tools outside the app read `paintedAt` as the moment the answer's summary painted.
+      summary.dataset.paintedAt = String(performance.now());
+      pump();
+    }
+
+    /**
+     * @param {?import('./search/searchClient.js').SearchResponse} tiers
+     */
+    const appendSecond = (tiers) => {
+      if (secondDone) return;
+      secondDone = true;
+      second = tiers;
+      let pages = 0;
+      if (tiers) {
+        const infos = tiesByName(
+          /** @type {Array<NonNullable<ReturnType<typeof docInfo>>>} */ (tiers.docs.map(docInfo).filter(Boolean)),
+          (d) => d.perPage[0],
+          (d) => d.docRef.relPath,
+        );
+        for (const info of infos) {
+          pages += info.perPage.length;
+          const g = groups.get(info.docRef.hash);
+          if (g) {
+            g.pages.push(...info.perPage);
+            showPages(g, RESULT_PAGES_PER_DOC);
+            continue;
           }
+          const hidden = restDocs.find((r) => r.docRef.hash === info.docRef.hash);
+          if (hidden) hidden.perPage.push(...info.perPage);
+          else if (groups.size < RESULT_DOC_LIMIT) appendGroup(info, moreDocs);
+          else restDocs.push(info);
         }
-        wrap.appendChild(tierSection);
+        syncMoreDocs();
         pump();
       }
-      // Timing tools outside the app read `tierPages` and `tiersAt`, so both are set even when the near matches hold no page.
+      // Timing tools outside the app read `tierPages` and `tiersAt`, so both are set even when the ranked pass adds no page.
+      wrap.dataset.tierPages = String(pages);
       wrap.dataset.tiersAt = String(performance.now());
+      summaryN.textContent = summaryText();
     };
-    const tiersNow = getEngineTiers();
-    if (tiersNow) appendTierSection(tiersNow);
+    if (getEngineTiers() !== undefined) appendSecond(getEngineTiers() ?? null);
 
     let listScrollTop = 0;
     resultsView = {
@@ -554,8 +598,8 @@ export function createResultsView({
         pump();
       },
       tiers: () => {
-        const tiers = getEngineTiers ? getEngineTiers() : null;
-        if (myGen === resultsGen && tiers) appendTierSection(tiers);
+        const tiers = getEngineTiers();
+        if (myGen === resultsGen && tiers !== undefined) appendSecond(tiers);
       },
       dispose: () => {
         resultsGen++;
@@ -585,7 +629,10 @@ export function createResultsView({
     /** Mark the row for `pageN` of `relPath` as the selection, or no row for a null path. */
     select: (relPath, pageN) => resultsView?.select(relPath, pageN),
 
-    /** Append the near matches that arrived for the current results to their view, if it is built. */
+    /**
+     * Take the ranked pass's answer into the current results' view.
+     * Call it also when no answer will come.
+     */
     appendTiers: () => {
       if (resultsView && resultsView.results === getResults()) resultsView.tiers();
     },

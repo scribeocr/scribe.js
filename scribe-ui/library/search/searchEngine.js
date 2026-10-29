@@ -29,7 +29,8 @@ export const ENGINE_DEFAULTS = Object.freeze({
    */
   prefixLastWord: true,
   fallbackTiers: true,
-  tierBound: 20,
+  /** How many pages the ranked pass keeps, the best. */
+  tierBound: 100,
   /**
    * Whether the fallback tiers are skipped for a query whose exact answer stopped at its bound.
    * On a large library, running them for such a query visits every page holding its common terms and delays the next query's first paint.
@@ -639,9 +640,9 @@ export const createSearchEngine = (storage, settings = {}) => {
       const snippets = new Map();
       /** @type {Map<import('./searchEvaluator.js').Hit, ?{dims: {width: number, height: number}, rects: Array<Array<import('./searchPageRecords.js').Box>>}>} */
       const rects = new Map();
-      // The results view shows every page of the fallback tiers and fetches none of their snippets later.
-      await Promise.all(docs.slice(0, lower ? docs.length : options.firstScreenDocs).map(async (d) => {
-        await Promise.all(d.pages.slice(0, lower ? d.pages.length : options.firstScreenPages).map(async (h) => {
+      // The results view fetches the other pages' snippets as it shows them.
+      await Promise.all(docs.slice(0, options.firstScreenDocs).map(async (d) => {
+        await Promise.all(d.pages.slice(0, options.firstScreenPages).map(async (h) => {
           const { rec, boxes } = await readPage(h.hash, h.page);
           if (!rec) {
             snippets.set(h, null);
@@ -655,6 +656,8 @@ export const createSearchEngine = (storage, settings = {}) => {
       return {
         query,
         terms: result.terms,
+        units: result.units,
+        quoted: result.quoted,
         matches: result.matches,
         bounded: result.bounded,
         partial: result.partial,
@@ -786,7 +789,7 @@ export const createSearchEngine = (storage, settings = {}) => {
     },
 
     /**
-     * Answer a query's fallback tiers, the best `tierBound` pages that hold every term but not the phrase.
+     * Answer a query's looser kinds, the best `tierBound` pages that hold every unit of the query but not its exact phrase.
      * Null when the job was canceled.
      * @param {string} query
      * @param {{cancelled: boolean, pause?: () => Promise<void>}} [job]

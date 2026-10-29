@@ -116,7 +116,8 @@ const pause = () => new Promise((resolve) => {
 
 globalThis.addEventListener('message', (e) => {
   const { id, op, args } = e.data;
-  if (tiersJob && op !== 'snippets' && op !== 'stats' && op !== 'hasDoc') tiersJob.cancelled = true;
+  // A click's page and find requests are answered between the ranked pass's slices, so only a new query or a change of the index ends it.
+  if (tiersJob && (op === 'query' || op === 'addDoc' || op === 'removeDoc' || op === 'open' || op === 'reset' || op === 'close')) tiersJob.cancelled = true;
   queue = queue.then(async () => {
     const started = performance.now();
     const watchdog = setTimeout(() => {
@@ -160,9 +161,10 @@ globalThis.addEventListener('message', (e) => {
       } else if (op === 'query') {
         result = await engine.query(args.query, args.opts || {});
         if (engine.options.fallbackTiers) {
+          const skip = (engine.options.tiersSkipBounded && result.bounded) || result.units.length < 2;
+          result.tiersPending = !skip;
           globalThis.postMessage({ id, ok: true, result });
-          // A lone word has no near matches: every page holding it, or a longer word beginning with it, is in the answer.
-          if ((engine.options.tiersSkipBounded && result.bounded) || result.terms.length < 2) {
+          if (skip) {
             globalThis.postMessage({
               id, phase: 'tiers', ok: true, result: null,
             });

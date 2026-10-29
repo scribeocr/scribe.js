@@ -317,18 +317,45 @@ export const tokenizePage = (page, rules = TOKENIZER_DEFAULTS) => {
   return out;
 };
 
+const QUOTE_MARK_RE = /["“”„‟＂]/;
+
+/**
+ * One unit of a query, either a quoted phrase or a single unquoted term.
+ * @typedef {Object} QueryUnit
+ * @property {number} from
+ * @property {number} to - One past the index of its last term.
+ * @property {boolean} quoted
+ */
+
 /**
  * @param {string} query
  * @param {TokenizerRules} [rules] - The rules the index was built under.
- * @returns {string[]}
+ * @returns {{terms: string[], units: QueryUnit[], quoted: boolean}}
  */
 export const tokenizeQuery = (query, rules = TOKENIZER_DEFAULTS) => {
+  /** @type {string[]} */
   const terms = [];
-  for (const raw of query.split(/\s+/)) {
-    if (!raw) continue;
-    for (const t of splitWord(normalizeWord(raw, rules.compat).norm, rules)) terms.push(t.term);
-  }
-  return terms;
+  /** @type {QueryUnit[]} */
+  const units = [];
+  let quoted = false;
+  const parts = query.split(QUOTE_MARK_RE);
+  const balanced = parts.length % 2 === 1;
+  parts.forEach((part, i) => {
+    const inside = i % 2 === 1 && (balanced || i < parts.length - 1);
+    const from = terms.length;
+    for (const raw of part.split(/\s+/)) {
+      if (!raw) continue;
+      for (const t of splitWord(normalizeWord(raw, rules.compat).norm, rules)) {
+        terms.push(t.term);
+        if (!inside) units.push({ from: terms.length - 1, to: terms.length, quoted: false });
+      }
+    }
+    if (inside && terms.length > from) {
+      units.push({ from, to: terms.length, quoted: true });
+      quoted = true;
+    }
+  });
+  return { terms, units, quoted };
 };
 
 /**

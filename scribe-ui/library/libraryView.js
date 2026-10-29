@@ -430,9 +430,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hit .sn b { font-weight: 600; color: var(--scribe-ink); background: #4278f550; border-radius: 2px; padding: 0 1px; }
 .scribe-pdf-viewer .scribe-library-rmore { display: block; border: none; background: none; padding: 4px 16px 6px 89px; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-rmore:hover { text-decoration: underline; }
-.scribe-pdf-viewer .scribe-library-rtiers { border-top: 1px solid var(--scribe-line); margin-top: 8px; padding-top: 2px; }
-.scribe-pdf-viewer .scribe-library-rtdoc { padding: 10px 16px 4px; font-weight: 600; }
-.scribe-pdf-viewer .scribe-library-rtdoc .m { font-weight: 400; color: var(--scribe-ink-3); font-size: 12px; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
 .scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
 .scribe-pdf-viewer .scribe-library-crumbs { position: relative; display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
@@ -733,7 +730,11 @@ export function createLibraryInstance(viewer, opts) {
   const engine = createSearchClient(opts.engineSettings || {});
   /** @type {?import('./search/searchClient.js').SearchResponse} */
   let engineResponse = null;
-  /** @type {?import('./search/searchClient.js').SearchResponse} */
+  /**
+   * The ranked pass's answer for the current query.
+   * It is undefined while the pass runs and null once no answer will come.
+   * @type {?import('./search/searchClient.js').SearchResponse|undefined}
+   */
   let engineTiers = null;
   /** @type {?string} */
   let engineError = null;
@@ -5720,6 +5721,7 @@ export function createLibraryInstance(viewer, opts) {
         await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
         return;
       }
+      if (entry.hash && target.query) preview.handOver(entry.hash, target.query, target.near ?? []);
       const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash && ownsTab(t)) : -1;
       if (openIdx >= 0) {
         entry.lastOpened = Date.now();
@@ -5763,6 +5765,7 @@ export function createLibraryInstance(viewer, opts) {
           libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
         });
         wrapMutators(pooled, tab);
+        /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = preview.findThroughIndex(entry.hash);
         preview.persistRasterWindow(relPath, entry, target.pageN ?? 0);
         if (!target.background) await continueFind();
         afterOpen();
@@ -5771,14 +5774,18 @@ export function createLibraryInstance(viewer, opts) {
       if (entry.hash && entry.pageDims) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0, target.query ? { query: target.query, near: target.near ?? [] } : null);
+        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0);
         const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, { activate: !target.background });
         const tab = /** @type {any} */ (viewer._tabs[viewer._tabs.length - 1]);
         tab.libraryOwner = instanceId;
         tab.libraryHash = entry.hash;
         tab.libraryRelPath = relPath;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
-        tab.onDocHydrated = (d) => wrapMutators(d, tab);
+        // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
+        tab.onDocHydrated = (d) => {
+          wrapMutators(d, tab);
+          /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = preview.findThroughIndex(entry.hash);
+        };
         wrapMutators(tab.doc, tab);
         handle.hydrated.catch(() => {});
         if (!target.background) {
@@ -5825,6 +5832,7 @@ export function createLibraryInstance(viewer, opts) {
         libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
       });
       wrapMutators(doc, tab);
+      if (entry.hash) /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = preview.findThroughIndex(entry.hash);
       if (!target.background) await continueFind();
       afterOpen();
     } finally {
@@ -7369,7 +7377,7 @@ export function createLibraryInstance(viewer, opts) {
     /** @type {?import('./search/searchClient.js').SearchResponse} */
     let answered = null;
     engine.query(query, undefined, (tiers) => {
-      if (destroyed || !tiers || !answered || engineResponse !== answered) return;
+      if (destroyed || !answered || engineResponse !== answered) return;
       engineTiers = tiers;
       results.appendTiers();
     }).then((response) => {
@@ -7377,7 +7385,7 @@ export function createLibraryInstance(viewer, opts) {
       fullTextQuery = query;
       answered = response;
       engineResponse = response;
-      engineTiers = null;
+      engineTiers = response.tiersPending ? undefined : null;
       engineError = null;
       fullTextResults = response.docs.map((d) => ({ hash: d.hash, pages: d.pages.map((p) => p.page) }));
       render();

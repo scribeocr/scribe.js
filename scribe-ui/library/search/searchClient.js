@@ -25,7 +25,9 @@ export const createSearchClient = (settings = {}) => {
       p.reject(err);
     }
     pending.clear();
+    const waiting = [...tierHandlers.values()];
     tierHandlers.clear();
+    for (const handler of waiting) handler(null);
   };
   const spawn = () => {
     worker = new Worker(new URL('./searchWorker.js', import.meta.url), { type: 'module' });
@@ -193,9 +195,11 @@ export const createSearchClient = (settings = {}) => {
 /**
  * @typedef {Object} ResponsePage
  * @property {number} page
- * @property {number} tier - 1 the phrase as typed and 2 the phrase with a longer word in place of its last, both in the answer.
- *   3 the words in order within the window, 4 any order within it and 5 anywhere on the page, the near matches.
- * @property {number} count - Occurrences on the page, except in tier 5, where it is the number of query terms.
+ * @property {number} tier - The closest kind of match the page holds.
+ *   1 the query's units adjacent in order and 2 the same with a longer word in place of the last.
+ *   3 the units in order within a short window, 4 any order within it and 5 anywhere on the page.
+ *   The answer lists tiers 1 and 2, and the ranked pass lists 3 to 5 after them.
+ * @property {number} count - Occurrences on the page, except in tier 5, where it is the number of the query's units.
  * @property {number} score - BM25 in tier 5, 0 elsewhere.
  * @property {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
  * @property {?Snippet} snippet
@@ -208,6 +212,9 @@ export const createSearchClient = (settings = {}) => {
  * @typedef {Object} SearchResponse
  * @property {string} query
  * @property {string[]} terms
+ * @property {import('./searchTokenizer.js').QueryUnit[]} units
+ * @property {boolean} quoted
+ * @property {boolean} [tiersPending]
  * @property {number} matches
  * @property {boolean} bounded
  * @property {boolean} partial - Whether an index file was left out because its list of words beginning with the last word was cut short.

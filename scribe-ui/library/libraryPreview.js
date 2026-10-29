@@ -117,17 +117,24 @@ export function createPreview({
   let handoff = null;
 
   /**
+   * The find the viewer runs on a library document.
+   * Its matches include the near matches the library last handed over, but only when they came with this document and this query.
+   * @param {string} hash
+   * @returns {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>}
+   */
+  const findThroughIndex = (hash) => (query) => engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : [])
+    .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds }))));
+
+  /**
    * Build a provisional seed for a page of a library document.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
-   * @param {?{query: string, near: NonNullable<PreviewTarget['near']>}} [handedOver] - The query the document opens on, with the near matches of the clicked row.
    * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
    */
-  const makeSeed = async (relPath, entry, pageN, handedOver = null) => {
+  const makeSeed = async (relPath, entry, pageN) => {
     const { hash } = entry;
     if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
-    if (handedOver) handoff = { hash, ...handedOver };
     const ref = { relPath, entry, hash };
     const [changes, pixels] = await Promise.all([sessions.changes(hash), sessions.pixels(ref)]);
     const pageCount = entry.pageDims.length;
@@ -147,9 +154,7 @@ export function createPreview({
       // Without a changes file the page appends its session additions instead.
       annots: (n) => Promise.resolve(changes?.annotations ? (changes.annotations[n] ?? []).map(copyAnnot) : null),
       thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
-      // The near marks handed over belong to the library's query, so a query typed into the find bar afterward goes without them.
-      find: (query) => engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : [])
-        .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })))),
+      find: findThroughIndex(hash),
       outline: changes?.outline ?? pixels.outline ?? [],
       load: async () => {
         const store = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
@@ -326,6 +331,8 @@ export function createPreview({
       if (liveTab) {
         const rec = recordFor(liveTab.doc, liveTab);
         rec.provisional = !!liveTab.provisional;
+        const tabDoc = /** @type {{findMatches?: ?ReturnType<typeof findThroughIndex>}} */ (/** @type {unknown} */ (liveTab.doc));
+        if (!tabDoc.findMatches) tabDoc.findMatches = findThroughIndex(target.hash);
         current = {
           relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, record: rec,
         };
@@ -340,6 +347,7 @@ export function createPreview({
       if (pooled) {
         const rec = recordFor(pooled);
         trackEdits(pooled, rec);
+        /** @type {{findMatches?: ?ReturnType<typeof findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = findThroughIndex(target.hash);
         current = {
           relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, record: rec,
         };
@@ -380,7 +388,11 @@ export function createPreview({
       rec.handle = made;
       rec.holderRef = holder;
       // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
-      rec.onDocHydrated = (d) => trackEdits(d, rec);
+      // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
+      rec.onDocHydrated = (d) => {
+        trackEdits(d, rec);
+        /** @type {{findMatches?: ?ReturnType<typeof findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = findThroughIndex(target.hash);
+      };
       holder.current = rec;
       trackEdits(made.seedDoc, rec);
       countHydration(made.seedDoc);
@@ -448,6 +460,15 @@ export function createPreview({
     },
 
     /**
+     * @param {string} hash
+     * @param {string} query
+     * @param {NonNullable<PreviewTarget['near']>} near
+     */
+    handOver: (hash, query, near) => {
+      handoff = { hash, query, near };
+    },
+
+    /**
      * Hand the attached preview to a lane tab, which takes over the record's document, dirty state and hydration.
      * @param {string} name
      * @param {Object} fields - The tab's library fields.
@@ -461,7 +482,12 @@ export function createPreview({
       tab.libraryDirty = rec.libraryDirty;
       rec.tab = tab;
       // The hydration swap and the dirty tracking write into the tab from here on.
-      tab.onDocHydrated = (d) => trackEdits(d, tab);
+      const hash = current && current.record === rec ? current.hash : null;
+      tab.onDocHydrated = (d) => {
+        trackEdits(d, tab);
+        // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
+        if (hash) /** @type {{findMatches?: ?ReturnType<typeof findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = findThroughIndex(hash);
+      };
       trackEdits(rec.doc, tab);
       if (rec.holderRef) rec.holderRef.current = tab;
       attached = null;
@@ -490,6 +516,7 @@ export function createPreview({
 
     persistRasterWindow,
     makeSeed,
+    findThroughIndex,
     beginUserLoad,
     endUserLoad,
     userLoadIdle,

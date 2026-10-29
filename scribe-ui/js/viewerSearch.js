@@ -5,7 +5,6 @@ import { parseCitation } from '../../js/resolveCitation.js';
 
 /**
  * The ids of the words the current search matches on page `n`.
- * A provisional document's matches come from the library's index, and the plain matcher would not reproduce them, so its list is read instead.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
  * @returns {string[]}
@@ -13,6 +12,7 @@ import { parseCitation } from '../../js/resolveCitation.js';
 export function pageMatchIds(viewer, n) {
   const s = viewer._searchState;
   if (!s.search) return [];
+  // A document's own find, such as the library's index, can return matches the plain matcher below would not reproduce.
   if (viewer.doc.findMatches) return s.matchList.filter((m) => m.pageN === n).flatMap((m) => m.wordIds);
   const page = viewer.doc.ocr.active[n];
   return page ? scribe.utils.ocr.getMatchingWordIds(s.search, page) : [];

@@ -87,9 +87,9 @@ const mergePostings = (reader, entries, merged) => {
  * @property {string} hash
  * @property {number} page
  * @property {number} ingestSeq
- * @property {number} tier - 1 the phrase as typed and 2 the phrase with a longer word in place of its last, both in the answer.
- *   3 the words in order within the window, 4 any order within it and 5 anywhere on the page, the near matches.
- * @property {number} count - Occurrences on the page, or the matched terms' count in tier 5.
+ * @property {number} tier - 1 the query's units adjacent in order and 2 the same with a longer word in place of the last.
+ *   3 the units in order within the window, 4 any order within it and 5 anywhere on the page.
+ * @property {number} count - Occurrences on the page, or the units' count in tier 5.
  * @property {number} span
  * @property {number} score
  * @property {Array<[number, number]>} marks - The occurrences to highlight, as (position << 1 | span) values of their first and last token, at most `marksPerPage`.
@@ -145,14 +145,14 @@ export const compareHits = (a, b, rankSpan) => a.tier - b.tier
  * @param {number} [options.seekCostBytes]
  * @param {{cancelled: boolean, pause?: () => Promise<void>}} [job] - The fallback mode's run.
  *   Once a slice of work is spent the evaluation awaits `pause`, then stops if `cancelled` was set meanwhile.
- * @returns {Promise<{terms: string[], hits: Hit[], matches: number, bounded: boolean, candidates: number,
+ * @returns {Promise<{terms: string[], units: import('./searchTokenizer.js').QueryUnit[], quoted: boolean, hits: Hit[], matches: number, bounded: boolean, candidates: number,
  *   skips: number, found: number, exactPages: number, cancelled: boolean, partial: boolean, plan: ?SweepPlan}>}
  *   In the fallback mode `found` counts every page of a lower tier and `exactPages` the pages the answer lists.
  *   `partial` is set when a segment was left out because its range of the last word was cut short.
  *   `skips` counts the occurrences found by stepping over a marker.
  */
 export const evaluate = async (segments, query, options, job) => {
-  const terms = tokenizeQuery(query, options.tokenizer);
+  const { terms, units, quoted } = tokenizeQuery(query, options.tokenizer);
   /** @type {Hit[]} */
   const hits = [];
   let matches = 0;
@@ -170,15 +170,15 @@ export const evaluate = async (segments, query, options, job) => {
     segments: 0, advanced: 0, sought: 0, rangeMerged: 0,
   } : null;
   const answer = () => ({
-    terms, hits, matches, bounded: lowerMode ? found > bound : hits.length >= bound, candidates, skips, found, exactPages, cancelled, partial, plan,
+    terms, units, quoted, hits, matches, bounded: lowerMode ? found > bound : hits.length >= bound, candidates, skips, found, exactPages, cancelled, partial, plan,
   });
   if (!terms.length) return answer();
   const n = terms.length;
   // Someone who types a lone one- or two-letter word means exactly that word.
-  const prefixAt = options.prefixLastWord && !(n === 1 && terms[0].length < 3) ? n - 1 : -1;
+  const lastUnit = units[units.length - 1];
+  const prefixAt = options.prefixLastWord && !lastUnit.quoted && !(n === 1 && terms[0].length < 3) ? n - 1 : -1;
   const prefix = prefixAt >= 0 ? terms[prefixAt] : '';
-  // Every page holding a lone word, as typed or as a longer word, is in the answer.
-  if (lowerMode && n === 1) return answer();
+  if (lowerMode && units.length < 2) return answer();
   const stepMarkers = options.tokenizer.markersUnpositioned === 'both';
   let sliceStart = performance.now();
   const paused = async () => {
@@ -291,12 +291,11 @@ export const evaluate = async (segments, query, options, job) => {
       return pageMarkers;
     };
     /**
-     * Complete `chain` right of term j - 1's token `cur`.
-     * @param {number[]} chain @param {number} j @param {number} cur
+     * @param {number[]} chain @param {number} j @param {number} cur @param {number} end
      * @returns {boolean}
      */
-    const walkRight = (chain, j, cur) => {
-      if (j === n) return true;
+    const walkRight = (chain, j, cur, end) => {
+      if (j === end) return true;
       const from = (cur >>> 1) + 1 + (cur & 1);
       const markers = /** @type {number[]} */ (pageMarkers);
       let to = from;
@@ -306,18 +305,17 @@ export const evaluate = async (segments, query, options, job) => {
       for (let x = from; x <= to; x++) {
         for (let at = firstAtOrAfter(vs, x); at < vs.length && (vs[at] >>> 1) === x; at++) {
           chain[j] = vs[at];
-          if (walkRight(chain, j + 1, vs[at])) return true;
+          if (walkRight(chain, j + 1, vs[at], end)) return true;
         }
       }
       return false;
     };
     /**
-     * Complete `chain` left of term j + 1's token `cur`.
-     * @param {number[]} chain @param {number} j @param {number} cur
+     * @param {number[]} chain @param {number} j @param {number} cur @param {number} from
      * @returns {boolean}
      */
-    const walkLeft = (chain, j, cur) => {
-      if (j < 0) return true;
+    const walkLeft = (chain, j, cur, from) => {
+      if (j < from) return true;
       const markers = /** @type {number[]} */ (pageMarkers);
       let to = (cur >>> 1) - 1;
       for (let at = firstAtOrAfter(markers, to); at >= 0 && at < markers.length && (markers[at] >>> 1) === to; at--) to--;
@@ -326,33 +324,37 @@ export const evaluate = async (segments, query, options, job) => {
         let at = firstAtOrAfter(vs, y);
         if (at < vs.length && vs[at] === y << 1) {
           chain[j] = vs[at];
-          if (walkLeft(chain, j - 1, vs[at])) return true;
+          if (walkLeft(chain, j - 1, vs[at], from)) return true;
         }
         for (at = firstAtOrAfter(vs, y - 1); y >= 1 && at < vs.length && (vs[at] >>> 1) === y - 1; at++) {
           if (!(vs[at] & 1)) continue;
           chain[j] = vs[at];
-          if (walkLeft(chain, j - 1, vs[at])) return true;
+          if (walkLeft(chain, j - 1, vs[at], from)) return true;
         }
       }
       return false;
     };
     /**
-     * The phrase's occurrences on the page.
      * @param {boolean} firstOnly
+     * @param {number} [from]
+     * @param {number} [to]
+     * @param {number} [limit]
      * @returns {{count: number, marks: Array<[number, number]>}}
      */
-    const occurrences = (firstOnly) => {
+    const occurrences = (firstOnly, from = 0, to = n, limit = marksPerPage) => {
       /** @type {Array<[number, number]>} */
       const marks = [];
       let count = 0;
+      let a = from;
+      for (let j = from + 1; j < to; j++) if (values[j].length < values[a].length) a = j;
       // Two chains can start for one occurrence when a prefix's range holds a joined hyphenation and its first half at one position.
       let lastFirst = -1;
-      for (const av of values[anchor]) {
+      for (const av of values[a]) {
         const chain = new Array(n);
-        chain[anchor] = av;
+        chain[a] = av;
         let cur = av;
         let ok = true;
-        for (let j = anchor + 1; j < n && ok; j++) {
+        for (let j = a + 1; j < to && ok; j++) {
           const expect = (cur >>> 1) + 1 + (cur & 1);
           const vs = values[j];
           const at = firstAtOrAfter(vs, expect);
@@ -362,7 +364,7 @@ export const evaluate = async (segments, query, options, job) => {
           } else ok = false;
         }
         cur = av;
-        for (let j = anchor - 1; j >= 0 && ok; j--) {
+        for (let j = a - 1; j >= from && ok; j--) {
           const p = cur >>> 1;
           const vs = /** @type {number[]} */ (values[j]);
           const plain = ((p - 1) << 1);
@@ -378,16 +380,16 @@ export const evaluate = async (segments, query, options, job) => {
         }
         let stepped = false;
         if (!ok && stepMarkers && markersOfPage().length) {
-          chain[anchor] = av;
-          ok = walkRight(chain, anchor + 1, av) && walkLeft(chain, anchor - 1, av);
+          chain[a] = av;
+          ok = walkRight(chain, a + 1, av, to) && walkLeft(chain, a - 1, av, from);
           stepped = ok;
         }
-        if (!ok || (chain[0] >>> 1) === lastFirst) continue;
-        lastFirst = chain[0] >>> 1;
+        if (!ok || (chain[from] >>> 1) === lastFirst) continue;
+        lastFirst = chain[from] >>> 1;
         if (stepped) skips++;
         count++;
         if (firstOnly) break;
-        if (marks.length < marksPerPage) marks.push([chain[0], chain[n - 1]]);
+        if (marks.length < limit) marks.push([chain[from], chain[to - 1]]);
       }
       return { count, marks };
     };
@@ -452,7 +454,29 @@ export const evaluate = async (segments, query, options, job) => {
           continue;
         }
       }
-      // A window's length leaves out the markers it passes, as the exact walk steps over them.
+      /** @type {Array<Array<{s: number, e: number, a: number, b: number}>>} */
+      const occ = [];
+      let unitMissing = false;
+      for (const u of units) {
+        if (u.to - u.from === 1) {
+          occ.push(values[u.from].map((v) => ({
+            s: v >>> 1, e: (v >>> 1) + (v & 1), a: v, b: v,
+          })));
+          continue;
+        }
+        const spans = occurrences(false, u.from, u.to, Infinity).marks;
+        if (!spans.length) {
+          unitMissing = true;
+          break;
+        }
+        occ.push(spans.map(([a, b]) => ({
+          s: a >>> 1, e: (b >>> 1) + (b & 1), a, b,
+        })).sort((x, y) => x.s - y.s));
+      }
+      if (unitMissing) continue;
+      const m = units.length;
+      // A quoted phrase's words beyond its first do not count against the window.
+      const widthCap = WINDOW + (n - m);
       const markers = stepMarkers ? markersOfPage() : [];
       const pos = values.map((vs) => /** @type {number[]} */ (vs).map((v) => v >>> 1));
       const wordAt = markers.length ? new Set(pos.flat()) : null;
@@ -469,46 +493,47 @@ export const evaluate = async (segments, query, options, job) => {
       /** @type {Array<[number, number]>} */
       const marks = [];
       let count = 0;
-      for (let i = 0; i < pos[0].length; i++) {
-        const p0 = pos[0][i];
-        if (i > 0 && pos[0][i - 1] === p0) continue;
-        let last = p0;
+      for (let i = 0; i < occ[0].length; i++) {
+        const first = occ[0][i];
+        if (i > 0 && occ[0][i - 1].s === first.s) continue;
+        let last = first;
         let ok = true;
-        for (let j = 1; j < n && ok; j++) {
-          const at = firstAtOrAfter(/** @type {number[]} */ (values[j]), last + 1);
-          if (at < pos[j].length) {
-            last = pos[j][at];
-          } else {
-            ok = false;
-          }
+        for (let u = 1; u < m && ok; u++) {
+          let k = 0;
+          while (k < occ[u].length && occ[u][k].s <= last.e) k++;
+          if (k < occ[u].length) last = occ[u][k];
+          else ok = false;
         }
-        const width = ok ? last - p0 + 1 - passed(p0, last) : Infinity;
-        if (width <= WINDOW) {
+        const width = ok ? last.e - first.s + 1 - passed(first.s, last.e) : Infinity;
+        if (width <= widthCap) {
           count++;
           if (!span || width < span) span = width;
-          if (marks.length < marksPerPage) marks.push([p0 << 1, last << 1]);
+          if (marks.length < marksPerPage) marks.push([first.a, last.b]);
         }
       }
       if (count) tier = 3;
       else {
+        /** @type {Array<{s: number, e: number, a: number, b: number, u: number}>} */
         const all = [];
-        for (let j = 0; j < n; j++) for (const p of pos[j]) all.push([p, j]);
-        all.sort((a, b) => a[0] - b[0]);
-        const have = new Array(n).fill(0);
+        occ.forEach((list, u) => { for (const o of list) all.push({ ...o, u }); });
+        all.sort((x, y) => x.s - y.s);
+        const have = new Array(m).fill(0);
         let distinct = 0;
         let lo = 0;
         let lastStart = -1;
         for (let hi = 0; hi < all.length; hi++) {
-          if (have[all[hi][1]]++ === 0) distinct++;
-          while (distinct === n) {
-            const w = all[hi][0] - all[lo][0] + 1 - passed(all[lo][0], all[hi][0]);
-            if (w <= WINDOW && all[lo][0] !== lastStart) {
-              lastStart = all[lo][0];
+          if (have[all[hi].u]++ === 0) distinct++;
+          while (distinct === m) {
+            let endAt = lo;
+            for (let k = lo + 1; k <= hi; k++) if (all[k].e > all[endAt].e) endAt = k;
+            const w = all[endAt].e - all[lo].s + 1 - passed(all[lo].s, all[endAt].e);
+            if (w <= widthCap && all[lo].s !== lastStart) {
+              lastStart = all[lo].s;
               count++;
               if (!span || w < span) span = w;
-              if (marks.length < marksPerPage) marks.push([all[lo][0] << 1, all[hi][0] << 1]);
+              if (marks.length < marksPerPage) marks.push([all[lo].a, all[endAt].b]);
             }
-            if (--have[all[lo][1]] === 0) distinct--;
+            if (--have[all[lo].u] === 0) distinct--;
             lo++;
           }
         }
@@ -516,8 +541,8 @@ export const evaluate = async (segments, query, options, job) => {
         else {
           tier = 5;
           span = seg.pageLength(ordinal, page);
-          count = n;
-          for (let j = 0; j < n; j++) if (marks.length < marksPerPage && pos[j].length) marks.push([pos[j][0] << 1, pos[j][0] << 1]);
+          count = m;
+          for (const list of occ) if (marks.length < marksPerPage) marks.push([list[0].a, list[0].b]);
         }
       }
       let score = 0;
