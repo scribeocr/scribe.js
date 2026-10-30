@@ -436,7 +436,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
   let content;
 
   if (format === 'pdf') {
-    if (convertDupSourceTextToPaths && !(displayMode !== 'ebook' && doc.inputData.pdfMode && addOverlay)) {
+    const insertInputPDF = displayMode !== 'ebook' && doc.inputData.pdfMode && addOverlay;
+    if (convertDupSourceTextToPaths && !insertInputPDF) {
       console.warn('convertDupSourceTextToPaths is only applied when overlaying OCR text onto a PDF input '
         + "(requires a PDF input, addOverlay enabled, and displayMode other than 'ebook'); ignoring.");
     }
@@ -453,8 +454,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
     }
 
     /** @type {Map<number, number>} */
-    const ebookPageScales = new Map();
-    if (displayMode === 'ebook') {
+    const pointScales = new Map();
+    if (!insertInputPDF) {
       for (const i of pageArr) {
         const pageSize = doc.inputData.pageStats?.[i]?.pageSize;
         const { dims } = doc.pageMetrics[i];
@@ -463,23 +464,78 @@ export async function exportData(doc, format = 'txt', options = {}) {
         if (scale === 1) continue;
         // Width and height ratios that disagree mean dims came from a coordinate frame other than the PDF page size.
         if (Math.abs(pageSize[1] / dims.height / scale - 1) > 0.02) continue;
-        ebookPageScales.set(i, scale);
+        pointScales.set(i, scale);
       }
     }
 
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
-        const scale = ebookPageScales.get(i) ?? 1;
+        const scale = pointScales.get(i) ?? 1;
         dimsLimit.height = Math.max(dimsLimit.height, Math.round(doc.pageMetrics[i].dims.height * scale * 100) / 100);
         dimsLimit.width = Math.max(dimsLimit.width, Math.round(doc.pageMetrics[i].dims.width * scale * 100) / 100);
       }
     }
 
+    let ocrExport = ocrDownload;
+    let pageMetricsExport = doc.pageMetrics;
+    let annotationsExport = annotationsPagesExport;
+    if (pointScales.size > 0) {
+      ocrExport = [...ocrDownload];
+      pageMetricsExport = [...doc.pageMetrics];
+      annotationsExport = [...annotationsPagesExport];
+      for (const [i, scale] of pointScales) {
+        const page = ocrExport[i];
+        if (page) {
+          // scalePage leaves paragraph bboxes in the pixel frame, so the clone's page.pars disagree with everything else on it.
+          // No PDF writer reads them today.
+          const clone = clonePage(page);
+          ocr.scalePage(clone, scale);
+          // scalePage does not scale word.style.size, so a word carrying an explicit size would keep its pixel-frame font size.
+          for (const line of clone.lines) {
+            for (const word of line.words) {
+              if (word.style.size) word.style.size *= scale;
+            }
+          }
+          ocrExport[i] = clone;
+        }
+        pageMetricsExport[i] = {
+          ...pageMetricsExport[i],
+          dims: {
+            width: Math.round(pageMetricsExport[i].dims.width * scale * 100) / 100,
+            height: Math.round(pageMetricsExport[i].dims.height * scale * 100) / 100,
+          },
+        };
+        annotationsExport[i] = (annotationsExport[i] || []).map((annot) => {
+          const scaled = structuredClone(annot);
+          if ('bbox' in scaled) {
+            scaled.bbox.left *= scale;
+            scaled.bbox.top *= scale;
+            scaled.bbox.right *= scale;
+            scaled.bbox.bottom *= scale;
+          }
+          if ('quads' in scaled && scaled.quads) {
+            for (const q of scaled.quads) {
+              q.left *= scale;
+              q.top *= scale;
+              q.right *= scale;
+              q.bottom *= scale;
+            }
+          }
+          if ('points' in scaled) {
+            for (let k = 0; k < scaled.points.length; k++) scaled.points[k] *= scale;
+          }
+          if ('vertices' in scaled) {
+            for (let k = 0; k < scaled.vertices.length; k++) scaled.vertices[k] *= scale;
+          }
+          if ('fontSize' in scaled) scaled.fontSize *= scale;
+          if ('borderWidth' in scaled && scaled.borderWidth) scaled.borderWidth *= scale;
+          return scaled;
+        });
+      }
+    }
     // For proof or ocr mode the text layer needs to be combined with a background layer
     if (displayMode !== 'ebook') {
-      const insertInputPDF = doc.inputData.pdfMode && addOverlay;
-
       const rotateBackground = !insertInputPDF && autoRotate;
 
       const rotateText = !rotateBackground;
@@ -650,8 +706,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
         }
 
         content = await writePdf({
-          ocrArr: ocrDownload,
-          pageMetricsArr: doc.pageMetrics,
+          ocrArr: ocrExport,
+          pageMetricsArr: pageMetricsExport,
           pageArr,
           textMode: displayMode,
           rotateText,
@@ -662,7 +718,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           proofOpacity: overlayOpacity / 100,
           images,
           includeImages,
-          annotationsPages: annotationsPagesExport,
+          annotationsPages: annotationsExport,
           humanReadable: humanReadablePDF,
           docFonts: doc.fonts,
           doc,
@@ -671,63 +727,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
         });
       }
     } else {
-      let ocrExport = ocrDownload;
-      let pageMetricsExport = doc.pageMetrics;
-      let annotationsExport = annotationsPagesExport;
-      if (ebookPageScales.size > 0) {
-        ocrExport = [...ocrDownload];
-        pageMetricsExport = [...doc.pageMetrics];
-        annotationsExport = [...annotationsPagesExport];
-        for (const [i, scale] of ebookPageScales) {
-          const page = ocrExport[i];
-          if (page) {
-            // scalePage leaves paragraph bboxes in the pixel frame, so the clone's page.pars disagree with everything else on it.
-            // No PDF writer reads them today.
-            const clone = clonePage(page);
-            ocr.scalePage(clone, scale);
-            // scalePage does not scale word.style.size, so a word carrying an explicit size would keep its pixel-frame font size.
-            for (const line of clone.lines) {
-              for (const word of line.words) {
-                if (word.style.size) word.style.size *= scale;
-              }
-            }
-            ocrExport[i] = clone;
-          }
-          pageMetricsExport[i] = {
-            ...pageMetricsExport[i],
-            dims: {
-              width: Math.round(pageMetricsExport[i].dims.width * scale * 100) / 100,
-              height: Math.round(pageMetricsExport[i].dims.height * scale * 100) / 100,
-            },
-          };
-          annotationsExport[i] = (annotationsExport[i] || []).map((annot) => {
-            const scaled = structuredClone(annot);
-            if ('bbox' in scaled) {
-              scaled.bbox.left *= scale;
-              scaled.bbox.top *= scale;
-              scaled.bbox.right *= scale;
-              scaled.bbox.bottom *= scale;
-            }
-            if ('quads' in scaled && scaled.quads) {
-              for (const q of scaled.quads) {
-                q.left *= scale;
-                q.top *= scale;
-                q.right *= scale;
-                q.bottom *= scale;
-              }
-            }
-            if ('points' in scaled) {
-              for (let k = 0; k < scaled.points.length; k++) scaled.points[k] *= scale;
-            }
-            if ('vertices' in scaled) {
-              for (let k = 0; k < scaled.vertices.length; k++) scaled.vertices[k] *= scale;
-            }
-            if ('fontSize' in scaled) scaled.fontSize *= scale;
-            if ('borderWidth' in scaled && scaled.borderWidth) scaled.borderWidth *= scale;
-            return scaled;
-          });
-        }
-      }
       content = await writePdf({
         ocrArr: ocrExport,
         pageMetricsArr: pageMetricsExport,

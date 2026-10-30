@@ -2352,6 +2352,28 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
     expect(idPair[1] === idPair[0], 'the changing /ID element must differ from the permanent one after an edit').toBe(false);
   });
 
+  test('A PDF source exported without the overlay writes point-frame pages that re-import at the source pixel frame', async () => {
+    const out = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { displayMode: 'invis', addOverlay: false, pageArr: [0, 1] }));
+    const txt = new TextDecoder('latin1').decode(new Uint8Array(out));
+    expect([...txt.matchAll(/\/MediaBox\[([^\]]*)\]/g)].map((m) => m[1]), 'a fresh PDF built from page renders carries each page\'s physical size in points, in display orientation')
+      .toEqual(['0 0 612 792', '0 0 792 612']);
+
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
+    const noOverlayDoc = await scribe.openDocument({ pdfFiles: [out] });
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
+    await noOverlayDoc.textReady;
+    expect(noOverlayDoc.pageMetrics.map((pm) => pm.dims), 'the re-import returns to the source pixel frame instead of tripping the width cap')
+      .toEqual([{ width: 2550, height: 3300 }, { width: 3300, height: 2550 }]);
+    expect(noOverlayDoc.ocr.active.map((page) => page.lines.reduce((n, line) => n + line.words.length, 0)),
+      'the invisible text layer of a fresh PDF carries every word of both pages').toEqual([211, 208]);
+    const mayor = noOverlayDoc.ocr.active[1].lines.filter((line) => lineText(line) === 'Mayor');
+    expect(mayor.length, 'the body line "Mayor" survives the point-frame round-trip as one line').toBe(1);
+    expect(mayor[0].bbox, 'the text layer is scaled with the page, so the word returns to its source position').toEqual({
+      left: 1501, top: 332, right: 1639, bottom: 406,
+    });
+    await noOverlayDoc.clear();
+  });
+
   test('OCR text over a /Rotate source page imports in the display frame', async () => {
     const page = doc.ocr.active[1];
 
