@@ -252,6 +252,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
   const contentEdits = envelope.session?.contentEdits || [];
   const nativeText = envelope.session?.nativeText || [];
   const fillShapes = envelope.session?.fillShapes || [];
+  const truth = envelope.session?.truth || [];
   for (let i = 0; i < ocrPages.length; i++) {
     const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
     /** @type {Record<string, any>} */
@@ -260,6 +261,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
       rec.contentEdits = contentEdits[i] ?? null;
       rec.nativeText = nativeText[i] ?? null;
       rec.fillShapes = fillShapes[i] ?? null;
+      if (envelope.session.truth) rec.truth = truth[i] ?? null;
     }
     yield '\n';
     yield JSON.stringify(rec);
@@ -876,6 +878,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         fillText: collectFillTextRefs(doc),
         pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       };
+      if (doc.truth.pages.some((p) => p)) envelope.session.truth = doc.truth.pages.map((p) => p ?? null);
       // Site matching pads by 2px, so rounding coordinates to 0.1px is lossless.
       const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
       const box = (/** @type {{left: number, top: number, right: number, bottom: number}} */ b) => [r1(b.left), r1(b.top), r1(b.right), r1(b.bottom)];

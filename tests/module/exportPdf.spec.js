@@ -1567,6 +1567,13 @@ describe('Check native text line deletion and replacement survive .scribe persis
         },
       ],
     });
+    srcDoc.truth.pages[1] = {
+      page: {
+        status: 'built', attributes: ['wholesale-disagreement'], process: 1, run: '2026-10-23T12-00-00-000Z-resolve',
+      },
+      words: { [srcDoc.ocr.active[1].lines[0].words[0].id]: { settledBy: 'control', kind: 'letters or digits', flags: ['lookalike'] } },
+      unresolved: { [srcDoc.ocr.active[1].lines[1].words[0].id]: { reason: 'unclear', verdicts: ['run-a/batch-01/4'] } },
+    };
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
@@ -1612,6 +1619,17 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(sessionObj.session?.contentEdits?.[1]?.length, 'the image-delete record is missing from the session block').toBe(1);
     expect(sessionObj.session?.nativeText?.length, 'per-page native-text metadata is missing from the session block').toBe(3);
     expect(Object.keys(sessionObj.session?.nativeText?.[0] || {}).length, 'native-text entries were lost from the edited page\'s session block').toBe(228);
+  });
+
+  test('Ground-truth process records survive the .scribe session round-trip and stay out of the standard file', () => {
+    expect(JSON.stringify(standardObj).includes('wholesale-disagreement'), 'a ground-truth process record leaked into the standard .scribe export').toBe(false);
+    expect(sessionObj.session?.truth?.length, 'the per-page truth records are missing from the session block').toBe(3);
+    expect(sessionObj.session?.truth?.[0], 'a page that is no truth carries a record').toBe(null);
+    expect(sessionObj.session?.truth?.[1]?.page?.attributes, 'the page attributes were lost from the session block').toEqual(['wholesale-disagreement']);
+    expect(restoredDoc.truth.pages[1], 'the truth record changed on .scribe restore').toEqual(sessionObj.session.truth[1]);
+    expect(restoredDoc.truth.pages[0], 'a page that is no truth gained a record on restore').toBe(null);
+    const [settledId] = Object.keys(restoredDoc.truth.pages[1].words);
+    expect(restoredDoc.ocr.active[1].lines[0].words[0].id, 'the restored record no longer keys the word it describes').toBe(settledId);
   });
 
   test('Assistant chat history survives the .scribe session round-trip', () => {

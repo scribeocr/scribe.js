@@ -153,21 +153,30 @@ describe('Check auto-rotate features.', () => {
     const words = lines.flatMap((line) => line.words);
     expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
     expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
-    expect(words.find((w) => w.text === 'Aragon’s')?.alt, 'a word with a classifier reading and a losing engine reading carries both, higher confidence first, each naming its origin in msg')
+    expect(words.find((w) => w.text === 'Aragon’s')?.readings,
+      'a word with a classifier reading and a losing engine reading carries its own reading first, then both, higher confidence first, each naming its origin in msg')
       .toEqual([{
-        text: 'Aragons', conf: 68, span: 1, msg: 'c1',
+        source: 'scribe', text: 'Aragon’s', conf: 0,
       }, {
-        text: 'Aragon‘s', conf: 63, span: 1, msg: 'a1',
+        source: 'scribe', text: 'Aragons', conf: 68, rank: 2, msg: 'c1',
+      }, {
+        source: 'scribe', text: 'Aragon‘s', conf: 63, rank: 3, msg: 'a1',
       }]);
-    expect(words.find((w) => w.text === '2012')?.alt, 'a word the engines disagreed on carries the other engine\'s reading with its confidence and the arbiter\'s rule').toEqual([{
-      text: '20l2', conf: 89, span: 1, msg: 'a1',
+    expect(words.find((w) => w.text === '2012')?.readings, 'a word the engines disagreed on carries the other engine\'s reading with its confidence and the arbiter\'s rule').toEqual([{
+      source: 'scribe', text: '2012', conf: 80,
+    }, {
+      source: 'scribe', text: '20l2', conf: 89, rank: 2, msg: 'a1',
     }]);
-    expect(words.find((w) => w.text === 'be')?.alt, 'a word whose classifier preferred another reading carries that reading with its confidence').toEqual([{
-      text: 'bc', conf: 88, span: 1, msg: 'c1',
+    expect(words.find((w) => w.text === 'be')?.readings, 'a word whose classifier preferred another reading carries that reading with its confidence').toEqual([{
+      source: 'scribe', text: 'be', conf: 100,
+    }, {
+      source: 'scribe', text: 'bc', conf: 88, rank: 2, msg: 'c1',
     }]);
-    expect(lines[0].words[0].alt, 'a word both engines agreed on carries no alternative reading').toBe(undefined);
-    const repeated = words.filter((w) => w.alt?.some((a) => a.text === w.text) || (w.alt && new Set(w.alt.map((a) => a.text)).size !== w.alt.length));
-    expect(repeated.length, 'an alternative reading repeats the shipped text or another alternative').toBe(0);
+    expect(lines[0].words[0].readings, 'a word both engines agreed on carries no readings list, since nothing but the engine\'s own reading exists for it').toBe(undefined);
+    const repeated = words.filter((w) => w.readings && new Set(w.readings.map((r) => r.text)).size !== w.readings.length);
+    expect(repeated.length, 'a word lists the same reading twice').toBe(0);
+    const ownFirst = words.filter((w) => w.readings && (w.readings[0].text !== w.text || (w.readings[0].rank || 1) !== 1));
+    expect(ownFirst.length, 'a word\'s readings do not start with its own reading').toBe(0);
 
     // The core times its own passes; the dev telemetry and the timing runner read them from `doc.ocrTiming` by timing code.
     const timing = doc.ocrTiming[0].Combined;
@@ -241,10 +250,47 @@ describe('Check comparison between OCR versions.', () => {
 
     await doc.importFilesSupp([`${ASSETS_PATH}/testocr_missing_word.hocr`], 'Missing Word');
 
+    // These words have confidence 100 in the hOCR, so own entries at 90 and 55 show whether the compare keeps an own entry as its layer wrote it or rebuilds it from the word.
+    const wordsA = doc.ocr['User Upload'][0].lines[0].words;
+    const wordsB = doc.ocr['Missing Word'][0].lines[0].words;
+    wordsB[0].readings = [{ source: 'hocr', text: 'This', conf: 90 }, {
+      source: 'hocr', text: 'Th1s', conf: 50, rank: 2, msg: 'c1',
+    }];
+    wordsA[4].readings = [{ source: 'hocr', text: 'of', conf: 55 }, {
+      source: 'hocr', text: '0f', conf: 60, rank: 2, msg: 'c1',
+    }];
+    wordsB[2].readings = [{ source: 'hocr', text: 'of', conf: 100 }, {
+      source: 'hocr', text: 'of.', conf: 40, rank: 2, msg: 'c1',
+    }];
+
     const res = await doc.compareOCR(doc.ocr['User Upload'], doc.ocr['Missing Word'], compOptions);
 
     // The first word is present in the 'Missing Word' OCR data.
-    expect(res.ocr[0].lines[0].words[0].text).toBe('This');
+    const { words } = res.ocr[0].lines[0];
+    expect(words[0].text).toBe('This');
+    expect(words[0].readings,
+      'a word the layers read differently keeps the surviving reading first, at the confidence its layer wrote, and ranks the losing reading and the dropped word\'s second choice by confidence')
+      .toEqual([{ source: 'hocr', text: 'This', conf: 90 }, {
+        source: 'hocr', text: 'Th1s', conf: 50, rank: 3, msg: 'c1',
+      }, {
+        source: 'hocr', text: 'ThAs', conf: 100, rank: 2,
+      }]);
+    expect([words[0].compTruth, words[0].matchTruth], 'a word the layers read differently is marked compared and unmatched').toEqual([true, false]);
+    expect(words[3].text).toBe('lot');
+    expect(words[3].readings, 'a word both layers read alike carries no readings list').toBe(undefined);
+    expect([words[3].conf, words[3].compTruth, words[3].matchTruth], 'a word both layers read alike is marked compared and matched at full confidence').toEqual([100, true, true]);
+    expect(words[1].text).toBe('is');
+    expect(words[1].readings, 'a word the other layer did not read carries no readings list').toBe(undefined);
+    expect([words[1].conf, words[1].compTruth], 'a word the other layer did not read is marked uncompared at zero confidence').toEqual([0, false]);
+    expect(words[4].text).toBe('of');
+    expect(words[4].readings,
+      'a word the layers read alike, where either carried a list, keeps its own entry first at the confidence its layer wrote and ranks both layers\' second choices by confidence')
+      .toEqual([{ source: 'hocr', text: 'of', conf: 55 }, {
+        source: 'hocr', text: '0f', conf: 60, rank: 2, msg: 'c1',
+      }, {
+        source: 'hocr', text: 'of.', conf: 40, rank: 3, msg: 'c1',
+      }]);
+    expect([words[4].conf, words[4].matchTruth], 'a word the layers read alike is matched at full confidence whatever list it carries').toEqual([100, true]);
   });
 
   test('Comparisons handled correctly when word is missing from comparison OCR', async () => {

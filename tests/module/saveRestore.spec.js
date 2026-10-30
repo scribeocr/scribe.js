@@ -79,8 +79,8 @@ describe('Check .scribe export function.', () => {
       const line0 = orig.lines[0];
       line0.orientation = 3;
       const word0 = line0.words[0];
-      word0.alt = [{
-        source: 'stamp', text: 'alt', conf: 1, span: 1,
+      word0.readings = [{
+        source: 'stamp', text: 'alt', conf: 1, rank: 2, span: 1, msg: 'stamp',
       }];
       word0.styleRuns = [{ i: 1, style: { bold: true } }];
       orig.pars[0].type = 'footnote';
@@ -90,7 +90,7 @@ describe('Check .scribe export function.', () => {
       word0.footnoteParId = orig.pars[0].id;
 
       // Stamp every defaulted field, so a field the clone forgets cannot pass the comparison by matching the constructor default on both sides.
-      const skipStamp = new Set(['alt', 'chars', 'styleRuns', 'par', 'page', 'line']);
+      const skipStamp = new Set(['readings', 'chars', 'styleRuns', 'par', 'page', 'line']);
       const stamped = new Set();
       /** @param {any} obj */
       const stamp = (obj) => {

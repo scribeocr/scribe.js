@@ -238,7 +238,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           outline: header.outline,
           inputData: header.inputData,
           session: header.session ? {
-            ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null), fillShapes: new Array(n).fill(null),
+            ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null), fillShapes: new Array(n).fill(null), truth: new Array(n).fill(null),
           } : undefined,
         };
       };
@@ -257,6 +257,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           if (recEdits !== undefined) assembled.session.contentEdits[rec.i] = recEdits;
           if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
           if (rec.fillShapes !== undefined) assembled.session.fillShapes[rec.i] = rec.fillShapes;
+          if (rec.truth !== undefined) assembled.session.truth[rec.i] = rec.truth;
         }
       };
 
@@ -358,6 +359,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
         const existing = doc.nativeText.pages[i];
         doc.nativeText.pages[i] = existing && Object.keys(existing).length ? { ...existing, ...nt } : nt;
       }
+    }
+    if (scribeRestoreObj.session.truth) {
+      for (let i = 0; i < scribeRestoreObj.session.truth.length; i++) doc.truth.pages[i] = scribeRestoreObj.session.truth[i] ?? null;
     }
     if (scribeRestoreObj.session.fillShapes) {
       const site = (/** @type {Array<number>} */ t) => ({
@@ -876,6 +880,9 @@ export async function importFiles(doc, files, options = {}) {
     }
     if (doc.fillShapes.pages[i] === undefined) {
       doc.fillShapes.pages[i] = null;
+    }
+    if (doc.truth.pages[i] === undefined) {
+      doc.truth.pages[i] = null;
     }
   }
 

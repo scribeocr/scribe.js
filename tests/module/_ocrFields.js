@@ -7,8 +7,8 @@
 export const strayFields = (d) => {
   const pageFields = ['angle', 'dims', 'lines', 'n', 'pars', 'rules', 'tableBoxes', 'textSource'];
   const lineFields = ['ascHeight', 'baseline', 'bbox', 'debug', 'id', 'lineNum', 'orientation', 'page', 'pageNum', 'par', 'words', 'xHeight'];
-  const wordFields = ['alt', 'bbox', 'chars', 'compTruth', 'conf', 'debug', 'footnoteParId', 'id', 'lang', 'line',
-    'matchTruth', 'style', 'styleRuns', 'text', 'visualCoords'];
+  const wordFields = ['bbox', 'chars', 'compTruth', 'conf', 'debug', 'footnoteParId', 'id', 'lang', 'line',
+    'matchTruth', 'readings', 'style', 'styleRuns', 'text', 'visualCoords'];
   const charFields = ['bbox', 'text'];
   const page = new Set();
   const lineSet = new Set();

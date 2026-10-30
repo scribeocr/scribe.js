@@ -687,6 +687,42 @@ declare global {
         /** Characters recorded against Type 3 glyph outlines, as `[pathHash, text]` pairs. */
         type3GlyphMappings?: Array<[string, string]>;
         tableExport?: { excluded?: Record<string, true>; names?: Record<string, string> };
+        truth?: Array<TruthPageRecord | null>;
+    };
+
+    /** One page's record of how the ground-truth process settled the page and its words. */
+    type TruthPageRecord = {
+        page: {
+            /** `excluded` when the page was taken out of the ground truth, otherwise `built`. */
+            status: 'built' | 'excluded';
+            /** Page-level verdicts and marks, such as `sideways` or `wholesale-disagreement`. */
+            attributes: Array<string>;
+            /** Why an excluded page was taken out. */
+            reason?: string;
+            /** How far the ground-truth process has taken the page: 1 combined its sources, 2 applied a combining strategy, 3 applied the judges' verdicts. */
+            process: number;
+            /** The run that last wrote the record. */
+            run: string;
+            /** The source whose words and boxes the combined layer keeps. */
+            base?: string;
+            /** Words each source read on the page. */
+            sources?: Record<string, number>;
+            /** Per pair of sources, `a|b`: the words both read, and how many they read the same way. */
+            agreement?: Record<string, { both: number; same: number }>;
+            /** The consensus function's counts for the page. */
+            stats?: Record<string, number>;
+            /** The page render the sources read: its image, pixel size and dpi. */
+            render?: { image: string; width: number; height: number; dpi: number } | null;
+            /** The combining strategy that last resolved the page. */
+            strategy?: string;
+        };
+        /**
+         * Keyed by word id: what settled the word, the kind of disagreement, the flags, and the verdict ids.
+         * `settledBy` is the strategy's decision class, `review` when a judge's verdict settled the word, or `none` while it is unsettled.
+         */
+        words: Record<string, { settledBy: string; reason?: string; class?: string; kind?: string; convention?: string; flags?: Array<string>; verdicts?: Array<string>; removed?: boolean }>;
+        /** Keyed by word id: the words no strategy and no judge could settle, with the reason. */
+        unresolved: Record<string, { reason: string; verdicts?: Array<string> }>;
     };
 
     /**

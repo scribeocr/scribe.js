@@ -135,7 +135,13 @@ export async function convertPageBlocks({
           wordObj.style.sup = !!word.superscript;
           wordObj.compTruth = !!word.comp;
           wordObj.matchTruth = !!word.match;
-          if (word.alt) wordObj.alt = word.alt;
+          if (word.alt) {
+            wordObj.readings = [{
+              source: 'scribe', text: wordObj.text, conf: word.confidence,
+            }, ...word.alt.map((a, altI) => ({
+              source: 'scribe', text: a.text, conf: a.conf, rank: altI + 2, ...(a.span > 1 ? { span: a.span } : {}), ...(a.msg ? { msg: a.msg } : {}),
+            }))];
+          }
           wordObj.chars = word.symbols === null ? null : word.symbols.map((symbol) => new ocr.OcrChar(symbol.text, {
             left: symbol.bbox.x0, top: symbol.bbox.y0, right: symbol.bbox.x1, bottom: symbol.bbox.y1,
           }));
@@ -299,7 +305,11 @@ export async function convertPageBlocksVanilla({
           if (word.choices.length > 0) {
             word.choices.sort((a, b) => b.confidence - a.confidence);
             if (word.choices[0].text !== word.text) {
-              wordObj.alt = [{ text: word.choices[0].text, conf: word.choices[0].confidence, span: 1 }];
+              wordObj.readings = [{
+                source: 'scribe', text: wordObj.text, conf: word.confidence,
+              }, {
+                source: 'scribe', text: word.choices[0].text, conf: word.choices[0].confidence, rank: 2, msg: 'c1',
+              }];
             }
           }
 

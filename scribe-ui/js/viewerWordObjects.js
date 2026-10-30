@@ -595,8 +595,7 @@ export class UiText {
       elem.style.textDecoration = '';
     }
 
-    // Proof mode marks a word the model gave other readings with a dotted rule under its box, so the reader knows the readings list has something for it.
-    if (!pad && this.word.alt?.length && this.viewer.state.displayMode === 'proof') {
+    if (!pad && scribe.utils.ocr.groupReadings(this.word).length > 1 && this.viewer.state.displayMode === 'proof') {
       const mark = document.createElement('i');
       mark.className = 'scribe-word-readings';
       mark.style.bottom = `calc(${this.fontDescentPx}px - 4px / var(--scribe-zoom, 1))`;

@@ -471,7 +471,7 @@ async function penalizeWord(wordObjs) {
  * @param {object} params.options
  * @param {("stats"|"comb")} [params.options.mode='stats'] - If `mode = 'stats'` stats quantifying the number of matches/mismatches are returned.
  *    If `mode = 'comb'` a new version of `pageA`, with text and confidence metrics informed by comparisons with pageB, is created.
- *    The losing reading of each conflict whose words align one-to-one or two-to-one is kept as an `alt` of the surviving words, with `source` set to its page's `textSource`.
+ *    The losing reading of each conflict whose words align one-to-one or two-to-one is kept in the first surviving word's `readings`.
  * @param {boolean} [params.options.editConf] - Whether confidence metrics should be updated when `mode = 'stats'`,
  *    rather than simply setting `compTruth`/`matchTruth`. Enabled when using recognition to update confidence metrics, but not when comparing to ground truth.
  * @param {boolean} [params.options.useBboxB] - Use bounding boxes from `pageB` in combined output.
@@ -565,6 +565,51 @@ export async function compareOCRPageImp({
     if (ignorePunct) t = t.replace(/(^|\D)[\W_]($|\D)/g, '$1$2');
     if (ignoreCap) t = t.toLowerCase();
     return t;
+  };
+
+  /** @param {import('../objects/ocrObjects.js').Reading} a @param {import('../objects/ocrObjects.js').Reading} b */
+  const sameReading = (a, b) => a.source === b.source && a.text === b.text && (a.span || 1) === (b.span || 1);
+  /**
+   * The list with its ranks renumbered so that no source has two rank-1 readings.
+   * The first entry is taken as the word's own reading.
+   * @param {Array<import('../objects/ocrObjects.js').Reading>} readings
+   */
+  const ranked = (readings) => {
+    /** @type {Set<string>} */
+    const firsts = new Set();
+    /** @type {Map<string, Array<import('../objects/ocrObjects.js').Reading>>} */
+    const others = new Map();
+    // Two pages of one engine share a source name, so the other page's reading can arrive at rank 1 beside the word's own.
+    readings.forEach((r, i) => {
+      if (i === 0 || ((r.rank || 1) === 1 && !firsts.has(r.source))) firsts.add(r.source);
+      else others.set(r.source, [...(others.get(r.source) || []), r]);
+    });
+    /** @type {Map<import('../objects/ocrObjects.js').Reading, number>} */
+    const rankOf = new Map();
+    for (const list of others.values()) list.slice().sort((a, b) => b.conf - a.conf).forEach((r, i) => rankOf.set(r, i + 2));
+    return readings.map((r, i) => {
+      if (i === 0) {
+        if (!r.rank) return r;
+        const own = { ...r };
+        delete own.rank;
+        return own;
+      }
+      return rankOf.has(r) && rankOf.get(r) !== r.rank ? { ...r, rank: rankOf.get(r) } : r;
+    });
+  };
+  /** @param {Array<import('../objects/ocrObjects.js').Reading>|undefined} readings @param {import('../objects/ocrObjects.js').Reading} reading */
+  const addReading = (readings, reading) => {
+    const list = readings || [];
+    return ranked(list.some((r) => sameReading(r, reading)) ? list : [...list, reading]);
+  };
+  /**
+   * The list with its own reading first.
+   * If the list already holds that reading, its entry goes first in place of `own`.
+   * @param {Array<import('../objects/ocrObjects.js').Reading>|undefined} readings @param {import('../objects/ocrObjects.js').Reading} own
+   */
+  const ownFirst = (readings, own) => {
+    const list = readings || [];
+    return ranked([list.find((r) => sameReading(r, own)) || own, ...list.filter((r) => !sameReading(r, own))]);
   };
 
   // TODO: This assumes that the lines are in a specific order, which may not always be the case.
@@ -681,7 +726,16 @@ export async function compareOCRPageImp({
               if (wordTextA === wordTextB) {
                 wordA.compTruth = true;
                 wordA.matchTruth = true;
-                if (mode === 'comb') wordA.conf = 100;
+                if (mode === 'comb') {
+                  wordA.conf = 100;
+                  // An agreed word gets no list, but a list either word already carries is kept complete with both pages' own readings.
+                  if (wordA.readings || wordB.readings) {
+                    const own = { source: ocr.readingSource(pageA), text: wordA.text, conf: confOrig.get(wordA.id) ?? wordA.conf };
+                    let readings = ownFirst(wordA.readings, own);
+                    for (const r of wordB.readings || []) readings = addReading(readings, r);
+                    wordA.readings = addReading(readings, { source: ocr.readingSource(pageB), text: wordB.text, conf: wordB.conf });
+                  }
+                }
                 hocrACorrect[wordA.id] = 1;
                 hocrBCorrect[wordB.id] = 1;
                 if (mode === 'comb' && useBboxB) {
@@ -897,18 +951,23 @@ export async function compareOCRPageImp({
                   }
                 }
 
+                const sourceWon = ocr.readingSource(winner === 'lstm' ? pageB : pageA);
+                const sourceLost = ocr.readingSource(winner === 'lstm' ? pageA : pageB);
                 const lostConfs = losers.map((x) => (winner === 'lstm' ? (confOrig.get(x.id) ?? 0) : x.conf));
-                const alt = [...(survivors[0].alt || []), {
-                  source: (winner === 'lstm' ? pageA.textSource : pageB.textSource) || undefined,
-                  text: lostText,
-                  conf: Math.round(lostConfs.reduce((a, b) => a + b, 0) / lostConfs.length),
-                  span: survivors.length,
-                }];
-                // A reading that covers only part of the dropped range has no word left to attach to.
+                /** @param {import('../objects/ocrObjects.js').Reading} r */
+                const spanned = (r) => { const rest = { ...r }; delete rest.span; return survivors.length > 1 ? { ...rest, span: survivors.length } : rest; };
+                // The dropped range's readings move over first, so a won word's own entry is found among them rather than rebuilt.
+                // A reading that covered only part of the dropped range has no word left to attach to.
                 const rangeDropped = winner === 'lstm' && !oneToOne ? rangeA : rangeB;
-                for (const a of rangeDropped[0].alt || []) if (a.span === rangeDropped.length) alt.push({ ...a, span: survivors.length });
-                const survivorsText = survivors.map((x) => x.text).join(' ');
-                survivors[0].alt = alt.filter((a) => !(a.span === survivors.length && a.text === survivorsText)).sort((a, b) => b.conf - a.conf);
+                for (const r of rangeDropped[0].readings || []) if ((r.span || 1) === rangeDropped.length) survivors[0].readings = addReading(survivors[0].readings, spanned(r));
+                // A survivor's `conf` was overwritten above, so a fresh own reading takes the confidence of the word that reading came from.
+                const wonWords = winner === 'lstm' ? (oneToOne ? [wordB] : wordsBArr) : rangeA;
+                // A later survivor gets a list only where it already has one, since the losing reading on the first survivor spans it.
+                survivors.forEach((s, n) => {
+                  if (n > 0 && !s.readings) return;
+                  s.readings = ownFirst(s.readings, { source: sourceWon, text: s.text, conf: winner === 'lstm' ? wonWords[n].conf : (confOrig.get(s.id) ?? s.conf) });
+                });
+                survivors[0].readings = addReading(survivors[0].readings, spanned({ source: sourceLost, text: lostText, conf: Math.round(lostConfs.reduce((a, b) => a + b, 0) / lostConfs.length) }));
 
                 if (winner === 'lstm' && !oneToOne) break;
               }

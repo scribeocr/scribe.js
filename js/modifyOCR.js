@@ -1,6 +1,6 @@
 import ocr from './objects/ocrObjects.js';
 import { layoutBoxIncludes } from './objects/layoutObjects.js';
-import { calcBoxOverlap, getRandomAlphanum } from './utils/miscUtils.js';
+import { getRandomAlphanum } from './utils/miscUtils.js';
 
 /**
  * Adds lines from a new page to an existing page.
@@ -28,18 +28,16 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
     // (1) If the new line's bounding box has significant overlap with an existing line's bounding box, add to that line.
     // (2) If the new line's bounding box has vertical overlap with 1+ existing line's bounding box, add to the closest such line.
     // (3) Otherwise, create a new line.
-    let lineI = -1;
-
     let match;
     let matchXOverlap = 0;
     let matchXDist = 1e6;
 
-    let closestI = 0;
+    let closestI = -1;
     let closestMetric = 1e6;
     let afterClosest = true;
     let yDistMin = 1e6;
 
-    for (lineI = 0; lineI < pageB.lines.length; lineI++) {
+    for (let lineI = 0; lineI < pageB.lines.length; lineI++) {
       const line = pageB.lines[lineI];
 
       // Skip lines that are not horizontal for now.
@@ -76,9 +74,8 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
             match = line;
           }
         }
-        // If no match has been identified, the closest non-matching line needs to be identified.
-        // This allows the new line to be inserted at a location that makes sense.
-      } else if (!match) {
+        // The closest non-matching line is tracked over the whole page, since a match can still be rejected below and the new line then goes beside the closest line.
+      } else {
         // An ad-hoc distance metric is used, as the standard geometric distance would likely produce worse results for multi-column layouts.
         // xDist is 0 when there is overlap between x coordinates, and otherwise equal to the distance between the x coordinates.
         // yDist is calculated similarly, however is weighted 3x more.  The sum of xMetric and yMetric represents the total distance/penalty.
@@ -92,7 +89,7 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
         if (totalMetric < closestMetric) {
           closestMetric = totalMetric;
           closestI = lineI;
-          afterClosest = lineNewRot[3] > lineRot[3];
+          afterClosest = lineNewRot.bbox.top > lineRot.bbox.top;
         }
       }
     }
@@ -129,7 +126,7 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
         // Add to page data
         // Note: Words will appear correctly on the canvas (and in the pdf) regardless of whether they are in the right order.
         // However, it is still important to get the order correct (this makes evaluation easier, improves copy/paste functionality in some pdf readers, etc.)
-        if (wordBoxNew[0] > wordBox.left) {
+        if (wordBoxNew.left > wordBox.left) {
           words.splice(wordIndex + 1, 0, wordNew);
         } else {
           words.splice(wordIndex, 0, wordNew);
@@ -154,11 +151,13 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
         if (editWordIds) wordNew.id += getRandomAlphanum(3);
       }
 
+      const at = closestI < 0 ? pageB.lines.length : (afterClosest ? closestI + 1 : closestI);
+
       if (replaceFontSize) {
         // If this is the first/last line on the page, assume the textbox height is the "A" height.
         // This is done because when a first/last line is added manually, it is often page numbers,
         // and is often not the same font size as other lines.
-        if (lineI === 0 || lineI + 1 === pageB.lines.length) {
+        if (at === 0 || at === pageB.lines.length) {
           lineNew.ascHeight = lineNew.bbox.bottom - lineNew.bbox.top;
           lineNew.xHeight = null;
 
@@ -178,12 +177,7 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
       }
 
       lineNew.page = pageB;
-
-      if (afterClosest) {
-        pageB.lines.splice(lineI + 1, 0, lineNew);
-      } else {
-        pageB.lines.splice(lineI, 0, lineNew);
-      }
+      pageB.lines.splice(at, 0, lineNew);
     }
   }
 }
@@ -262,36 +256,56 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
  * @property {number} medium - Words some (but not all) comparators corroborated.
  * @property {number} low - Words no comparator corroborated.
  * @property {number} replaced - Words whose text a comparator plurality overwrote.
+ * @property {number} added - Words a comparator read where the base layer had none, added to the output.
+ * @property {number} spanned - Comparator readings that covered several base words of one line.
+ * @property {number} crossLine - Comparator words that straddled three or more base lines, kept out of every word's readings.
  */
 
 /**
- * Build a base-anchored consensus OCR layer by voting each base word against aligned comparator words.
+ * Build a consensus OCR layer from `base`, in which each word carries every layer's reading of it and a confidence set by how many comparators read it the same way.
  *
- * The base geometry and default text are authoritative; comparator agreement only raises a word's confidence,
- * except that a word no comparator matches may be overwritten by the comparators' plurality (kept low-confidence so it still surfaces for review).
- * Alignment is geometric, so all layers must share one coordinate space, as `doc.ocr[*]` layers do.
- * Inputs are not mutated; returned pages are fresh clones of `base`.
+ * Words are matched by position, so all layers must share one coordinate space, as `doc.ocr[*]` layers do.
  *
  * @param {Array<OcrPage>} base - The authoritative OCR layer (one page per document page).
  * @param {Array<Array<OcrPage>>} comparators - One or more comparator OCR layers, same page order.
  * @param {Object} [options]
+ * @param {string} [options.baseName] - The base layer's source name in `readings`.
+ *  Defaults to each page's reading source, its `textSource` with the built-in engine's labels folded to 'scribe'.
+ * @param {Array<string>} [options.names] - The comparators' source names in `readings`, in order.
+ *  Each defaults to its page's reading source.
  * @param {number} [options.confHigh=100] - Confidence for full corroboration.
  * @param {number} [options.confMed=80] - Confidence for partial corroboration.
- * @param {number} [options.confLow=50] - Confidence for none.
- * @param {number} [options.overlapThresh=0.5] - Min fraction of a comparator word's area inside a base word to align it.
- * @param {number} [options.replaceMinAgree=2] - Min comparators agreeing on a word to override the base.
+ * @param {number} [options.confLow=50] - Confidence for none, and for an added word.
+ * @param {number} [options.replaceMinAgree=2] - Min comparators agreeing on one reading to override the text of a base word that no comparator matches.
+ *  0 never overrides.
+ * @param {boolean} [options.addMissing=true] - Add comparator words at no base word to the output.
  * @returns {{ ocr: Array<OcrPage>, stats: ConsensusStats }}
  */
 export function buildConsensusLayer(base, comparators, options = {}) {
   const confHigh = options.confHigh ?? 100;
   const confMed = options.confMed ?? 80;
   const confLow = options.confLow ?? 50;
-  const overlapThresh = options.overlapThresh ?? 0.5;
   const replaceMinAgree = options.replaceMinAgree ?? 2;
+  const addMissing = options.addMissing ?? true;
 
   const nComparators = comparators.length;
   const stats = {
-    total: 0, high: 0, medium: 0, low: 0, replaced: 0,
+    total: 0, high: 0, medium: 0, low: 0, replaced: 0, added: 0, spanned: 0, crossLine: 0,
+  };
+  const fold = (/** @type {string} */ t) => ocr.asciiPunctuation(ocr.replaceLigatures(t));
+  /** @param {OcrWord} w */
+  const core = (w) => {
+    // `compareOCRPageImp` trims word boxes by the same amounts.
+    const trim = Math.round((w.bbox.bottom - w.bbox.top) * (w.visualCoords ? 0.1 : 0.25));
+    return {
+      left: w.bbox.left, right: w.bbox.right, top: w.bbox.top + trim, bottom: w.bbox.bottom - trim,
+    };
+  };
+  /** @param {bbox} a @param {bbox} b */
+  const overlaps = (a, b) => {
+    if (a.top > b.bottom || b.top > a.bottom) return false;
+    const common = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    return common > 0 && common >= 0.5 * Math.min(a.right - a.left, b.right - b.left);
   };
   /** @type {Array<OcrPage>} */
   const outPages = [];
@@ -303,46 +317,105 @@ export function buildConsensusLayer(base, comparators, options = {}) {
 
     // Clone so the source base layer is never mutated. Voting runs on the clone's own words/ids.
     const outPage = ocr.clonePage(basePage);
+    const baseName = options.baseName || ocr.readingSource(basePage);
     const baseWords = ocr.getPageWords(outPage);
+    const baseCores = baseWords.map(core);
+    /** @param {OcrWord} w @param {string} name */
+    const choices = (w, name) => (w.readings || []).filter((r) => (r.rank || 1) > 1).map((r) => ({ ...r, source: name }));
+    for (const w of baseWords) {
+      w.readings = [{ source: baseName, text: w.text, conf: w.conf }, ...choices(w, baseName)];
+      // `reached` below reads a set `compTruth` as the mark of an earlier word's span reading, so the clone's flags are cleared before any word is scored.
+      w.compTruth = false;
+      w.matchTruth = false;
+    }
 
-    // Assign each comparator's words to the base word each most sits inside.
-    // Per comparator, map base-word id -> the assigned comparator words, kept with their left edge so we can join in reading order.
-    // A base word absent from the map means that comparator abstains for it.
-    const assignments = comparators.map((layer) => {
-      /** @type {Map<string, Array<{ left: number, text: string }>>} */
-      const map = new Map();
+    const perComparator = comparators.map((layer, c) => {
       const compPage = layer[i];
-      if (!compPage) return map;
-      for (const cWord of ocr.getPageWords(compPage)) {
-        let bestId = null;
-        let bestOverlap = -1;
-        for (const bWord of baseWords) {
-          const o = calcBoxOverlap(cWord.bbox, bWord.bbox);
-          if (o > bestOverlap && o >= overlapThresh) { bestOverlap = o; bestId = bWord.id; }
-        }
-        if (bestId !== null) {
-          const arr = map.get(bestId) || [];
-          arr.push({ left: cWord.bbox.left, text: cWord.text });
-          map.set(bestId, arr);
-        }
+      const name = options.names?.[c] || (compPage ? ocr.readingSource(compPage) : `comparator${c}`);
+      /** @type {Map<string, Array<{left: number, text: string, conf: number, choices: Array<import('./objects/ocrObjects.js').Reading>}>>} */
+      const pieces = new Map();
+      /** @type {Array<{first: string, span: number, text: string, conf: number}>} */
+      const spans = [];
+      /** @type {Array<OcrWord>} */
+      const unmatched = [];
+      if (!compPage) {
+        return {
+          name, pieces, spans, unmatched,
+        };
       }
-      return map;
+      for (const cWord of ocr.getPageWords(compPage)) {
+        const cCore = core(cWord);
+        const hits = [];
+        for (let k = 0; k < baseWords.length; k++) if (overlaps(cCore, baseCores[k])) hits.push(k);
+        if (hits.length === 0) { unmatched.push(cWord); continue; }
+        // A comparator word that straddles three or more lines, such as a column of numbers read as one vertical word, is no reading of any of them.
+        const lineOverlap = new Map();
+        for (const k of hits) {
+          const b = baseCores[k];
+          const area = Math.max(0, Math.min(cCore.right, b.right) - Math.max(cCore.left, b.left)) * Math.max(0, Math.min(cCore.bottom, b.bottom) - Math.max(cCore.top, b.top));
+          lineOverlap.set(baseWords[k].line, (lineOverlap.get(baseWords[k].line) || 0) + area);
+        }
+        if (lineOverlap.size > 2) { stats.crossLine += 1; continue; }
+        const line = [...lineOverlap.entries()].sort((a, b) => b[1] - a[1])[0][0];
+        const lineHits = hits.filter((k) => baseWords[k].line === line);
+        if (lineHits.length > 1) {
+          spans.push({
+            first: baseWords[lineHits[0]].id, span: lineHits.length, text: cWord.text, conf: cWord.conf,
+          });
+          continue;
+        }
+        hits.splice(0, hits.length, lineHits[0]);
+        const { id } = baseWords[hits[0]];
+        const arr = pieces.get(id) || [];
+        arr.push({
+          left: cWord.bbox.left, text: cWord.text, conf: cWord.conf, choices: choices(cWord, name),
+        });
+        pieces.set(id, arr);
+      }
+      return {
+        name, pieces, spans, unmatched,
+      };
     });
 
-    for (const bWord of baseWords) {
+    for (let bi = 0; bi < baseWords.length; bi++) {
+      const bWord = baseWords[bi];
       stats.total += 1;
-
-      // Each comparator's word-at-b: its assigned words joined left-to-right, or absent = abstain.
-      /** @type {Array<string>} */
-      const present = [];
+      const ownKey = fold(bWord.text);
       let matches = 0;
-      for (let k = 0; k < nComparators; k++) {
-        const arr = assignments[k].get(bWord.id);
-        if (!arr || arr.length === 0) continue;
-        const text = arr.slice().sort((a, b) => a.left - b.left).map((x) => x.text).join('');
-        present.push(text);
-        if (text === bWord.text) matches += 1;
+      let read = 0;
+      let spansHere = 0;
+      /** @type {Map<string, {text: string, n: number}>} */
+      const counts = new Map();
+      for (const comp of perComparator) {
+        const arr = comp.pieces.get(bWord.id);
+        if (arr && arr.length) {
+          const text = arr.slice().sort((a, b) => a.left - b.left).map((x) => x.text).join('');
+          const conf = Math.round(arr.reduce((a, x) => a + x.conf, 0) / arr.length);
+          const extra = arr.length === 1 ? arr[0].choices : [];
+          /** @type {Array<import('./objects/ocrObjects.js').Reading>} */ (bWord.readings).push({ source: comp.name, text, conf }, ...extra);
+          read += 1;
+          const key = fold(text);
+          if (key === ownKey) matches += 1;
+          else if (counts.has(key)) counts.get(key).n += 1;
+          else counts.set(key, { text, n: 1 });
+        }
+        for (const s of comp.spans) {
+          if (s.first !== bWord.id) continue;
+          /** @type {Array<import('./objects/ocrObjects.js').Reading>} */ (bWord.readings).push({
+            source: comp.name, text: s.text, conf: s.conf, span: s.span,
+          });
+          spansHere += 1;
+          for (let d = 1; d < s.span && bi + d < baseWords.length; d++) {
+            baseWords[bi + d].compTruth = true;
+            baseWords[bi + d].matchTruth = false;
+          }
+          stats.spanned += 1;
+        }
       }
+
+      const reached = bWord.compTruth;
+      bWord.compTruth = reached || read > 0 || spansHere > 0;
+      bWord.matchTruth = !reached && read > 0 && counts.size === 0 && spansHere === 0;
 
       if (matches === nComparators) {
         bWord.conf = confHigh;
@@ -354,21 +427,68 @@ export function buildConsensusLayer(base, comparators, options = {}) {
         bWord.conf = confLow;
         stats.low += 1;
         // Replace the base text with the comparators' plurality word, but only if a strict maximum of at least `replaceMinAgree` comparators agree on it.
-        /** @type {Map<string, number>} */
-        const counts = new Map();
-        for (const t of present) counts.set(t, (counts.get(t) || 0) + 1);
-        let bestText = null;
-        let bestCount = 0;
-        let tie = false;
-        for (const [t, c] of counts) {
-          if (c > bestCount) { bestCount = c; bestText = t; tie = false; } else if (c === bestCount) { tie = true; }
+        if (replaceMinAgree > 0) {
+          let bestText = null;
+          let bestCount = 0;
+          let tie = false;
+          for (const { text: t, n: c } of counts.values()) {
+            if (c > bestCount) { bestCount = c; bestText = t; tie = false; } else if (c === bestCount) { tie = true; }
+          }
+          if (bestText !== null && bestCount >= replaceMinAgree && !tie) {
+            bWord.text = bestText;
+            // The `readings` contract puts the reading equal to `text` first.
+            const key = fold(bestText);
+            const list = /** @type {Array<import('./objects/ocrObjects.js').Reading>} */ (bWord.readings);
+            bWord.readings = [...list.filter((r) => !r.span && fold(r.text) === key), ...list.filter((r) => r.span || fold(r.text) !== key)];
+            bWord.chars = null;
+            bWord.styleRuns = undefined;
+            stats.replaced += 1;
+          }
         }
-        if (bestText !== null && bestCount >= replaceMinAgree && !tie) {
-          bWord.text = bestText;
-          bWord.chars = null;
-          bWord.styleRuns = undefined;
-          stats.replaced += 1;
+      }
+    }
+
+    if (addMissing) {
+      /** @type {Array<{word: OcrWord, core: bbox, dissent: boolean}>} */
+      const addedWords = [];
+      // One counter across comparators, so two layers under one name never give their added words the same id.
+      let added = 0;
+      for (const comp of perComparator) {
+        if (!comp.unmatched.length) continue;
+        const extra = new ocr.OcrPage(outPage.n, { ...outPage.dims });
+        /** @type {Map<OcrLine, OcrLine>} */
+        const linesNew = new Map();
+        for (const cWord of comp.unmatched) {
+          const cCore = core(cWord);
+          const hit = addedWords.find((a) => overlaps(cCore, a.core));
+          if (hit) {
+            const list = /** @type {Array<import('./objects/ocrObjects.js').Reading>} */ (hit.word.readings);
+            list.push({ source: comp.name, text: cWord.text, conf: cWord.conf }, ...choices(cWord, comp.name));
+            hit.dissent = hit.dissent || fold(cWord.text) !== fold(hit.word.text);
+            hit.word.compTruth = true;
+            hit.word.matchTruth = !hit.dissent;
+            continue;
+          }
+          let lineNew = linesNew.get(cWord.line);
+          if (!lineNew) {
+            lineNew = new ocr.OcrLine(extra, { ...cWord.line.bbox }, cWord.line.baseline.slice(), cWord.line.ascHeight, cWord.line.xHeight);
+            linesNew.set(cWord.line, lineNew);
+            extra.lines.push(lineNew);
+          }
+          const wordNew = ocr.cloneWord(cWord);
+          wordNew.line = lineNew;
+          wordNew.conf = confLow;
+          wordNew.compTruth = false;
+          wordNew.matchTruth = false;
+          added += 1;
+          wordNew.id = `word_${outPage.n + 1}_${comp.name}_${added}`;
+          wordNew.readings = [{ source: comp.name, text: cWord.text, conf: cWord.conf }, ...choices(cWord, comp.name)];
+          lineNew.words.push(wordNew);
+          addedWords.push({ word: wordNew, core: core(wordNew), dissent: false });
+          stats.added += 1;
         }
+        for (const lineNew of extra.lines) ocr.updateLineBbox(lineNew);
+        combineOCRPage(extra, outPage, /** @type {PageMetrics} */ ({ angle: outPage.angle || 0, dims: outPage.dims }), false, false);
       }
     }
 

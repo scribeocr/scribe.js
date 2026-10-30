@@ -409,6 +409,24 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(allText).toContain('showy flowers');
   });
 
+  test('Lines recognized again beside the infobox enter the body text, not the infobox', async () => {
+    // Regression: the scan for the closest line stopped at the first line at the same height.
+    const page = scribe.utils.ocr.clonePage(doc.ocr.active[0]);
+    const extra = new scribe.utils.ocr.OcrPage(0, { ...page.dims });
+    for (const line of [page.lines.splice(38, 1)[0], page.lines.splice(21, 1)[0]].reverse()) {
+      const lineNew = scribe.utils.ocr.cloneLine(line);
+      lineNew.page = extra;
+      extra.lines.push(lineNew);
+    }
+    scribe.combineOCRPage(extra, page, doc.pageMetrics[0]);
+    expect(page.lines.length, 'both lines rejoin the page as lines of their own').toBe(44);
+    expect(scribe.utils.ocr.getLineText(page.lines[0]), 'the infobox title keeps its own text, with no body line at its height merged in').toBe('Iris');
+    expect(scribe.utils.ocr.getLineText(page.lines[21]), 'a body line at the height of the infobox title enters the body text as its own line')
+      .toBe('showy flowers. As well as being the scientific name, iris is also');
+    expect(scribe.utils.ocr.getLineText(page.lines[38]), 'a body line at the height of an infobox row enters the body text, not the infobox')
+      .toBe('simple or branched, solid or hollow, and flattened or have a');
+  });
+
   test('Page 1 surfaces the literal fill color and opacity 1 for visible text', async () => {
     // Text-native PDF, default `Tr=0`. Page 0 mixes default-black body text
     // (236 words) with grey link/caption words (#666666, 4 words).

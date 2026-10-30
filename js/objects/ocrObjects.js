@@ -178,6 +178,19 @@ export function WordDebugInfo() {
 }
 
 /**
+ * One reading of a word by one source.
+ * @typedef {Object} Reading
+ * @property {string} source - The name of the engine or layer that read the word.
+ * @property {string} text - The text the source read.
+ * @property {number} conf - The source's own confidence in this reading, 0 to 100.
+ * @property {number} [rank] - The source's own order when it offers several readings: 1 is what it output, 2 its next choice, and so on.
+ *   Absent means 1.
+ * @property {number} [span] - The number of consecutive words, starting at this one, that the reading covers.
+ *   Absent means 1.
+ * @property {string} [msg] - A free-form note from the source.
+ */
+
+/**
  * @param {OcrLine} line
  * @param {string} id
  * @param {string} text
@@ -187,12 +200,11 @@ export function OcrWord(line, id, text, bbox) {
   /** @type {string} */
   this.text = text;
   /**
-   * Other readings of the word. Usually `undefined`. Usage varies by OCR model.
-   * `span` is the number of consecutive words, starting at this one, that the reading replaces.
-   * `source` and `msg` are optional fields that may be used to communicate the source and arbitrary data.
-   * @type {Array<{source?: string, text: string, conf: number, span: number, msg?: string}>|undefined}
+   * The sources' readings of this word where they differ, the one equal to `text` first.
+   * A consensus layer records every word's readings, agreed or not.
+   * @type {Array<Reading>|undefined}
    */
-  this.alt = undefined;
+  this.readings = undefined;
   /** @type {Style} */
   this.style = {
     font: null,
@@ -217,9 +229,9 @@ export function OcrWord(line, id, text, bbox) {
   this.conf = 0;
   /** @type {bbox} */
   this.bbox = bbox;
-  /** @type {boolean} */
+  /** @type {boolean} Whether another source read this word's position, in the word's last comparison. */
   this.compTruth = false;
-  /** @type {boolean} */
+  /** @type {boolean} Whether every source compared at this word, in its last comparison, read it as `text`. */
   this.matchTruth = false;
   /** @type {string} */
   this.id = id;
@@ -620,6 +632,42 @@ function asciiPunctuation(text) {
 }
 
 /**
+ * The source name a page's own readings carry.
+ * @param {OcrPage} page
+ */
+export const readingSource = (page) => (page.textSource === 'scribe.js' || page.textSource === 'tesseract' ? 'scribe' : (page.textSource || 'unknown'));
+
+/**
+ * The distinct readings of a word, with the sources behind each.
+ * Two readings share a group when the comparison function counts them as equal and they cover the same number of words.
+ * The group holding `word.text` comes first and is marked `own`.
+ * @param {OcrWord} word
+ * @returns {Array<{text: string, span: number, own: boolean, readings: Array<Reading>}>}
+ */
+function groupReadings(word) {
+  const key = (/** @type {string} */ text, /** @type {number} */ span) => `${span}\u0000${asciiPunctuation(replaceLigatures(text))}`;
+  const ownKey = key(word.text, 1);
+  /** @type {Map<string, {text: string, span: number, own: boolean, readings: Array<Reading>}>} */
+  const groups = new Map();
+  for (const r of word.readings || []) {
+    const span = r.span || 1;
+    const k = key(r.text, span);
+    let g = groups.get(k);
+    if (!g) {
+      g = {
+        text: k === ownKey ? word.text : r.text, span, own: k === ownKey, readings: [],
+      };
+      groups.set(k, g);
+    }
+    g.readings.push(r);
+  }
+  const list = [...groups.values()];
+  const i = list.findIndex((g) => g.own);
+  if (i > 0) list.unshift(list.splice(i, 1)[0]);
+  return list;
+}
+
+/**
  * The ligature codepoint that is, or expands to, `text`.
  * @param {string} text
  * @returns {?string}
@@ -844,7 +892,7 @@ function cloneLine(line) {
  */
 function cloneWord(word) {
   const wordNew = new OcrWord(word.line, word.id, word.text, { ...word.bbox });
-  wordNew.alt = word.alt ? word.alt.map((a) => ({ ...a })) : undefined;
+  wordNew.readings = word.readings ? word.readings.map((r) => ({ ...r })) : undefined;
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
   if (word.styleRuns) wordNew.styleRuns = word.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } }));
@@ -1275,6 +1323,24 @@ export const updateOcrFormat = (pages) => {
         // Older .scribe files carry `poly` on every word, so drop it here or it re-exports forever.
         // @ts-ignore
         delete word.poly;
+        // @ts-ignore
+        if (word.alt) {
+          const own = readingSource(page);
+          /** @type {Array<Reading>} */
+          const readings = [{
+            source: own, text: word.text, conf: word.conf,
+          }];
+          // @ts-ignore
+          word.alt.forEach((a, i) => {
+            const theirs = a.source && a.source !== own;
+            readings.push({
+              source: a.source || own, text: a.text, conf: a.conf, ...(theirs ? {} : { rank: i + 2 }), ...(a.span > 1 ? { span: a.span } : {}), ...(a.msg ? { msg: a.msg } : {}),
+            });
+          });
+          word.readings = readings;
+          // @ts-ignore
+          delete word.alt;
+        }
       });
     });
   });
@@ -1318,6 +1384,8 @@ const ocr = {
   deletePageWords,
   replaceLigatures,
   asciiPunctuation,
+  groupReadings,
+  readingSource,
   ligatureForText,
   scaleLine,
   scalePage,

@@ -60,7 +60,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages, doc.truth.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.ocrTiming)) arrs.push(doc.ocrTiming);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
@@ -199,6 +199,19 @@ function snapshotPage(doc, i) {
     for (const g of fillShapes.glyphBoxes) g.id = wordIdMap.get(g.id) || g.id;
   }
 
+  /** @type {?TruthPageRecord} */
+  const truth = cloneAt(doc.truth.pages) ?? null;
+  if (truth) {
+    for (const key of /** @type {const} */ (['words', 'unresolved'])) {
+      const src = truth[key];
+      if (!src) continue;
+      /** @type {Record<string, any>} */
+      const remapped = {};
+      for (const [id, entry] of Object.entries(src)) remapped[wordIdMap.get(id) || id] = entry;
+      truth[key] = remapped;
+    }
+  }
+
   return {
     ocr,
     ocrRaw,
@@ -209,6 +222,7 @@ function snapshotPage(doc, i) {
     contentEdits,
     nativeText,
     fillShapes,
+    truth,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     ocrTiming: cloneAt(doc.ocrTiming),
@@ -773,6 +787,13 @@ export class ScribeDoc {
     this.nativeText = { pages: [] };
 
     /**
+     * Per-page ground-truth process records.
+     * Serialized only into the `.scribe` session block, so a default export omits it.
+     * @type {{pages: Array<?TruthPageRecord>}}
+     */
+    this.truth = { pages: [] };
+
+    /**
      * Characters recorded against Type 3 glyph outlines, keyed by the glyph's path hash.
      * The parser's `type3GlyphMappings` option and the PDF export use the same key.
      * Written through `setType3GlyphMappings`, which applies each change to the words in place.
@@ -1077,6 +1098,7 @@ export class ScribeDoc {
       spliceFull(this.contentEdits.pages, snapshots.map((b) => b.contentEdits ?? []));
       spliceFull(this.nativeText.pages, snapshots.map((b) => b.nativeText ?? {}));
       spliceFull(this.fillShapes.pages, snapshots.map((b) => b.fillShapes ?? null));
+      spliceFull(this.truth.pages, snapshots.map((b) => b.truth ?? null));
       spliceFull(this.vis, snapshots.map((b) => b.vis));
       spliceFull(this.ocrTiming, snapshots.map((b) => b.ocrTiming));
       spliceFull(this.convertPageWarn, snapshots.map((b) => b.convertPageWarn));
@@ -1261,6 +1283,7 @@ export class ScribeDoc {
     this.nativeText.pages.length = 0;
     this.type3GlyphMappings.clear();
     this.fillShapes.pages.length = 0;
+    this.truth.pages.length = 0;
     this.assistantChats.chats.length = 0;
     this.redactions.terms.length = 0;
     this.redactions.matchCase = false;

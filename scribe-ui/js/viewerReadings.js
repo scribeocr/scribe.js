@@ -1,12 +1,12 @@
 /**
- * Proof mode's readings list, which shows the selected word's other readings (`OcrWord.alt`).
+ * Proof mode's readings list.
  */
 import scribe from '../../scribe.js';
 // eslint-disable-next-line import/no-cycle
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 
 /** @typedef {import('../../js/objects/ocrObjects.js').OcrWord} OcrWord */
-/** @typedef {NonNullable<OcrWord['alt']>[number]} Reading */
+/** @typedef {ReturnType<typeof scribe.utils.ocr.groupReadings>[number]} ReadingGroup */
 
 /** @type {?HTMLDivElement} */
 let listNode = null;
@@ -32,10 +32,11 @@ const TOKENS = ['--scribe-surface', '--scribe-line', '--scribe-line-strong', '--
 const GRIP_SVG = '<svg viewBox="0 0 18 6" aria-hidden="true"><circle cx="4" cy="3" r="1.15" fill="currentColor"/>'
   + '<circle cx="9" cy="3" r="1.15" fill="currentColor"/><circle cx="14" cy="3" r="1.15" fill="currentColor"/></svg>';
 
-const readingRun = (word, reading) => {
+/** @param {OcrWord} word @param {ReadingGroup} group */
+const readingRun = (word, group) => {
   const lineWords = word.line.words.slice().sort((a, b) => a.bbox.left - b.bbox.left);
   const i = lineWords.indexOf(word);
-  return lineWords.slice(i, i + (reading.span || 1));
+  return lineWords.slice(i, i + (group.span || 1));
 };
 
 const uiWordFor = (viewer, word) => viewer.getUiWords().find((w) => w.word === word) || null;
@@ -57,6 +58,9 @@ function ensureList() {
     .scribe-readings-key { flex: 0 0 auto; min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box; border: 1px solid var(--scribe-line-strong, #d7dce4); border-radius: 3px;
       font: 600 10.5px/14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--scribe-ink-3, #98a1b0); text-align: center; }
     .scribe-readings-text { flex: 1 1 auto; }
+    .scribe-readings-row.current { cursor: default; }
+    .scribe-readings-row.current:hover { background: none; }
+    .scribe-readings-sources { display: block; font-size: 10.5px; line-height: 1.3; color: var(--scribe-ink-3, #98a1b0); white-space: normal; }
     .scribe-readings-text mark { background: var(--scribe-accent-wash, rgba(28, 98, 212, .14)); color: inherit; border-radius: 2px; box-shadow: 0 0 0 1px var(--scribe-accent-wash, rgba(28, 98, 212, .14)); }
     .scribe-readings-hint { padding: 3px 10px 1px; margin-top: 3px; border-top: 1px solid var(--scribe-line, #e4e8ef); font-size: 10.5px; color: var(--scribe-ink-3, #98a1b0); white-space: nowrap; }
     .scribe-readings-bracket { position: absolute; pointer-events: none; z-index: 2; box-sizing: border-box;
@@ -83,23 +87,25 @@ function ensureList() {
   });
   listNode.addEventListener('click', (e) => {
     const row = /** @type {HTMLElement} */ (e.target).closest('.scribe-readings-row');
-    if (row) pick(Number(row.dataset.i));
+    if (row && row.dataset.i !== undefined) pick(Number(row.dataset.i));
   });
   listNode.addEventListener('mouseover', (e) => {
     const row = /** @type {HTMLElement} */ (e.target).closest('.scribe-readings-row');
     if (!row || !listWord) return;
+    if (row.dataset.i === undefined) { endPreview(); return; }
     const index = Number(row.dataset.i);
     if (previewState?.index !== index) startPreview(index);
   });
   listNode.addEventListener('mouseleave', () => endPreview());
 }
 
+/** @param {number} index */
 function pick(index) {
   if (!listWord || !listViewer) return;
-  // The preview ends first because `applyReading` removes the picked reading from the word's readings by identity, and the stand-in's readings are copies.
+  // The preview ends first, since it swapped a stand-in word into the UI object.
   endPreview();
-  const reading = listWord.word.alt?.[index];
-  if (reading) applyReading(listViewer, listWord, reading);
+  const group = scribe.utils.ocr.groupReadings(listWord.word).filter((g) => !g.own)[index];
+  if (group) applyReading(listViewer, listWord, group);
 }
 
 function render() {
@@ -111,18 +117,22 @@ function render() {
   grip.title = 'Drag';
   grip.innerHTML = GRIP_SVG;
   listNode.appendChild(grip);
-  (word.alt || []).forEach((reading, i) => {
+  // The other readings are numbered in render order, which is the order `pick` and the context menu's rows use.
+  const groups = scribe.utils.ocr.groupReadings(word);
+  let others = 0;
+  groups.forEach((group) => {
     const row = document.createElement('div');
-    row.className = 'scribe-readings-row';
-    row.dataset.i = String(i);
-    if (i < 9) {
+    row.className = group.own ? 'scribe-readings-row current' : 'scribe-readings-row';
+    const i = group.own ? -1 : others++;
+    if (i >= 0) row.dataset.i = String(i);
+    if (i >= 0 && i < 9) {
       const key = document.createElement('span');
       key.className = 'scribe-readings-key';
       key.textContent = String(i + 1);
       row.appendChild(key);
     }
-    const from = [...readingRun(word, reading).map((w) => w.text).join(' ')];
-    const to = [...reading.text];
+    const from = [...readingRun(word, group).map((w) => w.text).join(' ')];
+    const to = [...group.text];
     const m = from.length; const n = to.length;
     const lcs = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
     for (let a = m - 1; a >= 0; a--) for (let b = n - 1; b >= 0; b--) lcs[a][b] = from[a] === to[b] ? lcs[a + 1][b + 1] + 1 : Math.max(lcs[a + 1][b], lcs[a][b + 1]);
@@ -142,6 +152,10 @@ function render() {
     }
     while (b < n) push(to[b++], true);
     flush();
+    const sources = document.createElement('span');
+    sources.className = 'scribe-readings-sources';
+    sources.textContent = group.readings.map((r) => `${r.source}${r.rank && r.rank > 1 ? ` (choice ${r.rank})` : ''} ${Math.round(r.conf)}`).join(' · ');
+    text.appendChild(sources);
     row.appendChild(text);
     listNode.appendChild(row);
   });
@@ -179,11 +193,11 @@ function startPreview(index) {
   if (!listWord || !listViewer) return;
   const itext = listWord;
   const { word } = itext;
-  const reading = word.alt?.[index];
-  if (!reading) return;
-  const run = readingRun(word, reading);
+  const group = scribe.utils.ocr.groupReadings(word).filter((g) => !g.own)[index];
+  if (!group) return;
+  const run = readingRun(word, group);
   const standIn = scribe.utils.ocr.cloneWord(word);
-  standIn.text = reading.text;
+  standIn.text = group.text;
   previewState = {
     itext, index, word, hidden: [],
   };
@@ -221,20 +235,26 @@ function endPreview() {
 /**
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {UiOcrWord} itext
- * @param {Reading} reading
+ * @param {ReadingGroup} group
  */
-function applyReading(viewer, itext, reading) {
+function applyReading(viewer, itext, group) {
   endPreview();
   dismissedWord = itext;
   const { word } = itext;
-  const run = readingRun(word, reading);
-  const previous = { text: run.map((w) => w.text).join(' '), conf: word.conf, span: 1 };
-  const alt = [previous, ...(word.alt || []).filter((r) => r !== reading)].sort((a, b) => b.conf - a.conf);
+  const run = readingRun(word, group);
   if (run.length > 1) {
     const merged = scribe.utils.mergeOcrWords(run);
-    merged.text = reading.text;
-    merged.conf = reading.conf;
-    merged.alt = alt;
+    merged.text = group.text;
+    merged.conf = 100;
+    // The `readings` contract puts the reading equal to `text` first.
+    const whole = (word.readings || []).filter((r) => (r.span || 1) === run.length).sort((a, b) => Number(group.readings.includes(b)) - Number(group.readings.includes(a)));
+    const stripped = whole.map((r) => { const rest = { ...r }; delete rest.span; return rest; });
+    const ownGroup = scribe.utils.ocr.groupReadings(word).find((g) => g.own);
+    merged.readings = [...stripped, {
+      source: ownGroup ? ownGroup.readings[0].source : scribe.utils.ocr.readingSource(word.line.page),
+      text: run.map((w) => w.text).join(' '),
+      conf: Math.round(run.reduce((sum, w) => sum + (scribe.utils.ocr.groupReadings(w).find((g) => g.own)?.readings[0].conf ?? w.conf), 0) / run.length),
+    }];
     merged.styleRuns = undefined;
     const lineWords = word.line.words;
     lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
@@ -250,15 +270,26 @@ function applyReading(viewer, itext, reading) {
     });
     return;
   }
-  word.text = reading.text;
-  word.conf = reading.conf;
-  word.alt = alt;
+  word.text = group.text;
+  word.conf = 100;
   word.styleRuns = undefined;
+  // The `readings` contract puts the reading equal to `text` first.
+  word.readings = [...group.readings, ...(word.readings || []).filter((r) => !group.readings.includes(r))];
   const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer.state.displayMode,
     scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
   itext.fill(fill);
   itext.opacity(opacity);
   UiText.updateWordCanvas(itext);
+}
+
+/**
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {UiOcrWord} itext
+ * @param {number} index - The reading's index among those that differ from the word's text, in the readings list's order.
+ */
+export function pickReading(viewer, itext, index) {
+  const group = scribe.utils.ocr.groupReadings(itext.word).filter((g) => !g.own)[index];
+  if (group) applyReading(viewer, itext, group);
 }
 
 /** @param {import('../viewer.js').ScribeViewer} viewer */
@@ -267,7 +298,7 @@ export function readingsListSync(viewer) {
   const selected = viewer.CanvasSelection.getUiWords().filter((w) => w.selected);
   const itext = selected.length === 1 ? selected[0] : null;
   if (itext !== dismissedWord) dismissedWord = null;
-  if (!UiText.enableEditing || !itext || !itext.el || !itext.word.alt?.length || UiText.input || itext === dismissedWord) {
+  if (!UiText.enableEditing || !itext || !itext.el || !scribe.utils.ocr.groupReadings(itext.word).some((g) => !g.own) || UiText.input || itext === dismissedWord) {
     if (!listViewer || listViewer === viewer) readingsListHide();
     return;
   }
