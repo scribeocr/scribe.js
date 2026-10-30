@@ -1845,6 +1845,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-app-menu-subchev { margin-left: auto; padding-left: 26px; font-size: 14px; line-height: 1; color: var(--scribe-ink-3); }
     .${r} .scribe-app-menu-sub { display: none; left: calc(100% - 6px); top: -5px; min-width: 190px; }
     .${r} .scribe-app-menu-subwrap.sub-open .scribe-app-menu-sub { display: block; }
+    .${r} .scribe-app-menu-subwrap.disabled { pointer-events: none; }
+    .${r} .scribe-app-menu-subwrap.disabled .scribe-app-menu-item { color: var(--scribe-ink-3); }
 
     .${r} .scribe-fs-pal { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30;
       background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px;
@@ -4932,6 +4934,29 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-recog-desk { display: inline-flex; align-items: center; gap: 4px; }
     .${r} .scribe-recog-desk .cr-icon-button { width: 28px; height: 28px; }
     .${r} .scribe-recog-desk .cr-icon-button > svg { width: 28px; height: 28px; display: block; }
+    .${r} .scribe-proof-tools { gap: 2px; }
+    .${r} .scribe-proof-step { width: 24px; height: 24px; border-radius: 6px; align-items: center; justify-content: center; }
+    .${r} .scribe-proof-step > svg { width: 18px; height: 18px; display: block; }
+    .${r} .scribe-proof-follow { display: inline-flex; align-items: center; gap: 7px; padding: 3px 8px 3px 6px; border-radius: 6px; font-size: 12px; color: var(--scribe-ink); cursor: pointer; white-space: nowrap; outline: 0; }
+    .${r} .scribe-proof-follow:hover { background: var(--scribe-active); }
+    .${r} .scribe-proof-follow:focus-visible { box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-proof-follow .scribe-app-menu-switch { margin-left: 0; }
+    .${r} .scribe-proof-follow.on .scribe-app-menu-switch { background: var(--scribe-accent); }
+    .${r} .scribe-proof-follow.on .scribe-app-menu-switch::after { transform: translateX(13px); }
+    .${r} .scribe-proof-viewseg { display: inline-flex; border: 1px solid var(--scribe-line-strong); border-radius: 6px; overflow: hidden; flex: none; margin: 0 2px; }
+    .${r} .scribe-proof-viewbtn { border: none; background: var(--scribe-surface); color: var(--scribe-ink-2); font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding: 4.5px 10px; cursor: pointer; }
+    .${r} .scribe-proof-viewbtn + .scribe-proof-viewbtn { border-left: 1px solid var(--scribe-line-strong); }
+    .${r} .scribe-proof-viewbtn.on { background: var(--scribe-accent); color: var(--scribe-accent-ink); cursor: default; }
+    .${r}.scribe-proof-textonly .scribe-layer-image { visibility: hidden; }
+    .${r}.scribe-proof-textonly .scribe-proof-peek .scribe-layer-image { visibility: visible; }
+    /* The page stays white in both themes, so the page and its ink take literal colors. */
+    /* The page's low-res preview is an inline background image on the container, so only a forced rule keeps it off. */
+    .${r}.scribe-proof-textonly .scribe-page { background-image: none !important; background-color: #fff; }
+    .${r}.scribe-proof-textonly .scribe-word { color: #141414 !important; opacity: 1 !important; }
+    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--scribe-desc, 0px) - 2px / var(--scribe-zoom, 1)); border-bottom: calc(2.5px / var(--scribe-zoom, 1)) solid var(--scribe-proof-rule); pointer-events: none; }
+    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-rule: #ff0000; }
+    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-rule: #ffc800; }
+    .${r} .scribe-proof-count { font-size: 12px; color: var(--scribe-ink); font-variant-numeric: tabular-nums; min-width: 9.5ch; text-align: center; padding: 0 2px; white-space: nowrap; }
     .${r} .scribe-recog-status { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
     .${r} .scribe-mode-banner-settings { display: inline-flex; align-items: center; gap: 2px; }

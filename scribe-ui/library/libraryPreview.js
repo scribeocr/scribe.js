@@ -146,6 +146,7 @@ export function createPreview({
       initialPage: pageN,
       window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
       name: titleOf(relPath),
+      pdfType: entry.pdfType ?? null,
       raster: (n) => sessions.raster(ref, n, true),
       render: (n, width) => sessions.renderAt(ref, n, width),
       ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),

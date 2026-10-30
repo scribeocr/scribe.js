@@ -1,6 +1,5 @@
 // Debug menu: developer-only tools, installed only when `DEBUG_MENU` in scribe-ui/devFlags.js is on and stripped from public builds.
 import { UiText } from '../viewerWordObjects.js';
-import { createDropdown } from './dropdown.js';
 import { makeOutlineNode } from '../../../js/objects/outlineObjects.js';
 import { saveAs } from '../../../js/utils/miscUtils.js';
 import { calcEvalStatsDoc } from '../../../js/recognizeConvert.js';
@@ -17,22 +16,6 @@ const DOC_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
 /** Download arrow, matching the app menu's own Export PDF icon. */
 const EXPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
   + '<path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M5 19h14"/></svg>';
-
-/**
- * Every format the exporter writes.
- * @type {Array<{format: 'pdf'|'docx'|'xlsx'|'html'|'txt'|'md'|'hocr'|'alto'|'scribe', label: string}>}
- */
-const EXPORT_FORMATS = [
-  { format: 'pdf', label: 'PDF (.pdf)' },
-  { format: 'docx', label: 'Word (.docx)' },
-  { format: 'xlsx', label: 'Excel (.xlsx)' },
-  { format: 'html', label: 'HTML (.html)' },
-  { format: 'txt', label: 'Text (.txt)' },
-  { format: 'md', label: 'Markdown (.md)' },
-  { format: 'hocr', label: 'hOCR (.hocr)' },
-  { format: 'alto', label: 'ALTO XML (.xml)' },
-  { format: 'scribe', label: 'Scribe session (.scribe)' },
-];
 
 /**
  * Append a "Debug" section to the app menu: a header row plus dev-only tools.
@@ -72,62 +55,6 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     }
   });
 
-  const exportMenu = document.createElement('div');
-  exportMenu.className = 'scribe-app-menu';
-  exportMenu.style.display = 'none';
-  exportMenu.appendChild(makeHeader('Export as'));
-  appMenu.menuWrap.appendChild(exportMenu);
-
-  for (const { format, label } of EXPORT_FORMATS) {
-    const row = document.createElement('div');
-    row.className = 'scribe-app-menu-item';
-    row.role = 'button';
-    row.tabIndex = 0;
-    const icon = document.createElement('span');
-    icon.className = 'scribe-app-menu-ic';
-    icon.innerHTML = EXPORT_SVG;
-    row.append(icon, document.createTextNode(label));
-    row.addEventListener('mousedown', (e) => e.preventDefault());
-    row.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const doc = viewer.doc;
-      if (!doc || doc.pageMetrics.length === 0) return;
-      row.classList.add('busy');
-      /** @type {import('../../../js/export/export.js').ExportOptions} */
-      const options = {};
-      if (format === 'pdf') {
-        options.displayMode = 'invis';
-        options.addOverlay = true;
-      } else if (format === 'html') {
-        // This export requests no page image, so the searchable-PDF default of hidden text would produce a blank file.
-        options.displayMode = 'ebook';
-      }
-      try {
-        await doc.download(format, host?._baseName() || 'document', options);
-        exportDropdown.close();
-      } catch (err) {
-        console.error(`Export to ${format} failed:`, err);
-        host?._showToast(`${label} export failed — ${err?.message || 'see the console'}`);
-      } finally {
-        row.classList.remove('busy');
-      }
-    });
-    exportMenu.appendChild(row);
-  }
-
-  const exportDropdown = createDropdown({
-    show: () => {
-      exportMenu.style.display = 'block';
-      return exportMenu;
-    },
-    hide: () => {
-      exportMenu.style.display = 'none';
-    },
-    rows: '.scribe-app-menu-item',
-  });
-  // Closing the app menu after a keyboard pick returns focus to its button, so focus there marks a keyboard open.
-  appMenu.addAction('Export as…', EXPORT_SVG, () => exportDropdown.open(appMenu.triggerElem, document.activeElement === appMenu.triggerElem ? 'first' : null));
-
   appMenu.addAction('Export assistant chat log', EXPORT_SVG, async () => {
     const envelope = viewer._automatePanel?.exportTrace?.(viewer.doc);
     if (!envelope) {
@@ -136,8 +63,6 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     }
     await saveAs(JSON.stringify(envelope, null, 2), `${(host?._baseName() || 'document').replace(/\.\w{1,6}$/, '')}-assistant-trace.json`);
   });
-
-  host?._teardownCallbacks.push(() => exportDropdown.destroy());
 
   // Off (the default) = the model-driven built-in engine; On = the DOM engine, whose invisible word spans sit under the browser's native selection.
   appMenu.addToggle(

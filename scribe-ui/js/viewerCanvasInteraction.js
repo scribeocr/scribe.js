@@ -12,6 +12,7 @@ import {
   linkTables, unlinkTable, resolveLinkCandidate, resolveUnlinkCandidate,
 } from './viewerLayout.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
+import { pickReading } from './viewerReadings.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
 import {
@@ -220,6 +221,7 @@ const CM_REDACT_SVG = menuIcon('<path d="M4 6.6h16"/><path d="M4 17.4h9"/><rect 
 const CM_BOOKMARK_SVG = menuIcon('<path d="M7 4h10v16l-5-3.6L7 20V4Z"/>');
 const CM_IDENTIFY_SVG = menuIcon('<circle cx="12" cy="12" r="5.2"/><path d="M12 3.5V7M12 17v3.5M3.5 12H7M17 12h3.5"/>');
 export const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
+const CM_PICK_SVG = menuIcon('<path d="M5 12.5l4.5 4.5L19 7"/>');
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
 const CM_LINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
@@ -320,6 +322,8 @@ const createContextMenuHTML = () => {
     [
       item('contextMenuIdentifyFontButton', 'Identify font', CM_IDENTIFY_SVG, identifyFontClick),
     ],
+    // One row per other reading of the right-clicked word, labeled when the menu opens.
+    Array.from({ length: 9 }, (_, i) => item(`contextMenuReadingButton${i}`, '', CM_PICK_SVG, () => readingClick(i))),
     [
       item('contextMenuSplitWordButton', 'Split Word', CM_SPLIT_SVG, splitWordClick),
       item('contextMenuMergeWordsButton', 'Merge Words', CM_MERGE_SVG, mergeWordsClick),
@@ -375,6 +379,14 @@ const createContextMenuHTML = () => {
 let _menuViewer = null;
 function mv() { return _menuViewer || ScribeViewer.getDefault(); }
 
+/** @param {number} i */
+const readingClick = (i) => {
+  hideContextMenu();
+  const viewer = mv();
+  const uiWord = viewer.contextMenuWord;
+  if (uiWord) pickReading(viewer, uiWord, i);
+};
+
 const splitWordClick = () => {
   hideContextMenu();
   const viewer = mv();
@@ -387,7 +399,9 @@ const splitWordClick = () => {
 
   const wordIndex = uiWord.word.line.words.findIndex((x) => x.id === uiWord.word.id);
 
-  uiWord.word.line.words.splice(wordIndex, 1, wordA, wordB);
+  viewer.doc.editWords([uiWord.word.line.page], 'Split word', () => {
+    uiWord.word.line.words.splice(wordIndex, 1, wordA, wordB);
+  });
 
   viewer.displayPage(viewer.state.cp.n);
 };
@@ -399,12 +413,14 @@ const mergeWordsClick = () => {
   const selectedUiWords = viewer.CanvasSelection.getUiWords();
   const selectedWords = selectedUiWords.map((x) => x.word);
   if (selectedUiWords.length < 2 || !scribe.utils.checkOcrWordsAdjacent(selectedWords)) return;
-  const newWord = scribe.utils.mergeOcrWords(selectedUiWords.map((x) => x.word));
-  const lineWords = selectedUiWords[0].word.line.words;
-  selectedUiWords.sort((a, b) => a.word.bbox.left - b.word.bbox.left);
-  lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
-  const firstIndex = lineWords.findIndex((x) => x.id === selectedUiWords[0].word.id);
-  lineWords.splice(firstIndex, selectedUiWords.length, newWord);
+  viewer.doc.editWords([selectedUiWords[0].word.line.page], 'Merged words', () => {
+    const newWord = scribe.utils.mergeOcrWords(selectedUiWords.map((x) => x.word));
+    const lineWords = selectedUiWords[0].word.line.words;
+    selectedUiWords.sort((a, b) => a.word.bbox.left - b.word.bbox.left);
+    lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
+    const firstIndex = lineWords.findIndex((x) => x.id === selectedUiWords[0].word.id);
+    lineWords.splice(firstIndex, selectedUiWords.length, newWord);
+  });
 
   viewer.displayPage(viewer.state.cp.n);
 };
@@ -766,6 +782,7 @@ let menuNode = null;
 /** @type {?HTMLStyleElement} */
 let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuSplitWordButtonElem;
+/** @type {Array<HTMLButtonElement>} */ let contextMenuReadingButtonElems = [];
 /** @type {HTMLButtonElement} */ let contextMenuDeleteWordsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuMergeWordsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuMergeColumnsButtonElem;
@@ -839,6 +856,7 @@ function ensureContextMenu() {
   document.body.appendChild(menuNode);
 
   contextMenuSplitWordButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitWordButton'));
+  contextMenuReadingButtonElems = Array.from({ length: 9 }, (_, i) => /** @type {HTMLButtonElement} */(document.getElementById(`contextMenuReadingButton${i}`)));
   contextMenuDeleteWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteWordsButton'));
   contextMenuMergeWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeWordsButton'));
   contextMenuMergeColumnsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeColumnsButton'));
@@ -1028,6 +1046,7 @@ export const hideContextMenu = () => {
   contextMenuMergeWordsButtonElem.style.display = 'none';
   contextMenuSplitWordButtonElem.style.display = 'none';
   contextMenuDeleteWordsButtonElem.style.display = 'none';
+  for (const btn of contextMenuReadingButtonElems) btn.style.display = 'none';
   contextMenuMergeColumnsButtonElem.style.display = 'none';
   contextMenuSplitColumnButtonElem.style.display = 'none';
   contextMenuCaptureLinesButtonElem.style.display = 'none';
@@ -1610,9 +1629,10 @@ export const contextMenuFunc = (viewer, event) => {
     let enableDeleteWords = false;
     let enableDeleteHighlight = false;
     let enableCopyHighlight = false;
-    // Word editing (split / merge / delete) is gated on `enableCanvasSelection`, the editor-only flag.
+    // Word editing (split / merge / delete) is gated on the proof mode's flag or the editor-only canvas selection.
     // Deleting a highlight is not, so the read-only viewer still offers it.
-    if (viewer.enableCanvasSelection && !viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
+    const wordEditing = viewer.enableCanvasSelection || UiText.enableEditing;
+    if (wordEditing && !viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
     if (!viewer.state.layoutMode && targetObj instanceof UiOcrWord) {
       viewer.contextMenuWord = targetObj;
       if (targetObj.highlightColor || targetObj.markupType) {
@@ -1621,17 +1641,28 @@ export const contextMenuFunc = (viewer, event) => {
         // Fill first when the word carries both, matching the comment card's click-to-pin priority.
         contextMenuMarkupSlot = targetObj.highlightColor ? 'highlight' : 'line';
       }
-      if (viewer.enableCanvasSelection) {
-        if (selectedUiWords.length < 2) {
-          UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
-          const cursorIndex = UiOcrWord.getCursorIndex(targetObj);
-          if (cursorIndex > 0 && cursorIndex < targetObj.word.text.length) {
-            enableSplitWord = true;
-          }
-        } else {
-          const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
-          if (adjacentWords) enableMergeWords = true;
+    }
+    // The proof mode's spans take no pointer events, so the word under a right-click comes from the selection engine's hit test.
+    const editTarget = targetObj instanceof UiOcrWord ? targetObj
+      : (wordEditing && !viewer.state.layoutMode ? (viewer.textSel?.wordAt?.(event.clientX, event.clientY) || null) : null);
+    if (wordEditing && editTarget) {
+      viewer.contextMenuWord = editTarget;
+      // The labels must follow `pickReading`'s order, since each row applies the reading at its own index.
+      const others = scribe.utils.ocr.groupReadings(editTarget.word).filter((group) => !group.own);
+      others.slice(0, contextMenuReadingButtonElems.length).forEach((group, i) => {
+        const btn = contextMenuReadingButtonElems[i];
+        /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = `Use “${group.text}”`;
+        btn.style.display = 'initial';
+      });
+      if (selectedUiWords.length < 2) {
+        UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
+        const cursorIndex = UiOcrWord.getCursorIndex(editTarget);
+        if (cursorIndex > 0 && cursorIndex < editTarget.word.text.length) {
+          enableSplitWord = true;
         }
+      } else {
+        const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
+        if (adjacentWords) enableMergeWords = true;
       }
     }
 

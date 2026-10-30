@@ -513,6 +513,12 @@ export class UiText {
     elem.style.letterSpacing = `${charSpacingHTML}px`;
     // Line height must match the height of the font bounding box for the font metrics to be accurate.
     elem.style.lineHeight = `${(this.fontAscentPx + this.fontDescentPx) * scale}px`;
+    // Proofread Text's text-only view draws a rule under the two flagged tiers at the baseline, so the tier and the descent ride on the element.
+    elem.style.setProperty('--scribe-desc', `${this.fontDescentPx * scale}px`);
+    const conf = this.word ? this.word.conf : null;
+    const tier = conf === null || conf === undefined || conf > scribe.ScribeDoc.defaults.confThreshHigh ? '' : conf > scribe.ScribeDoc.defaults.confThreshMed ? 'mid' : 'low';
+    if (tier) elem.dataset.proofTier = tier;
+    else if (restyle) delete elem.dataset.proofTier;
     // Text with opacity 0 is not selectable, so we make it transparent instead.
     if (opacity === 0) {
       elem.style.color = 'transparent';
@@ -858,9 +864,28 @@ export class UiText {
 
       // Words are not allowed to be empty.
       if (textNew) {
-        itext.word.text = textNew;
-        // Style-run indices no longer match the edited text.
-        itext.word.styleRuns = undefined;
+        if (textNew !== itext.word.text) {
+          const viewer = getViewer(itext);
+          const page = itext.word.line?.page;
+          const edit = () => {
+            itext.word.text = textNew;
+            // A person typed it, so the word is no longer in doubt.
+            itext.word.conf = 100;
+            // Style-run indices no longer match the edited text.
+            itext.word.styleRuns = undefined;
+          };
+          // A word of the document's active layer records an undoable step.
+          // A stand-in word, such as the table preview's, is edited outright.
+          if (page && viewer.doc?.ocr.active?.[page.n] === page) {
+            viewer.doc.editWords([page], 'Edited word', edit);
+            const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(itext.word, viewer.state.displayMode,
+              scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
+            itext.fill(fill);
+            itext.opacity(opacity);
+          } else {
+            edit();
+          }
+        }
         if (itext.changeTextCallback) itext.changeTextCallback(itext);
       }
       UiText.updateWordCanvas(itext);
@@ -1057,8 +1082,7 @@ export class UiOcrWord extends UiText {
 
     // White fill, blue border, and rounding make the handle read as a draggable grip rather than a flat bar.
     // It extends a little above and below the word so it stands proud of the box edge instead of blending in.
-    const handleW = 8;
-    const handlePad = 3;
+    const z = 'var(--scribe-zoom, 1)';
     /**
      * @param {'left'|'right'} side
      */
@@ -1067,15 +1091,15 @@ export class UiOcrWord extends UiText {
       handle.className = 'scribe-word-handle';
       Object.assign(handle.style, {
         position: 'absolute',
-        top: `${itext.y() - handlePad}px`,
-        height: `${itext.height() + handlePad * 2}px`,
-        width: `${handleW}px`,
-        marginLeft: `${-handleW / 2}px`,
+        top: `calc(${itext.y()}px - 3px / ${z})`,
+        height: `calc(${itext.height()}px + 6px / ${z})`,
+        width: `calc(8px / ${z})`,
+        marginLeft: `calc(-4px / ${z})`,
         boxSizing: 'border-box',
         background: '#ffffff',
-        border: '1.5px solid rgba(40,123,181,1)',
-        borderRadius: `${handleW / 2}px`,
-        boxShadow: '0 1px 2px rgba(0,0,0,0.35)',
+        border: `calc(1.5px / ${z}) solid rgba(40,123,181,1)`,
+        borderRadius: `calc(4px / ${z})`,
+        boxShadow: `0 calc(1px / ${z}) calc(2px / ${z}) rgba(0,0,0,0.35)`,
         cursor: 'ew-resize',
         zIndex: '3',
         touchAction: 'none',
@@ -1085,8 +1109,8 @@ export class UiOcrWord extends UiText {
       const positionHandle = () => {
         const px = side === 'left' ? itext.x() : itext.x() + itext.width();
         handle.style.left = `${px}px`;
-        handle.style.top = `${itext.y() - handlePad}px`;
-        handle.style.height = `${itext.height() + handlePad * 2}px`;
+        handle.style.top = `calc(${itext.y()}px - 3px / ${z})`;
+        handle.style.height = `calc(${itext.height()}px + 6px / ${z})`;
       };
       positionHandle();
 

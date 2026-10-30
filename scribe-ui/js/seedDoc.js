@@ -36,6 +36,7 @@ const MAX_EXACT_RASTERS = 4;
  * @property {() => Promise<Array<File>|Object>} load - Hydration source, either files for `scribe.openDocument` or an already-imported ScribeDoc.
  * @property {'eager'|'on-demand'} [hydration='eager']
  * @property {string} [name] - Display name for the tab and the download basename.
+ * @property {?string} [pdfType='text'] - The PDF type the import gave the document ('text', 'ocr' or 'image'), when the seed's source knows it.
  */
 
 let seedDocIdNext = -1;
@@ -62,7 +63,7 @@ export class SeedDoc {
       pdfMode: true,
       imageMode: false,
       evalMode: false,
-      pdfType: 'text',
+      pdfType: seed.pdfType || 'text',
       pageStats: null,
       requiresOCR: false,
       defaultDownloadFileName: seed.name || 'document.pdf',

@@ -1548,6 +1548,76 @@ export class ScribeDoc {
   }
 
   /**
+   * Run `fn`, which edits recognized words on `pages` in place, and record the change as one undoable step.
+   * Undo restores each page's lines, each line's words, box and baseline, and each word's text, confidence, readings, box, style and style runs.
+   * `fn` must be synchronous: the step is captured when it returns.
+   * @template T
+   * @param {Array<number|OcrPage>} pages - The pages `fn` edits, as indices or page objects of the active layer.
+   * @param {string} label - Description of the step for the undo timeline.
+   * @param {() => T} fn
+   * @returns {T} `fn`'s return value.
+   */
+  editWords(pages, label, fn) {
+    const pageObjs = pages.map((p) => (typeof p === 'number' ? this.ocr.active?.[p] : p)).filter((p) => !!p);
+    const ns = pageObjs.map((p) => p.n);
+    // Lines and words are kept by reference and only their fields copied, so the viewer's word objects stay valid across an undo.
+    const capture = () => pageObjs.map((page) => page.lines.map((line) => ({
+      line,
+      bbox: { ...line.bbox },
+      baseline: line.baseline.slice(),
+      words: line.words.map((word) => ({
+        word,
+        text: word.text,
+        conf: word.conf,
+        readings: word.readings,
+        styleRuns: word.styleRuns,
+        chars: word.chars,
+        bbox: { ...word.bbox },
+        style: { ...word.style },
+        lang: word.lang,
+        visualCoords: word.visualCoords,
+        compTruth: word.compTruth,
+        matchTruth: word.matchTruth,
+      })),
+    })));
+    /** @param {ReturnType<typeof capture>} snap */
+    const apply = (snap) => () => {
+      pageObjs.forEach((page, i) => {
+        page.lines.splice(0, page.lines.length, ...snap[i].map((l) => l.line));
+        for (const l of snap[i]) {
+          l.line.bbox = { ...l.bbox };
+          l.line.baseline = l.baseline.slice();
+          l.line.words.splice(0, l.line.words.length, ...l.words.map((w) => w.word));
+          for (const w of l.words) {
+            Object.assign(w.word, {
+              text: w.text,
+              conf: w.conf,
+              readings: w.readings,
+              styleRuns: w.styleRuns,
+              chars: w.chars,
+              bbox: { ...w.bbox },
+              style: { ...w.style },
+              lang: w.lang,
+              visualCoords: w.visualCoords,
+              compTruth: w.compTruth,
+              matchTruth: w.matchTruth,
+              line: l.line,
+            });
+          }
+        }
+      });
+      return ns.slice();
+    };
+    const before = capture();
+    const result = fn();
+    const after = capture();
+    this.docHistory.record({
+      surface: 'words', label, undo: apply(before), redo: apply(after),
+    });
+    return result;
+  }
+
+  /**
    * Delete the image placements matching the given extents, as one undoable step.
    * @param {Parameters<typeof deleteImagesImpl>[1]} items
    * @returns {ReturnType<typeof deleteImagesImpl>}

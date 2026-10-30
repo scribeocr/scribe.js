@@ -1334,7 +1334,8 @@ export class TextSelection {
         this.clear();
         this.viewer.destroyControls(true);
         this.viewer.CanvasSelection.addWords(kwUp);
-        UiOcrWord.addControls(kwUp);
+        // A word with no span (editing left on in `invis` mode) has nothing for the edge handles to hang on.
+        if (kwUp.el) UiOcrWord.addControls(kwUp);
         kwUp.select();
         UiOcrWord.updateUI();
       }

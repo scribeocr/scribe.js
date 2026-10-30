@@ -9,35 +9,22 @@ import {
 } from './viewerModifySelectedWords.js';
 
 /**
+ * Bring a stepped-to word into view without ever scrolling back toward the word the step left.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {UiText} uiObject
+ * @param {UiOcrWord} kw
+ * @param {?UiOcrWord} [from] - The word the step leaves, or null when nothing was selected.
  */
-const scrollIntoView = (viewer, uiObject) => {
-  const sc = viewer.scrollContainer;
-  const zoom = viewer.zoomLevel || 1;
-  // `getClientRect` is content space; multiply by zoom to get the on-screen position relative to the scroll origin.
-  const r = uiObject.getClientRect();
-  const topPx = r.y * zoom - sc.scrollTop;
-  const bottomPx = (r.y + r.height) * zoom - sc.scrollTop;
-  const leftPx = r.x * zoom - sc.scrollLeft;
-  const rightPx = (r.x + r.width) * zoom - sc.scrollLeft;
-
-  const margin = 30;
-
-  if (bottomPx > sc.clientHeight - margin) {
-    sc.scrollTop += bottomPx - (sc.clientHeight - margin);
-  } else if (topPx < 150) {
-    // Top gets more padding to account for the toolbar.
-    sc.scrollTop -= (200 - topPx);
+const scrollIntoView = (viewer, kw, from = null) => {
+  // Words on one line differ in height, so a difference smaller than a word's height is no travel at all.
+  let travel = 0;
+  if (from && !from._destroyed) {
+    const a = from.getClientRect();
+    const b = kw.getClientRect();
+    const dy = (b.y + b.height / 2) - (a.y + a.height / 2);
+    if (Math.abs(dy) >= Math.min(a.height, b.height)) travel = Math.sign(dy);
   }
-
-  if (rightPx > sc.clientWidth - margin) {
-    sc.scrollLeft += rightPx - (sc.clientWidth - margin);
-  } else if (leftPx < margin) {
-    sc.scrollLeft -= (margin - leftPx);
-  }
-
-  viewer.updateCurrentPage();
+  if (viewer.proofFollow) { viewer.proofFollow(kw, travel); return; }
+  viewer.scrollToWord(kw, { glide: true, ifNeeded: true, travel });
 };
 
 /**
@@ -65,7 +52,7 @@ export function selectNextWord(viewer) {
   if (nextWord) {
     _viewer.destroyControls(true);
     const nextUiWord = words.filter((x) => x.word.id === nextWord.id)[0];
-    scrollIntoView(_viewer, nextUiWord);
+    scrollIntoView(_viewer, nextUiWord, selectedWord);
     _viewer.CanvasSelection.addWords(nextUiWord);
     UiOcrWord.addControls(nextUiWord);
     nextUiWord.select();
@@ -97,12 +84,72 @@ export function selectPrevWord(viewer) {
   if (prevWord) {
     _viewer.destroyControls(true);
     const prevUiWord = words.filter((x) => x.word.id === prevWord.id)[0];
-    scrollIntoView(_viewer, prevUiWord);
+    scrollIntoView(_viewer, prevUiWord, selectedWord);
     _viewer.CanvasSelection.addWords(prevUiWord);
     UiOcrWord.addControls(prevUiWord);
     prevUiWord.select();
     UiOcrWord.updateUI();
   }
+}
+
+/**
+ * The words still to check in proofreading, in reading order across the document.
+ * A word is still to check while its confidence is at or below the high threshold.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @returns {Array<OcrWord>}
+ */
+export function wordsToCheck(doc) {
+  const thresh = scribe.ScribeDoc.defaults.confThreshHigh;
+  /** @type {Array<OcrWord>} */
+  const words = [];
+  for (const page of doc.ocr.active || []) {
+    if (!page) continue;
+    for (const line of page.lines) {
+      for (const word of line.words) if (word.text && word.conf <= thresh) words.push(word);
+    }
+  }
+  return words;
+}
+
+/**
+ * Select the next or previous word to check.
+ * The search starts from the selected word, or from the current page when nothing is selected, and wraps at the ends.
+ * A target on another page shows that page first.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {1|-1} dir
+ */
+export async function selectNextToCheck(viewer, dir) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  if (!_viewer.doc) return;
+  const queue = wordsToCheck(_viewer.doc);
+  if (queue.length === 0) return;
+  const selected = _viewer.CanvasSelection.getUiWords();
+  // Taken before the deselect below empties the selection's own array.
+  const from = selected.length === 1 ? selected[0] : null;
+  const cur = from ? from.word : null;
+  /** @param {OcrWord} w */
+  const place = (w) => [w.line.page.n, w.line.page.lines.indexOf(w.line), w.line.words.indexOf(w)];
+  /** @param {OcrWord} a @param {OcrWord} b */
+  const cmp = (a, b) => { const x = place(a); const y = place(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
+  let target;
+  if (cur && queue.includes(cur)) {
+    target = queue[(queue.indexOf(cur) + dir + queue.length) % queue.length];
+  } else if (cur) {
+    target = dir > 0 ? (queue.find((w) => cmp(w, cur) > 0) || queue[0]) : (queue.slice().reverse().find((w) => cmp(w, cur) < 0) || queue[queue.length - 1]);
+  } else {
+    const n = _viewer.state.cp.n;
+    target = dir > 0 ? (queue.find((w) => w.line.page.n >= n) || queue[0]) : (queue.slice().reverse().find((w) => w.line.page.n <= n) || queue[queue.length - 1]);
+  }
+  const n = target.line.page.n;
+  if (n !== _viewer.state.cp.n) await _viewer.displayPage(n, true, false);
+  const ui = _viewer.getUiWords().find((x) => x.word === target);
+  if (!ui) return;
+  _viewer.destroyControls(true);
+  scrollIntoView(_viewer, ui, from);
+  _viewer.CanvasSelection.addWords(ui);
+  UiOcrWord.addControls(ui);
+  ui.select();
+  UiOcrWord.updateUI();
 }
 
 /**
@@ -146,7 +193,7 @@ export function selectRightWord(viewer, selectMultiple = false) {
   if (rightWord) {
     _viewer.destroyControls(!selectMultiple);
     const nextUiWord = words.filter((x) => x.word.id === rightWord.id)[0];
-    scrollIntoView(_viewer, nextUiWord);
+    scrollIntoView(_viewer, nextUiWord, selectedWord);
     nextUiWord.select();
     _viewer.CanvasSelection.addWords(nextUiWord);
     if (!selectMultiple) {
@@ -198,7 +245,7 @@ export function selectLeftWord(viewer, selectMultiple = false) {
   if (leftWord) {
     _viewer.destroyControls(!selectMultiple);
     const nextUiWord = words.filter((x) => x.word.id === leftWord.id)[0];
-    scrollIntoView(_viewer, nextUiWord);
+    scrollIntoView(_viewer, nextUiWord, selectedWord);
     nextUiWord.select();
     _viewer.CanvasSelection.addWords(nextUiWord);
     if (!selectMultiple) {
@@ -242,7 +289,7 @@ export function selectAboveWord(viewer) {
   if (aboveWord) {
     _viewer.destroyControls(true);
     const aboveUiWord = words.filter((x) => x.word.id === aboveWord.id)[0];
-    scrollIntoView(_viewer, aboveUiWord);
+    scrollIntoView(_viewer, aboveUiWord, selectedWord);
     aboveUiWord.select();
     _viewer.CanvasSelection.addWords(aboveUiWord);
     UiOcrWord.addControls(aboveUiWord);
@@ -284,7 +331,7 @@ export function selectBelowWord(viewer) {
   if (belowWord) {
     _viewer.destroyControls(true);
     const belowUiWord = words.filter((x) => x.word.id === belowWord.id)[0];
-    scrollIntoView(_viewer, belowUiWord);
+    scrollIntoView(_viewer, belowUiWord, selectedWord);
     belowUiWord.select();
     _viewer.CanvasSelection.addWords(belowUiWord);
     UiOcrWord.addControls(belowUiWord);
@@ -303,9 +350,15 @@ export function handleKeyboardEvent(viewer, event) {
   const _viewer = viewer || ScribeViewer.getActiveViewer() || ScribeViewer.getDefault();
   if (!_viewer) return;
   const activeElem = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  // The scan peek is Ctrl+Space, plus Option+Space on a Mac, where macOS claims Ctrl+Space for switching input sources.
+  // Alt+Space stays unbound on other platforms, where Windows opens the window menu on it.
+  // With Option held a Mac reports the key as a non-breaking space, so the physical key is checked too.
+  const peekChord = (event.ctrlKey || (IS_MAC && event.altKey))
+    && (event.code === 'Space' || event.key === ' ' || event.key === '\u00a0');
   // Never steal keystrokes destined for a text-editing control: a host `<input>`/`<textarea>`,
   // a `contenteditable` host, or the viewer's own word-edit box, so typing there is unaffected.
-  if (activeElem && (activeElem instanceof HTMLInputElement
+  // The peek chord is the one exception, in the word-edit box only, since on a Mac it would otherwise type a non-breaking space into the word.
+  if (activeElem && !(peekChord && activeElem === UiText.input) && (activeElem instanceof HTMLInputElement
     || activeElem instanceof HTMLTextAreaElement
     || activeElem.isContentEditable)) return;
   if (activeElem && activeElem instanceof HTMLSelectElement
@@ -385,7 +438,9 @@ export function handleKeyboardEvent(viewer, event) {
 
   if (event.key === 'Tab') {
     if (activeElem && activeElem.closest('.scribe-field')) return;
-    if (event.shiftKey) {
+    if (UiText.enableEditing) {
+      selectNextToCheck(_viewer, event.shiftKey ? -1 : 1);
+    } else if (event.shiftKey) {
       selectPrevWord(_viewer);
     } else {
       selectNextWord(_viewer);
@@ -413,20 +468,35 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.ctrlKey && event.key === ' ' && !_viewer.textOverlayHidden) {
+  if (peekChord) {
+    event.preventDefault();
+    event.stopPropagation();
+    // A held chord repeats its keydown, which must neither restart the peek nor type into the word.
+    if (_viewer.textOverlayHidden) return;
     _viewer.textOverlayHidden = true;
     // Hide every text/overlay group (both use the `scribe-group` class) to reveal the raster underneath.
     _viewer.zoomLayer.querySelectorAll('.scribe-group').forEach((g) => { /** @type {HTMLElement} */ (g).style.display = 'none'; });
+    if (_viewer.proofTextOnly) _viewer.elem.classList.add('scribe-proof-peek');
     const opacityOrig = UiText.input ? UiText.input.style.opacity : '0.8';
     if (UiText.input) UiText.input.style.opacity = '0';
-    event.preventDefault();
-    event.stopPropagation();
+    // Hiding the text layer blurs the word-edit box inside it, so the box gets its focus and caret back on release.
+    const editBox = activeElem && activeElem === UiText.input ? activeElem : null;
+    const sel = window.getSelection();
+    const caret = editBox && sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
     _viewer.interactionCallback(event);
 
     const handleKeyUp = (keyupEvent) => {
-      if (keyupEvent.key === 'Control' || keyupEvent.key === ' ') {
+      if (['Control', 'Alt', ' ', '\u00a0'].includes(keyupEvent.key) || keyupEvent.code === 'Space') {
         _viewer.zoomLayer.querySelectorAll('.scribe-group').forEach((g) => { /** @type {HTMLElement} */ (g).style.display = ''; });
+        _viewer.elem.classList.remove('scribe-proof-peek');
         if (UiText.input) UiText.input.style.opacity = opacityOrig;
+        if (editBox && editBox === UiText.input && editBox.isConnected) {
+          editBox.focus({ preventScroll: true });
+          if (caret && sel) {
+            sel.removeAllRanges();
+            sel.addRange(caret);
+          }
+        }
         document.removeEventListener('keyup', handleKeyUp);
         _viewer.textOverlayHidden = false;
       }

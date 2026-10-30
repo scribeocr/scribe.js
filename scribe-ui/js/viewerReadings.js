@@ -243,22 +243,25 @@ function applyReading(viewer, itext, group) {
   const { word } = itext;
   const run = readingRun(word, group);
   if (run.length > 1) {
-    const merged = scribe.utils.mergeOcrWords(run);
-    merged.text = group.text;
-    merged.conf = 100;
-    // The `readings` contract puts the reading equal to `text` first.
-    const whole = (word.readings || []).filter((r) => (r.span || 1) === run.length).sort((a, b) => Number(group.readings.includes(b)) - Number(group.readings.includes(a)));
-    const stripped = whole.map((r) => { const rest = { ...r }; delete rest.span; return rest; });
-    const ownGroup = scribe.utils.ocr.groupReadings(word).find((g) => g.own);
-    merged.readings = [...stripped, {
-      source: ownGroup ? ownGroup.readings[0].source : scribe.utils.ocr.readingSource(word.line.page),
-      text: run.map((w) => w.text).join(' '),
-      conf: Math.round(run.reduce((sum, w) => sum + (scribe.utils.ocr.groupReadings(w).find((g) => g.own)?.readings[0].conf ?? w.conf), 0) / run.length),
-    }];
-    merged.styleRuns = undefined;
-    const lineWords = word.line.words;
-    lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
-    lineWords.splice(lineWords.indexOf(word), run.length, merged);
+    const merged = viewer.doc.editWords([word.line.page], 'Picked a reading', () => {
+      const mergedWord = scribe.utils.mergeOcrWords(run);
+      mergedWord.text = group.text;
+      mergedWord.conf = 100;
+      // The `readings` contract puts the reading equal to `text` first.
+      const whole = (word.readings || []).filter((r) => (r.span || 1) === run.length).sort((a, b) => Number(group.readings.includes(b)) - Number(group.readings.includes(a)));
+      const stripped = whole.map((r) => { const rest = { ...r }; delete rest.span; return rest; });
+      const ownGroup = scribe.utils.ocr.groupReadings(word).find((g) => g.own);
+      mergedWord.readings = [...stripped, {
+        source: ownGroup ? ownGroup.readings[0].source : scribe.utils.ocr.readingSource(word.line.page),
+        text: run.map((w) => w.text).join(' '),
+        conf: Math.round(run.reduce((sum, w) => sum + (scribe.utils.ocr.groupReadings(w).find((g) => g.own)?.readings[0].conf ?? w.conf), 0) / run.length),
+      }];
+      mergedWord.styleRuns = undefined;
+      const lineWords = word.line.words;
+      lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
+      lineWords.splice(lineWords.indexOf(word), run.length, mergedWord);
+      return mergedWord;
+    });
     viewer.displayPage(viewer.state.cp.n).then(() => {
       const ui = uiWordFor(viewer, merged);
       if (!ui) return;
@@ -270,11 +273,13 @@ function applyReading(viewer, itext, group) {
     });
     return;
   }
-  word.text = group.text;
-  word.conf = 100;
-  word.styleRuns = undefined;
-  // The `readings` contract puts the reading equal to `text` first.
-  word.readings = [...group.readings, ...(word.readings || []).filter((r) => !group.readings.includes(r))];
+  viewer.doc.editWords([word.line.page], 'Picked a reading', () => {
+    word.text = group.text;
+    word.conf = 100;
+    word.styleRuns = undefined;
+    // The `readings` contract puts the reading equal to `text` first.
+    word.readings = [...group.readings, ...(word.readings || []).filter((r) => !group.readings.includes(r))];
+  });
   const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer.state.displayMode,
     scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
   itext.fill(fill);

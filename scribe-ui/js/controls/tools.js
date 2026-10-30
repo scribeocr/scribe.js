@@ -26,6 +26,7 @@ import { pulseTable, setActiveTable } from '../viewerLayout.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 import { createDropdown } from './dropdown.js';
 import { barIcon } from './icons.js';
+import { UiText } from '../viewerWordObjects.js';
 
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
@@ -3723,7 +3724,15 @@ export function createExtractTablesTool(app) {
     b.dataset.tableView = view;
     b.textContent = label;
     Object.assign(b.style, {
-      border: 'none', background: 'var(--scribe-surface)', color: 'var(--scribe-ink-2)', font: '600 11px/1 inherit', fontFamily: 'inherit', padding: '4.5px 10px', cursor: 'pointer',
+      border: 'none',
+      background: 'var(--scribe-surface)',
+      color: 'var(--scribe-ink-2)',
+      fontFamily: 'inherit',
+      fontSize: '11px',
+      fontWeight: '600',
+      lineHeight: '1',
+      padding: '4.5px 10px',
+      cursor: 'pointer',
     });
     viewSeg.appendChild(b);
     return b;
@@ -4139,6 +4148,65 @@ export function createRecognizeTextTool() {
   toolbarElem.addEventListener('click', () => {
     if (toolbarElem.classList.contains('disabled')) return;
     setActive(!active);
+  });
+  return { toolbarElem, isActive: () => active, close: () => setActive(false) };
+}
+
+const PROOFREAD_SVG = modeIcon('<path d="M2.5 4.5h12M2.5 7.5h8M2.5 10.5h5"/><path d="M9.5 12.5l2 2 3.5-4.5"/>');
+
+/**
+ * Create the Proofread Text mode tool.
+ * The mode draws the recognized text over the page, colored by confidence, with each word selectable and editable in place.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, close: () => void }}
+ */
+export function createProofreadTextTool(app) {
+  const toolbarElem = makeIconButton('Proofread Text', PROOFREAD_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Proofread Text';
+  toolbarElem.appendChild(toolbarLabelElem);
+  let active = false;
+  /** @param {boolean} next */
+  const setActive = (next) => {
+    if (active === next) return;
+    const sv = app.scribe;
+    if (next && !sv.doc) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+    UiText.enableEditing = active;
+    sv.state.displayMode = active ? 'proof' : 'invis';
+    if (active) sv.clearTextSelection?.();
+    else sv.destroyControls(true);
+    sv.destroyText(false);
+    sv.displayPage(sv.state.cp.n, false, true);
+  };
+  toolbarElem.addEventListener('click', () => {
+    // Leaving comes before the disabled check, since the gate can disable the row while the mode is on and every exit runs through this click.
+    if (active) { setActive(false); return; }
+    if (toolbarElem.classList.contains('disabled')) return;
+    const doc = app.scribe.doc;
+    // Only a provisional document, which has a negative id, waits for its real one.
+    // Awaiting before the toggle would let the exclusivity click see this button inactive and leave the other mode on.
+    if (doc && doc.id < 0) {
+      hydrateIfProvisional(doc).then(async (ok) => {
+        if (!ok) return;
+        // Once its text is in, the real document decides whether there is anything to proofread.
+        // Activating on the provisional tab's answer could leave the mode on with its row disabled.
+        const real = app.scribe.doc;
+        if (!real || real.id < 0) return;
+        if (real.textReady) await real.textReady.catch(() => {});
+        if (app.scribe.doc !== real) return;
+        app._syncDocGatedControls?.();
+        if (toolbarElem.classList.contains('disabled')) return;
+        // The exclusivity click saw this button inactive, so the mode that was on is closed here before this one opens.
+        for (const other of app._exclusiveToolBtns || []) if (other !== toolbarElem && other.classList.contains('active')) other.click();
+        setActive(true);
+      });
+      return;
+    }
+    setActive(true);
   });
   return { toolbarElem, isActive: () => active, close: () => setActive(false) };
 }

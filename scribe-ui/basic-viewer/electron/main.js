@@ -432,6 +432,21 @@ function buildAppMenu(closeLabel, closeTab) {
         ] : [{ role: 'close', label: 'Close Window', accelerator: 'CmdOrCtrl+W' }]),
         { type: 'separator' },
         { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
+        {
+          id: 'export-as',
+          label: 'Export As',
+          enabled: false,
+          submenu: [
+            { id: 'export-docx', label: 'Word (.docx)…', click: send('export-docx') },
+            { id: 'export-xlsx', label: 'Excel (.xlsx)…', click: send('export-xlsx') },
+            { id: 'export-html', label: 'HTML (.html)…', click: send('export-html') },
+            { id: 'export-txt', label: 'Text (.txt)…', click: send('export-txt') },
+            { id: 'export-md', label: 'Markdown (.md)…', click: send('export-md') },
+            { id: 'export-hocr', label: 'hOCR (.hocr)…', click: send('export-hocr') },
+            { id: 'export-alto', label: 'ALTO XML (.xml)…', click: send('export-alto') },
+          ],
+        },
+        { id: 'save-session', label: 'Save Session (.scribe)…', enabled: false, click: send('save-session') },
         { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
         { id: 'split', label: 'Split at Bookmarks', enabled: false, click: send('split') },
         { type: 'separator' },
@@ -509,6 +524,8 @@ function applyMenuState(state) {
   set('find-next', { enabled: state.docOpen });
   set('find-prev', { enabled: state.docOpen });
   set('export-pdf', { enabled: state.docOpen });
+  set('export-as', { enabled: state.docOpen });
+  set('save-session', { enabled: state.docOpen });
   set('rotate-left', { enabled: state.docOpen });
   set('rotate-right', { enabled: state.docOpen });
   set('combine', { enabled: state.combine });

@@ -19,9 +19,12 @@ export function deleteSelectedWord(viewer) {
     selectedObjects[i].destroy();
   }
 
-  for (const [n, ids] of Object.entries(selectedIds)) {
-    scribe.utils.ocr.deletePageWords(_viewer.doc.ocr.active[n], ids);
-  }
+  const pages = Object.keys(selectedIds).map((n) => _viewer.doc.ocr.active[Number(n)]);
+  _viewer.doc.editWords(pages, selectedN === 1 ? 'Deleted word' : 'Deleted words', () => {
+    for (const [n, ids] of Object.entries(selectedIds)) {
+      scribe.utils.ocr.deletePageWords(_viewer.doc.ocr.active[Number(n)], ids);
+    }
+  });
 
   _viewer.destroyControls();
 
@@ -39,7 +42,9 @@ export function modifySelectedWordBbox(viewer, side, amount) {
   if (selectedWords.length !== 1) return;
   const selectedWord = selectedWords[0];
 
-  selectedWord.word.bbox[side] += amount;
+  _viewer.doc.editWords([selectedWord.word.line.page], 'Resized word', () => {
+    selectedWord.word.bbox[side] += amount;
+  });
   if (side === 'left') selectedWord.x(selectedWord.x() + amount);
   UiText.updateWordCanvas(selectedWord);
 }
@@ -62,19 +67,24 @@ export async function modifySelectedWordStyle(viewer, style) {
 
   if (UiText.inputRemove) UiText.inputRemove();
 
+  const pages = [...new Set(selectedObjects.map((wordI) => wordI.word.line.page))];
+  _viewer.doc.editWords(pages, 'Changed word style', () => {
+    for (const wordI of selectedObjects) {
+      if (style.font !== undefined) wordI.word.style.font = style.font;
+      if (style.size !== undefined) wordI.word.style.size = style.size;
+      if (style.bold !== undefined) wordI.word.style.bold = style.bold;
+      if (style.italic !== undefined) wordI.word.style.italic = style.italic;
+      if (style.underline !== undefined) wordI.word.style.underline = style.underline;
+      if (style.smallCaps !== undefined) wordI.word.style.smallCaps = style.smallCaps;
+      if (style.sup !== undefined) wordI.word.style.sup = style.sup;
+      // Runs are deltas from the word style rewritten above, so keeping them would change what they mean.
+      wordI.word.styleRuns = undefined;
+    }
+  });
+
   const selectedN = selectedObjects.length;
   for (let i = 0; i < selectedN; i++) {
     const wordI = selectedObjects[i];
-
-    if (style.font !== undefined) wordI.word.style.font = style.font;
-    if (style.size !== undefined) wordI.word.style.size = style.size;
-    if (style.bold !== undefined) wordI.word.style.bold = style.bold;
-    if (style.italic !== undefined) wordI.word.style.italic = style.italic;
-    if (style.underline !== undefined) wordI.word.style.underline = style.underline;
-    if (style.smallCaps !== undefined) wordI.word.style.smallCaps = style.smallCaps;
-    if (style.sup !== undefined) wordI.word.style.sup = style.sup;
-    // Runs are deltas from the word style rewritten above, so keeping them would change what they mean.
-    wordI.word.styleRuns = undefined;
 
     const fontI = _viewer.doc.fonts.getFont(wordI.word.style, wordI.word.lang);
 

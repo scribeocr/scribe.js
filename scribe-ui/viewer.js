@@ -178,6 +178,15 @@ export class ScribeViewer {
     this.textOverlayHidden = false;
 
     /**
+     * The hook a keyboard or stepper step hands its word to while Proofread Text's "Zoom to each word" is on, or null.
+     * `travel` is the way the selection moved: 1 down, -1 up, 0 none.
+     * @type {?((kw: import('./js/viewerWordObjects.js').UiOcrWord, travel: number) => void)}
+     */
+    this.proofFollow = null;
+    /** Proofread Text's Text only view is on, so the scan peek shows the scan it hides. */
+    this.proofTextOnly = false;
+
+    /**
      * [Debug] When `true` the text overlay is never built, unlike `textOverlayHidden` which only hides an already-built one.
      * Meaningful only under the DOM selection engine (the built-in engine draws selection from the model, not from an overlay).
      */
@@ -1492,6 +1501,8 @@ export class ScribeViewer {
     // A layout repaint replaces the overlay DOM, so live selection handles go stale and are dropped first.
     const layoutRepaint = (n) => (this.state.layoutMode && this.rowDistance(n, this.state.cp.n) < 2) || this.overlayGroupsRenderIndices.includes(n);
     if ([...pageSet].some(layoutRepaint)) this.destroyControls();
+    // A word rebuild replaces the spans a selection's handles hang on, so the selection is dropped with them.
+    if (res.surface === 'words') this.destroyControls();
     for (const n of pageSet) {
       this.refreshPageRaster(n);
       this.renderWords(n);
@@ -3498,8 +3509,11 @@ export class ScribeViewer {
    * @param {UiOcrWord} kw - A word in the rendered window.
    * @param {object} [options]
    * @param {boolean} [options.glide=false] - Glide to the word when it is within a screen's height; farther, or under reduced motion, jump.
+   * @param {boolean} [options.ifNeeded=false] - Leave the view alone when the word already sits within the viewport's inner band.
+   * @param {number} [options.travel=0] - The way the selection moved to reach the word: 1 down, -1 up, 0 none or unknown.
+   *   A word already in the band is centered only when that scrolls the same way, so a step never moves the view back toward the word it left.
    */
-  scrollToWord(kw, { glide = false } = {}) {
+  scrollToWord(kw, { glide = false, ifNeeded = false, travel = 0 } = {}) {
     // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
     const rect = kw.getClientRect();
     const margin = 30;
@@ -3510,12 +3524,17 @@ export class ScribeViewer {
     const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
     if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
     else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
+    const from = sc.scrollTop;
+    const target = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, top));
+    // The inner band, deeper at the top because the host's bars overlay the viewport there (the basic viewer's mode banner is 40 px).
+    const topPx = rect.y * zoom - from;
+    const bottomPx = (rect.y + rect.height) * zoom - from;
+    const inBand = topPx >= 60 && bottomPx <= sc.clientHeight - margin;
+    if (inBand && (ifNeeded || Math.sign(target - from) !== travel)) return;
     if (this._scrollGlide) {
       cancelAnimationFrame(this._scrollGlide.raf);
       this._scrollGlide = null;
     }
-    const from = sc.scrollTop;
-    const target = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, top));
     const distance = Math.abs(target - from);
     const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     // Beyond a screen, jump: the glide renders nothing on its way, so a longer one could pass pages that were never drawn.

@@ -35,7 +35,9 @@ import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.j
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, filesNamedForPdf, createRedactTool, createEditTextTool,
   createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
+  createProofreadTextTool,
 } from '../js/controls/tools.js';
+import { wordsToCheck, selectNextToCheck } from '../js/viewerShortcuts.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
@@ -147,6 +149,8 @@ const VBAR_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 const editIcon = (inner, w = 1.6) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
 /** Ringed stop square, the cancel control for a recognition run. */
 const STOP_SVG = editIcon('<circle cx="12" cy="12" r="8.5"/><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none"/>');
+const PROOF_PREV_SVG = editIcon('<path d="M15 6l-6 6 6 6"/>');
+const PROOF_NEXT_SVG = editIcon('<path d="M9 6l6 6-6 6"/>');
 const RECOGNIZE_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']];
 /**
  * Wrap SVG in a stroked icon for the app menu's 16px slots.
@@ -156,6 +160,7 @@ const RECOGNIZE_LANGS = [['eng', 'English'], ['deu', 'German'], ['fra', 'French'
  */
 const appMenuIcon = (inner) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 const ICON_EXPORT = appMenuIcon('<path d="M7.5 2.5v7m-3-3 3 3 3-3M3.5 12.5h8"/>');
+const ICON_SESSION = appMenuIcon('<path d="M9.5 2.5h-5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-7z"/><path d="M9.5 2.5v3h3M5.5 9.5h5M5.5 11.5h3"/>');
 const ICON_COMBINE = appMenuIcon('<path d="M2.5 5.5h6v6h-6zM7.5 3.5h6v6"/>');
 const ICON_SPLIT = appMenuIcon('<circle cx="4" cy="4" r="1.5"/><circle cx="4" cy="12" r="1.5"/><path d="M5.5 5.5l7 7M5.5 10.5l7-7"/>');
 /** Crescent moon for the app menu's Dark mode toggle. */
@@ -1671,6 +1676,22 @@ class ScribePDFViewer {
         this._teardownCallbacks.push(this._editTextTool.installBehaviors());
       }
 
+      /** @type {?ReturnType<typeof createProofreadTextTool>} */
+      this._proofreadTool = null;
+      /** Whether Proofread Text's "Zoom to each word" switch is on. */
+      this._proofFollow = false;
+      this._proofTextOnly = false;
+      /** @type {?HTMLSpanElement} */
+      this._proofFollowElem = null;
+      /** @type {?HTMLButtonElement[]} The Scan + text and Text only buttons, in that order. */
+      this._proofSegBtns = null;
+      /** The widest count reading pinned so far. */
+      this._proofreadCountWidest = '';
+      if (this._modeTrackRow1) {
+        this._proofreadTool = createProofreadTextTool(this);
+        this._modeTrackRow1.insertBefore(this._proofreadTool.toolbarElem, this._modeTrackChev);
+      }
+
       /** @type {?ReturnType<typeof createGraphicsEditTool>} */
       this._graphicsEditTool = null;
       if (editText) {
@@ -1715,6 +1736,7 @@ class ScribePDFViewer {
       if (this._inspectMenuRow && !this._inspectTool) this._inspectMenuRow.style.display = 'none';
 
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
+      if (this._proofreadTool) this._proofreadTool.toolbarElem.dataset.modeHint = `Click a word to select it · double-click to edit · Tab: next word to check · ${IS_MAC ? '⌥Space' : 'Ctrl+Space'}: show the scan`;
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
@@ -1722,7 +1744,7 @@ class ScribePDFViewer {
       if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
       if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
 
-      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
+      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._proofreadTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
         this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
@@ -2023,6 +2045,8 @@ class ScribePDFViewer {
 
     seedDoc._onPageText = (n) => {
       if (cancelled || this.doc !== seedDoc) return;
+      // A page's text decides which rows the document gate enables.
+      this._syncDocGatedControls();
       const cp = this.scribe.state.cp.n;
       if (n !== cp && !this.scribe.windowPages(cp).includes(n)) return;
       // Highlights hang on the page's word objects, so they are drawn once the words are.
@@ -3104,6 +3128,10 @@ class ScribePDFViewer {
       if (this._dockElem) this._dockElem.classList.remove('scribe-mode-on');
       if (this._recognizeExtras) this._recognizeExtras.remove();
       this._recognizeDockUi?.remove();
+      this._proofreadExtras?.remove();
+      this.scribe.proofFollow = null;
+      if (this._proofTextOnly) this._setProofTextOnly(false);
+      this._proofreadHandoffElem?.remove();
       this._closeRecognizeSheet();
       // The palette returns to its floating home so the closed bar holds nothing.
       const idlePal = this._fillSignTool?.paletteElem();
@@ -3232,12 +3260,17 @@ class ScribePDFViewer {
     // The Recognize Text mode runs from its banner, so the language and Start controls mount while it is the active mode.
     const recogMode = !!this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem;
     this._modeBanner.classList.toggle('scribe-mode-recognize', recogMode);
+    this._proofreadHandoffElem?.remove();
     if (recogMode) {
       this._recognizeDockUi?.remove();
       this._closeRecognizeSheet();
       if (this._recognizeAlreadyRan()) {
         this._recognizeExtras?.remove();
         this._modeBannerParts.hint.textContent = `✓ Recognized${this.scribe.opt.vanillaMode ? ' with Tesseract' : ''}${this.scribe.opt.ignorePdfText ? ', PDF text ignored' : ''} — text is selectable and searchable`;
+        if (this._proofreadTool && !this._proofreadTool.toolbarElem.classList.contains('disabled')) {
+          this._ensureProofreadHandoff();
+          this._modeBanner.insertBefore(this._proofreadHandoffElem, this._modeBannerParts.exit);
+        }
       } else {
         this._ensureRecognizeExtras();
         const pages = this._deepOcrPageCount();
@@ -3251,11 +3284,174 @@ class ScribePDFViewer {
       this._recognizeExtras.remove();
     }
 
+    if (this._proofreadTool && activeBtn === this._proofreadTool.toolbarElem) {
+      this._ensureProofreadExtras();
+      if (this._proofreadExtras.parentElement !== this._modeBanner) this._modeBanner.insertBefore(this._proofreadExtras, this._modeBannerParts.exit);
+      this._syncProofreadRow();
+      // The switch keeps its state across exits, but the stepping hook is armed only while the mode is on.
+      this._setProofFollow(this._proofFollow);
+      this._setProofTextOnly(this._proofTextOnly);
+    } else {
+      this._proofreadExtras?.remove();
+      this.scribe.proofFollow = null;
+      if (this._proofTextOnly) this._setProofTextOnly(false);
+    }
+
     this._modeBanner.style.display = 'flex';
     this._syncModeExitButtons(activeBtn);
     if (this._modeTrackWrap) this._syncModeTrackValue();
     this._syncPhoneVerbBar();
     this._positionBanners();
+  }
+
+  /** Build the Proofread Text mode's banner tools once. */
+  _ensureProofreadExtras() {
+    if (this._proofreadExtras) return;
+    const tools = document.createElement('span');
+    tools.className = 'scribe-mode-banner-tools scribe-proof-tools';
+    /**
+     * @param {string} title
+     * @param {string} svg
+     * @param {1|-1} dir
+     */
+    const stepButton = (title, svg, dir) => {
+      const btn = document.createElement('span');
+      btn.className = 'cr-icon-button scribe-proof-step';
+      btn.role = 'button';
+      btn.tabIndex = 0;
+      btn.title = title;
+      btn.ariaLabel = title;
+      btn.innerHTML = svg;
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      const step = () => selectNextToCheck(this.scribe, dir).then(() => this._syncProofreadRow());
+      btn.addEventListener('click', step);
+      btn.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        step();
+      });
+      return btn;
+    };
+    const count = document.createElement('span');
+    count.className = 'scribe-proof-count';
+    const follow = document.createElement('span');
+    follow.className = 'scribe-proof-follow';
+    follow.role = 'switch';
+    follow.tabIndex = 0;
+    follow.ariaChecked = 'false';
+    follow.title = 'Each step zooms in on the word and centers it';
+    const followSwitch = document.createElement('span');
+    followSwitch.className = 'scribe-app-menu-switch';
+    const followLabel = document.createElement('span');
+    followLabel.textContent = 'Zoom to each word';
+    follow.append(followSwitch, followLabel);
+    follow.addEventListener('mousedown', (e) => e.preventDefault());
+    follow.addEventListener('click', () => this._setProofFollow(!this._proofFollow));
+    follow.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      this._setProofFollow(!this._proofFollow);
+    });
+    const seg = document.createElement('span');
+    seg.className = 'scribe-proof-viewseg';
+    /** @param {string} label @param {boolean} textOnly */
+    const segButton = (label, textOnly) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'scribe-proof-viewbtn';
+      b.textContent = label;
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      b.addEventListener('click', () => this._setProofTextOnly(textOnly));
+      seg.appendChild(b);
+      return b;
+    };
+    this._proofSegBtns = [segButton('Scan + text', false), segButton('Text only', true)];
+    this._proofFollowElem = follow;
+    tools.append(follow, seg, stepButton('Previous word to check', PROOF_PREV_SVG, -1), count, stepButton('Next word to check', PROOF_NEXT_SVG, 1));
+    this._proofreadExtras = tools;
+    this._proofreadCountElem = count;
+  }
+
+  /** Draw the Proofread Text count from the words still to check and the selected word's place among them. */
+  _syncProofreadRow() {
+    if (!this._proofreadExtras || !this._proofreadExtras.isConnected || !this.doc) return;
+    const queue = wordsToCheck(this.doc);
+    const selected = this.scribe.CanvasSelection.getUiWords();
+    const pos = selected.length === 1 ? queue.indexOf(selected[0].word) + 1 : 0;
+    const count = this._proofreadCountElem;
+    if (!count) return;
+    // The widest reading for this many digits, pinned as the box's width, so the chevrons and the switch hold still as the text changes.
+    // The pin only grows: a count falling below a power of ten would otherwise shift the row once.
+    const widest = `${queue.length} of ${queue.length} to check`;
+    if (widest !== this._proofreadCountWidest) {
+      this._proofreadCountWidest = widest;
+      count.textContent = widest;
+      const w = Math.ceil(count.getBoundingClientRect().width);
+      const pinned = parseFloat(count.style.minWidth) || 0;
+      if (w > pinned) count.style.minWidth = `${w}px`;
+    }
+    count.textContent = pos > 0 ? `${pos} of ${queue.length} to check` : `${queue.length} to check`;
+  }
+
+  /**
+   * Turn Proofread Text's "Zoom to each word" on or off.
+   * Turning it on while the mode is on brings the selected word in at once.
+   * @param {boolean} on
+   */
+  _setProofFollow(on) {
+    this._proofFollow = !!on;
+    if (this._proofFollowElem) {
+      this._proofFollowElem.classList.toggle('on', this._proofFollow);
+      this._proofFollowElem.ariaChecked = this._proofFollow ? 'true' : 'false';
+    }
+    const inMode = !!this._proofreadTool?.isActive();
+    this.scribe.proofFollow = this._proofFollow && inMode ? (kw, travel) => this._followProofWord(kw, travel) : null;
+    if (!this._proofFollow || !inMode) return;
+    const selected = this.scribe.CanvasSelection.getUiWords();
+    if (selected.length === 1) this._followProofWord(selected[0], 0);
+  }
+
+  /**
+   * Zoom to fit width, then center a word unless that would scroll against the way the selection moved.
+   * @param {import('../js/viewerWordObjects.js').UiOcrWord} kw
+   * @param {number} travel - The way the selection moved: 1 down, -1 up, 0 none.
+   */
+  _followProofWord(kw, travel) {
+    const sv = this.scribe;
+    const sc = sv.scrollContainer;
+    if (!sc) return;
+    const fit = sv._contentWidth > 0 ? sc.clientWidth / sv._contentWidth : sv.zoomLevel;
+    if (Math.abs(sv.zoomLevel - fit) > 1e-3) this.zoomTo(fit);
+    // The zoom keeps the word objects, but a rebuilt page would have replaced this one.
+    const live = kw._destroyed ? sv.getUiWords().find((x) => x.word === kw.word) : kw;
+    if (live) sv.scrollToWord(live, { glide: true, travel });
+  }
+
+  /**
+   * Switch Proofread Text between Scan + text and Text only.
+   * Text only hides the scan and shows the layered text alone in ink, with a rule under the doubtful words.
+   * @param {boolean} textOnly
+   */
+  _setProofTextOnly(textOnly) {
+    this._proofTextOnly = !!textOnly;
+    this.pdfViewerElem.classList.toggle('scribe-proof-textonly', this._proofTextOnly);
+    this.scribe.proofTextOnly = this._proofTextOnly;
+    if (this._proofSegBtns) this._proofSegBtns.forEach((b, i) => b.classList.toggle('on', (i === 1) === this._proofTextOnly));
+  }
+
+  /** Build the Recognize Text receipt's hand-off button once. */
+  _ensureProofreadHandoff() {
+    if (this._proofreadHandoffElem) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'scribe-mode-banner-run scribe-proof-handoff';
+    btn.textContent = 'Proofread Text';
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => {
+      const tool = this._proofreadTool?.toolbarElem;
+      if (tool && !tool.classList.contains('disabled')) tool.click();
+    });
+    this._proofreadHandoffElem = btn;
   }
 
   /** Build the Recognize Text mode's working controls once. */
@@ -3911,6 +4107,8 @@ class ScribePDFViewer {
     const dirty = !!doc && this._modeBaseline >= 0 && doc.docHistory.undoStack.length !== this._modeBaseline;
     if (this._dockModeParts?.save) this._dockModeParts.save.disabled = !dirty;
     if (this._modeBannerParts?.save) this._modeBannerParts.save.disabled = !dirty;
+    // Every edit and selection change passes through here, so the proofreading count follows them.
+    this._syncProofreadRow();
   }
 
   /** Acknowledge a destructive action with one soft swell of the toolbar undo button. */
@@ -5958,6 +6156,8 @@ class ScribePDFViewer {
       this._inspectMenuRow,
       this._printMenuRow,
       this._exportItem,
+      this._exportAsItem,
+      this._saveSessionItem,
       this._coverToggleItem,
       this._modeTrackViewBtn,
       this._modeTrackChev,
@@ -5989,6 +6189,18 @@ class ScribePDFViewer {
       editBtn.classList.toggle('disabled', !editable);
       editBtn.ariaDisabled = !editable ? 'true' : 'false';
       editBtn.tabIndex = !editable ? -1 : 0;
+    }
+    // Proofreading is for text the engine read over an image, so a native-text PDF keeps the row disabled.
+    const proofBtn = this._proofreadTool?.toolbarElem;
+    if (proofBtn) {
+      // A provisional tab's pages carry their text source and its seed carries the PDF type, so the row takes the same test as on a hydrated document.
+      const proofreadable = !disabled && !!this.doc.ocr?.active?.some((page) => page?.lines?.length > 0
+        && (page.textSource !== 'pdf' || this.doc.inputData.pdfType !== 'text'));
+      // The exit goes through the tool, not the button's click, so a row the gate has already disabled still leaves the mode.
+      if (!proofreadable && this._proofreadTool.isActive()) this._proofreadTool.close();
+      proofBtn.classList.toggle('disabled', !proofreadable);
+      proofBtn.ariaDisabled = !proofreadable ? 'true' : 'false';
+      proofBtn.tabIndex = !proofreadable ? -1 : 0;
     }
     const graphicsBtn = this._graphicsEditTool?.toolbarElem;
     if (graphicsBtn) {
@@ -6210,6 +6422,36 @@ class ScribePDFViewer {
       };
       const exportItem = appMenu.addAction('Export PDF', ICON_EXPORT, this._menuCommands['export-pdf']);
       this._exportItem = exportItem;
+
+      /**
+       * @param {'docx'|'xlsx'|'html'|'txt'|'md'|'hocr'|'alto'|'scribe'} format
+       * @param {string} label - What the failure toast calls the file.
+       */
+      const exportAs = (format, label) => async () => {
+        if (this._frontSurface() || !this.doc || this.doc.pageMetrics.length === 0) return;
+        /** @type {import('../../js/export/export.js').ExportOptions} */
+        const options = {};
+        // This export requests no page image, so the searchable-PDF default of hidden text would produce a blank file.
+        if (format === 'html') options.displayMode = 'ebook';
+        if (format === 'scribe') options.scribeSession = true;
+        try {
+          await this.doc.download(format, this._baseName(), options);
+        } catch (err) {
+          console.error(`Export to ${format} failed:`, err);
+          this._showToast(`Couldn’t export ${label}. Please try again.`);
+        }
+      };
+      /** @type {Array<['docx'|'xlsx'|'html'|'txt'|'md'|'hocr'|'alto', string]>} */
+      const exportFormats = [
+        ['docx', 'Word (.docx)'], ['xlsx', 'Excel (.xlsx)'], ['html', 'HTML (.html)'], ['txt', 'Text (.txt)'],
+        ['md', 'Markdown (.md)'], ['hocr', 'hOCR (.hocr)'], ['alto', 'ALTO XML (.xml)'],
+      ];
+      for (const [format, label] of exportFormats) this._menuCommands[`export-${format}`] = exportAs(format, label);
+      this._menuCommands['save-session'] = exportAs('scribe', 'the session');
+      const exportAsMenu = appMenu.addSubmenu('Export as…', ICON_EXPORT);
+      exportAsMenu.setItems(exportFormats.map(([format, label]) => ({ label, onClick: this._menuCommands[`export-${format}`] })));
+      this._exportAsItem = exportAsMenu.wrap;
+      this._saveSessionItem = appMenu.addAction('Save session (.scribe)', ICON_SESSION, this._menuCommands['save-session']);
 
       // Separator before the document actions, hidden when neither Combine nor Split currently applies.
       this._appMenuDocSep = appMenu.addSeparator();
