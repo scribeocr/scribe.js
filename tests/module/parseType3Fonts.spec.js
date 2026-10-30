@@ -339,12 +339,12 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     await scribe.terminate();
   });
 
-  test('Type0 ground-truth median character height is 35 px and width is 24 px', () => {
-    expect(medianGTH).toBe(35);
+  test('Type0 ground-truth median character height is 57 px and width is 24 px', () => {
+    expect(medianGTH, 'median ground-truth char height spans the declared ascent and descent at this size').toBe(57);
     expect(medianGTW).toBe(24);
   });
 
-  test('Uncorrected Type3 character heights are taller than ground truth (50 px)', () => {
+  test('Uncorrected Type3 character heights are the 50 px placeholder height', () => {
     // Confirms the precondition: without correction, Type3 chars get the broken
     // placeholder height. Anchors the regression so a future change that already
     // produces correct sizes upstream would surface here.

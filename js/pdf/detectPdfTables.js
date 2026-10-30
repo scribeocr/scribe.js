@@ -2754,7 +2754,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
       const stripMedH = hts[Math.floor(hts.length / 2)] || 20;
       const solidCompletePair = hRows.some((r, i) => i > 0
         && r.top - hRows[i - 1].bottom <= stripMedH * 0.8
-        && r.colsHit >= 2 && hRows[i - 1].colsHit >= 2);
+        && r.colsHit >= 2 && hRows[i - 1].colsHit >= 2 && !hRows[i - 1].title);
       if (hRows.length >= 4 || solidCompletePair) {
         stripInHeader = false;
       } else {
@@ -2792,7 +2792,8 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
  * @param {number[]} colBounds - column boundary x positions, outer edges included
  * @param {'data' | 'header'} [mode='data'] - 'header' reads the region as a drawn header band, where stacked lines are one header row
- * @returns {Array<{lineIndices: number[], top: number, bottom: number, colsHit: number}>}
+ * @returns {Array<{lineIndices: number[], top: number, bottom: number, colsHit: number, title: boolean}>}
+ *   `title` marks a header-mode row kept apart from the row beneath it as a title or spanning heading.
  */
 function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
   if (lineIdxArr.length === 0) return [];
@@ -2803,7 +2804,7 @@ function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
   // Clustering on bottoms rather than tops keeps a raised superscript fragment in its base row.
   const entries = lineIdxArr.map((i) => ({ i, top: lines[i].bbox.top, bottom: lines[i].bbox.bottom }))
     .sort((a, b) => a.bottom - b.bottom);
-  /** @type {Array<{lineIndices: number[], top: number, bottom: number, cols: Map<number, OcrWord[]>}>} */
+  /** @type {Array<{lineIndices: number[], top: number, bottom: number, cols: Map<number, OcrWord[]>, title?: boolean}>} */
   const rows = [];
   for (const e of entries) {
     const cur = rows[rows.length - 1];
@@ -2856,7 +2857,12 @@ function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
     if (mode === 'header') {
       if (b.top - a.bottom > medH * 0.8) return false;
       // Right edges aligned across columns is the signature of parallel value rows, which no header stacks.
-      return !(a.cols.size >= 2 && b.cols.size >= 2 && isValueRowPair(a, b));
+      if (a.cols.size >= 2 && b.cols.size >= 2 && isValueRowPair(a, b)) return false;
+      if (a.lineIndices.length === 1 && a.cols.size >= 2 && b.lineIndices.length >= 2) {
+        a.title = true;
+        return false;
+      }
+      return true;
     }
     // A wrap is set solid, while the sibling rows of a grouped section sit at row pitch.
     // Tight pitch still runs about a third of a line height, so the cut sits well below it.
@@ -2901,7 +2907,7 @@ function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
   }
 
   return rows.map((r) => ({
-    lineIndices: r.lineIndices, top: r.top, bottom: r.bottom, colsHit: r.cols.size,
+    lineIndices: r.lineIndices, top: r.top, bottom: r.bottom, colsHit: r.cols.size, title: r.title === true,
   }));
 }
 
@@ -2992,7 +2998,7 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
   const rotated = regionLineIdxs.filter((i) => (lines[i].orientation || 0) !== 0).length;
   if (rotated > regionLineIdxs.length / 2) return null;
 
-  // A solid-adjacent pair of multi-column rows survives header-mode merging only when the rows are parallel values, which means the band is data.
+  // Two multi-column rows set solid but left apart by header-mode merging are parallel value rows unless the upper one is a title.
   // Lines bind to bands by baseline because a row sitting on a rule laps its bbox across it.
   const bandEdges = [spanTop, ...interiorBandYs, spanBottom];
   /** @type {Array<{lineIndices: number[], y: number, bottom: number, colsHit: number}>} */
@@ -3014,7 +3020,7 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
       const bandMedH = hts[Math.floor(hts.length / 2)] || 20;
       const solidCompletePair = hRows.some((r, ri) => ri > 0
         && r.top - hRows[ri - 1].bottom <= bandMedH * 0.8
-        && r.colsHit >= 2 && hRows[ri - 1].colsHit >= 2);
+        && r.colsHit >= 2 && hRows[ri - 1].colsHit >= 2 && !hRows[ri - 1].title);
       if (hRows.length >= 4 || solidCompletePair) {
         inHeader = false;
       } else {

@@ -1794,7 +1794,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
         // A descriptor declaring 0 states no metric at all, and taking it literally collapses every box built from it onto the baseline.
         if (ascentVal !== 0 && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
-        if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = descentVal;
+        // A descent is a depth below the baseline and the spec writes it negative; Skia's PDF writer and Aspose write the
+        // magnitude, which taken literally ends every box above the baseline.
+        if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = -Math.abs(descentVal);
 
         // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);
@@ -2117,7 +2119,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const ascentVal = resolveNumValue(fdText, 'Ascent', objCache);
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
         if (ascentVal !== 0 && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
-        if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = descentVal;
+        // A descent is a depth below the baseline and the spec writes it negative; Skia's PDF writer and Aspose write the
+        // magnitude, which taken literally ends every box above the baseline.
+        if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = -Math.abs(descentVal);
 
         // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);

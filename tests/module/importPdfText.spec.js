@@ -400,6 +400,15 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(sortedLines[0].words.map((w) => w.text).join(' ')).toBe('Iris (plant)');
   });
 
+  // Chrome writes a font's /Descent positive, though the PDF spec requires it negative.
+  test('The title line box on page 1 reaches below the baseline to the descenders', async () => {
+    const title = doc.ocr.active[0].lines.find((l) => l.words.map((w) => w.text).join(' ') === 'Iris (plant)');
+    expect(title.bbox, 'the title line box spans the ascenders and the descenders of "Iris (plant)"').toEqual({
+      left: 150, top: 304, right: 744, bottom: 423,
+    });
+    expect(title.baseline[1], 'the title baseline lies inside its line box, above the bottom edge').toBe(-23);
+  });
+
   test('Page 1 contains expected article body text', async () => {
     const allText = doc.ocr.active[0].lines
       .map((l) => l.words.map((w) => w.text).join(' '))
@@ -444,7 +453,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(colors.size).toBe(2);
   });
 
-  test('Page 1 lines[0].words[0] is "Iris" with 4 chars at expected per-char widths and a uniform height of 35', async () => {
+  test('Page 1 lines[0].words[0] is "Iris" with 4 chars at expected per-char widths and a uniform height of 56', async () => {
     const word = doc.ocr.active[0].lines[0].words[0];
     expect(word.text).toBe('Iris');
     expect(word.chars).toBeDefined();
@@ -455,7 +464,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(chars[1].bbox.right - chars[1].bbox.left).toBe(20);
     expect(chars[2].bbox.right - chars[2].bbox.left).toBe(14);
     expect(chars[3].bbox.right - chars[3].bbox.left).toBe(27);
-    for (const ch of chars) expect(ch.bbox.bottom - ch.bbox.top).toBe(35);
+    for (const ch of chars) expect(ch.bbox.bottom - ch.bbox.top, 'char box height spans the declared ascent and descent at this size').toBe(56);
   });
 
   test('"Iris sibirica" caption at lines[1] has font size 44', async () => {
