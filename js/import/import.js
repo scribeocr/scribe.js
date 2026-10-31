@@ -306,7 +306,10 @@ async function restoreSessionFromFile(doc, scribeFile) {
   }
   if (scribeRestoreObj.fontState) {
     objectAssignDefined(doc.fonts.state, scribeRestoreObj.fontState);
-    await doc.runOptimization(doc.ocr.active);
+    await doc.runOptimization(doc.ocr.active).catch((err) => {
+      if (err?.name === 'WorkerTerminatedError') throw err;
+      doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+    });
   }
   if (scribeRestoreObj.layoutRegions) {
     doc.layoutRegions.pages = addCircularRefsRegions(scribeRestoreObj.layoutRegions);
@@ -979,7 +982,10 @@ export async function importFiles(doc, files, options = {}) {
         clearObjectProperties(doc.fonts.state.charMetrics);
         Object.assign(doc.fonts.state.charMetrics, charMetrics);
       }
-      await doc.runOptimization(doc.ocr.active);
+      await doc.runOptimization(doc.ocr.active).catch((err) => {
+        if (err?.name === 'WorkerTerminatedError') throw err;
+        doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+      });
     }
     assignPageLineNums(doc.ocr[oemName]);
   }

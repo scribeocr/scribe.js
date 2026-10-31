@@ -233,6 +233,8 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
 
   /** @type {Array<OcrPage>} */
   const ocrArr = [];
+  /** @type {Array<Error>} */
+  const errors = [];
   /** @type {Array<?EvalMetrics>} */
   const metricsArr = [];
   /** @type {Array<Array<CompDebugBrowser | CompDebugNode>>} */
@@ -272,9 +274,12 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
 
   const indices = [...Array(ocrA.length).keys()];
   const compPromises = indices.map(async (i) => comparePageI(i));
-  await Promise.allSettled(compPromises);
+  const settled = await Promise.allSettled(compPromises);
+  for (const [i, result] of settled.entries()) if (result.status === 'rejected') errors[i] = result.reason;
 
-  return { ocr: ocrArr, metrics: metricsArr, debug: debugImageArr };
+  return {
+    ocr: ocrArr, metrics: metricsArr, debug: debugImageArr, errors,
+  };
 }
 
 /**
@@ -1302,7 +1307,10 @@ export async function recognize(doc, options = {}) {
           clearObjectProperties(doc.fonts.state.charMetrics);
           Object.assign(doc.fonts.state.charMetrics, charMetrics);
         }
-        await doc.runOptimization(doc.ocr.Combined);
+        await doc.runOptimization(doc.ocr.Combined).catch((err) => {
+          if (err?.name === 'WorkerTerminatedError') throw err;
+          doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+        });
       }
     } else {
       const progressCb = () => doc.progressHandler({ type: 'recognize' });
@@ -1325,7 +1333,10 @@ export async function recognize(doc, options = {}) {
         clearObjectProperties(doc.fonts.state.charMetrics);
         Object.assign(doc.fonts.state.charMetrics, charMetrics);
       }
-      await doc.runOptimization(fontLayer);
+      await doc.runOptimization(fontLayer).catch((err) => {
+        if (err?.name === 'WorkerTerminatedError') throw err;
+        doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+      });
 
       if (existingOCR && (userOcr || fullOcr)) {
         if (combineMode === 'conf') {
@@ -1344,8 +1355,13 @@ export async function recognize(doc, options = {}) {
 
           if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
+          const recognized = doc.ocr.Combined.slice();
           clearObjectProperties(doc.ocr.Combined);
           Object.assign(doc.ocr.Combined, res.ocr);
+          for (const [i, err] of Object.entries(res.errors)) {
+            doc.ocr.Combined[i] = recognized[i];
+            doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the existing text failed (${err && err.message ? err.message : err}); the recognition is kept as it is.` });
+          }
         } else if (combineMode === 'data') {
           /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
           const compOptions = {
@@ -1369,8 +1385,13 @@ export async function recognize(doc, options = {}) {
 
           if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
+          const recognized = doc.ocr.Combined.slice();
           clearObjectProperties(doc.ocr.Combined);
           Object.assign(doc.ocr.Combined, res.ocr);
+          for (const [i, err] of Object.entries(res.errors)) {
+            doc.ocr.Combined[i] = recognized[i];
+            doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the existing text failed (${err && err.message ? err.message : err}); the recognition is kept as it is.` });
+          }
         }
       }
     }

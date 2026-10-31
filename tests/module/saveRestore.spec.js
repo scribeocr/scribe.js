@@ -452,3 +452,42 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
     await scribe.terminate();
   });
 });
+
+// Deleting the width counts mimics a session saved before the font statistics recorded them.
+describe('A session whose font statistics cannot be scored still opens with its text.', () => {
+  const imagePath = `${ASSETS_PATH}/econometrica_example.png`;
+  /** @type {Array<string>} */
+  const warnings = [];
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let restored;
+
+  beforeAll(async () => {
+    const saved = await scribe.openDocument([imagePath, `${ASSETS_PATH}/econometrica_example.abbyy.xml`]);
+    const file = JSON.parse(/** @type {string} */ (await saved.exportData('scribe', { compressScribe: false })));
+    await saved.close();
+    for (const family of Object.values(file.fontState.charMetrics)) {
+      for (const style of Object.values(family)) if (style && typeof style === 'object') delete style.widthObs;
+    }
+    const warningHandlerPrev = scribe.opt.warningHandler;
+    scribe.opt.warningHandler = (message) => warnings.push(message);
+    try {
+      restored = await scribe.openDocument({ scribeFiles: [new TextEncoder().encode(JSON.stringify(file)).buffer], imageFiles: [imagePath] });
+    } finally {
+      scribe.opt.warningHandler = warningHandlerPrev;
+    }
+  });
+
+  test('The session opens with every word of its page', () => {
+    expect(restored.ocr.active[0].lines.reduce((n, line) => n + line.words.length, 0), 'the restored text is lost when font optimization fails').toBe(532);
+  });
+
+  test('The failed font optimization is reported as one warning', () => {
+    expect(warnings.map((w) => w.split(':')[0]), 'a failed font optimization is reported through the warning handler instead of rejecting the open')
+      .toEqual(['Font optimization failed, so the default fonts are used']);
+  });
+
+  afterAll(async () => {
+    if (restored) await restored.close();
+    await scribe.terminate();
+  });
+});

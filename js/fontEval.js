@@ -197,6 +197,9 @@ export async function evaluateFonts(docFonts, images, pageMetrics, pageArr, opt,
     nimbusMono: evalNimbusMono ? evalPagesFont(docFonts, images, pageMetrics, 'NimbusMono', pageArr, opt) : null,
   };
 
+  // Without this, the one-by-one awaits below would leave the rest unhandled when one rejects.
+  await Promise.all(Object.values(fontMetricsPromises));
+
   const fontMetricsTmp = {
     carlito: await fontMetricsPromises.carlito,
     nimbusSans: await fontMetricsPromises.nimbusSans,
@@ -283,6 +286,8 @@ export async function runOptimization(doc, ocrArr) {
       .then((res) => {
         docFonts.opt = res;
       });
+    // The evaluation below runs before this promise is awaited, so a rejection needs a handler now.
+    optimizeFontContainerAllPromise.catch(() => {});
   }
 
   // If image data exists, select the correct font by comparing to the image.
