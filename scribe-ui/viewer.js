@@ -3768,8 +3768,13 @@ export class ScribeViewer {
       // Is this a problem that is likely to occur in real use? If so, how should it be fixed?
       const res = await this.doc.compareOCR(this.doc.ocr.active, this.doc.ocr['Ground Truth'], compOptions);
 
+      const pagesPrev = this.doc.ocr.active;
       this.doc.ocr[oemActive] = res.ocr;
       this.doc.ocr.active = this.doc.ocr[oemActive];
+      for (const [i, err] of Object.entries(res.errors)) {
+        this.doc.ocr.active[i] = pagesPrev[i];
+        this.doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the ground truth failed (${err && err.message ? err.message : err}); the page is kept as it is.` });
+      }
 
       clearObjectProperties(this.evalStats);
       Object.assign(this.evalStats, res.metrics);
