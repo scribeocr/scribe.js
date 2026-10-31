@@ -1,4 +1,4 @@
-import ocr from '../objects/ocrObjects.js';
+import ocr, { bboxFromPageSpace } from '../objects/ocrObjects.js';
 
 import {
   calcBboxUnion,
@@ -82,6 +82,22 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
   /** @type {Array<number>} */
   const angleRisePage = [];
 
+  // Vision starts a word's vertices at its own top-left corner even when it is rotated, so the first edge runs in the reading direction.
+  // Every line takes the page's direction because Vision can misread a column of numbers on an upright page as one vertical word.
+  const dirs = [0, 0, 0, 0];
+  for (const block of pageVision.blocks) {
+    for (const paragraph of block.paragraphs || []) {
+      for (const word of paragraph.words || []) {
+        if (!word.symbols || word.symbols.length === 0) continue;
+        const v = getVertices(word.boundingBox);
+        const dx = v[1].x - v[0].x; const dy = v[1].y - v[0].y;
+        dirs[Math.abs(dx) >= Math.abs(dy) ? (dx >= 0 ? 0 : 2) : (dy >= 0 ? 1 : 3)] += word.symbols.length;
+      }
+    }
+  }
+  const topDir = dirs.indexOf(Math.max(...dirs));
+  const orientation = dirs[topDir] > (dirs[0] + dirs[1] + dirs[2] + dirs[3]) / 2 ? topDir : 0;
+
   pageVision.blocks.forEach((block, blockIndex) => {
     if (!block.paragraphs) return;
 
@@ -93,12 +109,12 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
       const xsPar = parVertices.map((v) => v.x || 0);
       const ysPar = parVertices.map((v) => v.y || 0);
 
-      const bboxPar = {
+      const bboxPar = bboxFromPageSpace({
         left: Math.min(...xsPar),
         top: Math.min(...ysPar),
         right: Math.max(...xsPar),
         bottom: Math.max(...ysPar),
-      };
+      }, orientation, pageDimsOut);
 
       const parObj = new ocr.OcrPar(pageObj, bboxPar);
       parObj.reason = String(block.blockType || 'TEXT');
@@ -110,6 +126,21 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
       let lineObj = new ocr.OcrLine(pageObj, null, [0, 0]);
       let lineIndex = 0;
 
+      const closeLine = () => {
+        if (lineObj.words.length === 0) return;
+        const wordBboxes = lineObj.words.map((w) => w.bbox);
+        lineObj.bbox = calcBboxUnion(wordBboxes);
+
+        calculateTextMetrics(lineObj);
+        lineObj.orientation = orientation;
+
+        pageObj.lines.push(lineObj);
+        parObj.lines.push(lineObj);
+        lineObj.par = parObj;
+        lineIndex++;
+        lineObj = new ocr.OcrLine(pageObj, null, [0, 0]);
+      };
+
       wordsVision.forEach((word, wordIndex) => {
         if (!word.symbols || word.symbols.length === 0) return;
 
@@ -117,12 +148,18 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
         const xs = wordVertices.map((v) => v.x || 0);
         const ys = wordVertices.map((v) => v.y || 0);
 
-        const bboxWord = {
+        const bboxWord = bboxFromPageSpace({
           left: Math.min(...xs),
           top: Math.min(...ys),
           right: Math.max(...xs),
           bottom: Math.max(...ys),
-        };
+        }, orientation, pageDimsOut);
+
+        // Vision can omit the line break between vertically stacked words.
+        if (lineObj.words.length > 0) {
+          const bboxLine = calcBboxUnion(lineObj.words.map((w) => w.bbox));
+          if (bboxWord.top >= bboxLine.bottom || bboxWord.bottom <= bboxLine.top) closeLine();
+        }
 
         const id = `word_${n + 1}_${blockIndex + 1}_${paragraphIndex + 1}_${lineIndex + 1}_${wordIndex + 1}`;
 
@@ -137,12 +174,12 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
               const charVertices = getVertices(symbol.boundingBox);
               const charXs = charVertices.map((v) => v.x || 0);
               const charYs = charVertices.map((v) => v.y || 0);
-              const charBbox = {
+              const charBbox = bboxFromPageSpace({
                 left: Math.min(...charXs),
                 top: Math.min(...charYs),
                 right: Math.max(...charXs),
                 bottom: Math.max(...charYs),
-              };
+              }, orientation, pageDimsOut);
               const charObj = new ocr.OcrChar(symbol.text || '', charBbox);
               charObjs.push(charObj);
             });
@@ -164,23 +201,7 @@ export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
           return breakType === 'LINE_BREAK' || breakType === 'EOL_SURE_SPACE';
         });
 
-        if (hasLineBreak || wordIndex === wordsVision.length - 1) {
-          if (lineObj.words.length > 0) {
-            const wordBboxes = lineObj.words.map((w) => w.bbox);
-            lineObj.bbox = calcBboxUnion(wordBboxes);
-
-            calculateTextMetrics(lineObj);
-
-            pageObj.lines.push(lineObj);
-            parObj.lines.push(lineObj);
-            lineObj.par = parObj;
-            lineIndex++;
-          }
-
-          if (wordIndex !== wordsVision.length - 1) {
-            lineObj = new ocr.OcrLine(pageObj, null, [0, 0]);
-          }
-        }
+        if (hasLineBreak || wordIndex === wordsVision.length - 1) closeLine();
       });
 
       if (parObj.lines.length > 0) {
