@@ -309,7 +309,7 @@ function createWindow({ fresh = false } = {}) {
     }
     launchArgs = {};
     if (pendingMenuAction) {
-      win.webContents.send('menu-action', pendingMenuAction);
+      runMenuAction(win, pendingMenuAction);
       pendingMenuAction = null;
     }
   });
@@ -397,6 +397,16 @@ function sendArgsToRenderer(args, target = targetWindow()) {
 let closeFolderLabel = 'Close Folder';
 let closeTabShown = false;
 /**
+ * Run a native menu's action in a window's page.
+ * @param {import('electron').BrowserWindow} win
+ * @param {string} id
+ */
+const runMenuAction = (win, id) => {
+  // A click in the native menu is the user's gesture, but a message to the page carries none.
+  // The File System Access picker behind Open Folder opens only while the page holds one, so the action runs as a gesture in the page itself.
+  win.webContents.executeJavaScript(`window.electronAPI.runMenuAction(${JSON.stringify(id)})`, true).catch(() => {});
+};
+/**
  * Build the macOS application menu.
  * @param {string} closeLabel - The Close Folder item's label.
  * @param {boolean} closeTab - Whether ⌘W closes a tab rather than the window, as in tabbed macOS windows.
@@ -405,7 +415,7 @@ function buildAppMenu(closeLabel, closeTab) {
   const send = (id) => () => {
     const target = targetWindow();
     if (target) {
-      target.win.webContents.send('menu-action', id);
+      runMenuAction(target.win, id);
       return;
     }
     if (id !== 'open') return;
@@ -573,6 +583,24 @@ ipcMain.on('focus-folder-window', (_event, /** @type {string} */ name) => {
 });
 ipcMain.on('new-window', () => createWindow({ fresh: true }));
 
+/**
+ * Record the path of the folder a permission request or check names.
+ * @param {{filePath?: string, isDirectory?: boolean}} details
+ * @param {boolean} picked - Whether a picker chose the folder just now.
+ */
+const learnFolderPath = (details, picked) => {
+  // File System Access handles carry no path, so the renderer's permission traffic is the only place the shell sees where a folder is.
+  const p = details.isDirectory && details.filePath ? details.filePath : '';
+  if (!p) return;
+  const known = shellState.recentFolders;
+  // A folder restored from storage raises a permission check and never a request, so a check can name a folder the shell has never seen.
+  // Checks for directories inside a known folder stay out, so the ten slots hold folders the user picked.
+  if (!picked && known.some((q) => p === q || p.startsWith(q + path.sep))) return;
+  if (known[0] === p) return;
+  shellState.recentFolders = [p, ...known.filter((q) => q !== p)].slice(0, 10);
+  saveShellState();
+};
+
 // These channels take a folder's name, and at most a path inside that folder, so the renderer cannot point the shell at arbitrary files.
 /** @param {string} name */
 const folderPathFor = (name) => (typeof name === 'string' && name ? shellState.recentFolders.find((p) => path.basename(p) === name) ?? null : null);
@@ -687,19 +715,17 @@ if (!gotTheLock) {
     // Electron grants renderer permission requests by default when no handler is installed, so everything but the two APIs the app uses is denied here.
     // The File System Access API arrives as `fileSystem` when the library's folder picker asks for write access to the chosen folder; denying it leaves the picker failing silently.
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback, details) => {
-      // File System Access handles carry no path, so the picker's write request is the only place the shell learns where a folder is.
-      const req = /** @type {{filePath?: string, isDirectory?: boolean}} */ (details);
-      if (permission === 'fileSystem' && req.isDirectory && req.filePath) {
-        shellState.recentFolders = [req.filePath, ...shellState.recentFolders.filter((p) => p !== req.filePath)].slice(0, 10);
-        saveShellState();
-      }
+      if (permission === 'fileSystem') learnFolderPath(/** @type {{filePath?: string, isDirectory?: boolean}} */ (details), true);
       callback(permission === 'clipboard-sanitized-write' || permission === 'fileSystem');
     });
     // Without a check handler a folder handle restored from storage reports 'prompt' after a relaunch, and reopening the folder costs a click.
     // A check answered false makes the handle 'denied' for good, with no request to fall back on, so the check cannot be narrowed to recorded paths.
     // Granting every file-system check is safe because the renderer runs only this app's code, which stores handles only from the folder picker.
     // Other checks pass as they do with no handler installed, except the deprecated synchronous clipboard read, which nothing in the app uses.
-    session.defaultSession.setPermissionCheckHandler((_wc, permission) => permission !== 'deprecated-sync-clipboard-read');
+    session.defaultSession.setPermissionCheckHandler((_wc, permission, _origin, details) => {
+      if (permission === 'fileSystem') learnFolderPath(details, false);
+      return permission !== 'deprecated-sync-clipboard-read';
+    });
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
     // The isolation headers must be set only here: adding a webRequest hook as well stacks duplicate values ("require-corp, require-corp"), which silently voids the policies.
     // A webRequest hook cannot replace this either, since it never decorates worker-script responses, which must carry COEP themselves to spawn.

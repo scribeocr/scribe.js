@@ -267,6 +267,9 @@ export class ScribeViewer {
     this._scrollTop = 0;
     /** @type {number} */
     this._scrollLeft = 0;
+    this._resizedWidth = 0;
+    /** @type {number|undefined} The unrounded horizontal scroll `resize` last wrote. */
+    this._scrollLeftSet = undefined;
     /**
      * Settle timer for a deferred page build (see `updateCurrentPage`).
      * A deferred word build (fast scroll, or any scroll in invis mode) or raster window (preview glide) arms it.
@@ -1846,9 +1849,26 @@ export class ScribeViewer {
    */
   resize(width, height) {
     if (!this.scrollContainer || !(width > 0) || !(height > 0)) return;
-    this.scrollContainer.style.width = `${width}px`;
-    this.scrollContainer.style.height = `${height}px`;
+    const sc = this.scrollContainer;
+    const prevWidth = this._resizedWidth;
+    this._resizedWidth = width;
+    // Read before the width changes, because a read afterwards lays the element out at the new width, where the browser has already clamped the scroll to its new maximum.
+    const scrollLeftPrev = sc.scrollLeft;
+    sc.style.width = `${width}px`;
+    sc.style.height = `${height}px`;
     this._scrollMetricsCache = null;
+    // Keep the content point under the viewport's center fixed, so pages in a block wider than the viewport stay centered as the width changes.
+    if (prevWidth > 0 && prevWidth !== width && this.contentSizer) {
+      const contentPx = this._contentWidth * this.zoomLevel;
+      const marginPrev = Math.max(0, (prevWidth - contentPx) / 2);
+      const marginNext = Math.max(0, (width - contentPx) / 2);
+      // The unrounded last write is the base, so a resize animated over many frames does not drift off center by rounding.
+      const set = this._scrollLeftSet;
+      const base = set !== undefined && Math.abs(scrollLeftPrev - set) <= 1 ? set : scrollLeftPrev;
+      const next = Math.max(0, base - marginPrev + prevWidth / 2 + marginNext - width / 2);
+      sc.scrollLeft = next;
+      this._scrollLeftSet = next;
+    }
     // Pages are centered within `_contentWidth` independent of the viewport, so a resize moves no page and needs no O(pages) re-center walk.
     // Re-centering the whole block within the new viewport takes one snapped margin that the browser reflows as a single box, which keeps a sidebar drag or animation smooth.
     this._updateHCentering(width);
@@ -3505,7 +3525,8 @@ export class ScribeViewer {
   }
 
   /**
-   * Scroll so `kw` sits at the vertical center of the viewport, nudging horizontally only when it would sit off an edge.
+   * Scroll so `kw` sits at the vertical center of the viewport.
+   * A page that fits the viewport's width is centered under it. On a wider page the view moves horizontally only when the word would sit off an edge.
    * @param {UiOcrWord} kw - A word in the rendered window.
    * @param {object} [options]
    * @param {boolean} [options.glide=false] - Glide to the word when it is within a screen's height; farther, or under reduced motion, jump.
@@ -3520,10 +3541,16 @@ export class ScribeViewer {
     const sc = this.scrollContainer;
     const zoom = this.zoomLevel || 1;
     const top = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
-    const leftPx = rect.x * zoom - sc.scrollLeft;
-    const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
-    if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
-    else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
+    const n = kw.word?.line?.page?.n;
+    const dims = n === undefined ? null : this.getDisplayDims(n);
+    if (dims && dims.width * zoom <= sc.clientWidth) {
+      sc.scrollLeft = (this._pageLeft(n) + dims.width / 2) * zoom - sc.clientWidth / 2;
+    } else {
+      const leftPx = rect.x * zoom - sc.scrollLeft;
+      const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
+      if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
+      else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
+    }
     const from = sc.scrollTop;
     const target = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, top));
     // The inner band, deeper at the top because the host's bars overlay the viewport there (the basic viewer's mode banner is 40 px).

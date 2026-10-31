@@ -287,10 +287,8 @@ export function createDragReorder({
   const gatherOut = (d) => {
     const ghost = /** @type {HTMLElement} */ (d.ghost);
     const row = d.cardElem;
-    const nm = /** @type {?HTMLElement} */ (row.querySelector(':scope > .nm'));
     const release = () => {
       ghost.remove();
-      if (nm) nm.style.opacity = '';
       for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
     };
     if (reducedMotion()) {
@@ -313,7 +311,6 @@ export function createDragReorder({
     ghost.style.width = '';
     ghost.style.minWidth = `${r.width}px`;
     const home = chipHome(d);
-    if (nm) nm.style.opacity = '0';
     const gone = { backgroundColor: 'transparent', borderColor: 'transparent', boxShadow: 'none' };
     const anims = [
       ghost.animate([{ transform: 'none' }, { transform: `translate(${home.left - r.left}px, ${home.top - r.top}px)` }], { duration: GATHER_MS, easing: 'ease', fill: 'forwards' }),

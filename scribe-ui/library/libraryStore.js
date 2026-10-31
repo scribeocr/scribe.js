@@ -370,7 +370,7 @@ export class LibraryStore {
    */
   static async connectNew() {
     // Opening only reads the folder, so the browser's prompt asks to view it, and each action that writes asks to edit.
-    // The desktop shell learns a folder's path only from the picker's write request, and grants that request without a prompt, so there the picker still asks to edit.
+    // The desktop shell grants the picker's write request without a prompt and learns the folder's path from it, so there the picker still asks to edit.
     const mode = /** @type {any} */ (window).electronAPI ? 'readwrite' : 'read';
     // @ts-ignore - showDirectoryPicker is Chromium-only and absent from lib.dom.
     const handle = await window.showDirectoryPicker({ mode });

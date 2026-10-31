@@ -1,5 +1,8 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+/** @type {?((id: string) => void)} */
+let menuActionHandler = null;
+
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isPackaged: process.argv.includes('--scribe-packaged'),
@@ -18,7 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onFileMissing: (callback) => ipcRenderer.on('file-missing', (_event, data) => callback(data)),
   onNavigate: (callback) => ipcRenderer.on('viewer-navigate', (_event, data) => callback(data)),
   onHighlight: (callback) => ipcRenderer.on('viewer-highlight', (_event, data) => callback(data)),
-  onMenuAction: (callback) => ipcRenderer.on('menu-action', (_event, id) => callback(id)),
+  onMenuAction: (callback) => { menuActionHandler = callback; },
+  // The shell runs a native menu's action here as a user gesture, since a file or folder picker opens only under one.
+  runMenuAction: (id) => { if (menuActionHandler) menuActionHandler(id); },
   sendMenuState: (state) => ipcRenderer.send('menu-state', state),
   getPowerState: () => ipcRenderer.invoke('power-state'),
   onPowerChanged: (callback) => ipcRenderer.on('power-changed', (_event, data) => callback(data)),

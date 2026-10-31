@@ -7240,7 +7240,7 @@ export function createLibraryInstance(viewer, opts) {
   const folderDropdown = createDropdown({
     show: (anchor) => {
       if (!store) return null;
-      // The shell learns a folder's location only from the picker, so a folder picked under an earlier version has none.
+      // The shell learns a folder's location from the picker or from the permission check a restored folder raises at launch, so a folder picked under an earlier version has none until a relaunch.
       if (revealItem) {
         const known = folderDirs.has(store.root.name);
         revealItem.classList.toggle('disabled', !known);
