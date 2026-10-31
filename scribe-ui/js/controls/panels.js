@@ -2750,7 +2750,7 @@ export function createScrollbars(scribe, viewerContainer) {
     const pageMetrics = scribe.doc && scribe.doc.pageMetrics;
     if (!sc || !pageMetrics || pageMetrics.length === 0) return null;
 
-    const barSize = 12;
+    const barSize = 10;
     const minThumb = 24;
 
     const m = scribe._scrollMetrics();
@@ -2850,8 +2850,10 @@ export function createScrollbars(scribe, viewerContainer) {
     if (vGeom && vGeom.visible) {
       vTrack.style.display = 'block';
       vTrack.style.height = `${Math.round(vGeom.trackPx)}px`;
-      vThumb.style.height = `${Math.round(vGeom.thumbPx)}px`;
-      vThumb.style.top = `${Math.round(vGeom.startPx)}px`;
+      // The thumb's end is rounded as a whole, so its rounded start plus its height never passes the rounded track by a pixel.
+      const vStart = Math.round(vGeom.startPx);
+      vThumb.style.height = `${Math.round(vGeom.startPx + vGeom.thumbPx) - vStart}px`;
+      vThumb.style.top = `${vStart}px`;
     } else {
       vTrack.style.display = 'none';
     }
@@ -2859,8 +2861,9 @@ export function createScrollbars(scribe, viewerContainer) {
     if (hGeom && hGeom.visible) {
       hTrack.style.display = 'block';
       hTrack.style.width = `${Math.round(hGeom.trackPx)}px`;
-      hThumb.style.width = `${Math.round(hGeom.thumbPx)}px`;
-      hThumb.style.left = `${Math.round(hGeom.startPx)}px`;
+      const hStart = Math.round(hGeom.startPx);
+      hThumb.style.width = `${Math.round(hGeom.startPx + hGeom.thumbPx) - hStart}px`;
+      hThumb.style.left = `${hStart}px`;
     } else {
       hTrack.style.display = 'none';
     }

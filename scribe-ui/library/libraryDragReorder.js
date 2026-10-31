@@ -18,6 +18,8 @@ const AUTOSCROLL_EDGE = 36;
 const AUTOSCROLL_SPEED = 14;
 export const FOLDER_FLY_MS = 240;
 const OVER_TARGET_SCALE = 0.45;
+const OVER_GROUP_SCALE = 1.25;
+const CHIP_FADE_MS = 140;
 export const FOLDER_OVER_TARGET_SCALE = 0.7;
 const OVER_TARGET_MS = 140;
 const LIFT_MS = 140;
@@ -61,6 +63,7 @@ const FLICK_MS = 60;
  * @property {number} pageW - The chip's page size at rest.
  * @property {number} pageH
  * @property {boolean} overBar - Whether the pointer has reached the bar at any time during the drag.
+ * @property {boolean} foreign - Whether the pointer is over a target outside the library.
  */
 
 /**
@@ -84,10 +87,13 @@ const FLICK_MS = 60;
  * @param {(dirPath: string, moves: LibraryMove[], fromDir: string) => void} deps.finishLanding
  * @param {(img: HTMLImageElement, relPath: string) => void} deps.thumbFor - Point an image at a document's thumbnail.
  * @param {(reached: boolean, afterCrumbDrop: boolean) => void} deps.barApproach - Unfold a folded path when the pointer reaches the bar mid-drag, or fold it back when that drag ends.
+ * @param {(phase: 'move'|'drop'|'cancel', clientX: number, clientY: number, carried: string[], ghost?: ?HTMLElement) => boolean} [deps.foreignDrop] - A target outside the library.
+ *   The drop phase passes the ghost, whose page the target may take for its landing before the ghost is removed.
+ *   Answers whether the pointer is over such a target, and on a `drop` whether that target took the carried document.
  */
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
-  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach,
+  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach, foreignDrop,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
@@ -112,7 +118,11 @@ export function createDragReorder({
   const CARRY_BANDS = ['folders-grid', 'main-grid', 'rows'];
 
   /** @param {string} relPath */
-  const elemOf = (relPath) => /** @type {?HTMLElement} */(body.querySelector(CARRY_BANDS.map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(relPath)}"]`).join(', ')));
+  const elemOf = (relPath, d = drag) => {
+    // The pressed card itself, since it may be a Recent or Just added copy, which CARRY_BANDS leaves out.
+    if (d && d.relPath === relPath && d.cardElem.isConnected) return d.cardElem;
+    return /** @type {?HTMLElement} */(body.querySelector(CARRY_BANDS.map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(relPath)}"]`).join(', ')));
+  };
 
   /** @param {number} n */
   const countBadge = (n) => {
@@ -289,7 +299,7 @@ export function createDragReorder({
     const row = d.cardElem;
     const release = () => {
       ghost.remove();
-      for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
+      for (const p of d.carried) elemOf(p, d)?.classList.remove('dragging');
     };
     if (reducedMotion()) {
       release();
@@ -446,7 +456,7 @@ export function createDragReorder({
     if (!d.isDir) d.ghost.style.transformOrigin = `${d.grabDX}px ${d.grabDY}px`;
     // The chip's position is driven per frame while it gathers, which a transition on its transform would smear.
     d.ghost.style.transition = reducedMotion() || d.chip ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
-    for (const p of d.carried) elemOf(p)?.classList.add('dragging');
+    for (const p of d.carried) elemOf(p, d)?.classList.add('dragging');
     surface.classList.add('card-drag');
     if (d.chip) surface.classList.add('chip-drag');
     if (d.canReorder && mainGridElem) {
@@ -473,6 +483,21 @@ export function createDragReorder({
    * @param {CardDrag} d
    */
   const updateDropTarget = (d) => {
+    const foreign = !!foreignDrop && !d.isDir && foreignDrop('move', d.lastX, d.lastY, d.carried);
+    if (foreign !== d.foreign) {
+      d.foreign = foreign;
+      if (d.ghost && !d.chip) d.ghost.style.transform = foreign ? `scale(${OVER_GROUP_SCALE})` : '';
+    }
+    if (foreign) {
+      if (d.dropElem) {
+        d.dropElem.classList.remove('drop');
+        if (d.dropElem.classList.contains('folder')) unpreviewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '');
+        d.dropElem = null;
+      }
+      d.dropDir = null;
+      if (d.line) d.line.style.display = 'none';
+      return;
+    }
     const under = document.elementFromPoint(d.lastX, d.lastY);
     let target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
     if (!target && viewer.toolbarElem) {
@@ -747,7 +772,7 @@ export function createDragReorder({
    */
   const settleBack = async (d) => {
     const release = () => {
-      for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
+      for (const p of d.carried) elemOf(p, d)?.classList.remove('dragging');
     };
     if (!d.ghost) {
       release();
@@ -772,7 +797,7 @@ export function createDragReorder({
     /** @type {Parameters<typeof flyCopies>[0]} */
     const flights = [];
     for (const page of pages) {
-      const cardElem = elemOf(page.relPath);
+      const cardElem = elemOf(page.relPath, d);
       const home = cardElem?.querySelector('img.thumb');
       if (!cardElem || !home) continue;
       flights.push({
@@ -824,7 +849,7 @@ export function createDragReorder({
     // The render below draws a vacated slot, so a crumb drop records its undo first.
     if (!isFolder) finishLanding(destDir, moves, fromDir);
     renderWithSlide();
-    for (const p of failed) elemOf(p)?.classList.remove('dragging');
+    for (const p of failed) elemOf(p, d)?.classList.remove('dragging');
     await flight;
     if (isFolder) finishLanding(destDir, moves, fromDir);
     else target.classList.remove('drop');
@@ -901,6 +926,22 @@ export function createDragReorder({
       return;
     }
     suppressClickUntil = Date.now() + 350;
+    if (foreignDrop) {
+      const taken = commit && d.foreign && foreignDrop('drop', d.lastX, d.lastY, d.carried, d.ghost);
+      if (!taken) foreignDrop('cancel', d.lastX, d.lastY, d.carried);
+      if (taken) {
+        if (d.ghost && d.chip && !reducedMotion()) {
+          const ghost = d.ghost;
+          const fade = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: CHIP_FADE_MS, easing: 'ease', fill: 'forwards' });
+          const gone = () => ghost.remove();
+          fade.finished.then(gone, gone);
+        } else d.ghost?.remove();
+        for (const p of d.carried) elemOf(p, d)?.classList.remove('dragging');
+        renderPending = false;
+        render();
+        return;
+      }
+    }
     const dropping = commit && d.dropDir != null && !!manifest && !!d.dropElem;
     if (!dropping && d.dropElem) {
       d.dropElem.classList.remove('drop');
@@ -911,7 +952,7 @@ export function createDragReorder({
       // A lift released without ever dragging opens the card menu, the touch home for Remove.
       if (commit && !d.moved) {
         d.ghost?.remove();
-        for (const p of d.carried) elemOf(p)?.classList.remove('dragging');
+        for (const p of d.carried) elemOf(p, d)?.classList.remove('dragging');
         if (renderPending) {
           renderPending = false;
           render();
@@ -962,7 +1003,7 @@ export function createDragReorder({
       lastY: e.clientY,
       started: false,
       moved: false,
-      canReorder: reorderAllowed() && !relPath.endsWith('/'),
+      canReorder: reorderAllowed() && !relPath.endsWith('/') && card.parentElement?.dataset.band === 'main-grid',
       dropDir: null,
       dropElem: null,
       ghost: null,
@@ -979,6 +1020,7 @@ export function createDragReorder({
       pageW: 0,
       pageH: 0,
       overBar: false,
+      foreign: false,
     };
     if (isTouch) {
       drag.holdTimer = window.setTimeout(() => {

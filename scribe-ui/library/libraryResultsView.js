@@ -1,8 +1,23 @@
-// The library's full-text search results: ranked hit rows with snippets and page thumbnails, beside a preview pane.
+// The library's full-text search results: ranked hit rows with snippets and page thumbnails.
 // The built view is retained rather than rebuilt, so returning to an unchanged result set restores scroll and paint intact.
 
 import { titleOf } from './libraryStore.js';
-import { markOverlayHTML } from './libraryPreview.js';
+/**
+ * @param {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}} m
+ *   The first `per` of `rects` belong to the first occurrence.
+ * @returns {string}
+ */
+const markOverlayHTML = (m) => {
+  if (!m || !m.rects.length) return '';
+  let html = '';
+  for (let i = 0; i < m.rects.length; i++) {
+    const r = m.rects[i];
+    const act = i < m.per ? ' act' : '';
+    html += `<span class="scribe-mark${act}" style="left:${(r.left / m.dims.width) * 100}%;top:${(r.top / m.dims.height) * 100}%;`
+      + `width:${((r.right - r.left) / m.dims.width) * 100}%;height:${((r.bottom - r.top) / m.dims.height) * 100}%;"></span>`;
+  }
+  return html;
+};
 
 /** How many documents, and pages within each, the list shows before a "more" button. */
 const RESULT_DOC_LIMIT = 20;
@@ -15,15 +30,15 @@ const THUMB_QUIET_MS = 1000;
 /**
  * Own the search-results view: one retained build at a time, plus the thumbnail pump and warm lane behind it.
  * @param {Object} deps
- * @param {() => HTMLElement} deps.host - The element the hit list mounts into, the split's column or, where no preview is shown, the surface body.
+ * @param {() => HTMLElement} deps.host
  * @param {import('./docSession.js').DocSessions} deps.sessions
- * @param {ReturnType<typeof import('./libraryPreview.js').createPreview>} deps.preview
+ * @param {ReturnType<typeof import('./libraryDocLoads.js').createDocLoads>} deps.loads
  * @param {() => ?import('./libraryStore.js').LibraryStore} deps.getStore
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => Array<{hash: string, pages: number[]}>} deps.getResults
  * @param {() => string} deps.getQuery
- * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object) => Promise<void>} deps.openEntry
- * @param {() => boolean} deps.selectOpens - Whether selecting a hit opens its document outright, where no preview is shown.
+ * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object, keep: boolean) => Promise<void>} deps.openEntry
+ *   Show the hit's page: a preview the next selection replaces, or, with `keep`, a tab that stays.
  * @param {() => void} deps.onBack - Leave the results and return to browsing.
  * @param {() => ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.getEngine
  * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineResponse
@@ -32,7 +47,7 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => ?string} deps.getEngineError
  */
 export function createResultsView({
-  host, sessions, preview, getStore, getManifest, getResults, getQuery, openEntry, selectOpens, onBack,
+  host, sessions, loads, getStore, getManifest, getResults, getQuery, openEntry, onBack,
   getEngine, getEngineResponse, getEngineTiers, getEngineError,
 }) {
   /**
@@ -40,7 +55,6 @@ export function createResultsView({
    * @typedef {Object} ResultsBuild
    * @property {Object} results
    * @property {HTMLElement} wrap
-   * @property {(relPath: ?string, pageN: number) => void} select
    * @property {() => void} snapshot
    * @property {() => void} attach
    * @property {() => void} repump
@@ -51,8 +65,6 @@ export function createResultsView({
   let resultsView = null;
   /** Abandons in-flight result-row work when a fresh results build replaces the old one. */
   let resultsGen = 0;
-  /** The query the view last rendered with, so a new search clears the preview. */
-  let shownQuery = '';
 
   const renderResults = () => {
     const results = getResults();
@@ -79,7 +91,6 @@ export function createResultsView({
     wrap.tabIndex = 0;
     wrap.setAttribute('aria-label', 'Search results');
     hostEl.appendChild(wrap);
-    /** The scroller the list sits in at the moment, which can change between the split's column and the surface body. */
     const scroller = () => wrap.parentElement ?? wrap;
 
     const summary = document.createElement('div');
@@ -100,9 +111,6 @@ export function createResultsView({
     summary.appendChild(backBtn);
     wrap.appendChild(summary);
 
-    if (shownQuery !== fullTextQuery) preview.showEmpty();
-    shownQuery = fullTextQuery;
-
     const byHash = new Map();
     if (manifest) for (const [relPath, e] of Object.entries(manifest.docs)) byHash.set(e.hash, { relPath, entry: e });
 
@@ -113,8 +121,17 @@ export function createResultsView({
     const hits = [];
     let active = -1;
     let opening = false;
-    const openActive = async () => {
-      if (active < 0 || opening) return;
+    /** @type {?boolean} The request made while an open was in flight, run once it lands: the double-click's keep behind its click's preview, or the last of a run of arrow presses. */
+    let queued = null;
+    /**
+     * @param {boolean} keep
+     */
+    const openActive = async (keep) => {
+      if (active < 0) return;
+      if (opening) {
+        queued = keep;
+        return;
+      }
       const h = hits[active];
       opening = true;
       try {
@@ -124,40 +141,22 @@ export function createResultsView({
           near: h.lowerTier && h.marks ? [{
             page: h.pageN, tier: /** @type {number} */ (h.tier), count: h.count, marks: h.marks,
           }] : [],
-        });
+        }, keep);
       } finally {
         opening = false;
+        if (queued !== null) {
+          const next = queued;
+          queued = null;
+          openActive(next);
+        }
       }
     };
 
     const selectHit = (i) => {
       active = i;
       hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
-      const h = hits[i];
-      h.row.scrollIntoView({ block: 'nearest' });
-      if (selectOpens()) {
-        openActive();
-        return;
-      }
-      preview.show({
-        relPath: h.relPath,
-        hash: h.hash,
-        entry: h.entry,
-        pageN: h.pageN,
-        query: fullTextQuery,
-        near: h.lowerTier && h.marks ? [{
-          page: h.pageN, tier: /** @type {number} */ (h.tier), count: h.count, marks: h.marks,
-        }] : [],
-        title: titleOf(h.relPath),
-      });
-    };
-
-    /** Mark the row for `pageN` of `relPath` as the selection without showing it, or no row for a null path. */
-    const selectRowOnly = (relPath, pageN) => {
-      const i = relPath ? hits.findIndex((h) => h.relPath === relPath && h.pageN === pageN) : -1;
-      active = i;
-      hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
-      if (i >= 0) hits[i].row.scrollIntoView({ block: 'nearest' });
+      hits[i].row.scrollIntoView({ block: 'nearest' });
+      openActive(false);
     };
 
     wrap.addEventListener('keydown', (e) => {
@@ -168,7 +167,7 @@ export function createResultsView({
         e.preventDefault();
         if (active > 0) selectHit(active - 1);
       } else if (e.key === 'Enter') {
-        openActive();
+        openActive(true);
       }
     });
 
@@ -239,8 +238,8 @@ export function createResultsView({
           document.addEventListener('visibilitychange', resume);
           break;
         }
-        if (preview.userLoadActive()) {
-          preview.userLoadIdle().then(resumeWarm);
+        if (loads.userLoadActive()) {
+          loads.userLoadIdle().then(resumeWarm);
           break;
         }
         const listRect = scroller().getBoundingClientRect();
@@ -356,8 +355,9 @@ export function createResultsView({
       });
       row.addEventListener('dblclick', (e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-        selectHit(hits.indexOf(hit));
-        openActive();
+        active = hits.indexOf(hit);
+        hits.forEach((h, j) => h.row.classList.toggle('on', j === active));
+        openActive(true);
       });
       /** @type {ThumbItem} */
       const thumb = {
@@ -585,7 +585,6 @@ export function createResultsView({
     resultsView = {
       results,
       wrap,
-      select: selectRowOnly,
       snapshot: () => {
         listScrollTop = scroller().scrollTop;
       },
@@ -625,9 +624,6 @@ export function createResultsView({
 
     /** Retry the rows left blank at pump time, after rasters landed elsewhere. */
     repump: () => resultsView?.repump(),
-
-    /** Mark the row for `pageN` of `relPath` as the selection, or no row for a null path. */
-    select: (relPath, pageN) => resultsView?.select(relPath, pageN),
 
     /**
      * Take the ranked pass's answer into the current results' view.

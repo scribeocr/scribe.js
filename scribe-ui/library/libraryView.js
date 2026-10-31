@@ -8,6 +8,7 @@ import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
+import { findText, goToMatch } from '../js/viewerSearch.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import {
   LibraryStore, folderNameProblem, sameEntry, titleOf,
@@ -16,11 +17,9 @@ import { PortfolioStore } from './portfolioStore.js';
 import { createSearchClient } from './search/searchClient.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
-import {
-  createPageNav, createZoomControls, makeIconButton, makeSeparator,
-} from '../js/controls/toolbar.js';
+import { makeIconButton } from '../js/controls/toolbar.js';
 import { barIcon, slotIcon } from '../js/controls/icons.js';
-import { createPreview } from './libraryPreview.js';
+import { createDocLoads } from './libraryDocLoads.js';
 import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
 import { flyCopies } from '../js/controls/pageReorder.js';
@@ -81,12 +80,17 @@ const MUTATOR_METHODS = [
   'undo', 'redo', 'recognize',
 ];
 
-const PREVIEW_STORAGE_KEY = 'scribe-library-preview';
+const COLUMN_STORAGE_KEY = 'scribe-library-column';
+/** The folder column's width beside open documents, in px, and the bounds its edge can drag it to. */
+const COLUMN_DEFAULT_W = 260;
+const COLUMN_MIN_W = 200;
+const COLUMN_MAX_W = 480;
 const VIEW_STORAGE_KEY = 'scribe-library-view';
 const OTHERS_STORAGE_KEY = 'scribe-library-others';
 const COLS_STORAGE_KEY = 'scribe-library-cols';
 /** Storage key for the name of the folder that was open when the app last ran. */
 const OPEN_FOLDER_KEY = 'scribe-library-open-folder';
+const REVEAL_UNKNOWN_HINT = 'Available after the folder is picked again with Open Another Folder…';
 const RESUME_STORAGE_KEY = 'scribe-library-resume';
 
 /**
@@ -96,9 +100,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {string} glyph - The pinned tab's icon.
  * @property {?Object} [store] - A store to open at once; the library connects its own folder instead.
  * @property {'grid'|'list'|'compact'} [viewDefault]
- * @property {boolean} [previewDefault]
  * @property {boolean} [showOthersDefault]
- * @property {boolean} [persistPrefs] - Read and write the view, column, preview and other-files preferences in localStorage.
+ * @property {boolean} [persistPrefs] - Read and write the view, column, folder-column and other-files preferences in localStorage.
  * @property {boolean} [readOnly] - No file drops, folder operations, New menu or Refresh.
  * @property {string} [emptyText]
  * @property {?string} [initialRelPath] - The file to select and preview once the store is open.
@@ -129,14 +132,14 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} [syncFoldersOpenElsewhere] Document library only: reorder and redraw the Recent list once the folders other windows hold change.
  * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
+ * @property {() => void} positionSurface Lay the surface over its area again, after the top bars change.
  * @property {() => void} show
  * @property {() => void} hide
- * @property {() => boolean} covering Whether the surface covers the document area, as the browse form does and the split form does not.
- * @property {() => void} clearPreview Empty the split form's pane and clear its selection.
+ * @property {() => boolean} covering Whether the surface fills the document area, as it does with nothing open.
+ * @property {() => number} columnWidth The width the surface takes at the window's left edge as the folder column, 0 while it is not shown as one.
+ * @property {(node: Node) => boolean} containsNode
  * @property {() => void} phoneUiChanged
- * @property {() => void} pageChanged The viewer moved to another page.
- * @property {(options?: {keepSurface?: boolean}) => void} docOpened The viewer put a tab's document on screen.
- *   The surface yields the front unless `keepSurface` is set.
+ * @property {() => void} docOpened The viewer put a tab's document on screen.
  * @property {() => void} emptied
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
  * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
@@ -256,7 +259,44 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
 .scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; scrollbar-gutter: stable; position: relative; }
-.scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 7px; }
+.scribe-pdf-viewer .scribe-library-surface.column { right: auto; box-sizing: border-box; border-right: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-surface.column.closing { opacity: .55; }
+.scribe-pdf-viewer .scribe-library-colhead { flex: none; display: flex; align-items: center; gap: 4px; height: 36px; box-sizing: border-box; padding: 0 4px 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-canvas); }
+.scribe-pdf-viewer .scribe-library-colhead[hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-colhead > [hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-seg button { width: 28px; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-hbtn { padding: 0 7px; gap: 5px; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-hbtn.icon-only { padding: 0 4px; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-sort-lbl .ghost { display: none; }
+.scribe-pdf-viewer .scribe-library-colview .scribe-library-colview-glyph { display: inline-flex; }
+.scribe-pdf-viewer .scribe-library-colview .scribe-library-colview-glyph svg { width: 16px; height: 16px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body.grid-mode { padding: 10px 10px 0; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); justify-content: stretch; gap: 8px; margin-bottom: 14px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card .body { padding: 6px 8px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card .title { font-size: 11.5px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card .meta { font-size: 11px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-section-label { margin: 2px 0 8px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card.folder .fstrip { min-height: 0; padding: 8px 6px 7px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card.folder .scribe-library-fold { transform: scale(var(--fold-fit, 1)); transform-origin: center; margin: calc(-68px * (1 - var(--fold-fit, 1)) / 2) calc(-150px * (1 - var(--fold-fit, 1)) / 2); }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-card.folder .fstrip::before { transform: scale(var(--fold-fit, 1)); transform-origin: center; top: 8px; }
+.scribe-pdf-viewer .scribe-library-colglyph { display: inline-flex; width: 16px; height: 16px; flex-shrink: 0; color: var(--scribe-ink-2); margin-right: 4px; }
+.scribe-pdf-viewer .scribe-library-colname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-hicon { width: 24px; height: 24px; padding: 2px; border-radius: 6px; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-colup { margin-left: -4px; }
+.scribe-pdf-viewer .scribe-library-colsearch { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-canvas); }
+.scribe-pdf-viewer .scribe-library-colsearch .scribe-library-field { width: 100%; margin: 0; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-library-colsearch .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
+.scribe-pdf-viewer .scribe-library-colsearch { container-type: inline-size; }
+@container (max-width: 340px) { .scribe-pdf-viewer .scribe-library-colsearch .scribe-library-field.has-text:focus-within .scribe-library-hint { display: none; } }
+.scribe-pdf-viewer .scribe-library-colsash { position: absolute; top: 0; bottom: 0; right: 0; width: 3px; cursor: col-resize; z-index: 4; touch-action: none; }
+.scribe-pdf-viewer .scribe-library-colsash::before { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
+.scribe-pdf-viewer .scribe-library-colsash:hover::before { opacity: 1; transition-delay: 0.25s; }
+.scribe-pdf-viewer .scribe-library-colsash.drag::before { opacity: 1; transition-delay: 0s; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-progress { padding: 0 8px 0 10px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-rsummary { padding: 8px 10px 6px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body { padding: 0; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body.list-mode { background: var(--scribe-surface); }
+.scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 6px; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
@@ -289,7 +329,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.context { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card .thumb { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); display: block; }
 .scribe-pdf-viewer .scribe-library-card .body { padding: 8px 10px; }
-.scribe-pdf-viewer .scribe-library-card .title { font-weight: 600; font-size: 13px; line-height: 1.3; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-word; }
+.scribe-pdf-viewer .scribe-library-card .title { font-weight: 600; font-size: 13px; line-height: 1.3; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .scribe-pdf-viewer .scribe-library-card .meta { font-size: 12px; opacity: 0.65; margin-top: 3px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .scribe-pdf-viewer .scribe-library-badge { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: color-mix(in srgb, var(--scribe-ink) 12%, transparent); }
 .scribe-pdf-viewer .scribe-library-badge.warn { background: #c77d0a; color: #fff; }
@@ -369,8 +409,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-recent .p { color: var(--scribe-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; flex: none; max-width: 55%; }
 /* A stable gutter is reserved even under overflow: hidden. */
 .scribe-pdf-viewer .scribe-library-body.results-mode { padding: 0; scrollbar-gutter: auto; }
-.scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; scrollbar-gutter: auto; }
-.scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
 /* Columns the layout dropped to keep the name readable.
    Their tracks are gone, so the cells have to go with them. */
 .scribe-pdf-viewer .scribe-library-cols-drop-1 .scribe-library-lhead > :nth-child(2), .scribe-pdf-viewer .scribe-library-cols-drop-1 .scribe-library-row > :nth-child(2) { display: none; }
@@ -379,40 +417,12 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-lhead > :nth-child(5), .scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-row > :nth-child(5) { display: none; }
 /* Dividers move width between columns, which is meaningless once the layout is dropping them to fit. */
 .scribe-pdf-viewer .scribe-library-cols-dropped .scribe-library-hres { display: none; }
-.scribe-pdf-viewer .scribe-library-results { flex: 1; display: flex; min-height: 0; min-width: 0; font-size: 13px; }
-.scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
-.scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 5px; }
+.scribe-pdf-viewer .scribe-library-rlist { width: 100%; height: 100%; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; background: var(--scribe-surface); outline: none; }
+.scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 6px; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
-.scribe-pdf-viewer .scribe-library-results.solo .scribe-library-rlist { width: 100%; border-right: none; }
-.scribe-pdf-viewer .scribe-library-results.solo .scribe-library-rsplit { display: none; }
-.scribe-pdf-viewer .scribe-library-rsplit { flex: 0 0 7px; margin: 0 -3px; position: relative; z-index: 4; cursor: col-resize; touch-action: none; }
-.scribe-pdf-viewer .scribe-library-rsplit::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
-.scribe-pdf-viewer .scribe-library-rsplit:hover::before { opacity: 1; transition-delay: 0.25s; }
-.scribe-pdf-viewer .scribe-library-rsplit.drag::before { opacity: 1; transition-delay: 0s; }
-.scribe-pdf-viewer .scribe-library-results.rsplit-drag { user-select: none; }
-.scribe-pdf-viewer .scribe-library-results.rsplit-drag * { cursor: col-resize !important; }
 .scribe-pdf-viewer .scribe-library-rwrap { outline: none; }
-.scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 /* Stacked above the stage, so the find bar that hangs from it paints over the page. */
-.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); box-shadow: inset 0 -1px 0 var(--scribe-line); position: relative; z-index: 2; }
-.scribe-pdf-viewer .scribe-library-pv-head .t { flex: 1 1 0; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-zoom, .scribe-pdf-viewer .scribe-library-pv-tools { display: inline-flex; align-items: center; flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-pv-tools { flex: 1 1 0; justify-content: flex-end; gap: 8px; }
-.scribe-pdf-viewer .scribe-library-pv-tools .vertical-separator { margin: 0; }
-.scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; background: var(--scribe-canvas); }
-.scribe-pdf-viewer .scribe-library-pv-stage.live { background: transparent; pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
-.scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
-@keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
-.scribe-pdf-viewer .scribe-library-surface.split { background: transparent; }
-/* The boxes over the document pass the pointer through to it, and pointer-events is inherited, so every other part of the split form takes it back. */
-.scribe-pdf-viewer .scribe-library-surface.split, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results, .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv { pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-surface.split > :not(.scribe-library-body), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-body > :not(.scribe-library-results), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-results > :not(.scribe-library-pv), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv > :not(.scribe-library-pv-stage), .scribe-pdf-viewer .scribe-library-surface.split .scribe-library-pv-stage:not(.live) { pointer-events: auto; }
-.scribe-pdf-viewer .scribe-library-bar-ghost { position: absolute; box-sizing: border-box; overflow: hidden; pointer-events: none; z-index: 41; color: var(--scribe-ink); line-height: 28px; }
-.scribe-pdf-viewer .scribe-library-bar-ghost > * { position: absolute; margin: 0; }
-.scribe-pdf-viewer .scribe-library-find-lift { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: visible; z-index: 42; color: var(--scribe-ink); line-height: 28px; }
 .scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-back { margin-left: auto; border: none; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
@@ -538,29 +548,12 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.portfolio > img.thumb { display: none; }
 .scribe-pdf-viewer .scribe-library-card.portfolio .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-card.portfolio .fthumb .fi { width: 46px; height: 46px; }
-.scribe-pdf-viewer .scribe-library-pv-plate { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px; color: var(--scribe-ink-2); font-size: 13px; text-align: center; }
-.scribe-pdf-viewer .scribe-library-pv-plate > .fi { width: 56px; height: 56px; color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-pv-plate .n { font-weight: 600; color: var(--scribe-ink); overflow-wrap: anywhere; }
-.scribe-pdf-viewer .scribe-library-pv-plate .m { color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-pv-plate .scribe-library-btn { margin-top: 8px; }
-.scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-nav, .scribe-pdf-viewer .scribe-library-pv-plated .scribe-library-pv-tools { display: none; }
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
 /* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
 .scribe-pdf-viewer .scribe-library-surface.card-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag * { cursor: grabbing; }
 .scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag * { cursor: default; }
 /* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
-.scribe-pdf-viewer .scribe-library-pv-head { container: scribe-pv / inline-size; }
-@container scribe-pv (max-width: 472px) {
-  .scribe-pdf-viewer .scribe-library-pv-nav .cr-icon-button { display: none; }
-}
-@container scribe-pv (max-width: 416px) {
-  .scribe-pdf-viewer .scribe-library-pv-zoom { display: none; }
-  .scribe-pdf-viewer .scribe-library-pv-tools { flex: 0 0 auto; }
-}
-@container scribe-pv (max-width: 352px) {
-  .scribe-pdf-viewer .scribe-library-pv-nav { display: none; }
-}
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-sort-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-add-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only svg.chev { display: none; }
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only { padding: 0 5px; }
 .scribe-pdf-viewer .scribe-library-bar-controls[hidden], .scribe-pdf-viewer .scribe-library-bar-controls > [hidden] { display: none !important; }
@@ -646,61 +639,123 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card .shelf-act:hover { text-decoration: underline; }
 .scribe-pdf-viewer .scribe-library-folder-menu { left: 0; right: auto; min-width: 230px; z-index: 60; }
 .scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
-.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled svg { color: var(--scribe-ink-3); }
-.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item.disabled:hover { background: none; }
+.scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
+.scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled svg { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled:hover { background: none; }
 `;
   document.head.appendChild(style);
 };
 
 /**
- * The split shell shared by the search results and the list view's preview.
- * It holds a resizable left column, a drag sash, and room for the pane the caller appends.
- * @param {number} defaultWidth
- * @param {() => number} getWidth
- * @param {(w: number) => void} setWidth
+ * Land a dropped card or row as the document it opens.
+ * @param {?HTMLElement} pageImg - The drag ghost's page, an image or the canvas copy of one, at the size it had at release; null for a row's chip.
+ * @param {?import('../viewer.js').ScribeViewer} target - The viewer the document will open in, when it exists at the drop.
+ * @returns {{arrive: (viewer: import('../viewer.js').ScribeViewer) => void, cancel: () => void}} `arrive` names the viewer the document opened in, and `cancel` ends the landing at once.
  */
-const buildPreviewSplit = (defaultWidth, getWidth, setWidth) => {
-  const wrap = document.createElement('div');
-  wrap.className = 'scribe-library-results';
-  wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
-  const left = document.createElement('div');
-  left.className = 'scribe-library-rlist';
-  wrap.appendChild(left);
-  const sash = document.createElement('div');
-  sash.className = 'scribe-library-rsplit';
-  sash.setAttribute('role', 'separator');
-  sash.setAttribute('aria-orientation', 'vertical');
-  sash.setAttribute('aria-label', 'Resize the preview split');
-  sash.addEventListener('pointerdown', (e) => {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = left.getBoundingClientRect().width;
-    sash.classList.add('drag');
-    wrap.classList.add('rsplit-drag');
-    const onMove = (/** @type {PointerEvent} */ ev) => {
-      // Clamp to the same bounds as the CSS width clamp so dragging past an edge has no dead travel on the way back.
-      setWidth(Math.round(Math.max(280, Math.min(startW + ev.clientX - startX, wrap.getBoundingClientRect().width - 320))));
-      wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
-    };
-    const onUp = () => {
-      sash.classList.remove('drag');
-      wrap.classList.remove('rsplit-drag');
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
-      window.removeEventListener('pointercancel', onUp);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
-    window.addEventListener('pointercancel', onUp);
-  });
-  sash.addEventListener('dblclick', () => {
-    setWidth(defaultWidth);
-    wrap.style.setProperty('--scribe-library-rlist-w', `${defaultWidth}px`);
-  });
-  wrap.appendChild(sash);
-  return { wrap, left };
+const landCard = (pageImg, target) => {
+  const from = pageImg ? pageImg.getBoundingClientRect() : null;
+  const cs = pageImg ? getComputedStyle(pageImg) : null;
+  /** @type {?HTMLDivElement} */
+  let veil = null;
+  const sc = target?.scrollContainer;
+  if (sc) {
+    const r = sc.getBoundingClientRect();
+    let bg = '#fff';
+    for (let el = /** @type {?HTMLElement} */ (sc); el; el = el.parentElement) {
+      const c = getComputedStyle(el).backgroundColor;
+      if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') { bg = c; break; }
+    }
+    veil = document.createElement('div');
+    veil.className = 'scribe-landing-veil';
+    Object.assign(veil.style, {
+      position: 'fixed',
+      left: `${r.left}px`,
+      top: `${r.top}px`,
+      width: `${r.width}px`,
+      height: `${r.height}px`,
+      zIndex: '999',
+      pointerEvents: 'none',
+      background: bg,
+    });
+    document.body.appendChild(veil);
+  }
+  /** @type {?HTMLElement} */
+  let copy = null;
+  if (pageImg && from && cs) {
+    // A cloned canvas is blank, so a canvas page is drawn into a new one.
+    if (pageImg instanceof HTMLCanvasElement) {
+      const c = document.createElement('canvas');
+      c.width = pageImg.width;
+      c.height = pageImg.height;
+      c.getContext('2d')?.drawImage(pageImg, 0, 0);
+      copy = c;
+    } else copy = /** @type {HTMLElement} */ (pageImg.cloneNode(true));
+  }
+  if (copy && from && cs) {
+    copy.className = 'scribe-card-landing';
+    Object.assign(copy.style, {
+      position: 'fixed',
+      left: `${from.left}px`,
+      top: `${from.top}px`,
+      width: `${from.width}px`,
+      height: `${from.height}px`,
+      margin: '0',
+      zIndex: '1000',
+      pointerEvents: 'none',
+      objectFit: 'cover',
+      objectPosition: 'top',
+      border: cs.border,
+      borderRadius: cs.borderRadius,
+      boxShadow: cs.boxShadow,
+      background: cs.backgroundColor || '#fff',
+    });
+    document.body.appendChild(copy);
+  }
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    copy?.remove();
+    veil?.remove();
+  };
+  const reduced = () => !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return {
+    arrive: (viewer) => {
+      if (done) return;
+      const n = viewer.state.cp.n;
+      const painted = viewer.imageCache?.pageCanvases?.[n];
+      const paint = painted ? Promise.race([painted, new Promise((r) => { setTimeout(r, 2500); })]) : Promise.resolve();
+      if (!copy || !from || !cs) {
+        paint.then(() => {
+          if (done || !veil || reduced()) {
+            finish();
+            return;
+          }
+          const fade = veil.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180, easing: 'ease', fill: 'forwards' });
+          fade.finished.then(finish, finish);
+        }, finish);
+        return;
+      }
+      const pageEl = viewer.pageContainerArr?.[n];
+      const to = pageEl ? pageEl.getBoundingClientRect() : null;
+      if (!to || !to.width) {
+        finish();
+        return;
+      }
+      const flight = reduced() ? null : copy.animate([
+        {
+          left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: cs.borderRadius,
+        },
+        {
+          left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, borderRadius: '0px',
+        },
+      ], { duration: 240, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'forwards' });
+      Promise.all([flight ? flight.finished : Promise.resolve(), paint]).then(() => {
+        requestAnimationFrame(finish);
+      }, finish);
+    },
+    cancel: finish,
+  };
 };
 
 /**
@@ -796,15 +851,6 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?Array<{hash: string, pages: number[]}>} Full-text results, or null for the browse grid. */
   let fullTextResults = null;
   let fullTextQuery = '';
-  let listPreviewOn = opts.previewDefault ?? false;
-  if (persistPrefs) {
-    try {
-      listPreviewOn = window.localStorage.getItem(PREVIEW_STORAGE_KEY) === '1';
-    } catch { /* localStorage unavailable. */ }
-  }
-  /** @type {?string} The document the list view previews. */
-  let listPreviewPath = null;
-  let listPreviewPage = 0;
   const sessions = new DocSessions();
   /** @type {?number} */
   let manifestTimer = null;
@@ -1014,13 +1060,6 @@ export function createLibraryInstance(viewer, opts) {
   sortWrap.appendChild(sortMenu);
   header.appendChild(sortWrap);
 
-  const previewBtn = document.createElement('button');
-  previewBtn.className = 'scribe-library-hicon';
-  previewBtn.innerHTML = slotIcon('preview22');
-  previewBtn.title = 'Preview panel';
-  previewBtn.setAttribute('aria-label', 'Preview panel');
-  header.appendChild(previewBtn);
-
   const headerSep = document.createElement('span');
   headerSep.className = 'vertical-separator';
   if (!readOnly) header.appendChild(headerSep);
@@ -1149,10 +1188,9 @@ export function createLibraryInstance(viewer, opts) {
     barControls = document.createElement('span');
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
-    // A read-only store (a portfolio) has nothing to add or rescan, so its bar ends at the preview toggle.
     const barParts = readOnly
-      ? [searchField, findBtn, viewSeg, sortWrap, previewBtn, moreWrap]
-      : [searchField, findBtn, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn, moreWrap];
+      ? [searchField, findBtn, viewSeg, sortWrap, moreWrap]
+      : [searchField, findBtn, viewSeg, sortWrap, headerSep, newWrap, refreshBtn, moreWrap];
     for (const el of barParts) barControls.appendChild(el);
     // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
@@ -1198,663 +1236,324 @@ export function createLibraryInstance(viewer, opts) {
     homeTab.appendChild(chev);
     homeTabChev = chev;
   }
-  // The library mounts its tab when a folder opens.
   if (viewer._tabStrip && !isLibrary) {
     viewer._tabStrip.addPinnedTab(homeTab);
     viewer._tabStripMinTabs = 1;
     viewer._renderTabs();
   }
 
-  // --- Layout -------------------------------------------------------------
-
-  const positionSurface = () => {
-    surface.style.top = `${viewer._topBarsHeight()}px`;
-  };
-  const resizeObserver = new ResizeObserver(positionSurface);
-  resizeObserver.observe(viewer.pdfViewerElem);
-
-  // --- The split form -----------------------------------------------------
-  // The main viewer draws the document in the pane's area, under a head whose controls drive it directly.
+  // --- The forms ---------------------------------------------------------
+  // With nothing open the library fills the document area and its controls take the toolbar.
+  // Once a document is open it is a column at the window's left edge beside the groups, under a head of its own.
+  // The toolbar then holds the document's controls.
 
   /** @type {Array<{el: HTMLElement, display: string}>} */
   let hiddenBarElems = [];
   let barSwapped = false;
   let priorEndZoneFlex = '';
-  let resultsListWidth = 400;
-  let listPreviewWidth = 700;
-  /** @type {?HTMLElement} The split's column, mounted by the render that builds the results or the list. */
-  let splitLeft = null;
-
-  const pane = document.createElement('div');
-  pane.className = 'scribe-library-pv';
-  // The toolbar class applies the toolbar-scoped styles of the find bar and the page input.
-  pane.innerHTML = '<div class="scribe-library-pv-head scribe-pdf-viewer-toolbar" style="display:none;">'
-    + '<span class="t"></span><span class="scribe-library-pv-tools"></span></div>'
-    + '<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty"></div>'
-    + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>';
-  const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
-  const pvTitle = /** @type {HTMLElement} */ (pvHead.querySelector('.t'));
-  const pvTools = /** @type {HTMLElement} */ (pvHead.querySelector('.scribe-library-pv-tools'));
-  const pvStage = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-stage'));
-  const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
-  const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
-  const pvPlate = document.createElement('div');
-  pvPlate.className = 'scribe-library-pv-plate';
-  pvPlate.style.display = 'none';
-  pvStage.appendChild(pvPlate);
-  const pageNav = createPageNav(viewer.scribe);
-  const navWrap = document.createElement('span');
-  navWrap.className = 'scribe-library-pv-nav';
-  navWrap.append(pageNav.prevElem, pageNav.nextElem, pageNav.pageInputGroup);
-  pvTitle.after(navWrap);
-  // The title and the tools split the head's leftover width, which can land the page controls on a half pixel.
-  let navObserver = null;
-  if (typeof ResizeObserver !== 'undefined') {
-    navObserver = new ResizeObserver(() => {
-      navWrap.style.left = '';
-      const x = navWrap.getBoundingClientRect().left - pvHead.getBoundingClientRect().left;
-      const frac = x - Math.round(x);
-      navWrap.style.position = 'relative';
-      navWrap.style.left = Math.abs(frac) > 0.01 ? `${-frac}px` : '';
-    });
-    navObserver.observe(pvHead);
+  /** @type {'full'|'column'} */
+  let form = 'full';
+  let columnOpen = true;
+  let columnW = COLUMN_DEFAULT_W;
+  if (persistPrefs) {
+    try {
+      const stored = parseInt(window.localStorage.getItem(COLUMN_STORAGE_KEY) || '', 10);
+      if (stored >= COLUMN_MIN_W && stored <= COLUMN_MAX_W) columnW = stored;
+    } catch { /* localStorage unavailable. */ }
   }
-  pageNav.pageNumElem.addEventListener('focus', () => pageNav.pageNumElem.select());
-  // Wrapped because the pair sets its display inline, which would override the width rule that hides it.
-  const zoomWrap = document.createElement('span');
-  zoomWrap.className = 'scribe-library-pv-zoom';
-  zoomWrap.appendChild(createZoomControls(viewer.scribe).zoomControls);
-  const pvOpenBtn = makeIconButton('Open', barIcon('openInTab'));
-  const pvSep = makeSeparator();
-  const pvFindSep = makeSeparator();
-  pvFindSep.style.display = 'none';
-  pvTools.append(zoomWrap, pvFindSep, pvSep, pvOpenBtn);
-  /** Show the viewer's page in the head's page control. */
-  const syncPaneNav = () => {
-    const d = viewer.doc;
-    if (!d || !d.pageMetrics.length) return;
-    if (document.activeElement !== pageNav.pageNumElem) pageNav.pageNumElem.value = String(viewer.scribe.state.cp.n + 1);
-    pageNav.pageCountElem.textContent = String(d.pageMetrics.length);
+  const saveColumnW = () => {
+    if (!persistPrefs) return;
+    try {
+      window.localStorage.setItem(COLUMN_STORAGE_KEY, String(columnW));
+    } catch { /* localStorage unavailable. */ }
   };
-  /** @type {?{btnParent: ?HTMLElement, btnNext: ?Node, groupParent: ?HTMLElement, groupNext: ?Node}} Where the viewer's find control and bar came from, while the pane head holds them. */
-  let findHome = null;
-  /** Move the viewer's find control and bar into the pane head, so the preview's find is the viewer's own. */
-  const takeFindBar = () => {
-    const bar = viewer._searchBar;
-    if (!bar || findHome) return;
-    findHome = {
-      btnParent: bar.searchElem.parentElement, btnNext: bar.searchElem.nextSibling, groupParent: bar.findGroupElem.parentElement, groupNext: bar.findGroupElem.nextSibling,
-    };
-    pvTools.insertBefore(bar.searchElem, pvSep);
-    bar.searchElem.style.display = '';
-    pvFindSep.style.display = '';
-    pvHead.appendChild(bar.findGroupElem);
-    bar.rehome();
-  };
-  const returnFindBar = () => {
-    const bar = viewer._searchBar;
-    if (!bar || !findHome) return;
-    const h = findHome;
-    findHome = null;
-    pvFindSep.style.display = 'none';
-    h.btnParent?.insertBefore(bar.searchElem, h.btnNext && h.btnNext.parentNode === h.btnParent ? h.btnNext : null);
-    h.groupParent?.insertBefore(bar.findGroupElem, h.groupNext && h.groupNext.parentNode === h.groupParent ? h.groupNext : null);
-    // The toolbar's document controls stay hidden while the library bar is in, and the swap out shows them again.
-    if (barSwapped) bar.searchElem.style.display = 'none';
-  };
-  /** @param {NonNullable<typeof viewer._searchBar>} bar */
-  const findBarPos = (bar) => {
-    const root = viewer.pdfViewerElem.getBoundingClientRect();
-    const r = bar.findGroupElem.getBoundingClientRect();
-    return { x: r.left - root.left, y: r.top - root.top };
-  };
-  /**
-   * Take the open find bar out of the home it has just been placed in, to glide there in a straight line from `from` as a morph plays.
-   * @param {NonNullable<typeof viewer._searchBar>} bar
-   * @param {{x: number, y: number}} from - Where the bar hung before it changed homes, in the viewer's coordinates.
-   * @returns {{step: (e: number) => void, land: () => void}} `step` places the bar at the morph's eased progress.
-   *   `land` puts it back in its home.
-   */
-  const liftFindBar = (bar, from) => {
-    const group = bar.findGroupElem;
-    const to = findBarPos(bar);
-    const parent = /** @type {HTMLElement} */ (group.parentElement);
-    const next = group.nextSibling;
-    // The library surface clips anything above its top edge, where a bar bound for the pane head starts its glide.
-    const lift = document.createElement('div');
-    // The find bar's desktop styles are scoped to the toolbar class, so the layer carries it.
-    lift.className = 'scribe-pdf-viewer-toolbar scribe-library-find-lift';
-    lift.appendChild(group);
-    viewer.pdfViewerElem.appendChild(lift);
-    group.style.right = 'auto';
-    const step = (/** @type {number} */ e) => {
-      group.style.left = `${Math.round(from.x + (to.x - from.x) * e)}px`;
-      group.style.top = `${Math.round(from.y + (to.y - from.y) * e)}px`;
-    };
-    step(0);
-    return {
-      step,
-      land: () => {
-        group.style.left = '';
-        group.style.top = '';
-        group.style.right = '';
-        parent.insertBefore(group, next && next.parentNode === parent ? next : null);
-        lift.remove();
-        bar.rehome();
-      },
-    };
-  };
+  /** Whether an open document calls for the column. */
+  const columnForm = () => isLibrary && !viewer._phoneUi && viewer._tabs.length > 0;
+  /** Whether the column can show. */
+  const columnReady = () => columnForm() && !!store && !!manifest;
 
-  /** Whether the library shows the rows' column beside the pane. */
-  const splitForm = () => !!barControls && !viewer._phoneUi && !!store && !!manifest && !storageOpen
-    && (!!fullTextResults || (listPreviewOn && viewMode !== 'grid'));
-
-  /** True while Open or a return morphs between the pane and the rail, so the inset sync leaves the inset to it. */
-  let morphing = false;
-  /** Set ahead of an Open from the pane, so the deactivate the viewer asks for waits for the morph. */
-  let morphPending = false;
-
-  /** Inset the document area to the pane while the split form is up, and clear the inset otherwise. */
-  const syncDocInset = () => {
-    if (morphing) return;
-    if (!visible || !splitForm() || !pvStage.isConnected || surface.style.display === 'none') {
-      viewer.setDocInset(null);
-      return;
+  const colHead = document.createElement('div');
+  colHead.className = 'scribe-library-colhead';
+  colHead.hidden = true;
+  const colUpBtn = document.createElement('button');
+  colUpBtn.className = 'scribe-library-hicon scribe-library-colup';
+  colUpBtn.innerHTML = slotIcon('back22');
+  colUpBtn.title = 'Up one folder';
+  colUpBtn.setAttribute('aria-label', 'Up one folder');
+  colUpBtn.hidden = true;
+  colUpBtn.addEventListener('click', () => openDir(currentDir.includes('/') ? currentDir.slice(0, currentDir.lastIndexOf('/')) : ''));
+  const colGlyph = document.createElement('span');
+  colGlyph.className = 'scribe-library-colglyph';
+  colGlyph.innerHTML = opts.glyph;
+  const colName = document.createElement('span');
+  colName.className = 'scribe-library-colname';
+  const colSearchBtn = document.createElement('button');
+  colSearchBtn.className = 'scribe-library-hicon';
+  colSearchBtn.innerHTML = slotIcon('search22');
+  colSearchBtn.title = 'Search or filter by name';
+  colSearchBtn.setAttribute('aria-label', 'Search or filter by name');
+  const colMoreBtn = document.createElement('button');
+  colMoreBtn.className = 'scribe-library-hicon';
+  colMoreBtn.innerHTML = slotIcon('more22');
+  colMoreBtn.title = 'Folder actions';
+  colMoreBtn.setAttribute('aria-label', 'Folder actions');
+  colMoreBtn.setAttribute('aria-haspopup', 'menu');
+  const colViewBtn = document.createElement('button');
+  colViewBtn.className = 'scribe-library-hbtn scribe-library-colview icon-only';
+  colViewBtn.innerHTML = `<span class="scribe-library-colview-glyph">${VIEW_LIST_SVG}</span>${CHEVRON_SVG}`;
+  colViewBtn.title = 'View';
+  colViewBtn.setAttribute('aria-label', 'View');
+  colViewBtn.setAttribute('aria-haspopup', 'menu');
+  colViewBtn.hidden = true;
+  colHead.append(colUpBtn, colGlyph, colName, colSearchBtn, colMoreBtn);
+  const colSearchRow = document.createElement('div');
+  colSearchRow.className = 'scribe-library-colsearch';
+  colSearchRow.hidden = true;
+  colSearchBtn.addEventListener('click', () => {
+    colSearchRow.hidden = !colSearchRow.hidden;
+    colSearchBtn.classList.toggle('on', !colSearchRow.hidden);
+    if (!colSearchRow.hidden) {
+      searchInput.focus();
+      searchInput.select();
     }
-    viewer.setDocInset(pvStage);
-  };
-  // Relaying out inside the observer's delivery resizes elements other observers watch in the same cycle, which the browser reports as a resize loop.
-  let insetSyncRaf = 0;
-  const stageObserver = new ResizeObserver(() => {
-    cancelAnimationFrame(insetSyncRaf);
-    insetSyncRaf = requestAnimationFrame(() => { insetSyncRaf = 0; syncDocInset(); });
   });
-  stageObserver.observe(pvStage);
+  const colSash = document.createElement('div');
+  colSash.className = 'scribe-library-colsash';
+  colSash.hidden = true;
+  colSash.setAttribute('role', 'separator');
+  colSash.setAttribute('aria-orientation', 'vertical');
+  colSash.setAttribute('aria-label', 'Resize the folder column');
+  colSash.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = columnW;
+    let closing = false;
+    colSash.classList.add('drag');
+    viewer.pdfViewerElem.classList.add('scribe-group-drag');
+    const onMove = (/** @type {PointerEvent} */ ev) => {
+      const want = startW + ev.clientX - startX;
+      closing = want < COLUMN_MIN_W - 60;
+      columnW = Math.max(COLUMN_MIN_W, Math.min(COLUMN_MAX_W, want));
+      surface.classList.toggle('closing', closing);
+      layoutColumn();
+    };
+    const onUp = () => {
+      colSash.classList.remove('drag');
+      surface.classList.remove('closing');
+      viewer.pdfViewerElem.classList.remove('scribe-group-drag');
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      if (closing) {
+        columnW = startW;
+        columnOpen = false;
+        applyForm();
+        return;
+      }
+      saveColumnW();
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+  colSash.addEventListener('dblclick', () => {
+    columnW = COLUMN_DEFAULT_W;
+    saveColumnW();
+    layoutColumn();
+  });
+  surface.insertBefore(colHead, progressElem);
+  surface.insertBefore(colSearchRow, progressElem);
+  surface.appendChild(colSash);
 
-  /** @type {'empty'|'loading'|'ready'|'error'|'plate'} What the pane shows besides the document. */
-  let stageKind = 'empty';
-
-  /** Show the previewed document's name and Open in the pane head, a plate's name alone, or no head without a selection. */
-  const syncPaneHead = () => {
-    const last = preview.lastTarget();
-    const plated = stageKind === 'plate';
-    const title = last ? last.title : (plated && listPreviewPath ? (listPreviewPath.split('/').pop() || listPreviewPath) : null);
-    pvHead.style.display = title ? '' : 'none';
-    pvTitle.textContent = title ?? '';
-    pvTitle.title = title ?? '';
-    pane.classList.toggle('scribe-library-pv-plated', plated);
-    pvOpenBtn.classList.toggle('disabled', !last);
-    if (last) syncPaneNav();
+  /** @type {?HTMLSpanElement} */
+  let colToggle = null;
+  if (viewer.toolbarElem && isLibrary) {
+    colToggle = makeIconButton('Hide the folder', barIcon('folder'));
+    colToggle.classList.add('scribe-library-col-toggle');
+    colToggle.style.display = 'none';
+    colToggle.addEventListener('click', () => {
+      if (!visible) {
+        columnOpen = true;
+        activate();
+        return;
+      }
+      columnOpen = !columnOpen;
+      applyForm();
+    });
+    viewer.toolbarElemStart.insertBefore(colToggle, barTitle ? barTitle.nextSibling : viewer.toolbarElemStart.firstChild);
+  }
+  const syncColumnToggle = () => {
+    if (!colToggle) return;
+    colToggle.style.display = columnReady() ? '' : 'none';
+    const shown = visible && form === 'column' && columnOpen;
+    colToggle.classList.toggle('active', shown);
+    colToggle.dataset.tip = shown ? 'Hide the folder' : 'Show the folder';
+    colToggle.ariaLabel = colToggle.dataset.tip;
   };
-
-  /**
-   * Set what the pane shows besides the document.
-   * A load over a seeded page shows the page through the stage too, under the spinner.
-   * @param {'empty'|'loading'|'ready'|'error'|'plate'} kind
-   * @param {string} [text]
-   */
-  const setStage = (kind, text) => {
-    stageKind = kind;
-    pvStage.classList.toggle('live', kind === 'ready' || (kind === 'loading' && !!viewer.doc));
-    pvLoading.style.display = kind === 'loading' ? '' : 'none';
-    pvPlate.style.display = kind === 'plate' ? '' : 'none';
-    pvEmpty.style.display = kind === 'empty' || kind === 'error' ? '' : 'none';
-    if (kind === 'empty') pvEmpty.textContent = fullTextResults ? 'Select a result to preview it here' : 'Select a document to preview it here';
-    else if (kind === 'error') pvEmpty.textContent = text ?? 'This page could not be rendered.';
-    syncPaneHead();
-    syncDocInset();
+  const syncColumnHead = () => {
+    if (form !== 'column') return;
+    const leaf = currentDir ? (currentDir.split('/').pop() || currentDir) : (store?.root.name ?? opts.name);
+    colName.textContent = leaf;
+    colName.title = currentDir ? `${store?.root.name ?? opts.name}/${currentDir}` : leaf;
+    colUpBtn.hidden = !currentDir;
   };
-
-  /**
-   * Show a file the viewer cannot render, with its name, its kind and the one action that applies to it.
-   * @param {{title: string, badge: string, icon: string, note: string, action: string, onAction: () => void}} target
-   */
-  const showPlate = (target) => {
-    pvPlate.replaceChildren();
-    pvPlate.insertAdjacentHTML('beforeend', `<span class="fi">${target.icon}</span>`);
-    const nameEl = document.createElement('div');
-    nameEl.className = 'n';
-    nameEl.textContent = target.title;
-    const badgeEl = document.createElement('span');
-    badgeEl.className = 'scribe-library-badge';
-    badgeEl.textContent = target.badge;
-    const noteEl = document.createElement('div');
-    noteEl.className = 'm';
-    noteEl.textContent = target.note;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'scribe-library-btn';
-    btn.textContent = target.action;
-    btn.addEventListener('click', () => target.onAction());
-    pvPlate.append(nameEl, badgeEl, noteEl, btn);
-    setStage('plate');
+  /** What the column's head has folded into its actions menu. */
+  const colFold = {
+    view: false, sort: false, new: false, refresh: false,
   };
-
-  /**
-   * Mount the split's column and sash in the body, and return the column for the rows.
-   * @param {'results'|'list'} kind
-   */
-  const mountSplit = (kind) => {
-    const defaultWidth = kind === 'results' ? 400 : 700;
-    const { wrap, left } = buildPreviewSplit(
-      defaultWidth,
-      () => (kind === 'results' ? resultsListWidth : listPreviewWidth),
-      (w) => { if (kind === 'results') resultsListWidth = w; else listPreviewWidth = w; },
-    );
-    body.appendChild(wrap);
-    body.classList.add('split-mode');
-    splitLeft = left;
-    if (kind === 'results') {
-      wrap.appendChild(pane);
-      syncDocInset();
+  const fitColBar = () => {
+    if (form !== 'column' || colHead.hidden || viewSeg.parentElement !== colHead) return;
+    viewSeg.hidden = false;
+    colViewBtn.hidden = true;
+    sortBtn.classList.remove('icon-only');
+    newBtn.classList.remove('icon-only');
+    // The bar pins its labeled buttons to whole-pixel widths; the column measures them as they are.
+    sortBtn.style.width = '';
+    newBtn.style.width = '';
+    sortWrap.hidden = false;
+    newWrap.hidden = readOnly;
+    refreshBtn.hidden = readOnly;
+    colFold.view = false;
+    colFold.sort = false;
+    colFold.new = false;
+    colFold.refresh = false;
+    const need = () => {
+      let w = 12;
+      for (const el of colHead.children) {
+        if (/** @type {HTMLElement} */ (el).hidden) continue;
+        w += (el === colName ? 64 : el.getBoundingClientRect().width) + 4;
+      }
+      return w;
+    };
+    const steps = [
+      () => { viewSeg.hidden = true; colViewBtn.hidden = false; },
+      () => sortBtn.classList.add('icon-only'),
+      () => newBtn.classList.add('icon-only'),
+      () => { refreshBtn.hidden = true; colFold.refresh = !readOnly; },
+      () => { newWrap.hidden = true; colFold.new = !readOnly; },
+      () => { sortWrap.hidden = true; colFold.sort = true; },
+      () => { colViewBtn.hidden = true; colFold.view = true; },
+    ];
+    for (const step of steps) {
+      if (need() <= colHead.clientWidth) break;
+      step();
     }
-    return left;
+  };
+  const fitFolds = () => {
+    // A fold is drawn 150 px wide, and the strip around it has 6 px of padding on each side.
+    for (const card of /** @type {NodeListOf<HTMLElement>} */ (body.querySelectorAll('.scribe-library-card.folder'))) {
+      if (form !== 'column') card.style.removeProperty('--fold-fit');
+      else card.style.setProperty('--fold-fit', Math.min(1, Math.max(0.2, (card.clientWidth - 12) / 150)).toFixed(3));
+    }
+  };
+  const positionSurface = () => {
+    const column = visible && form === 'column';
+    surface.style.top = `${column ? (viewer._phoneUi ? 0 : viewer.toolbarHeight) : viewer._topBarsHeight()}px`;
+    surface.style.width = column ? `${columnW}px` : '';
+    surface.style.right = column ? 'auto' : '';
+    if (column) {
+      fitColBar();
+      fitFolds();
+    }
+  };
+  const resizeObserver = new ResizeObserver(positionSurface);
+  resizeObserver.observe(viewer.pdfViewerElem);
+  const layoutColumn = () => {
+    positionSurface();
+    viewer._relayout();
   };
 
   /**
-   * Put the pane beside the list's column while the split form is up, and take it away otherwise.
-   * The pane then shows the remembered preview.
+   * Put the showing surface in the form the window calls for.
+   * @param {{render?: boolean}} [options] - `render` rebuilds the body when the form changed.
    */
-  const syncListPane = () => {
-    const wrap = splitLeft?.parentElement;
-    if (!wrap) return;
-    const split = splitForm();
-    wrap.classList.toggle('solo', !split);
-    if (!split) {
-      if (pane.parentElement === wrap) pane.remove();
-      syncDocInset();
-      return;
-    }
-    if (pane.parentElement !== wrap) wrap.appendChild(pane);
-    syncDocInset();
-    const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
-    if (entry && listPreviewPath) {
-      showListPreview(listPreviewPath, entry, Math.min(listPreviewPage, (entry.pageCount || 1) - 1));
-    } else if (listPreviewPath && body.querySelector(`.scribe-library-row.other[data-rel-path="${CSS.escape(listPreviewPath)}"]`)) {
-      showOtherPreview(listPreviewPath);
-    } else {
-      listPreviewPath = null;
-      if (!preview.lastTarget()) setStage('empty');
-    }
-  };
-
-  /** Put the lit library's bar and surface on screen, with the find bar in the pane head in the split form. */
-  const applyForm = () => {
+  const applyForm = ({ render: doRender = true } = {}) => {
     if (!visible) return;
-    swapBarIn();
-    surface.style.display = 'flex';
-    const split = splitForm();
-    surface.classList.toggle('split', split);
-    if (split) takeFindBar();
-    else {
-      returnFindBar();
-      viewer.setDocInset(null);
-    }
-    viewer._syncFrontSurface();
-  };
-
-  const MORPH_MS = 200;
-  const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
-  const railWidth = () => parseFloat(viewer._thumbnailPanel?.panelElem.style.width) || 230;
-
-  /**
-   * Run `step(e)` from 0 to 1 over the morph's duration, eased out.
-   * @param {(e: number) => void} step
-   */
-  const runMorph = (step) => new Promise((done) => {
-    /** @type {?number} */
-    let t0 = null;
-    const frame = (/** @type {number} */ ts) => {
-      if (t0 === null) t0 = ts;
-      const p = destroyed ? 1 : Math.min(1, (ts - t0) / MORPH_MS);
-      step(1 - (1 - p) ** 3);
-      if (p < 1) requestAnimationFrame(frame);
-      else done();
-    };
-    requestAnimationFrame(frame);
-  });
-
-  /**
-   * Pin the head at its current width to the pane's right edge.
-   * The pane can then widen around it without moving its controls.
-   * @returns {() => void} Undoes the pin.
-   */
-  const pinHead = () => {
-    const priorPane = pane.style.position;
-    const priorHead = pvHead.style.cssText;
-    const width = pvHead.getBoundingClientRect().width;
-    pane.style.position = 'relative';
-    pvHead.style.position = 'absolute';
-    pvHead.style.top = '0';
-    pvHead.style.right = '0';
-    pvHead.style.width = `${width}px`;
-    return () => {
-      pvHead.style.cssText = priorHead;
-      pane.style.position = priorPane;
-    };
-  };
-
-  /**
-   * Cross-fade the toolbar between its library and viewer forms in place.
-   * @param {HTMLElement[]} leaving - The parts on show, which `swap` hides.
-   * @param {() => HTMLElement[]} swap - Changes the form and returns the parts it shows.
-   * @param {boolean} libraryGhost - Whether `leaving` is the library's parts.
-   * @returns {() => void} Ends the fade.
-   */
-  const crossFadeBar = (leaving, swap, libraryGhost) => {
-    const bar = viewer.toolbarElem;
-    if (!bar) {
-      swap();
-      return () => {};
-    }
-    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
-    const barRect = bar.getBoundingClientRect();
-    const ghost = document.createElement('div');
-    // The library's parts take their narrow-bar styles from the library bar's container queries, so their ghost must be a container of the same name.
-    ghost.className = `scribe-pdf-viewer-toolbar scribe-library-bar-ghost${libraryGhost ? ' scribe-library-bar' : ''}`;
-    ghost.setAttribute('aria-hidden', 'true');
-    ghost.style.left = `${barRect.left - rootRect.left}px`;
-    ghost.style.top = `${barRect.top - rootRect.top}px`;
-    ghost.style.width = `${barRect.width}px`;
-    ghost.style.height = `${barRect.height}px`;
-    for (const el of leaving) {
-      const r = el.getBoundingClientRect();
-      if (!r.width || !r.height) continue;
-      const clone = /** @type {HTMLElement} */ (el.cloneNode(true));
-      clone.setAttribute('inert', '');
-      clone.removeAttribute('id');
-      for (const inner of clone.querySelectorAll('[id]')) inner.removeAttribute('id');
-      clone.style.left = `${r.left - barRect.left}px`;
-      clone.style.top = `${r.top - barRect.top}px`;
-      clone.style.width = `${r.width}px`;
-      clone.style.height = `${r.height}px`;
-      ghost.appendChild(clone);
-    }
-    viewer.pdfViewerElem.appendChild(ghost);
-    const arriving = swap();
-    for (const el of arriving) {
-      el.style.transition = 'none';
-      el.style.opacity = '0';
-    }
-    // A layout read commits the start opacities before the transitions arm.
-    bar.getBoundingClientRect();
-    ghost.style.transition = `opacity ${MORPH_MS}ms ease`;
-    ghost.style.opacity = '0';
-    for (const el of arriving) {
-      el.style.transition = `opacity ${MORPH_MS}ms ease`;
-      el.style.opacity = '1';
-    }
-    return () => {
-      ghost.remove();
-      for (const el of arriving) {
-        el.style.transition = '';
-        el.style.opacity = '';
-      }
-    };
-  };
-
-  /** Morph from the pane to the rail for Open. */
-  const morphOut = async () => {
-    const left = splitLeft;
-    const start = viewer._docInset;
-    const sc = viewer.scribe.scrollContainer;
-    if (!viewer._phoneUi && !viewer._activeSidebar) viewer.showSidebarNow('thumbnails');
-    if (left && start && sc && !viewer._phoneUi && !reducedMotion()) {
-      morphing = true;
-      const toW = railWidth();
-      const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
-      if (sash) sash.style.visibility = 'hidden';
-      const scrollStart = sc.scrollTop;
-      const bar = viewer._searchBar;
-      // Where the open find bar hangs from the head, before the swap below moves it to the toolbar.
-      const findFrom = bar && findHome && bar.findGroupElem.style.display !== 'none' ? findBarPos(bar) : null;
-      const unpinHead = pinHead();
-      // The head's find control is the viewer's own, so it goes back to the toolbar now to fade in with the toolbar's other controls.
-      // A stand-in takes its place in the head for the slide.
-      const findStand = bar && findHome ? /** @type {HTMLElement} */ (bar.searchElem.cloneNode(true)) : null;
-      if (findStand && bar) {
-        findStand.setAttribute('inert', '');
-        findStand.setAttribute('aria-hidden', 'true');
-        bar.searchElem.before(findStand);
-      }
-      const libraryParts = /** @type {HTMLElement[]} */ ([barTitle, barControls].filter((el) => el));
-      const endBarFade = crossFadeBar(libraryParts, () => {
-        const shown = hiddenBarElems.filter((h) => h.display !== 'none').map((h) => h.el);
-        returnFindBar();
-        swapBarOut();
-        return shown;
-      }, true);
-      let glide = null;
-      if (findFrom && bar) {
-        // The glide ends where the bar hangs when lifted, so it is re-placed at its toolbar offset first.
-        bar.rehome();
-        glide = liftFindBar(bar, findFrom);
-      }
-      surface.classList.add('leaving');
-      // The column's content keeps its width, so the narrowing column clips it.
-      const contentW = left.clientWidth;
-      const pinned = /** @type {HTMLElement[]} */ ([...left.children]);
-      for (const el of pinned) el.style.width = `${contentW}px`;
-      await runMorph((e) => {
-        const insetLeft = start.left + (toW - start.left) * e;
-        const insetTop = Math.round(start.top * (1 - e));
-        left.style.width = `${Math.max(0, insetLeft - 1)}px`;
-        left.style.opacity = String(1 - e);
-        pvHead.style.transform = `translateY(${insetTop - start.top}px)`;
-        viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
-        sc.scrollTop = Math.max(0, scrollStart - (start.top - insetTop));
-        glide?.step(e);
-      });
-      left.style.width = '';
-      left.style.opacity = '';
-      for (const el of pinned) el.style.width = '';
-      if (sash) sash.style.visibility = '';
-      findStand?.remove();
-      unpinHead();
-      glide?.land();
-      endBarFade();
-      surface.classList.remove('leaving');
-      morphing = false;
-      morphPending = false;
+    if (isLibrary && viewer._tabs.length > 0 && !columnReady()) {
       deactivate();
       return;
     }
-    morphPending = false;
-    const top = viewer._docInset ? viewer._docInset.top : 0;
-    deactivate();
-    if (sc && top) sc.scrollTop = Math.max(0, sc.scrollTop - top);
+    const next = columnReady() ? 'column' : 'full';
+    const changed = next !== form;
+    if (changed) {
+      form = next;
+      if (form === 'column') {
+        searchField.hidden = false;
+        searchField.classList.remove('popped');
+        colSearchRow.appendChild(searchField);
+        for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colHead.insertBefore(el, colMoreBtn);
+      } else {
+        colSearchRow.hidden = true;
+        colSearchBtn.classList.remove('on');
+        const ctl = barControls ?? header;
+        ctl.insertBefore(searchField, ctl.firstChild);
+        const before = moreWrap.parentElement === ctl ? moreWrap : null;
+        for (const el of readOnly ? [viewSeg, sortWrap] : [viewSeg, sortWrap, headerSep, newWrap, refreshBtn]) ctl.insertBefore(el, before);
+        for (const el of [viewSeg, sortWrap, newWrap, refreshBtn]) el.hidden = false;
+        colViewBtn.hidden = true;
+        sortBtn.classList.remove('icon-only');
+        newBtn.classList.remove('icon-only');
+      }
+      syncViewUI();
+      lastRenderKey = '';
+    }
+    colHead.hidden = form !== 'column';
+    colSash.hidden = form !== 'column';
+    surface.classList.toggle('column', form === 'column');
+    if (form === 'full') {
+      swapBarIn();
+      if (viewer._rightGroup && !viewer._groupTabs(1).length) viewer._closeGroup();
+      viewer._setActiveGroup(0);
+      viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
+      viewer._searchBar?.closeSearch();
+      surface.style.display = 'flex';
+    } else {
+      swapBarOut();
+      surface.style.display = columnOpen ? 'flex' : 'none';
+    }
+    syncColumnHead();
+    syncColumnToggle();
+    positionSurface();
+    viewer._syncFrontSurface();
+    viewer._relayout();
+    if (changed && doRender && store && manifest) render({ revealSelection: true });
   };
 
   /**
-   * Morph from the rail back to the pane for a return.
-   * @param {() => void} endBarFade - Ends the bar's cross-fade the activation armed.
-   * @param {number} hadTop - The document's top inset as read before the render that lays out the split.
-   * @param {?{x: number, y: number}} findFrom - Where the open find bar hung from the toolbar before the activation moved it into the head, or null while it is closed.
+   * Put the surface on screen, in the form the window calls for.
+   * @param {{render?: boolean}} [options] - `render` rebuilds the body afterwards.
    */
-  const morphIn = async (endBarFade, hadTop, findFrom) => {
-    const left = splitLeft;
-    const sc = viewer.scribe.scrollContainer;
-    if (!left || !sc || viewer._phoneUi || reducedMotion()) {
-      endBarFade();
-      if (viewer._activeSidebar) viewer.hideSidebarNow();
-      syncDocInset();
-      return;
-    }
-    morphing = true;
-    const rail = viewer._panelFor(viewer._activeSidebar);
-    const fromW = rail ? railWidth() : 0;
-    const rootRect = viewer.pdfViewerElem.getBoundingClientRect();
-    const r = pvStage.getBoundingClientRect();
-    const toLeft = Math.round(r.left - rootRect.left);
-    const topInset = Math.round(r.top - rootRect.top) - viewer._topBarsHeight();
-    const scrollStart = sc.scrollTop;
-    const sash = /** @type {?HTMLElement} */ (left.nextElementSibling);
-    if (sash) sash.style.visibility = 'hidden';
-    // The glide ends where the bar hangs when lifted, so it is re-placed under the head and lifted before the head is moved up for the slide.
-    const bar = viewer._searchBar;
-    let glide = null;
-    if (findFrom && bar && findHome) {
-      bar.rehome();
-      glide = liftFindBar(bar, findFrom);
-    }
-    const unpinHead = pinHead();
-    surface.classList.add('entering');
-    // The content is pinned at its resting width before the column narrows, so the widening column uncovers it.
-    const contentW = left.clientWidth;
-    const pinned = /** @type {HTMLElement[]} */ ([...left.children]);
-    for (const el of pinned) el.style.width = `${contentW}px`;
-    left.style.width = `${Math.max(0, fromW - 1)}px`;
-    left.style.opacity = '0';
-    pvHead.style.transform = `translateY(${hadTop - topInset}px)`;
-    viewer.setDocInset({ left: fromW, top: hadTop });
-    await runMorph((e) => {
-      const insetLeft = fromW + (toLeft - fromW) * e;
-      const insetTop = Math.round(hadTop + (topInset - hadTop) * e);
-      left.style.width = `${Math.max(0, insetLeft - 1)}px`;
-      left.style.opacity = String(e);
-      pvHead.style.transform = `translateY(${insetTop - topInset}px)`;
-      viewer.setDocInset({ left: Math.round(insetLeft), top: insetTop });
-      sc.scrollTop = scrollStart + (insetTop - hadTop);
-      glide?.step(e);
-    });
-    left.style.width = '';
-    left.style.opacity = '';
-    for (const el of pinned) el.style.width = '';
-    if (sash) sash.style.visibility = '';
-    unpinHead();
-    glide?.land();
-    endBarFade();
-    surface.classList.remove('entering');
-    if (viewer._activeSidebar) viewer.hideSidebarNow();
-    morphing = false;
-    syncDocInset();
-  };
-
-  /**
-   * Light the library's tab and put its form on screen.
-   * @param {{render?: boolean, attach?: boolean, morph?: boolean}} [options] - `render` rebuilds the body afterwards.
-   *   `attach` puts the split form's selection in the pane.
-   *   `morph` animates the return from a tab's document.
-   */
-  const activate = ({ render: doRender = true, attach = true, morph = false } = {}) => {
-    // Read before the render below, which lays out the split and overwrites the inset the return morph starts from.
-    const hadTop = viewer._docInset ? viewer._docInset.top : 0;
-    // Likewise where the open find bar hangs from the toolbar, which the form change below moves into the head.
-    const findFrom = morph && viewer._searchBar && viewer._searchBar.findGroupElem.style.display !== 'none' ? findBarPos(viewer._searchBar) : null;
-    // One pinned surface shows at a time, so another instance's is hidden before this one takes the bar.
+  const activate = ({ render: doRender = true } = {}) => {
     for (const inst of viewer._libraryInstances) {
       if (inst !== api && inst.visible()) inst.hide();
     }
     visible = true;
     viewer._lastPinned = api;
-    positionSurface();
-    viewer._tabStrip?.setPinnedActive(true);
-    homeTab.classList.add('active');
-    const split = splitForm();
-    const listed = (/** @type {string} */ relPath, /** @type {?string} */ hash) => (fullTextResults
-      ? fullTextResults.some((r) => r.hash === hash)
-      : browseListed(relPath));
-    const tab = viewer._activeTab >= 0 ? viewer._tabs[viewer._activeTab] : null;
-    const tabEntry = tab && tab.doc === viewer.doc && ownsTab(tab) && tab.libraryHash && tab.libraryRelPath && manifest ? manifest.docs[tab.libraryRelPath] : null;
-    const tabShown = !!(tab && tabEntry && tabEntry.hash === tab.libraryHash && listed(tab.libraryRelPath, tab.libraryHash));
-    if (attach && tab && tab.doc === viewer.doc) {
-      selectedPaths.clear();
-      selAnchor = tabShown && tab.libraryRelPath ? tab.libraryRelPath : null;
-      if (selAnchor) selectedPaths.add(selAnchor);
+    if (!isLibrary) {
+      viewer._tabStrip?.setPinnedActive(true);
+      homeTab.classList.add('active');
     }
-    let fromTab = false;
-    if (split) {
-      if (attach) {
-        const last = preview.lastTarget();
-        if (tabShown && tab) {
-          const pageN = viewer.scribe.state.cp.n;
-          const adopted = preview.adoptAttached({
-            relPath: tab.libraryRelPath, hash: tab.libraryHash, entry: tabEntry, pageN, query: fullTextResults ? fullTextQuery : null, title: titleOf(tab.libraryRelPath),
-          });
-          if (adopted) {
-            fromTab = morph && !viewer._phoneUi;
-            if (fullTextResults) results.select(tab.libraryRelPath, pageN);
-            else {
-              listPreviewPath = tab.libraryRelPath;
-              listPreviewPage = pageN;
-            }
-          }
-        } else if (!last) {
-          preview.showEmpty();
-          results.select(null, 0);
-          // The pane may have shown a plate, and the render below usually updates the rows in place without restoring it.
-          if (!fullTextResults) syncListPane();
-        } else if (preview.adoptAttached(last)) {
-          results.select(last.relPath, viewer.scribe.state.cp.n);
-          if (!fullTextResults) {
-            listPreviewPath = last.relPath;
-            listPreviewPage = viewer.scribe.state.cp.n;
-          }
-        } else {
-          preview.show(last);
-          if (!fullTextResults) {
-            listPreviewPath = last.relPath;
-            listPreviewPage = last.pageN;
-          }
-        }
-        if (!fullTextResults) syncSelectionUI();
-      }
-    } else {
-      viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
-      viewer._searchBar?.closeSearch();
-    }
-    let endBarFade = () => {};
-    if (fromTab && !reducedMotion()) {
-      const libraryParts = /** @type {HTMLElement[]} */ ([barTitle, barControls].filter((el) => el));
-      endBarFade = crossFadeBar(mainBarParts(), () => {
-        applyForm();
-        return libraryParts;
-      }, false);
-    } else applyForm();
-    if (doRender) render({ revealSelection: true });
-    if (fromTab) morphIn(endBarFade, hadTop, findFrom);
+    applyForm({ render: false });
+    if (visible && doRender) render({ revealSelection: true });
   };
 
-  /** Unlight the library's tab, giving a tab's document the front. */
+  /** Take the surface off screen, giving a document the front. */
   const deactivate = () => {
     visible = false;
     closeCardMenu();
-    returnFindBar();
     swapBarOut();
     viewer._searchBar?.rehome();
-    viewer._tabStrip?.setPinnedActive(false);
-    homeTab.classList.remove('active');
+    if (!isLibrary) {
+      viewer._tabStrip?.setPinnedActive(false);
+      homeTab.classList.remove('active');
+    }
     surface.style.display = 'none';
-    surface.classList.remove('split');
-    viewer.setDocInset(null);
+    surface.classList.remove('column');
+    syncColumnToggle();
     viewer._syncFrontSurface();
+    viewer._relayout();
   };
-
-  /** Light the library in its split form ahead of a document attaching as the preview, leaving the attach to the caller. */
-  const ensureLit = () => {
-    if (!visible) activate({ render: false, attach: false });
-    else applyForm();
-    // The attach fits the page to the document area the moment it runs, so the inset cannot wait for the stage observer's frame.
-    syncDocInset();
-  };
-
-  /** Empty the pane and clear its selection. */
-  const clearPreview = () => {
-    preview.showEmpty();
-    listPreviewPath = null;
-    results.select(null, 0);
-    syncSelectionUI();
-    syncPaneHead();
-  };
-
-  pvOpenBtn.addEventListener('click', () => {
-    if (pvOpenBtn.classList.contains('disabled')) return;
-    const last = preview.lastTarget();
-    if (!last || !manifest) return;
-    const entry = manifest.docs[last.relPath];
-    if (entry) openEntry(last.relPath, entry, { pageN: viewer.scribe.state.cp.n, query: last.query ?? undefined, near: last.near });
-  });
-
   /**
    * This instance as the viewer and the other instances see it.
    * Filled in below, once the pieces it exposes exist.
@@ -1918,7 +1617,6 @@ export function createLibraryInstance(viewer, opts) {
     // A resize while the bar was swapped measured hidden controls, so re-shed against the restored bar.
     viewer._syncModeOverflow?.();
   };
-
   // --- Persistence helpers ------------------------------------------------
 
   const saveManifestSoon = () => {
@@ -1948,7 +1646,7 @@ export function createLibraryInstance(viewer, opts) {
         sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
         sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
       } : null,
-      lib: visible ? 1 : 0,
+      lib: visible && form === 'full' ? 1 : 0,
     };
   };
   /**
@@ -2016,7 +1714,7 @@ export function createLibraryInstance(viewer, opts) {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
-      if (entry && tab.libraryRelPath) preview.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */ (tab).lastPage ?? 0);
+      if (entry && tab.libraryRelPath) loads.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */ (tab).lastPage ?? 0);
     }
     if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
     tab.librarySaving = true;
@@ -2326,63 +2024,12 @@ export function createLibraryInstance(viewer, opts) {
     crumbFadeDue = false;
     const prevHidden = crumbHidden;
     const segs = currentDir ? currentDir.split('/') : [];
-    if (!barControls || !barSwapped || !viewer.toolbarElem) {
-      crumbHidden = finder || segs.length < 3 ? 0 : segs.length - 1;
-      buildCrumbs();
-      if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
-      return;
-    }
-    const controls = barControls;
-    sortBtn.classList.remove('icon-only');
-    newBtn.classList.remove('icon-only');
-    // The text buttons carry a pinned width from their last form, which would measure as that form.
-    sortBtn.style.width = '';
-    newBtn.style.width = '';
-    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) el.hidden = false;
-    const popped = searchField.classList.contains('popped');
-    findBtn.hidden = !popped;
-    moreWrap.hidden = true;
-    controls.hidden = dragUnfolded;
-    crumbHidden = 0;
-    buildCrumbs();
-    // The root and every ancestor below it can fold, but not the current name.
-    const foldable = finder ? NAME_CAPS.length - 1 : segs.length;
-    fieldLow = false;
-    searchField.style.minWidth = `${fieldFloor()}px`;
-    const syncMore = () => { moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || previewBtn.hidden || sortWrap.hidden || viewSeg.hidden); };
-    // The More button is decided before each measurement, so its width counts once something has folded into it.
-    const fits = () => {
-      syncMore();
-      return crumbsNeed() + controlsNeed() <= barRoom();
-    };
-    const foldOne = () => {
-      if (crumbHidden >= foldable) return false;
-      crumbHidden += 1;
-      buildCrumbs();
-      return true;
-    };
-    const steps = [
-      () => sortBtn.classList.add('icon-only'),
-      () => newBtn.classList.add('icon-only'),
-      foldOne,
-      () => { refreshBtn.hidden = true; },
-      () => { newWrap.hidden = true; headerSep.hidden = true; },
-      () => { previewBtn.hidden = true; },
-      foldOne,
-      () => { sortWrap.hidden = true; },
-      foldOne,
-      () => { viewSeg.hidden = true; },
-      () => { fieldLow = true; searchField.style.minWidth = `${fieldFloor()}px`; },
-      () => { if (!popped) { searchField.hidden = true; findBtn.hidden = false; } },
-    ];
-    for (const step of steps) {
-      if (fits()) break;
-      step();
-    }
-    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb, or one more cut of the name */ }
-    syncMore();
-    roundBarButtons();
-    if (finder) {
+    /**
+     * Fill the Finder form's path bar from the current folder.
+     * The bar is on the surface, not the toolbar, so it fills whether or not the library has the toolbar.
+     */
+    const fillPathBar = () => {
+      if (!finder) return;
       pathBar.replaceChildren();
       pathBar.hidden = !store;
       const rootLabel = isLibrary && store ? store.root.name : opts.name;
@@ -2406,7 +2053,64 @@ export function createLibraryInstance(viewer, opts) {
         pathBar.appendChild(item);
       });
       fitPathBar();
+    };
+    if (!barControls || !barSwapped || !viewer.toolbarElem) {
+      crumbHidden = finder || segs.length < 3 ? 0 : segs.length - 1;
+      buildCrumbs();
+      fillPathBar();
+      if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
+      return;
     }
+    const controls = barControls;
+    sortBtn.classList.remove('icon-only');
+    newBtn.classList.remove('icon-only');
+    // The text buttons carry a pinned width from their last form, which would measure as that form.
+    sortBtn.style.width = '';
+    newBtn.style.width = '';
+    for (const el of [searchField, viewSeg, sortWrap, headerSep, newWrap, refreshBtn]) el.hidden = false;
+    const popped = searchField.classList.contains('popped');
+    findBtn.hidden = !popped;
+    moreWrap.hidden = true;
+    controls.hidden = dragUnfolded;
+    crumbHidden = 0;
+    buildCrumbs();
+    // The root and every ancestor below it can fold, but not the current name.
+    const foldable = finder ? NAME_CAPS.length - 1 : segs.length;
+    fieldLow = false;
+    searchField.style.minWidth = `${fieldFloor()}px`;
+    const syncMore = () => { moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || sortWrap.hidden || viewSeg.hidden); };
+    // The More button is decided before each measurement, so its width counts once something has folded into it.
+    const fits = () => {
+      syncMore();
+      return crumbsNeed() + controlsNeed() <= barRoom();
+    };
+    const foldOne = () => {
+      if (crumbHidden >= foldable) return false;
+      crumbHidden += 1;
+      buildCrumbs();
+      return true;
+    };
+    const steps = [
+      () => sortBtn.classList.add('icon-only'),
+      () => newBtn.classList.add('icon-only'),
+      foldOne,
+      () => { refreshBtn.hidden = true; },
+      () => { newWrap.hidden = true; headerSep.hidden = true; },
+      foldOne,
+      () => { sortWrap.hidden = true; },
+      foldOne,
+      () => { viewSeg.hidden = true; },
+      () => { fieldLow = true; searchField.style.minWidth = `${fieldFloor()}px`; },
+      () => { if (!popped) { searchField.hidden = true; findBtn.hidden = false; } },
+    ];
+    for (const step of steps) {
+      if (fits()) break;
+      step();
+    }
+    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb, or one more cut of the name */ }
+    syncMore();
+    roundBarButtons();
+    fillPathBar();
     if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
   };
 
@@ -2449,6 +2153,7 @@ export function createLibraryInstance(viewer, opts) {
   const buildMoreMenu = () => {
     moreMenu.replaceChildren();
     let sections = 0;
+    const inCol = form === 'column';
     /** @param {string} title */
     const section = (title) => {
       if (sections) {
@@ -2465,7 +2170,7 @@ export function createLibraryInstance(viewer, opts) {
     };
     /**
      * @param {string} label
-     * @param {{on?: boolean, role?: string, icon?: string}} how
+     * @param {{on?: boolean, role?: string, icon?: string, disabled?: boolean, hint?: string, hover?: (on: boolean) => void}} how - `hint` says why a row is disabled.
      * @param {() => void} act
      */
     const item = (label, how, act) => {
@@ -2475,19 +2180,29 @@ export function createLibraryInstance(viewer, opts) {
       if (how.role === 'menuitemcheckbox' || how.role === 'menuitemradio') it.setAttribute('aria-checked', String(!!how.on));
       it.innerHTML = how.icon ?? MENU_CHECK_SVG;
       it.appendChild(document.createTextNode(label));
-      it.addEventListener('click', () => {
-        moreDropdown.close();
-        act();
-      });
+      if (how.disabled) {
+        it.classList.add('disabled');
+        it.setAttribute('aria-disabled', 'true');
+        if (how.hint) it.title = how.hint;
+      } else {
+        it.addEventListener('click', () => {
+          moreDropdown.close();
+          act();
+        });
+      }
+      if (how.hover) {
+        it.addEventListener('mouseenter', () => how.hover?.(true));
+        it.addEventListener('mouseleave', () => how.hover?.(false));
+      }
       moreMenu.appendChild(it);
     };
-    if (viewSeg.hidden) {
+    if (inCol ? colFold.view : viewSeg.hidden) {
       section('View');
       for (const [mode, label] of [['grid', 'Grid'], ['list', 'List'], ['compact', 'Compact']]) {
         item(label, { on: viewMode === mode, role: 'menuitemradio' }, () => setViewMode(/** @type {'grid' | 'list' | 'compact'} */ (mode)));
       }
     }
-    if (sortWrap.hidden) {
+    if (inCol ? colFold.sort : sortWrap.hidden) {
       section('Sort by');
       for (const sortItem of sortItems) {
         const mode = /** @type {keyof typeof SORT_LABELS} */ (sortItem.dataset.mode);
@@ -2498,29 +2213,53 @@ export function createLibraryInstance(viewer, opts) {
       moreMenu.appendChild(sep);
       item('Show other files', { on: showOthers, role: 'menuitemcheckbox' }, () => othersItem.click());
     }
-    if (previewBtn.hidden && viewMode !== 'grid') {
-      section('');
-      item('Preview panel', { on: listPreviewOn, role: 'menuitemcheckbox' }, () => previewBtn.click());
-    }
-    if (newWrap.hidden && !readOnly) {
+    if ((inCol ? colFold.new : newWrap.hidden) && !readOnly) {
       section('New');
       item('New folder', { icon: MENU_FOLDER_PLUS_SVG }, () => newFolderItem.click());
       item('New PDF from images…', { icon: MENU_IMAGE_SVG }, () => newPdfItem.click());
       item('Add PDFs…', { icon: MENU_IMPORT_SVG }, () => addPdfsItem.click());
     }
-    if (refreshBtn.hidden && !readOnly) {
+    // The folder actions carry their own Refresh Folder, so the column's menu does not say it twice.
+    if (refreshBtn.hidden && !readOnly && !inCol) {
       section('');
       item('Refresh folder', { icon: MENU_REFRESH_SVG }, () => refreshBtn.click());
     }
+    if (inCol) {
+      section('');
+      for (const entry of folderMenuEntries) {
+        if (entry === 'sep') {
+          const sep = document.createElement('div');
+          sep.className = 'scribe-library-menu-sep';
+          moreMenu.appendChild(sep);
+          continue;
+        }
+        const text = [...entry.item.childNodes].find((c) => c.nodeType === Node.TEXT_NODE);
+        const unknownPlace = entry.item === revealItem && !!store && !folderDirs.has(store.root.name);
+        item(text ? text.textContent ?? '' : '', {
+          icon: entry.svg, disabled: unknownPlace, hint: unknownPlace ? REVEAL_UNKNOWN_HINT : undefined, hover: entry.item === folderMenuCloseItem ? previewClose : undefined,
+        }, () => entry.item.click());
+      }
+    }
   };
   const moreDropdown = createDropdown({
-    show: () => {
+    show: (anchor) => {
       buildMoreMenu();
+      if (anchor === colMoreBtn) {
+        const host = viewer.pdfViewerElem;
+        if (moreMenu.parentElement !== host) host.appendChild(moreMenu);
+        const hostRect = host.getBoundingClientRect();
+        const anchorRect = anchor.getBoundingClientRect();
+        Object.assign(moreMenu.style, { left: `${Math.max(4, anchorRect.left - hostRect.left)}px`, top: `${anchorRect.bottom - hostRect.top + 4}px`, right: 'auto' });
+      } else if (moreMenu.parentElement !== moreWrap) {
+        moreWrap.appendChild(moreMenu);
+        Object.assign(moreMenu.style, { left: '', top: '', right: '' });
+      }
       moreMenu.style.display = '';
       return moreMenu;
     },
     hide: () => {
       moreMenu.style.display = 'none';
+      previewClose(false);
     },
     rows: '.scribe-library-menu-item',
   });
@@ -2622,8 +2361,7 @@ export function createLibraryInstance(viewer, opts) {
     const revealSelection = !!(renderOpts && renderOpts.revealSelection);
     const reveal = () => {
       if (!revealSelection) return;
-      const previewed = listPreviewOn && viewMode !== 'grid' ? listPreviewPath : null;
-      const sel = previewed ? `[data-rel-path="${CSS.escape(previewed)}"]` : '[data-rel-path].selected';
+      const sel = '[data-rel-path].selected';
       // Recent and the just-added shelf repeat documents listed below them, so the document's own card or row is the one brought into view.
       const item = /** @type {?HTMLElement} */ (body.querySelector(`[data-band="main-grid"] > ${sel}, [data-band="rows"] > ${sel}`) || body.querySelector(sel));
       if (!item) return;
@@ -2693,7 +2431,7 @@ export function createLibraryInstance(viewer, opts) {
         const band = (name) => /** @type {?HTMLElement} */ (body.querySelector(`[data-band="${name}"]`));
         const recentGrid = band('recent-grid');
         if (recentGrid) {
-          syncKeyedChildren(recentGrid, recent, ([p]) => p, ([p, e]) => buildCard(p, e, false), (node, [p, e]) => updateCard(node, p, e));
+          syncKeyedChildren(recentGrid, recent, ([p]) => p, ([p, e]) => buildCard(p, e), (node, [p, e]) => updateCard(node, p, e));
         }
         const dirGrid = band('folders-grid');
         if (dirGrid) {
@@ -2742,13 +2480,13 @@ export function createLibraryInstance(viewer, opts) {
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
     results.snapshot();
     body.textContent = '';
-    splitLeft = null;
-    body.classList.remove('results-mode', 'list-mode', 'split-mode');
+    body.classList.remove('results-mode', 'list-mode', 'grid-mode');
+    if (store && manifest && !fullTextResults && !storageOpen && viewMode === 'grid') {
+      body.classList.add('grid-mode');
+      if (form === 'column') requestAnimationFrame(fitFolds);
+    }
     if (!fullTextResults) results.dispose();
-    // Leaving the split form lets go of the document it previewed.
-    if (!splitForm() && preview.lastTarget()) preview.showEmpty();
-    applyForm();
-    syncPaneHead();
+    syncColumnHead();
     if (!store || !manifest) {
       // Only the library can be store-less, waiting at its start screen.
       // Every other instance has its store from birth and waits only for its scan.
@@ -2848,7 +2586,6 @@ export function createLibraryInstance(viewer, opts) {
 
     if (fullTextResults) {
       body.classList.add('results-mode');
-      if (splitForm()) mountSplit('results');
       results.render();
       return;
     }
@@ -2884,7 +2621,7 @@ export function createLibraryInstance(viewer, opts) {
       const shelfGrid = document.createElement('div');
       shelfGrid.className = 'scribe-library-grid shelf';
       for (const { relPath } of justAdded) {
-        const card = buildCard(relPath, manifest.docs[relPath], false);
+        const card = buildCard(relPath, manifest.docs[relPath]);
         const removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'shelf-act';
@@ -2921,7 +2658,7 @@ export function createLibraryInstance(viewer, opts) {
       const grid = document.createElement('div');
       grid.className = 'scribe-library-grid';
       grid.dataset.band = 'recent-grid';
-      for (const [relPath, entry] of recent) grid.appendChild(buildCard(relPath, entry, false));
+      for (const [relPath, entry] of recent) grid.appendChild(buildCard(relPath, entry));
       body.appendChild(grid);
       // With folders present, the branch below labels the document grid itself.
       if (!shownDirs.length) {
@@ -2982,8 +2719,6 @@ export function createLibraryInstance(viewer, opts) {
 
   /** Restyle every visible card and list row to the selection set. */
   const syncSelectionUI = () => {
-    // The previewed document stays selected through every selection change, since a deselected preview leaves no cue of what the pane shows.
-    if (listPreviewOn && viewMode !== 'grid' && listPreviewPath) selectedPaths.add(listPreviewPath);
     for (const el of body.querySelectorAll('.scribe-library-card, .scribe-library-row')) {
       el.classList.toggle('selected', selectedPaths.has(/** @type {HTMLElement} */ (el).dataset.relPath ?? ''));
     }
@@ -3327,14 +3062,22 @@ export function createLibraryInstance(viewer, opts) {
         menuHeader.textContent = otherPaths.length ? `${all.length} files` : `${paths.length} documents`;
         menuElem.appendChild(menuHeader);
       }
-      const openItem = addItem('Open', false, async () => {
+      const sides = !!viewer._tabStrip && !viewer._phoneUi;
+      const sideName = (/** @type {number} */ g) => (g === 1 ? 'Right' : 'Left');
+      const openItem = addItem(sides ? `Open on the ${sideName(targetGroup())}` : 'Open', false, async () => {
         for (const p of paths) {
           const entry = manifest && manifest.docs[p];
-          if (entry) await openEntry(p, entry);
+          if (entry) await openEntryHere(p, entry);
         }
       });
       // Files Scribe cannot open keep the verb in place, greyed, so the menu reads the same on every row.
       if (!paths.length) openItem.classList.add('disabled');
+      if (paths.length === 1 && sides) {
+        addItem(`Open on the ${sideName(sideGroup())}`, false, () => {
+          const entry = manifest && manifest.docs[paths[0]];
+          if (entry) openEntrySide(paths[0], entry);
+        });
+      }
       addItem(all.length === 1 ? 'Save a copy…' : 'Save copies…', false, () => saveCopies(all));
       addItem(all.length === 1 ? 'Copy name' : 'Copy names', false, () => navigator.clipboard?.writeText(all.map(titleOf).join('\n')).catch(() => {}));
       if (!readOnly && paths.length) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
@@ -3583,7 +3326,7 @@ export function createLibraryInstance(viewer, opts) {
       if (drag.clickSuppressed()) return;
       // Resolved at click time: reused nodes outlive the entry object they were built with.
       const entryNow = manifest?.docs[relPath];
-      if (entryNow) openEntry(relPath, entryNow);
+      if (entryNow) openEntryHere(relPath, entryNow);
     };
     // Touch keeps tap-to-open; select-then-double-click is a pointer-and-keyboard scheme.
     card.addEventListener('click', (e) => {
@@ -3603,10 +3346,18 @@ export function createLibraryInstance(viewer, opts) {
     });
     card.addEventListener('dblclick', (e) => {
       if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+      if (e.altKey) {
+        const entryNow = manifest?.docs[relPath];
+        if (entryNow && !drag.clickSuppressed()) openEntrySide(relPath, entryNow);
+        return;
+      }
       open();
     });
     card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') open();
+      if (e.key !== 'Enter') return;
+      const entryNow = e.altKey ? manifest?.docs[relPath] : null;
+      if (entryNow) openEntrySide(relPath, entryNow);
+      else open();
     });
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -4447,7 +4198,7 @@ export function createLibraryInstance(viewer, opts) {
       if (drag.clickSuppressed()) return;
       // Resolved at click time: reused nodes outlive the entry object they were built with.
       const entryNow = manifest?.docs[relPath];
-      if (entryNow) openEntry(relPath, entryNow);
+      if (entryNow) openEntryHere(relPath, entryNow);
     };
     row.addEventListener('click', (e) => {
       if (viewer._coarsePointer) {
@@ -4457,17 +4208,24 @@ export function createLibraryInstance(viewer, opts) {
       if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
-      // Preview first: syncSelectionUI keeps the previewed document selected, so listPreviewPath must already point at this row.
-      const entryNow = manifest?.docs[relPath];
-      if (entryNow) showListPreview(relPath, entryNow, 0);
       applyClickSelection(e, relPath, paths);
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
     });
     row.addEventListener('dblclick', (e) => {
       if (e.shiftKey || e.ctrlKey || e.metaKey) return;
+      if (e.altKey) {
+        const entryNow = manifest?.docs[relPath];
+        if (entryNow && !drag.clickSuppressed()) openEntrySide(relPath, entryNow);
+        return;
+      }
       open();
     });
     row.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') open();
+      if (e.key !== 'Enter') return;
+      const entryNow = e.altKey ? manifest?.docs[relPath] : null;
+      if (entryNow) openEntrySide(relPath, entryNow);
+      else open();
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -4633,8 +4391,6 @@ export function createLibraryInstance(viewer, opts) {
       if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
-      // Preview first: syncSelectionUI keeps the previewed file selected, so listPreviewPath must already point at this row.
-      showOtherPreview(relPath);
       applyClickSelection(e, relPath, paths);
     });
     row.addEventListener('contextmenu', (e) => {
@@ -4851,7 +4607,6 @@ export function createLibraryInstance(viewer, opts) {
     selectedPaths.clear();
     for (const p of selected) selectedPaths.add(rekeyKey(p));
     if (selAnchor) selAnchor = rekeyKey(selAnchor);
-    if (listPreviewPath) listPreviewPath = rekey(listPreviewPath);
     for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath) t.libraryRelPath = rekey(t.libraryRelPath);
     currentDir = rekey(currentDir);
     for (const a of justAdded) a.relPath = rekey(a.relPath);
@@ -5255,8 +5010,9 @@ export function createLibraryInstance(viewer, opts) {
   const renderList = (shownDirs, shown, shownOthers) => {
     body.classList.add('list-mode');
     const comfortable = viewMode === 'list';
-    // The rows live in the split's column whether or not the pane is up, so the two forms share one look and the toggle keeps the rows.
-    const host = mountSplit('list');
+    const host = document.createElement('div');
+    host.className = 'scribe-library-rlist';
+    body.appendChild(host);
     const head = document.createElement('div');
     head.className = comfortable ? 'scribe-library-lhead cols-cf' : 'scribe-library-lhead';
     const rows = document.createElement('div');
@@ -5389,7 +5145,8 @@ export function createLibraryInstance(viewer, opts) {
           need -= spent;
         }
         // A page count squeezed to a stub is worth less than the name it would cost, so drop it whole instead.
-        for (const j of COL_DROP_ORDER[viewMode]) {
+        // The folder column drops the dates first, then the page count.
+        for (const j of (form === 'column' ? [3, 2, 1] : COL_DROP_ORDER[viewMode])) {
           if (need <= 0) break;
           colHidden.add(j);
           need -= eff[j];
@@ -5399,7 +5156,7 @@ export function createLibraryInstance(viewer, opts) {
         eff[0] = Math.max(cols[0].min, eff[0] - need);
       }
       // A page count is worth less than the name text it displaces even when it fits, so it also goes once half the names are cut off.
-      if (fits && !colHidden.has(1) && eff[0] < colNameTypical) {
+      if (fits && form !== 'column' && !colHidden.has(1) && eff[0] < colNameTypical) {
         colHidden.add(1);
         eff[0] += eff[1];
         eff[1] = 0;
@@ -5580,60 +5337,17 @@ export function createLibraryInstance(viewer, opts) {
     // The sash and the window resize without a render, so width changes reach the columns through this observer.
     colsObserver?.disconnect();
     colsObserver = new ResizeObserver(() => {
-      // The morph resizes the column under pinned content, so the columns must not refit to its passing widths.
-      if (colDragActive || morphing) return;
+      if (colDragActive) return;
       // Painting inside the observer callback re-triggers it in the same delivery, which the browser reports as a resize-loop error.
       cancelAnimationFrame(colProjectRaf);
       colProjectRaf = requestAnimationFrame(() => {
-        if (!colDragActive && !morphing) projectCols(availCols());
+        if (!colDragActive) projectCols(availCols());
       });
       window.clearTimeout(colSettleTimer);
       colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
     });
     colsObserver.observe(host);
-    syncListPane();
     return host;
-  };
-
-  /**
-   * Show a document as the list view's preview, remembering the spot across re-renders.
-   * @param {string} relPath
-   * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {number} pageN
-   */
-  const showListPreview = (relPath, entry, pageN) => {
-    if (!splitForm()) return;
-    listPreviewPath = relPath;
-    listPreviewPage = pageN;
-    preview.show({
-      relPath,
-      hash: entry.hash,
-      entry,
-      pageN,
-      query: null,
-      title: titleOf(relPath),
-    });
-  };
-
-  /**
-   * Show a non-PDF file's plate in the pane, with its name, its kind and the one thing Scribe can do with it.
-   * @param {string} relPath
-   */
-  const showOtherPreview = (relPath) => {
-    if (!splitForm()) return;
-    listPreviewPath = relPath;
-    listPreviewPage = 0;
-    const name = relPath.split('/').pop() || relPath;
-    const dot = name.lastIndexOf('.');
-    preview.showEmpty();
-    showPlate({
-      title: name,
-      badge: dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE',
-      icon: FILE_SVG,
-      note: 'Not a PDF — Scribe can’t open it',
-      action: 'Save a copy…',
-      onAction: () => saveCopies([relPath]),
-    });
   };
 
   // --- Opening documents --------------------------------------------------
@@ -5662,33 +5376,51 @@ export function createLibraryInstance(viewer, opts) {
     }
   };
 
-  /** Hashes (or paths, for legacy entries) with an open in flight, so a click storm during a slow load cannot stack duplicate imports. */
-  const openingDocs = new Set();
+  /**
+   * The documents with an open in flight, by hash or path, each with the promise of its open.
+   * A click storm during a slow load cannot stack duplicate imports.
+   * @type {Map<string, Promise<void>>}
+   */
+  const openingDocs = new Map();
 
   /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {{pageN?: number, query?: string, near?: import('./libraryPreview.js').PreviewTarget['near'], background?: boolean}} [target] - `background` opens the tab without activating it.
-   *   `near` holds the near matches of the clicked row, which the find bar marks beside the document's matches of `query`.
+   * @param {{pageN?: number, query?: string, near?: import('./libraryDocLoads.js').NearMatches, background?: boolean, group?: 0|1, preview?: boolean, program?: boolean, move?: boolean}} [target]
+   *   `background` opens the tab without activating it.
+   *   `move` brings a document already open into `group`, as a drop does.
+   *   `query` and `near`, the clicked row's search and its near matches, mark the hit's words on the opened page while the find bar stays closed.
+   *   `group` is the editor group the document opens in, the lane by default.
+   *   `preview` marks the tab as the one the next preview replaces.
+   *   `program` leaves the active group as it is.
    */
   const openEntry = async (relPath, entry, target = {}) => {
     if (!store || !manifest) return;
     const openKey = entry.hash || relPath;
-    if (openingDocs.has(openKey)) return;
-    openingDocs.add(openKey);
-    /** Open the viewer's find bar on the query, landing on its first match on the opened page. */
-    const continueFind = async () => {
-      const bar = viewer._searchBar;
-      if (!target.query || !bar) return;
-      bar.searchInputElem.value = '';
-      await bar.openSearch();
-      bar.searchInputElem.value = target.query;
-      await bar.runSearch(target.query, target.pageN);
-    };
-    // A document opened from the pane is read with its own pages beside it.
-    const fromPane = visible && splitForm();
-    const afterOpen = () => {
-      if (fromPane && !target.background && !viewer._phoneUi && !viewer._activeSidebar) viewer.showSidebarNow('thumbnails');
+    // A request for a document still opening, such as the double-click's keep behind its click's preview, runs once that open has landed.
+    const inFlight = openingDocs.get(openKey);
+    if (inFlight) {
+      await inFlight;
+      await openEntry(relPath, entry, target);
+      return;
+    }
+    /** @type {() => void} */
+    let settle = () => {};
+    openingDocs.set(openKey, new Promise((resolve) => { settle = () => resolve(); }));
+    /**
+     * Paint the query's matches on the opened document and land on the first match of the hit's page.
+     * @param {?import('../viewer.js').ScribeViewer} shownViewer - The viewer showing the document, in either group.
+     */
+    const markHits = async (shownViewer) => {
+      if (!target.query || !shownViewer || !shownViewer.doc || !shownViewer.doc.pageMetrics.length) return;
+      const { doc } = shownViewer;
+      // Deferred-import text may still be extracting, and a find before it lands would mark nothing.
+      if (doc._textReadySettle) await doc.textReady;
+      if (shownViewer.doc !== doc) return;
+      if (!(await findText(shownViewer, target.query))) return;
+      const { matchList } = shownViewer._searchState;
+      const onPage = target.pageN != null ? matchList.findIndex((m) => m.pageN === target.pageN) : -1;
+      if (onPage >= 0) await goToMatch(shownViewer, onPage);
     };
     try {
       if (entry.portfolio) {
@@ -5709,52 +5441,36 @@ export function createLibraryInstance(viewer, opts) {
         }
         /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
         let doc;
-        preview.beginUserLoad();
+        loads.beginUserLoad();
         try {
           doc = await scribeLib.openDocument([pdfFile], { deferText: true });
         } catch (err) {
           viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
           return;
         } finally {
-          preview.endUserLoad();
+          loads.endUserLoad();
         }
         await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
         return;
       }
-      if (entry.hash && target.query) preview.handOver(entry.hash, target.query, target.near ?? []);
+      if (entry.hash && target.query) loads.handOver(entry.hash, target.query, target.near ?? []);
       const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash && ownsTab(t)) : -1;
       if (openIdx >= 0) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        // The tab's document on screen as the preview stays where the reader is; any other lands on the asked page.
-        const onScreen = viewer._tabs[openIdx].doc === viewer.doc;
-        const morph = onScreen && fromPane;
-        if (morph) morphPending = true;
-        await viewer._activateTab(openIdx);
-        if (morph) {
-          await morphOut();
-          return;
-        }
-        if (!onScreen) {
-          if (target.pageN != null) await viewer.scribe.displayPage(target.pageN, true, false);
-          await continueFind();
-        }
-        afterOpen();
+        const openTab = viewer._tabs[openIdx];
+        // A document already open is shown where it is; only a drop, which places it by hand, moves it across.
+        const wantGroup = target.move && target.group != null ? target.group : (openTab.group || 0);
+        const onScreen = (openTab.group || 0) === wantGroup && !!viewer._viewerShowing(openTab.doc);
+        if ((openTab.group || 0) !== wantGroup) await viewer._moveTabToGroup(openTab, wantGroup, Infinity, { program: !!target.program });
+        // An open turns a preview tab into a kept one, and a preview never turns a kept tab back.
+        if (openTab.preview && !target.preview) openTab.preview = false;
+        await viewer._activateTab(viewer._tabs.indexOf(openTab));
+        if (!target.program) viewer._setActiveGroup(openTab.group || 0);
+        const shown = viewer._viewerShowing(openTab.doc) ?? viewer.scribe;
+        if (target.pageN != null && (!onScreen || shown.state.cp.n !== target.pageN)) await shown.displayPage(target.pageN, true, false);
+        await markHits(shown);
         return;
-      }
-      // The library's own preview on screen becomes a tab as it stands, with nothing reloaded.
-      const shown = preview.lastTarget();
-      if (!target.background && shown && shown.relPath === relPath && viewer.doc && preview.owns(viewer.doc)) {
-        morphPending = true;
-        const tab = preview.pin(titleOf(relPath), { libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath });
-        if (tab) {
-          entry.lastOpened = Date.now();
-          saveManifestSoon();
-          preview.persistRasterWindow(relPath, entry, viewer.scribe.state.cp.n);
-          await morphOut();
-          return;
-        }
-        morphPending = false;
       }
       // The copy a recognition run holds counts as the live copy, so opening mid-run shows its text arriving rather than a second copy.
       const pooled = entry.hash ? (ingest?.adoptRecognizing(entry.hash) ?? sessions.takeLive(entry.hash)) : null;
@@ -5762,21 +5478,29 @@ export function createLibraryInstance(viewer, opts) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), {
-          libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+          libraryOwner: instanceId,
+          libraryHash: entry.hash,
+          libraryRelPath: relPath,
+          lastPage: target.pageN ?? 0,
+          activate: !target.background,
+          group: target.group ?? 0,
+          preview: !!target.preview,
+          program: !!target.program,
         });
         wrapMutators(pooled, tab);
-        /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = preview.findThroughIndex(entry.hash);
-        preview.persistRasterWindow(relPath, entry, target.pageN ?? 0);
-        if (!target.background) await continueFind();
-        afterOpen();
+        /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = loads.findThroughIndex(entry.hash);
+        loads.persistRasterWindow(relPath, entry, target.pageN ?? 0);
+        if (!target.background) await markHits(viewer._viewerShowing(pooled));
         return;
       }
       if (entry.hash && entry.pageDims) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const seed = await preview.makeSeed(relPath, entry, target.pageN ?? 0);
-        const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, { activate: !target.background });
-        const tab = /** @type {any} */ (viewer._tabs[viewer._tabs.length - 1]);
+        const seed = await loads.makeSeed(relPath, entry, target.pageN ?? 0);
+        const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, {
+          activate: !target.background, group: target.group ?? 0, preview: !!target.preview, program: !!target.program,
+        });
+        const tab = /** @type {any} */ (handle.tab);
         tab.libraryOwner = instanceId;
         tab.libraryHash = entry.hash;
         tab.libraryRelPath = relPath;
@@ -5784,15 +5508,14 @@ export function createLibraryInstance(viewer, opts) {
         // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
         tab.onDocHydrated = (d) => {
           wrapMutators(d, tab);
-          /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = preview.findThroughIndex(entry.hash);
+          /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = loads.findThroughIndex(entry.hash);
         };
         wrapMutators(tab.doc, tab);
         handle.hydrated.catch(() => {});
         if (!target.background) {
           await handle.primed;
-          await continueFind();
+          await markHits(viewer._viewerShowing(tab.doc));
         }
-        afterOpen();
         return;
       }
       /** @type {File} */
@@ -5808,14 +5531,14 @@ export function createLibraryInstance(viewer, opts) {
       }
       /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc;
-      preview.beginUserLoad();
+      loads.beginUserLoad();
       try {
         doc = await scribeLib.openDocument([pdfFile], { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
       } finally {
-        preview.endUserLoad();
+        loads.endUserLoad();
       }
       if (doc.attachments.collection) {
         // An entry indexed before the library recorded portfolios shows its nature only now, so the manifest catches up here.
@@ -5829,16 +5552,54 @@ export function createLibraryInstance(viewer, opts) {
       saveManifestSoon();
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), {
-        libraryOwner: instanceId, libraryHash: entry.hash, libraryRelPath: relPath, lastPage: target.pageN ?? 0, activate: !target.background,
+        libraryOwner: instanceId,
+        libraryHash: entry.hash,
+        libraryRelPath: relPath,
+        lastPage: target.pageN ?? 0,
+        activate: !target.background,
+        group: target.group ?? 0,
+        preview: !!target.preview,
+        program: !!target.program,
       });
       wrapMutators(doc, tab);
-      if (entry.hash) /** @type {{findMatches?: ?ReturnType<typeof preview.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = preview.findThroughIndex(entry.hash);
-      if (!target.background) await continueFind();
-      afterOpen();
+      if (entry.hash) /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = loads.findThroughIndex(entry.hash);
+      if (!target.background) await markHits(viewer._viewerShowing(doc));
     } finally {
       openingDocs.delete(openKey);
+      settle();
     }
   };
+
+  /** The group a Library click opens into. */
+  const targetGroup = () => viewer._openTarget(viewer._rightGroup ? viewer._activeGroup : 0);
+  /**
+   * The group Alt and the menu's other entry open into.
+   * With one group it is the right group, which the open creates by splitting the window.
+   */
+  const sideGroup = () => (viewer._rightGroup ? 1 - targetGroup() : 1);
+  /**
+   * Open a document for keeps where a click opens, which becomes the active group.
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   */
+  const openEntryHere = (relPath, entry) => openEntry(relPath, entry, { group: targetGroup() });
+  /**
+   * Open a document in the other group.
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   */
+  const openEntrySide = (relPath, entry) => openEntry(relPath, entry, { group: sideGroup() });
+  /**
+   * Show a document as a preview tab, which the next preview replaces.
+   * It opens where a click opens, or in `where.group`.
+   * It leaves the active group as it is.
+   * @param {string} relPath
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
+   * @param {{pageN?: number, query?: string, near?: import('./libraryDocLoads.js').NearMatches, group?: number}} [where]
+   */
+  const previewEntry = (relPath, entry, where = {}) => openEntry(relPath, entry, {
+    ...where, group: where.group ?? targetGroup(), preview: true, program: true,
+  });
 
   // --- Revert to original -------------------------------------------------
 
@@ -5867,7 +5628,6 @@ export function createLibraryInstance(viewer, opts) {
       tab.libraryDirty = false;
       viewer._closeTab(i);
     }
-    if (preview.shownHash() === hash) clearPreview();
     sessions.invalidate(hash);
   };
 
@@ -6107,7 +5867,6 @@ export function createLibraryInstance(viewer, opts) {
     if (!choice || store !== s || !manifest) return;
     if (choice.keep) {
       ingest?.cancel();
-      preview.destroy();
       sessions.reset();
       await s.deleteCaches();
       await engine.reset().catch(() => {});
@@ -6427,15 +6186,10 @@ export function createLibraryInstance(viewer, opts) {
   // --- Subsystems ---------------------------------------------------------
 
   // Constructed here rather than beside their first use, because they capture `render`, `openCardMenu`, and `openEntry` by value.
-  const preview = createPreview({
-    viewer,
+  const loads = createDocLoads({
     sessions,
     engine,
     getStore: () => store,
-    onSidecarSaved: (hash, doc) => { afterSidecarSaved(hash, doc, false); },
-    ensureLit,
-    onState: (kind, text) => setStage(kind, text),
-    trackEdits: wrapMutators,
   });
 
   const leaveResults = () => {
@@ -6446,10 +6200,9 @@ export function createLibraryInstance(viewer, opts) {
     render();
   };
   const results = createResultsView({
-    host: () => (splitForm() && splitLeft ? splitLeft : body),
+    host: () => body,
     sessions,
-    preview,
-    selectOpens: () => !splitForm(),
+    loads,
     getStore: () => store,
     getManifest: () => manifest,
     getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults),
@@ -6458,7 +6211,9 @@ export function createLibraryInstance(viewer, opts) {
     getEngineResponse: () => engineResponse,
     getEngineTiers: () => engineTiers,
     getEngineError: () => engineError,
-    openEntry,
+    openEntry: (relPath, entry, where, keep) => (keep
+      ? openEntry(relPath, entry, { ...where, group: targetGroup() })
+      : previewEntry(relPath, entry, where)),
     onBack: leaveResults,
   });
 
@@ -6484,6 +6239,26 @@ export function createLibraryInstance(viewer, opts) {
       if (entry) setThumbSrc(img, entry);
     },
     barApproach: (reached, afterCrumbDrop) => (reached ? unfoldForDrag() : refoldAfterDrag(afterCrumbDrop)),
+    foreignDrop: (phase, x, y, carried, ghost) => {
+      if (carried.length !== 1 || carried[0].endsWith('/') || !viewer._cardDragTarget) return false;
+      const t = viewer._cardDragTarget(phase, x, y, titleOf(carried[0]));
+      if (phase === 'drop' && t) {
+        const relPath = carried[0];
+        const entry = manifest?.docs[relPath];
+        if (!entry) return true;
+        const pageImg = ghost && !ghost.classList.contains('chip') ? /** @type {?HTMLElement} */ ([...ghost.querySelectorAll('.scribe-ghost-card :is(canvas, img)')].pop() ?? null) : null;
+        const targetViewer = t.group === 1 ? (viewer._rightGroup?.viewer ?? null) : viewer.scribe;
+        const landing = ghost ? landCard(pageImg, targetViewer) : null;
+        openEntry(relPath, entry, { group: t.group, move: true }).then(() => {
+          const tab = viewer._tabs.find((tb) => ownsTab(tb) && (entry.hash ? tb.libraryHash === entry.hash : tb.libraryRelPath === relPath));
+          const shown = tab ? viewer._viewerShowing(tab.doc) : null;
+          if (shown) landing?.arrive(shown);
+          else landing?.cancel();
+        }).catch(() => landing?.cancel());
+        return true;
+      }
+      return !!t;
+    },
   });
 
   // --- Ingest wiring ------------------------------------------------------
@@ -6814,16 +6589,10 @@ export function createLibraryInstance(viewer, opts) {
       },
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
-    homeTab.title = store.root.name;
-    /** @type {HTMLElement} */ (homeTab.querySelector('.scribe-tab-name')).textContent = store.root.name;
-    if (viewer._tabStrip && !homeTab.parentElement) viewer._tabStrip.addPinnedTab(homeTab);
-    viewer._tabStripMinTabs = 0;
-    if (visible) {
-      viewer._tabStrip?.setPinnedActive(true);
-      homeTab.classList.add('active');
-    }
     viewer._renderTabs();
-    positionSurface();
+    if (visible) applyForm();
+    else if (columnReady()) activate({ render: false });
+    else positionSurface();
     recentFolders = await LibraryStore.recentFolders();
     publishFolders();
     if (viewer._resumeOwner) {
@@ -6889,6 +6658,8 @@ export function createLibraryInstance(viewer, opts) {
       }
       writeResumeRecord();
     }
+    // Documents the record brought back get the column beside them.
+    if (!visible && !destroyed && columnReady()) activate({ render: false });
     await ingest.scan();
     render();
     ingest.start();
@@ -7027,7 +6798,7 @@ export function createLibraryInstance(viewer, opts) {
     viewer._renderTabs();
     render();
     ingest.start();
-    viewer._tabStrip?.showTabNote(viewer._tabs.indexOf(tab), 'Copied into the folder', {
+    viewer._tabStrip?.showTabNote(viewer._stripIndex(tab), 'Copied into the folder', {
       actionLabel: 'Undo',
       onAction: () => { undoCopyIntoFolder(tab, relPath, fromIndex).catch(() => {}); },
     });
@@ -7077,13 +6848,12 @@ export function createLibraryInstance(viewer, opts) {
       viewer._showToast(`Couldn't find “${tab?.name ?? 'the document'}” in ${store.root.name}.`);
       return;
     }
-    if (!visible) activate({ render: false, attach: false });
-    storageOpen = false;
-    const previewing = listPreviewOn && viewMode !== 'grid';
-    if (previewing) {
-      listPreviewPath = relPath;
-      listPreviewPage = 0;
+    if (!visible) activate({ render: false });
+    else if (form === 'column' && !columnOpen) {
+      columnOpen = true;
+      applyForm();
     }
+    storageOpen = false;
     const dir = relPath.includes('/') ? relPath.slice(0, relPath.lastIndexOf('/')) : '';
     if (dir !== currentDir) {
       openDir(dir);
@@ -7097,8 +6867,6 @@ export function createLibraryInstance(viewer, opts) {
     selectedPaths.add(relPath);
     selAnchor = relPath;
     render({ revealSelection: true });
-    // A render that reconciles the list in place leaves the pane alone, so the preview is asked for directly.
-    if (previewing) showListPreview(relPath, entry, 0);
   };
 
   // --- Event wiring -------------------------------------------------------
@@ -7141,7 +6909,6 @@ export function createLibraryInstance(viewer, opts) {
 
     engine.close().catch(() => {});
 
-    preview.destroy();
     sessions.reset();
     results.dispose();
     selectedPaths.clear();
@@ -7170,10 +6937,10 @@ export function createLibraryInstance(viewer, opts) {
       if (folderTabs.includes(viewer._tabs[i]) && viewer._tabs[i] !== activeTab) viewer._closeTab(i);
     }
     if (folderTabs.includes(activeTab)) viewer._closeTab(viewer._tabs.indexOf(activeTab));
-    if (viewer._tabStrip && homeTab.parentElement) viewer._tabStrip.removePinnedTab(homeTab);
-    viewer._tabStripMinTabs = viewer._tabStrip?.pinnedCount() ? 1 : 2;
     viewer._renderTabs();
-    positionSurface();
+    if (visible) applyForm();
+    else positionSurface();
+    syncColumnToggle();
     syncBarForStore();
     syncFolderRows();
     viewer._notifyMenuState();
@@ -7244,7 +7011,7 @@ export function createLibraryInstance(viewer, opts) {
       if (revealItem) {
         const known = folderDirs.has(store.root.name);
         revealItem.classList.toggle('disabled', !known);
-        revealItem.title = known ? '' : 'Available after the folder is picked again with Open Folder…';
+        revealItem.title = known ? '' : REVEAL_UNKNOWN_HINT;
       }
       const host = viewer.pdfViewerElem;
       if (folderMenu.parentElement !== host) host.appendChild(folderMenu);
@@ -7262,6 +7029,13 @@ export function createLibraryInstance(viewer, opts) {
     rows: '.scribe-library-menu-item',
   });
   if (homeTabChev) folderDropdown.attachTrigger(homeTabChev);
+  // The column's own button opens the bar's overflow menu, which lists the folder actions beneath whatever the head has folded.
+  moreDropdown.attachTrigger(colMoreBtn);
+  /**
+   * The folder menu's rows in order, with their icons.
+   * @type {Array<'sep' | {svg: string, item: HTMLElement}>}
+   */
+  const folderMenuEntries = [];
   /** @param {string} svg @param {string} label @param {() => void} onPick */
   const addFolderMenuItem = (svg, label, onPick) => {
     const item = document.createElement('div');
@@ -7274,9 +7048,11 @@ export function createLibraryInstance(viewer, opts) {
       onPick();
     });
     folderMenu.appendChild(item);
+    folderMenuEntries.push({ svg, item });
     return item;
   };
   const addFolderMenuSep = () => {
+    folderMenuEntries.push('sep');
     const sep = document.createElement('div');
     sep.className = 'scribe-library-menu-sep';
     folderMenu.appendChild(sep);
@@ -7422,6 +7198,7 @@ export function createLibraryInstance(viewer, opts) {
   const syncSortUI = () => {
     sortLabelElem.textContent = SORT_LABELS[sortMode];
     for (const item of sortItems) item.classList.toggle('on', item.dataset.mode === sortMode);
+    fitColBar();
   };
   const sortDropdown = createDropdown({
     show: () => {
@@ -7469,10 +7246,10 @@ export function createLibraryInstance(viewer, opts) {
     gridViewBtn.setAttribute('aria-pressed', String(viewMode === 'grid'));
     listViewBtn.setAttribute('aria-pressed', String(viewMode === 'list'));
     compactViewBtn.setAttribute('aria-pressed', String(viewMode === 'compact'));
-    // Disabled rather than hidden in grid view, since a vanishing button would shift every control on the bar.
-    previewBtn.disabled = viewMode === 'grid';
-    previewBtn.classList.toggle('on', listPreviewOn && viewMode !== 'grid');
-    previewBtn.setAttribute('aria-pressed', String(listPreviewOn));
+    const glyph = colViewBtn.querySelector('.scribe-library-colview-glyph');
+    if (glyph) glyph.innerHTML = viewMode === 'grid' ? VIEW_GRID_SVG : viewMode === 'list' ? VIEW_LIST_SVG : VIEW_COMPACT_SVG;
+    colViewBtn.title = `View: ${viewMode === 'grid' ? 'Grid' : viewMode === 'list' ? 'List' : 'Compact'}`;
+    fitColBar();
   };
   syncViewUI();
   /** @param {'grid' | 'list' | 'compact'} mode */
@@ -7492,26 +7269,46 @@ export function createLibraryInstance(viewer, opts) {
   gridViewBtn.addEventListener('click', () => setViewMode('grid'));
   listViewBtn.addEventListener('click', () => setViewMode('list'));
   compactViewBtn.addEventListener('click', () => setViewMode('compact'));
-  previewBtn.addEventListener('click', () => {
-    listPreviewOn = !listPreviewOn;
-    if (persistPrefs) {
-      try {
-        window.localStorage.setItem(PREVIEW_STORAGE_KEY, listPreviewOn ? '1' : '0');
-      } catch { /* localStorage unavailable. */ }
-    }
-    syncViewUI();
-    if (fullTextResults) return;
-    if (!splitLeft || !body.classList.contains('list-mode')) {
-      render();
-      return;
-    }
-    // Only the pane comes or goes, so the rows keep their scroll and focus.
-    if (!splitForm() && preview.lastTarget()) preview.showEmpty();
-    applyForm();
-    syncListPane();
-    syncSelectionUI();
-    syncPaneHead();
+  const viewMenu = document.createElement('div');
+  viewMenu.className = 'scribe-library-menu scribe-library-view-menu';
+  viewMenu.setAttribute('role', 'menu');
+  viewMenu.style.display = 'none';
+  /** @type {HTMLElement[]} */
+  const viewItems = [];
+  for (const [mode, label] of [['grid', 'Grid'], ['list', 'List'], ['compact', 'Compact']]) {
+    const item = document.createElement('div');
+    item.className = 'scribe-library-menu-item';
+    item.setAttribute('role', 'menuitemradio');
+    item.dataset.mode = mode;
+    item.innerHTML = `${MENU_CHECK_SVG}${label}`;
+    item.addEventListener('click', () => {
+      viewDropdown.close();
+      setViewMode(/** @type {'grid' | 'list' | 'compact'} */ (mode));
+    });
+    viewMenu.appendChild(item);
+    viewItems.push(item);
+  }
+  const viewDropdown = createDropdown({
+    show: (anchor) => {
+      for (const item of viewItems) {
+        item.classList.toggle('on', item.dataset.mode === viewMode);
+        item.setAttribute('aria-checked', String(item.dataset.mode === viewMode));
+      }
+      const host = viewer.pdfViewerElem;
+      if (viewMenu.parentElement !== host) host.appendChild(viewMenu);
+      const hostRect = host.getBoundingClientRect();
+      const anchorRect = anchor.getBoundingClientRect();
+      Object.assign(viewMenu.style, {
+        left: `${Math.max(4, anchorRect.left - hostRect.left)}px`, top: `${anchorRect.bottom - hostRect.top + 4}px`, right: 'auto', display: '',
+      });
+      return viewMenu;
+    },
+    hide: () => {
+      viewMenu.style.display = 'none';
+    },
+    rows: '.scribe-library-menu-item',
   });
+  viewDropdown.attachTrigger(colViewBtn);
 
   const newDropdown = createDropdown({
     show: () => {
@@ -7706,17 +7503,17 @@ export function createLibraryInstance(viewer, opts) {
   viewer.pdfViewerElem.addEventListener('focusin', trackEngagement, true);
 
   const focusSearch = () => {
-    // A reader working in the previewed document gets its find, not the library's search.
-    if (docEngaged && splitForm() && viewer.doc && viewer._searchBar) {
-      viewer._searchBar.openSearch();
-      return;
+    if (form === 'column') {
+      colSearchRow.hidden = false;
+      colSearchBtn.classList.add('on');
     }
     searchInput.focus();
     searchInput.select();
   };
+  const hasWindow = () => visible && (form === 'full' || surface.contains(document.activeElement));
   // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
   const onFindShortcut = (e) => {
-    if (!visible) return;
+    if (!hasWindow()) return;
     if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -7774,7 +7571,7 @@ export function createLibraryInstance(viewer, opts) {
   });
   /** @param {KeyboardEvent} e */
   const onNavShortcut = (e) => {
-    if (!finder || !visible || docEngaged || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!finder || !hasWindow() || docEngaged || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
     if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     if (e.key === '[') goBack();
     else if (e.key === ']') goForward();
@@ -7787,7 +7584,7 @@ export function createLibraryInstance(viewer, opts) {
   // The document's keyboard scope is off while the surface is in front, which silences its Ctrl+O, so the surface answers it.
   /** @param {KeyboardEvent} e */
   const onOpenShortcut = (e) => {
-    if (!visible) return;
+    if (!visible || form !== 'full') return;
     if (!((e.key === 'o' || e.key === 'O') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -7798,7 +7595,7 @@ export function createLibraryInstance(viewer, opts) {
   // Document-level like the find shortcut, so it works with focus anywhere on the surface, never inside a text field.
   /** @param {KeyboardEvent} e */
   const onSelectAll = (e) => {
-    if (!visible || docEngaged) return;
+    if (!hasWindow() || docEngaged) return;
     if (!((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey)) return;
     if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     const paths = new Set([...body.querySelectorAll('.scribe-library-card[data-rel-path], .scribe-library-row[data-rel-path]')]
@@ -7818,7 +7615,9 @@ export function createLibraryInstance(viewer, opts) {
     libraryHash: opts.libraryHash ?? null,
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
-    covering: () => visible && !splitForm(),
+    covering: () => visible && form === 'full',
+    columnWidth: () => (visible && form === 'column' && columnOpen ? columnW : 0),
+    containsNode: (/** @type {Node} */ node) => surface.contains(node),
     focusSearch,
     ...(isLibrary ? {
       connected: () => !!store,
@@ -7833,34 +7632,33 @@ export function createLibraryInstance(viewer, opts) {
       copyTabIntoFolder,
       showTab,
     } : {}),
+    positionSurface,
     ...(opts.onClose ? { close: opts.onClose } : {}),
     show: () => {
-      if (visible) return;
-      activate({ morph: true });
+      if (!visible) activate();
+      else if (form === 'column' && !columnOpen) {
+        columnOpen = true;
+        applyForm();
+      }
     },
     hide: () => {
       if (visible) deactivate();
     },
-    clearPreview,
-    pageChanged: () => {
-      if (visible && pvHead.style.display !== 'none') syncPaneNav();
-    },
     phoneUiChanged: () => {
-      if (!visible) return;
-      if (!splitForm() && preview.lastTarget()) preview.showEmpty();
-      applyForm();
-      syncListPane();
-      syncSelectionUI();
-      syncPaneHead();
+      if (visible) applyForm();
     },
-    docOpened: ({ keepSurface = false } = {}) => {
-      // An Open from the pane leaves the surface up for the morph that follows it.
-      if (visible && !morphPending && !keepSurface) deactivate();
-      preview.displaced();
+    docOpened: () => {
+      if (!visible) {
+        syncColumnToggle();
+        return;
+      }
+      if (isLibrary) applyForm();
+      else deactivate();
       writeResumeRecord();
     },
     emptied: () => {
       if (!visible) activate();
+      else applyForm();
       writeResumeRecord();
     },
     saveTabIfDirty,
@@ -7899,11 +7697,8 @@ export function createLibraryInstance(viewer, opts) {
         currentDir = first.slice(0, Math.max(0, first.lastIndexOf('/')));
         selectedPaths.add(first);
         selAnchor = first;
-        listPreviewPath = first;
       }
       render({ revealSelection: true });
-      // The render above reconciles the list in place, which leaves the pane alone, so the preview is asked for directly.
-      if (first && firstEntry) showListPreview(first, firstEntry, 0);
       return;
     }
     recentFolders = await LibraryStore.recentFolders();
@@ -7950,7 +7745,6 @@ export function createLibraryInstance(viewer, opts) {
   Object.assign(api, {
     destroy() {
       destroyed = true;
-      navObserver?.disconnect();
       drag.cancel();
       if (visible) deactivate();
       releaseFolderLock?.();
@@ -7987,20 +7781,17 @@ export function createLibraryInstance(viewer, opts) {
         manifestTimer = null;
         if (store && manifest) store.writeManifest(manifest).catch(() => {});
       }
-      preview.destroy();
       sessions.reset();
       results.dispose();
       engine.terminate();
       surface.remove();
-      stageObserver.disconnect();
-      pane.remove();
+      colToggle?.remove();
       viewer.pdfViewerElem.removeEventListener('pointerdown', trackEngagement, true);
       viewer.pdfViewerElem.removeEventListener('focusin', trackEngagement, true);
       barTitle?.remove();
       barControls?.remove();
       if (viewer._tabStrip) {
         viewer._tabStrip.removePinnedTab(homeTab);
-        if (!viewer._tabStrip.pinnedCount()) viewer._tabStripMinTabs = 2;
         viewer._renderTabs();
       }
       openFolderItem?.remove();
@@ -8024,7 +7815,7 @@ export function createLibraryInstance(viewer, opts) {
 }
 
 /**
- * Install the document library: the pinned Library tab, its folder connection and the app-menu items that go with it.
+ * Install the document library: its surface, its folder connection and the app-menu items that go with it.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
  * @param {{settings?: ?Object, bar?: 'crumbs'|'finder'}} [options] - `settings` adjusts the search engine's defaults, `ENGINE_DEFAULTS` in searchEngine.js.
  *   `bar` is the toolbar's form, breadcrumbs by default.
@@ -8062,7 +7853,6 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
     store,
     bar: viewer._libraryBar,
     viewDefault: 'compact',
-    previewDefault: true,
     showOthersDefault: true,
     persistPrefs: false,
     readOnly: true,

@@ -48,16 +48,127 @@ import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineOb
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { DEBUG_MENU } from '../devFlags.js';
 
+/**
+ * The view-switch strip of a sidebar: one tab per view the sidebar offers.
+ * @param {(key: 'thumbnails'|'bookmarks'|'comments') => ?Object} panelFor
+ * @param {(key: 'thumbnails'|'bookmarks'|'comments') => void} onPick
+ * @returns {{tabs: HTMLDivElement, tabElems: Object<string, HTMLSpanElement>}}
+ */
+function buildSidebarTabs(panelFor, onPick) {
+  const tabs = document.createElement('div');
+  tabs.className = 'scribe-sbtabs';
+  tabs.style.display = 'none';
+  const track = document.createElement('div');
+  track.className = 'scribe-sbtabs-track';
+  tabs.appendChild(track);
+  /** @type {Object<string, HTMLSpanElement>} */
+  const tabElems = {};
+  /** @type {Array<['thumbnails'|'bookmarks'|'comments', string, string]>} */
+  const views = [
+    ['thumbnails', 'Page thumbnails', SIDEBAR_PAGES_SVG],
+    ['bookmarks', 'Bookmarks', BOOKMARK_SVG],
+    ['comments', 'Comments', COMMENT_SVG],
+  ];
+  for (const [key, label, svg] of views) {
+    if (!panelFor(key)) continue;
+    const tab = document.createElement('span');
+    tab.className = 'scribe-sbtab';
+    tab.title = label;
+    tab.role = 'button';
+    tab.tabIndex = 0;
+    tab.ariaLabel = label;
+    tab.innerHTML = svg;
+    tab.addEventListener('click', () => onPick(key));
+    tabElems[key] = tab;
+    track.appendChild(tab);
+  }
+  return { tabs, tabElems };
+}
+
+/**
+ * @param {GroupSidebar} side
+ * @param {'thumbnails'|'bookmarks'|'comments'|null} key
+ */
+function groupPanelFor(side, key) {
+  if (key === 'thumbnails') return side.thumbnails;
+  if (key === 'bookmarks') return side.bookmarks;
+  if (key === 'comments') return side.comments;
+  return null;
+}
+
+/**
+ * Place the right group's sidebar in the group's body and size the group's viewer beside it.
+ * @param {{side: GroupSidebar, viewer: ScribeViewer, bars?: ReturnType<typeof createScrollbars>}} group
+ * @param {number} groupW
+ * @param {number} bodyH
+ */
+function layoutGroupSidebar(group, groupW, bodyH) {
+  const s = group.side;
+  s.width = groupW;
+  s.bodyH = bodyH;
+  const stripH = s.tabsElem ? SIDEBAR_TABS_HEIGHT : 0;
+  if (s.tabsElem) s.tabsElem.style.top = '0px';
+  for (const key of SIDEBAR_VIEW_KEYS) {
+    const panel = groupPanelFor(s, key);
+    if (!panel) continue;
+    panel.panelElem.style.top = `${stripH}px`;
+    panel.panelElem.style.height = `${bodyH - stripH}px`;
+  }
+  // A sidebar animation owns the inset and the viewer's size on its own clock.
+  if (s.anim) return;
+  const panel = groupPanelFor(s, s.active);
+  const panelW = panel ? (parseFloat(panel.panelElem.style.width) || 0) : 0;
+  if (s.tabsElem && panel) {
+    s.tabsElem.style.width = `${panelW}px`;
+    const tabs = Object.values(s.tabElems).filter((t) => t.style.display !== 'none');
+    const inner = panelW - 12 - 1 - 4 - 2 * (tabs.length - 1);
+    const tabW = Math.max(0, Math.floor(inner / Math.max(1, tabs.length) / 2) * 2);
+    for (const t of tabs) t.style.flex = `0 0 ${tabW}px`;
+  }
+  const inset = Math.min(panelW, Math.max(0, groupW - 80));
+  group.viewer.scrollContainer.style.marginLeft = `${inset}px`;
+  group.viewer.resize(groupW - 1 - inset, bodyH);
+  group.bars?.updateScrollbars();
+}
+
 /** Root class used to scope this app's control styles. */
 const ROOT_CLASS = 'scribe-pdf-viewer';
+
+/**
+ * The right group's own sidebar.
+ * `width` and `bodyH` are the group's width and its body's height, which the slide's inset reads.
+ * @typedef {Object} GroupSidebar
+ * @property {?ReturnType<typeof createThumbnailPanel>} thumbnails
+ * @property {?ReturnType<typeof createBookmarksPanel>} bookmarks
+ * @property {?ReturnType<typeof createCommentsPanel>} comments
+ * @property {?HTMLDivElement} tabsElem
+ * @property {Object<string, HTMLSpanElement>} tabElems
+ * @property {'thumbnails'|'bookmarks'|'comments'|null} active
+ * @property {'thumbnails'|'bookmarks'|'comments'} last
+ * @property {?{raf: number}} anim
+ * @property {?{min: number, max: number}} resizeBounds
+ * @property {number} width
+ * @property {number} bodyH
+ */
+
+/**
+ * One sidebar's panels, strip and document inset, as the sidebar slide drives them.
+ * @typedef {Object} SidebarDrive
+ * @property {(key: 'thumbnails'|'bookmarks'|'comments'|null) => ?{panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, setVisible: (v: boolean) => void}} panelFor
+ * @property {?{panelElem: HTMLDivElement}} thumbnails
+ * @property {?HTMLDivElement} strip
+ * @property {?{raf: number}} anim
+ * @property {(inset: number) => void} setInset
+ * @property {() => void} relayout
+ */
 
 // Toolbar height bounds (px).
 const TOOLBAR_HEIGHT_DEFAULT = 40;
 const TOOLBAR_HEIGHT_MIN = 24;
 const TOOLBAR_HEIGHT_MAX = 80;
 
-/** Height of the document tab strip (shown only with 2+ open tabs), in px. */
 const TAB_STRIP_HEIGHT = 30;
+const GROUP_NOTICE_HEIGHT = 32;
 
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 const SHEET_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>';
@@ -513,21 +624,36 @@ class ScribePDFViewer {
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
     this._activeTab = -1;
-    /** @type {?string} Last active-document name announced via the `scribe-active-doc-change` event, or null when none was open. */
-    this._announcedDocName = null;
     /**
-     * Name of the document the library's preview pane is showing.
-     * While the library surface is up, it stands in as the active document.
-     * @type {?string}
+     * The second editor group, to the right of the document's lane, or null while the window is not split.
+     * `active` is the group's shown tab, or null while the group is empty.
+     * @type {?{el: HTMLDivElement, sash: HTMLDivElement, strip: ReturnType<typeof createTabStrip>, body: HTMLDivElement, empty: HTMLDivElement,
+     *   notice: HTMLDivElement, noticeText: HTMLSpanElement, viewer: ScribeViewer, active: ?Object, side: GroupSidebar}}
      */
-    this._previewDocName = null;
+    this._rightGroup = null;
+    this._rightGroupFrac = 0.5;
+    this._groupW = 0;
+    /** The group the toolbar, the page box and the keys act on: 0 for the document's lane, 1 for the group to the right. */
+    this._activeGroup = 0;
+    /** @type {?HTMLDivElement} */
+    this._dropOverlay = null;
+    /** @type {?HTMLDivElement} */
+    this._dragChip = null;
+    /** @type {?HTMLDivElement} */
+    this._dropIns = null;
+    /** @type {HTMLElement[]} */
+    this._splitBtns = [];
+    /** @type {?{left: number, top: number, width: number, height: number}} The lane's document area, in the root's coordinates. */
+    this._laneBox = null;
+    this._groupPressWired = false;
+    /** @type {?string} */
+    this._announcedDocName = null;
     /** Whether the tab strip currently occupies layout space. */
     this._tabStripVisible = false;
     /**
      * Open-tab count at which the strip appears.
-     * A pinned surface lowers it so its tab has a home.
      */
-    this._tabStripMinTabs = 2;
+    this._tabStripMinTabs = 1;
     this._modeTrackOpen = false;
     /** @type {?HTMLElement} */
     this._modeTrackWrap = null;
@@ -873,12 +999,6 @@ class ScribePDFViewer {
     this._sidebarTabsElem = null;
     /** @type {Object<string, HTMLSpanElement>} The strip's tabs by view key. */
     this._sidebarTabElems = {};
-    /** @type {?{left: number, top: number}} The inset of the document area a library sets while its preview pane holds the document. */
-    this._docInset = null;
-    /** @type {?HTMLElement} */
-    this._docInsetElem = null;
-    /** True while a preview attaches, so its first fit is to the pane's width. */
-    this._previewFitWidth = false;
     /** @type {?ReturnType<typeof import('../js/controls/automatePanel.js').createAutomatePanel>} The Automate panel (right dock), or null until its module loads. */
     this._automatePanel = null;
     /**
@@ -932,9 +1052,11 @@ class ScribePDFViewer {
       toolbarButtons.style.display = 'flex';
       toolbarButtons.style.alignItems = 'center';
 
-      const pageNav = createPageNav(this.scribe);
-      const zoom = createZoomControls(this.scribe);
-      const rotate = createRotateControls(this.scribe);
+      // The page, zoom and rotate controls act on whichever group is active.
+      const barViewer = this._barViewer();
+      const pageNav = createPageNav(barViewer);
+      const zoom = createZoomControls(barViewer);
+      const rotate = createRotateControls(barViewer);
       const print = createPrintControls(this.scribe, this.pdfViewerElem);
       this._print = print;
       const open = createOpenControls(this.scribe, this.pdfViewerElem, (files) => this.openFiles(files));
@@ -960,8 +1082,8 @@ class ScribePDFViewer {
       this._menuCommands = {
         open: () => open.openElem.click(),
         print: () => { if (!this._frontSurface()) print.printElem.click(); },
-        'rotate-left': () => { if (!this._frontSurface()) this.scribe.rotatePage(this.scribe.state.cp.n, -90); },
-        'rotate-right': () => { if (!this._frontSurface()) this.scribe.rotatePage(this.scribe.state.cp.n, 90); },
+        'rotate-left': () => { const v = this._activeViewer(); if (!this._frontSurface()) v.rotatePage(v.state.cp.n, -90); },
+        'rotate-right': () => { const v = this._activeViewer(); if (!this._frontSurface()) v.rotatePage(v.state.cp.n, 90); },
         undo: () => { if (fieldOwnsUndo()) document.execCommand('undo'); else if (!this._frontSurface()) this._doUndo(false); },
         redo: () => { if (fieldOwnsUndo()) document.execCommand('redo'); else if (!this._frontSurface()) this._doUndo(true); },
         find: () => {
@@ -1014,6 +1136,13 @@ class ScribePDFViewer {
         toggle.classList.add('scribe-sidebar-toggle');
         toggle.addEventListener('click', () => {
           if (toggle.classList.contains('disabled')) return;
+          const g = this._rightGroup;
+          if (this._activeGroup === 1 && g) {
+            const s = g.side;
+            const last = groupPanelFor(s, s.last);
+            this._requestGroupSidebar(s.active || ((last && last.toggleElem.style.display !== 'none') ? s.last : 'thumbnails'));
+            return;
+          }
           if (this._activeSidebar) {
             this._requestSidebar(this._activeSidebar);
             return;
@@ -1024,33 +1153,10 @@ class ScribePDFViewer {
         this._sidebarToggleElem = toggle;
         toolbarElemStart.appendChild(toggle);
 
-        const tabs = document.createElement('div');
-        tabs.className = 'scribe-sbtabs';
-        tabs.style.display = 'none';
-        const track = document.createElement('div');
-        track.className = 'scribe-sbtabs-track';
-        tabs.appendChild(track);
-        /** @type {Array<['thumbnails'|'bookmarks'|'comments', string, string]>} */
-        const views = [
-          ['thumbnails', 'Page thumbnails', SIDEBAR_PAGES_SVG],
-          ['bookmarks', 'Bookmarks', BOOKMARK_SVG],
-          ['comments', 'Comments', COMMENT_SVG],
-        ];
-        for (const [key, label, svg] of views) {
-          if (!this._panelFor(key)) continue;
-          const tab = document.createElement('span');
-          tab.className = 'scribe-sbtab';
-          tab.title = label;
-          tab.role = 'button';
-          tab.tabIndex = 0;
-          tab.ariaLabel = label;
-          tab.innerHTML = svg;
-          tab.addEventListener('click', () => { if (key !== this._activeSidebar) this._requestSidebar(key); });
-          this._sidebarTabElems[key] = tab;
-          track.appendChild(tab);
-        }
-        this._sidebarTabsElem = tabs;
-        this.pdfViewerElem.appendChild(tabs);
+        const built = buildSidebarTabs((key) => this._panelFor(key), (key) => { if (key !== this._activeSidebar) this._requestSidebar(key); });
+        this._sidebarTabElems = built.tabElems;
+        this._sidebarTabsElem = built.tabs;
+        this.pdfViewerElem.appendChild(built.tabs);
       }
 
       if (this._editEnabled) {
@@ -1120,32 +1226,7 @@ class ScribePDFViewer {
 
       // Tab strip sits in normal flow directly below the toolbar (so the canvas flows beneath it).
       // It starts hidden and only takes layout space once a second document is opened.
-      const tabStrip = createTabStrip({
-        onSelect: (i) => this._activateTab(i),
-        onClose: (i) => this._closeTab(i),
-        onCloseOthers: async (i) => {
-          const kept = this._tabs[i];
-          if (!kept) return;
-          // Activate the survivor first, so closing the active tab never loads a document that is about to be closed too.
-          // While a library previews in its pane no lane tab is active, so there is nothing to activate first.
-          // Activating the kept tab anyway would replace the pane's preview with its document.
-          if (this._activeTab >= 0 && i !== this._activeTab) await this._activateTab(i, { keepSurface: true });
-          for (let j = this._tabs.length - 1; j >= 0; j--) {
-            if (this._tabs[j] !== kept) this._closeTab(j);
-          }
-        },
-        onCloseAll: () => {
-          // The active tab closes last, so closing it never attaches the next tab's document only to close it in turn.
-          const active = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
-          for (let j = this._tabs.length - 1; j >= 0; j--) {
-            if (this._tabs[j] !== active) this._closeTab(j);
-          }
-          if (active) this._closeTab(this._tabs.indexOf(active));
-        },
-        onMove: (from, to) => this._moveTab(from, to),
-        onCopyInto: (from, to) => { this._library?.copyTabIntoFolder?.(this._tabs[from], to); },
-        extraMenuItems: (i) => this._tabMenuExtras(i),
-      });
+      const tabStrip = createTabStrip(this._stripConfig(0));
       this._tabStrip = tabStrip;
       this._tabStripElem = tabStrip.tabStripElem;
       this._tabStripElem.style.height = `${TAB_STRIP_HEIGHT}px`;
@@ -1287,6 +1368,24 @@ class ScribePDFViewer {
     if (this._searchBar) {
       this._teardownCallbacks.push(this._searchBar.installFindShortcut());
     }
+
+    const onGroupKey = (/** @type {KeyboardEvent} */ e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.defaultPrevented || this._phoneUi || !this._tabStrip) return;
+      const el = document.activeElement;
+      if (el && el !== document.body && !this.pdfViewerElem.contains(el)) return;
+      if (e.key === '\\') {
+        e.preventDefault();
+        // With nothing open the library fills the window, and a group under it would be out of sight.
+        if (this._frontSurface()) return;
+        if (this._rightGroup) this._setActiveGroup(1);
+        else this._openGroup();
+      } else if (e.key === '1' || (e.key === '2' && this._rightGroup)) {
+        e.preventDefault();
+        this._setActiveGroup(e.key === '2' ? 1 : 0);
+      }
+    };
+    document.addEventListener('keydown', onGroupKey);
+    this._teardownCallbacks.push(() => document.removeEventListener('keydown', onGroupKey));
 
     // Ctrl/Cmd+P prints (scoped by keyboardScope), replacing the browser's print-the-page default.
     if (this._print) {
@@ -1430,16 +1529,14 @@ class ScribePDFViewer {
     const origCallback = this.scribe.displayPageCallback;
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
-      this._syncPageNumDisplay();
+      // Every op that changes the page count (paste, insert, delete, move, undo/redo) ends in displayPage, so the count refreshes here.
+      this._syncPageBox();
       this._syncDockPageNumWidth();
-      // Keep the navbar total in sync with the live page count. Every op that changes the count (paste, insert, delete, move, undo/redo) ends in displayPage, so refreshing here covers them all.
-      if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
       if (this._bookmarksPanel) this._bookmarksPanel.setActive();
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
       if (this._companionStrip) this._companionStrip.setActive(this.scribe.state.cp.n);
-      for (const inst of this._libraryInstances) inst.pageChanged();
       if (this.scribe.onTablesPageChanged) this.scribe.onTablesPageChanged(this.scribe.state.cp.n);
     };
 
@@ -1676,22 +1773,6 @@ class ScribePDFViewer {
         this._teardownCallbacks.push(this._editTextTool.installBehaviors());
       }
 
-      /** @type {?ReturnType<typeof createProofreadTextTool>} */
-      this._proofreadTool = null;
-      /** Whether Proofread Text's "Zoom to each word" switch is on. */
-      this._proofFollow = false;
-      this._proofTextOnly = false;
-      /** @type {?HTMLSpanElement} */
-      this._proofFollowElem = null;
-      /** @type {?HTMLButtonElement[]} The Scan + text and Text only buttons, in that order. */
-      this._proofSegBtns = null;
-      /** The widest count reading pinned so far. */
-      this._proofreadCountWidest = '';
-      if (this._modeTrackRow1) {
-        this._proofreadTool = createProofreadTextTool(this);
-        this._modeTrackRow1.insertBefore(this._proofreadTool.toolbarElem, this._modeTrackChev);
-      }
-
       /** @type {?ReturnType<typeof createGraphicsEditTool>} */
       this._graphicsEditTool = null;
       if (editText) {
@@ -1718,6 +1799,23 @@ class ScribePDFViewer {
         this._modeTrackRow1.insertBefore(this._recognizeTool.toolbarElem, this._modeTrackChev);
       }
 
+      // Listed right after Recognize Text, since the mode checks recognized text; beside Edit Text it read as native-text editing.
+      /** @type {?ReturnType<typeof createProofreadTextTool>} */
+      this._proofreadTool = null;
+      /** Whether Proofread Text's "Zoom to each word" switch is on. */
+      this._proofFollow = false;
+      this._proofTextOnly = false;
+      /** @type {?HTMLSpanElement} */
+      this._proofFollowElem = null;
+      /** @type {?HTMLButtonElement[]} The Scan + text and Text only buttons, in that order. */
+      this._proofSegBtns = null;
+      /** The widest count reading pinned so far. */
+      this._proofreadCountWidest = '';
+      if (this._modeTrackRow1) {
+        this._proofreadTool = createProofreadTextTool(this);
+        this._modeTrackRow1.insertBefore(this._proofreadTool.toolbarElem, this._modeTrackChev);
+      }
+
       /** @type {?ReturnType<typeof createExtractTablesTool>} */
       this._extractTablesTool = null;
       // The mode's workspace lives in the right panel, which every editor has.
@@ -1736,16 +1834,16 @@ class ScribePDFViewer {
       if (this._inspectMenuRow && !this._inspectTool) this._inspectMenuRow.style.display = 'none';
 
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
-      if (this._proofreadTool) this._proofreadTool.toolbarElem.dataset.modeHint = `Click a word to select it · double-click to edit · Tab: next word to check · ${IS_MAC ? '⌥Space' : 'Ctrl+Space'}: show the scan`;
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
+      if (this._proofreadTool) this._proofreadTool.toolbarElem.dataset.modeHint = `Click a word to select it · double-click to edit · Tab: next word to check · ${IS_MAC ? '⌥Space' : 'Ctrl+Space'}: show the scan`;
       if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
       if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
 
-      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._proofreadTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
-        this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem,
+      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
+        this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem, this._proofreadTool?.toolbarElem,
         this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       // A tool that awaits before activating can mark its button active after the click listener below has synced the banner, so the banner follows the class itself.
@@ -1880,74 +1978,14 @@ class ScribePDFViewer {
   }
 
   /**
-   * Show `doc` as a library preview, under the library's lit tab rather than a tab of its own.
-   * No lane tab is active while a preview is attached, and the outgoing document is retained for its owner.
-   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
-   * @param {number} initialPage
-   * @param {string} name - The document's display name, which the viewer announces and uses for downloads.
-   * @returns {Promise<void>}
-   */
-  async attachPreview(doc, initialPage, name) {
-    if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
-      const outgoing = this._tabs[this._activeTab];
-      outgoing.lastPage = this.scribe.state.cp.n;
-      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(outgoing))).catch(() => {});
-    }
-    this._activeTab = -1;
-    this._previewDocName = name;
-    this._renderTabs();
-    this._syncTabNotice();
-    // A tab's document already on screen stays where the reader left it; only the strip changes hands.
-    if (doc !== this.doc) await this._setDoc(doc, initialPage, false, false, { preview: true });
-    else this._announceActiveDoc();
-  }
-
-  /**
-   * Give the attached preview a lane tab of its own and make that tab active.
-   * The document stays attached as it is, so nothing is re-rendered or moved.
-   * @param {string} name
-   * @param {Object} [extra] - Additional fields carried on the tab (e.g. the library's `libraryHash`).
-   * @returns {?Object} The new tab, or null when no preview is attached.
-   */
-  pinPreview(name, extra = {}) {
-    if (this._activeTab >= 0 || !this.doc) return null;
-    const tab = { ...this._newTab(this.doc, name), ...extra, lastPage: this.scribe.state.cp.n };
-    this._tabs.push(tab);
-    this._activeTab = this._tabs.length - 1;
-    this._previewDocName = null;
-    this._renderTabs();
-    this._syncTabNotice();
-    for (const inst of this._libraryInstances) inst.docOpened();
-    this._applyTabResourcePolicy();
-    return tab;
-  }
-
-  /**
-   * Empty the document area under the library's lit tab, leaving the open sidebar view in place.
-   * The document is retained for its owner, a tab's for its tab.
-   * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc} The detached document, or null when none was attached.
-   */
-  detachPreview() {
-    if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
-      const outgoing = this._tabs[this._activeTab];
-      outgoing.lastPage = this.scribe.state.cp.n;
-      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(outgoing))).catch(() => {});
-    }
-    this._activeTab = -1;
-    this._previewDocName = null;
-    this._renderTabs();
-    this._syncTabNotice();
-    if (!this.doc) return null;
-    return this.detachDoc({ terminate: false, keepSidebar: true });
-  }
-
-  /**
-   * The display name of the document on screen: the active tab's, or the preview's.
+   * The display name of the active group's current tab.
    * @returns {?string}
    */
   _shownName() {
+    const g = this._rightGroup;
+    if (this._activeGroup === 1 && g) return g.active ? g.active.name : null;
     if (this._activeTab >= 0) return this._tabs[this._activeTab]?.name ?? null;
-    return this.doc ? this._previewDocName : null;
+    return null;
   }
 
   /**
@@ -1975,18 +2013,24 @@ class ScribePDFViewer {
    * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
    * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
-   * @param {{activate?: boolean}} [opts]
-   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}>}
+   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean}} [opts] - `group`, `preview` and `program` go to the tab as `_openDocAsTab` takes them.
+   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void, tab: Object}>} `tab` is the record the document opened as.
    */
-  async openProvisional(seed, { activate = true } = {}) {
+  async openProvisional(seed, {
+    activate = true, group = 0, preview = false, program = false,
+  } = {}) {
     /** @type {{current: ?Object}} */
     const holder = { current: null };
     const {
       seedDoc, primed, hydrated, cancel,
     } = this._makeProvisional(seed, holder);
-    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: seed.initialPage ?? 0, activate });
+    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', {
+      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program,
+    });
     if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
-    return { primed, hydrated, cancel };
+    return {
+      primed, hydrated, cancel, tab: holder.current,
+    };
   }
 
   /**
@@ -2019,7 +2063,8 @@ class ScribePDFViewer {
 
     // Word geometry lands moments after the raster, so the text layer has to be rebuilt when it does.
     const primed = seedDoc.prime().then(() => {
-      if (!cancelled && this.doc === seedDoc) this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+      const v = this._viewerShowing(seedDoc);
+      if (!cancelled && v) v.displayPage(v.state.cp.n, false, true);
     });
 
     const start = () => {
@@ -2044,21 +2089,23 @@ class ScribePDFViewer {
     seedDoc._requestHydration = start;
 
     seedDoc._onPageText = (n) => {
-      if (cancelled || this.doc !== seedDoc) return;
+      const v = this._viewerShowing(seedDoc);
+      if (cancelled || !v) return;
       // A page's text decides which rows the document gate enables.
-      this._syncDocGatedControls();
-      const cp = this.scribe.state.cp.n;
-      if (n !== cp && !this.scribe.windowPages(cp).includes(n)) return;
+      if (v === this.scribe) this._syncDocGatedControls();
+      const cp = v.state.cp.n;
+      if (n !== cp && !v.windowPages(cp).includes(n)) return;
       // Highlights hang on the page's word objects, so they are drawn once the words are.
-      this.scribe.renderWords(n).then(() => {
-        if (cancelled || this.doc !== seedDoc) return;
-        this.scribe.renderHighlights?.(n);
-        this.scribe.renderNotes?.(n);
+      v.renderWords(n).then(() => {
+        if (cancelled || this._viewerShowing(seedDoc) !== v) return;
+        v.renderHighlights?.(n);
+        v.renderNotes?.(n);
       }).catch(() => {});
     };
     seedDoc._onPageRaster = (n) => {
-      if (cancelled || this.doc !== seedDoc) return;
-      this.scribe.refreshPageRaster(n).catch(() => {});
+      const v = this._viewerShowing(seedDoc);
+      if (cancelled || !v) return;
+      v.refreshPageRaster(n).catch(() => {});
     };
 
     const cancel = () => {
@@ -2100,6 +2147,12 @@ class ScribePDFViewer {
     }
     if (this.doc !== seedDoc) {
       // A background tab swaps silently, and activation attaches the real document normally.
+      const g = this._rightGroup;
+      if (g && g.viewer.doc === seedDoc) {
+        const cp = g.viewer.state.cp.n;
+        g.viewer.doc = realDoc;
+        await g.viewer.displayPage(Math.min(cp, realDoc.inputData.pageCount - 1), true, false);
+      }
       await seedDoc.close();
       return;
     }
@@ -2121,7 +2174,7 @@ class ScribePDFViewer {
 
     try {
       // A preview's swap stays a preview, so the library's tab keeps the front.
-      await this._setDoc(realDoc, cpN, false, false, { preview: this._activeTab < 0, samePages: geometryMatches });
+      await this._setDoc(realDoc, cpN, false, false, { samePages: geometryMatches });
       if (sel && this.scribe.textSel) {
         const ts = this.scribe.textSel;
         ts.range = { kind: 'linear', start: sel.start, end: sel.end };
@@ -2185,7 +2238,7 @@ class ScribePDFViewer {
    *   `samePages` marks a hydration swap whose document holds the pages the rail shows, in the same order, so the rail re-keys its rows instead of rebuilding.
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
    */
-  async _setDoc(doc, initialPage, owns, terminatePrevious, { preview = false, keepSurface = false, samePages = false } = {}) {
+  async _setDoc(doc, initialPage, owns, terminatePrevious, { keepSurface = false, samePages = false } = {}) {
     const prev = this.doc;
     const displaced = prev && prev !== doc ? prev : null;
     const terminatePrev = terminatePrevious ?? this._ownsDoc;
@@ -2194,14 +2247,16 @@ class ScribePDFViewer {
     this._ownsDoc = owns;
     this.scribe.doc = doc;
     this.resetSearch();
-    if (!preview) for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
+    for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
     }
 
-    if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
-    if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
+    if (this._activeGroup !== 1 || !this._rightGroup) {
+      if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
+      if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
+    }
     // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
     // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
     if (this._thumbnailPanel && samePages) this._thumbnailPanel.rebind();
@@ -2257,8 +2312,7 @@ class ScribePDFViewer {
     loadedDoc?.textReady?.then(() => { if (this.doc === loadedDoc) this._syncDocGatedControls(); }).catch(() => {});
 
     // A load is not a user toggle, so the reopened rail lands instantly rather than sliding in.
-    // A preview is read in the library's pane, where the sidebar has no place until Open.
-    if (!prev && !preview && !this._phoneUi && this._sidebarWhenLoaded && !this._activeSidebar) {
+    if (!prev && !this._phoneUi && this._sidebarWhenLoaded && !this._activeSidebar) {
       const wanted = this._panelFor(this._sidebarWhenLoaded);
       this.showSidebarNow(wanted && wanted.toggleElem.style.display !== 'none' ? this._sidebarWhenLoaded : 'thumbnails');
     }
@@ -2270,14 +2324,8 @@ class ScribePDFViewer {
     if (terminatePrev && displaced) displaced.close().catch(() => {});
 
     this.scribe.runSetInitial = true;
-    // A preview opens at the width of the pane it is read in.
-    this._previewFitWidth = preview;
-    try {
-      // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
-      await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
-    } finally {
-      this._previewFitWidth = false;
-    }
+    // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
+    await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
 
     this._extractTablesTool?.docChanged?.();
     this._inspectTool?.docChanged?.();
@@ -2492,7 +2540,7 @@ class ScribePDFViewer {
    */
   _newTab(doc, name) {
     return {
-      doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false, notice: null,
+      doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false, notice: null, group: 0, preview: false,
     };
   }
 
@@ -2511,15 +2559,26 @@ class ScribePDFViewer {
       const { libraryHash, libraryRelPath, libraryOwner } = extra;
       return this._openPortfolio(doc, name, { libraryHash, libraryRelPath, libraryOwner });
     }
-    const { activate = true, ...fields } = extra;
-    const tab = { ...this._newTab(doc, name), ...fields };
-    this._tabs.push(tab);
+    const {
+      activate = true, group = 0, preview = false, program = false, ...fields
+    } = extra;
+    const tab = {
+      ...this._newTab(doc, name), ...fields, group: group === 1 && !this._phoneUi && this._tabStrip ? 1 : 0, preview: !!preview,
+    };
+    if (tab.group === 1 && !this._rightGroup) this._openGroup({ program: true });
+    const prev = preview ? this._groupTabs(tab.group).find((t) => t.preview) : null;
+    const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    if (prev) this._tabs.splice(this._tabs.indexOf(prev), 0, tab);
+    else this._tabs.push(tab);
+    this._activeTab = act && act !== prev ? this._tabs.indexOf(act) : -1;
+    if (prev) this._closeTab(this._tabs.indexOf(prev));
     if (activate) {
-      await this._activateTab(this._tabs.length - 1);
+      await this._activateTab(this._tabs.indexOf(tab));
     } else {
       this._renderTabs();
       this._applyTabResourcePolicy();
     }
+    if (activate && !program) this._setActiveGroup(tab.group);
     return tab;
   }
 
@@ -2563,6 +2622,9 @@ class ScribePDFViewer {
   _applyTabResourcePolicy() {
     const warmN = this._phoneUi ? 1 : 3;
     const warm = new Set([...this._tabs].sort((a, b) => b.lastUse - a.lastUse).slice(0, warmN));
+    // A document on screen in either group stays warm whatever its use count says.
+    if (this._rightGroup?.active) warm.add(this._rightGroup.active);
+    if (this._activeTab >= 0 && this._tabs[this._activeTab]) warm.add(this._tabs[this._activeTab]);
     // Cross-document page copies share image sources, so a cold tab's source can still feed a warm document's renders.
     const warmSources = new Set();
     for (const tab of warm) for (const src of tab.doc.images.sources.values()) warmSources.add(src);
@@ -2741,6 +2803,10 @@ class ScribePDFViewer {
    */
   async _activateTab(i, { keepSurface = false } = {}) {
     if (i < 0 || i >= this._tabs.length) return;
+    if (this._tabs[i].group === 1) {
+      await this._activateGroupTab(this._tabs[i]);
+      return;
+    }
     if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
       this._tabs[this._activeTab].lastPage = this.scribe.state.cp.n;
       // The outgoing tab's sidecar saves in the background, and its document stays alive across the switch.
@@ -2750,9 +2816,7 @@ class ScribePDFViewer {
     const tab = this._tabs[i];
     this._activeTab = i;
     tab.lastUse = ++this._tabUseCounter;
-    // The tab's document is already on screen, as the library's preview, so activating it changes the strip and not the page.
     if (tab.doc === this.doc && !tab.asleep) {
-      this._previewDocName = null;
       this._renderTabs();
       this._syncTabNotice();
       for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
@@ -2762,15 +2826,7 @@ class ScribePDFViewer {
     if (tab.asleep) tab.waking = true;
     this._renderTabs();
     this._syncTabNotice();
-    // Respawn the suspended pool before attaching, so the tab's spinner covers the slow part and the attach renders against a warm pool.
-    // Bounded by a timeout so the spinner always ends.
-    // On timeout or failure the attach proceeds and renders retry lazily.
-    if (tab.waking && tab.doc.images.pdfData) {
-      const respawn = tab.doc.images.getPdfScheduler().catch(() => {
-        this._showToast(`Couldn't restart the page renderer for “${tab.name}” — pages will retry as they come into view.`);
-      });
-      await Promise.race([respawn, new Promise((resolve) => { setTimeout(resolve, 10000); })]);
-    }
+    await this._wakeTab(tab);
     await this._setDoc(tab.doc, tab.lastPage, false, false, { keepSurface });
     if (tab.waking) {
       tab.waking = false;
@@ -2787,21 +2843,29 @@ class ScribePDFViewer {
    */
   _closeTab(i) {
     if (i < 0 || i >= this._tabs.length) return;
+    const removed = this._tabs[i];
+    if (removed.group === 1) {
+      this._closeGroupTab(removed);
+      return;
+    }
     const wasActive = i === this._activeTab;
-    const [removed] = this._tabs.splice(i, 1);
-    // A document on screen while its tab is not active is a lit library's preview of it.
-    if (this._activeTab < 0 && this.doc === removed.doc) this._libraryInstances.find((inst) => inst.visible())?.clearPreview();
+    const pos = this._groupTabs(0).indexOf(removed);
+    this._tabs.splice(i, 1);
     // A library tab with unsaved edits writes its sidecar first, and closes only once that settles.
     Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(removed))).catch(() => {})
       .then(() => removed.doc.close().catch(() => {}));
 
-    if (this._tabs.length === 0) {
+    const lane = this._groupTabs(0);
+    if (lane.length === 0) {
       this._activeTab = -1;
       this._renderTabs();
       this._syncTabNotice();
-      // A library's preview of a document with no tab stays on screen.
       if (wasActive || this.doc === removed.doc) this.detachDoc({ terminate: false });
-      // The pinned surface shown most recently takes the empty strip, else the first (the library's, when it is installed).
+      if (this._rightGroup) {
+        if (this._groupTabs(1).length) this._adoptGroupTabs().catch(() => {});
+        else this._closeGroup();
+        if (this._tabs.length) return;
+      }
       (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
       return;
     }
@@ -2809,11 +2873,875 @@ class ScribePDFViewer {
       // The removed tab is gone. Clear the active marker so `_activateTab` doesn't save a page into it.
       // A tab closing is no request to see the next one, so a lit library stays in front.
       this._activeTab = -1;
-      this._activateTab(Math.min(i, this._tabs.length - 1), { keepSurface: true });
+      this._activateTab(this._tabs.indexOf(lane[Math.min(pos, lane.length - 1)]), { keepSurface: true });
     } else {
       if (i < this._activeTab) this._activeTab -= 1;
       this._renderTabs();
     }
+  }
+
+  /**
+   * Split the window by opening the second editor group, empty, to the right of the document's lane.
+   * The reader's split makes the new group the active one; the program's leaves the focus where it was.
+   * @param {{program?: boolean}} [opts]
+   * @returns {ScribePDFViewer['_rightGroup']} Null on the phone, which has one group.
+   */
+  _openGroup({ program = false } = {}) {
+    if (this._rightGroup) return this._rightGroup;
+    if (this._phoneUi || !this._tabStrip) return null;
+    const el = document.createElement('div');
+    el.className = 'scribe-right-group';
+    const strip = createTabStrip(this._stripConfig(1));
+    strip.tabStripElem.style.height = `${TAB_STRIP_HEIGHT}px`;
+    const notice = document.createElement('div');
+    notice.className = 'scribe-group-notice';
+    notice.style.display = 'none';
+    const noticeText = document.createElement('span');
+    noticeText.className = 't';
+    notice.appendChild(noticeText);
+    const body = document.createElement('div');
+    body.className = 'scribe-right-group-body';
+    const empty = document.createElement('div');
+    empty.className = 'scribe-group-empty';
+    empty.textContent = 'Nothing open here. Drag a tab or a document card into this half, or use Open on the Right in the Library.';
+    el.append(strip.tabStripElem, notice, body);
+    const sash = document.createElement('div');
+    sash.className = 'scribe-group-sash';
+    sash.setAttribute('role', 'separator');
+    sash.setAttribute('aria-orientation', 'vertical');
+    sash.setAttribute('aria-label', 'Resize the groups');
+    sash.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const startFrac = this._rightGroupFrac;
+      const areaW = this._rightGroupAreaW || this._width;
+      sash.classList.add('drag');
+      this.pdfViewerElem.classList.add('scribe-group-drag');
+      const onMove = (/** @type {PointerEvent} */ ev) => {
+        this._rightGroupFrac = Math.max(0.2, Math.min(0.8, startFrac - (ev.clientX - startX) / areaW));
+        this._relayout();
+      };
+      const onUp = () => {
+        sash.classList.remove('drag');
+        this.pdfViewerElem.classList.remove('scribe-group-drag');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    });
+    sash.addEventListener('dblclick', () => { this._rightGroupFrac = 0.5; this._relayout(); });
+    this.pdfViewerElem.append(sash, el);
+    const viewer = new ScribeViewer();
+    viewer.enableHTMLOverlay = true;
+    viewer.opt.keyboardScope = this.scribe.opt.keyboardScope;
+    viewer.opt.middleClickPan = false;
+    viewer.opt.enableComments = false;
+    viewer.opt.enableForms = false;
+    viewer.init(body, 10, 10);
+    body.appendChild(empty);
+    const bars = createScrollbars(viewer, body);
+    viewer.displayPageCallback = () => { if (this._activeGroup === 1) this._syncPageBox(); };
+    const side = this._buildGroupSidebar(viewer, body);
+    this._rightGroup = {
+      bars, el, sash, strip, body, empty, notice, noticeText, viewer, active: null, side,
+    };
+    if (!this._groupPressWired) {
+      this._groupPressWired = true;
+      this.pdfViewerElem.addEventListener('pointerdown', (e) => {
+        const g = this._rightGroup;
+        const t = e.target;
+        if (!g || !(t instanceof Node)) return;
+        if (g.el.contains(t) || g.sash.contains(t)) {
+          this._setActiveGroup(1);
+          return;
+        }
+        // The toolbar, the Automate panel and the library belong to neither group, so a press there leaves the active group as it is.
+        if ((this.toolbarElem && this.toolbarElem.contains(t)) || this._automatePanel?.panelElem.contains(t)) return;
+        if (this._libraryInstances.some((inst) => inst.containsNode?.(t))) return;
+        this._setActiveGroup(0);
+      }, true);
+    }
+    this._relayout();
+    this._renderTabs();
+    this._setActiveGroup(program ? this._activeGroup : 1);
+    return this._rightGroup;
+  }
+
+  /**
+   * Make the right group's documents the lane's and take the group down.
+   */
+  async _adoptGroupTabs() {
+    const g = this._rightGroup;
+    if (!g) return;
+    const side = this._groupTabs(1);
+    const shown = g.active;
+    if (shown && g.viewer.doc === shown.doc) shown.lastPage = g.viewer.state.cp.n;
+    for (const tab of side) tab.group = 0;
+    g.active = null;
+    this._closeGroup();
+    const next = shown || side[0];
+    if (next) await this._activateTab(this._tabs.indexOf(next));
+  }
+
+  /** Take the group to the right down with its tabs. */
+  _closeGroup() {
+    const g = this._rightGroup;
+    if (!g) return;
+    for (const tab of this._groupTabs(1)) {
+      this._removeTab(tab);
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
+        .then(() => tab.doc.close().catch(() => {}));
+    }
+    this._rightGroup = null;
+    if (g.side.anim) cancelAnimationFrame(g.side.anim.raf);
+    for (const key of SIDEBAR_VIEW_KEYS) groupPanelFor(g.side, key)?.destroy();
+    g.viewer.destroy();
+    g.el.remove();
+    g.sash.remove();
+    this._hideDropTarget();
+    this._setActiveGroup(0);
+    this._relayout();
+    this._renderTabs();
+  }
+
+  /**
+   * Build the right group's sidebar, closed to start.
+   * @param {ScribeViewer} viewer
+   * @param {HTMLDivElement} body
+   * @returns {GroupSidebar}
+   */
+  _buildGroupSidebar(viewer, body) {
+    /** @type {GroupSidebar} */
+    const side = {
+      thumbnails: null, bookmarks: null, comments: null, tabsElem: null, tabElems: {}, active: null, last: 'thumbnails', anim: null, resizeBounds: null, width: 0, bodyH: 0,
+    };
+    if (!this._thumbnailPanel) return side;
+    side.thumbnails = createThumbnailPanel(viewer, {
+      onSelect: (n) => viewer.displayPage(n, true, false),
+      onResize: (_width, phase) => {
+        if (phase === 'start') {
+          this._sidebarDragActive = true;
+          viewer.startInteractionTextHide();
+          return;
+        }
+        if (phase === 'end') {
+          this._sidebarDragActive = false;
+          this._relayout();
+          viewer.endInteractionTextHide();
+          return;
+        }
+        this._relayout();
+      },
+    });
+    side.thumbnails.setVisible(false);
+    if (this._bookmarksPanel) {
+      side.bookmarks = createBookmarksPanel(viewer, {
+        onNavigate: (dest) => viewer.goToOutlineDest(dest),
+        onResize: (w, phase) => this._resizeGroupSidebar(side, w, phase),
+        onRenameFocus: () => {},
+        onMoveSession: () => {},
+      });
+      side.bookmarks.setVisible(false);
+    }
+    if (this._commentsPanel) {
+      side.comments = createCommentsPanel(viewer, {
+        onNavigate: (dest) => viewer.goToOutlineDest(dest),
+        onResize: (w, phase) => this._resizeGroupSidebar(side, w, phase),
+        onComposeFocus: () => {},
+      });
+      side.comments.setVisible(false);
+    }
+    const built = buildSidebarTabs((key) => groupPanelFor(side, key), (key) => { if (key !== side.active) this._requestGroupSidebar(key); });
+    side.tabsElem = built.tabs;
+    side.tabElems = built.tabElems;
+    body.append(built.tabs);
+    for (const key of SIDEBAR_VIEW_KEYS) {
+      const panel = groupPanelFor(side, key);
+      if (panel) body.append(panel.panelElem);
+    }
+    return side;
+  }
+
+  /**
+   * Open, switch or close a view of the right group's sidebar.
+   * @param {'thumbnails'|'bookmarks'|'comments'} key
+   */
+  _requestGroupSidebar(key) {
+    const g = this._rightGroup;
+    if (!g || !g.active || !groupPanelFor(g.side, key)) return;
+    const s = g.side;
+    const prev = s.active;
+    const next = prev === key ? null : key;
+    if (next === prev) return;
+    s.active = next;
+    if (next) s.last = next;
+    this._transitionSidebar(prev, next, this._groupSide(g));
+    this._syncSidebarControls();
+  }
+
+  /**
+   * Apply a resize dragged from the right group's bookmarks or comments view, keeping its views one shared width.
+   * @param {GroupSidebar} side
+   * @param {number} desiredWidth
+   * @param {'start'|'move'|'end'} phase
+   */
+  _resizeGroupSidebar(side, desiredWidth, phase) {
+    if (!side.thumbnails || !side.bookmarks) return;
+    if (phase === 'start') {
+      side.resizeBounds = side.thumbnails.getResizeBounds();
+      this._sidebarDragActive = true;
+      return;
+    }
+    if (phase === 'end') {
+      const applied = side.thumbnails.setWidth(desiredWidth);
+      side.bookmarks.panelElem.style.width = `${applied}px`;
+      if (side.comments) side.comments.panelElem.style.width = `${applied}px`;
+      side.resizeBounds = null;
+      this._sidebarDragActive = false;
+      this._relayout();
+      return;
+    }
+    const b = side.resizeBounds;
+    const applied = b ? Math.max(b.min, Math.min(b.max, desiredWidth)) : desiredWidth;
+    side.bookmarks.panelElem.style.width = `${applied}px`;
+    if (side.comments) side.comments.panelElem.style.width = `${applied}px`;
+    this._relayout();
+  }
+
+  /**
+   * Rebuild the right group's sidebar views for the document the group now shows, hiding the views the document has nothing for.
+   * @param {NonNullable<ScribePDFViewer['_rightGroup']>} g
+   * @param {number} pageIndex
+   */
+  _syncGroupSidebarDoc(g, pageIndex) {
+    const s = g.side;
+    if (!s.thumbnails) return;
+    const { doc } = g.viewer;
+    s.thumbnails.rebuild(pageIndex);
+    if (s.bookmarks) {
+      s.bookmarks.rebuild();
+      s.bookmarks.toggleElem.style.display = (doc && doc.outline && doc.outline.length) ? '' : 'none';
+    }
+    if (s.comments) {
+      s.comments.rebuild();
+      const hasComments = !!doc && ((doc.annotations && doc.annotations.pages) || []).some((p) => (p || []).some((a) => a.comment || a.type === 'text'));
+      s.comments.toggleElem.style.display = hasComments ? '' : 'none';
+    }
+    const open = groupPanelFor(s, s.active);
+    if (open && open.toggleElem.style.display === 'none' && s.thumbnails) {
+      open.setVisible(false);
+      s.active = 'thumbnails';
+      s.thumbnails.setVisible(true);
+      this._relayout();
+    }
+    this._syncSidebarControls();
+  }
+
+  /**
+   * @returns {SidebarDrive}
+   */
+  _laneSide() {
+    const self = this;
+    return {
+      panelFor: (key) => this._panelFor(key),
+      thumbnails: this._thumbnailPanel,
+      strip: this._phoneUi ? null : this._sidebarTabsElem,
+      get anim() { return self._sidebarAnim; },
+      set anim(v) { self._sidebarAnim = v; },
+      // Each frame runs `_relayout` at that frame's inset, so the group to the right moves with the slide.
+      setInset: (raw) => this._relayout({ inset: raw }),
+      relayout: () => this._relayout(),
+    };
+  }
+
+  /**
+   * @param {NonNullable<ScribePDFViewer['_rightGroup']>} g
+   * @returns {SidebarDrive}
+   */
+  _groupSide(g) {
+    const s = g.side;
+    return {
+      panelFor: (key) => groupPanelFor(s, key),
+      thumbnails: s.thumbnails,
+      strip: s.tabsElem,
+      get anim() { return s.anim; },
+      set anim(v) { s.anim = v; },
+      setInset: (raw) => {
+        const inset = Math.min(Math.max(0, raw), Math.max(0, s.width - 80));
+        g.viewer.scrollContainer.style.marginLeft = `${inset}px`;
+        g.viewer.resize(s.width - 1 - inset, s.bodyH);
+      },
+      relayout: () => this._relayout(),
+    };
+  }
+
+  /**
+   * Show a warning over the group to the right, or clear it.
+   * @param {?string} text
+   * @param {string} [title] - The full account, for the strip's tooltip.
+   */
+  _setGroupNotice(text, title = '') {
+    const g = this._rightGroup;
+    if (!g) return;
+    g.noticeText.textContent = text || '';
+    g.notice.title = title;
+    g.notice.style.display = text ? '' : 'none';
+    this._relayout();
+  }
+
+  /**
+   * @param {0|1} n
+   */
+  _setActiveGroup(n) {
+    const g = this._rightGroup;
+    const next = n === 1 && g ? 1 : 0;
+    const changed = next !== this._activeGroup;
+    this._activeGroup = next;
+    this._tabStripElem?.classList.toggle('scribe-group-inactive', next === 1);
+    if (g) g.strip.tabStripElem.classList.toggle('scribe-group-inactive', next === 0);
+    this._syncFrontSurface();
+    this._syncPageBox();
+    this._syncDocGatedControls();
+    this._syncSidebarControls();
+    this._announceActiveDoc();
+    if (changed) {
+      const sc = next === 1 ? g?.viewer.scrollContainer : (this.doc ? this.scribe.scrollContainer : null);
+      if (sc && !sc.contains(document.activeElement)) sc.focus({ preventScroll: true });
+    }
+  }
+
+  _activeViewer() {
+    return this._activeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
+  }
+
+  /**
+   * A stand-in for the active group's viewer, for controls built once.
+   * Each call and each read goes to that group's viewer at that moment.
+   * @returns {ScribeViewer}
+   */
+  _barViewer() {
+    const proxy = new Proxy({}, {
+      get: (_, prop) => {
+        const v = /** @type {any} */ (this._activeViewer());
+        const val = v[prop];
+        return typeof val === 'function' ? val.bind(v) : val;
+      },
+    });
+    return /** @type {ScribeViewer} */ (/** @type {unknown} */ (proxy));
+  }
+
+  /**
+   * The group an open aimed at `g` lands in.
+   * It is the other group while `g` holds a pinned tab and the other does not, since a pinned tab keeps its group's view.
+   * @param {number} g
+   * @returns {number}
+   */
+  _openTarget(g) {
+    if (!this._rightGroup) return 0;
+    const anchoredIn = (n) => this._tabs.some((t) => (t.group || 0) === n && t.anchored);
+    return anchoredIn(g) && !anchoredIn(1 - g) ? 1 - g : g;
+  }
+
+  /**
+   * @param {Object} doc
+   * @returns {?ScribeViewer}
+   */
+  _viewerShowing(doc) {
+    if (this.doc === doc) return this.scribe;
+    const g = this._rightGroup;
+    return g && g.viewer.doc === doc ? g.viewer : null;
+  }
+
+  /** Fill the page box and the count from the active group's document. */
+  _syncPageBox() {
+    if (!this.pageNumElem || !this.pageCountElem) return;
+    const g = this._rightGroup;
+    if (this._activeGroup === 1 && g) {
+      const doc = g.active ? g.viewer.doc : null;
+      if (document.activeElement !== this.pageNumElem) this.pageNumElem.value = doc ? String(g.viewer.state.cp.n + 1) : '';
+      this.pageCountElem.textContent = doc ? String(doc.inputData.pageCount) : '';
+      return;
+    }
+    this._syncPageNumDisplay();
+    this.pageCountElem.textContent = this.doc ? String(this.doc.inputData.pageCount) : '';
+  }
+
+  /**
+   * @param {0|1} group
+   * @returns {Array<Object>}
+   */
+  _groupTabs(group) {
+    return this._tabs.filter((t) => (t.group || 0) === group);
+  }
+
+  /**
+   * The index in `_tabs` of a group's strip index `i`, or -1.
+   * @param {0|1} group
+   * @param {number} i
+   */
+  _tabIndex(group, i) {
+    const t = this._groupTabs(group)[i];
+    return t ? this._tabs.indexOf(t) : -1;
+  }
+
+  /**
+   * @param {Object} tab
+   */
+  _stripIndex(tab) {
+    return this._groupTabs(tab.group || 0).indexOf(tab);
+  }
+
+  /**
+   * Respawn a sleeping tab's suspended pool before its document attaches.
+   * @param {Object} tab
+   */
+  async _wakeTab(tab) {
+    if (!tab.waking || !tab.doc.images.pdfData) return;
+    const respawn = tab.doc.images.getPdfScheduler().catch(() => {
+      this._showToast(`Couldn't restart the page renderer for “${tab.name}” — pages will retry as they come into view.`);
+    });
+    await Promise.race([respawn, new Promise((resolve) => { setTimeout(resolve, 10000); })]);
+  }
+
+  /**
+   * Show `tab` in the group to the right, at the page it was left on.
+   * @param {Object} tab
+   */
+  async _activateGroupTab(tab) {
+    const g = this._rightGroup;
+    if (!g || tab.group !== 1 || !this._tabs.includes(tab)) return;
+    const prev = g.active;
+    if (prev && prev !== tab && g.viewer.doc === prev.doc) {
+      prev.lastPage = g.viewer.state.cp.n;
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(prev))).catch(() => {});
+    }
+    g.active = tab;
+    tab.lastUse = ++this._tabUseCounter;
+    this._setGroupNotice(null);
+    if (g.viewer.doc === tab.doc && !tab.asleep) {
+      this._renderTabs();
+      this._applyTabResourcePolicy();
+      return;
+    }
+    if (tab.asleep) tab.waking = true;
+    this._renderTabs();
+    await this._wakeTab(tab);
+    if (this._rightGroup !== g || g.active !== tab) return;
+    g.viewer.doc = tab.doc;
+    const pageIndex = Math.min(tab.lastPage || 0, Math.max(0, tab.doc.inputData.pageCount - 1));
+    this._syncGroupSidebarDoc(g, pageIndex);
+    await g.viewer.displayPage(pageIndex, true, false);
+    // Deferred text extraction can reveal comments after the load.
+    const { doc } = tab;
+    if (doc._textReadySettle) doc.textReady.then(() => { if (this._rightGroup === g && g.viewer.doc === doc) this._syncGroupSidebarDoc(g, g.viewer.state.cp.n); }).catch(() => {});
+    if (tab.waking) {
+      tab.waking = false;
+      tab.asleep = false;
+      this._renderTabs();
+    }
+    this._applyTabResourcePolicy();
+    if (this._activeGroup === 1) this._syncPageBox();
+    this._announceActiveDoc();
+  }
+
+  /**
+   * Close a tab of the group to the right.
+   * The group closes with its last tab.
+   * @param {Object} tab
+   */
+  _closeGroupTab(tab) {
+    const g = /** @type {NonNullable<ScribePDFViewer['_rightGroup']>} */ (this._rightGroup);
+    const pos = this._groupTabs(1).indexOf(tab);
+    this._removeTab(tab);
+    Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
+      .then(() => tab.doc.close().catch(() => {}));
+    const rest = this._groupTabs(1);
+    if (!rest.length) {
+      this._closeGroup();
+      return;
+    }
+    if (g.active === tab) {
+      g.active = null;
+      this._activateGroupTab(rest[Math.min(pos, rest.length - 1)]).catch(() => {});
+    } else {
+      this._renderTabs();
+    }
+  }
+
+  /**
+   * Take `tab` out of the tab list, keeping the active tab the same tab at its new index.
+   * @param {Object} tab
+   */
+  _removeTab(tab) {
+    const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    this._tabs.splice(this._tabs.indexOf(tab), 1);
+    this._activeTab = act && act !== tab ? this._tabs.indexOf(act) : -1;
+  }
+
+  /**
+   * Put `tab` into group `group` at strip index `index` of that group, keeping every other tab's order.
+   * The lane's active tab stays the active one at its new index; a tab moved out of the lane leaves none active.
+   * @param {Object} tab
+   * @param {0|1} group
+   * @param {number} index - The end of the group when past its last tab.
+   */
+  _placeInGroup(tab, group, index) {
+    const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    const cur = this._tabs.indexOf(tab);
+    if (cur >= 0) this._tabs.splice(cur, 1);
+    tab.group = group;
+    const list = this._groupTabs(group);
+    const before = list[Math.max(0, Math.min(index, list.length))] ?? null;
+    if (before) {
+      this._tabs.splice(this._tabs.indexOf(before), 0, tab);
+    } else {
+      const last = list[list.length - 1];
+      this._tabs.splice(last ? this._tabs.indexOf(last) + 1 : this._tabs.length, 0, tab);
+    }
+    this._activeTab = act && (act.group || 0) === 0 ? this._tabs.indexOf(act) : -1;
+  }
+
+  /**
+   * Reorder a tab within a group's strip.
+   * The tab at `from` moves to index `to` of the strip's list without it.
+   * @param {0|1} group
+   * @param {number} from
+   * @param {number} to
+   */
+  _moveTabWithin(group, from, to) {
+    const tab = this._groupTabs(group)[from];
+    if (!tab || from === to) return;
+    this._placeInGroup(tab, group, to);
+    this._renderTabs();
+  }
+
+  /**
+   * Move `tab` into group `group`, at `index` of that group's strip, and show it there.
+   * The group it leaves shows its next tab, else the library or nothing; a group to the right left with no tab closes.
+   * @param {Object} tab
+   * @param {0|1} group
+   * @param {number} [index]
+   * @param {{program?: boolean}} [opts] - The program's move leaves the active group as it is.
+   */
+  async _moveTabToGroup(tab, group, index = Infinity, { program = false } = {}) {
+    const to = group === 1 ? 1 : 0;
+    if (!this._tabs.includes(tab)) return;
+    // The lane's only document moved to the right would empty the lane, which closes and takes the document back, so there is nothing to do.
+    if (to === 1 && tab.group !== 1 && this._groupTabs(0).length === 1) return;
+    if (to === 1 && !this._rightGroup && !this._openGroup({ program })) return;
+    const g = this._rightGroup;
+    if (tab.group === to) {
+      this._moveTabWithin(to, this._groupTabs(to).indexOf(tab), index);
+      if (!program) this._setActiveGroup(to);
+      return;
+    }
+    if (to === 1) {
+      const lane = this._groupTabs(0);
+      const pos = lane.indexOf(tab);
+      const wasActive = this._activeTab >= 0 && this._tabs[this._activeTab] === tab;
+      if (wasActive) tab.lastPage = this.scribe.state.cp.n;
+      this._placeInGroup(tab, 1, index);
+      if (wasActive) {
+        const rest = this._groupTabs(0);
+        if (rest.length) {
+          await this._activateTab(this._tabs.indexOf(rest[Math.min(pos, rest.length - 1)]), { keepSurface: true });
+        } else {
+          this.detachDoc({ terminate: false });
+          (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
+        }
+      }
+      await this._activateGroupTab(tab);
+    } else {
+      const side = this._groupTabs(1);
+      const pos = side.indexOf(tab);
+      const wasActive = !!g && g.active === tab;
+      if (wasActive && g) {
+        tab.lastPage = g.viewer.state.cp.n;
+        g.active = null;
+      }
+      this._placeInGroup(tab, 0, index);
+      const rest = this._groupTabs(1);
+      if (!rest.length) this._closeGroup();
+      else if (wasActive) await this._activateGroupTab(rest[Math.min(pos, rest.length - 1)]);
+      await this._activateTab(this._tabs.indexOf(tab));
+    }
+    if (!program) this._setActiveGroup(to);
+    this._renderTabs();
+  }
+
+  /**
+   * The tab strip's callbacks for one group.
+   * @param {0|1} group
+   */
+  _stripConfig(group) {
+    // The strip counts its own tabs, so every index is mapped to the group's tab before the shared list is touched.
+    const tabAt = (/** @type {number} */ i) => this._groupTabs(group)[i] ?? null;
+    const indexOf = (/** @type {Object} */ tab) => this._tabs.indexOf(tab);
+    const activeOf = () => (group === 0 ? (this._activeTab >= 0 ? this._tabs[this._activeTab] : null) : (this._rightGroup ? this._rightGroup.active : null));
+    return {
+      onSelect: (/** @type {number} */ i) => { const t = tabAt(i); if (t) this._activateTab(indexOf(t)); },
+      onClose: (/** @type {number} */ i) => { const t = tabAt(i); if (t) this._closeTab(indexOf(t)); },
+      onCloseOthers: async (/** @type {number} */ i) => {
+        const kept = tabAt(i);
+        if (!kept) return;
+        // Activate the survivor first, so closing the active tab never loads a document about to be closed too.
+        const active = activeOf();
+        if (active && active !== kept) await this._activateTab(indexOf(kept), { keepSurface: true });
+        for (const t of this._groupTabs(group).reverse()) if (t !== kept) this._closeTab(indexOf(t));
+      },
+      onCloseAll: () => {
+        // The active tab closes last, so closing it never attaches the next tab's document only to close it in turn.
+        const active = activeOf();
+        for (const t of this._groupTabs(group).reverse()) if (t !== active) this._closeTab(indexOf(t));
+        if (active) this._closeTab(indexOf(active));
+      },
+      onMove: (/** @type {number} */ from, /** @type {number} */ to) => this._moveTabWithin(group, from, to),
+      onCopyInto: (/** @type {number} */ from, /** @type {number} */ to) => { const t = tabAt(from); if (t) this._library?.copyTabIntoFolder?.(t, this._tabIndex(group, to)); },
+      extraMenuItems: (/** @type {number} */ i) => { const t = tabAt(i); return t ? this._tabMenuExtras(t) : []; },
+      onKeep: (/** @type {number} */ i) => { const t = tabAt(i); if (t && t.preview) { t.preview = false; this._renderTabs(); } },
+      actions: this._stripActions(group),
+      onDragOutside: (/** @type {'move'|'drop'|'cancel'} */ phase, /** @type {number} */ x, /** @type {number} */ y, /** @type {number} */ i) => this._tabDragOutside(group, phase, x, y, i),
+    };
+  }
+
+  /**
+   * @param {0|1} group
+   * @returns {HTMLElement[]}
+   */
+  _stripActions(group) {
+    /**
+     * @param {string} svg
+     * @param {string} label
+     * @param {() => void} onClick
+     */
+    const action = (svg, label, onClick) => {
+      const btn = document.createElement('span');
+      btn.className = 'scribe-tab-action';
+      btn.innerHTML = `<span class="scribe-tab-icon">${svg}</span>`;
+      btn.role = 'button';
+      btn.tabIndex = 0;
+      btn.title = label;
+      btn.ariaLabel = label;
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', () => { if (!btn.classList.contains('disabled')) onClick(); });
+      btn.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        btn.click();
+      });
+      return btn;
+    };
+    if (group === 1) return [action(barIcon('close'), 'Close this group and its tabs', () => this._closeGroup())];
+    const split = action(barIcon('split'), `Split view (${shortcutLabel('\\')})`, () => this._openGroup());
+    this._splitBtns.push(split);
+    return [split];
+  }
+
+  /**
+   * The rows after the standard ones in a tab's context menu.
+   * @param {Object} tab
+   * @returns {Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>}
+   */
+  _tabMenuExtras(tab) {
+    /** @type {Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>} */
+    const rows = [];
+    const stuck = tab.group !== 1 && this._groupTabs(0).length === 1;
+    if (!this._phoneUi) rows.push({ label: tab.anchored ? 'Unpin' : 'Pin: keep it in view', onPick: () => { tab.anchored = !tab.anchored; this._renderTabs(); } });
+    if (this._phoneUi) {
+      // The phone has one group.
+    } else if (this._rightGroup) {
+      rows.push({ label: tab.group === 1 ? 'Move to the Left' : 'Move to the Right', disabled: stuck, onPick: () => { this._moveTabToGroup(tab, tab.group === 1 ? 0 : 1).catch(() => {}); } });
+    } else {
+      rows.push({ label: 'Move to the Right', disabled: stuck, onPick: () => { this._moveTabToGroup(tab, 1).catch(() => {}); } });
+    }
+    if (tab.preview) rows.push({ label: 'Keep Open', onPick: () => { tab.preview = false; this._renderTabs(); } });
+    const lib = this._library;
+    if (lib?.connected?.()) {
+      if (lib.ownsTab?.(tab)) {
+        if (lib.showTab) rows.push({ sep: true }, { label: 'Show in Folder', onPick: () => lib.showTab?.(tab) });
+      } else if (lib.copyTabIntoFolder) {
+        rows.push({ sep: true }, { label: `Copy into ${lib.folderName?.() || 'Folder'}`, onPick: () => lib.copyTabIntoFolder?.(tab, null) });
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Where a drop at a client point would land, from a drag out of group `fromGroup`.
+   * A tab lands on the other group's strip or its body; a card lands on either group.
+   * With one group, the right half of the lane splits the window.
+   * @param {number} x
+   * @param {number} y
+   * @param {0|1} fromGroup
+   * @param {'tab'|'card'} what - A card over a library that fills the window is the library's to place.
+   * @returns {?{kind: 'split'|'strip'|'body', group: 0|1, index: number, ix?: number, rect: {left: number, top: number, width: number, height: number, right: number, bottom: number}}}
+   */
+  _dropTargetAt(x, y, fromGroup, what) {
+    const g = this._rightGroup;
+    if (what === 'card' && this._frontSurface()) return null;
+    const root = this.pdfViewerElem.getBoundingClientRect();
+    /** @param {{left: number, top: number, width: number, height: number}} b */
+    const box = (b) => ({
+      left: root.left + b.left, top: root.top + b.top, width: b.width, height: b.height, right: root.left + b.left + b.width, bottom: root.top + b.top + b.height,
+    });
+    /** @param {{left: number, top: number, right: number, bottom: number}} r */
+    const inRect = (r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    const lane = this._laneBox ? box(this._laneBox) : null;
+    if (!g) {
+      if (!lane || this._phoneUi || !inRect(lane)) return null;
+      if (x > lane.left + lane.width / 2) {
+        const half = {
+          left: this._laneBox.left + this._laneBox.width / 2, top: this._laneBox.top, width: this._laneBox.width / 2, height: this._laneBox.height,
+        };
+        return {
+          kind: 'split', group: 1, index: 0, rect: box(half),
+        };
+      }
+      return what === 'card' ? {
+        kind: 'body', group: 0, index: Infinity, rect: lane,
+      } : null;
+    }
+    /** @type {Array<0|1>} */
+    const targets = what === 'card' ? [1, 0] : [fromGroup === 1 ? 0 : 1];
+    for (const target of targets) {
+      const stripEl = target === 1 ? g.strip.tabStripElem : this._tabStripElem;
+      if (stripEl) {
+        const sr = stripEl.getBoundingClientRect();
+        if (inRect(sr)) {
+          const tabs = /** @type {HTMLElement[]} */ ([...stripEl.querySelectorAll('.scribe-tab-lane .scribe-tab')]);
+          let index = tabs.length;
+          let ix = tabs.length ? tabs[tabs.length - 1].getBoundingClientRect().right : (stripEl.querySelector('.scribe-tab-lane')?.getBoundingClientRect().left ?? x);
+          for (let k = 0; k < tabs.length; k++) {
+            const r = tabs[k].getBoundingClientRect();
+            if (x < r.left + r.width / 2) {
+              index = k;
+              ix = r.left;
+              break;
+            }
+          }
+          return {
+            kind: 'strip', group: target, index, ix, rect: sr,
+          };
+        }
+      }
+      const bodyRect = target === 1 ? g.body.getBoundingClientRect() : lane;
+      if (bodyRect && inRect(bodyRect)) {
+        return {
+          kind: 'body', group: target, index: Infinity, rect: bodyRect,
+        };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Handle a tab of group `fromGroup` dragged past its strip.
+   * @param {0|1} fromGroup
+   * @param {'move'|'drop'|'cancel'} phase
+   * @param {number} x
+   * @param {number} y
+   * @param {number} i - The strip index of the dragged tab.
+   * @returns {boolean} Whether the point is a target of the app's; a `drop` answered true is applied here.
+   */
+  _tabDragOutside(fromGroup, phase, x, y, i) {
+    if (phase === 'cancel') {
+      this._hideDropTarget();
+      return false;
+    }
+    const tab = this._groupTabs(fromGroup)[i];
+    const target = tab ? this._dropTargetAt(x, y, fromGroup, 'tab') : null;
+    if (phase === 'move') {
+      this._showDropTarget(target, tab ? tab.name : '', x, y, 'tab');
+      return !!target;
+    }
+    this._hideDropTarget();
+    if (!target || !tab) return false;
+    this._moveTabToGroup(tab, target.group, target.index).catch(() => {});
+    return true;
+  }
+
+  /**
+   * Handle a library card dragged out of the folder.
+   * @param {'move'|'drop'|'cancel'} phase
+   * @param {number} x
+   * @param {number} y
+   * @param {string} label
+   * @returns {?{group: 0|1}} The target on a move or a drop, for the library to act on.
+   */
+  _cardDragTarget(phase, x, y, label) {
+    if (phase === 'cancel') {
+      this._hideDropTarget();
+      return null;
+    }
+    const target = this._dropTargetAt(x, y, 0, 'card');
+    if (phase === 'move') this._showDropTarget(target, label, x, y, 'card');
+    else this._hideDropTarget();
+    return target ? { group: target.group } : null;
+  }
+
+  /**
+   * Draw the drop target for a drag.
+   * @param {?ReturnType<ScribePDFViewer['_dropTargetAt']>} target
+   * @param {string} label
+   * @param {number} x
+   * @param {number} y
+   * @param {'tab'|'card'} kind
+   */
+  _showDropTarget(target, label, x, y, kind) {
+    if (!target) {
+      this._hideDropTarget();
+      return;
+    }
+    const root = this.pdfViewerElem.getBoundingClientRect();
+    if (!this._dropOverlay) {
+      const ov = document.createElement('div');
+      ov.className = 'scribe-group-drop';
+      ov.innerHTML = '<div class="scribe-drag-frame"></div><div class="scribe-drag-pill"><span class="scribe-tab-icon"></span><span></span></div>';
+      const ins = document.createElement('div');
+      ins.className = 'scribe-group-drop-ins';
+      const chip = document.createElement('div');
+      chip.className = 'scribe-tab-ghost';
+      chip.innerHTML = `<span class="scribe-tab-icon">${barIcon('book')}</span><span class="scribe-tab-name"></span>`;
+      this.pdfViewerElem.append(ov, ins, chip);
+      this._dropOverlay = ov;
+      this._dropIns = ins;
+      this._dragChip = chip;
+    }
+    const ov = this._dropOverlay;
+    const ins = /** @type {HTMLDivElement} */ (this._dropIns);
+    const chip = /** @type {HTMLDivElement} */ (this._dragChip);
+    if (target.kind === 'strip') {
+      ov.style.display = 'none';
+      Object.assign(ins.style, {
+        display: '', left: `${(target.ix ?? x) - root.left - 1}px`, top: `${target.rect.top - root.top + 4}px`, height: `${target.rect.height - 8}px`,
+      });
+    } else {
+      ins.style.display = 'none';
+      const r = target.rect;
+      Object.assign(ov.style, {
+        display: '', left: `${r.left - root.left}px`, top: `${r.top - root.top}px`, width: `${r.width}px`, height: `${r.height}px`,
+      });
+      const split = target.kind === 'split';
+      let text;
+      if (split) text = kind === 'tab' ? 'Split right' : 'Open to the right';
+      else text = kind === 'tab' ? 'Move here' : 'Open here';
+      /** @type {HTMLElement} */ (ov.querySelector('.scribe-drag-pill span:last-child')).textContent = text;
+      /** @type {HTMLElement} */ (ov.querySelector('.scribe-drag-pill .scribe-tab-icon')).innerHTML = split ? barIcon('split') : barIcon('book');
+    }
+    if (kind === 'tab') {
+      /** @type {HTMLElement} */ (chip.querySelector('.scribe-tab-name')).textContent = label;
+      Object.assign(chip.style, { display: '', left: `${x + 12}px`, top: `${y + 10}px` });
+    } else {
+      chip.style.display = 'none';
+    }
+  }
+
+  _hideDropTarget() {
+    for (const el of [this._dropOverlay, this._dropIns, this._dragChip]) if (el) el.style.display = 'none';
   }
 
   /**
@@ -2831,24 +3759,22 @@ class ScribePDFViewer {
     this._renderTabs();
   }
 
-  /**
-   * The folder rows for tab `i`'s context menu.
-   * @param {number} i
-   * @returns {Array<{label: string, onPick: () => void}>}
-   */
-  _tabMenuExtras(i) {
-    const lib = this._library;
-    const tab = this._tabs[i];
-    if (!lib?.connected?.() || !tab) return [];
-    if (lib.ownsTab?.(tab)) return lib.showTab ? [{ label: 'Show in Folder', onPick: () => lib.showTab?.(tab) }] : [];
-    return lib.copyTabIntoFolder ? [{ label: `Copy into ${lib.folderName?.() || 'Folder'}`, onPick: () => lib.copyTabIntoFolder?.(tab, null) }] : [];
-  }
-
-  /** Re-render the tab strip and toggle its visibility. */
+  /** Re-render both tab strips and toggle the lane strip's visibility. */
   _renderTabs() {
-    this._setTabStripVisible(this._tabs.length >= this._tabStripMinTabs);
+    const g = this._rightGroup;
+    // The phone shows the strip from the second document; the desktop strip carries the Split view button, so it shows from the first.
+    const minTabs = this._phoneUi ? Math.max(2, this._tabStripMinTabs) : this._tabStripMinTabs;
+    this._setTabStripVisible(!!g || this._tabs.length >= minTabs);
     const folder = this._library?.connected?.() ? this._library : null;
-    if (this._tabStrip) this._tabStrip.render(this._tabs, this._activeTab, { grouped: !!folder, inGroup: (t) => !!folder?.ownsTab?.(t) });
+    const lane = this._groupTabs(0);
+    const active = this._activeTab >= 0 ? lane.indexOf(this._tabs[this._activeTab]) : -1;
+    if (this._tabStrip) this._tabStrip.render(lane, active, { grouped: !!folder, inGroup: (t) => !!folder?.ownsTab?.(t) });
+    if (g) {
+      const side = this._groupTabs(1);
+      g.strip.render(side, g.active ? side.indexOf(g.active) : -1, { grouped: false, inGroup: () => false });
+      g.empty.style.display = g.active ? 'none' : '';
+    }
+    for (const btn of this._splitBtns) btn.style.display = (g || this._phoneUi) ? 'none' : '';
     // Combine needs 2+ tabs and Split tracks the active document, so refresh both when the strip changes.
     if (this._editEnabled) {
       this._updateCombineButton();
@@ -2862,11 +3788,9 @@ class ScribePDFViewer {
 
   /** Tell the embedding page which document is active. */
   _announceActiveDoc() {
-    const activeName = this._frontSurface() ? this._previewDocName : this._shownName();
+    const activeName = this._frontSurface() ? null : this._shownName();
     if (activeName === this._announcedDocName) return;
     this._announcedDocName = activeName;
-    // The event must not bubble.
-    // The library's preview pane runs a nested viewer of this class, and its announcements would otherwise reach the embedding page as the active document.
     this.container.dispatchEvent(new CustomEvent('scribe-active-doc-change', { detail: { name: activeName } }));
   }
 
@@ -2925,14 +3849,25 @@ class ScribePDFViewer {
       + (this._tabStripVisible ? TAB_STRIP_HEIGHT + 1 : 0);
   }
 
+  /** The width of the Library column at the window's left edge, 0 while it is not shown. */
+  _columnWidth() {
+    if (this._phoneUi) return 0;
+    for (const inst of this._libraryInstances) {
+      const w = inst.columnWidth?.();
+      if (w) return w;
+    }
+    return 0;
+  }
+
   /** Stack the overlay banners across the top of the document area, the mode banner above the message banner. */
   _positionBanners() {
     const top = this._topBarsHeight();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
-    // The automate panel shares the banners' band, so they give up that width rather than overdrawing its header.
-    const bannerRight = (!this._phoneUi && this._automatePanel?.isOpen()) ? `${this._automatePanel.width}px` : '0px';
-    if (this._modeBanner) this._modeBanner.style.right = bannerRight;
-    if (this._banner) this._banner.style.right = bannerRight;
+    const panelW = (!this._phoneUi && this._automatePanel?.isOpen()) ? this._automatePanel.width : 0;
+    const bannerRight = `${panelW + (this._rightGroup ? this._groupW : 0)}px`;
+    const bannerLeft = `${this._columnWidth()}px`;
+    if (this._modeBanner) { this._modeBanner.style.right = bannerRight; this._modeBanner.style.left = bannerLeft; }
+    if (this._banner) { this._banner.style.right = bannerRight; this._banner.style.left = bannerLeft; }
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
@@ -4251,7 +5186,7 @@ class ScribePDFViewer {
   }
 
   /** Re-apply the drop zone, canvas and thumbnail-panel sizing from the current dimensions and bar heights. */
-  _relayout() {
+  _relayout({ inset: tweenInset = null } = {}) {
     const top = this._topBarsHeight();
     // The empty-state drop zone starts under the tab strip, or its clear top band takes the tabs' clicks.
     if (this.dropZone) {
@@ -4288,9 +5223,9 @@ class ScribePDFViewer {
       // Closing re-enters `_relayout` once with the panel already closed, so the recursion ends there.
       if (this._phoneUi && this._automatePanel.isOpen()) this._automatePanel.close();
     }
-    // A sidebar animation owns the document inset and canvas size on its own clock, so don't fight it here.
+    // A sidebar animation owns the document inset on its own clock, so only the tween's own calls, which pass the frame's inset, run past here.
     // The panel top/height set above are still safe to keep in sync every frame.
-    if (this._sidebarAnim) return;
+    if (this._sidebarAnim && tweenInset === null) return;
     // Inset the document by the open view's width so it centers in the area beside the sidebar, not under it.
     // Keep at least a sliver of document even if the panel is wider than the viewport.
     const activePanel = this._panelFor(this._activeSidebar);
@@ -4304,22 +5239,50 @@ class ScribePDFViewer {
       const tabW = Math.max(0, Math.floor(inner / Math.max(1, tabs.length) / 2) * 2);
       for (const t of tabs) t.style.flex = `0 0 ${tabW}px`;
     }
-    // Measured at every relayout because the pane can move without resizing, as a narrowing window slides it along at its minimum width.
-    if (this._docInsetElem) this._measureDocInset();
-    const docInset = this._docInset;
-    const inset = Math.min(docInset ? docInset.left : panelW, Math.max(0, this._width - 80));
-    const insetTop = docInset ? Math.max(0, docInset.top) : 0;
+    const colW = this._columnWidth();
+    const inset = Math.min(tweenInset === null ? panelW : Math.max(0, tweenInset), Math.max(0, this._width - colW - 80));
     const rightW = (this._automatePanel && this._automatePanel.isOpen())
-      ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
-    // Both overlay tracks are positioned against the full-width container, so each is moved to the document's edge by hand.
-    if (this._vScrollTrack) {
-      this._vScrollTrack.style.right = `${rightW}px`;
-      this._vScrollTrack.style.top = insetTop ? `${insetTop}px` : '';
+      ? Math.min(this._automatePanel.width, Math.max(0, this._width - colW - inset - 80)) : 0;
+    const areaW = this._width - colW - inset - rightW;
+    const areaH = this._height - top - this._docBottomInset();
+    const group = this._rightGroup;
+    const groupW = group ? Math.round(Math.max(240, Math.min(areaW - 240, areaW * this._rightGroupFrac))) : 0;
+    this._rightGroupAreaW = areaW;
+    // The banners were placed above with the previous group width, so they are placed again once it changes.
+    if (this._groupW !== groupW) {
+      this._groupW = groupW;
+      this._positionBanners();
     }
-    if (this._hScrollTrack) this._hScrollTrack.style.left = `${inset}px`;
-    this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-    this.scribe.scrollContainer.style.marginTop = insetTop ? `${insetTop}px` : '';
-    this.scribe.resize(this._width - inset - rightW, this._height - top - insetTop - this._docBottomInset());
+    if (this._sidebarTabsElem) this._sidebarTabsElem.style.left = `${colW}px`;
+    for (const key of SIDEBAR_VIEW_KEYS) {
+      const panel = this._panelFor(key);
+      if (panel && !this._phoneUi) panel.panelElem.style.left = `${colW}px`;
+    }
+    // Both overlay tracks are positioned against the full-width container, so each is moved to the document's edge by hand.
+    if (this._vScrollTrack) this._vScrollTrack.style.right = `${rightW + groupW}px`;
+    if (this._hScrollTrack) this._hScrollTrack.style.left = `${colW + inset}px`;
+    this.scribe.scrollContainer.style.marginLeft = `${colW + inset}px`;
+    this.scribe.resize(areaW - groupW, areaH);
+    if (this._tabStripElem) {
+      this._tabStripElem.style.marginLeft = colW ? `${colW}px` : '';
+      this._tabStripElem.style.width = group ? `${inset + areaW - groupW}px` : (colW ? `${this._width - colW}px` : '');
+    }
+    this._laneBox = {
+      left: colW + inset, top, width: areaW - groupW, height: areaH,
+    };
+    if (group) {
+      const left = colW + inset + areaW - groupW;
+      const band = this._tabStripVisible ? TAB_STRIP_HEIGHT + 1 : 0;
+      const groupTop = top - band;
+      const noticeH = group.notice.style.display === 'none' ? 0 : GROUP_NOTICE_HEIGHT;
+      Object.assign(group.el.style, {
+        left: `${left}px`, top: `${groupTop}px`, width: `${groupW}px`, height: `${areaH + band}px`,
+      });
+      Object.assign(group.sash.style, { left: `${left}px`, top: `${groupTop}px`, height: `${areaH + band}px` });
+      layoutGroupSidebar(group, groupW, Math.max(1, areaH + band - TAB_STRIP_HEIGHT - 1 - noticeH));
+    }
+    for (const inst of this._libraryInstances) inst.positionSurface?.();
+    if (this.dropZone && group) this.dropZone.style.width = `${colW + inset + areaW - groupW - 6}px`;
     // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
     if (this._updateScrollbars && !this._sidebarDragActive) this._updateScrollbars();
   }
@@ -4334,50 +5297,6 @@ class ScribePDFViewer {
     if (key === 'bookmarks') return this._bookmarksPanel;
     if (key === 'comments') return this._commentsPanel;
     return null;
-  }
-
-  /**
-   * Inset the document area to a library's preview pane, or clear the inset with null.
-   * While set, the pane's left edge and head height replace the sidebar's inset, and the document is laid out in the pane.
-   * A stage element has the inset measured from it at every relayout.
-   * Numbers fix the inset until the next call.
-   * @param {?{left: number, top: number} | HTMLElement} inset
-   */
-  setDocInset(inset) {
-    if (inset instanceof Element) {
-      const fresh = inset !== this._docInsetElem;
-      this._docInsetElem = inset;
-      if (!this.scribe.scrollContainer) return;
-      const prevLeft = this._docInset ? this._docInset.left : null;
-      const moved = this._measureDocInset();
-      if (!fresh && !moved) return;
-      this._relayout();
-      if (!fresh && prevLeft !== null && this._docInset && this._docInset.left !== prevLeft) this._refitAuto();
-      return;
-    }
-    const prev = this._docInset;
-    const wasMeasured = !!this._docInsetElem;
-    this._docInsetElem = null;
-    if (!inset && !prev) return;
-    if (!wasMeasured && inset && prev && inset.left === prev.left && inset.top === prev.top) return;
-    this._docInset = inset ? { left: Math.max(0, inset.left), top: Math.max(0, inset.top) } : null;
-    if (this.scribe.scrollContainer) this._relayout();
-  }
-
-  /**
-   * Measure the pane's stage into the inset, and report whether the inset moved.
-   * @returns {boolean}
-   */
-  _measureDocInset() {
-    const el = this._docInsetElem;
-    if (!el) return false;
-    const r = el.getBoundingClientRect();
-    if (!r.width || !r.height) return false;
-    const rootRect = this.pdfViewerElem.getBoundingClientRect();
-    const next = { left: Math.max(0, Math.round(r.left - rootRect.left)), top: Math.max(0, Math.round(r.top - rootRect.top) - this._topBarsHeight()) };
-    const prev = this._docInset;
-    this._docInset = next;
-    return !prev || prev.left !== next.left || prev.top !== next.top;
   }
 
   /**
@@ -4499,40 +5418,28 @@ class ScribePDFViewer {
    * @param {'thumbnails'|'bookmarks'|'comments'|null} prevKey - The view that was open (null if the sidebar was closed).
    * @param {'thumbnails'|'bookmarks'|'comments'|null} nextKey - The view to show (null to close the sidebar).
    */
-  _transitionSidebar(prevKey, nextKey) {
+  _transitionSidebar(prevKey, nextKey, side = this._laneSide()) {
     if (!this.scribe.scrollContainer) return;
     // Interrupt any in-flight transition by stopping its clock.
     // The new setup overwrites the inline styles it was driving, and its transition settles the panels' shown/hidden state.
-    if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
+    if (side.anim) { cancelAnimationFrame(side.anim.raf); side.anim = null; }
 
-    const fromPanel = this._panelFor(prevKey);
-    const toPanel = this._panelFor(nextKey);
+    const fromPanel = side.panelFor(prevKey);
+    const toPanel = side.panelFor(nextKey);
     // A non-thumbnails view adopts the thumbnail view's current width before measuring, so all share one edge.
-    if (toPanel && toPanel !== this._thumbnailPanel && this._thumbnailPanel) {
-      toPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
+    if (toPanel && toPanel !== side.thumbnails && side.thumbnails) {
+      toPanel.panelElem.style.width = side.thumbnails.panelElem.style.width;
     }
     const fromEl = fromPanel ? fromPanel.panelElem : null;
     const toEl = toPanel ? toPanel.panelElem : null;
     const fromW = fromEl ? (parseFloat(fromEl.style.width) || 0) : 0;
     const toW = toEl ? (parseFloat(toEl.style.width) || 0) : 0;
-    const top = this._topBarsHeight();
     const isSwitch = !!fromPanel && !!toPanel;
     // The strip rides the sidebar: it slides with the view on open/close and holds still through a switch's crossfade.
-    const strip = this._phoneUi ? null : this._sidebarTabsElem;
-
-    const setInset = (/** @type {number} */ raw) => {
-      const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
-      // The open Automate panel keeps its right inset through the sidebar animation.
-      const rightW = (this._automatePanel && this._automatePanel.isOpen())
-        ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
-      // Only the document's left edge travels during the slide, so the vertical track keeps the offset `_relayout` gave it.
-      if (this._hScrollTrack) this._hScrollTrack.style.left = `${inset}px`;
-      this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-      this.scribe.resize(this._width - inset - rightW, this._height - top);
-    };
+    const { strip, setInset } = side;
 
     const cleanup = () => {
-      this._sidebarAnim = null;
+      side.anim = null;
       // Settle the incoming view at rest (shown, no inline transform/opacity), then hide and tear down the outgoing view.
       // Both snaps run under transition:none so no stray CSS transition fires.
       // Restore transitions next frame, once the resting styles have committed.
@@ -4550,12 +5457,12 @@ class ScribePDFViewer {
         if (toEl) toEl.style.transition = '';
         if (fromEl) fromEl.style.transition = '';
       });
-      this._relayout();
+      side.relayout();
     };
     // Mark the transition in flight before mounting the incoming view: its `setVisible` fires an onResize -> _relayout
     // that must yield the inset to this tween rather than snapping it.
     const anim = { raf: 0 };
-    this._sidebarAnim = anim;
+    side.anim = anim;
 
     if (toPanel) toPanel.setVisible(true); // mount + render the incoming view before it fades/slides in
     // Own transform + opacity for the duration; CSS transitions off so the JS clock is the sole driver.
@@ -4598,16 +5505,20 @@ class ScribePDFViewer {
       }
       setInset(outW + (toW - outW) * e);
       // Keep looping only while this transition is still the current one; an interrupt/destroy replaces or nulls it.
-      if (p < 1) { if (this._sidebarAnim === anim) anim.raf = requestAnimationFrame(frame); } else cleanup();
+      if (p < 1) { if (side.anim === anim) anim.raf = requestAnimationFrame(frame); } else cleanup();
     };
     anim.raf = requestAnimationFrame(frame);
   }
 
-  /** Reflect the sidebar's state on its toggle and view-switch strip (a no-op without a sidebar). */
+  /**
+   * Reflect the sidebars' state on the toolbar's toggle and on each sidebar's view-switch strip.
+   * The toggle shows the active group's sidebar.
+   */
   _syncSidebarControls() {
     if (!this._sidebarToggleElem) return;
     if (this._activeSidebar) this._lastSidebarView = this._activeSidebar;
-    const open = this._activeSidebar !== null;
+    const g = this._rightGroup;
+    const open = this._activeGroup === 1 && g ? g.side.active !== null : this._activeSidebar !== null;
     this._sidebarToggleElem.classList.toggle('active', open);
     this._sidebarToggleElem.dataset.tip = open ? 'Hide sidebar' : 'Show sidebar';
     this._sidebarToggleElem.ariaLabel = this._sidebarToggleElem.dataset.tip;
@@ -4618,7 +5529,16 @@ class ScribePDFViewer {
     }
     // A running transition owns the strip's visibility, so only the resting state is set here.
     if (this._sidebarTabsElem && !this._sidebarAnim) {
-      this._sidebarTabsElem.style.display = (open && !this._phoneUi) ? '' : 'none';
+      this._sidebarTabsElem.style.display = (this._activeSidebar !== null && !this._phoneUi) ? '' : 'none';
+    }
+    if (g) {
+      const s = g.side;
+      for (const [key, tab] of Object.entries(s.tabElems)) {
+        tab.classList.toggle('on', key === s.active);
+        const panel = groupPanelFor(s, /** @type {'thumbnails'|'bookmarks'|'comments'} */ (key));
+        tab.style.display = (panel && panel.toggleElem.style.display !== 'none') ? '' : 'none';
+      }
+      if (s.tabsElem && !s.anim) s.tabsElem.style.display = s.active !== null ? '' : 'none';
     }
   }
 
@@ -4817,6 +5737,7 @@ class ScribePDFViewer {
    * @returns {?import('../library/libraryView.js').LibraryInstance}
    */
   _frontSurface() {
+    if (this._activeGroup === 1 && this._rightGroup?.active) return null;
     return this._libraryInstances.find((inst) => inst.covering()) ?? null;
   }
 
@@ -4984,7 +5905,7 @@ class ScribePDFViewer {
     const sc = this.scribe.scrollContainer;
     const docW = this.scribe._contentWidth || af.docW;
     const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
-    const widthMode = this._phoneUi || hZoom * docW > sc.clientWidth || (!!this._docInsetElem && af.widthMode);
+    const widthMode = this._phoneUi || hZoom * docW > sc.clientWidth;
     if (!widthMode && !af.widthMode) return;
     const target = Math.min(this._autoFitCap(docW), widthMode ? sc.clientWidth / docW : hZoom);
     if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
@@ -6139,13 +7060,21 @@ class ScribePDFViewer {
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
     if (disabled && this._extractTablesTool?.isActive()) this._extractTablesTool.close();
     if (disabled && this._inspectTool?.isActive()) this._inspectTool.close();
+    // The sidebar toggle acts on the active group, so it follows that group's document.
+    const sideToggle = this._sidebarToggleElem;
+    if (sideToggle) {
+      const g = this._rightGroup;
+      const sideDisabled = this._activeGroup === 1 && g ? !g.active : disabled;
+      sideToggle.classList.toggle('disabled', sideDisabled);
+      sideToggle.ariaDisabled = sideDisabled ? 'true' : 'false';
+      sideToggle.tabIndex = sideDisabled ? -1 : 0;
+    }
     for (const el of [
       this._searchBar?.searchElem,
       this._twoPageBtn,
       this._thumbnailPanel?.toggleElem,
       this._bookmarksPanel?.toggleElem,
       this._commentsPanel?.toggleElem,
-      this._sidebarToggleElem,
       this._sheetPanelsBtn,
       this._dockEditBtn,
       this._fillSignTool?.toolbarElem,
@@ -6272,6 +7201,12 @@ class ScribePDFViewer {
     // Teardown callbacks remove the document-level listeners and the highlight tool's observer/tooltip/cursor style.
     for (const cb of this._teardownCallbacks) cb();
     this._teardownCallbacks = [];
+    if (this._rightGroup) {
+      this._rightGroup.viewer.destroy();
+      this._rightGroup.el.remove();
+      this._rightGroup.sash.remove();
+      this._rightGroup = null;
+    }
     // The app owns every tab's document (opened via attachDocument with owns=false), so close them all here.
     for (const tab of this._tabs) {
       try { await tab.doc.close(); } catch { /* ignore */ }
@@ -6323,7 +7258,7 @@ class ScribePDFViewer {
 
       // The phone takes width-fit either way.
       const heightFitOverflows = ((stageH - 150) / imgDims.height) * docW > stageW;
-      const widthFitDefault = (isDefaultFit && (this._phoneUi || heightFitOverflows)) || !!this._previewFitWidth;
+      const widthFitDefault = isDefaultFit && (this._phoneUi || heightFitOverflows);
       const effectiveMode = widthFitDefault ? 'width' : fitMode;
 
       let zoom;

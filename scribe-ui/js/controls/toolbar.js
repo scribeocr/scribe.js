@@ -680,14 +680,21 @@ const TAB_FADE_WIDTH = 24;
  * @param {() => void} cfg.onCloseAll - Called when the context menu's "Close All" is picked.
  * @param {(from: number, to: number) => void} [cfg.onMove] - Called when a drag reorders a tab: remove it at `from`, then insert it at `to`.
  * @param {(from: number, to: number) => void} [cfg.onCopyInto] - Called when a freestanding tab is dropped into the folder group, with the same indices as `onMove`.
- * @param {(index: number) => Array<{label: string, onPick: () => void}>} [cfg.extraMenuItems] - Rows appended to a tab's context menu after a separator.
+ * @param {(index: number) => Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>} [cfg.extraMenuItems]
+ *   Rows appended to a tab's context menu after a separator.
+ *   A `sep` row is another separator.
+ * @param {(index: number) => void} [cfg.onKeep] - Called when a preview tab is double-clicked, to keep it.
+ * @param {HTMLElement[]} [cfg.actions] - Controls mounted at the strip's end, after the paddles.
+ * @param {(phase: 'move'|'drop'|'cancel', clientX: number, clientY: number, index: number) => boolean} [cfg.onDragOutside]
+ *   Called on each move of a dragged tab and at its drop, to ask whether the pointer is over a drop target outside this strip.
+ *   When it answers true to a `drop`, the owner applies the drop and the strip only restores its tabs.
  * @returns {{ tabStripElem: HTMLDivElement,
- *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
+ *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean, preview?: boolean }>, activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
  *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void,
  *   showTabNote: (index: number, message: string, options?: {actionLabel?: string, onAction?: () => void}) => void }}
  */
 export function createTabStrip({
-  onSelect, onClose, onCloseOthers, onCloseAll, onMove, onCopyInto, extraMenuItems,
+  onSelect, onClose, onCloseOthers, onCloseAll, onMove, onCopyInto, extraMenuItems, onKeep, actions, onDragOutside,
 }) {
   const tabStripElem = document.createElement('div');
   tabStripElem.className = 'scribe-tab-strip';
@@ -743,6 +750,12 @@ export function createTabStrip({
   const prev = makePaddle(TAB_PREV_SVG, 'Scroll tabs left', -1);
   const next = makePaddle(TAB_NEXT_SVG, 'Scroll tabs right', 1);
   tabStripElem.append(prev.wrap, laneWrap, next.wrap);
+  if (actions && actions.length) {
+    const actionsWrap = document.createElement('div');
+    actionsWrap.className = 'scribe-tab-actions';
+    actionsWrap.append(...actions);
+    tabStripElem.appendChild(actionsWrap);
+  }
 
   // A vertical wheel scrolls the lane horizontally (trackpad horizontal deltas already work natively).
   laneElem.addEventListener('wheel', (event) => {
@@ -861,36 +874,44 @@ export function createTabStrip({
    * @param {number} tabCount
    */
   function openTabMenu(clientX, clientY, index, name, tabCount) {
+    /** @type {Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>} */
+    const rows = [
+      { label: 'Copy Name', onPick: () => navigator.clipboard?.writeText(name) },
+      { label: 'Close', onPick: () => onClose(index) },
+    ];
+    if (tabCount > 1) rows.push({ label: 'Close Others', onPick: () => onCloseOthers(index) }, { label: 'Close All', onPick: () => onCloseAll() });
+    const extras = extraMenuItems ? extraMenuItems(index) : [];
+    if (extras.length) rows.push({ sep: true }, ...extras);
+    showMenu(clientX, clientY, rows);
+  }
+
+  /**
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>} rows
+   */
+  function showMenu(clientX, clientY, rows) {
     const host = tabStripElem.parentElement;
     if (!host) return;
     if (menuElem.parentElement !== host) host.appendChild(menuElem);
     menuElem.replaceChildren();
-    /**
-     * @param {string} label
-     * @param {() => void} onPick
-     */
-    const addItem = (label, onPick) => {
+    for (const row of rows) {
+      if (row.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'scribe-tab-menu-sep';
+        menuElem.appendChild(sep);
+        continue;
+      }
       const item = document.createElement('div');
-      item.className = 'scribe-tab-menu-item';
-      item.textContent = label;
-      item.addEventListener('click', () => {
-        closeTabMenu();
-        onPick();
-      });
+      item.className = `scribe-tab-menu-item${row.disabled ? ' disabled' : ''}`;
+      item.textContent = row.label ?? '';
+      if (!row.disabled) {
+        item.addEventListener('click', () => {
+          closeTabMenu();
+          row.onPick?.();
+        });
+      }
       menuElem.appendChild(item);
-    };
-    addItem('Copy Name', () => navigator.clipboard?.writeText(name));
-    addItem('Close', () => onClose(index));
-    if (tabCount > 1) {
-      addItem('Close Others', () => onCloseOthers(index));
-      addItem('Close All', () => onCloseAll());
-    }
-    const extras = extraMenuItems ? extraMenuItems(index) : [];
-    if (extras.length) {
-      const sep = document.createElement('div');
-      sep.className = 'scribe-tab-menu-sep';
-      menuElem.appendChild(sep);
-      for (const extra of extras) addItem(extra.label, extra.onPick);
     }
     // Show first so the menu has measurable dimensions, then clamp it inside the host.
     menuElem.style.display = '';
@@ -994,12 +1015,23 @@ export function createTabStrip({
       const tabElem = document.createElement('div');
       tabElem.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
       if (tab.asleep) tabElem.classList.add('asleep');
+      if (tab.preview) {
+        tabElem.classList.add('preview');
+        tabElem.addEventListener('dblclick', () => { if (onKeep) onKeep(i); });
+      }
       tabElem.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
       tabElem.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTabMenu(event.clientX, event.clientY, i, tab.name, tabs.length);
       });
 
+      if (tab.anchored) {
+        tabElem.classList.add('anchored');
+        const pin = document.createElement('span');
+        pin.className = 'scribe-tab-anchor';
+        pin.innerHTML = barIcon('pin');
+        tabElem.appendChild(pin);
+      }
       const name = document.createElement('span');
       name.className = 'scribe-tab-name';
       name.textContent = tab.name;
@@ -1110,6 +1142,7 @@ export function createTabStrip({
       startDrag(d);
     }
     moveDrag(event.clientX, event.clientY);
+    if (onDragOutside) onDragOutside('move', event.clientX, event.clientY, d.from);
   }
 
   function onDragUp() {
@@ -1118,6 +1151,10 @@ export function createTabStrip({
     removeDragListeners();
     if (!d.started) {
       drag = null;
+      return;
+    }
+    if (onDragOutside && onDragOutside('drop', d.lastX, d.lastY, d.from)) {
+      cancelDrag(true);
       return;
     }
     // The click that ends a drag is the drop, not a selection.
@@ -1324,6 +1361,7 @@ export function createTabStrip({
     drag = null;
     removeDragListeners();
     if (!d.started) return;
+    if (onDragOutside) onDragOutside('cancel', d.lastX, d.lastY, d.from);
     endDragVisuals(d);
     if (rerender && lastRender) render(lastRender.tabs, lastRender.activeIndex, lastRender.group);
   }
@@ -3550,13 +3588,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-scrollbar-v {
       top: 0;
       right: 0;
-      width: 12px;
+      width: 10px;
     }
 
     .${r} .scribe-scrollbar-h {
       left: 0;
       bottom: 0;
-      height: 12px;
+      height: 10px;
     }
 
     .${r} .scribe-scrollbar-thumb {
@@ -3573,12 +3611,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-scrollbar-v .scribe-scrollbar-thumb {
       left: 2px;
-      width: 8px;
+      width: 6px;
     }
 
     .${r} .scribe-scrollbar-h .scribe-scrollbar-thumb {
       top: 2px;
-      height: 8px;
+      height: 6px;
     }
 
     .${r} .scribe-thumb-panel {
@@ -3607,7 +3645,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       top: 0;
       left: 0;
       bottom: 0;
-      right: 6px;
+      right: 0;
       overflow-y: auto;
       overflow-x: hidden;
       padding: 8px 0;
@@ -3615,7 +3653,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar {
-      width: 7px;
+      width: 6px;
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar-track {
@@ -3636,7 +3674,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       top: 0;
       right: 0;
       bottom: 0;
-      width: 6px;
+      width: 3px;
       cursor: ew-resize;
       z-index: 8;
       touch-action: none;
@@ -4979,6 +5017,39 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-banner-run:not(:disabled):hover { background: var(--scribe-active); }
     .${r} .scribe-mode-banner-run:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); cursor: default; }
     .${r} .scribe-mode-banner-run.busy { opacity: .6; pointer-events: none; }
+
+    .${r} .scribe-tab.preview .scribe-tab-name { font-style: italic; padding-right: 2px; }
+    .${r} .scribe-right-group { position: absolute; z-index: 3; display: flex; flex-direction: column; box-sizing: border-box; background: var(--scribe-canvas); border-left: 1px solid var(--scribe-line); overflow: hidden; }
+    .${r} .scribe-right-group .scribe-tab-strip { flex: none; }
+    .${r} .scribe-right-group-body { flex: 1 1 0; min-height: 0; position: relative; overflow: hidden; }
+    .${r} .scribe-group-notice { flex: none; display: flex; align-items: center; gap: 8px; height: 32px; box-sizing: border-box; padding: 0 12px; font-size: 12.5px; color: var(--scribe-ink); background: var(--scribe-warn-soft); box-shadow: inset 0 -1px 0 var(--scribe-line); white-space: nowrap; }
+    .${r} .scribe-group-notice .t { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-group-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px 36px; color: var(--scribe-ink-3); font-size: 13px; line-height: 1.5; pointer-events: none; }
+    .${r} .scribe-tab-actions { flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px; margin-left: auto; }
+    .${r} .scribe-tab-action { width: min(var(--scribe-icon-size, 32px), 28px); height: min(var(--scribe-icon-size, 32px), 28px); border-radius: 7px; display: inline-flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); cursor: pointer; user-select: none; outline: none; -webkit-tap-highlight-color: transparent; }
+    .${r} .scribe-tab-action .scribe-tab-icon { width: 100%; height: 100%; display: inline-flex; }
+    .${r} .scribe-tab-action .scribe-bar-glyph { width: 100%; height: 100%; }
+    .${r} .scribe-tab-action:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
+    .${r} .scribe-tab-action:focus-visible { outline: 2px solid var(--scribe-accent-ring); }
+    .${r} .scribe-tab-action.disabled { color: var(--scribe-ink-3); opacity: .45; background: none; cursor: default; pointer-events: none; }
+    .${r} .scribe-tab-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-tab-menu-item.disabled:hover { background: none; }
+    .${r} .scribe-tab-anchor { width: 12px; height: 12px; flex: none; display: inline-flex; color: var(--scribe-accent); }
+    .${r} .scribe-tab-anchor svg { width: 100%; height: 100%; display: block; }
+    .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active, .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin .scribe-tab.active,
+    .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { color: var(--scribe-ink-2); border-bottom-color: var(--scribe-line-strong); }
+    .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active .scribe-tab-name { text-shadow: none; }
+    .${r} .scribe-group-drop { position: absolute; z-index: 32; background: var(--scribe-accent-soft); opacity: .94; pointer-events: none; }
+    .${r} .scribe-group-drop .scribe-drag-frame { inset: 10px; border-radius: 12px; }
+    .${r} .scribe-group-drop .scribe-drag-pill { top: 22px; padding: 7px 14px 7px 11px; font-size: 13px; }
+    .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }
+    .${r} .scribe-tab-ghost { position: fixed; z-index: 1000; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 28px; max-width: 240px; box-sizing: border-box; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 13px; border: 1px solid var(--scribe-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(20, 30, 60, .22); white-space: nowrap; overflow: hidden; }
+    .${r} .scribe-tab-ghost .scribe-tab-icon { color: var(--scribe-ink-2); }
+    .${r} .scribe-group-sash { position: absolute; z-index: 4; width: 7px; margin-left: -3px; cursor: col-resize; touch-action: none; }
+    .${r} .scribe-group-sash::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
+    .${r} .scribe-group-sash:hover::before { opacity: 1; transition-delay: 0.25s; }
+    .${r} .scribe-group-sash.drag::before { opacity: 1; transition-delay: 0s; }
+    .${r}.scribe-group-drag, .${r}.scribe-group-drag * { cursor: col-resize !important; user-select: none; }
 
     /* The mode drop-down: the sidebar strip's material at bar scale. */
     .${r} .scribe-mode-track-wrap { position: relative; display: inline-flex; }

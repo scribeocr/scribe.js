@@ -1,6 +1,8 @@
 const BAR = {
   menu: { size: 26, paths: '<path d="M4.5 7H21.5M4.5 13H21.5M4.5 19H21.5"/>' },
   sidebar: { size: 26, paths: '<rect x="4" y="6" width="18" height="14" rx="2.5"/><path d="M10 6V20"/>' },
+  folder: { size: 26, paths: '<path d="M4 8.5A2 2 0 0 1 6 6.5H10.2L12.4 8.7H20A2 2 0 0 1 22 10.7V18.5A2 2 0 0 1 20 20.5H6A2 2 0 0 1 4 18.5Z"/>' },
+  split: { size: 26, paths: '<rect x="4" y="6" width="18" height="14" rx="2.5"/><path d="M13 6V20"/>' },
   undo: { size: 26, paths: '<path d="M8.5 5L4.5 9L8.5 13"/><path d="M4.5 9H15A6 6 0 0 1 15 21H10"/>' },
   redo: { size: 26, paths: '<path d="M17.5 5L21.5 9L17.5 13"/><path d="M21.5 9H11A6 6 0 0 0 11 21H16"/>' },
   automate: { size: 26, paths: '<path d="M6 8L11.5 13L6 18Z"/><path d="M15 8H21M15 13H21M15 18H19"/>' },
@@ -20,6 +22,7 @@ const BAR = {
       + '<path fill="currentColor" stroke="none" d="M5 22L5.7 19.5A2 2 0 0 1 7.6 18H18.4A2 2 0 0 1 20.3 19.5L21 22Z"/>',
   },
   openInTab: { size: 26, paths: '<path d="M11 7H8.5A2.5 2.5 0 0 0 6 9.5V17.5A2.5 2.5 0 0 0 8.5 20H16.5A2.5 2.5 0 0 0 19 17.5V15"/><path d="M14.5 6H20V11.5M20 6L12 14"/>' },
+  pin: { size: 26, paths: '<path d="M9 4.5H17M13 4.5V11M8.5 15.5H17.5L15.5 11H10.5ZM13 15.5V21.5"/>' },
   stepUp: { size: 22, paths: '<path d="M6.5 13.5L11 9L15.5 13.5"/>' },
   stepDown: { size: 22, paths: '<path d="M6.5 8.5L11 13L15.5 8.5"/>' },
 };
