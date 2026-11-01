@@ -776,7 +776,7 @@ export function placeSignatureAsset(viewer, n, asset, rect) {
  */
 export function signIntoField(app, n, fieldRow) {
   const sigs = loadSignatures();
-  const place = (asset) => placeSignatureAsset(app.scribe, n, asset, fieldRow.bbox);
+  const place = (asset) => placeSignatureAsset(app._activeViewer(), n, asset, fieldRow.bbox);
   if (sigs.length > 0) place(sigs[sigs.length - 1]);
   else openSignatureDialog(app, place);
 }
@@ -786,10 +786,11 @@ export function signIntoField(app, n, fieldRow) {
 /**
  * Build the Fill & Sign palette and its behaviors for one app instance.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
- * @returns {{ elem: HTMLDivElement, show: () => void, hide: () => void, isOpen: () => boolean, destroy: () => void }}
+ * @returns {{ elem: HTMLDivElement, viewer: import('../viewer.js').ScribeViewer, show: () => void, hide: () => void, isOpen: () => boolean, destroy: () => void }}
  */
 export function createFillSignPalette(app) {
-  const viewer = app.scribe;
+  // The Fill & Sign tool rebuilds the palette when it opens in the other group.
+  const viewer = app._activeViewer();
   const pal = document.createElement('div');
   pal.className = 'scribe-fs-pal';
   pal.style.display = 'none';
@@ -1256,6 +1257,7 @@ export function createFillSignPalette(app) {
   };
   return {
     elem: pal,
+    viewer,
     show,
     hide,
     isOpen: () => pal.style.display !== 'none',

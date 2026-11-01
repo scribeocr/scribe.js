@@ -9,6 +9,7 @@ import { runAssistantTurn } from '../assistant/assistant.js';
 import { makeAssistantTrace, buildTraceEnvelope } from '../assistant/trace.js';
 import { VERBS, navigateToReceipt } from '../assistant/verbs.js';
 import { CODE_FONT_FAMILY, collectMdRefs, parseMdBlocks } from '../../../js/utils/parseMd.js';
+import { docAddressLabel, parseDocAddress } from '../../../js/docAddress.js';
 
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
@@ -19,6 +20,7 @@ const INSPECT_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M1
 const BACK_SVG = lineIcon('<path d="M14 6l-6 6 6 6"/>');
 const SEND_SVG = lineIcon('<path d="M4.5 11.4L19.5 4.5 15.6 19.5l-3.9-5.2z"/><path d="M11.7 14.3l7.8-9.8"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
+const CITE_SVG = lineIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
 const STOP_SVG = lineIcon('<rect x="7" y="7" width="10" height="10" rx="1.5"/>');
 const READ_SVG = lineIcon('<path d="M12 5.5C9.8 4 6.8 3.8 4 4.4v14.2c2.8-.6 5.8-.4 8 1.1 2.2-1.5 5.2-1.7 8-1.1V4.4c-2.8-.6-5.8-.4-8 1.1z"/><path d="M12 5.5v14.2"/>');
 const CHEVRON_SVG = lineIcon('<path d="M7.5 10l4.5 4.5 4.5-4.5"/>');
@@ -389,6 +391,9 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-det .scribe-am-ins-kv { font-size: 11.5px; grid-template-columns: 100px minmax(0, 1fr); }
     .${r} .scribe-am-ins-sample { font-size: 18px; line-height: 1.25; color: var(--scribe-ink); margin: 2px 0 6px; overflow-wrap: anywhere; }
     .${r} .scribe-am-ins-more { font-size: 11.5px; color: var(--scribe-ink-3); padding: 4px 4px 0; }
+    .${r} .scribe-am-cite { display: inline-flex; align-items: center; gap: 4px; margin: 0 1px; padding: 0 7px 0 5px; border: 1px solid var(--scribe-line-strong); border-radius: 10px; background: var(--scribe-surface); color: var(--scribe-accent); font: inherit; font-size: 12px; line-height: 18px; cursor: pointer; vertical-align: baseline; }
+    .${r} .scribe-am-cite:hover { background: var(--scribe-accent-soft); }
+    .${r} .scribe-am-cite-ic { display: inline-flex; width: 12px; height: 12px; flex: none; }
     .${r} .scribe-am-ins-more-link { color: var(--scribe-accent); text-decoration: none; }
     .${r} .scribe-am-ins-more-link:hover { text-decoration: underline; }
     .${r} .scribe-am-ins-cathd { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0 2px; }
@@ -1786,7 +1791,20 @@ export function createAutomatePanel(app, rootClass, hooks) {
           b.appendChild(node);
           node = b;
         }
-        // A run's link target is dropped, because a model-authored URL would bypass the external-link guard.
+        // A link target other than a document address is dropped, because a model-authored URL would bypass the external-link guard.
+        const address = run.link ? parseDocAddress(run.link) : null;
+        if (address) {
+          const chip = document.createElement('button');
+          chip.type = 'button';
+          chip.className = 'scribe-am-cite';
+          chip.title = docAddressLabel(address);
+          const ic = document.createElement('span');
+          ic.className = 'scribe-am-cite-ic';
+          ic.innerHTML = CITE_SVG;
+          chip.append(ic, node);
+          chip.addEventListener('click', () => { app.openDocAddress(run.link).catch(() => {}); });
+          node = chip;
+        }
         parent.appendChild(node);
       }
     };
@@ -2365,6 +2383,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
 
   /** @type {?{refresh: () => void}} */
   let wsHandle = null;
+  /** @type {?import('../../viewer.js').ScribeViewer} */
+  let wsViewer = null;
   let wsPriorView = 'rest';
 
   async function openTablesWorkspace() {
@@ -2376,15 +2396,19 @@ export function createAutomatePanel(app, rootClass, hooks) {
     // The mode may have exited (or the view moved on) during the await.
     if (view !== 'tables' || wsHandle) return;
     tablesElem.textContent = '';
-    wsHandle = module.buildTablesWorkspace(host, tablesElem);
-    app.scribe.onLayoutTablesEdited = () => wsHandle?.refresh();
-    app.scribe.onTablesPageChanged = (n) => wsHandle?.pageChanged(n);
+    wsViewer = app._activeViewer();
+    wsHandle = module.buildTablesWorkspace({ app, viewer: wsViewer }, tablesElem);
+    wsViewer.onLayoutTablesEdited = () => wsHandle?.refresh();
+    wsViewer.onTablesPageChanged = (n) => wsHandle?.pageChanged(n);
   }
 
   function closeTablesWorkspace() {
     if (!wsHandle && view !== 'tables') return;
-    app.scribe.onLayoutTablesEdited = null;
-    app.scribe.onTablesPageChanged = null;
+    if (wsViewer) {
+      wsViewer.onLayoutTablesEdited = null;
+      wsViewer.onTablesPageChanged = null;
+    }
+    wsViewer = null;
     wsHandle = null;
     tablesElem.textContent = '';
     if (view === 'tables') setView(wsPriorView === 'tables' ? 'rest' : wsPriorView);
@@ -2407,7 +2431,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
     // The mode may have exited (or the view moved on) during the await.
     if (view !== 'inspect' || inspectHandle) return;
     inspectElem.textContent = '';
-    inspectHandle = module.buildInspectWorkspace(host, inspectElem, {
+    inspectHandle = module.buildInspectWorkspace({ app, viewer: app._activeViewer() }, inspectElem, {
       // With no automations catalog there is no list to go back to, so the back control appears only for a sub-view.
       setSubview: (title) => {
         if (view !== 'inspect') return;

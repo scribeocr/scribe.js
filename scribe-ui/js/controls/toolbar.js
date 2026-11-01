@@ -1406,17 +1406,18 @@ export function createTabStrip({
 
 /**
  * Build the find/search bar and its behaviors.
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {import('../../viewer.js').ScribeViewer} initialViewer
  * @param {HTMLElement} rootElem - The app's root element (used to scope the Ctrl/Cmd+F shortcut).
  * @returns {{
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
  *   openSearch: (options?: {focus?: boolean}) => Promise<void>, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
  *   updateSearchCounter: () => void, resetSearch: () => void, rehome: () => void,
- *   installFindShortcut: () => (() => void)
+ *   installFindShortcut: () => (() => void), rebind: (viewer: import('../../viewer.js').ScribeViewer) => Promise<void>
  * }}
  */
-export function createSearchBar(scribe, rootElem) {
+export function createSearchBar(initialViewer, rootElem) {
+  let scribe = initialViewer;
   const searchElem = makeIconButton('Find', barIcon('find'));
   searchElem.dataset.tipKey = shortcutLabel('F');
 
@@ -1658,6 +1659,20 @@ export function createSearchBar(scribe, rootElem) {
     return () => document.removeEventListener('keydown', handler);
   }
 
+  /**
+   * Bind the bar to another viewer.
+   * @param {import('../../viewer.js').ScribeViewer} viewer
+   */
+  async function rebind(viewer) {
+    if (viewer === scribe) return;
+    const wasOpen = scribe.state.searchMode;
+    const hadFocus = document.activeElement === searchInputElem;
+    if (wasOpen) closeSearch();
+    scribe = viewer;
+    lastActive = -1;
+    if (wasOpen) await openSearch({ focus: hadFocus });
+  }
+
   return {
     searchElem,
     findGroupElem,
@@ -1671,6 +1686,7 @@ export function createSearchBar(scribe, rootElem) {
     rehome,
     stepMatch,
     installFindShortcut,
+    rebind,
   };
 }
 
@@ -1716,6 +1732,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-wash: rgba(28, 98, 212, .14);
       --scribe-match: #e4e6ea;
       --scribe-match-active: #a4c0ee;
+      --scribe-cite: rgba(255, 233, 59, .45);
       --scribe-note: #f4d06a;
       --scribe-warn-soft: #fbf1d3;
       --scribe-danger: #d1493d;
@@ -1750,6 +1767,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-wash: rgba(79, 139, 240, .22);
       --scribe-match: #e4e6ea;
       --scribe-match-active: #a4c0ee;
+      --scribe-cite: rgba(255, 233, 59, .45);
       --scribe-note: #f0cd68;
       --scribe-warn-soft: #3a3117;
       --scribe-danger: #ef7a6c;

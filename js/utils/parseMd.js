@@ -190,7 +190,7 @@ export function parseInlineMd(text, style, refs) {
       }
       flush();
       if (!isImage) {
-        const link = /^(https?:|mailto:)/i.test(url) ? url : style.link;
+        const link = /^(https?:|mailto:|scribe-doc:)/i.test(url) ? url : style.link;
         runs.push(...parseInlineMd(label, { ...style, link }, refs));
       }
       i = labelEnd + 1 + consumed;
@@ -232,7 +232,7 @@ export function parseInlineMd(text, style, refs) {
             if (name === 'a') {
               const href = /\shref\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tag[3] || '');
               const dest = href ? href[1] || href[2] : '';
-              if (/^(https?:|mailto:)/i.test(dest)) link = dest;
+              if (/^(https?:|mailto:|scribe-doc:)/i.test(dest)) link = dest;
             }
             runs.push(...parseInlineMd(inner, {
               ...style, ...(styleProp ? { [styleProp]: true } : {}), link,

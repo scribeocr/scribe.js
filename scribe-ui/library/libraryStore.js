@@ -9,6 +9,12 @@ const APP_DATA_DIR = 'libraries';
 const MANIFEST_VERSION = 1;
 const MANIFEST_FILE = 'index.json';
 
+/** @param {ArrayBuffer} buf @returns {Promise<string>} First 16 hex chars of SHA-256. */
+export const hashBytes = async (buf) => {
+  const digest = await crypto.subtle.digest('SHA-256', buf);
+  return [...new Uint8Array(digest, 0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
+};
+
 /** Byte cap for stored page rasters, enforced by the artifact sweep. */
 export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 
@@ -952,13 +958,18 @@ export class LibraryStore {
    * Orphans appear when a changed file re-ingests under a new hash.
    * Eviction removes whole documents, least recently opened first.
    * Also establishes `rasterBytes`, the running total that `writePageRaster` keeps current between sweeps.
+   * Nothing is swept while an entry is pending.
    * @param {LibraryManifest} manifest
    */
   async sweepArtifacts(manifest) {
+    // A pending entry's hash is unknown until its ingest, so its sidecar can pass for an orphan.
+    if (Object.values(manifest.docs).some((e) => e.status === 'pending')) return;
     /** @type {Map<string, number>} Referenced hash -> most recent open (falling back to added time). */
     const lastUse = new Map();
-    for (const e of Object.values(manifest.docs)) {
-      if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
+    for (const [relPath, e] of Object.entries(manifest.docs)) {
+      // An ingest that failed before it recorded a hash leaves a sidecar its retry reopens with, so the file is hashed here.
+      const hash = e.hash || (e.status === 'missing' ? '' : await this.readFile(relPath).then((f) => f.arrayBuffer()).then(hashBytes).catch(() => ''));
+      if (hash) lastUse.set(hash, Math.max(lastUse.get(hash) || 0, e.lastOpened || 0, e.added || 0));
     }
     const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
       [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.docsDir, '.changes'], [this.docsDir, '.changes.bak'], [this.thumbsDir, '.jpg'],

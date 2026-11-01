@@ -4,7 +4,8 @@ import { pageMatchIds, search } from './js/viewerSearch.js';
 import {
   UiDataColumn, UiLayout, UiRegion, layout,
 } from './js/viewerLayout.js';
-import { clearObjectProperties } from '../js/utils/miscUtils.js';
+import { calcBoxOverlap, clearObjectProperties } from '../js/utils/miscUtils.js';
+import { docAddressLabel, parseDocAddress } from '../js/docAddress.js';
 import { nativeTextForPage } from '../js/textEdits.js';
 import { loadBuiltInFontsRaw } from '../js/fontContainerMain.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
@@ -2304,9 +2305,13 @@ export class ScribeViewer {
         // Touch has no hover, and a held button means a drag or selection is underway, not a hover.
         const entry = (pointerType === 'touch' || buttons) ? null : this.linkAt(clientX, clientY);
         this._linkStatusUpdate(entry);
+        this._docLinkHotUpdate(entry);
       });
     });
-    scrollContainer.addEventListener('pointerleave', () => this._linkStatusUpdate(null));
+    scrollContainer.addEventListener('pointerleave', () => {
+      this._linkStatusUpdate(null);
+      this._docLinkHotUpdate(null);
+    });
 
     // On native scroll, update the current page (coalesced to one update per frame),
     // passing the per-frame scroll distance as the speed `updateCurrentPage` uses to decide whether to defer the word build.
@@ -2535,8 +2540,9 @@ export class ScribeViewer {
   /**
    * Set the initial position and zoom of the canvas to reasonable defaults.
    * @param {dims} imgDims - Dimensions of image
+   * @param {{fitWidth?: boolean}} [options]
    */
-  setInitialPositionZoom(imgDims) {
+  setInitialPositionZoom(imgDims, { fitWidth = false } = {}) {
     this.runSetInitial = false;
 
     const totalHeight = this.scrollContainer.clientHeight;
@@ -2544,7 +2550,7 @@ export class ScribeViewer {
     const bottomMarginHeight = 50;
     const targetHeight = totalHeight - interfaceHeight - bottomMarginHeight;
 
-    const zoom = targetHeight / imgDims.height;
+    const zoom = fitWidth ? (this.scrollContainer.clientWidth - 24) / imgDims.width : targetHeight / imgDims.height;
     this.zoomLevel = zoom;
     this._applyZoomTransform(zoom);
     // Populate `_contentWidth`/`_contentHeight` and size the content sizer before the scroll writes below.
@@ -2882,9 +2888,12 @@ export class ScribeViewer {
     this._linkStatusUpdate(null);
     if (entry.dest) {
       this.goToOutlineDest(entry.dest);
+    } else if (entry.uri && parseDocAddress(entry.uri)) {
+      if (this.opt.onDocAddress) this.opt.onDocAddress(entry, this.doc.annotations.pages.findIndex((arr) => !!arr && arr.includes(entry)));
     } else if (entry.uri && /^(https?:|mailto:)/i.test(entry.uri.trim())) {
       // A PDF can carry a javascript: URI that must never execute, so only http and mailto open.
-      window.open(entry.uri, '_blank', 'noopener,noreferrer');
+      if (scribe.opt.openExternal) scribe.opt.openExternal(entry.uri);
+      else window.open(entry.uri, '_blank', 'noopener,noreferrer');
     }
   }
 
@@ -2895,7 +2904,7 @@ export class ScribeViewer {
    * @param {{clientX: number, clientY: number, ctrlKey: boolean, metaKey: boolean}} event - The confirming pointer or click event.
    */
   _linkActivate(entry, event) {
-    if (entry.dest) {
+    if (entry.dest || (entry.uri && parseDocAddress(entry.uri))) {
       this._followLink(entry);
       return;
     }
@@ -3094,8 +3103,30 @@ export class ScribeViewer {
       this.elem.appendChild(el);
       this._linkStatusEl = el;
     }
-    this._linkStatusEl.textContent = entry.uri || (entry.dest ? `Go to page ${entry.dest.pageIndex + 1}` : '');
+    const address = entry.uri ? parseDocAddress(entry.uri) : null;
+    this._linkStatusEl.textContent = address ? docAddressLabel(address) : entry.uri || (entry.dest ? `Go to page ${entry.dest.pageIndex + 1}` : '');
     this._linkStatusEl.style.display = 'block';
+  }
+
+  /**
+   * Move the accent to the words under the hovered document-address link.
+   * @param {?AnnotationLink} entry
+   */
+  _docLinkHotUpdate(entry) {
+    const hot = entry && entry.uri && parseDocAddress(entry.uri) ? entry : null;
+    // A word rebuild destroys the accented words, so the same link is re-applied to the new ones.
+    const stale = (this._docLinkHotWords || []).some((kw) => kw._destroyed);
+    if (hot === (this._docLinkHotEntry || null) && !stale) return;
+    for (const kw of this._docLinkHotWords || []) if (!kw._destroyed) kw.docLinkHot = false;
+    this._docLinkHotEntry = hot;
+    this._docLinkHotWords = [];
+    if (!hot) return;
+    const n = this.doc.annotations.pages.findIndex((arr) => !!arr && arr.includes(hot));
+    for (const kw of this._wordObjs[n] || []) {
+      if (kw._destroyed || !kw.docLink || calcBoxOverlap(kw.word.bbox, hot.bbox) < 0.5) continue;
+      kw.docLinkHot = true;
+      this._docLinkHotWords.push(kw);
+    }
   }
 
   /**
@@ -3274,7 +3305,7 @@ export class ScribeViewer {
   }
 
   /**
-   * Redraw page `n`'s search-match rectangles once the current burst of flag changes settles.
+   * Redraw page `n`'s search-match, citation and document-link marks once the current burst of flag changes settles.
    * @param {number} n
    */
   scheduleMarkRepaint(n) {
@@ -3807,6 +3838,7 @@ export class ScribeViewer {
     const angle = this.doc.pageMetrics[page.n].angle || 0;
     const imageRotated = Math.abs(angle) > 0.05;
     const pageAnnotations = this.doc.annotations.pages[page.n] || [];
+    const docLinkBoxes = pageAnnotations.filter((a) => a.type === 'link' && a.uri && parseDocAddress(a.uri)).map((a) => a.bbox);
     const matchIdArr = this.state.searchMode ? pageMatchIds(this, page.n) : [];
     const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
     const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
@@ -3837,7 +3869,9 @@ export class ScribeViewer {
           rotation: 0,
           word: wordObj,
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
-          activeMatch: activeIds.has(wordObj.id) || this._citationIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id),
+          cited: this._citationIds.has(wordObj.id),
+          docLink: docLinkBoxes.some((b) => calcBoxOverlap(wordObj.bbox, b) >= 0.5),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,
           highlightGroupId: annot ? (annot.groupId || null) : null,
@@ -3903,6 +3937,7 @@ export class ScribeViewer {
     const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
     const pageAnnotations = this.doc.annotations.pages[page.n] || [];
+    const docLinkBoxes = pageAnnotations.filter((a) => a.type === 'link' && a.uri && parseDocAddress(a.uri)).map((a) => a.bbox);
 
     if (!this._wordObjs[page.n]) this._wordObjs[page.n] = [];
 
@@ -4009,7 +4044,9 @@ export class ScribeViewer {
           word: wordObj,
           outline: outlineWord,
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
-          activeMatch: activeIds.has(wordObj.id) || this._citationIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id),
+          cited: this._citationIds.has(wordObj.id),
+          docLink: docLinkBoxes.some((b) => calcBoxOverlap(wordObj.bbox, b) >= 0.5),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,
           highlightGroupId: annot ? (annot.groupId || null) : null,

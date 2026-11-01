@@ -10,6 +10,7 @@ import {
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
 import { resolveCitation as resolveCitationImpl } from '../resolveCitation.js';
+import { parseDocAddress, resolveDocAddress as resolveDocAddressImpl } from '../docAddress.js';
 import { setType3GlyphMappings as setType3GlyphMappingsImpl } from '../type3GlyphMappings.js';
 import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
@@ -1391,6 +1392,16 @@ export class ScribeDoc {
    */
   resolveCitation(text) {
     return resolveCitationImpl(this.ocr.active || [], text);
+  }
+
+  /**
+   * Resolve a document address against the active layer.
+   * @param {string} uri
+   * @returns {?ReturnType<typeof resolveDocAddressImpl>} Null when `uri` is not an address.
+   */
+  resolveDocAddress(uri) {
+    const address = parseDocAddress(uri);
+    return address ? resolveDocAddressImpl(this.ocr.active || [], address) : null;
   }
 
   /**

@@ -275,6 +275,7 @@ export class PortfolioStore {
    * @param {import('./libraryStore.js').LibraryManifest} manifest
    */
   async sweepArtifacts(manifest) {
+    if (Object.values(manifest.docs).some((e) => e.status === 'pending')) return;
     const live = new Set(Object.values(manifest.docs).map((e) => e.hash).filter(Boolean));
     for (const map of [this.sidecars, this.sidecarBackups, this.changes, this.changesBackups, this.thumbs, this.rasters]) {
       for (const hash of [...map.keys()]) if (!live.has(hash)) map.delete(hash);

@@ -50,11 +50,11 @@ const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24
 /**
  * @param {HTMLElement} el
  * @param {string} label
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {() => import('../../viewer.js').ScribeViewer} viewer - The viewer the tool is bound to, read at each hover or focus since the binding moves between groups.
  */
-function nameForSelection(el, label, scribe) {
+function nameForSelection(el, label, viewer) {
   const sync = () => {
-    const name = scribe.hasTextSelection() ? `${label} selection` : label;
+    const name = viewer().hasTextSelection() ? `${label} selection` : label;
     el.dataset.tip = name;
     el.ariaLabel = name;
   };
@@ -65,7 +65,7 @@ function nameForSelection(el, label, scribe) {
 /**
  * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment marks.
  * The toolbar DOM is built immediately. The selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {import('../../viewer.js').ScribeViewer} initialViewer
  * @param {HTMLElement} rootElem - The app's root element (for selection scope and cursor CSS).
  * @param {object} cfg
  * @param {string[]} cfg.colors - One or more hex colors.
@@ -74,10 +74,11 @@ function nameForSelection(el, label, scribe) {
  * @returns {{
  *   highlightElem: HTMLSpanElement, toolbarElem: HTMLSpanElement,
  *   updateCommentIcons: () => void,
- *   installBehaviors: () => (() => void)
+ *   installBehaviors: (viewer?: import('../../viewer.js').ScribeViewer) => (() => void)
  * }}
  */
-export function createHighlightTool(scribe, rootElem, { colors, defaultColor, rootClass }) {
+export function createHighlightTool(initialViewer, rootElem, { colors, defaultColor, rootClass }) {
+  let scribe = initialViewer;
   let highlightMode = false;
   let highlightColor = defaultColor;
   // Expose the active color to the core viewer so its right-click "Highlight" item can use it (see viewer._highlightColor).
@@ -93,7 +94,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   let openCommentEditor = null;
 
   const highlightElem = makeIconButton('Highlight', barIcon('highlighter'));
-  nameForSelection(highlightElem, 'Highlight', scribe);
+  nameForSelection(highlightElem, 'Highlight', () => scribe);
   const tipPath = highlightElem.querySelector('.scribe-hl-tip');
   const setTipColor = (c) => { if (tipPath && c) tipPath.style.fill = c; };
   setTipColor(highlightColor);
@@ -217,9 +218,13 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   /**
    * Wire the selection-driven highlighting, comment tooltip, and overlay observer.
    * Call after `scribe.init` (needs `scribe.elem`).
+   * @param {import('../../viewer.js').ScribeViewer} [viewer] - The viewer to bind, after the caller has torn down the previous binding.
    * @returns {() => void} teardown
    */
-  function installBehaviors() {
+  function installBehaviors(viewer = scribe) {
+    scribe = viewer;
+    scribe._highlightColor = highlightColor;
+    updateHighlightCursorStyle();
     const mouseupHandler = (event) => {
       if (!highlightMode) return;
       if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
@@ -1053,6 +1058,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       scribe._openNoteEditor = null;
       scribe._updateCommentIcons = null;
       openCommentEditor = null;
+      if (scribe.useCustomSelection && scribe.textSel) scribe.textSel.cursorOverride = null;
       if (cursorStyleElem) {
         cursorStyleElem.remove();
         cursorStyleElem = null;
@@ -1075,19 +1081,20 @@ const REDACT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" 
 /**
  * Build the redact tool: a toggle button that marks content for destructive removal at export.
  * While armed, releasing a text selection marks its words; dragging a non-text area (or Alt+drag anywhere) draws a region mark for images and figures.
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {import('../../viewer.js').ScribeViewer} initialViewer
  * @param {HTMLElement} rootElem - The app's root element (for selection scope).
  * @param {object} cfg
  * @param {(marksAdded: number) => void} [cfg.onMark] - Called after each marking gesture.
- * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: () => (() => void) }}
+ * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: (viewer?: import('../../viewer.js').ScribeViewer) => (() => void) }}
  */
-export function createRedactTool(scribe, rootElem, { onMark } = {}) {
+export function createRedactTool(initialViewer, rootElem, { onMark } = {}) {
+  let scribe = initialViewer;
   let redactMode = false;
   // The context menu's "Redact" item is gated on the tool being present.
   scribe._redactEnabled = true;
 
   const toolbarElem = makeIconButton('Redact', REDACT_SVG);
-  nameForSelection(toolbarElem, 'Redact', scribe);
+  nameForSelection(toolbarElem, 'Redact', () => scribe);
 
   function updateRedactCursor() {
     if (scribe.useCustomSelection && scribe.textSel) {
@@ -1117,9 +1124,13 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
   /**
    * Wire the selection-driven marking and the region box-draw.
    * Call after `scribe.init` (needs the scroll container).
+   * @param {import('../../viewer.js').ScribeViewer} [viewer] - The viewer to bind, after the caller has torn down the previous binding.
    * @returns {() => void} teardown
    */
-  function installBehaviors() {
+  function installBehaviors(viewer = scribe) {
+    scribe = viewer;
+    scribe._redactEnabled = true;
+    updateRedactCursor();
     const mouseupHandler = (event) => {
       if (!redactMode) return;
       if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
@@ -1208,6 +1219,7 @@ export function createRedactTool(scribe, rootElem, { onMark } = {}) {
       scribe.scrollContainer?.removeEventListener('pointerdown', pointerdownHandler, true);
       cancelDrag();
       if (scribe.textSel) scribe.textSel.cursorOverride = null;
+      if (scribe.scrollContainer) scribe.scrollContainer.style.cursor = '';
     };
   }
 
@@ -1525,9 +1537,10 @@ export const hydrateIfProvisional = async (doc) => {
 /**
  * The "Edit Text" mode tool.
  * While the mode is active, lines of visible native PDF text are selectable objects that can be edited in place or deleted.
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {import('../../viewer.js').ScribeViewer} initialViewer
  */
-export function createEditTextTool(scribe) {
+export function createEditTextTool(initialViewer) {
+  let scribe = initialViewer;
   let editMode = false;
   /** @type {?ReturnType<typeof createLineEditor>} */
   let editor = null;
@@ -1575,9 +1588,11 @@ export function createEditTextTool(scribe) {
   /**
    * Wire the mode's pointer and keyboard behaviors.
    * Call after `scribe.init` (needs the scroll container).
+   * @param {import('../../viewer.js').ScribeViewer} [viewer] - The viewer to bind, after the caller has torn down the previous binding.
    * @returns {() => void} teardown
    */
-  function installBehaviors() {
+  function installBehaviors(viewer = scribe) {
+    scribe = viewer;
     /** @param {Array<number>} pages */
     const refreshPages = (pages) => {
       const swapped = refreshEditedPages(scribe, pages);
@@ -3130,9 +3145,10 @@ const IMAGE_EDIT_SVG = modeIcon('<rect x="2.5" y="3.5" width="12" height="10" rx
 
 /**
  * Toolbar control that toggles the Edit Graphics mode for selecting and deleting a page's image and path placements.
- * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {import('../../viewer.js').ScribeViewer} initialViewer
  */
-export function createGraphicsEditTool(scribe) {
+export function createGraphicsEditTool(initialViewer) {
+  let scribe = initialViewer;
   let graphicsMode = false;
   const toolbarElem = makeIconButton('Edit Graphics', IMAGE_EDIT_SVG);
   toolbarElem.classList.add('cr-labeled-button');
@@ -3300,9 +3316,11 @@ export function createGraphicsEditTool(scribe) {
   /**
    * Wire the mode's pointer and keyboard behaviors.
    * Call after `scribe.init` (needs the scroll container).
+   * @param {import('../../viewer.js').ScribeViewer} [viewer] - The viewer to bind, after the caller has torn down the previous binding.
    * @returns {() => void} teardown
    */
-  function installBehaviors() {
+  function installBehaviors(viewer = scribe) {
+    scribe = viewer;
     /** @param {Array<number>} pages */
     const refreshPages = (pages) => {
       for (const n of new Set(pages)) scribe.refreshPageRaster(n);
@@ -3580,6 +3598,11 @@ export function createFillSignTool(app) {
     open = next;
     toolbarElem.classList.toggle('active', open);
     if (open) {
+      // The palette places onto the viewer it was built for.
+      if (palette && palette.viewer !== app._activeViewer()) {
+        palette.destroy();
+        palette = null;
+      }
       if (!palette) {
         palette = createFillSignPalette(app);
         app.pdfViewerElem.appendChild(palette.elem);
@@ -3633,10 +3656,10 @@ export function createEditPagesTool(app) {
     toolbarElem.classList.toggle('active', active);
     // Dress and widen before any auto-open.
     // The open animation reads the panel width when it starts, so this order slides the rail in at the mode's final width.
-    app._thumbnailPanel?.setPageEditMode(active);
-    if (active && app._activeSidebar !== 'thumbnails') app._requestSidebar('thumbnails');
+    app._activeThumbnails()?.setPageEditMode(active);
+    if (active) app._showActiveSidebar('thumbnails');
     // A page edit waits for the real document behind a provisional one, so its load starts here, ahead of the first edit.
-    if (active) hydrateIfProvisional(app.scribe.doc);
+    if (active) hydrateIfProvisional(app._activeViewer().doc);
   };
   toolbarElem.addEventListener('click', () => {
     if (toolbarElem.classList.contains('disabled')) return;
@@ -3669,9 +3692,9 @@ export function createExtractTablesTool(app) {
   /** @type {?Set<string>} */
   let beforeIds = null;
   const hintText = () => (armed ? 'Drag a box around the table \u00b7 Esc cancels' : null);
-  const armPointerDown = () => { beforeIds = new Set(app.scribe.doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).map((t) => t.id))); };
+  const armPointerDown = () => { beforeIds = new Set(app._activeViewer().doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).map((t) => t.id))); };
   const armPointerUp = () => {
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     const before = beforeIds;
     beforeIds = null;
     const added = before ? sv.doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).filter((t) => !before.has(t.id)).map((t) => ({ table: t, n: p.n }))) : [];
@@ -3686,7 +3709,7 @@ export function createExtractTablesTool(app) {
   const disarm = () => {
     if (!armed) return;
     armed = false;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     sv.mode = 'select';
     sv.enableCanvasSelection = priorCanvasSelection;
     sv.elem.classList.remove('scribe-xt-armed');
@@ -3696,7 +3719,7 @@ export function createExtractTablesTool(app) {
     app._setToolHint?.(tool);
   };
   const armAddTable = () => {
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (!sv.doc || !active) return;
     if (previewOn) setPreview(false);
     if (armed) return;
@@ -3754,7 +3777,7 @@ export function createExtractTablesTool(app) {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (armed) {
       e.preventDefault();
       disarm();
@@ -3776,19 +3799,19 @@ export function createExtractTablesTool(app) {
       ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
     }[e.key];
     if (arrow && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (moveTablePreviewSelection(app.scribe, arrow[0], arrow[1], e.shiftKey)) e.preventDefault();
+      if (moveTablePreviewSelection(app._activeViewer(), arrow[0], arrow[1], e.shiftKey)) e.preventDefault();
       return;
     }
     if (!(e.ctrlKey || e.metaKey)) return;
     const key = e.key.toLowerCase();
     if (key !== 'c' && key !== 'a') return;
-    const handled = key === 'c' ? !!copyTablePreviewSelection(app.scribe) : selectAllTablePreviewCells(app.scribe);
+    const handled = key === 'c' ? !!copyTablePreviewSelection(app._activeViewer()) : selectAllTablePreviewCells(app._activeViewer());
     if (handled) e.preventDefault();
   };
 
   const setPreview = (on) => {
     if (on === previewOn) return;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     previewOn = on;
     sv.state.tablePreview = on;
     if (on) {
@@ -3828,7 +3851,7 @@ export function createExtractTablesTool(app) {
 
   const setActive = (next) => {
     if (active === next) return;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (next && !sv.doc) return;
     active = next;
     toolbarElem.classList.toggle('active', active);
@@ -3859,7 +3882,7 @@ export function createExtractTablesTool(app) {
   };
   toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
-    if (!active && !(await hydrateIfProvisional(app.scribe.doc))) return;
+    if (!active && !(await hydrateIfProvisional(app._activeViewer().doc))) return;
     setActive(!active);
   });
 
@@ -3868,7 +3891,7 @@ export function createExtractTablesTool(app) {
   const docChanged = () => {
     if (!active) return;
     disarm();
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (previewOn) {
       const sheet = resolveActiveSheet(sv);
       // A still-extracting document may yet detect tables, so only a settled tableless one drops the preview.
@@ -3946,19 +3969,19 @@ export function createInspectDocumentTool(app) {
 
   /** Whether the inventory can name the font that drew a UI word: native text whose font object is known. */
   const identifiable = (kw) => {
-    const doc = app.scribe.doc;
+    const doc = app._activeViewer().doc;
     const page = kw?.word?.line?.page;
     if (!doc || !page || page.textSource !== 'pdf') return false;
     return doc.nativeText.pages[page.n]?.[kw.word.id]?.fontObjNum != null;
   };
   /** Mount `el` over `word` in its page's text group, `pad` px out from the drawn box; off-window pages get nothing. */
   const placeBox = (el, word, pad) => {
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     const n = word.line.page.n;
     if (!sv.doc || !sv.windowPages(sv.state.cp.n).includes(n)) { el.remove(); return; }
     const group = sv.getTextGroup(n, word.line.orientation || 0);
     if (!group) { el.remove(); return; }
-    const box = wordDrawBox(app.scribe.doc, word);
+    const box = wordDrawBox(app._activeViewer().doc, word);
     el.style.left = `${box.left - pad}px`;
     el.style.top = `${box.top - pad}px`;
     el.style.width = `${box.right - box.left + 2 * pad}px`;
@@ -3970,7 +3993,7 @@ export function createInspectDocumentTool(app) {
   const setArmed = (on) => {
     if ((on && !active) || armed === on) return;
     armed = on;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     // The Edit Text convention: the arrow while a pick is armed, since the hover box marks what a click takes.
     if (sv.textSel) sv.textSel.cursorOverride = on ? 'default' : null;
     if (!on) hideHover();
@@ -4009,7 +4032,7 @@ export function createInspectDocumentTool(app) {
   const hoverHandler = (ev) => {
     // The phone has no hover; a compat mouse event after a tap would leave a stray box.
     if (!armed || app._phoneUi || ev.buttons !== 0) { hideHover(); return; }
-    const kw = app.scribe.textSel?.wordAt?.(ev.clientX, ev.clientY);
+    const kw = app._activeViewer().textSel?.wordAt?.(ev.clientX, ev.clientY);
     if (!kw || !identifiable(kw)) { hideHover(); return; }
     placeBox(hoverElem, kw.word, 2);
   };
@@ -4028,7 +4051,7 @@ export function createInspectDocumentTool(app) {
     const d = down;
     down = null;
     if (!d || Math.hypot(ev.clientX - d.x, ev.clientY - d.y) > 6) return;
-    const kw = app.scribe.textSel?.wordAt?.(ev.clientX, ev.clientY) || null;
+    const kw = app._activeViewer().textSel?.wordAt?.(ev.clientX, ev.clientY) || null;
     // Armed: a click on text with no known font, a picture or blank paper leaves the pick armed.
     if (armed) { if (kw) pickWord(kw); return; }
     if (kw && workspace()?.wordClicked?.(kw)) return;
@@ -4053,7 +4076,7 @@ export function createInspectDocumentTool(app) {
 
   const setActive = (next) => {
     if (active === next) return;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (next && !sv.doc) return;
     active = next;
     toolbarElem.classList.toggle('active', active);
@@ -4092,7 +4115,7 @@ export function createInspectDocumentTool(app) {
   };
   toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
-    if (!active && !(await hydrateIfProvisional(app.scribe.doc))) return;
+    if (!active && !(await hydrateIfProvisional(app._activeViewer().doc))) return;
     setActive(!active);
   });
 
@@ -4171,7 +4194,7 @@ export function createProofreadTextTool(app) {
   /** @param {boolean} next */
   const setActive = (next) => {
     if (active === next) return;
-    const sv = app.scribe;
+    const sv = app._activeViewer();
     if (next && !sv.doc) return;
     active = next;
     toolbarElem.classList.toggle('active', active);
@@ -4186,7 +4209,7 @@ export function createProofreadTextTool(app) {
     // Leaving comes before the disabled check, since the gate can disable the row while the mode is on and every exit runs through this click.
     if (active) { setActive(false); return; }
     if (toolbarElem.classList.contains('disabled')) return;
-    const doc = app.scribe.doc;
+    const doc = app._activeViewer().doc;
     // Only a provisional document, which has a negative id, waits for its real one.
     // Awaiting before the toggle would let the exclusivity click see this button inactive and leave the other mode on.
     if (doc && doc.id < 0) {
@@ -4194,10 +4217,10 @@ export function createProofreadTextTool(app) {
         if (!ok) return;
         // Once its text is in, the real document decides whether there is anything to proofread.
         // Activating on the provisional tab's answer could leave the mode on with its row disabled.
-        const real = app.scribe.doc;
+        const real = app._activeViewer().doc;
         if (!real || real.id < 0) return;
         if (real.textReady) await real.textReady.catch(() => {});
-        if (app.scribe.doc !== real) return;
+        if (app._activeViewer().doc !== real) return;
         app._syncDocGatedControls?.();
         if (toolbarElem.classList.contains('disabled')) return;
         // The exclusivity click saw this button inactive, so the mode that was on is closed here before this one opens.

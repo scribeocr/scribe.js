@@ -300,6 +300,13 @@ describe('Check export for .pdf files.', () => {
       opacity: 1,
       groupId: 'test-export-2',
     });
+    doc.addLinks([{
+      page: 0,
+      bbox: {
+        left: 100, top: 600, right: 300, bottom: 620,
+      },
+      uri: 'scribe-doc://0123456789abcdef/4?q=THE+COURT%3A+YOUR+BIRTHDAY%3F&line=12',
+    }]);
 
     scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
@@ -309,7 +316,10 @@ describe('Check export for .pdf files.', () => {
     const encoder = new TextEncoder();
     doc = await scribe.openDocument({ scribeFiles: [encoder.encode(scribeData).buffer] });
 
-    expect(doc.annotations.pages[0].length, 'both the highlight and the underline survive the .scribe round-trip').toBe(2);
+    expect(doc.annotations.pages[0].length, 'the highlight, the underline and the address link survive the .scribe round-trip').toBe(3);
+    expect(doc.annotations.pages[0][2].type, 'the address link keeps its type through the .scribe round-trip').toBe('link');
+    expect(doc.annotations.pages[0][2].uri, 'the address link keeps its exact address through the .scribe round-trip')
+      .toBe('scribe-doc://0123456789abcdef/4?q=THE+COURT%3A+YOUR+BIRTHDAY%3F&line=12');
     expect(doc.annotations.pages[0][0].color).toBe('#ffff00');
     expect(doc.annotations.pages[0][0].opacity).toBe(0.35);
     expect(doc.annotations.pages[0][0].bbox.left).toBe(100);
@@ -854,9 +864,16 @@ describe('Check export for .pdf files.', () => {
         },
         uri: 'https://example.com/added-by-test',
       },
+      {
+        page: 2,
+        bbox: {
+          left: 200, top: 300, right: 600, bottom: 360,
+        },
+        uri: 'scribe-doc://0123456789abcdef/41?cite=54%3A1-20',
+      },
     ]);
     const linkCount = (pages) => pages.flatMap((p) => p || []).filter((a) => a.type === 'link').length;
-    expect(linkCount(doc.annotations.pages), 'addLinks adds two link annotations beside the 97 lifted source URI links').toBe(99);
+    expect(linkCount(doc.annotations.pages), 'addLinks adds three link annotations beside the 97 lifted source URI links').toBe(100);
 
     scribe.ScribeDoc.defaults.displayMode = 'annot';
     scribe.ScribeDoc.defaults.addOverlay = true;
@@ -885,11 +902,14 @@ describe('Check export for .pdf files.', () => {
     expect(underlines.length, 'the underline round-trips through the overlay path as one annotation, unmerged with the same-groupId highlight').toBe(1);
     expect(underlines[0].quads.length, 'the single-line underline keeps one quad').toBe(1);
 
-    expect(linkCount(doc.annotations.pages), 'all 97 lifted source URI links plus the 2 added links survive the round-trip, un-duplicated').toBe(99);
+    expect(linkCount(doc.annotations.pages), 'all 97 lifted source URI links plus the 3 added links survive the round-trip, un-duplicated').toBe(100);
     expect(
       doc.annotations.pages.map((p) => (p || []).filter((a) => a.type === 'link' && a.uri).length),
-      'per-page URI link counts survive (43/25/29 from the source, plus the added page-1 link)',
-    ).toEqual([43, 26, 29]);
+      'per-page URI link counts survive (43/25/29 from the source, plus the added page-1 and page-2 links)',
+    ).toEqual([43, 26, 30]);
+    const addressLink = (doc.annotations.pages[2] || []).find((a) => a.type === 'link' && a.uri && a.uri.startsWith('scribe-doc:'));
+    expect(addressLink?.uri, 'a document address survives the PDF round-trip exactly: the export whose citations re-open only in this library')
+      .toBe('scribe-doc://0123456789abcdef/41?cite=54%3A1-20');
     const firstUriLink = (doc.annotations.pages[0] || []).find((a) => a.type === 'link' && a.uri);
     expect(firstUriLink.uri, 'the first page-0 URI link keeps its exact target URL').toBe('https://en.wikipedia.org/wiki/Template:Taxonomy/Iris');
     const destLinks = (doc.annotations.pages[0] || []).filter((a) => a.type === 'link' && a.dest);
@@ -912,7 +932,7 @@ describe('Check export for .pdf files.', () => {
     const reUnderlines = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'underline');
     expect(reUnderlines.length, 'underline duplicated on re-export: it survives in both the source /Annots and the model').toBe(1);
     expect(reUnderlines[0].quads.length, 'the underline lost its quad on the second round-trip').toBe(1);
-    expect(linkCount(doc.annotations.pages), 'links duplicated or lost on re-export: each must survive as the lifted annotation only, with its source copy dropped').toBe(99);
+    expect(linkCount(doc.annotations.pages), 'links duplicated or lost on re-export: each must survive as the lifted annotation only, with its source copy dropped').toBe(100);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();

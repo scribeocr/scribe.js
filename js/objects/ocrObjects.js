@@ -1000,6 +1000,28 @@ function getMatchingWords(text, ocrPage) {
 }
 
 /**
+ * Gets every non-overlapping run of consecutive words whose texts are exactly the quote's words, in page order.
+ * @param {string} text
+ * @param {OcrPage} ocrPage
+ * @returns {Array<Array<OcrWord>>}
+ */
+function getQuoteRuns(text, ocrPage) {
+  const tokens = String(text ?? '').trim().split(/\s+/).filter((t) => t.length > 0);
+  if (tokens.length === 0) return [];
+  const words = getPageWords(ocrPage);
+  /** @type {Array<Array<OcrWord>>} */
+  const runs = [];
+  for (let i = 0; i <= words.length - tokens.length; i++) {
+    const cand = words.slice(i, i + tokens.length);
+    if (cand.every((w, j) => w.text === tokens[j])) {
+      runs.push(cand);
+      i += tokens.length - 1;
+    }
+  }
+  return runs;
+}
+
+/**
  * Gets words in a line that match the provided text.
  * @param {string} text
  * @param {OcrLine} line
@@ -1392,6 +1414,7 @@ const ocr = {
   getDistinctChars,
   getMatchingWords,
   getMatchingWordsInLine,
+  getQuoteRuns,
   getMatchingWordIds,
   getDocMatches,
   getPageText,

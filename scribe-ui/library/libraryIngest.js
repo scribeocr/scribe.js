@@ -8,6 +8,7 @@ import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
  *    Persists the sidecar the way that tab's own checkpoint does, stamping the recognition when `recognized` is true.
  */
 import { openDocumentFromFile, filesNamedForPdf } from '../js/controls/tools.js';
+import { hashBytes } from './libraryStore.js';
 
 const THUMB_WIDTH = 300;
 /** Stored page rasters stand in for the live preview, so they need its pane width rather than thumbnail width. */
@@ -55,12 +56,6 @@ const recordTextSignals = (entry, doc) => {
   entry.pdfType = pdfType;
   entry.ocrShallow = stats ? selectOcrPages(stats, pdfType, 'autoShallow').filter(Boolean).length : 0;
   entry.ocrDeep = stats ? selectOcrPages(stats, pdfType, 'autoDeep').filter(Boolean).length : 0;
-};
-
-/** @param {ArrayBuffer} buf @returns {Promise<string>} First 16 hex chars of SHA-256. */
-const hashBytes = async (buf) => {
-  const digest = await crypto.subtle.digest('SHA-256', buf);
-  return [...new Uint8Array(digest, 0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
 export class LibraryIngest {
@@ -303,6 +298,8 @@ export class LibraryIngest {
       this.running = false;
       this.current = null;
       if (manifestPending) await this.store.writeManifest(this.manifest).catch(() => {});
+      // The scan's sweep does nothing while any entries are pending, so this is the sweep that cleans up once they are ingested.
+      if (!this.paused && this.pendingCount() === 0) this.store.sweepArtifacts(this.manifest).catch(() => {});
       this.onProgress?.({ done: this.done, total: this.done + this.pendingCount(), current: '' });
       this.done = 0;
     }

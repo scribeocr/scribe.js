@@ -77,6 +77,8 @@ const SYSTEM_PROMPT = 'You are the document assistant inside a PDF editor, actin
   + 'Page and line indices are 0-based. Start an unfamiliar document with get_overview. '
   + 'Mutating tools verify your quote against the live text and refuse on any mismatch; when refused, re-read the page and retry with the exact text. '
   + 'When asked for something no tool covers, say so and name what you can do instead. '
+  + 'When get_overview gives a docAddress, cite a passage in your reply as a markdown link to it: the address, the 0-based page, and the exact quote URL-encoded, '
+  + 'as [p. 54](scribe-doc://<hash>/<page>?q=<quote>); the reader opens such a link beside the document. '
   + 'Keep replies short; the user watches the document while you work.';
 
 /**

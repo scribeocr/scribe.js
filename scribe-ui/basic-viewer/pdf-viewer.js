@@ -7,7 +7,8 @@ import { ScribeViewer } from '../viewer.js';
 import '../js/selection/customSelectionEngine.js';
 import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
-import { goToCitation as goToCitationImpl } from '../js/viewerSearch.js';
+import { goToCitation as goToCitationImpl, showCitedWords, clearCitation } from '../js/viewerSearch.js';
+import { resolveDocAddress } from '../../js/docAddress.js';
 import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
 import {
   signIntoField, selectedFillItem, deleteSelectedFillItem, deselectFillItem,
@@ -690,6 +691,9 @@ class ScribePDFViewer {
     this.scribe.opt.middleClickPan = false;
     this.scribe.opt.enableComments = comments;
     this.scribe.opt.enableForms = true;
+    this.scribe.opt.onDocAddress = (entry) => {
+      this.openDocAddress(entry.uri, { from: this.scribe }).catch((err) => console.error('Failed to open the cited passage.', err));
+    };
     if (edit) {
       this.scribe.opt.enablePageEditing = true;
       this.scribe.opt.enableRecognition = true;
@@ -1072,7 +1076,7 @@ class ScribePDFViewer {
       appMenu.menuWrap.append(open.openControls, print.printControls);
       // The Edit Text line editor types into a hidden input but keeps its own history, which `_doUndo` steps.
       const fieldOwnsUndo = () => {
-        if (this.scribe._editTextLineEditor?.isOpen()) return false;
+        if (this._activeViewer()._editTextLineEditor?.isOpen()) return false;
         const el = document.activeElement;
         return el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA)$/.test(el.tagName));
       };
@@ -1321,6 +1325,9 @@ class ScribePDFViewer {
     // Document-level listeners, retained so `destroy()` can remove them.
     /** @type {Array<() => void>} */
     this._teardownCallbacks = [];
+    /** @type {Array<{tool: {installBehaviors: (viewer?: ScribeViewer) => (() => void)}, teardown: () => void}>} */
+    this._toolBindings = [];
+    this._teardownCallbacks.push(() => { for (const b of this._toolBindings) b.teardown(); });
 
     // The app menu's outside-click listener is document-level, so retire it on destroy.
     if (this._appMenu) this._teardownCallbacks.push(() => this._appMenu.destroy());
@@ -1352,9 +1359,7 @@ class ScribePDFViewer {
     }
 
     // Selection-driven highlighting + comment marks (needs `scribe.elem`, so wired after init).
-    if (this._highlightTool) {
-      this._teardownCallbacks.push(this._highlightTool.installBehaviors());
-    }
+    if (this._highlightTool) this._bindTool(this._highlightTool);
 
     // Backup mouseup listener on the document to clear selection state if mouseup happens outside the scroll container.
     const selectionResetMouseupHandler = () => {
@@ -1669,7 +1674,7 @@ class ScribePDFViewer {
         };
         this._redactTool = createRedactTool(this.scribe, this.pdfViewerElem, { onMark });
         this.scribe._onRedactMark = onMark;
-        this._teardownCallbacks.push(this._redactTool.installBehaviors());
+        this._bindTool(this._redactTool);
       }
 
       // The right panel hosts the mode workspaces, so every editor gets it and only the automation content mounts behind the flag.
@@ -1772,7 +1777,7 @@ class ScribePDFViewer {
       if (editText) {
         this._editTextTool = createEditTextTool(this.scribe);
         if (this._modeTrackRow1) this._modeTrackRow1.insertBefore(this._editTextTool.toolbarElem, this._modeTrackChev);
-        this._teardownCallbacks.push(this._editTextTool.installBehaviors());
+        this._bindTool(this._editTextTool);
       }
 
       /** @type {?ReturnType<typeof createGraphicsEditTool>} */
@@ -1780,7 +1785,7 @@ class ScribePDFViewer {
       if (editText) {
         this._graphicsEditTool = createGraphicsEditTool(this.scribe);
         if (this._modeTrackRow1) this._modeTrackRow1.insertBefore(this._graphicsEditTool.toolbarElem, this._modeTrackChev);
-        this._teardownCallbacks.push(this._graphicsEditTool.installBehaviors());
+        this._bindTool(this._graphicsEditTool);
       }
 
       this._fillSignTool = createFillSignTool(this);
@@ -2015,11 +2020,12 @@ class ScribePDFViewer {
    * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
    * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
-   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean}} [opts] - `group`, `preview` and `program` go to the tab as `_openDocAsTab` takes them.
+   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string}} [opts]
+   *   `group`, `preview`, `program`, `fitWidth` and `openAddress` go to the tab as `_openDocAsTab` takes them.
    * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void, tab: Object}>} `tab` is the record the document opened as.
    */
   async openProvisional(seed, {
-    activate = true, group = 0, preview = false, program = false,
+    activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null,
   } = {}) {
     /** @type {{current: ?Object}} */
     const holder = { current: null };
@@ -2027,7 +2033,7 @@ class ScribePDFViewer {
       seedDoc, primed, hydrated, cancel,
     } = this._makeProvisional(seed, holder);
     holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', {
-      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program,
+      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress,
     });
     if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
     return {
@@ -2132,6 +2138,10 @@ class ScribePDFViewer {
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} realDoc
    */
   async _hydrateSwap(holder, seedDoc, realDoc) {
+    /** @param {Object} a @param {Object} b */
+    const sameGeometry = (a, b) => a.inputData.pageCount === b.inputData.pageCount
+      && Math.abs(a.pageMetrics[0].dims.width - b.pageMetrics[0].dims.width) < 1
+      && Math.abs(a.pageMetrics[0].dims.height - b.pageMetrics[0].dims.height) < 1;
     holder.doc = realDoc;
     holder.provisional = false;
     // Fired synchronously with the adoption rather than on `hydrated`.
@@ -2151,9 +2161,29 @@ class ScribePDFViewer {
       // A background tab swaps silently, and activation attaches the real document normally.
       const g = this._rightGroup;
       if (g && g.viewer.doc === seedDoc) {
-        const cp = g.viewer.state.cp.n;
-        g.viewer.doc = realDoc;
-        await g.viewer.displayPage(Math.min(cp, realDoc.inputData.pageCount - 1), true, false);
+        const v = g.viewer;
+        const cp = Math.min(v.state.cp.n, realDoc.inputData.pageCount - 1);
+        const same = sameGeometry(realDoc, seedDoc);
+        if (!same) { const tab = this._tabs.find((t) => t.doc === seedDoc); if (tab) tab.placedByAddress = false; }
+        const { scrollTop, scrollLeft } = v.scrollContainer;
+        const veil = same ? this._buildSwapVeil(v) : null;
+        try {
+          v.doc = realDoc;
+          await v.displayPage(cp, !same, false);
+          if (same) {
+            v.scrollContainer.scrollTop = scrollTop;
+            v.scrollContainer.scrollLeft = scrollLeft;
+          }
+          await seedDoc.close();
+          if (veil) {
+            const pc = v.imageCache.pageCanvases[cp];
+            if (pc) await Promise.race([pc, new Promise((r) => { setTimeout(r, 2000); })]);
+            await new Promise((r) => { requestAnimationFrame(() => r(null)); });
+          }
+        } finally {
+          veil?.remove();
+        }
+        return;
       }
       await seedDoc.close();
       return;
@@ -2162,9 +2192,7 @@ class ScribePDFViewer {
     const zoom = this.scribe.zoomLevel;
     const { scrollTop, scrollLeft } = sc;
     const cpN = this.scribe.state.cp.n;
-    const geometryMatches = realDoc.inputData.pageCount === seedDoc.inputData.pageCount
-      && Math.abs(realDoc.pageMetrics[0].dims.width - seedDoc.pageMetrics[0].dims.width) < 1
-      && Math.abs(realDoc.pageMetrics[0].dims.height - seedDoc.pageMetrics[0].dims.height) < 1;
+    const geometryMatches = sameGeometry(realDoc, seedDoc);
 
     const textSel = this.scribe.textSel;
     const sel = geometryMatches && textSel && textSel.range?.kind === 'linear'
@@ -2199,10 +2227,11 @@ class ScribePDFViewer {
   /**
    * A snapshot of the visible page canvases, absolutely positioned over the viewport.
    * The hydration swap's clear-and-re-render then happens behind an image of exactly what was showing.
+   * @param {import('../viewer.js').ScribeViewer} [viewer]
    * @returns {?HTMLCanvasElement}
    */
-  _buildSwapVeil() {
-    const sc = this.scribe.scrollContainer;
+  _buildSwapVeil(viewer = this.scribe) {
+    const sc = viewer.scrollContainer;
     const scRect = sc.getBoundingClientRect();
     if (!scRect.width || !scRect.height) return null;
     const rootRect = this.pdfViewerElem.getBoundingClientRect();
@@ -2553,6 +2582,8 @@ class ScribePDFViewer {
    * @param {string} name
    * @param {Object} [extra] - Additional fields carried on the tab (e.g. the library's `libraryHash`).
    *   `activate: false` adds the tab without switching to it.
+   *   `fitWidth: true` fits the page to the group's width when the tab first shows in the group to the right.
+   *   `openAddress` is a document address whose passage the tab opens at in the group to the right.
    * @returns {Promise<Object>} The created tab.
    */
   async _openDocAsTab(doc, name, extra = {}) {
@@ -2562,12 +2593,14 @@ class ScribePDFViewer {
       return this._openPortfolio(doc, name, { libraryHash, libraryRelPath, libraryOwner });
     }
     const {
-      activate = true, group = 0, preview = false, program = false, ...fields
+      activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
     } = extra;
     const tab = {
       ...this._newTab(doc, name), ...fields, group: group === 1 && !this._phoneUi && this._tabStrip ? 1 : 0, preview: !!preview,
     };
     if (tab.group === 1 && !this._rightGroup) this._openGroup({ program: true });
+    if (fitWidth && tab.group === 1) tab.fitWidth = true;
+    if (openAddress && tab.group === 1) tab.openAddress = openAddress;
     const prev = preview ? this._groupTabs(tab.group).find((t) => t.preview) : null;
     const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
     if (prev) this._tabs.splice(this._tabs.indexOf(prev), 0, tab);
@@ -2883,6 +2916,91 @@ class ScribePDFViewer {
   }
 
   /**
+   * Show the passage a document address names beside the citing document.
+   * @param {string} uri
+   * @param {{from?: ?ScribeViewer}} [options] - `from` is the viewer holding the link.
+   */
+  async openDocAddress(uri, { from = null } = {}) {
+    const address = scribe.utils.parseDocAddress(uri);
+    if (!address) return;
+    const label = scribe.utils.docAddressLabel(address);
+    const citing = from ? this.heldDoc(from) : null;
+    if (from && citing && citing.hash === address.hash) {
+      const target = from.doc.resolveDocAddress(uri);
+      await showCitedWords(from, Math.min(target.pageIndex, from.doc.inputData.pageCount - 1), target.words, { wholePage: target.state !== 'ok' });
+      return;
+    }
+    const fromGroup = from && this._rightGroup && from === this._rightGroup.viewer ? 1 : 0;
+    const g = this._rightGroup || this._openGroup({ program: true });
+    let to = g ? this._openTarget(1 - fromGroup) : 0;
+    this._setGroupNotice(null);
+    let tab = this._tabs.find((t) => (t.group || 0) === to && t.libraryHash === address.hash) || null;
+    if (!tab) {
+      const across = this._tabs.find((t) => t.libraryHash === address.hash) || null;
+      if (across && this._viewerShowing(across.doc)) {
+        to = across.group || 0;
+        tab = across;
+      } else if (across) {
+        await this._moveTabToGroup(across, to, Infinity, { program: true });
+        tab = across;
+      }
+    }
+    let changed = false;
+    if (!tab) {
+      for (const inst of this._libraryInstances) {
+        const got = inst.openByHash ? await inst.openByHash(address.hash, address.path, {
+          group: to, preview: true, program: true, pageN: address.pageIndex, fitWidth: to === 1, openAddress: uri,
+        }) : null;
+        if (got) {
+          tab = got.tab;
+          changed = got.changed;
+          break;
+        }
+      }
+    }
+    if (this._rightGroup !== g) return;
+    const notice = (/** @type {string} */ text, title = '') => { if (to === 1) this._setGroupNotice(text, title); else this._showToast(title || text); };
+    if (!tab) {
+      notice(`${label} · not open and not in the folder`);
+      return;
+    }
+    const toViewer = to === 1 ? g.viewer : this.scribe;
+    if (to === 1) {
+      tab.openAddress = uri;
+      await this._activateGroupTab(tab);
+    } else {
+      await this._activateTab(this._tabs.indexOf(tab));
+    }
+    // The passage needs the real document's text.
+    if (tab.doc._requestHydration) await tab.doc._requestHydration().catch(() => {});
+    const { doc } = tab;
+    if (doc._textReadySettle) await doc.textReady;
+    if (this._rightGroup !== g || toViewer.doc !== doc) return;
+    const target = doc.resolveDocAddress(uri);
+    const pageIndex = Math.min(target.pageIndex, doc.inputData.pageCount - 1);
+    // A view the activation placed at the passage stays put across the hydration swap, so the real document's words are marked where they are.
+    const placed = tab.placedByAddress === true;
+    delete tab.placedByAddress;
+    await showCitedWords(toViewer, pageIndex, target.words, { wholePage: target.state !== 'ok', scroll: !placed || target.state !== 'ok' });
+    tab.lastPage = pageIndex;
+    if (target.state === 'changed') notice(`${label} · passage not found`, `${label}: the cited passage is not in this document as it stands, so the page opens with nothing marked.`);
+    else if (changed) notice(`${label} · file changed`, `${label}: the file at this path is not the one the link was made from, so the passage may have moved.`);
+  }
+
+  /**
+   * The library identity of the document `viewer` shows, in either group.
+   * @param {ScribeViewer} viewer
+   * @returns {?{hash: string, title: string, path: ?string}} Null for a document opened outside a folder.
+   */
+  heldDoc(viewer) {
+    const g = this._rightGroup;
+    let tab = null;
+    if (g && viewer === g.viewer) tab = g.active;
+    else if (viewer === this.scribe && this._activeTab >= 0) tab = this._tabs[this._activeTab];
+    return tab && tab.libraryHash && tab.doc === viewer.doc ? { hash: tab.libraryHash, title: tab.name, path: tab.libraryRelPath || null } : null;
+  }
+
+  /**
    * Split the window by opening the second editor group, empty, to the right of the document's lane.
    * The reader's split makes the new group the active one; the program's leaves the focus where it was.
    * @param {{program?: boolean}} [opts]
@@ -2941,16 +3059,34 @@ class ScribePDFViewer {
     viewer.enableHTMLOverlay = true;
     viewer.opt.keyboardScope = this.scribe.opt.keyboardScope;
     viewer.opt.middleClickPan = false;
-    viewer.opt.enableComments = false;
+    // The toolbar's tools follow the active group, so the group's viewer takes the lane's tool options other than forms.
+    viewer.opt.enableComments = this.scribe.opt.enableComments;
     viewer.opt.enableForms = false;
+    viewer.opt.enablePageEditing = this.scribe.opt.enablePageEditing;
+    viewer.opt.enableRecognition = this.scribe.opt.enableRecognition;
+    viewer._editPagesGate = this.scribe._editPagesGate;
+    viewer.opt.onDocAddress = (entry) => {
+      this.openDocAddress(entry.uri, { from: viewer }).catch((err) => console.error('Failed to open the cited passage.', err));
+    };
     viewer.init(body, 10, 10);
     body.appendChild(empty);
     const bars = createScrollbars(viewer, body);
+    viewer.scrollContainer.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      clearCitation(viewer);
+    });
     viewer.displayPageCallback = () => { if (this._activeGroup === 1) this._syncPageBox(); };
     const side = this._buildGroupSidebar(viewer, body);
     this._rightGroup = {
       bars, el, sash, strip, body, empty, notice, noticeText, viewer, active: null, side,
     };
+    if (side.bookmarks) {
+      viewer._addBookmark = (pageIndex) => {
+        if (side.active !== 'bookmarks') this._requestGroupSidebar('bookmarks');
+        side.bookmarks.addAtPage(pageIndex);
+      };
+    }
     if (!this._groupPressWired) {
       this._groupPressWired = true;
       this.pdfViewerElem.addEventListener('pointerdown', (e) => {
@@ -2993,6 +3129,8 @@ class ScribePDFViewer {
   _closeGroup() {
     const g = this._rightGroup;
     if (!g) return;
+    // The toolbar's tools and any mode leave the group before its viewer goes.
+    if (this._activeGroup === 1) this._setActiveGroup(0);
     for (const tab of this._groupTabs(1)) {
       this._removeTab(tab);
       Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
@@ -3202,9 +3340,22 @@ class ScribePDFViewer {
     const g = this._rightGroup;
     const next = n === 1 && g ? 1 : 0;
     const changed = next !== this._activeGroup;
+    if (changed) {
+      // A mode is one document's session, so it ends on the group it ran in before the toolbar moves to the other.
+      const modeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
+      if (modeBtn) {
+        modeBtn.click();
+        this._syncModeBanner();
+      }
+    }
     this._activeGroup = next;
     this._tabStripElem?.classList.toggle('scribe-group-inactive', next === 1);
     if (g) g.strip.tabStripElem.classList.toggle('scribe-group-inactive', next === 0);
+    if (changed) {
+      this._rebindTools();
+      this._searchBar?.rebind(this._activeViewer()).catch(() => {});
+      this._syncUndoState();
+    }
     this._syncFrontSurface();
     this._syncPageBox();
     this._syncDocGatedControls();
@@ -3218,6 +3369,39 @@ class ScribePDFViewer {
 
   _activeViewer() {
     return this._activeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
+  }
+
+  /**
+   * @param {{installBehaviors: (viewer?: ScribeViewer) => (() => void)}} tool
+   */
+  _bindTool(tool) {
+    this._toolBindings.push({ tool, teardown: tool.installBehaviors(this._activeViewer()) });
+  }
+
+  _rebindTools() {
+    const viewer = this._activeViewer();
+    for (const b of this._toolBindings) {
+      b.teardown();
+      b.teardown = b.tool.installBehaviors(viewer);
+    }
+  }
+
+  /**
+   * @returns {?ReturnType<typeof createThumbnailPanel>}
+   */
+  _activeThumbnails() {
+    const g = this._rightGroup;
+    return this._activeGroup === 1 && g ? g.side.thumbnails : this._thumbnailPanel;
+  }
+
+  /**
+   * @param {'thumbnails'|'bookmarks'|'comments'} key
+   */
+  _showActiveSidebar(key) {
+    const g = this._rightGroup;
+    if (this._activeGroup === 1 && g) {
+      if (g.side.active !== key) this._requestGroupSidebar(key);
+    } else if (this._activeSidebar !== key) this._requestSidebar(key);
   }
 
   /**
@@ -3325,6 +3509,10 @@ class ScribePDFViewer {
     tab.lastUse = ++this._tabUseCounter;
     this._setGroupNotice(null);
     if (g.viewer.doc === tab.doc && !tab.asleep) {
+      // The document is the one shown, so an address is left for the caller to scroll to.
+      // A stale placement must not stop that scroll.
+      delete tab.openAddress;
+      tab.placedByAddress = false;
       this._renderTabs();
       this._applyTabResourcePolicy();
       return;
@@ -3335,8 +3523,26 @@ class ScribePDFViewer {
     if (this._rightGroup !== g || g.active !== tab) return;
     g.viewer.doc = tab.doc;
     const pageIndex = Math.min(tab.lastPage || 0, Math.max(0, tab.doc.inputData.pageCount - 1));
+    if (tab.fitWidth) {
+      delete tab.fitWidth;
+      const dims = tab.doc.pageMetrics[pageIndex]?.dims;
+      if (dims) g.viewer.setInitialPositionZoom(dims, { fitWidth: true });
+    }
     this._syncGroupSidebarDoc(g, pageIndex);
-    await g.viewer.displayPage(pageIndex, true, false);
+    // An address places the first display at its passage, so the view never shows the page's top first and then moves.
+    const address = tab.openAddress ? scribe.utils.parseDocAddress(tab.openAddress) : null;
+    delete tab.openAddress;
+    let placed = false;
+    if (address) {
+      if (tab.doc.pageText) await tab.doc.pageText(pageIndex).catch(() => {});
+      const target = resolveDocAddress(tab.doc.ocr.active || [], address);
+      if (target.state === 'ok' && target.words.length && this._rightGroup === g && g.viewer.doc === tab.doc) {
+        await showCitedWords(g.viewer, target.pageIndex, target.words);
+        placed = true;
+      }
+    }
+    tab.placedByAddress = placed;
+    if (!placed) await g.viewer.displayPage(pageIndex, true, false);
     // Deferred text extraction can reveal comments after the load.
     const { doc } = tab;
     if (doc._textReadySettle) doc.textReady.then(() => { if (this._rightGroup === g && g.viewer.doc === doc) this._syncGroupSidebarDoc(g, g.viewer.state.cp.n); }).catch(() => {});
@@ -3866,8 +4072,10 @@ class ScribePDFViewer {
     const top = this._topBarsHeight();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
     const panelW = (!this._phoneUi && this._automatePanel?.isOpen()) ? this._automatePanel.width : 0;
-    const bannerRight = `${panelW + (this._rightGroup ? this._groupW : 0)}px`;
-    const bannerLeft = `${this._columnWidth()}px`;
+    const g = this._rightGroup;
+    const onGroup = this._activeGroup === 1 && !!g && !!this._laneBox;
+    const bannerRight = `${panelW + (g && !onGroup ? this._groupW : 0)}px`;
+    const bannerLeft = `${onGroup ? this._laneBox.left + this._laneBox.width : this._columnWidth()}px`;
     if (this._modeBanner) { this._modeBanner.style.right = bannerRight; this._modeBanner.style.left = bannerLeft; }
     if (this._banner) { this._banner.style.right = bannerRight; this._banner.style.left = bannerLeft; }
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
@@ -3879,7 +4087,7 @@ class ScribePDFViewer {
     // Edit Pages needs the reserve on desktop, since its selection checkboxes overhang the first row's top edge.
     const railModeH = (this._phoneUi || messageH > 0 || (this._editPagesTool && this._editPagesTool.isActive()))
       ? modeH : 0;
-    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(Math.max(0, railModeH + messageH - stripH));
+    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(onGroup ? 0 : Math.max(0, railModeH + messageH - stripH));
   }
 
   /**
@@ -4066,7 +4274,7 @@ class ScribePDFViewer {
       if (this._recognizeExtras) this._recognizeExtras.remove();
       this._recognizeDockUi?.remove();
       this._proofreadExtras?.remove();
-      this.scribe.proofFollow = null;
+      this._activeViewer().proofFollow = null;
       if (this._proofTextOnly) this._setProofTextOnly(false);
       this._proofreadHandoffElem?.remove();
       this._closeRecognizeSheet();
@@ -4176,7 +4384,7 @@ class ScribePDFViewer {
     }
 
     // Edit Text's style cluster (bold, italic, text color) mounts before Save / Discard while its mode runs on the desktop; the phone's verb bar carries the same.
-    const tsTools = this._editTextTool ? this.scribe._editTextBannerTools : null;
+    const tsTools = this._editTextTool ? this._activeViewer()._editTextBannerTools : null;
     if (tsTools) {
       if (activeBtn === this._editTextTool.toolbarElem && !this._phoneUi) {
         if (tsTools.parentElement !== this._modeBanner) this._modeBanner.insertBefore(tsTools, this._modeBannerParts.exit);
@@ -4230,7 +4438,7 @@ class ScribePDFViewer {
       this._setProofTextOnly(this._proofTextOnly);
     } else {
       this._proofreadExtras?.remove();
-      this.scribe.proofFollow = null;
+      this._activeViewer().proofFollow = null;
       if (this._proofTextOnly) this._setProofTextOnly(false);
     }
 
@@ -4342,9 +4550,10 @@ class ScribePDFViewer {
       this._proofFollowElem.ariaChecked = this._proofFollow ? 'true' : 'false';
     }
     const inMode = !!this._proofreadTool?.isActive();
-    this.scribe.proofFollow = this._proofFollow && inMode ? (kw, travel) => this._followProofWord(kw, travel) : null;
+    const sv = this._activeViewer();
+    sv.proofFollow = this._proofFollow && inMode ? (kw, travel) => this._followProofWord(kw, travel) : null;
     if (!this._proofFollow || !inMode) return;
-    const selected = this.scribe.CanvasSelection.getUiWords();
+    const selected = sv.CanvasSelection.getUiWords();
     if (selected.length === 1) this._followProofWord(selected[0], 0);
   }
 
@@ -4354,7 +4563,7 @@ class ScribePDFViewer {
    * @param {number} travel - The way the selection moved: 1 down, -1 up, 0 none.
    */
   _followProofWord(kw, travel) {
-    const sv = this.scribe;
+    const sv = this._activeViewer();
     const sc = sv.scrollContainer;
     if (!sc) return;
     const fit = sv._contentWidth > 0 ? sc.clientWidth / sv._contentWidth : sv.zoomLevel;
@@ -4372,7 +4581,7 @@ class ScribePDFViewer {
   _setProofTextOnly(textOnly) {
     this._proofTextOnly = !!textOnly;
     this.pdfViewerElem.classList.toggle('scribe-proof-textonly', this._proofTextOnly);
-    this.scribe.proofTextOnly = this._proofTextOnly;
+    this._activeViewer().proofTextOnly = this._proofTextOnly;
     if (this._proofSegBtns) this._proofSegBtns.forEach((b, i) => b.classList.toggle('on', (i === 1) === this._proofTextOnly));
   }
 
@@ -4650,7 +4859,7 @@ class ScribePDFViewer {
    */
   _syncRecognizeRow() {
     if (!this._recognizeExtras) return;
-    const doc = this.doc;
+    const { doc } = this._activeViewer();
     const opt = this.scribe.opt;
     const run = this._recognizeRun && this._recognizeRun.doc === doc ? this._recognizeRun : null;
     const ui = this._recognizeDockParts;
@@ -4900,7 +5109,7 @@ class ScribePDFViewer {
 
   /** @param {boolean} revert - Lift the preview the picker left on the line. */
   _closePhoneColorSheet(revert) {
-    if (revert) this.scribe._editTextPreviewColor?.(null);
+    if (revert) this._activeViewer()._editTextPreviewColor?.(null);
     const sheet = this._colorSheetElem;
     if (!sheet) return;
     sheet.classList.remove('open', 'dragging');
@@ -5016,11 +5225,12 @@ class ScribePDFViewer {
    * @param {boolean} redo
    */
   _doUndo(redo) {
-    const ed = this.scribe._editTextLineEditor;
+    const sv = this._activeViewer();
+    const ed = sv._editTextLineEditor;
     if (ed?.isOpen()) {
       if (redo) ed.redo(); else ed.undo();
-    } else if (redo) this.scribe.redo();
-    else this.scribe.undo();
+    } else if (redo) sv.redo();
+    else sv.undo();
     this._syncUndoState();
   }
 
@@ -5029,8 +5239,9 @@ class ScribePDFViewer {
    * The history has no change event, so call this after anything that can move the stacks.
    */
   _syncUndoState() {
-    const doc = this.scribe.doc;
-    const ed = this.scribe._editTextLineEditor;
+    const sv = this._activeViewer();
+    const { doc } = sv;
+    const ed = sv._editTextLineEditor;
     const session = !!ed?.isOpen();
     const canUndo = session ? ed.canUndo() : !!(doc && doc.canUndo);
     const canRedo = session ? ed.canRedo() : !!(doc && doc.canRedo);
@@ -5073,7 +5284,8 @@ class ScribePDFViewer {
   _syncModeExitButtons(activeBtn) {
     if (activeBtn !== this._modeSessionBtn) {
       this._modeSessionBtn = activeBtn;
-      this._modeBaseline = activeBtn && this.scribe.doc ? this.scribe.doc.docHistory.undoStack.length : -1;
+      const { doc } = this._activeViewer();
+      this._modeBaseline = activeBtn && doc ? doc.docHistory.undoStack.length : -1;
     }
     const sessionExit = !!activeBtn
       && (activeBtn === this._editTextTool?.toolbarElem || activeBtn === this._graphicsEditTool?.toolbarElem
@@ -5092,9 +5304,10 @@ class ScribePDFViewer {
    * The document history unwinds to the depth captured at mode entry, then the mode exits.
    */
   _discardModeSession() {
-    const ed = this.scribe._editTextLineEditor;
+    const sv = this._activeViewer();
+    const ed = sv._editTextLineEditor;
     if (ed?.isOpen()) ed.revert();
-    const doc = this.scribe.doc;
+    const { doc } = sv;
     if (doc && this._modeBaseline >= 0) {
       const stack = doc.docHistory.undoStack;
       // A page op's viewer-level undo rebuilds every page, so a session of page ops alone rebuilds once, on the last undo.
@@ -5104,12 +5317,12 @@ class ScribePDFViewer {
       while (stack.length > this._modeBaseline && guard > 0) {
         guard -= 1;
         const viewerStep = !pagesOnly || stack.length === this._modeBaseline + 1;
-        if (!(viewerStep ? this.scribe.undo() : doc.undo())) break;
+        if (!(viewerStep ? sv.undo() : doc.undo())) break;
       }
       // The depth sits below the baseline when the session undid edits made before it began.
       while (stack.length < this._modeBaseline && guard > 0) {
         guard -= 1;
-        if (!this.scribe.redo()) break;
+        if (!sv.redo()) break;
       }
     }
     if (this._modeBannerBtn) this._modeBannerBtn.click();
@@ -7056,7 +7269,8 @@ class ScribePDFViewer {
 
   /** Disable the controls that need a document while none is loaded or a pinned surface is in front of it. */
   _syncDocGatedControls() {
-    const disabled = !this.doc || !!this._frontSurface();
+    const { doc } = this._activeViewer();
+    const disabled = !doc || !!this._frontSurface();
     if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
     if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
@@ -7101,19 +7315,19 @@ class ScribePDFViewer {
 
     const fieldsItem = this._fieldsToggleItem;
     if (fieldsItem) {
-      const hasFields = !disabled && docHasFormFields(this.doc);
+      const hasFields = !disabled && docHasFormFields(doc);
       fieldsItem.classList.toggle('disabled', !hasFields);
       fieldsItem.ariaDisabled = !hasFields ? 'true' : 'false';
       fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
     // A provisional document loads the real one when one of these tools opens, so the Edit Text and Edit Graphics gates read the real document's stores alone.
-    const provisional = !!this.doc && this.doc.id < 0 && !!this.doc._requestHydration;
+    const provisional = !!doc && doc.id < 0 && !!doc._requestHydration;
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
     const editBtn = this._editTextTool?.toolbarElem;
     if (editBtn) {
-      const editable = !disabled && (provisional || !!this.doc.ocr?.active?.some((page) => {
-        const nt = this.doc ? nativeTextForPage(this.doc, page) : {};
+      const editable = !disabled && (provisional || !!doc.ocr?.active?.some((page) => {
+        const nt = doc ? nativeTextForPage(doc, page) : {};
         return page?.lines?.some((line) => line.words.some((w) => nt[w.id]));
       }));
       if (!editable && editBtn.classList.contains('active')) editBtn.click();
@@ -7124,9 +7338,9 @@ class ScribePDFViewer {
     const proofBtn = this._proofreadTool?.toolbarElem;
     if (proofBtn) {
       // A provisional tab's pages carry their text source and the entry presence the document library recorded, so the row takes the same test as on a hydrated document.
-      const proofreadable = !disabled && !!this.doc.ocr?.active?.some((page) => {
+      const proofreadable = !disabled && !!doc.ocr?.active?.some((page) => {
         if (!page || DOCUMENT_IMPORT_SOURCES.has(page.textSource)) return false;
-        const nt = nativeTextForPage(this.doc, page);
+        const nt = nativeTextForPage(doc, page);
         return page.lines.some((line) => line.words.some((w) => !nt[w.id]));
       });
       // The exit goes through the tool, not the button's click, so a row the gate has already disabled still leaves the mode.
@@ -7139,13 +7353,13 @@ class ScribePDFViewer {
     if (graphicsBtn) {
       // The area cut mirrors the tool's own picker, so on a real document the button never enables where nothing can be selected.
       let pathsIneligibleSomewhere = false;
-      const hasGraphics = !disabled && (provisional || !!this.doc?.fillShapes?.pages.some((shapes, n) => {
-        const dims = this.doc?.pageMetrics?.[n]?.dims;
+      const hasGraphics = !disabled && (provisional || !!doc?.fillShapes?.pages.some((shapes, n) => {
+        const dims = doc?.pageMetrics?.[n]?.dims;
         if (!shapes || !dims) return false;
-        if (pagePathsIneligible(this.doc, n)) pathsIneligibleSomewhere = true;
+        if (pagePathsIneligible(doc, n)) pathsIneligibleSomewhere = true;
         const areaCap = dims.width * dims.height * 0.95;
-        return pageImagePlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
-          || pagePathPlacements(this.doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
+        return pageImagePlacements(doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
+          || pagePathPlacements(doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
       }));
       if (!disabled && pathsIneligibleSomewhere) {
         graphicsBtn.dataset.modeHint = 'Click or drag to select images and shapes · Some pages have too many shapes to edit';
@@ -7473,7 +7687,7 @@ class ScribePDFViewer {
    * @returns {number}
    */
   _deepOcrPageCount() {
-    const doc = this.doc;
+    const { doc } = this._activeViewer();
     if (!doc) return 0;
     // While a deferred import's stats are still extracting, return 0 so the recognition surfaces start quiet instead of flashing on then vanishing.
     // `_setDoc` re-runs this once `textReady` lands.
@@ -7488,7 +7702,8 @@ class ScribePDFViewer {
    * @returns {boolean}
    */
   _recognizeAlreadyRan() {
-    return !!this.doc && this._recognizeRuns.get(this.doc) === this._recognizeRunSig();
+    const { doc } = this._activeViewer();
+    return !!doc && this._recognizeRuns.get(doc) === this._recognizeRunSig();
   }
 
   /**
@@ -7547,11 +7762,21 @@ class ScribePDFViewer {
   }
 
   /**
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  async _redrawRecognized(doc) {
+    const shown = this._viewerShowing(doc);
+    if (!shown) return;
+    shown.destroyText(false);
+    await shown.displayPage(shown.state.cp.n, false, true);
+  }
+
+  /**
    * Recognize the auto-selected (deep) pages, then re-render the current page so the new text appears.
    * A cancel is honored until the last page lands, and puts the document back as it was.
    */
   async _recognizeAll() {
-    const doc = this.doc;
+    const { doc } = this._activeViewer();
     if (!doc || this._recognizeRun) return;
     const total = this._deepOcrPageCount();
     const runSig = this._recognizeRunSig();
@@ -7611,15 +7836,11 @@ class ScribePDFViewer {
       await doc.recognize(recognizeOptions);
       ok = true;
       this._recognizeRuns.set(doc, runSig);
-      this.scribe.destroyText(false);
-      await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+      await this._redrawRecognized(doc);
     } catch (err) {
       if (err && err.name === 'AbortError') {
         // The library put the document back. The page is drawn again from the restored text, and nothing is recorded or announced.
-        if (this.doc === doc) {
-          this.scribe.destroyText(false);
-          await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
-        }
+        await this._redrawRecognized(doc);
       } else {
         console.error('OCR failed:', err);
         this._recognizeFailedDoc = doc;

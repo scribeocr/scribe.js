@@ -45,20 +45,18 @@ function applyHighlights(viewer) {
 }
 
 /**
- * Repaint the citation highlight.
+ * Repaint the citation wash.
+ * The wash is the word's own `cited` state, apart from the find bar's match fill, so the two never share a color or clear each other.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Set<string>} previous - The word ids `viewer._citationIds` held before it changed.
  */
 function repaintCitation(viewer, previous) {
-  const s = viewer._searchState;
-  const activeEntry = s.matchList[s.activeMatch];
-  const searchIds = activeEntry ? new Set(activeEntry.wordIds) : new Set();
-  // Pages kept built off-screen hold the previous highlight too.
+  // Pages kept built off-screen hold the previous wash too.
   for (const pageWords of viewer._wordObjs) {
     if (!pageWords) continue;
     for (const kw of pageWords) {
       const id = kw.word.id;
-      if (!kw._destroyed && (viewer._citationIds.has(id) || previous.has(id))) kw.activeMatch = viewer._citationIds.has(id) || searchIds.has(id);
+      if (!kw._destroyed && (viewer._citationIds.has(id) || previous.has(id))) kw.cited = viewer._citationIds.has(id);
     }
   }
 }
@@ -250,18 +248,49 @@ export async function goToCitation(viewer, text, { highlight = true } = {}) {
     if (_viewer.doc !== doc) return [];
   }
   const spans = doc.resolveCitation(text);
-  /** @type {Set<string>} */
-  const ids = new Set();
-  if (highlight) for (const sp of spans) for (const l of sp.lines) for (const w of l.words) ids.add(w.id);
-  const previous = _viewer._citationIds;
-  _viewer._citationIds = ids;
-  const wholePage = parseCitation(text)?.kind === 'page';
-  if (spans.length) await _viewer.displayPage(spans[0].page, wholePage, false);
-  const uiWords = _viewer.getUiWords();
-  repaintCitation(_viewer, previous);
-  if (!spans.length || wholePage) return spans;
-  const first = spans[0].lines.flatMap((l) => l.words)[0];
-  const uiWord = first && uiWords.find((kw) => kw.word.id === first.id);
-  if (uiWord) _viewer.scrollToWord(uiWord);
+  if (!spans.length) {
+    clearCitation(_viewer);
+    return spans;
+  }
+  const words = spans.flatMap((sp) => sp.lines.flatMap((l) => l.words));
+  await showCitedWords(_viewer, spans[0].page, highlight ? words : [], { wholePage: parseCitation(text)?.kind === 'page', firstWord: words[0] });
   return spans;
+}
+
+/**
+ * Light `words` as the current citation and bring the passage on page `pageIndex` into view.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} pageIndex
+ * @param {Array<import('../../js/objects/ocrObjects.js').OcrWord>} words
+ * @param {object} [options]
+ * @param {boolean} [options.wholePage=false] - Show the page from its top instead of scrolling to the first word.
+ * @param {import('../../js/objects/ocrObjects.js').OcrWord} [options.firstWord=words[0]]
+ * @param {boolean} [options.scroll=true] - `false` re-marks the words where the view already stands.
+ */
+export async function showCitedWords(viewer, pageIndex, words, { wholePage = false, firstWord = words[0], scroll = true } = {}) {
+  const previous = viewer._citationIds;
+  viewer._citationIds = new Set(words.map((w) => w.id));
+  if (!scroll) {
+    await viewer.displayPage(pageIndex, false, false);
+    // A page drawn before its text or any citation existed has no word objects yet, so they are built before the wash is laid.
+    viewer.getUiWords();
+    repaintCitation(viewer, previous);
+    return;
+  }
+  await viewer.displayPage(pageIndex, wholePage || !firstWord, false);
+  const uiWords = viewer.getUiWords();
+  repaintCitation(viewer, previous);
+  if (wholePage || !firstWord) return;
+  const uiWord = uiWords.find((kw) => kw.word.id === firstWord.id);
+  if (uiWord) viewer.scrollToWord(uiWord);
+}
+
+/**
+ * Take the citation wash off every word.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ */
+export function clearCitation(viewer) {
+  const previous = viewer._citationIds;
+  viewer._citationIds = new Set();
+  repaintCitation(viewer, previous);
 }

@@ -95,6 +95,12 @@ export class ScribeViewerOpts {
      */
     this.middleClickPan = true;
     /**
+     * Called when a link annotation carrying a document address is activated, with the link and the index of its page.
+     * The viewer itself follows no address.
+     * @type {?((entry: Object, pageIndex: number) => void)}
+     */
+    this.onDocAddress = null;
+    /**
      * Author name stamped onto comments and notes created in this viewer (PDF /T). Default `''` (unauthored).
      * Never auto-derived from OS/browser identity; the embedder sets it if wanted.
      */

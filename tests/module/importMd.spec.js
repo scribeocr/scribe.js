@@ -245,6 +245,15 @@ describe('Check markdown import.', () => {
     expect(plainText.includes('archive]:'), 'a reference definition line must produce no visible text').toBe(false);
   });
 
+  test('A document address link keeps its target, as a web link does', async () => {
+    const cited = await scribe.openDocument([new File(['Bentley conceded the point ([p. 54, lines 1-20](scribe-doc://0123456789abcdef/41?cite=54%3A1-20)).'], 'cited.md', { type: 'text/markdown' })]);
+    const words = cited.ocr.active[0].lines.flatMap((line) => line.words);
+    expect(words.find((word) => word.text === 'lines').style.link, 'a scribe-doc link must carry its address, which only this library follows')
+      .toBe('scribe-doc://0123456789abcdef/41?cite=54%3A1-20');
+    expect(words.map((word) => word.text).join(' '), 'the address contributes nothing to the text').toBe('Bentley conceded the point (p. 54, lines 1-20).');
+    await cited.close();
+  });
+
   test('A footnote definition becomes a linked footnote paragraph', () => {
     const notePar = doc.ocr.active[1].pars[25];
     expect(notePar.type, 'a `[^1]:` definition must import as a footnote paragraph').toBe('footnote');

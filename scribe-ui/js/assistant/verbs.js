@@ -83,16 +83,7 @@ function resolveQuote(pageObj, quote, { startLine, unique = true } = {}) {
   const tokens = String(quote ?? '').trim().split(/\s+/).filter((t) => t.length > 0);
   if (tokens.length === 0) return { ok: false, error: 'The quote is empty.' };
   const words = scribe.utils.ocr.getPageWords(pageObj);
-
-  /** @type {Array<Array<OcrWord>>} */
-  const runs = [];
-  for (let i = 0; i <= words.length - tokens.length; i++) {
-    const cand = words.slice(i, i + tokens.length);
-    if (cand.every((w, j) => w.text === tokens[j])) {
-      runs.push(cand);
-      i += tokens.length - 1;
-    }
-  }
+  const runs = scribe.utils.ocr.getQuoteRuns(quote, pageObj);
 
   if (runs.length === 0) {
     // A case-only miss gets the live text echoed back, so the model can retry without another read.
@@ -227,9 +218,10 @@ export const VERBS = [
         }
       };
       walk(doc.outline, 0);
+      const held = host.app?.heldDoc?.(host.viewer) ?? null;
       return {
         result: {
-          pageCount, lineCounts, scanPages, outline,
+          pageCount, lineCounts, scanPages, outline, ...(held ? { docAddress: `scribe-doc://${held.hash}/` } : {}),
         },
         receipt: { label: 'Read the document overview' },
       };

@@ -109,6 +109,8 @@ export class UiText {
    * @param {boolean} [options.selected=false]
    * @param {boolean} [options.fillBox=false]
    * @param {boolean} [options.activeMatch=false]
+   * @param {boolean} [options.cited=false] - The word is part of the passage a citation navigated to.
+   * @param {boolean} [options.docLink=false] - The word lies under a link that carries a document address.
    * @param {number} [options.opacity=1]
    * @param {string} [options.fill='black']
    * @param {boolean} [options.dynamicWidth=false] - If `true`, the width is computed from the text content rather than the bounding box.
@@ -129,7 +131,7 @@ export class UiText {
    */
   constructor({
     x, yActual, word, rotation = 0,
-    outline = false, selected = false, fillBox = false, activeMatch = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
+    outline = false, selected = false, fillBox = false, activeMatch = false, cited = false, docLink = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
     markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
@@ -263,6 +265,10 @@ export class UiText {
     this._selected = selected;
     this._fillBox = fillBox;
     this._activeMatch = activeMatch;
+    // A cited passage is washed in the highlighter color, not the find bar's match color, so a reader never takes a citation for a search hit.
+    this._cited = cited;
+    this._docLink = docLink;
+    this._docLinkHot = false;
     this._highlightColor = highlightColor;
     this._highlightOpacity = highlightOpacity;
     this.highlightGroupId = highlightGroupId;
@@ -374,6 +380,29 @@ export class UiText {
 
   set activeMatch(v) { this._activeMatch = v; this._applyStateStyle(); }
 
+  get cited() { return this._cited; }
+
+  set cited(v) { this._cited = v; this._applyStateStyle(); }
+
+  get docLink() { return this._docLink; }
+
+  set docLink(v) {
+    this._docLink = v;
+    // The text selection lays the document-link mark whether or not the word has a span.
+    this.viewer?.scheduleMarkRepaint(this.word.line.page.n);
+  }
+
+  get docLinkHot() { return this._docLinkHot; }
+
+  set docLinkHot(v) {
+    this._docLinkHot = v;
+    if (!this._docLink) return;
+    this.viewer?.scheduleMarkRepaint(this.word.line.page.n);
+    if (!this.el) return;
+    if (this._opacity !== 0) this.el.style.color = v ? 'var(--scribe-accent, #1c62d4)' : this._fill;
+    this.el.style.cursor = v ? 'pointer' : '';
+  }
+
   get highlightColor() { return this._highlightColor; }
 
   // The fill is drawn by the viewer's highlight layer (`renderHighlights`), not the word span, so setting the colour only updates state.
@@ -458,9 +487,10 @@ export class UiText {
     }
     if (this._activeMatch) this.el.style.backgroundColor = 'var(--scribe-match-active)';
     else if (this._fillBox) this.el.style.backgroundColor = 'var(--scribe-match)';
+    else if (this._cited) this.el.style.backgroundColor = 'var(--scribe-cite)';
     else this.el.style.backgroundColor = '';
     // Multiplied like the custom engine's mark layer, so in invis mode the wash sits behind the raster's ink.
-    this.el.style.mixBlendMode = this._activeMatch || this._fillBox ? 'multiply' : '';
+    this.el.style.mixBlendMode = this._activeMatch || this._fillBox || this._cited ? 'multiply' : '';
 
     if (this._selected) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';
@@ -625,8 +655,9 @@ export class UiText {
   _applyStateStyleOn(elem) {
     if (this._activeMatch) elem.style.backgroundColor = 'var(--scribe-match-active)';
     else if (this._fillBox) elem.style.backgroundColor = 'var(--scribe-match)';
+    else if (this._cited) elem.style.backgroundColor = 'var(--scribe-cite)';
     else elem.style.backgroundColor = '';
-    elem.style.mixBlendMode = this._activeMatch || this._fillBox ? 'multiply' : '';
+    elem.style.mixBlendMode = this._activeMatch || this._fillBox || this._cited ? 'multiply' : '';
 
     if (this._selected) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';
@@ -976,6 +1007,8 @@ export class UiOcrWord extends UiText {
    * @param {boolean} options.outline - Draw black outline around text.
    * @param {boolean} options.fillBox
    * @param {boolean} [options.activeMatch=false]
+   * @param {boolean} [options.cited=false]
+   * @param {boolean} [options.docLink=false]
    * @param {boolean} options.listening
    * @param {?string} [options.highlightColor=null]
    * @param {number} [options.highlightOpacity=1]
@@ -991,7 +1024,7 @@ export class UiOcrWord extends UiText {
    */
   constructor({
     visualLeft, yActual, topBaseline, word, rotation = 0,
-    outline = false, fillBox = false, activeMatch = false, listening = true, highlightColor = null, highlightOpacity = 1,
+    outline = false, fillBox = false, activeMatch = false, cited = false, docLink = false, listening = true, highlightColor = null, highlightOpacity = 1,
     highlightGroupId = null, highlightComment = '',
     markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
@@ -1010,6 +1043,8 @@ export class UiOcrWord extends UiText {
       outline,
       fillBox,
       activeMatch,
+      cited,
+      docLink,
       opacity,
       fill,
       highlightColor,

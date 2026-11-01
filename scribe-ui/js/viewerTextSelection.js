@@ -2,6 +2,12 @@ import scribe from '../../scribe.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { nativeTextForPage } from '../../js/textEdits.js';
 
+const DOC_LINK_MARK_CSS = '--scribe-doclink-dot:clamp(0.075em,calc(2px / var(--scribe-zoom,1)),0.15em);'
+  + 'height:var(--scribe-doclink-dot);pointer-events:none;'
+  + 'background:linear-gradient(90deg,transparent 0 calc(var(--scribe-doclink-dot) * 0.6),'
+  + 'var(--scribe-doclink-color,var(--scribe-ink,#1f2530)) calc(var(--scribe-doclink-dot) * 0.6) calc(var(--scribe-doclink-dot) * 1.6),'
+  + 'transparent calc(var(--scribe-doclink-dot) * 1.6)) 0 0/calc(var(--scribe-doclink-dot) * 2.2) 100% space';
+
 /**
  * Custom text selection for the read-only viewer, with no text in the DOM.
  *
@@ -49,6 +55,9 @@ export function ensureSelectionStyleSheet() {
     + '.scribe-sel-rect{position:absolute;background:var(--scribe-sel,#a6c8ff)}'
     + '.scribe-mark-rect{position:absolute;background:var(--scribe-match);border-radius:calc(2px / var(--scribe-zoom,1));transition:background-color .12s ease}'
     + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active)}'
+    + '.scribe-mark-rect.scribe-mark-cited{background:var(--scribe-cite)}'
+    + `.scribe-mark-doclink{position:absolute;${DOC_LINK_MARK_CSS}}`
+    + '.scribe-mark-doclink.hot{--scribe-doclink-color:var(--scribe-accent,#1c62d4)}'
     + '@media (prefers-reduced-motion: reduce){.scribe-mark-rect{transition:none}}'
     // The group is pointer-transparent and each handle re-enables hits, so the page still scrolls around the touch-selection grips.
     // `--sel-handle-scale`, set to 1/zoom per render, holds the grips' drawn size constant on screen at any document zoom.
@@ -1748,7 +1757,7 @@ export class TextSelection {
   }
 
   /**
-   * Draw page `n`'s search-match rectangles.
+   * Draw page `n`'s search-match rectangles, citation wash and document-link marks.
    * Match state lives on the word objects (`viewerSearch` sets it), which have no span to paint a background onto.
    * The words of one match on one line share a rectangle.
    * @param {number} n
@@ -1762,7 +1771,10 @@ export class TextSelection {
       const matchOf = new Map();
       this.viewer._searchState.matchList.forEach((m, i) => { for (const id of m.wordIds) matchOf.set(id, i); });
       const air = 1 / (this.viewer.zoomLevel || 1);
-      /** @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, active: boolean, left: number, right: number, top: number, bottom: number}} */
+      /**
+       * @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, kind: 'active'|'match'|'cited',
+       *   left: number, right: number, top: number, bottom: number}}
+       */
       let run = null;
       const flush = () => {
         if (!run) return;
@@ -1775,7 +1787,7 @@ export class TextSelection {
           pool.set(run.key, div);
           if (group) group.appendChild(div);
         }
-        div.className = run.active ? 'scribe-mark-rect scribe-mark-active' : 'scribe-mark-rect';
+        div.className = run.kind === 'active' ? 'scribe-mark-rect scribe-mark-active' : run.kind === 'cited' ? 'scribe-mark-rect scribe-mark-cited' : 'scribe-mark-rect';
         Object.assign(div.style, {
           left: `${run.left - air}px`,
           top: `${run.top - air}px`,
@@ -1787,18 +1799,20 @@ export class TextSelection {
       };
       for (const kw of words) {
         // A span-backed word (visible display modes) paints its own match background, so a mark rect on top would double-tint it.
-        if ((!kw.activeMatch && !kw.fillBox) || kw.el) {
+        if ((!kw.activeMatch && !kw.fillBox && !kw.cited) || kw.el) {
           flush();
           continue;
         }
         const member = matchOf.has(kw.word.id) ? matchOf.get(kw.word.id) : 'citation';
+        // A find-bar match outranks the citation wash on a word that is both, as the span painter does.
+        const kind = kw.activeMatch ? 'active' : kw.fillBox ? 'match' : 'cited';
         const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
         const right = left + kw.width();
         // Em offsets, not `fontAscentPx`/`fontDescentPx`, which vary by font and overstate the ink.
         // 0.25 em below the baseline clears typical descenders.
         const top = kw.yActual - kw.fontSize * 0.72;
         const bottom = kw.yActual + kw.fontSize * 0.25;
-        if (run && run.line === kw.word.line && run.member === member && run.active === kw.activeMatch) {
+        if (run && run.line === kw.word.line && run.member === member && run.kind === kind) {
           run.left = Math.min(run.left, left);
           run.right = Math.max(run.right, right);
           run.top = Math.min(run.top, top);
@@ -1806,11 +1820,50 @@ export class TextSelection {
         } else {
           flush();
           run = {
-            key: kw.word.id, line: kw.word.line, member, active: kw.activeMatch, left, right, top, bottom,
+            key: kw.word.id, line: kw.word.line, member, kind, left, right, top, bottom,
           };
         }
       }
       flush();
+      /** @type {?{key: string, line: OcrLine, hot: boolean, left: number, right: number, top: number, fontSize: number}} */
+      let mark = null;
+      const flushMark = () => {
+        if (!mark) return;
+        const group = this.viewer.getSelectGroup(n, mark.line.orientation);
+        let div = pool.get(mark.key);
+        if (!div || div.parentNode !== group) {
+          if (div) div.remove();
+          div = document.createElement('div');
+          pool.set(mark.key, div);
+          if (group) group.appendChild(div);
+        }
+        div.className = mark.hot ? 'scribe-mark-doclink hot' : 'scribe-mark-doclink';
+        Object.assign(div.style, {
+          left: `${mark.left}px`, top: `calc(${mark.top}px + 0.1em)`, width: `${mark.right - mark.left}px`, fontSize: `${mark.fontSize}px`,
+        });
+        keep.add(mark.key);
+        mark = null;
+      };
+      for (const kw of words) {
+        if (!kw.docLink) {
+          flushMark();
+          continue;
+        }
+        const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
+        const right = left + kw.width();
+        const top = kw.yActual;
+        if (mark && mark.line === kw.word.line) {
+          mark.left = Math.min(mark.left, left);
+          mark.right = Math.max(mark.right, right);
+          mark.hot = mark.hot || !!kw.docLinkHot;
+        } else {
+          flushMark();
+          mark = {
+            key: `${kw.word.id}:mark`, line: kw.word.line, hot: !!kw.docLinkHot, left, right, top, fontSize: kw.fontSize,
+          };
+        }
+      }
+      flushMark();
     }
     for (const [key, div] of pool) {
       if (keep.has(key)) continue;

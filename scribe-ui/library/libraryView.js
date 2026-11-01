@@ -132,6 +132,10 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} [syncFoldersOpenElsewhere] Document library only: reorder and redraw the Recent list once the folders other windows hold change.
  * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
+ * @property {(hash: string, path: ?string, target?: {group?: 0|1, preview?: boolean, program?: boolean, pageN?: number, fitWidth?: boolean, openAddress?: string})
+ *   => Promise<?{tab: Object, changed: boolean}>} [openByHash]
+ *   Document library only: open the folder's document with this hash into the group `target` names, and return its tab.
+ *   With no such hash it opens the document at `path` and sets `changed`.
  * @property {() => void} positionSurface Lay the surface over its area again, after the top bars change.
  * @property {() => void} show
  * @property {() => void} hide
@@ -5386,7 +5390,8 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {{pageN?: number, query?: string, near?: import('./libraryDocLoads.js').NearMatches, background?: boolean, group?: 0|1, preview?: boolean, program?: boolean, move?: boolean}} [target]
+   * @param {{pageN?: number, query?: string, near?: import('./libraryDocLoads.js').NearMatches, background?: boolean, group?: 0|1, preview?: boolean, program?: boolean,
+   *   move?: boolean, fitWidth?: boolean, openAddress?: string}} [target]
    *   `background` opens the tab without activating it.
    *   `move` brings a document already open into `group`, as a drop does.
    *   `query` and `near`, the clicked row's search and its near matches, mark the hit's words on the opened page while the find bar stays closed.
@@ -5486,6 +5491,8 @@ export function createLibraryInstance(viewer, opts) {
           group: target.group ?? 0,
           preview: !!target.preview,
           program: !!target.program,
+          fitWidth: !!target.fitWidth,
+          openAddress: target.openAddress ?? null,
         });
         wrapMutators(pooled, tab);
         /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = loads.findThroughIndex(entry.hash);
@@ -5498,7 +5505,7 @@ export function createLibraryInstance(viewer, opts) {
         saveManifestSoon();
         const seed = await loads.makeSeed(relPath, entry, target.pageN ?? 0);
         const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, {
-          activate: !target.background, group: target.group ?? 0, preview: !!target.preview, program: !!target.program,
+          activate: !target.background, group: target.group ?? 0, preview: !!target.preview, program: !!target.program, fitWidth: !!target.fitWidth, openAddress: target.openAddress ?? null,
         });
         const tab = /** @type {any} */ (handle.tab);
         tab.libraryOwner = instanceId;
@@ -5600,6 +5607,25 @@ export function createLibraryInstance(viewer, opts) {
   const previewEntry = (relPath, entry, where = {}) => openEntry(relPath, entry, {
     ...where, group: where.group ?? targetGroup(), preview: true, program: true,
   });
+
+  /**
+   * Open the folder's document with this hash into the group `target` names, and return its tab.
+   * @param {string} hash
+   * @param {?string} path
+   * @param {{group?: 0|1, preview?: boolean, program?: boolean, pageN?: number, fitWidth?: boolean, openAddress?: string}} [target]
+   * @returns {Promise<?{tab: Object, changed: boolean}>}
+   */
+  const openByHash = async (hash, path, target = {}) => {
+    if (!store || !manifest) return null;
+    let relPath = Object.keys(manifest.docs).find((p) => manifest.docs[p].hash === hash);
+    const changed = !relPath && !!path && !!manifest.docs[path]?.hash;
+    if (changed) relPath = path;
+    if (!relPath) return null;
+    const entry = manifest.docs[relPath];
+    await openEntry(relPath, entry, target);
+    const tab = viewer._tabs.find((t) => ownsTab(t) && t.libraryHash === entry.hash && (target.group == null || (t.group || 0) === target.group)) ?? null;
+    return tab ? { tab, changed } : null;
+  };
 
   // --- Revert to original -------------------------------------------------
 
@@ -7631,6 +7657,7 @@ export function createLibraryInstance(viewer, opts) {
       folderName: () => store?.root.name ?? '',
       copyTabIntoFolder,
       showTab,
+      openByHash,
     } : {}),
     positionSurface,
     ...(opts.onClose ? { close: opts.onClose } : {}),

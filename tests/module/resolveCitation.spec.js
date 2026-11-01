@@ -68,6 +68,31 @@ describe('one-up native transcript', () => {
     expect(doc.resolveCitation('¶ 3'), 'a transcript has no numbered paragraphs').toEqual([]);
   });
 
+  test('a document address resolves to its cited rows, its quoted passage, or its page', () => {
+    const wordTexts = (target) => target.words.map((w) => w.text);
+    const lineOf = (target) => doc.ocr.active[target.pageIndex].lines.indexOf(target.words[0].line);
+    const rows = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?cite=40%3A10-12');
+    expect([rows.state, rows.pageIndex], 'a citation address resolves on the page it names').toEqual(['ok', 4]);
+    expect(wordTexts(rows), 'the address names rows 10 to 12 of printed page 40: their numbers and their words')
+      .toEqual(['10', '11', '12', 'MY', 'BIRTHDAY', 'THAT', 'DAY,', 'SO', '--', 'THE', 'COURT:', 'YOUR', 'BIRTHDAY?', 'MR.', 'FOSTER:', 'YES.']);
+    const quote = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?q=THE+COURT%3A+YOUR+BIRTHDAY%3F');
+    expect([quote.state, quote.pageIndex, wordTexts(quote), lineOf(quote)], 'a quoted passage resolves to its run of words, on the line that holds it')
+      .toEqual(['ok', 4, ['THE', 'COURT:', 'YOUR', 'BIRTHDAY?'], 37]);
+    const first = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?q=THE+COURT%3A');
+    expect([wordTexts(first), lineOf(first)], 'a passage that occurs more than once resolves to its first occurrence without a line').toEqual([['THE', 'COURT:'], 32]);
+    const picked = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?q=THE+COURT%3A&line=37');
+    expect([wordTexts(picked), lineOf(picked)], 'the line picks the occurrence that starts on it').toEqual([['THE', 'COURT:'], 37]);
+    const moved = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?cite=44%3A1');
+    expect([moved.state, moved.pageIndex, moved.words.length], 'a citation the document no longer holds reports the change and keeps the page').toEqual(['changed', 4, 0]);
+    const gone = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?q=NOT+ON+THIS+PAGE');
+    expect([gone.state, gone.pageIndex, gone.words.length], 'a passage the page no longer holds reports the change and keeps the page').toEqual(['changed', 4, 0]);
+    const page = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4');
+    expect([page.state, page.pageIndex, page.words.length], 'an address with no locator names the page alone').toEqual(['page', 4, 0]);
+    const whole = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?cite=40');
+    expect([whole.state, whole.pageIndex, whole.words.length], 'a citation that names a whole page finds the page and marks no words').toEqual(['ok', 4, 0]);
+    expect(doc.resolveDocAddress('https://example.org/not-an-address'), 'a URI that is not an address resolves to nothing').toBeNull();
+  });
+
   test('the fields survive a .scribe round trip, and an older file gets them on restore', async () => {
     scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');

@@ -19,6 +19,7 @@ import {
   calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
   saveAs,
 } from './js/utils/miscUtils.js';
+import { docAddressLabel, formatDocAddress, parseDocAddress } from './js/docAddress.js';
 import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
 import { calcEvalStatsDoc } from './js/recognizeConvert.js';
@@ -339,6 +340,13 @@ class utils {
   static splitOcrWord = splitOcrWord;
 
   static ocr = ocr;
+
+  // Document addresses
+  static parseDocAddress = parseDocAddress;
+
+  static formatDocAddress = formatDocAddress;
+
+  static docAddressLabel = docAddressLabel;
 
   // Layout utils
   static calcColumnBounds = calcColumnBounds;
