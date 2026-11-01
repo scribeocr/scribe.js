@@ -1,5 +1,6 @@
 import { OEM, PSM } from './constants.js';
 import { base64ToBytes } from '../js/utils/imageUtils.js';
+import { Worker } from '../js/utils/crossOriginWorker.js';
 
 const loadImage = async (image) => {
   if (typeof image === 'string') return base64ToBytes(image);

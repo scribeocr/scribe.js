@@ -12,6 +12,8 @@ const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElement
 
 // The library is desktop-only for now, and the shell injects its bridge global before any page script runs, so this reads true by the time the viewer is built.
 const inDesktopShell = !!(/** @type {any} */ (window).electronAPI);
+// The VS Code extension's build leaves the OCR engine out, and VS Code defines this function before any page script runs.
+const inVsCodeWebview = typeof (/** @type {any} */ (globalThis)).acquireVsCodeApi === 'function';
 
 const buildBootstrapViewer = () => {
   if (!pdfViewerContElem) return null;
@@ -22,7 +24,7 @@ const buildBootstrapViewer = () => {
     pdfViewerContElem.style.height = '100dvh';
   }
   const v = new ScribePDFViewer(pdfViewerContElem, {
-    keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY, automate: AUTOMATE,
+    keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY, automate: AUTOMATE, recognition: !inVsCodeWebview,
   });
   // Expose key modules on `globalThis.df` for debugging and tests. Not part of the public API.
   // Use the module imports/exports instead.

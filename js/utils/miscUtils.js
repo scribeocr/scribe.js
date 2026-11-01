@@ -1,5 +1,6 @@
 // File summary:
 // Various utility functions used in other files.
+import { opt } from '../containers/app.js';
 
 // Includes all capital letters except for "J" and "Q"
 export const ascCharArr = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'O', 'P', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
@@ -327,6 +328,10 @@ export function countSubstringOccurrences(string, subString, allowOverlapping, c
  * @param {string} fileName - File name.
  */
 export const saveAs = async (content, fileName) => {
+  if (opt.saveAs) {
+    await opt.saveAs(content, fileName);
+    return;
+  }
   if (typeof process !== 'undefined') {
     const { promises: fsPromises } = await import('node:fs');
     const buffer = content instanceof ArrayBuffer ? Buffer.from(content) : content;

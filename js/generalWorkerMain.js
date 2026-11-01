@@ -1,5 +1,6 @@
 import { opt } from './containers/app.js';
 import { TessScheduler } from '../tess/TessScheduler.js';
+import { Worker } from './utils/crossOriginWorker.js';
 
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.

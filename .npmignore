@@ -37,6 +37,7 @@ js/font-parser/test
 js/font-parser/.mocharc.json
 js/font-parser/package-lock.json
 scribe-ui/basic-viewer/electron
+scribe-ui/basic-viewer/vscode
 scribe-ui/package.json
 scribe-ui/package-lock.json
 scribe-ui/.npmignore

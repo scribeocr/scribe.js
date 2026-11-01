@@ -1,0 +1,61 @@
+{
+  "name": "viewer-21",
+  "displayName": "21 Viewer",
+  "description": "Open PDFs and .scribe documents in 21 Viewer: text selection, search, highlights, comments and OCR, inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "viewer21",
+  "license": "AGPL-3.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scribeocr/scribe.js"
+  },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "pdf",
+    "viewer",
+    "ocr",
+    "scribe"
+  ],
+  "type": "module",
+  "main": "extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "viewer-21.pdf",
+        "displayName": "21 Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.pdf"
+          },
+          {
+            "filenamePattern": "*.scribe"
+          }
+        ],
+        "priority": "default"
+      }
+    ]
+  },
+  "scripts": {
+    "dist": "bash build.sh"
+  },
+  "devDependencies": {
+    "@types/vscode": "~1.100.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

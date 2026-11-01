@@ -18,5 +18,6 @@
         "**/*.wasm.js",
         "user-docs",
         "dist",
+        "scribe-ui/basic-viewer/vscode/staging",
     ],
 }

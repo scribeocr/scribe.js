@@ -23,6 +23,14 @@ export class opt {
   static inProcess = false;
 
   /**
+   * Start each worker from a blob of its script's text, which the page fetches.
+   * For a host that serves files to pages but not to workers, such as a VS Code webview.
+   * The worker scripts must then import nothing and fetch nothing by address.
+   * Must be set prior to initialization.
+   */
+  static fetchWorkerScripts = false;
+
+  /**
    * Custom URL or path to load Tesseract `.traineddata` files from.
    * If `null` (default), files are fetched from the jsdelivr CDN.
    * Set this to a directory containing `<lang>.traineddata.gz` to use a local
@@ -37,6 +45,18 @@ export class opt {
    * In browsers it takes effect only on a cross-origin-isolated page.
    */
   static usePdfSharedBuffer = typeof process !== 'undefined' && !!process.versions?.node;
+
+  /**
+   * Host-provided save, called instead of starting a browser download.
+   * @type {?((content: Blob | ArrayBuffer | Uint8Array | string, fileName: string) => (void | Promise<void>))}
+   */
+  static saveAs = null;
+
+  /**
+   * Host-provided opener for a document's external links, called instead of `window.open`.
+   * @type {?((url: string) => void)}
+   */
+  static openExternal = null;
 
   static dev = { disableGPU: false, forceGPU: false };
 

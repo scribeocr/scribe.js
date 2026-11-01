@@ -560,6 +560,8 @@ class ScribePDFViewer {
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
    * @param {boolean} [options.editText=edit] - Enable the Edit Text tool and its toolbar button.
    *   Defaults to `edit`. Pass `false` to keep editing on but text editing off.
+   * @param {boolean} [options.recognition=edit] - Enable the Recognize Text tool and its toolbar button.
+   *   Defaults to `edit`. Pass `false` to keep editing on but recognition off, for a host that ships no OCR engine.
    * @param {boolean} [options.automate=false] - Enable the Automate panel, a right-docked surface for running document automations.
    *   It adds a toolbar opener, an app-menu row, and hand-off rows in the selection menu.
    *   Requires `edit`.
@@ -593,6 +595,7 @@ class ScribePDFViewer {
       edit = true,
       redact = edit,
       editText = edit,
+      recognition = edit,
       automate = false,
       assistantAdapter = null,
       library = false,
@@ -1801,7 +1804,7 @@ class ScribePDFViewer {
 
       /** @type {?ReturnType<typeof createRecognizeTextTool>} */
       this._recognizeTool = null;
-      if (this._modeTrackRow1) {
+      if (this._modeTrackRow1 && recognition) {
         this._recognizeTool = createRecognizeTextTool();
         this._modeTrackRow1.insertBefore(this._recognizeTool.toolbarElem, this._modeTrackChev);
       }
@@ -2011,6 +2014,36 @@ class ScribePDFViewer {
     const displaced = await this._setDoc(doc, initialPage, true, terminatePrevious);
     await doc.textReady;
     return displaced;
+  }
+
+  /**
+   * Replace the displayed document with a new version of its bytes, keeping the page and zoom.
+   * @param {File | Blob | ArrayBuffer | Uint8Array} file
+   * @returns {Promise<boolean>} Whether the document was replaced.
+   */
+  async replaceActiveDoc(file) {
+    const prev = this.doc;
+    if (!prev) return false;
+    const page = this.scribe.state.cp.n;
+    const zoom = this.scribe.zoomLevel;
+    let doc = null;
+    try {
+      doc = await openDocumentFromFile(file, { deferText: true });
+      if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
+    } catch (err) {
+      console.error('Failed to reload the document:', err);
+      if (doc) await doc.close().catch(() => {});
+      return false;
+    }
+    // A tab's document is the tab's to close, as in `_closeTab`.
+    // A document opened with `importFile` is the viewer's, which `_setDoc` closes.
+    const tab = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
+    if (tab) tab.doc = doc;
+    await this._setDoc(doc, Math.min(page, doc.inputData.pageCount - 1), !tab, tab ? false : undefined);
+    if (tab) prev.close().catch(() => {});
+    this.zoomTo(zoom);
+    await doc.textReady;
+    return true;
   }
 
   /**
@@ -8000,10 +8033,10 @@ class ScribePDFViewer {
   }
 
   /**
-   * Change the theme setting: persist it and re-apply.
-   * @param {'system' | 'light' | 'dark'} value - The new theme setting to persist.
+   * Set the theme and persist the choice for the next session.
+   * @param {'system' | 'light' | 'dark'} value
    */
-  _setThemeSetting(value) {
+  setTheme(value) {
     this._themeSetting = value;
     try { window.localStorage.setItem(THEME_STORAGE_KEY, value); } catch { /* localStorage unavailable. The choice just won't persist. */ }
     this._applyTheme();
@@ -8011,7 +8044,7 @@ class ScribePDFViewer {
 
   /** Toggle Dark mode, persisting the result as an explicit preference. */
   _toggleDarkMode() {
-    this._setThemeSetting(this._effectiveTheme() === 'dark' ? 'light' : 'dark');
+    this.setTheme(this._effectiveTheme() === 'dark' ? 'light' : 'dark');
   }
 
   static _editStyleAdded = false;

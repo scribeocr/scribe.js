@@ -1,3 +1,5 @@
+import { Worker } from '../../js/utils/crossOriginWorker.js';
+
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.
  * @returns {Promise} A promise that resolves to an object with control methods.

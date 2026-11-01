@@ -1,5 +1,6 @@
 // Process-wide pool of reusable PDF workers, leased to per-source schedulers.
 // Spawning a PDF worker costs hundreds of milliseconds, so it is paid once per process here rather than on every document open, tab wake, and ingest step.
+import { Worker } from './utils/crossOriginWorker.js';
 
 /**
  * Creates a single PDF worker and returns an object with wrapped methods.

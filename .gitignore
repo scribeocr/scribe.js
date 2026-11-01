@@ -35,6 +35,8 @@ scribe-ui/basic-viewer/tauri/
 scribe-ui/basic-viewer/electron/cache/
 scribe-ui/basic-viewer/electron/staging/
 scribe-ui/basic-viewer/electron/dist/
+scribe-ui/basic-viewer/vscode/staging/
+scribe-ui/basic-viewer/vscode/dist/
 
 # devtools
 /devtools/
