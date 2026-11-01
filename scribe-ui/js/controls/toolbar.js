@@ -2827,7 +2827,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       align-items: center;
       gap: 6px;
       min-width: 140px;
-      max-width: 200px;
+      max-width: 300px;
       padding: 0 10px;
       color: var(--scribe-ink-2);
       font-size: 13px;
@@ -2839,7 +2839,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab.asleep .scribe-tab-name { color: var(--scribe-ink-3); }
 
     .${r} .scribe-tab-pin { display: flex; align-items: stretch; flex: none; }
-    .${r} .scribe-tab-pin .scribe-tab { min-width: 0; max-width: 300px; }
+    .${r} .scribe-tab-pin .scribe-tab { min-width: 0; }
     .${r} .scribe-tab-pin-sep { width: 1px; background: var(--scribe-line-strong); margin: 6px 4px; flex-shrink: 0; }
     .${r} .scribe-tab-icon { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; }
     .${r} .scribe-tab-icon svg { width: 100%; height: 100%; display: block; }
@@ -2934,6 +2934,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-tab-close {
+      flex: none;
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -5043,7 +5044,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-group-drop .scribe-drag-frame { inset: 10px; border-radius: 12px; }
     .${r} .scribe-group-drop .scribe-drag-pill { top: 22px; padding: 7px 14px 7px 11px; font-size: 13px; }
     .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }
-    .${r} .scribe-tab-ghost { position: fixed; z-index: 1000; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 28px; max-width: 240px; box-sizing: border-box; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 13px; border: 1px solid var(--scribe-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(20, 30, 60, .22); white-space: nowrap; overflow: hidden; }
+    .${r} .scribe-tab-ghost { position: fixed; z-index: 1000; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 28px; max-width: 340px; box-sizing: border-box; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 13px; border: 1px solid var(--scribe-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(20, 30, 60, .22); white-space: nowrap; overflow: hidden; }
     .${r} .scribe-tab-ghost .scribe-tab-icon { color: var(--scribe-ink-2); }
     .${r} .scribe-group-sash { position: absolute; z-index: 4; width: 7px; margin-left: -3px; cursor: col-resize; touch-action: none; }
     .${r} .scribe-group-sash::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
