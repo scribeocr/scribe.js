@@ -1,5 +1,6 @@
 import scribe from '../../scribe.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
 
 /**
  * Custom text selection for the read-only viewer, with no text in the DOM.
@@ -1100,7 +1101,7 @@ export class TextSelection {
   /**
    * The word under a client point, if the point is inside its box.
    * This is the editing entry's hit test.
-   * Unlike `hitTestHighlight` it returns any word, highlighted or not.
+   * While Proofread Text's editing is on, it returns null for a word with a native-text entry.
    * @param {number} clientX
    * @param {number} clientY
    * @returns {?import('./viewerWordObjects.js').UiOcrWord}
@@ -1117,7 +1118,10 @@ export class TextSelection {
         for (let wi = 0; wi < entry.boxes.length; wi++) {
           const box = entry.boxes[wi];
           if (local.x < box.left || local.x > box.right) continue;
-          return this.viewer.ensureWordObjs(n).get(entry.words[wi].id) ?? null;
+          const word = entry.words[wi];
+          // A word with a native-text entry belongs to Edit Text, so Proofread Text's click does not pick it.
+          if (UiText.enableEditing && this.viewer.doc && nativeTextForPage(this.viewer.doc, word.line.page)[word.id]) return null;
+          return this.viewer.ensureWordObjs(n).get(word.id) ?? null;
         }
       }
     }

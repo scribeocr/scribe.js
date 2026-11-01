@@ -312,6 +312,7 @@ export class UiText {
         UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
         UiText.addTextInput(this);
       });
+        if (this.word?.line?.page && this.viewer?.doc && nativeTextForPage(this.viewer.doc, this.word.line.page)[this.word.id]) return;
     }
 
     this.select = () => { this.selected = true; };
@@ -995,7 +996,10 @@ export class UiOcrWord extends UiText {
     markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
   }) {
-    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer?.state.displayMode ?? 'invis',
+    // A word with a native-text entry belongs to Edit Text, so Proofread Text draws it as View does.
+    let displayMode = viewer?.state.displayMode ?? 'invis';
+    if (displayMode === 'proof' && viewer?.doc && word.line?.page && nativeTextForPage(viewer.doc, word.line.page)[word.id]) displayMode = 'invis';
+    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, displayMode,
       scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
 
     super({

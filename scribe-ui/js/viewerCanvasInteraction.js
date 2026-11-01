@@ -12,6 +12,7 @@ import {
   linkTables, unlinkTable, resolveLinkCandidate, resolveUnlinkCandidate,
 } from './viewerLayout.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
 import { pickReading } from './viewerReadings.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
@@ -1149,6 +1150,8 @@ const calloutEditTextClick = () => {
   const words = viewer.getWordsUnderTextSelection();
   if (words.length !== 1) return;
   const kw = words[0];
+  // A word with a native-text entry belongs to Edit Text, so Proofread Text opens no editor on it.
+  if (viewer.doc && nativeTextForPage(viewer.doc, kw.word.line.page)[kw.word.id]) return;
   viewer.clearTextSelection();
   UiText.addTextInput(kw);
 };
@@ -1393,7 +1396,9 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     if (UiText.enableEditing && viewer.textSel.range?.kind === 'linear') {
       const r = viewer.textSel.range;
       if (r.start.n === r.end.n && r.end.off - r.start.off <= 40) {
-        show.edit = viewer.getWordsUnderTextSelection().length === 1;
+        const words = viewer.getWordsUnderTextSelection();
+        // A word with a native-text entry belongs to Edit Text, so Proofread Text offers no editor on it.
+        show.edit = words.length === 1 && !(viewer.doc && nativeTextForPage(viewer.doc, words[0].word.line.page)[words[0].word.id]);
       }
     }
   } else {

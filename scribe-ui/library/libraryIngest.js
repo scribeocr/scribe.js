@@ -413,7 +413,7 @@ export class LibraryIngest {
             await this.store.deleteChanges(hash);
           }
 
-          await this.engine.addDoc(hash, doc.ocr.active || []);
+          await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
           try {
             const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH);
             if (thumb) await this.store.writeThumb(hash, thumb);
@@ -506,7 +506,7 @@ export class LibraryIngest {
       } else {
         await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
         await this.store.writeChanges(hash, await doc.exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
-        await this.engine.addDoc(hash, doc.ocr.active || []);
+        await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
         entry.recognizedAt = Date.now();
       }
       delete entry.ocrError;

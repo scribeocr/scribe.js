@@ -3729,7 +3729,9 @@ export class ScribeViewer {
     for (const pageWords of this._wordObjs) {
       if (!pageWords) continue;
       for (const obj of pageWords) {
-        const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(obj.word, this.state.displayMode,
+        let displayMode = this.state.displayMode;
+        if (displayMode === 'proof' && this.doc && obj.word.line?.page && nativeTextForPage(this.doc, obj.word.line.page)[obj.word.id]) displayMode = 'invis';
+        const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(obj.word, displayMode,
           scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
         obj.fill(fill);
         obj.opacity(opacity);

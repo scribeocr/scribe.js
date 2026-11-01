@@ -48,6 +48,8 @@ import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineOb
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { DEBUG_MENU } from '../devFlags.js';
 
+const DOCUMENT_IMPORT_SOURCES = new Set(['docx', 'md', 'text']);
+
 /**
  * The view-switch strip of a sidebar: one tab per view the sidebar offers.
  * @param {(key: 'thumbnails'|'bookmarks'|'comments') => ?Object} panelFor
@@ -7105,7 +7107,7 @@ class ScribePDFViewer {
       fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
-    // A provisional document loads the real one when one of these tools opens, so the gates read the real document's stores alone.
+    // A provisional document loads the real one when one of these tools opens, so the Edit Text and Edit Graphics gates read the real document's stores alone.
     const provisional = !!this.doc && this.doc.id < 0 && !!this.doc._requestHydration;
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
     const editBtn = this._editTextTool?.toolbarElem;
@@ -7119,12 +7121,14 @@ class ScribePDFViewer {
       editBtn.ariaDisabled = !editable ? 'true' : 'false';
       editBtn.tabIndex = !editable ? -1 : 0;
     }
-    // Proofreading is for text the engine read over an image, so a native-text PDF keeps the row disabled.
     const proofBtn = this._proofreadTool?.toolbarElem;
     if (proofBtn) {
-      // A provisional tab's pages carry their text source and its seed carries the PDF type, so the row takes the same test as on a hydrated document.
-      const proofreadable = !disabled && !!this.doc.ocr?.active?.some((page) => page?.lines?.length > 0
-        && (page.textSource !== 'pdf' || this.doc.inputData.pdfType !== 'text'));
+      // A provisional tab's pages carry their text source and the entry presence the document library recorded, so the row takes the same test as on a hydrated document.
+      const proofreadable = !disabled && !!this.doc.ocr?.active?.some((page) => {
+        if (!page || DOCUMENT_IMPORT_SOURCES.has(page.textSource)) return false;
+        const nt = nativeTextForPage(this.doc, page);
+        return page.lines.some((line) => line.words.some((w) => !nt[w.id]));
+      });
       // The exit goes through the tool, not the button's click, so a row the gate has already disabled still leaves the mode.
       if (!proofreadable && this._proofreadTool.isActive()) this._proofreadTool.close();
       proofBtn.classList.toggle('disabled', !proofreadable);

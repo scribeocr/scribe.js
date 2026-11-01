@@ -10,6 +10,8 @@ import {
 
 const MAX_RESIDENT_PAGES = 64;
 const MAX_EXACT_RASTERS = 4;
+/** @type {NativeTextWord} */
+const SEED_ENTRY = Object.freeze({ baselineY: Number.NaN });
 
 /**
  * @typedef {Object} ProvisionalSeed
@@ -312,6 +314,8 @@ export class SeedDoc {
         return par;
       });
       page.pars = pars;
+      /** @type {Record<string, NativeTextWord>} */
+      const entries = {};
       for (const lineLike of pageLike.lines) {
         const words = Array.isArray(lineLike.words) ? lineLike.words.filter((w) => w && w.text && w.bbox) : [];
         if (!words.length) continue;
@@ -338,10 +342,13 @@ export class SeedDoc {
           if (w.visualCoords === false) word.visualCoords = false;
           if (w.footnoteParId) word.footnoteParId = w.footnoteParId;
           if (Array.isArray(w.chars)) word.chars = w.chars;
+          if (w.native) entries[word.id] = SEED_ENTRY;
           line.words.push(word);
         }
         page.lines.push(line);
       }
+      // The mode gates read the entries the document library recorded, so a tab answers before its document loads.
+      this.nativeText.pages[n] = entries;
       this.ocr.active[n] = page;
       this.inputData.xmlMode[n] = true;
       this._resident.push(n);

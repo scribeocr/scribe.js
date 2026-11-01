@@ -51,6 +51,8 @@ const unzig = (v) => (v % 2 === 0 ? v / 2 : -(v + 1) / 2);
  * @property {{font: ?string, size: ?number, bold: boolean, italic: boolean, smallCaps: boolean, sup: boolean, dropcap: boolean, underline: boolean, color: ?string, opacity: number}} style
  * @property {?string} lang
  * @property {number} conf
+ * @property {boolean} native - Whether the word had a native-text entry when the record was written.
+ *   It is false for every word of a record written before this field existed.
  * @property {boolean} visualCoords
  * @property {?string} footnoteParId
  */
@@ -143,6 +145,9 @@ const encodeView = (page) => {
   for (let k = 0; k < 5; k++) for (const slots of wordSlots) w.varint(slots[k]);
   for (const word of words) w.varint(Math.round((word.opacity == null ? 1 : word.opacity) * OPACITY_SCALE));
   for (const word of words) w.varint(Math.max(0, Math.min(100, Math.round(word.conf || 0))));
+  const natives = new Uint8Array(Math.ceil(words.length / 8));
+  words.forEach((word, i) => { if (word.native) natives[i >> 3] |= 1 << (i & 7); });
+  w.bytes(natives);
   return w.result();
 };
 
@@ -380,6 +385,7 @@ export const readPageView = async (file, pageN, text) => {
   const footnotes = column(() => str(r.varint()));
   const opacities = column(() => r.varint() / OPACITY_SCALE);
   const confs = column(() => r.varint());
+  const natives = r.at < r.buf.length ? r.bytes(Math.ceil(n / 8)) : null;
   /** @type {Array<ViewLine>} */
   const lines = [];
   let at = 0;
@@ -410,6 +416,7 @@ export const readPageView = async (file, pageN, text) => {
         lang: langs[k],
         conf: confs[k],
         visualCoords: !!(f & FLAG_VISUAL),
+        native: !!natives && !!(natives[k >> 3] & (1 << (k & 7))),
         footnoteParId: footnotes[k],
       });
       at += lengths[k];

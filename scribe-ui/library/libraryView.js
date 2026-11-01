@@ -1700,7 +1700,7 @@ export function createLibraryInstance(viewer, opts) {
     ]);
     saveManifestSoon();
     try {
-      await engine.addDoc(hash, doc.ocr.active);
+      await engine.addDoc(hash, doc.ocr.active, doc.nativeText?.pages || []);
     } catch { /* The sidecar is saved; a stale index entry is repaired by the next rebuild. */ }
   };
 

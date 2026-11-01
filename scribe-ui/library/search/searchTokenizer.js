@@ -61,6 +61,7 @@ export const MARKER_TERM = '\u0000marker';
  * @property {?string} lang
  * @property {number} conf
  * @property {boolean} visualCoords
+ * @property {boolean} native - Whether the word has a native-text entry.
  * @property {?string} footnoteParId
  */
 /** @typedef {bbox} Box */
@@ -388,10 +389,11 @@ export const recordTokenTerm = (rec, k, rules) => {
 };
 
 /**
+ * @param {Record<string, NativeTextWord>} [entries]
  * @param {?import('../../../js/objects/ocrObjects.js').OcrPage} page
  * @returns {?PageInput}
  */
-export const pageInputOf = (page) => {
+export const pageInputOf = (page, entries = {}) => {
   if (!page || !page.lines.length) return null;
   /** @type {Map<Object, number>} */
   const parIndex = new Map();
@@ -435,6 +437,7 @@ export const pageInputOf = (page) => {
         opacity: w.style?.opacity ?? 1,
         lang: w.lang ?? null,
         conf: w.conf ?? 0,
+        native: !!entries[w.id],
         visualCoords: w.visualCoords !== false,
         footnoteParId: w.footnoteParId ?? null,
       })),

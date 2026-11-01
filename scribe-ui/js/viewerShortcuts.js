@@ -2,6 +2,7 @@
 import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
 import { readingsListKey } from './viewerReadings.js';
 import { IS_MAC } from './platform.js';
 import {
@@ -171,11 +172,10 @@ export function selectRightWord(viewer, selectMultiple = false) {
     selectedWord = _viewer.CanvasSelection.selectedWordFirst;
   }
 
-  let rightWord;
+  const eligible = (w) => !UiText.enableEditing || !nativeTextForPage(_viewer.doc, w.line.page)[w.id];
   const selectedWordIndex = selectedWord.word.line.words.findIndex((word) => word.id === selectedWord.word.id);
-  if (selectedWordIndex + 1 < selectedWord.word.line.words.length) {
-    rightWord = selectedWord.word.line.words[selectedWordIndex + 1];
-  } else {
+  let rightWord = selectedWord.word.line.words.slice(selectedWordIndex + 1).find(eligible);
+  if (!rightWord) {
     /** @type {?OcrLine} */
     let rightLine = null;
     for (let i = 0; i < selectedWord.word.line.page.lines.length; i++) {
@@ -187,7 +187,7 @@ export function selectRightWord(viewer, selectMultiple = false) {
         }
       }
     }
-    if (rightLine) rightWord = rightLine.words[0];
+    if (rightLine) rightWord = rightLine.words.find(eligible);
   }
 
   if (rightWord) {
@@ -223,11 +223,10 @@ export function selectLeftWord(viewer, selectMultiple = false) {
     selectedWord = _viewer.CanvasSelection.selectedWordFirst;
   }
 
-  let leftWord;
+  const eligible = (w) => !UiText.enableEditing || !nativeTextForPage(_viewer.doc, w.line.page)[w.id];
   const selectedWordIndex = selectedWord.word.line.words.findIndex((word) => word.id === selectedWord.word.id);
-  if (selectedWordIndex > 0) {
-    leftWord = selectedWord.word.line.words[selectedWordIndex - 1];
-  } else {
+  let leftWord = selectedWord.word.line.words.slice(0, selectedWordIndex).reverse().find(eligible);
+  if (!leftWord) {
     /** @type {?OcrLine} */
     let leftLine = null;
     for (let i = 0; i < selectedWord.word.line.page.lines.length; i++) {
@@ -239,7 +238,7 @@ export function selectLeftWord(viewer, selectMultiple = false) {
         }
       }
     }
-    if (leftLine) leftWord = leftLine.words[leftLine.words.length - 1];
+    if (leftLine) leftWord = [...leftLine.words].reverse().find(eligible);
   }
 
   if (leftWord) {
@@ -272,10 +271,12 @@ export function selectAboveWord(viewer) {
     prevLine = scribe.utils.ocr.getPrevLine(prevLine);
   }
   if (!prevLine) return;
+  const candidates = prevLine.words.filter((w) => !UiText.enableEditing || !nativeTextForPage(_viewer.doc, w.line.page)[w.id]);
+  if (!candidates.length) return;
   const selectedWordCenter = (selectedWord.word.bbox.right + selectedWord.word.bbox.left) / 2;
   let bestDist = 5000;
-  let aboveWord = prevLine.words[0];
-  for (const word of prevLine.words) {
+  let aboveWord = candidates[0];
+  for (const word of candidates) {
     const wordCenter = (word.bbox.right + word.bbox.left) / 2;
     const dist = Math.abs(selectedWordCenter - wordCenter);
     if (dist < bestDist) {
@@ -314,10 +315,12 @@ export function selectBelowWord(viewer) {
     nextLine = scribe.utils.ocr.getNextLine(nextLine);
   }
   if (!nextLine) return;
+  const candidates = nextLine.words.filter((w) => !UiText.enableEditing || !nativeTextForPage(_viewer.doc, w.line.page)[w.id]);
+  if (!candidates.length) return;
   const selectedWordCenter = (selectedWord.word.bbox.right + selectedWord.word.bbox.left) / 2;
   let bestDist = 5000;
-  let belowWord = nextLine.words[0];
-  for (const word of nextLine.words) {
+  let belowWord = candidates[0];
+  for (const word of candidates) {
     const wordCenter = (word.bbox.right + word.bbox.left) / 2;
     const dist = Math.abs(selectedWordCenter - wordCenter);
     if (dist < bestDist) {

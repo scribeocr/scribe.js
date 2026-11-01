@@ -122,7 +122,7 @@ export const createSearchClient = (settings = {}) => {
      * @param {string} hash
      * @param {Array<?import('../../../js/objects/ocrObjects.js').OcrPage>} pages
      */
-    addDoc: (hash, pages) => serial('addDoc', { hash, pages: pages.map(pageInputOf) }),
+    addDoc: (hash, pages, entries = []) => serial('addDoc', { hash, pages: pages.map((page, i) => pageInputOf(page, entries[i] || {})) }),
     /** @param {string} hash */
     removeDoc: (hash) => serial('removeDoc', { hash }),
     /** @param {string} hash @returns {Promise<boolean>} */
