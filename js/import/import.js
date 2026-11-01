@@ -1,12 +1,8 @@
 import { opt } from '../containers/app.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { markFillTextRefs } from '../fillSign.js';
-import { GlobalFonts } from '../containers/fontContainer.js';
 import {
-  enableOpt,
   loadBuiltInFontsRaw,
-  optimizeFontContainerAll,
-  setDefaultAuto,
 } from '../fontContainerMain.js';
 import { calcCharMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
@@ -238,7 +234,12 @@ async function restoreSessionFromFile(doc, scribeFile) {
           outline: header.outline,
           inputData: header.inputData,
           session: header.session ? {
-            ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null), fillShapes: new Array(n).fill(null), truth: new Array(n).fill(null),
+            ...header.session,
+            contentEdits: new Array(n).fill(null),
+            nativeText: new Array(n).fill(null),
+            fillShapes: new Array(n).fill(null),
+            truth: new Array(n).fill(null),
+            hocrSource: { head: header.session.hocrSourceHead ?? null, pages: new Array(n).fill(null) },
           } : undefined,
         };
       };
@@ -258,6 +259,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
           if (rec.fillShapes !== undefined) assembled.session.fillShapes[rec.i] = rec.fillShapes;
           if (rec.truth !== undefined) assembled.session.truth[rec.i] = rec.truth;
+          if (rec.hocrSource !== undefined) assembled.session.hocrSource.pages[rec.i] = rec.hocrSource;
         }
       };
 
@@ -366,6 +368,11 @@ async function restoreSessionFromFile(doc, scribeFile) {
     if (scribeRestoreObj.session.truth) {
       for (let i = 0; i < scribeRestoreObj.session.truth.length; i++) doc.truth.pages[i] = scribeRestoreObj.session.truth[i] ?? null;
     }
+    if (scribeRestoreObj.session.hocrSource) {
+      if (scribeRestoreObj.session.hocrSource.head) doc.hocrSource.head['User Upload'] = scribeRestoreObj.session.hocrSource.head;
+      const pages = scribeRestoreObj.session.hocrSource.pages || [];
+      for (let i = 0; i < pages.length; i++) if (pages[i]) doc.hocrSource.pages[i] = { 'User Upload': pages[i] };
+    }
     if (scribeRestoreObj.session.fillShapes) {
       const site = (/** @type {Array<number>} */ t) => ({
         left: t[0], top: t[1], right: t[2], bottom: t[3],
@@ -433,64 +440,6 @@ async function restoreSessionFromFile(doc, scribeFile) {
     rotations: savedRotations,
     sourceIndices: savedSourceIndices,
     outline: 'outline' in scribeRestoreObj ? (scribeRestoreObj.outline || []) : null,
-  };
-}
-
-/**
- * Restore session data from legacy HOCR exports into this document.
- * Originally HOCR was used as the primary format for saving and restoring sessions,
- * which lead to a significant amount of session data being stored in HOCR files.
- * This function extracts that data and restores it to the current session format.
- * Eventually this function can be deprecated and removed.
- * Users should use the .scribe format for saving and restoring sessions instead.
- * @param {ScribeDoc} doc
- * @param {Awaited<ReturnType<importOCRFiles>>} ocrData
- */
-async function _restoreSessionFromLegacyHocr(doc, ocrData) {
-  let existingOpt = false;
-
-  objectAssignDefined(doc.fonts.state, ocrData.fontState);
-
-  // Restore font metrics and optimize font from previous session (if applicable)
-  if (ocrData.fontState.charMetrics && Object.keys(ocrData.fontState.charMetrics).length > 0) {
-    const fontPromise = loadBuiltInFontsRaw();
-
-    existingOpt = true;
-
-    await gs.schedulerReady;
-    setDefaultAuto(doc.fonts, doc.fonts.state.charMetrics);
-
-    // If `ocrData.enableOpt` is `false`, then the metrics are present but ignored.
-    // This occurs if optimization was found to decrease accuracy for both sans and serif,
-    // not simply because the user disabled optimization in the view settings.
-    // If no `enableOpt` property exists but metrics are present, then optimization is enabled.
-    if (ocrData.enableOpt === 'false') {
-      doc.fonts.state.enableOpt = false;
-    } else {
-      await fontPromise;
-      if (!GlobalFonts.raw) throw new Error('Raw font data not found.');
-      doc.fonts.opt = await optimizeFontContainerAll(GlobalFonts.raw, doc.fonts.state.charMetrics, doc.fonts.id);
-      doc.fonts.state.enableOpt = true;
-      await enableOpt(doc.fonts, true);
-    }
-  }
-
-  // Restore layout data from previous session (if applicable)
-  if (ocrData.layoutObj) {
-    addCircularRefsRegions(ocrData.layoutObj);
-    for (let i = 0; i < ocrData.layoutObj.length; i++) {
-      doc.layoutRegions.pages[i] = ocrData.layoutObj[i];
-    }
-  }
-
-  if (ocrData.layoutDataTableObj) {
-    for (let i = 0; i < ocrData.layoutDataTableObj.length; i++) {
-      doc.layoutDataTables.pages[i] = ocrData.layoutDataTableObj[i];
-    }
-  }
-
-  return {
-    existingOpt,
   };
 }
 
@@ -643,7 +592,6 @@ export async function importFiles(doc, files, options = {}) {
   let pageCountImage;
   /** @type {TextSource} */
   let format;
-  let reimportHocrMode = false;
 
   if (doc.inputData.pdfMode) {
     // If no XML data is provided, page sizes are calculated using muPDF alone
@@ -655,7 +603,6 @@ export async function importFiles(doc, files, options = {}) {
     pageCountImage = imageFiles.length;
   }
 
-  let existingOpt = false;
   const oemName = 'User Upload';
   let pdfTextExtracted = false;
   if (xmlModeImport) {
@@ -824,12 +771,7 @@ export async function importFiles(doc, files, options = {}) {
     }
 
     format = /** @type {("hocr" | "abbyy" | "alto" | "stext" | "textract" | "text")} */ (ocrData.format);
-    reimportHocrMode = ocrData.reimportHocrMode;
-
-    if (ocrData.reimportHocrMode) {
-      const restoreRes = await _restoreSessionFromLegacyHocr(doc, ocrData);
-      existingOpt = restoreRes.existingOpt;
-    }
+    if (format === 'hocr' && ocrData.hocrHead) doc.hocrSource.head[oemName] = ocrData.hocrHead;
   }
 
   const pageCountOcr = doc.ocrRaw.active?.length ? countOcrPages(format, doc.ocrRaw.active) : (doc.ocr.active?.length || 0);
@@ -886,6 +828,9 @@ export async function importFiles(doc, files, options = {}) {
     }
     if (doc.truth.pages[i] === undefined) {
       doc.truth.pages[i] = null;
+    }
+    if (doc.hocrSource.pages[i] === undefined) {
+      doc.hocrSource.pages[i] = null;
     }
   }
 
@@ -952,7 +897,7 @@ export async function importFiles(doc, files, options = {}) {
 
   if (xmlModeImport) {
     // Process OCR using web worker, reading from file first if that has not been done already
-    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, reimportHocrMode, doc.pageMetrics, { docxLineSplitMode });
+    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, doc.pageMetrics, { docxLineSplitMode });
 
     // An OCR page carries its own pixel size into `pageMetrics`, so a page that got none is sized like its neighbors: its PDF size at the OCR file's scale.
     const pagesWithoutOcr = doc.inputData.ocrPageMatch?.pagesWithoutOcr;
@@ -972,9 +917,7 @@ export async function importFiles(doc, files, options = {}) {
       }
     }
 
-    // Skip this step if optimization info was already restored from a previous session,
-    // or if using stext/textract (which are character-level but not visually accurate).
-    if (!existingOpt && !skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
+    if (!skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
       await checkCharWarn(doc, doc.convertPageWarn);
       const charMetrics = calcCharMetricsFromPages(doc.ocr.active);
 
@@ -1047,7 +990,8 @@ export async function importFilesSupp(doc, files, ocrName) {
   }
 
   const format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
+  if (format === 'hocr' && ocrData.hocrHead) doc.hocrSource.head[ocrName] = ocrData.hocrHead;
 
-  await convertOCR(doc, ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode, doc.pageMetrics);
+  await convertOCR(doc, ocrData.hocrRaw, false, format, ocrName, doc.pageMetrics);
   assignPageLineNums(doc.ocr[ocrName]);
 }

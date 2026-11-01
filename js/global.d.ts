@@ -68,6 +68,7 @@ declare global {
     // OCR objects
     type OcrPage = import("./objects/ocrObjects.js").OcrPage;
     type OcrLine = import("./objects/ocrObjects.js").OcrLine;
+    type OcrPar = import("./objects/ocrObjects.js").OcrPar;
     type OcrWord = import("./objects/ocrObjects.js").OcrWord;
     type OcrChar = import("./objects/ocrObjects.js").OcrChar;
 
@@ -688,6 +689,9 @@ declare global {
         type3GlyphMappings?: Array<[string, string]>;
         tableExport?: { excluded?: Record<string, true>; names?: Record<string, string> };
         truth?: Array<TruthPageRecord | null>;
+        hocrSource?: { head: ?Array<string>; pages: Array<?HocrSourcePage> };
+        /** The segmented save's form of `hocrSource.head`. */
+        hocrSourceHead?: ?Array<string>;
     };
 
     /** One page's record of how the ground-truth process settled the page and its words. */
@@ -723,6 +727,27 @@ declare global {
         words: Record<string, { settledBy: string; reason?: string; class?: string; kind?: string; convention?: string; flags?: Array<string>; verdicts?: Array<string>; removed?: boolean }>;
         /** Keyed by word id: the words no strategy and no judge could settle, with the reason. */
         unresolved: Record<string, { reason: string; verdicts?: Array<string> }>;
+    };
+
+    /**
+     * One page's hOCR source markup.
+     * `template` is the page's inner markup with each line replaced by `\u0000L<id>\u0000`.
+     * A paragraph's open and close tags become `\u0000P<id>\u0000` and `\u0000/P<id>\u0000`.
+     * A carea's open and close tags become `\u0000C<index>\u0000` and `\u0000/C<index>\u0000`.
+     */
+    type HocrSourcePage = {
+        open: string;
+        close: string;
+        template: string;
+        careas: Array<{ open: string; close: string; lineIds: Array<string> }>;
+        pars: Record<string, { open: string; close: string; lineIds: Array<string> }>;
+        /**
+         * Each line's raw markup, keyed by line id.
+         * A dropped line never entered the page.
+         * It is re-emitted as uploaded.
+         * The other lines carry `fp`, their fingerprint as they left the importer, for telling an edited line from an untouched one.
+         */
+        lines: Record<string, { raw: string; dropped: boolean; fp?: string }>;
     };
 
     /**

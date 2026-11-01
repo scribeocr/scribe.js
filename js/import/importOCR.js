@@ -1,5 +1,3 @@
-// import { updateDataProgress } from "../main.js";
-import { addCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { readOcrFile } from '../utils/miscUtils.js';
 
 export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/, '')
@@ -88,7 +86,6 @@ export function countOcrPages(format, ocrRaw) {
 
 /**
  * Import raw OCR data from files.
- * Currently supports .hocr (used by Tesseract), Abbyy .xml, and stext (an intermediate data format used by mupdf).
  *
  * @param {Array<File|FileNode|ArrayBuffer>} ocrFilesAll - Array of OCR files
  */
@@ -98,20 +95,9 @@ export async function importOCRFiles(ocrFilesAll) {
 
   let hocrStrStart = null;
   let format = null;
-  let reimportHocrMode = false;
 
   let pageCountHOCR;
   let hocrRaw;
-  /** @type {Object.<string, CharMetricsFamily> | undefined} */
-  let charMetricsObj;
-  /** @type {?LayoutPage} */
-  let layoutObj = null;
-  /** @type {?LayoutDataTablePage} */
-  let layoutDataTableObj = null;
-  let defaultFont;
-  let enableOpt;
-  let sansFont;
-  let serifFont;
 
   if (singleHOCRMode) {
     const fileExt = ocrFilesAll[0]?.name?.split('.').pop();
@@ -187,76 +173,18 @@ export async function importOCRFiles(ocrFilesAll) {
       const hocrFile = ocrFilesAll[i];
       hocrRaw[i] = await readOcrFile(hocrFile);
     }
+    if (format === 'hocr') hocrStrStart = hocrStrFirst.match(/[\s\S]*?<body>/)?.[0] ?? null;
   }
 
+  /** @type {?Array<string>} */
+  let hocrHead = null;
   if (format === 'hocr' && hocrStrStart) {
-    const getMeta = (name) => {
-      const regex = new RegExp(`<meta name=["']${name}["'][^<]+`, 'i');
-
-      const nodeStr = hocrStrStart.match(regex)?.[0];
-      if (!nodeStr) return null;
-      const contentStr = nodeStr.match(/content=["']([\s\S]+?)(?=["']\s{0,5}\/?>)/i)?.[1];
-      if (!contentStr) return null;
-      return contentStr.replace(/&quot;/g, '"');
-    };
-
-    const ocrSystem = getMeta('ocr-system');
-    reimportHocrMode = ocrSystem === 'scribeocr';
-
-    // Font optimization and layout settings are skipped in the fringe case where .hocr files are produced individually using Scribe,
-    // and then re-uploaded together for further processing, since only the first page is parsed for metadata.
-    // Hopefully this case is rare enough that it does not come up often.
-    if (singleHOCRMode) {
-      const charMetricsStr = getMeta('font-metrics');
-      if (charMetricsStr) {
-        charMetricsObj = /** @type  {Object.<string, CharMetricsFamily>} */ (JSON.parse(charMetricsStr));
-
-        // Older versions of the font metrics object used 'small-caps' instead of 'smallCaps'.
-        for (const key in charMetricsObj) {
-          if (charMetricsObj[key]['small-caps'] && !charMetricsObj[key].smallCaps) charMetricsObj[key].smallCaps = charMetricsObj[key]['small-caps'];
-        }
-      }
-
-      const layoutStr = getMeta('layout');
-      if (layoutStr) layoutObj = /** @type {LayoutPage} */ (JSON.parse(layoutStr));
-
-      const layoutDataTableStr = getMeta('layout-data-table');
-      if (layoutDataTableStr) {
-        layoutDataTableObj = JSON.parse(layoutDataTableStr);
-        addCircularRefsDataTables(layoutDataTableObj);
-      }
-
-      const enableOptStr = getMeta('enable-opt');
-      if (enableOptStr) enableOpt = enableOptStr;
-    }
-
-    const defaultFontStr = getMeta('default-font');
-    if (defaultFontStr) defaultFont = defaultFontStr;
-
-    const sansFontStr = getMeta('sans-font');
-    if (sansFontStr) sansFont = sansFontStr;
-
-    let serifFontStr = getMeta('serif-font');
-    // Older versions of Scribe used 'NimbusRomNo9L' instead of 'NimbusRoman'.
-    if (serifFontStr && serifFontStr === 'NimbusRomNo9L') serifFontStr = 'NimbusRoman';
-    if (serifFontStr) serifFont = serifFontStr;
+    hocrHead = [...hocrStrStart.matchAll(/<meta\b[^>]*\bname\s*=\s*["']ocr-[^"']*["'][^>]*>/gi)].map((x) => x[0]);
   }
-
-  /** @type {Partial<FontState>} */
-  const fontState = {
-    enableOpt: enableOpt !== undefined ? enableOpt === 'true' || enableOpt === '1' : undefined,
-    serifDefaultName: serifFont,
-    sansDefaultName: sansFont,
-    defaultFontName: defaultFont,
-    charMetrics: charMetricsObj,
-  };
 
   return {
     hocrRaw,
-    layoutObj,
-    fontState,
-    layoutDataTableObj,
     format,
-    reimportHocrMode,
+    hocrHead,
   };
 }

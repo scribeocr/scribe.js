@@ -3787,7 +3787,7 @@ export class ScribeViewer {
    * @param {number} angle
    */
   _renderParOutlines(page, angle) {
-    if (this.doc?.inputData?.pdfType !== 'text' && (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource))) {
+    if (this.doc?.inputData?.pdfType !== 'text' && (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx', 'hocr'].includes(page.textSource))) {
       scribe.utils.assignParagraphs(page, angle);
     }
     const imageRotated = Math.abs(angle) > 0.05;

@@ -85,9 +85,6 @@ export class InputData {
   /** `true` if user uploaded image files (.png, .jpeg) */
   imageMode = false;
 
-  /** `true` if user re-uploaded HOCR data created by Scribe OCR */
-  resumeMode = false;
-
   /** `true` if ground truth data is uploaded */
   evalMode = false;
 
@@ -113,7 +110,6 @@ export class InputData {
     this.ocrPageMatch = null;
     this.requiresOCR = false;
     this.imageMode = false;
-    this.resumeMode = false;
     this.evalMode = false;
     this.inputFileNames = [];
     this.defaultDownloadFileName = '';

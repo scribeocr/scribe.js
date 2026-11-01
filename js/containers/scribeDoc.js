@@ -60,7 +60,8 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages, doc.truth.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
+  arrs.push(doc.truth.pages, doc.hocrSource.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.ocrTiming)) arrs.push(doc.ocrTiming);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
@@ -223,6 +224,8 @@ function snapshotPage(doc, i) {
     nativeText,
     fillShapes,
     truth,
+    // A copy gets fresh line and paragraph ids, which the source markup's placeholders would no longer name.
+    hocrSource: null,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     ocrTiming: cloneAt(doc.ocrTiming),
@@ -794,6 +797,15 @@ export class ScribeDoc {
     this.truth = { pages: [] };
 
     /**
+     * The hOCR markup each layer of the document was imported from.
+     * `head` holds each layer's `ocr-*` meta tags, keyed by layer name.
+     * `pages[n]` holds each layer's record for page `n`, keyed by layer name.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{head: Record<string, Array<string>>, pages: Array<?Record<string, HocrSourcePage>>}}
+     */
+    this.hocrSource = { head: {}, pages: [] };
+
+    /**
      * Characters recorded against Type 3 glyph outlines, keyed by the glyph's path hash.
      * The parser's `type3GlyphMappings` option and the PDF export use the same key.
      * Written through `setType3GlyphMappings`, which applies each change to the words in place.
@@ -1097,6 +1109,7 @@ export class ScribeDoc {
       }));
       spliceFull(this.contentEdits.pages, snapshots.map((b) => b.contentEdits ?? []));
       spliceFull(this.nativeText.pages, snapshots.map((b) => b.nativeText ?? {}));
+      spliceFull(this.hocrSource.pages, snapshots.map((b) => b.hocrSource ?? null));
       spliceFull(this.fillShapes.pages, snapshots.map((b) => b.fillShapes ?? null));
       spliceFull(this.truth.pages, snapshots.map((b) => b.truth ?? null));
       spliceFull(this.vis, snapshots.map((b) => b.vis));
@@ -1281,6 +1294,8 @@ export class ScribeDoc {
     this.annotations.restored = false;
     this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
+    this.hocrSource.head = {};
+    this.hocrSource.pages.length = 0;
     this.type3GlyphMappings.clear();
     this.fillShapes.pages.length = 0;
     this.truth.pages.length = 0;

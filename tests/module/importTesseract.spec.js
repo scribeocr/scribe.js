@@ -29,6 +29,10 @@ describe('Check .hocr import function (basic)', () => {
     expect(page.pars.map((x) => x.lines.length), 'the ocr_par elements of a Tesseract hOCR file did not become the page\'s paragraphs').toEqual([2, 1, 10, 1]);
     expect(page.lines[2].par, 'a caption line is not in the paragraph its ocr_par puts it in').toBe(page.pars[1]);
     expect(page.textSource, 'an hOCR page does not record its source').toBe('hocr');
+    expect(page.pars.length, 'the file\'s ocr_par elements were not imported as paragraphs').toBe(4);
+    expect(page.pars[0].lines.map((line) => line.id), 'the first paragraph does not hold its two lines, or the lines lost their ids').toEqual(['line_1_1', 'line_1_2']);
+    expect(page.pars[2].id, 'a paragraph lost the id the file gave it').toBe('par_1_3');
+    expect(page.lines[0].par, 'a line does not point back at its paragraph').toBe(page.pars[0]);
   });
 
   // When using Tesseract.js or the Tesseract API to save individual pages as .hocr files, the output is different from the output of the Tesseract CLI,
@@ -128,6 +132,34 @@ async function readFileContent(filePath) {
   return response.text();
 }
 
+describe('Check .hocr import of one file per page.', () => {
+  test('Should renumber the ids of a per-page file to the page\'s position in the document', async () => {
+    doc = await scribe.openDocument([`${ASSETS_PATH}/bill.hocr`, `${ASSETS_PATH}/bill.tesseractjs.hocr`]);
+
+    const [first, second] = doc.ocr.active;
+    expect(first.lines[0].id, 'the first page\'s ids changed').toBe('line_1_1');
+    expect(second.lines[0].id, 'a second page\'s line kept the page number of its own run').toBe('line_2_1');
+    expect(second.pars[0].id, 'a second page\'s paragraph kept the page number of its own run').toBe('par_2_1');
+    expect(second.lines[0].words[0].id, 'a second page\'s word kept the page number of its own run').toBe('word_2_1');
+
+    const hocr = /** @type {string} */ (await doc.exportData('hocr'));
+    const pageTags = hocr.match(/<div class='ocr_page'[^>]*>/g) || [];
+    expect(pageTags.map((tag) => tag.match(/id='([^']*)'/)?.[1]), 'the exported pages do not carry their own page ids').toEqual(['page_1', 'page_2']);
+    expect(pageTags.map((tag) => tag.match(/ppageno (\d+)/)?.[1]), 'the exported pages do not carry their own page numbers').toEqual(['0', '1']);
+    expect(hocr.slice(hocr.indexOf("id='page_2'")), 'the second page\'s markup still carries ids numbered for page 1').not.toMatch(/id='(?:block|par|line|word)_1_/);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+/**
+ * Rewrite a single-quoted hOCR file with double-quoted attributes.
+ * @param {string} hocr
+ */
+const doubleQuoted = (hocr) => hocr.replace(/=\s*'([^']*)'/g, (m, v) => `="${v.replace(/"/g, "'")}"`);
+
 describe('Check hOCR detection from content alone.', () => {
   test('Should import the bare ocr_page fragment tesseract.js writes, without a file name', async () => {
     const text = await readFileContent(`${ASSETS_PATH}/bill.tesseractjs.hocr`);
@@ -135,17 +167,18 @@ describe('Check hOCR detection from content alone.', () => {
     expect(doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' '), 'a fragment with no XML declaration or html root is read as hOCR').toBe('FIRST CHEQUING');
   });
 
-  test('Should import a double-quoted hOCR file: caption lines, character spans and padded words', async () => {
+  test('Should import a double-quoted hOCR file: caption lines, character spans, padded words and a partial drop cap', async () => {
     // Archive.org's hOCR files use double-quoted attributes.
     // Those converted from ABBYY output also pad word spans with spaces.
-    const billText = (await readFileContent(`${ASSETS_PATH}/bill.hocr`)).replace(/'/g, '"').replace('>FIRST<', '>FIRST <');
+    const billText = doubleQuoted(await readFileContent(`${ASSETS_PATH}/bill.hocr`)).replace('>FIRST<', '><span class="ocr_dropcap">F</span>IRST <');
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(billText).buffer] });
     const page = doc.ocr.active[0];
     expect(page.lines.length, 'a double-quoted ocr_caption span was dropped on import').toBe(14);
     expect(page.lines[2].words.map((x) => x.text).join(' '), 'the caption line lost its words').toBe('Date Description Number Debits Credits Balance');
-    expect(page.lines[0].words[0].text, 'whitespace padding inside a word span became part of the word').toBe('FIRST');
+    expect(page.lines[0].words[0].text, 'a drop cap over part of a word read out of order, or whitespace padding inside the word span became part of the word').toBe('FIRST');
+    expect(page.lines[0].words[0].style.dropcap, 'a drop cap over part of a word was not read as a drop cap').toBe(true);
 
-    const charText = (await readFileContent(`${ASSETS_PATH}/tesseract_italics_example_1b.hocr`)).replace(/'/g, '"');
+    const charText = doubleQuoted(await readFileContent(`${ASSETS_PATH}/tesseract_italics_example_1b.hocr`));
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(charText).buffer] });
     const charPage = doc.ocr.active[0];
     expect(charPage.lines.map((x) => x.words.length), 'double-quoted character spans yielded no words').toEqual([10, 4, 6, 11]);

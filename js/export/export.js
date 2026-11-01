@@ -245,6 +245,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
         assistantChats: envelope.session.assistantChats,
         redactions: envelope.session.redactions,
         type3GlyphMappings: envelope.session.type3GlyphMappings,
+        hocrSourceHead: envelope.session.hocrSource?.head,
       }
       : undefined,
   };
@@ -253,6 +254,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
   const nativeText = envelope.session?.nativeText || [];
   const fillShapes = envelope.session?.fillShapes || [];
   const truth = envelope.session?.truth || [];
+  const hocrSourcePages = envelope.session?.hocrSource?.pages || [];
   for (let i = 0; i < ocrPages.length; i++) {
     const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
     /** @type {Record<string, any>} */
@@ -262,6 +264,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
       rec.nativeText = nativeText[i] ?? null;
       rec.fillShapes = fillShapes[i] ?? null;
       if (envelope.session.truth) rec.truth = truth[i] ?? null;
+      rec.hocrSource = hocrSourcePages[i] ?? null;
     }
     yield '\n';
     yield JSON.stringify(rec);
@@ -357,6 +360,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     throw new Error(`No OCR layer named "${options.ocrName}" on this document.`);
   }
   const ocrSource = options.ocrName ? doc.ocr[options.ocrName] : doc.ocr.active;
+  const ocrLayerName = options.ocrName ?? Object.keys(doc.ocr).find((k) => k !== 'active' && doc.ocr[k] === ocrSource) ?? null;
 
   if (format !== 'hocr' && enableLayout) {
     // Reorder HOCR elements according to layout boxes
@@ -747,14 +751,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
       });
     }
   } else if (format === 'hocr') {
+    // A page under a redaction mark is written without its source markup, which would return the lines the importer dropped unredacted.
+    const hocrSource = ocrLayerName ? {
+      head: doc.hocrSource.head[ocrLayerName] ?? null,
+      pages: doc.hocrSource.pages.map((recs, i) => (redactRectsByPage.has(i) ? null : recs?.[ocrLayerName] ?? null)),
+    } : null;
     content = writeHocr({
-      ocrData: ocrDownload,
-      pageArr,
-      docFonts: doc.fonts,
-      layoutRegions: { pages: removeCircularRefsRegions(doc.layoutRegions.pages) },
-      pageMetrics: doc.pageMetrics,
-      dataTablesSerialized: doc.serializeLayoutDataTables(),
-      doc,
+      ocrData: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, hocrSource, doc,
     });
   } else if (format === 'alto') {
     content = writeAlto({
@@ -870,10 +873,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
     };
     // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
     if (scribeSession) {
+      const hocrHead = ocrLayerName ? doc.hocrSource.head[ocrLayerName] ?? null : null;
+      const hocrPages = doc.hocrSource.pages.map((recs) => (ocrLayerName ? recs?.[ocrLayerName] ?? null : null));
       envelope.session = {
         v: 1,
         contentEdits: doc.contentEdits.pages,
         nativeText: doc.nativeText.pages,
+        hocrSource: hocrHead || hocrPages.some((p) => p) ? { head: hocrHead, pages: hocrPages } : undefined,
         fillText: collectFillTextRefs(doc),
         pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       };

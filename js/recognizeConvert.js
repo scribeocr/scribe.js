@@ -414,14 +414,13 @@ export async function recognizePageImp(
  * @param {string} ocrRaw - String containing raw OCR data for single page.
  * @param {number} n - Page number
  * @param {TextSource} format - Format of raw data.
- * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  * @returns {Promise<Awaited<ReturnType<typeof import('./import/convertPageBlocks.js').convertPageBlocks>>>}
  */
-async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
+async function convertOCRPage(ocrRaw, n, format) {
   await gs.getGeneralScheduler();
   let res;
   if (format === 'hocr') {
-    res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
+    res = await gs.convertPageHocr({ ocrStr: ocrRaw, n });
   } else if (format === 'abbyy') {
     res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
   } else if (format === 'alto') {
@@ -462,9 +461,10 @@ async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
  *   Set false when inserting a secondary engine's results into a doc that already has a primary OCR pass.
  * @param {boolean} [options.setActive] - When true, point `doc.ocr.active` at this engine's array. Default true.
  *   Set false to leave `doc.ocr.active` unchanged (used by recognition's per-page callback, which assigns active itself at the end of the run).
+ * @param {?HocrSourcePage} [options.hocrSource] - The page's hOCR source markup, kept under `engineName` for re-export of that layer.
  */
 export function insertParsedPage(doc, n, page, {
-  engineName, dataTables, warn = {}, mainData = true, setActive = true,
+  engineName, dataTables, warn = {}, mainData = true, setActive = true, hocrSource = undefined,
 }) {
   addCircularRefsOcr([page]);
 
@@ -476,6 +476,12 @@ export function insertParsedPage(doc, n, page, {
     doc.convertPageWarn[n] = warn;
     if (page.dims && page.dims.height && page.dims.width) doc.pageMetrics[n] = new PageMetrics(page.dims);
     doc.pageMetrics[n].angle = page.angle;
+  }
+
+  if (hocrSource !== undefined) {
+    if (!doc.hocrSource.pages[n]) doc.hocrSource.pages[n] = {};
+    if (hocrSource) doc.hocrSource.pages[n][engineName] = hocrSource;
+    else delete doc.hocrSource.pages[n][engineName];
   }
 
   doc.inputData.xmlMode[n] = true;
@@ -496,13 +502,13 @@ export function insertParsedPage(doc, n, page, {
  * This needs to be a separate function from `convertOCRPage`, given that sometimes recognition and conversion are combined by using `recognizeAndConvert`.
  *
  * @param {ScribeDoc} doc
- * @param {Awaited<ReturnType<typeof import('./import/convertPageBlocks.js').convertPageBlocks>>} params
+ * @param {Awaited<ReturnType<typeof import('./import/convertPageBlocks.js').convertPageBlocks>> & {hocrSource?: ?HocrSourcePage}} params
  * @param {number} n
  * @param {boolean} mainData
  * @param {string} engineName - Name of OCR engine.
  */
 async function convertPageCallback(doc, {
-  pageObj, dataTables, warn, langSet,
+  pageObj, dataTables, warn, langSet, hocrSource,
 }, n, mainData, engineName) {
   const fontPromiseArr = [];
   if (langSet && langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
@@ -514,7 +520,7 @@ async function convertPageCallback(doc, {
   await Promise.all(fontPromiseArr);
 
   insertParsedPage(doc, n, pageObj, {
-    engineName, dataTables, warn, mainData, setActive: false,
+    engineName, dataTables, warn, mainData, setActive: false, hocrSource,
   });
 }
 
@@ -529,13 +535,12 @@ async function convertPageCallback(doc, {
  *  For Tesseract.js recognition, the engine's results are flagged as the "main" data.
  * @param {TextSource} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
- * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
  * @param {Object} [options]
  * @param {'width' | 'sentence'} [options.docxLineSplitMode] - DOCX line-split mode.
  *    Defaults to `scribeDocDefaults.docxLineSplitMode`. Ignored for non-docx formats.
  */
-export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null, options = {}) {
+export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, pageMetrics = null, options = {}) {
   const docxLineSplitMode = options.docxLineSplitMode ?? scribeDocDefaults.docxLineSplitMode;
   const promiseArr = [];
   if (format === 'textract') {
@@ -617,7 +622,7 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
 
   for (let n = 0; n < ocrRawArr.length; n++) {
     if (ocrRawArr[n] == null) continue;
-    promiseArr.push(convertOCRPage(ocrRawArr[n], n, format, scribeMode)
+    promiseArr.push(convertOCRPage(ocrRawArr[n], n, format)
       .then((res) => convertPageCallback(doc, res, n, mainData, engineName)));
   }
   await Promise.all(promiseArr);
