@@ -173,6 +173,54 @@ const TOOLBAR_HEIGHT_MAX = 80;
 const TAB_STRIP_HEIGHT = 30;
 const GROUP_NOTICE_HEIGHT = 32;
 
+/**
+ * Mirror scroll and zoom between two viewers of one document, both ways, until the returned function is called.
+ * @param {ScribeViewer} a
+ * @param {ScribeViewer} b
+ * @returns {() => void}
+ */
+function linkViewers(a, b) {
+  /** @type {WeakMap<ScribeViewer, {top: number, left: number}>} */
+  const expected = new WeakMap();
+  let zooming = false;
+  const margin = (/** @type {ScribeViewer} */ v) => parseFloat(v.contentSizer?.style.marginLeft || '0') || 0;
+  const follow = (/** @type {ScribeViewer} */ from, /** @type {ScribeViewer} */ to) => () => {
+    const fs = from.scrollContainer;
+    const ts = to.scrollContainer;
+    // Following the echo of a write into `from` would drag `to` back, since the echo arrives a frame late and can be clamped.
+    const echo = expected.get(from);
+    if (echo && Math.abs(fs.scrollTop - echo.top) < 0.5 && Math.abs(fs.scrollLeft - echo.left) < 0.5) {
+      expected.delete(from);
+      return;
+    }
+    const top = fs.scrollTop;
+    const left = fs.scrollLeft - margin(from) + margin(to);
+    if (Math.abs(ts.scrollTop - top) < 0.5 && Math.abs(ts.scrollLeft - left) < 0.5) return;
+    const was = { top: ts.scrollTop, left: ts.scrollLeft };
+    ts.scrollTop = top;
+    ts.scrollLeft = left;
+    // A write clamped to where the target already was fires no scroll event, so it leaves no echo to ignore.
+    if (ts.scrollTop !== was.top || ts.scrollLeft !== was.left) expected.set(to, { top: ts.scrollTop, left: ts.scrollLeft });
+  };
+  const zoomFollow = (/** @type {ScribeViewer} */ from, /** @type {ScribeViewer} */ to) => (/** @type {number} */ level) => {
+    if (zooming || Math.abs(to.zoomLevel - level) < 1e-6) return;
+    zooming = true;
+    try { to.zoom(level / to.zoomLevel, to.getViewportCenter()); } finally { zooming = false; }
+  };
+  const ab = follow(a, b);
+  const ba = follow(b, a);
+  a.scrollContainer.addEventListener('scroll', ab, { passive: true });
+  b.scrollContainer.addEventListener('scroll', ba, { passive: true });
+  a.onZoomChange = zoomFollow(a, b);
+  b.onZoomChange = zoomFollow(b, a);
+  return () => {
+    a.scrollContainer.removeEventListener('scroll', ab);
+    b.scrollContainer.removeEventListener('scroll', ba);
+    a.onZoomChange = null;
+    b.onZoomChange = null;
+  };
+}
+
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 const SHEET_BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 6l-6 6 6 6"/></svg>';
 const DOCK_PANELS_SVG = '<svg viewBox="0 0 44 44" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"'
@@ -639,6 +687,15 @@ class ScribePDFViewer {
     this._rightGroup = null;
     this._rightGroupFrac = 0.5;
     this._groupW = 0;
+    /**
+     * The second view of the lane's document that the lane's mode shows as an item of the right group (Side by side), or null.
+     * @type {?{tab: Object, link: ?(() => void)}}
+     */
+    this._sideView = null;
+    /** The group the active mode started in. */
+    this._modeGroup = 0;
+    /** @type {'scan'|'text'|'beside'} Proofread Text's view. */
+    this._proofView = 'scan';
     /** The group the toolbar, the page box and the keys act on: 0 for the document's lane, 1 for the group to the right. */
     this._activeGroup = 0;
     /** @type {?HTMLDivElement} */
@@ -1814,10 +1871,9 @@ class ScribePDFViewer {
       this._proofreadTool = null;
       /** Whether Proofread Text's "Zoom to each word" switch is on. */
       this._proofFollow = false;
-      this._proofTextOnly = false;
       /** @type {?HTMLSpanElement} */
       this._proofFollowElem = null;
-      /** @type {?HTMLButtonElement[]} The Scan + text and Text only buttons, in that order. */
+      /** @type {?HTMLButtonElement[]} The Scan + text, Text only and Side by side buttons, in that order. */
       this._proofSegBtns = null;
       /** The widest count reading pinned so far. */
       this._proofreadCountWidest = '';
@@ -2391,6 +2447,7 @@ class ScribePDFViewer {
     // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
     await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
 
+    await this._syncSideViewDoc(doc);
     this._extractTablesTool?.docChanged?.();
     this._inspectTool?.docChanged?.();
 
@@ -2438,6 +2495,7 @@ class ScribePDFViewer {
     if (!prev) return null;
     const terminatePrev = terminate ?? this._ownsDoc;
 
+    if (this._sideView) this._closeSideView();
     this.scribe.doc = new scribe.ScribeDoc(); // empty doc -> setter fires clear(): view cleared
     this.doc = null;
     this._ownsDoc = false;
@@ -2699,7 +2757,7 @@ class ScribePDFViewer {
     let changed = false;
     for (const tab of this._tabs) {
       // Pool teardown would kill an in-flight text extraction, so still-extracting documents stay warm.
-      if (warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
+      if (tab.view || warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
       let suspendedAny = false;
       for (const src of tab.doc.images.sources.values()) {
         // A source with staged or running jobs drains first, because suspending it drops those renders.
@@ -3149,12 +3207,17 @@ class ScribePDFViewer {
     const g = this._rightGroup;
     if (!g) return;
     const side = this._groupTabs(1);
-    const shown = g.active;
+    const shown = g.active && !g.active.view ? g.active : null;
     if (shown && g.viewer.doc === shown.doc) shown.lastPage = g.viewer.state.cp.n;
-    for (const tab of side) tab.group = 0;
+    const docs = [];
+    for (const tab of side) {
+      if (tab.view) { this._removeTab(tab); this._dropSideView(tab); continue; }
+      tab.group = 0;
+      docs.push(tab);
+    }
     g.active = null;
     this._closeGroup();
-    const next = shown || side[0];
+    const next = shown || docs[0];
     if (next) await this._activateTab(this._tabs.indexOf(next));
   }
 
@@ -3166,6 +3229,8 @@ class ScribePDFViewer {
     if (this._activeGroup === 1) this._setActiveGroup(0);
     for (const tab of this._groupTabs(1)) {
       this._removeTab(tab);
+      // A view item shows the lane's document, which stays open with the lane.
+      if (tab.view) { this._dropSideView(tab); continue; }
       Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
         .then(() => tab.doc.close().catch(() => {}));
     }
@@ -3179,6 +3244,109 @@ class ScribePDFViewer {
     this._setActiveGroup(0);
     this._relayout();
     this._renderTabs();
+  }
+
+  /**
+   * Show a second view of the lane's document as an item of the right group (Side by side).
+   * @param {Object} view
+   * @param {string} view.label - The item's name in the strip.
+   * @param {string} view.icon - The mode's icon markup.
+   * @param {(viewer: ScribeViewer) => (void|Promise<void>)} view.configure - Puts the group viewer in the second view once the document shows there.
+   * @param {(viewer: ScribeViewer) => void} view.release - Undoes it whenever the group viewer leaves the second view.
+   * @param {() => void} [view.onClose] - Told once the item is gone, or at once when the view cannot open.
+   * @param {(doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => boolean} [view.retarget] - Whether the view holds for a document the lane switched to.
+   * @returns {Promise<?Object>} The item, or null when the view cannot open.
+   */
+  async _openSideView(view) {
+    if (this._sideView) this._closeSideView();
+    if (!this.doc || this._phoneUi || !this._tabStrip || this._modeGroup === 1) {
+      view.onClose?.();
+      return null;
+    }
+    const tab = {
+      ...this._newTab(this.doc, view.label), group: 1, icon: view.icon, view,
+    };
+    // Registered before the group opens, since opening it syncs the banner, and a mode's sync opens the view when it finds none.
+    this._sideView = { tab, link: null };
+    const g = this._rightGroup || this._openGroup({ program: true });
+    if (!g) {
+      this._sideView = null;
+      view.onClose?.();
+      return null;
+    }
+    this._tabs.push(tab);
+    await this._activateGroupTab(tab);
+    return tab;
+  }
+
+  /** Close the second view. */
+  _closeSideView() {
+    const sv = this._sideView;
+    if (!sv) return;
+    if (this._tabs.includes(sv.tab)) this._closeGroupTab(sv.tab);
+    else this._dropSideView(sv.tab);
+  }
+
+  /**
+   * Put the group viewer into the second view, then mirror the lane's zoom and scroll and link the two.
+   * @param {Object} tab
+   */
+  async _showSideView(tab) {
+    const g = this._rightGroup;
+    const sv = this._sideView;
+    if (!g || !sv || sv.tab !== tab || g.viewer.doc !== tab.doc) return;
+    const lane = this.scribe;
+    const v = g.viewer;
+    await tab.view.configure(v);
+    if (this._rightGroup !== g || g.active !== tab || this._sideView !== sv) return;
+    if (Math.abs(v.zoomLevel - lane.zoomLevel) > 1e-6) v.zoom(lane.zoomLevel / v.zoomLevel, v.getViewportCenter());
+    const margin = (/** @type {ScribeViewer} */ x) => parseFloat(x.contentSizer?.style.marginLeft || '0') || 0;
+    v.scrollContainer.scrollTop = lane.scrollContainer.scrollTop;
+    v.scrollContainer.scrollLeft = lane.scrollContainer.scrollLeft - margin(lane) + margin(v);
+    sv.link = linkViewers(lane, v);
+    this._positionBanners();
+  }
+
+  /** Take the group viewer out of the second view. */
+  _hideSideView() {
+    const sv = this._sideView;
+    const g = this._rightGroup;
+    if (!sv || !g) return;
+    if (sv.link) { sv.link(); sv.link = null; }
+    if (g.viewer.doc === sv.tab.doc) sv.tab.view.release(g.viewer);
+    this._positionBanners();
+  }
+
+  /**
+   * End the second view once its item has left the tab list.
+   * @param {Object} tab
+   */
+  _dropSideView(tab) {
+    const sv = this._sideView;
+    if (!sv || sv.tab !== tab) return;
+    this._hideSideView();
+    this._sideView = null;
+    tab.view.onClose?.();
+  }
+
+  /**
+   * Move the second view to the lane's new document, or close it when the view does not hold for that document.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  async _syncSideViewDoc(doc) {
+    const sv = this._sideView;
+    if (!sv || sv.tab.doc === doc) return;
+    if (!sv.tab.view.retarget?.(doc)) { this._closeSideView(); return; }
+    const g = this._rightGroup;
+    const shown = !!g && g.active === sv.tab;
+    if (shown) this._hideSideView();
+    sv.tab.doc = doc;
+    if (shown && g) {
+      g.active = null;
+      await this._activateGroupTab(sv.tab);
+    } else {
+      this._renderTabs();
+    }
   }
 
   /**
@@ -3373,8 +3541,8 @@ class ScribePDFViewer {
     const g = this._rightGroup;
     const next = n === 1 && g ? 1 : 0;
     const changed = next !== this._activeGroup;
-    if (changed) {
-      // A mode is one document's session, so it ends on the group it ran in before the toolbar moves to the other.
+    // A mode is one document's session, so it ends on the group it ran in before the toolbar moves to the other.
+    if (changed && !this._sideView) {
       const modeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
       if (modeBtn) {
         modeBtn.click();
@@ -3402,6 +3570,11 @@ class ScribePDFViewer {
 
   _activeViewer() {
     return this._activeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
+  }
+
+  /** The viewer the active mode runs on. */
+  _modeViewer() {
+    return this._modeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
   }
 
   /**
@@ -3536,9 +3709,11 @@ class ScribePDFViewer {
     const prev = g.active;
     if (prev && prev !== tab && g.viewer.doc === prev.doc) {
       prev.lastPage = g.viewer.state.cp.n;
-      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(prev))).catch(() => {});
+      if (prev.view) this._hideSideView();
+      else Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(prev))).catch(() => {});
     }
     g.active = tab;
+    if (tab.view) tab.lastPage = this.scribe.state.cp.n;
     tab.lastUse = ++this._tabUseCounter;
     this._setGroupNotice(null);
     if (g.viewer.doc === tab.doc && !tab.asleep) {
@@ -3576,6 +3751,7 @@ class ScribePDFViewer {
     }
     tab.placedByAddress = placed;
     if (!placed) await g.viewer.displayPage(pageIndex, true, false);
+    if (tab.view) await this._showSideView(tab);
     // Deferred text extraction can reveal comments after the load.
     const { doc } = tab;
     if (doc._textReadySettle) doc.textReady.then(() => { if (this._rightGroup === g && g.viewer.doc === doc) this._syncGroupSidebarDoc(g, g.viewer.state.cp.n); }).catch(() => {});
@@ -3598,8 +3774,12 @@ class ScribePDFViewer {
     const g = /** @type {NonNullable<ScribePDFViewer['_rightGroup']>} */ (this._rightGroup);
     const pos = this._groupTabs(1).indexOf(tab);
     this._removeTab(tab);
-    Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
-      .then(() => tab.doc.close().catch(() => {}));
+    // A view item shows the lane's document, which stays open with the lane.
+    if (tab.view) this._dropSideView(tab);
+    else {
+      Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(tab))).catch(() => {})
+        .then(() => tab.doc.close().catch(() => {}));
+    }
     const rest = this._groupTabs(1);
     if (!rest.length) {
       this._closeGroup();
@@ -3670,7 +3850,7 @@ class ScribePDFViewer {
    */
   async _moveTabToGroup(tab, group, index = Infinity, { program = false } = {}) {
     const to = group === 1 ? 1 : 0;
-    if (!this._tabs.includes(tab)) return;
+    if (!this._tabs.includes(tab) || tab.view) return;
     // The lane's only document moved to the right would empty the lane, which closes and takes the document back, so there is nothing to do.
     if (to === 1 && tab.group !== 1 && this._groupTabs(0).length === 1) return;
     if (to === 1 && !this._rightGroup && !this._openGroup({ program })) return;
@@ -3790,6 +3970,7 @@ class ScribePDFViewer {
   _tabMenuExtras(tab) {
     /** @type {Array<{label?: string, onPick?: () => void, disabled?: boolean, sep?: boolean}>} */
     const rows = [];
+    if (tab.view) return rows;
     const stuck = tab.group !== 1 && this._groupTabs(0).length === 1;
     if (!this._phoneUi) rows.push({ label: tab.anchored ? 'Unpin' : 'Pin: keep it in view', onPick: () => { tab.anchored = !tab.anchored; this._renderTabs(); } });
     if (this._phoneUi) {
@@ -4012,6 +4193,14 @@ class ScribePDFViewer {
     if (this._tabStrip) this._tabStrip.render(lane, active, { grouped: !!folder, inGroup: (t) => !!folder?.ownsTab?.(t) });
     if (g) {
       const side = this._groupTabs(1);
+      const laneName = (this._activeTab >= 0 ? this._tabs[this._activeTab]?.name : null) || '';
+      for (const t of side) if (t.view) t.sub = laneName;
+      const lone = side.length === 1 && !!side[0].view;
+      const closeAction = g.strip.tabStripElem.querySelector('.scribe-tab-action');
+      if (closeAction) {
+        closeAction.title = lone ? 'Close this view' : 'Close this group and its tabs';
+        closeAction.ariaLabel = closeAction.title;
+      }
       g.strip.render(side, g.active ? side.indexOf(g.active) : -1, { grouped: false, inGroup: () => false });
       g.empty.style.display = g.active ? 'none' : '';
     }
@@ -4106,8 +4295,9 @@ class ScribePDFViewer {
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
     const panelW = (!this._phoneUi && this._automatePanel?.isOpen()) ? this._automatePanel.width : 0;
     const g = this._rightGroup;
-    const onGroup = this._activeGroup === 1 && !!g && !!this._laneBox;
-    const bannerRight = `${panelW + (g && !onGroup ? this._groupW : 0)}px`;
+    const onGroup = (this._modeBannerBtn ? this._modeGroup === 1 : this._activeGroup === 1) && !!g && !!this._laneBox;
+    const sideShown = !!(this._sideView && g && g.active === this._sideView.tab);
+    const bannerRight = `${panelW + (g && !onGroup && !sideShown ? this._groupW : 0)}px`;
     const bannerLeft = `${onGroup ? this._laneBox.left + this._laneBox.width : this._columnWidth()}px`;
     if (this._modeBanner) { this._modeBanner.style.right = bannerRight; this._modeBanner.style.left = bannerLeft; }
     if (this._banner) { this._banner.style.right = bannerRight; this._banner.style.left = bannerLeft; }
@@ -4307,8 +4497,8 @@ class ScribePDFViewer {
       if (this._recognizeExtras) this._recognizeExtras.remove();
       this._recognizeDockUi?.remove();
       this._proofreadExtras?.remove();
-      this._activeViewer().proofFollow = null;
-      if (this._proofTextOnly) this._setProofTextOnly(false);
+      this._modeViewer().proofFollow = null;
+      if (this._proofView !== 'scan') this._setProofView('scan');
       this._proofreadHandoffElem?.remove();
       this._closeRecognizeSheet();
       // The palette returns to its floating home so the closed bar holds nothing.
@@ -4321,6 +4511,8 @@ class ScribePDFViewer {
       this._positionBanners();
       return;
     }
+    // Recorded only as a mode starts, because a mode with its second view open keeps running when the active group changes.
+    if (this._modeBannerBtn !== activeBtn) this._modeGroup = this._activeGroup;
     // On the phone the dock is the mode's bar, so the top banner stays hidden.
     // A banner would put Done in the top-right corner, out of one-handed reach.
     if (this._phoneUi && this._dockModeRow) {
@@ -4468,11 +4660,11 @@ class ScribePDFViewer {
       this._syncProofreadRow();
       // The switch keeps its state across exits, but the stepping hook is armed only while the mode is on.
       this._setProofFollow(this._proofFollow);
-      this._setProofTextOnly(this._proofTextOnly);
+      this._setProofView(this._proofView);
     } else {
       this._proofreadExtras?.remove();
-      this._activeViewer().proofFollow = null;
-      if (this._proofTextOnly) this._setProofTextOnly(false);
+      this._modeViewer().proofFollow = null;
+      if (this._proofView !== 'scan') this._setProofView('scan');
     }
 
     this._modeBanner.style.display = 'flex';
@@ -4532,18 +4724,18 @@ class ScribePDFViewer {
     });
     const seg = document.createElement('span');
     seg.className = 'scribe-proof-viewseg';
-    /** @param {string} label @param {boolean} textOnly */
-    const segButton = (label, textOnly) => {
+    /** @param {string} label @param {'scan'|'text'|'beside'} key */
+    const segButton = (label, key) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'scribe-proof-viewbtn';
       b.textContent = label;
       b.addEventListener('mousedown', (e) => e.preventDefault());
-      b.addEventListener('click', () => this._setProofTextOnly(textOnly));
+      b.addEventListener('click', () => this._setProofView(key));
       seg.appendChild(b);
       return b;
     };
-    this._proofSegBtns = [segButton('Scan + text', false), segButton('Text only', true)];
+    this._proofSegBtns = [segButton('Scan + text', 'scan'), segButton('Text only', 'text'), segButton('Side by side', 'beside')];
     this._proofFollowElem = follow;
     tools.append(follow, seg, stepButton('Previous word to check', PROOF_PREV_SVG, -1), count, stepButton('Next word to check', PROOF_NEXT_SVG, 1));
     this._proofreadExtras = tools;
@@ -4583,7 +4775,7 @@ class ScribePDFViewer {
       this._proofFollowElem.ariaChecked = this._proofFollow ? 'true' : 'false';
     }
     const inMode = !!this._proofreadTool?.isActive();
-    const sv = this._activeViewer();
+    const sv = this._modeViewer();
     sv.proofFollow = this._proofFollow && inMode ? (kw, travel) => this._followProofWord(kw, travel) : null;
     if (!this._proofFollow || !inMode) return;
     const selected = sv.CanvasSelection.getUiWords();
@@ -4607,15 +4799,84 @@ class ScribePDFViewer {
   }
 
   /**
-   * Switch Proofread Text between Scan + text and Text only.
-   * Text only hides the scan and shows the layered text alone in ink, with a rule under the doubtful words.
-   * @param {boolean} textOnly
+   * Switch Proofread Text between Scan + text, Text only and Side by side.
+   * Text only hides the scan and shows the layered text alone in ink, with the doubtful words underlined.
+   * Side by side keeps the mode's own viewer on Scan + text and shows Text only beside it, as an item of the group to the right.
+   * @param {'scan'|'text'|'beside'} next
    */
-  _setProofTextOnly(textOnly) {
-    this._proofTextOnly = !!textOnly;
-    this.pdfViewerElem.classList.toggle('scribe-proof-textonly', this._proofTextOnly);
-    this._activeViewer().proofTextOnly = this._proofTextOnly;
-    if (this._proofSegBtns) this._proofSegBtns.forEach((b, i) => b.classList.toggle('on', (i === 1) === this._proofTextOnly));
+  _setProofView(next) {
+    if (next === 'beside' && (this._phoneUi || this._modeGroup === 1)) return;
+    const sv = this._modeViewer();
+    const prev = this._proofView;
+    this._proofView = next;
+    if (prev === 'beside' && next !== 'beside' && this._sideView) this._closeSideView();
+    const textOnly = next === 'text';
+    sv.elem.classList.toggle('scribe-proof-textonly', textOnly);
+    sv.proofTextOnly = textOnly;
+    if (next === 'beside' && !this._sideView) {
+      const icon = this._proofreadTool?.toolbarElem.querySelector('.cr-icon')?.innerHTML || '';
+      const mirror = (/** @type {ScribeViewer} */ to) => (/** @type {?Array<number>} */ pages) => {
+        const ns = Array.isArray(pages) ? pages : to.textGroupsRenderIndices.slice();
+        for (const n of ns) if (to.textGroupsRenderIndices.includes(n)) to.renderWords(n);
+      };
+      /** @type {?(() => void)} */
+      let restore = null;
+      this._openSideView({
+        label: 'Text only',
+        icon,
+        configure: async (v) => {
+          v.state.displayMode = 'proof';
+          v.proofTextOnly = true;
+          v.elem.classList.add('scribe-proof-textonly');
+          const laneEdit = sv.onEditCallback;
+          const laneWord = sv.onWordTextChange;
+          const paneEdit = v.onEditCallback;
+          const toPane = mirror(v);
+          const toLane = mirror(sv);
+          sv.onEditCallback = (pages) => { if (laneEdit) laneEdit(pages); toPane(pages); };
+          sv.onWordTextChange = (obj) => { if (laneWord) laneWord(obj); toPane([obj.word.line.page.n]); };
+          v.onEditCallback = (pages) => { if (paneEdit) paneEdit(pages); toLane(pages); this._syncUndoState(); };
+          v.onWordTextChange = (obj) => { toLane([obj.word.line.page.n]); this._syncProofreadRow(); };
+          restore = () => {
+            sv.onEditCallback = laneEdit;
+            sv.onWordTextChange = laneWord;
+            v.onEditCallback = paneEdit;
+            v.onWordTextChange = null;
+            restore = null;
+          };
+          v.destroyText(false);
+          await v.displayPage(v.state.cp.n, false, true);
+        },
+        release: (v) => {
+          if (restore) restore();
+          v.state.displayMode = 'invis';
+          v.proofTextOnly = false;
+          v.elem.classList.remove('scribe-proof-textonly');
+        },
+        onClose: () => {
+          if (this._proofView !== 'beside') return;
+          this._proofView = 'scan';
+          this._syncProofSeg();
+        },
+        // The mode decides for itself whether a document the lane switches to can be proofread, and closes with the view when it cannot.
+        retarget: () => true,
+      });
+    }
+    this._syncProofSeg();
+  }
+
+  /** Light the Proofread Text view switch's position in force. */
+  _syncProofSeg() {
+    if (!this._proofSegBtns) return;
+    const keys = ['scan', 'text', 'beside'];
+    const canBeside = !this._phoneUi && this._modeGroup !== 1;
+    this._proofSegBtns.forEach((b, i) => {
+      b.classList.toggle('on', keys[i] === this._proofView);
+      if (i !== 2) return;
+      b.style.display = this._phoneUi ? 'none' : '';
+      b.disabled = !canBeside;
+      b.title = canBeside ? '' : 'Side by side works from the left half';
+    });
   }
 
   /** Build the Recognize Text receipt's hand-off button once. */
@@ -7497,6 +7758,7 @@ class ScribePDFViewer {
         this.scribe._updateContentSize();
         sc.scrollTop = restoreView.sy;
         sc.scrollLeft = restoreView.sx;
+        this.scribe.onZoomChange?.(restoreView.zoom);
         return;
       }
       const stageW = sc.clientWidth;
@@ -7549,6 +7811,8 @@ class ScribePDFViewer {
       this._autoFit = {
         imgDims, docW, zoom, isDefaultFit, widthMode: widthFitDefault,
       };
+      // A linked second viewer follows the zoom through this hook.
+      this.scribe.onZoomChange?.(zoom);
     };
   }
 

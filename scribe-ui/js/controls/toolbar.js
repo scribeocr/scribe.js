@@ -689,7 +689,8 @@ const TAB_FADE_WIDTH = 24;
  *   Called on each move of a dragged tab and at its drop, to ask whether the pointer is over a drop target outside this strip.
  *   When it answers true to a `drop`, the owner applies the drop and the strip only restores its tabs.
  * @returns {{ tabStripElem: HTMLDivElement,
- *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean, preview?: boolean }>, activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
+ *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean, preview?: boolean, view?: Object, icon?: string, sub?: string }>,
+ *     activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
  *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void,
  *   showTabNote: (index: number, message: string, options?: {actionLabel?: string, onAction?: () => void}) => void }}
  */
@@ -989,7 +990,9 @@ export function createTabStrip({
   /**
    * Rebuild the tab elements from the current tab list.
    * With `group`, the tabs `inGroup` admits sit first, in a group that continues the pinned folder tab, and the rest follow after a gap.
-   * @param {Array<{ name: string, asleep?: boolean, waking?: boolean }>} tabs
+   * A tab with `view` is a view item, a mode's second view of another tab's document.
+   * It is not dragged, its name is italic, `icon` draws before the name, and alone in the strip it is a wide header with `sub` after the name.
+   * @param {Array<{ name: string, asleep?: boolean, waking?: boolean, preview?: boolean, view?: Object, icon?: string, sub?: string }>} tabs
    * @param {number} activeIndex
    * @param {{grouped: boolean, inGroup: (tab: Object) => boolean}} [group]
    */
@@ -1019,7 +1022,10 @@ export function createTabStrip({
         tabElem.classList.add('preview');
         tabElem.addEventListener('dblclick', () => { if (onKeep) onKeep(i); });
       }
-      tabElem.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
+      const wide = !!tab.view && tabs.length === 1;
+      if (tab.view) tabElem.classList.add('view');
+      if (wide) tabElem.classList.add('wide');
+      tabElem.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : (tab.sub ? `${tab.name} · ${tab.sub}` : tab.name);
       tabElem.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTabMenu(event.clientX, event.clientY, i, tab.name, tabs.length);
@@ -1032,10 +1038,22 @@ export function createTabStrip({
         pin.innerHTML = barIcon('pin');
         tabElem.appendChild(pin);
       }
+      if (tab.icon) {
+        const icon = document.createElement('span');
+        icon.className = 'scribe-tab-icon';
+        icon.innerHTML = tab.icon;
+        tabElem.appendChild(icon);
+      }
       const name = document.createElement('span');
       name.className = 'scribe-tab-name';
       name.textContent = tab.name;
       tabElem.appendChild(name);
+      if (wide && tab.sub) {
+        const sub = document.createElement('span');
+        sub.className = 'scribe-tab-sub';
+        sub.textContent = `· ${tab.sub}`;
+        tabElem.appendChild(sub);
+      }
 
       if (tab.waking) {
         const spin = document.createElement('span');
@@ -1059,7 +1077,7 @@ export function createTabStrip({
         if (suppressClick) return;
         onSelect(i);
       });
-      tabElem.addEventListener('pointerdown', beginTabDrag);
+      if (!tab.view) tabElem.addEventListener('pointerdown', beginTabDrag);
       tabElem.dataset.tabIndex = String(i);
       if (group.grouped && group.inGroup(tab)) {
         /** @type {HTMLSpanElement} */ (groupElem).appendChild(tabElem);
@@ -5004,15 +5022,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-proof-viewbtn { border: none; background: var(--scribe-surface); color: var(--scribe-ink-2); font-family: inherit; font-size: 11px; font-weight: 600; line-height: 1; padding: 4.5px 10px; cursor: pointer; }
     .${r} .scribe-proof-viewbtn + .scribe-proof-viewbtn { border-left: 1px solid var(--scribe-line-strong); }
     .${r} .scribe-proof-viewbtn.on { background: var(--scribe-accent); color: var(--scribe-accent-ink); cursor: default; }
-    .${r}.scribe-proof-textonly .scribe-layer-image { visibility: hidden; }
-    .${r}.scribe-proof-textonly .scribe-proof-peek .scribe-layer-image { visibility: visible; }
+    .${r} .scribe-proof-viewbtn:disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-proof-textonly .scribe-layer-image { visibility: hidden; }
+    .${r} .scribe-proof-textonly.scribe-proof-peek .scribe-layer-image { visibility: visible; }
     /* The page stays white in both themes, so the page and its ink take literal colors. */
     /* The page's low-res preview is an inline background image on the container, so only a forced rule keeps it off. */
-    .${r}.scribe-proof-textonly .scribe-page { background-image: none !important; background-color: #fff; }
-    .${r}.scribe-proof-textonly .scribe-word { color: #141414 !important; opacity: 1 !important; }
-    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--scribe-desc, 0px) - 2px / var(--scribe-zoom, 1)); border-bottom: calc(2.5px / var(--scribe-zoom, 1)) solid var(--scribe-proof-rule); pointer-events: none; }
-    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-rule: #ff0000; }
-    .${r}.scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-rule: #ffc800; }
+    .${r} .scribe-proof-textonly .scribe-page { background-image: none !important; background-color: #fff; }
+    .${r} .scribe-proof-textonly .scribe-word { color: #141414 !important; opacity: 1 !important; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--scribe-desc, 0px) - 2px / var(--scribe-zoom, 1)); border-bottom: calc(2.5px / var(--scribe-zoom, 1)) solid var(--scribe-proof-rule); pointer-events: none; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-rule: #ff0000; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-rule: #ffc800; }
     .${r} .scribe-proof-count { font-size: 12px; color: var(--scribe-ink); font-variant-numeric: tabular-nums; min-width: 9.5ch; text-align: center; padding: 0 2px; white-space: nowrap; }
     .${r} .scribe-recog-status { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
@@ -5037,7 +5056,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-banner-run:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); cursor: default; }
     .${r} .scribe-mode-banner-run.busy { opacity: .6; pointer-events: none; }
 
-    .${r} .scribe-tab.preview .scribe-tab-name { font-style: italic; padding-right: 2px; }
+    .${r} .scribe-tab.preview .scribe-tab-name, .${r} .scribe-tab.view .scribe-tab-name { font-style: italic; padding-right: 2px; }
+    .${r} .scribe-tab.wide { flex: 1 1 auto; max-width: none; gap: 7px; padding-left: 12px; }
+    .${r} .scribe-tab.wide .scribe-tab-icon { color: var(--scribe-accent); }
+    .${r} .scribe-tab.wide .scribe-tab-name { flex: none; font-style: normal; font-weight: 600; font-size: 12.5px; }
+    .${r} .scribe-tab.wide .scribe-tab-close { display: none; }
+    .${r} .scribe-tab-sub { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--scribe-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .${r} .scribe-right-group { position: absolute; z-index: 3; display: flex; flex-direction: column; box-sizing: border-box; background: var(--scribe-canvas); border-left: 1px solid var(--scribe-line); overflow: hidden; }
     .${r} .scribe-right-group .scribe-tab-strip { flex: none; }
     .${r} .scribe-right-group-body { flex: 1 1 0; min-height: 0; position: relative; overflow: hidden; }

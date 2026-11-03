@@ -918,7 +918,6 @@ export class UiText {
             edit();
           }
         }
-        if (itext.changeTextCallback) itext.changeTextCallback(itext);
       }
       UiText.updateWordCanvas(itext);
       UiText.input.remove();
@@ -928,6 +927,8 @@ export class UiText {
       UiText.inputInnerHTMLLast = '';
       UiText.inputCursorLast = 0;
       readingsListSync(getViewer(itext));
+      // This runs after the input is gone, because a callback that re-renders the page would otherwise re-enter this removal through `renderWords`.
+      if (textNew && itext.changeTextCallback) itext.changeTextCallback(itext);
     };
 
     UiText.input.addEventListener('blur', () => (UiText.inputRemove));
@@ -1056,7 +1057,7 @@ export class UiOcrWord extends UiText {
       markupOpacity,
       markupGroupId,
       markupComment,
-      changeTextCallback: () => {},
+      changeTextCallback: (obj) => { if (viewer.onWordTextChange) viewer.onWordTextChange(obj); },
       viewer,
       dom,
     });

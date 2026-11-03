@@ -22,7 +22,7 @@ import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.j
 import {
   resolveActiveSheet, copyTablePreviewSelection, selectAllTablePreviewCells, moveTablePreviewSelection,
 } from '../viewerTablePreview.js';
-import { pulseTable, setActiveTable } from '../viewerLayout.js';
+import { pulseTable, setActiveTable, renderLayoutBoxes } from '../viewerLayout.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 import { createDropdown } from './dropdown.js';
 import { barIcon } from './icons.js';
@@ -3686,18 +3686,21 @@ export function createExtractTablesTool(app) {
   toolbarLabelElem.textContent = 'Extract Tables';
   toolbarElem.appendChild(toolbarLabelElem);
   let active = false;
-  let previewOn = false;
+  let view = 'page';
   /** @type {?string} */
   let priorDisplayMode = null;
+  // The mode's viewer is fixed at entry, since a press into the other group during Side by side makes that group active without ending the mode.
+  let modeViewer = null;
+  const viewerOf = () => modeViewer || app._activeViewer();
 
   let armed = false;
   let priorCanvasSelection = false;
   /** @type {?Set<string>} */
   let beforeIds = null;
   const hintText = () => (armed ? 'Drag a box around the table \u00b7 Esc cancels' : null);
-  const armPointerDown = () => { beforeIds = new Set(app._activeViewer().doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).map((t) => t.id))); };
+  const armPointerDown = () => { beforeIds = new Set(viewerOf().doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).map((t) => t.id))); };
   const armPointerUp = () => {
-    const sv = app._activeViewer();
+    const sv = viewerOf();
     const before = beforeIds;
     beforeIds = null;
     const added = before ? sv.doc.layoutDataTables.pages.flatMap((p) => (p?.tables || []).filter((t) => !before.has(t.id)).map((t) => ({ table: t, n: p.n }))) : [];
@@ -3712,7 +3715,7 @@ export function createExtractTablesTool(app) {
   const disarm = () => {
     if (!armed) return;
     armed = false;
-    const sv = app._activeViewer();
+    const sv = viewerOf();
     sv.mode = 'select';
     sv.enableCanvasSelection = priorCanvasSelection;
     sv.elem.classList.remove('scribe-xt-armed');
@@ -3722,9 +3725,9 @@ export function createExtractTablesTool(app) {
     app._setToolHint?.(tool);
   };
   const armAddTable = () => {
-    const sv = app._activeViewer();
+    const sv = viewerOf();
     if (!sv.doc || !active) return;
-    if (previewOn) setPreview(false);
+    if (view === 'preview') setView('page');
     if (armed) return;
     armed = true;
     priorCanvasSelection = sv.enableCanvasSelection;
@@ -3738,16 +3741,16 @@ export function createExtractTablesTool(app) {
     app._setToolHint?.(tool);
   };
 
-  // The Page and Preview export view toggle, mounted into the mode banner while this mode is active.
+  // The Page, Preview Export and Side by side view switch, mounted into the mode banner while this mode is active.
   const viewSeg = document.createElement('span');
   viewSeg.className = 'scribe-mode-banner-viewseg';
   Object.assign(viewSeg.style, {
     display: 'inline-flex', border: '1px solid var(--scribe-line-strong)', borderRadius: '6px', overflow: 'hidden', margin: '0 2px 0 10px', flex: 'none',
   });
-  const segBtn = (label, view) => {
+  const segBtn = (label, key) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.dataset.tableView = view;
+    b.dataset.tableView = key;
     b.textContent = label;
     Object.assign(b.style, {
       border: 'none',
@@ -3766,12 +3769,17 @@ export function createExtractTablesTool(app) {
   const pageBtn = segBtn('Page', 'page');
   const previewBtn = segBtn('Preview Export', 'preview');
   previewBtn.style.borderLeft = '1px solid var(--scribe-line-strong)';
+  const besideBtn = segBtn('Side by side', 'beside');
+  besideBtn.style.borderLeft = '1px solid var(--scribe-line-strong)';
   const syncSeg = () => {
-    [pageBtn, previewBtn].forEach((b) => {
-      const on = (b === previewBtn) === previewOn;
+    const canBeside = !!modeViewer && modeViewer === app.scribe;
+    besideBtn.disabled = !canBeside;
+    besideBtn.title = canBeside ? '' : 'Side by side works from the left half';
+    [pageBtn, previewBtn, besideBtn].forEach((b) => {
+      const on = b.dataset.tableView === view;
       b.style.background = on ? 'var(--scribe-accent)' : 'var(--scribe-surface)';
-      b.style.color = on ? 'var(--scribe-accent-ink)' : 'var(--scribe-ink-2)';
-      b.style.cursor = on ? 'default' : 'pointer';
+      b.style.color = on ? 'var(--scribe-accent-ink)' : (b.disabled ? 'var(--scribe-ink-3)' : 'var(--scribe-ink-2)');
+      b.style.cursor = on || b.disabled ? 'default' : 'pointer';
     });
   };
   // This must beat the mode-exit handler that also listens on document, so it registers in the capture phase and marks the press handled.
@@ -3780,7 +3788,7 @@ export function createExtractTablesTool(app) {
     if (e.key !== 'Escape' || e.defaultPrevented) return;
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-    const sv = app._activeViewer();
+    const sv = viewerOf();
     if (armed) {
       e.preventDefault();
       disarm();
@@ -3793,6 +3801,23 @@ export function createExtractTablesTool(app) {
     }
   };
 
+  const previewViewer = () => {
+    const g = app._rightGroup;
+    if (view === 'beside' && g && app._sideView && g.active === app._sideView.tab) return g.viewer;
+    return viewerOf();
+  };
+
+  const syncBeside = () => {
+    const pv = previewViewer();
+    const sv = viewerOf();
+    if (pv === sv) return Promise.resolve();
+    pv.state.activeTableId = sv.state.activeTableId;
+    pv.state.tablePreviewGhost = sv.state.tablePreviewGhost;
+    pv.state.tablePreviewFormatting = sv.state.tablePreviewFormatting;
+    pv.destroyText(false);
+    return pv.displayPage(pv.state.cp.n, false, true);
+  };
+
   const previewKey = (e) => {
     const t = /** @type {?HTMLElement} */ (e.target);
     if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
@@ -3802,29 +3827,27 @@ export function createExtractTablesTool(app) {
       ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
     }[e.key];
     if (arrow && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (moveTablePreviewSelection(app._activeViewer(), arrow[0], arrow[1], e.shiftKey)) e.preventDefault();
+      if (moveTablePreviewSelection(previewViewer(), arrow[0], arrow[1], e.shiftKey)) e.preventDefault();
       return;
     }
     if (!(e.ctrlKey || e.metaKey)) return;
     const key = e.key.toLowerCase();
     if (key !== 'c' && key !== 'a') return;
-    const handled = key === 'c' ? !!copyTablePreviewSelection(app._activeViewer()) : selectAllTablePreviewCells(app._activeViewer());
+    const handled = key === 'c' ? !!copyTablePreviewSelection(previewViewer()) : selectAllTablePreviewCells(previewViewer());
     if (handled) e.preventDefault();
   };
 
-  const setPreview = (on) => {
-    if (on === previewOn) return;
-    const sv = app._activeViewer();
-    previewOn = on;
+  /** @param {boolean} on */
+  const setLanePreview = (on) => {
+    const sv = viewerOf();
+    if (sv.state.tablePreview === on) return;
     sv.state.tablePreview = on;
     if (on) {
       priorDisplayMode = sv.state.displayMode;
       sv.state.displayMode = 'ebook';
       // A column selection left by the page view would render as a phantom blue fill over the sheet.
       sv.CanvasSelection.deselectAll();
-      document.addEventListener('keydown', previewKey);
     } else {
-      document.removeEventListener('keydown', previewKey);
       sv.state.displayMode = priorDisplayMode || 'invis';
       priorDisplayMode = null;
       // The refresh below re-derives only the render window, so sheet elements parked on other pages are swept directly.
@@ -3846,19 +3869,87 @@ export function createExtractTablesTool(app) {
     sv.displayPage(sv.state.cp.n, false, true);
     // Nothing was edited, but the heal above can move the active table, and this is how the panel's list adopts it.
     if (sheet) sv.layoutTablesEdited(sheet.n);
+  };
+
+  /** @type {?{prev: ?Function}} */
+  let laneEditedHook = null;
+  const dropBesideHooks = () => {
+    if (!laneEditedHook) return;
+    viewerOf().onLayoutTablesEdited = laneEditedHook.prev;
+    laneEditedHook = null;
+  };
+  const openBeside = () => {
+    const sv = viewerOf();
+    const configure = async (v) => {
+      v.state.layoutMode = true;
+      v.state.tablePreview = true;
+      v.state.displayMode = 'ebook';
+      v.CanvasSelection.deselectAll();
+      v.onLayoutTablesEdited = paneEdited;
+      await syncBeside();
+    };
+    const release = (v) => {
+      v.state.tablePreview = false;
+      v.state.layoutMode = false;
+      v.state.displayMode = 'invis';
+      v._tpSel = null;
+      if (v.onLayoutTablesEdited === paneEdited) v.onLayoutTablesEdited = null;
+    };
+    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle;
+    const onClose = () => {
+      if (view !== 'beside') return;
+      view = 'page';
+      dropBesideHooks();
+      document.removeEventListener('keydown', previewKey);
+      syncSeg();
+    };
+    const prev = sv.onLayoutTablesEdited;
+    laneEditedHook = { prev };
+    sv.onLayoutTablesEdited = (n) => {
+      prev?.(n);
+      syncBeside();
+    };
+    const paneEdited = (n) => {
+      if (sv.state.layoutMode && sv.overlayGroupsRenderIndices.includes(n)) {
+        sv.destroyControls();
+        renderLayoutBoxes(sv, n);
+      }
+      prev?.(n);
+    };
+    app._openSideView({
+      label: 'Preview Export', icon: EXTRACT_TABLES_MODE_SVG, configure, release, onClose, retarget,
+    });
+  };
+  /** @param {'page'|'preview'|'beside'} next */
+  const setView = (next) => {
+    if (next === view || (next === 'beside' && (!active || besideBtn.disabled))) return;
+    const prev = view;
+    view = next;
+    if (prev === 'beside') {
+      dropBesideHooks();
+      app._closeSideView();
+    }
+    if (next === 'page') document.removeEventListener('keydown', previewKey);
+    else if (prev === 'page') document.addEventListener('keydown', previewKey);
+    setLanePreview(next === 'preview');
+    if (next === 'beside') openBeside();
     syncSeg();
   };
-  pageBtn.addEventListener('click', () => setPreview(false));
-  previewBtn.addEventListener('click', () => setPreview(true));
+  pageBtn.addEventListener('click', () => setView('page'));
+  previewBtn.addEventListener('click', () => setView('preview'));
+  besideBtn.addEventListener('click', () => setView('beside'));
   syncSeg();
 
   const setActive = (next) => {
     if (active === next) return;
-    const sv = app._activeViewer();
+    const sv = next ? app._activeViewer() : viewerOf();
     if (next && !sv.doc) return;
     active = next;
     toolbarElem.classList.toggle('active', active);
-    if (!active && previewOn) setPreview(false);
+    // The view returns to the page before the mode's viewer is let go, since leaving a view undoes its changes to that viewer.
+    if (!active && view !== 'page') setView('page');
+    modeViewer = next ? sv : null;
+    syncSeg();
     // One flag gates the layout overlays, the selection fork, and the context-menu table verbs together.
     sv.state.layoutMode = active;
     if (active) {
@@ -3894,11 +3985,11 @@ export function createExtractTablesTool(app) {
   const docChanged = () => {
     if (!active) return;
     disarm();
-    const sv = app._activeViewer();
-    if (previewOn) {
+    const sv = viewerOf();
+    if (view === 'preview') {
       const sheet = resolveActiveSheet(sv);
       // A still-extracting document may yet detect tables, so only a settled tableless one drops the preview.
-      if (!sheet && !sv.doc._textReadySettle) setPreview(false);
+      if (!sheet && !sv.doc._textReadySettle) setView('page');
       else if (sheet && sheet.n !== sv.state.cp.n) sv.displayPage(sheet.n, true, true);
     }
     app._automatePanel?.openTablesWorkspace();
@@ -3911,7 +4002,7 @@ export function createExtractTablesTool(app) {
   };
 
   const tool = {
-    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, docChanged, armAddTable, hintText,
+    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, docChanged, armAddTable, hintText, syncBeside,
   };
   return tool;
 }
@@ -4194,12 +4285,15 @@ export function createProofreadTextTool(app) {
   toolbarLabelElem.textContent = 'Proofread Text';
   toolbarElem.appendChild(toolbarLabelElem);
   let active = false;
+  // The mode's viewer is fixed at entry, since a press into the other group during Side by side makes that group active without ending the mode.
+  let modeViewer = null;
   /** @param {boolean} next */
   const setActive = (next) => {
     if (active === next) return;
-    const sv = app._activeViewer();
+    const sv = next ? app._activeViewer() : (modeViewer || app._activeViewer());
     if (next && !sv.doc) return;
     active = next;
+    modeViewer = next ? sv : null;
     toolbarElem.classList.toggle('active', active);
     UiText.enableEditing = active;
     sv.state.displayMode = active ? 'proof' : 'invis';

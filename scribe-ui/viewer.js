@@ -213,7 +213,17 @@ export class ScribeViewer {
     /** @type {?Function} */
     this.displayPageCallback = null;
 
-    /** @type {?Function} Fired after an undo/redo, so host UI (e.g. the bookmarks panel) can refresh non-page state. */
+    /** @type {?((level: number) => void)} */
+    this.onZoomChange = null;
+
+    /** @type {?((word: import('./js/viewerWordObjects.js').UiText) => void)} Fired after a word's text is edited and committed in this viewer. */
+    this.onWordTextChange = null;
+
+    /**
+     * Fired after an undo or redo, and after some other edits.
+     * Only an undo or redo passes `pages`, which lists the page indices it touched or is null when the whole view was rebuilt.
+     * @type {?((pages?: ?Array<number>) => void)}
+     */
     this.onEditCallback = null;
     /**
      * Host hook for a click on an unsigned signature field.
@@ -1497,7 +1507,7 @@ export class ScribeViewer {
     if (!res) return false;
     if (res.surface === 'page' || !res.pages) {
       this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
-      if (this.onEditCallback) this.onEditCallback();
+      if (this.onEditCallback) this.onEditCallback(null);
       if (this.onPageEditCallback) this.onPageEditCallback();
       return true;
     }
@@ -1527,7 +1537,7 @@ export class ScribeViewer {
     }
     // The tools rebuild the comments panel directly after annotation edits, so undo makes the same call.
     if (this._rebuildCommentsPanel) this._rebuildCommentsPanel();
-    if (this.onEditCallback) this.onEditCallback();
+    if (this.onEditCallback) this.onEditCallback(res.pages);
     return true;
   }
 
@@ -1598,6 +1608,7 @@ export class ScribeViewer {
     this._scheduleReraster();
     this._zoomStageImp(scaleBy, center);
     this.updateCurrentPage();
+    if (this.onZoomChange) this.onZoomChange(this.zoomLevel);
   }
 
   /** After a zoom settles, end the zoom gesture and re-raster the visible page canvases at the new resolution so they stay crisp. */
@@ -2182,6 +2193,7 @@ export class ScribeViewer {
     this._scrollMetrics();
     sc.scrollLeft = contentX * newZoom - (g.lastCenter.x - scRect.left) + panLeft;
     sc.scrollTop = contentY * newZoom - (g.lastCenter.y - scRect.top) + panTop;
+    if (this.onZoomChange) this.onZoomChange(this.zoomLevel);
   }
 
   /**
@@ -2561,6 +2573,7 @@ export class ScribeViewer {
     // `scrollTop` skips the top gutter so the first page starts at the top of the viewport, not below a band of free-pan blank space.
     this.scrollContainer.scrollLeft = Math.max(0, (this._contentWidth * zoom - this.scrollContainer.clientWidth) / 2);
     this.scrollContainer.scrollTop = this._panGutter().y * zoom;
+    if (this.onZoomChange) this.onZoomChange(this.zoomLevel);
   }
 
   /**

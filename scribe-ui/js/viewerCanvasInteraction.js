@@ -382,15 +382,15 @@ function mv() { return _menuViewer || ScribeViewer.getDefault(); }
 
 /** @param {number} i */
 const readingClick = (i) => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const uiWord = viewer.contextMenuWord;
   if (uiWord) pickReading(viewer, uiWord, i);
 };
 
 const splitWordClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const uiWord = viewer.contextMenuWord;
 
   if (!uiWord) return;
@@ -408,8 +408,8 @@ const splitWordClick = () => {
 };
 
 const mergeWordsClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
 
   const selectedUiWords = viewer.CanvasSelection.getUiWords();
   const selectedWords = selectedUiWords.map((x) => x.word);
@@ -427,18 +427,20 @@ const mergeWordsClick = () => {
 };
 
 const deleteLayoutDataTableClick = () => {
+  const viewer = mv();
   hideContextMenu();
-  deleteSelectedLayoutDataTable(mv());
+  deleteSelectedLayoutDataTable(viewer);
 };
 
 const deleteLayoutRegionClick = () => {
+  const viewer = mv();
   hideContextMenu();
-  deleteSelectedLayoutRegion(mv());
+  deleteSelectedLayoutRegion(viewer);
 };
 
 const copyTableContentsClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
   if (selectedColumns.length === 0 || !navigator.clipboard) return;
 
@@ -465,8 +467,8 @@ const copyTableContentsClick = () => {
 };
 
 const mergeDataColumnsClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   if (viewer.state.tablePreview) {
     mergeTablePreviewColumns(viewer);
     return;
@@ -476,8 +478,8 @@ const mergeDataColumnsClick = () => {
 };
 
 const mergeDataTablesClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const dataTableArr = viewer.CanvasSelection.getDataTables();
   mergeDataTables(dataTableArr);
   viewer.destroyControls();
@@ -487,45 +489,46 @@ const mergeDataTablesClick = () => {
 /** @type {?LayoutDataTable} */ let unlinkTargetTable = null;
 
 const linkTablesClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   if (linkTargetTable) linkTables(viewer, linkTargetTable);
   linkTargetTable = null;
   viewer.destroyControls();
 };
 
 const unlinkTablesClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   if (unlinkTargetTable) unlinkTable(viewer, unlinkTargetTable);
   unlinkTargetTable = null;
   if (!viewer.state.tablePreview) viewer.destroyControls();
 };
 
 const splitDataColumnClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
   splitDataColumn(selectedColumns[0], viewer.contextMenuPointer.x);
   viewer.destroyControls();
 };
 
 const splitDataTableClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   splitDataTable(viewer.CanvasSelection.getUiDataColumns());
   viewer.destroyControls();
 };
 
 const copyCellsClick = () => {
+  const viewer = mv();
   hideContextMenu();
-  copyTablePreviewSelection(mv());
+  copyTablePreviewSelection(viewer);
 };
 
 /* Line capture pairs with the `left` inclusion rule, because indented row labels overhang the column and a majority test would miss exactly the lines this feature exists to catch. */
 const captureLinesClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   const cols = viewer.CanvasSelection.getUiDataColumnsCopy();
   if (cols.length === 0) return;
   const table = cols[0].layoutBox.table;
@@ -771,8 +774,8 @@ const rotatePageRightClick = () => {
 };
 
 const deleteWordsClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
   deleteSelectedWord(viewer);
   viewer.destroyControls();
 };

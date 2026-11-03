@@ -142,6 +142,7 @@ function buildOptions(host, onChange) {
       host.viewer.destroyText(false);
       host.viewer.displayPage(host.viewer.state.cp.n, false, true);
     }
+    host.app?._extractTablesTool?.syncBeside?.();
   });
   formattingInput.addEventListener('change', onChange);
   formattingLab.append(formattingInput, document.createTextNode('Preserve source formatting'));
@@ -606,6 +607,7 @@ export function buildTablesWorkspace(host, container) {
     // Refreshed, so the overlays restyle for the new active table even when the page is already rendered.
     await viewer.displayPage(n, true, true);
     if (!viewer.state.tablePreview) pulseTable(viewer, table);
+    host.app?._extractTablesTool?.syncBeside?.();
   };
 
   const renderList = () => {
