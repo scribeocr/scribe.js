@@ -36,8 +36,12 @@ import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.j
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, filesNamedForPdf, createRedactTool, createEditTextTool,
   createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
-  createProofreadTextTool,
+  createProofreadTextTool, createCompareVersionsTool,
 } from '../js/controls/tools.js';
+import { longestChain } from '../../js/textDiff.js';
+import {
+  diffMarksFor, applyDiffMarks, setDiffCurrent, goToChange, diffRunsFor,
+} from '../js/viewerDiff.js';
 import { wordsToCheck, selectNextToCheck } from '../js/viewerShortcuts.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
@@ -332,6 +336,11 @@ const ICON_FIELDS = appMenuIcon('<rect x="2.5" y="5.5" width="11" height="6" rx=
 const ICON_COVER_ALONE = appMenuIcon('<rect x="2.5" y="3.5" width="5" height="9"/><rect x="9.5" y="3.5" width="5" height="9"/>');
 const ICON_AUTOMATE = appMenuIcon('<path d="M3.5 4.5l3 3-3 3z"/><path d="M9.5 4.5h4M9.5 7.5h4M9.5 10.5h2"/>');
 const ICON_INSPECT = appMenuIcon('<circle cx="8" cy="8" r="5.5"/><path d="M8.5 7.5v3M8.5 5.5v.01"/>');
+const ICON_COMPARE = appMenuIcon('<path d="M6 5.5V3h7.5v7.5H11"/><rect x="2.5" y="5.5" width="7.5" height="7.5" rx="1"/><path d="M4.5 8h3.5M4.5 10.5h3.5"/>');
+const COMPARE_PREV_SVG = editIcon('<path d="M6 15l6-6 6 6"/>');
+const COMPARE_NEXT_SVG = editIcon('<path d="M6 9l6 6 6-6"/>');
+const COMPARE_LIST_SVG = editIcon('<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M14.5 5.5v13M16.5 9h2M16.5 12h2"/>');
+const COMPARE_LINK_SVG = editIcon('<path d="M10 14a3.5 3.5 0 0 0 5 0l3-3a3.5 3.5 0 0 0-5-5l-1 1"/><path d="M14 10a3.5 3.5 0 0 0-5 0l-3 3a3.5 3.5 0 0 0 5 5l1-1"/>');
 // The bar's rotate glyphs, redrawn for the menu's 16px slots.
 // A stroked arrowhead stays legible at this size, where a filled one blurs.
 const ICON_ROTATE_LEFT = appMenuIcon('<path d="M3.2 6A5 5 0 1 0 7.5 3.5H5.5M7.5 1.5l-2 2 2 2"/>');
@@ -856,6 +865,17 @@ class ScribePDFViewer {
      *   save: HTMLButtonElement, discard: HTMLButtonElement, exit: HTMLSpanElement}}
      */
     this._modeBannerParts = null;
+    /** @type {?Object} The running comparison of the Compare Versions mode, or null. */
+    this._compare = null;
+    /** @type {?HTMLSpanElement} */
+    this._compareExtras = null;
+    this._compareCountElem = null;
+    this._compareListBtn = null;
+    /**
+     * Whether the user wants the comparison's list shown.
+     * The panel's own close button leaves it unchanged.
+     */
+    this._compareListOpen = true;
     /** @type {WeakMap<object, string>} Documents recognized this session, keyed to the run's language signature, and never exported. */
     this._recognizeRuns = new WeakMap();
     /**
@@ -1174,6 +1194,8 @@ class ScribePDFViewer {
       this._printMenuRow = appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, shortcutLabel('P'));
       this._menuCommands.inspect = () => this._enterInspectFromMenu();
       this._inspectMenuRow = appMenu.addAction('Inspect Document', ICON_INSPECT, this._menuCommands.inspect);
+      this._menuCommands.compare = () => { if (!this._frontSurface()) this._compareTool?.toolbarElem.click(); };
+      this._compareMenuRow = appMenu.addAction('Compare Versions', ICON_COMPARE, this._menuCommands.compare);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
       appMenu.addAction('Rotate left', ICON_ROTATE_LEFT, this._menuCommands['rotate-left'])
         .classList.add('scribe-touch-row');
@@ -1899,6 +1921,14 @@ class ScribePDFViewer {
       }
       if (this._inspectMenuRow && !this._inspectTool) this._inspectMenuRow.style.display = 'none';
 
+      /** @type {?ReturnType<typeof createCompareVersionsTool>} */
+      this._compareTool = null;
+      if (this._modeTrackRow1) {
+        this._compareTool = createCompareVersionsTool(this);
+        this._modeTrackRow1.insertBefore(this._compareTool.toolbarElem, this._modeTrackChev);
+      }
+      if (this._compareMenuRow && !this._compareTool) this._compareMenuRow.style.display = 'none';
+
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
@@ -1907,10 +1937,11 @@ class ScribePDFViewer {
       if (this._proofreadTool) this._proofreadTool.toolbarElem.dataset.modeHint = `Click a word to select it · double-click to edit · Tab: next word to check · ${IS_MAC ? '⌥Space' : 'Ctrl+Space'}: show the scan`;
       if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
       if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
+      if (this._compareTool) this._compareTool.toolbarElem.dataset.modeHint = 'Click a change on the page or in the list · Enter: next change';
 
       const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem, this._proofreadTool?.toolbarElem,
-        this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem].filter((b) => !!b);
+        this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem, this._compareTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       // A tool that awaits before activating can mark its button active after the click listener below has synced the banner, so the banner follows the class itself.
       // Without this the session's history baseline waits for the next sync from elsewhere, and an edit made before it counts as nothing to save.
@@ -3542,7 +3573,7 @@ class ScribePDFViewer {
     const next = n === 1 && g ? 1 : 0;
     const changed = next !== this._activeGroup;
     // A mode is one document's session, so it ends on the group it ran in before the toolbar moves to the other.
-    if (changed && !this._sideView) {
+    if (changed && !this._sideView && !this._compare) {
       const modeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
       if (modeBtn) {
         modeBtn.click();
@@ -4295,9 +4326,9 @@ class ScribePDFViewer {
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
     const panelW = (!this._phoneUi && this._automatePanel?.isOpen()) ? this._automatePanel.width : 0;
     const g = this._rightGroup;
-    const onGroup = (this._modeBannerBtn ? this._modeGroup === 1 : this._activeGroup === 1) && !!g && !!this._laneBox;
-    const sideShown = !!(this._sideView && g && g.active === this._sideView.tab);
-    const bannerRight = `${panelW + (g && !onGroup && !sideShown ? this._groupW : 0)}px`;
+    const spans = !!(this._sideView && g && g.active === this._sideView.tab) || !!this._compare;
+    const onGroup = (this._modeBannerBtn ? this._modeGroup === 1 : this._activeGroup === 1) && !!g && !!this._laneBox && !spans;
+    const bannerRight = `${panelW + (g && !onGroup && !spans ? this._groupW : 0)}px`;
     const bannerLeft = `${onGroup ? this._laneBox.left + this._laneBox.width : this._columnWidth()}px`;
     if (this._modeBanner) { this._modeBanner.style.right = bannerRight; this._modeBanner.style.left = bannerLeft; }
     if (this._banner) { this._banner.style.right = bannerRight; this._banner.style.left = bannerLeft; }
@@ -4497,6 +4528,7 @@ class ScribePDFViewer {
       if (this._recognizeExtras) this._recognizeExtras.remove();
       this._recognizeDockUi?.remove();
       this._proofreadExtras?.remove();
+      this._compareExtras?.remove();
       this._modeViewer().proofFollow = null;
       if (this._proofView !== 'scan') this._setProofView('scan');
       this._proofreadHandoffElem?.remove();
@@ -4667,11 +4699,332 @@ class ScribePDFViewer {
       if (this._proofView !== 'scan') this._setProofView('scan');
     }
 
+    if (this._compareTool && activeBtn === this._compareTool.toolbarElem) {
+      this._ensureCompareExtras();
+      if (this._compareExtras.parentElement !== this._modeBanner) this._modeBanner.insertBefore(this._compareExtras, this._modeBannerParts.exit);
+      this._syncCompareRow();
+    } else {
+      this._compareExtras?.remove();
+    }
+
     this._modeBanner.style.display = 'flex';
     this._syncModeExitButtons(activeBtn);
     if (this._modeTrackWrap) this._syncModeTrackValue();
     this._syncPhoneVerbBar();
     this._positionBanners();
+  }
+
+  /**
+   * The two documents a comparison would take: the lane's and the right group's.
+   * @returns {[?Object, ?Object]}
+   */
+  _compareDocs() {
+    return [this.doc || null, this._rightGroup?.active?.doc || null];
+  }
+
+  async _startCompare() {
+    const [docA, docB] = this._compareDocs();
+    const g = this._rightGroup;
+    if (!docA || !docB || !g) { this._compareTool?.close(); return; }
+    /**
+     * @type {{docA: Object, docB: Object, diff: ?import('../../js/textDiff.js').TextDiff, cur: number, link: boolean, suspendLink: boolean,
+     *   chip: ?HTMLElement, unlink: ?(() => void), marksA: ?Map<number, Object>, marksB: ?Map<number, Object>}}
+     */
+    const state = {
+      docA, docB, diff: null, cur: 0, link: true, suspendLink: false, chip: null, unlink: null, marksA: null, marksB: null,
+    };
+    this._compare = state;
+    this._syncModeBanner();
+    this._installCompareLink(state);
+    // A frame callback runs before that frame paints, so the diff waits for the task after it and the banner is on screen first.
+    await new Promise((resolve) => { requestAnimationFrame(() => setTimeout(resolve, 0)); });
+    if (this._compare !== state) return;
+    const diff = await docA.diffText(docB).catch((err) => { console.error('Compare Versions failed:', err); return null; });
+    if (this._compare !== state) return;
+    if (!diff) { this._compareTool?.close(); return; }
+    state.diff = diff;
+    const style = getComputedStyle(this.pdfViewerElem);
+    const colors = { removed: style.getPropertyValue('--scribe-diff-removed').trim() || '#d1493d', added: style.getPropertyValue('--scribe-diff-added').trim() || '#2e8b57' };
+    state.marksA = diffMarksFor(diff, 'a');
+    state.marksB = diffMarksFor(diff, 'b');
+    applyDiffMarks(this.scribe, state.marksA);
+    applyDiffMarks(g.viewer, state.marksB);
+    this.scribe.diffRuns = diffRunsFor(docA, diff, 'a', colors);
+    g.viewer.diffRuns = diffRunsFor(docB, diff, 'b', colors);
+    this._compareRailsRestyle();
+    const recognized = (doc) => (doc.ocr?.active || []).some((p) => p && p.textSource && p.textSource !== 'pdf' && !DOCUMENT_IMPORT_SOURCES.has(p.textSource));
+    if (recognized(docA) || recognized(docB)) this._setGroupNotice('A draft’s text comes from recognition, so some differences may be reading errors.');
+    this._setCompareList(this._compareListOpen ?? true);
+    if (diff.changes.length) await this._compareGoTo(1);
+    else this._syncCompareRow();
+  }
+
+  _endCompare() {
+    const state = this._compare;
+    if (!state) return;
+    this._compare = null;
+    const g = this._rightGroup;
+    applyDiffMarks(this.scribe, null);
+    if (g) applyDiffMarks(g.viewer, null);
+    this.scribe.diffRuns = null;
+    if (g) g.viewer.diffRuns = null;
+    this._compareRailsRestyle();
+    state.unlink?.();
+    state.chip?.remove();
+    this._automatePanel?.closeCompareWorkspace();
+    this._setGroupNotice(null);
+    this._syncModeBanner();
+  }
+
+  _compareRailsRestyle() {
+    this._thumbnailPanel?.restyleRows();
+    this._rightGroup?.side?.thumbnails?.restyleRows();
+  }
+
+  /**
+   * Link the two groups' scrolling for the comparison, and put the link chip on the sash.
+   * @param {NonNullable<ScribePDFViewer['_compare']>} state
+   */
+  _installCompareLink(state) {
+    const g = this._rightGroup;
+    if (!g) return;
+    const viewers = [this.scribe, g.viewer];
+    const panes = viewers.map((v) => v.scrollContainer);
+    const docs = [state.docA, state.docB];
+    const linked = [NaN, NaN];
+    /** @type {?Array<Map<string, import('../../js/objects/ocrObjects.js').OcrLine>>} */
+    let lineOf = null;
+    /** @type {?{key: string, pairs: Array<[number, number]>}} */
+    let anchors = null;
+    /** The tops of the lines both drafts hold, in each pane's scroll space. */
+    const pairsFor = () => {
+      const key = `${state.diff ? 'd' : '-'}|${viewers.map((v) => `${v.zoomLevel}:${v.scrollContainer.scrollHeight}`).join('|')}`;
+      if (anchors && anchors.key === key) return anchors.pairs;
+      /** @type {Array<[number, number]>} */
+      const pairs = [];
+      if (state.diff) {
+        if (!lineOf) {
+          lineOf = docs.map((doc) => {
+            /** @type {Map<string, import('../../js/objects/ocrObjects.js').OcrLine>} */
+            const m = new Map();
+            for (const p of doc.ocr.active || []) { if (p) for (const l of p.lines) for (const w of l.words) m.set(w.id, l); }
+            return m;
+          });
+        }
+        const lines = lineOf;
+        const zooms = viewers.map((v) => v.zoomLevel || 1);
+        /** @param {number} i @param {{pageN: number, wordId: string}} ref */
+        const top = (i, ref) => {
+          const line = lines[i].get(ref.wordId);
+          return line ? viewers[i].localToContent(ref.pageN, line.orientation, line.bbox.left, line.bbox.top).y * zooms[i] : null;
+        };
+        /** @type {Array<[number, number, number, number]>} */
+        const lineTops = [];
+        for (const l of state.diff.lines) {
+          const ya = top(0, l.a);
+          const yb = top(1, l.b);
+          if (ya != null && yb != null) lineTops.push([ya, yb, l.a.pageN, l.b.pageN]);
+        }
+        lineTops.sort((p, q) => p[0] - q[0]);
+        const chain = /** @type {Array<[number, number, number, number]>} */ (longestChain(lineTops)).filter((p, i, arr) => i === 0 || p[0] > arr[i - 1][0]);
+        for (let i = 0; i < chain.length; i++) {
+          const p = chain[i];
+          const q = chain[i + 1];
+          pairs.push([p[0], p[1]]);
+          // Pairing the page ends and next page tops keeps a heading one draft adds at a page's top facing the other draft's page top rather than the blank foot of the page before.
+          if (!q || q[2] <= p[2] || q[3] <= p[3]) continue;
+          const endA = viewers[0].getPageStop(p[2], false) * zooms[0];
+          const endB = viewers[1].getPageStop(p[3], false) * zooms[1];
+          const topA = viewers[0].getPageStop(q[2]) * zooms[0];
+          const topB = viewers[1].getPageStop(q[3]) * zooms[1];
+          if (endA > p[0] && endB > p[1] && topA > endA && topB > endB && topA < q[0] && topB < q[1]) pairs.push([endA, endB], [topA, topB]);
+        }
+      }
+      anchors = { key, pairs };
+      return pairs;
+    };
+    /**
+     * Where a point of pane `from`'s scroll space falls in the other pane.
+     * @param {number} from
+     * @param {number} y
+     */
+    const mapY = (from, y) => {
+      const to = 1 - from;
+      const pairs = pairsFor();
+      const k = (viewers[to].zoomLevel || 1) / (viewers[from].zoomLevel || 1);
+      if (!pairs.length) return y * k;
+      if (y <= pairs[0][from]) return pairs[0][to] - (pairs[0][from] - y) * k;
+      const last = pairs[pairs.length - 1];
+      if (y >= last[from]) return last[to] + (y - last[from]) * k;
+      let lo = 0;
+      let hi = pairs.length - 1;
+      while (hi - lo > 1) {
+        const mid = Math.floor((lo + hi) / 2);
+        if (pairs[mid][from] <= y) lo = mid;
+        else hi = mid;
+      }
+      const p0 = pairs[lo];
+      const p1 = pairs[hi];
+      const sF = p1[from] - p0[from];
+      const sT = p1[to] - p0[to];
+      const d = y - p0[from];
+      if (sF <= 0) return p0[to];
+      const m = sT - sF * k;
+      // Where the other pane has less far to go, it holds until both are equally far from the next shared line, then keeps pace.
+      if (m < 0) return p0[to] + Math.max(0, d - (sF - sT / k)) * k;
+      // Otherwise the other pane keeps this pane's pace near each shared line and covers its extra distance in the middle half.
+      const a = sF / 4;
+      const u = Math.min(1, Math.max(0, (d - a) / (sF - 2 * a)));
+      return p0[to] + d * k + m * u;
+    };
+    /** @param {number} from */
+    const follow = (from) => {
+      const to = 1 - from;
+      // The line the reader sees first lies under the mode banner's edge, not at the scroll top.
+      const band = this._modeBanner && this._modeBanner.style.display !== 'none' ? this._modeBanner.offsetHeight : 0;
+      panes[to].scrollTop = Math.max(0, mapY(from, panes[from].scrollTop + band) - band);
+      linked[to] = panes[to].scrollTop;
+    };
+    const onScroll = [0, 1].map((from) => () => {
+      const echo = Math.abs(panes[from].scrollTop - linked[from]) <= 1;
+      linked[from] = NaN;
+      if (echo || !state.link || state.suspendLink) return;
+      follow(from);
+    });
+    for (const i of [0, 1]) panes[i].addEventListener('scroll', onScroll[i]);
+    state.unlink = () => { for (const i of [0, 1]) panes[i].removeEventListener('scroll', onScroll[i]); };
+    const link = document.createElement('span');
+    link.className = 'scribe-compare-chip on';
+    link.role = 'button';
+    link.tabIndex = 0;
+    link.title = 'Scroll both drafts together';
+    link.ariaLabel = link.title;
+    link.innerHTML = COMPARE_LINK_SVG;
+    // The sash's own press starts a resize, which the chip's press must not.
+    link.addEventListener('pointerdown', (e) => { e.stopPropagation(); e.preventDefault(); });
+    link.addEventListener('dblclick', (e) => e.stopPropagation());
+    link.addEventListener('click', () => {
+      state.link = !state.link;
+      link.classList.toggle('on', state.link);
+      link.title = state.link ? 'Scroll both drafts together' : 'Scroll each draft on its own';
+      link.ariaLabel = link.title;
+      if (state.link) follow(0);
+    });
+    g.sash.append(link);
+    state.chip = link;
+  }
+
+  /** @param {number} n */
+  async _compareGoTo(n) {
+    const state = this._compare;
+    const g = this._rightGroup;
+    if (!state?.diff || !g || !state.marksA || !state.marksB) return;
+    const total = state.diff.changes.length;
+    if (!total) return;
+    const next = Math.max(1, Math.min(total, n));
+    state.cur = next;
+    setDiffCurrent(this.scribe, state.marksA, state.diff, 'a', next);
+    setDiffCurrent(g.viewer, state.marksB, state.diff, 'b', next);
+    // Both groups scroll to their own side of the change, so the link stands aside until both have landed.
+    state.suspendLink = true;
+    await Promise.all([goToChange(this.scribe, state.diff, 'a', next), goToChange(g.viewer, state.diff, 'b', next)]);
+    requestAnimationFrame(() => { state.suspendLink = false; });
+    this._automatePanel?.compareWorkspace()?.setCurrent(next);
+    this._syncCompareRow();
+  }
+
+  /** @param {1|-1} dir */
+  _compareStep(dir) {
+    const state = this._compare;
+    if (!state?.diff?.changes.length) return;
+    this._compareGoTo((state.cur || (dir > 0 ? 0 : state.diff.changes.length + 1)) + dir);
+  }
+
+  /** @param {boolean} open */
+  _setCompareList(open) {
+    this._compareListOpen = open;
+    const state = this._compare;
+    if (!open || !state?.diff) { this._automatePanel?.closeCompareWorkspace(); this._syncCompareRow(); return; }
+    const nameOf = (/** @type {Object} */ doc) => this._tabs.find((t) => t.doc === doc)?.name || 'draft';
+    const names = /** @type {[string, string]} */ ([nameOf(state.docA), nameOf(state.docB)]);
+    Promise.resolve(this._automateReady).then(async () => {
+      if (this._compare !== state || !this._compareListOpen) return;
+      await this._automatePanel?.openCompareWorkspace({
+        diff: state.diff, docs: [state.docA, state.docB], names, onGo: (n) => this._compareGoTo(n), current: state.cur,
+      });
+      if (this._compare !== state) return;
+      this._automatePanel?.compareWorkspace()?.setCurrent(state.cur);
+      this._syncCompareRow();
+    });
+  }
+
+  _ensureCompareExtras() {
+    if (this._compareExtras) return;
+    const tools = document.createElement('span');
+    tools.className = 'scribe-mode-banner-tools scribe-compare-tools';
+    /**
+     * @param {string} title
+     * @param {string} svg
+     * @param {() => void} act
+     */
+    const button = (title, svg, act) => {
+      const btn = document.createElement('span');
+      btn.className = 'cr-icon-button scribe-proof-step';
+      btn.role = 'button';
+      btn.tabIndex = 0;
+      btn.title = title;
+      btn.ariaLabel = title;
+      btn.innerHTML = svg;
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', act);
+      btn.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        act();
+      });
+      return btn;
+    };
+    const count = document.createElement('span');
+    count.className = 'scribe-compare-count';
+    count.tabIndex = 0;
+    count.title = 'Enter: next change · Shift+Enter: previous change';
+    count.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      this._compareStep(e.shiftKey ? -1 : 1);
+    });
+    const list = button('Show the list of changes', COMPARE_LIST_SVG, () => {
+      const shown = !!this._automatePanel?.isOpen() && !!this._automatePanel?.compareWorkspace();
+      this._setCompareList(!shown);
+    });
+    list.classList.add('scribe-compare-list');
+    list.classList.remove('scribe-proof-step');
+    tools.append(button('Previous change', COMPARE_PREV_SVG, () => this._compareStep(-1)), count, button('Next change', COMPARE_NEXT_SVG, () => this._compareStep(1)), list);
+    this._compareExtras = tools;
+    this._compareCountElem = count;
+    this._compareListBtn = list;
+  }
+
+  _syncCompareRow() {
+    const state = this._compare;
+    if (!this._compareExtras || !this._compareExtras.isConnected) return;
+    const count = this._compareCountElem;
+    const total = state?.diff ? state.diff.changes.length : null;
+    if (count) count.textContent = total == null ? 'Comparing…' : (state && state.cur ? `${state.cur} of ${total}` : `${total} change${total === 1 ? '' : 's'}`);
+    const steps = this._compareExtras.querySelectorAll('.scribe-proof-step');
+    const none = !total;
+    for (const el of steps) {
+      el.classList.toggle('disabled', none);
+      el.ariaDisabled = String(none);
+      el.tabIndex = none ? -1 : 0;
+    }
+    const shown = !!this._automatePanel?.isOpen() && !!this._automatePanel?.compareWorkspace();
+    const list = this._compareListBtn;
+    if (list) {
+      list.classList.toggle('active', shown);
+      list.title = shown ? 'Hide the list of changes' : 'Show the list of changes';
+      list.ariaLabel = list.title;
+    }
   }
 
   /** Build the Proofread Text mode's banner tools once. */
@@ -7642,6 +7995,21 @@ class ScribePDFViewer {
       proofBtn.classList.toggle('disabled', !proofreadable);
       proofBtn.ariaDisabled = !proofreadable ? 'true' : 'false';
       proofBtn.tabIndex = !proofreadable ? -1 : 0;
+    }
+    const cmpBtn = this._compareTool?.toolbarElem;
+    if (cmpBtn) {
+      const [docA, docB] = this._compareDocs();
+      // A provisional document passes, since entering the mode hydrates it and runs this gate again.
+      const hasWords = (d) => !!d && (d.id < 0 || !!d.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
+      const sideShown = !!(this._sideView && this._rightGroup && this._rightGroup.active === this._sideView.tab);
+      const comparable = !this._frontSurface() && !this._phoneUi && !!this._rightGroup && !sideShown && hasWords(docA) && hasWords(docB);
+      if (this._compare && (this._compare.docA !== docA || this._compare.docB !== docB)) this._compareTool.close();
+      else if (!comparable && this._compareTool.isActive()) this._compareTool.close();
+      cmpBtn.dataset.tip = comparable ? 'Compare Versions' : !this._rightGroup || !docB || sideShown ? 'Open the other draft on the right to compare' : 'Both drafts need text to compare';
+      cmpBtn.classList.toggle('disabled', !comparable);
+      cmpBtn.ariaDisabled = !comparable ? 'true' : 'false';
+      cmpBtn.tabIndex = !comparable ? -1 : 0;
+      this._compareMenuRow?.classList.toggle('disabled', !comparable);
     }
     const graphicsBtn = this._graphicsEditTool?.toolbarElem;
     if (graphicsBtn) {

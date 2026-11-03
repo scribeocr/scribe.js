@@ -120,7 +120,7 @@ function clearPageClipboard() {
  *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
  *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void,
- *   setPageEditMode: (on: boolean) => void, setTopInset: (px: number) => void, clearSelection: () => void,
+ *   setPageEditMode: (on: boolean) => void, setTopInset: (px: number) => void, restyleRows: () => void, clearSelection: () => void,
  *   beginStructureSlide: () => (() => void), refit: () => void, rebind: () => void,
  *   getResizeBounds: () => { min: number, max: number },
  *   gridGeometry: () => { count: number, cols: number, cellW: number, pad: number, strideX: number,
@@ -692,6 +692,7 @@ export function createThumbnailPanel(scribe, {
           }
         }
       }
+      if (dims && scribe.diffRuns) runs.push(...scribe.diffRuns(n));
       let hlElem = thumbElem.querySelector('.scribe-thumb-hl');
       if (runs.length === 0) {
         if (hlElem) hlElem.remove();
@@ -2703,6 +2704,7 @@ export function createThumbnailPanel(scribe, {
     setRoomMode,
     setPageEditMode,
     setTopInset,
+    restyleRows: () => { for (const [i, entry] of mounted) restyleRow(entry, i); },
     clearSelection,
     beginStructureSlide,
     refit,

@@ -28,6 +28,7 @@ import { subsetPdf, stripMetadataPdf } from '../export/pdf/subsetPdf.js';
 import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
 import { getMetadataImpl } from '../pdf/metadata/metadataInspect.js';
 import { getResourceInventoryImpl } from '../pdf/resourceInventory.js';
+import { diffDocText } from '../textDiff.js';
 import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
 import {
   recognize as recognizeImpl,
@@ -1741,6 +1742,18 @@ export class ScribeDoc {
    */
   insertParsedPage(n, page, options) {
     return insertParsedPageImpl(this, n, page, options);
+  }
+
+  /**
+   * Find the text changes between this document and another.
+   * Curly quotes, dashes and hyphens always compare equal to their ASCII forms, and ligatures to their letters.
+   * @param {ScribeDoc} other
+   * @param {import('../textDiff.js').TextDiffOptions} [options]
+   * @returns {Promise<import('../textDiff.js').TextDiff>}
+   */
+  async diffText(other, options) {
+    await Promise.all([this.textReady, other.textReady]);
+    return diffDocText(this.ocr.active || [], other.ocr.active || [], options);
   }
 
   /**

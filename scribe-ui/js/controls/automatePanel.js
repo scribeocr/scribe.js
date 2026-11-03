@@ -17,6 +17,7 @@ const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 const AUTOMATE_SVG = lineIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 // Drawn in the header when the panel opens straight into the Inspect Document workspace, with no catalog behind it.
 const INSPECT_SVG = lineIcon('<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8v.01"/>');
+const COMPARE_SVG = lineIcon('<path d="M9 8V4h11v11h-4"/><rect x="4" y="8" width="11" height="11" rx="1.5"/><path d="M7 12.5h5M7 15.5h5"/>');
 const BACK_SVG = lineIcon('<path d="M14 6l-6 6 6 6"/>');
 const SEND_SVG = lineIcon('<path d="M4.5 11.4L19.5 4.5 15.6 19.5l-3.9-5.2z"/><path d="M11.7 14.3l7.8-9.8"/>');
 const SPIN_SVG = lineIcon('<path d="M12 4.5a7.5 7.5 0 1 0 7.5 7.5"/>');
@@ -324,6 +325,19 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-ins-kv { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 0 10px; padding: 3px 0; font-size: 12.5px; line-height: 1.35; }
     .${r} .scribe-am-ins-k { color: var(--scribe-ink-2); }
     .${r} .scribe-am-ins-v { color: var(--scribe-ink); overflow-wrap: anywhere; }
+    .${r} .scribe-am-cmp { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 0 12px; }
+    .${r} .scribe-am-cmp-grp { padding: 10px 12px 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--scribe-ink-3); cursor: pointer; }
+    .${r} .scribe-am-cmp-grp:hover { color: var(--scribe-ink); }
+    .${r} .scribe-am-cmp-row { display: grid; grid-template-columns: 3px minmax(0, 1fr); gap: 9px; padding: 6px 12px 6px 8px; font-size: 12px; line-height: 1.35; color: var(--scribe-ink); cursor: pointer; border-left: 2px solid transparent; --scribe-cmp-kind: var(--scribe-diff-added); }
+    .${r} .scribe-am-cmp-row.k-removed { --scribe-cmp-kind: var(--scribe-diff-removed); }
+    .${r} .scribe-am-cmp-row:hover { background: var(--scribe-hover); }
+    .${r} .scribe-am-cmp-row.cur { background: var(--scribe-active); border-left-color: var(--scribe-accent); }
+    .${r} .scribe-am-cmp-row .kb { width: 3px; border-radius: 1.5px; background: var(--scribe-cmp-kind); align-self: stretch; margin: 1px 0; }
+    .${r} .scribe-am-cmp-row .t { min-width: 0; }
+    .${r} .scribe-am-cmp-row .t .o, .${r} .scribe-am-cmp-row .t .n { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-am-cmp-row .t .d { border-radius: 2px; padding: 0 1px; margin: 0 -1px; }
+    .${r} .scribe-am-cmp-row .t .o .d { text-decoration: line-through; text-decoration-color: var(--scribe-diff-removed); background: var(--scribe-diff-removed-wash); }
+    .${r} .scribe-am-cmp-row .t .n .d { background: var(--scribe-diff-added-wash); }
     .${r} .scribe-am-ins-notset { color: var(--scribe-ink-3); font-style: italic; }
     .${r} .scribe-am-ins-empty { padding: 6px 0 4px; }
     .${r} .scribe-am-ins-scope { margin: 10px 0 0; gap: 14px; }
@@ -814,6 +828,10 @@ export function createAutomatePanel(app, rootClass, hooks) {
   inspectElem.className = 'scribe-am-inswrap';
   inspectElem.style.display = 'none';
 
+  const compareElem = document.createElement('div');
+  compareElem.className = 'scribe-am-inswrap';
+  compareElem.style.display = 'none';
+
   // The Redactions workspace, populated by the redact-terms module when its catalog row opens it.
   const redactElem = document.createElement('div');
   redactElem.className = 'scribe-am-rdwrap';
@@ -855,7 +873,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   cbox.append(cinput, cbar);
   composer.appendChild(cbox);
 
-  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, inspectElem, redactElem, bulkElem, composer);
+  panelElem.append(hd, strip, tray, catalog, chatsElem, thread, asstThread, tablesElem, inspectElem, compareElem, redactElem, bulkElem, composer);
 
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-am-resize';
@@ -896,22 +914,24 @@ export function createAutomatePanel(app, rootClass, hooks) {
     asstThread.style.display = asst ? '' : 'none';
     tablesElem.style.display = next === 'tables' ? '' : 'none';
     inspectElem.style.display = next === 'inspect' ? '' : 'none';
+    compareElem.style.display = next === 'compare' ? '' : 'none';
     redactElem.style.display = next === 'redact' ? '' : 'none';
     bulkElem.style.display = next === 'bulk' ? '' : 'none';
     backBtn.style.display = rest || !automations ? 'none' : '';
     backBtn.title = 'Back to all automations';
     hdIcon.style.display = rest || !automations ? '' : 'none';
-    if (!automations) hdIcon.innerHTML = next === 'inspect' ? INSPECT_SVG : (AUTOMATIONS.find((a) => a.id === 'extract-tables')?.svg || AUTOMATE_SVG);
+    if (!automations) hdIcon.innerHTML = next === 'inspect' ? INSPECT_SVG : next === 'compare' ? COMPARE_SVG : (AUTOMATIONS.find((a) => a.id === 'extract-tables')?.svg || AUTOMATE_SVG);
     plusBtn.style.display = asst ? '' : 'none';
     const st = app.doc ? docStates.get(app.doc) : null;
     hdTitle.textContent = rest ? 'Automate'
       : chatsList ? 'Chats'
         : next === 'tables' ? 'Extract Tables'
           : next === 'inspect' ? 'Inspect Document'
-            : next === 'redact' ? 'Redactions'
-              : next === 'bulk' ? 'Bulk Edit'
-                : asst ? (st?.activeRec?.title ?? 'Assistant')
-                  : (activeRun ? activeRun.title : 'Automate');
+            : next === 'compare' ? 'Changes'
+              : next === 'redact' ? 'Redactions'
+                : next === 'bulk' ? 'Bulk Edit'
+                  : asst ? (st?.activeRec?.title ?? 'Assistant')
+                    : (activeRun ? activeRun.title : 'Automate');
     if (asst && st) {
       const live = st.activeRec ? st.live.get(st.activeRec) : st.draft;
       if (live) live.unseen = false;
@@ -2455,6 +2475,33 @@ export function createAutomatePanel(app, rootClass, hooks) {
     inspectOpenedPanel = false;
   }
 
+  /** @type {?ReturnType<import('../automations/compareVersions.js').buildCompareWorkspace>} */
+  let compareHandle = null;
+  let comparePriorView = 'rest';
+  let compareOpenedPanel = false;
+
+  /** @param {Parameters<import('../automations/compareVersions.js').buildCompareWorkspace>[1]} state */
+  async function openCompareWorkspace(state) {
+    if (view !== 'compare') compareOpenedPanel = !openState;
+    open();
+    if (view !== 'compare') comparePriorView = view;
+    setView('compare');
+    if (compareHandle) { compareHandle.setDiff(state.diff); compareHandle.setCurrent(state.current); return; }
+    const module = await import('../automations/compareVersions.js');
+    if (view !== 'compare' || compareHandle) return;
+    compareHandle = module.buildCompareWorkspace(compareElem, state);
+  }
+
+  function closeCompareWorkspace() {
+    if (!compareHandle && view !== 'compare') return;
+    compareHandle?.teardown();
+    compareHandle = null;
+    compareElem.textContent = '';
+    if (view === 'compare') setView(comparePriorView === 'compare' ? 'rest' : comparePriorView);
+    if (compareOpenedPanel) close();
+    compareOpenedPanel = false;
+  }
+
   /** @type {?{refresh: () => void, prefill: (term: string) => void}} */
   let redactHandle = null;
 
@@ -2593,6 +2640,8 @@ export function createAutomatePanel(app, rootClass, hooks) {
     panelElem.style.display = 'none';
     toggleElem.classList.remove('active');
     hooks.onLayoutChange();
+    // The Compare Versions banner's list toggle reflects the panel, so a close from the panel's own button is reported.
+    if (view === 'compare') app._syncCompareRow?.();
   };
   toggleElem.addEventListener('click', () => (openState ? close() : open()));
   closeBtn.addEventListener('click', close);
@@ -2687,9 +2736,13 @@ export function createAutomatePanel(app, rootClass, hooks) {
     closeInspectWorkspace,
     /** The live Inspect Document workspace, for the mode's page interactions; null while it is closed. */
     inspectWorkspace: () => inspectHandle,
+    openCompareWorkspace,
+    closeCompareWorkspace,
+    compareWorkspace: () => compareHandle,
     destroy: () => {
       closeBulkWorkspace();
       closeInspectWorkspace();
+      closeCompareWorkspace();
       for (const abort of activeAborts) abort.abort();
       activeAborts.clear();
       modelDropdown.close();

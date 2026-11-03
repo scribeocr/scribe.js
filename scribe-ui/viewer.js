@@ -658,6 +658,8 @@ export class ScribeViewer {
      * @type {Set<string>}
      */
     this._citationIds = new Set();
+    /** @type {?Map<number, {sides: Map<string, 'removed'|'added'>, current: Set<string>}>} */
+    this._diffMarks = null;
 
     this.evalStats = [];
     this._evalStatsConfig = {
@@ -818,6 +820,8 @@ export class ScribeViewer {
       search: '', matchList: [], activeMatch: -1,
     };
     this._citationIds = new Set();
+    /** @type {?Map<number, {sides: Map<string, 'removed'|'added'>, current: Set<string>}>} */
+    this._diffMarks = null;
 
     this.state.cp.n = 0;
     this.state.searchMode = false;
@@ -3577,8 +3581,11 @@ export class ScribeViewer {
    * @param {boolean} [options.ifNeeded=false] - Leave the view alone when the word already sits within the viewport's inner band.
    * @param {number} [options.travel=0] - The way the selection moved to reach the word: 1 down, -1 up, 0 none or unknown.
    *   A word already in the band is centered only when that scrolls the same way, so a step never moves the view back toward the word it left.
+   * @param {boolean} [options.center=false] - Center the word even when it already sits in the band.
    */
-  scrollToWord(kw, { glide = false, ifNeeded = false, travel = 0 } = {}) {
+  scrollToWord(kw, {
+    glide = false, ifNeeded = false, travel = 0, center = false,
+  } = {}) {
     // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
     const rect = kw.getClientRect();
     const margin = 30;
@@ -3601,7 +3608,7 @@ export class ScribeViewer {
     const topPx = rect.y * zoom - from;
     const bottomPx = (rect.y + rect.height) * zoom - from;
     const inBand = topPx >= 60 && bottomPx <= sc.clientHeight - margin;
-    if (inBand && (ifNeeded || Math.sign(target - from) !== travel)) return;
+    if (inBand && !center && (ifNeeded || Math.sign(target - from) !== travel)) return;
     if (this._scrollGlide) {
       cancelAnimationFrame(this._scrollGlide.raf);
       this._scrollGlide = null;
@@ -3855,6 +3862,7 @@ export class ScribeViewer {
     const matchIdArr = this.state.searchMode ? pageMatchIds(this, page.n) : [];
     const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
     const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
+    const diffPage = this._diffMarks ? this._diffMarks.get(page.n) || null : null;
 
     /** @type {Array<UiOcrWord>} */
     const words = [];
@@ -3884,6 +3892,8 @@ export class ScribeViewer {
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
           activeMatch: activeIds.has(wordObj.id),
           cited: this._citationIds.has(wordObj.id),
+          diff: diffPage ? diffPage.sides.get(wordObj.id) || null : null,
+          diffCurrent: !!diffPage && diffPage.current.has(wordObj.id),
           docLink: docLinkBoxes.some((b) => calcBoxOverlap(wordObj.bbox, b) >= 0.5),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,
@@ -3932,7 +3942,7 @@ export class ScribeViewer {
     if (this.useCustomSelection && this.state.displayMode === 'invis') {
       if (this.opt.outlinePars) this._renderParOutlines(page, angle);
       // Word objects exist to carry highlight and search state; a page with neither needs none.
-      const needsWords = (this.doc.annotations.pages[page.n] || []).length > 0 || this.state.searchMode || this._citationIds.size > 0;
+      const needsWords = (this.doc.annotations.pages[page.n] || []).length > 0 || this.state.searchMode || this._citationIds.size > 0 || !!this._diffMarks;
       if (needsWords && !this._wordObjMaps[page.n]) this._buildWordObjs(page);
       this.renderHighlights(page.n);
       /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderMarks(page.n);
@@ -3946,6 +3956,7 @@ export class ScribeViewer {
     // Word IDs of the currently-focused match, computed only when that match is on this page, so it renders distinctly from the others.
     const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
     const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
+    const diffPage = this._diffMarks ? this._diffMarks.get(page.n) || null : null;
 
     const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
@@ -4059,6 +4070,8 @@ export class ScribeViewer {
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
           activeMatch: activeIds.has(wordObj.id),
           cited: this._citationIds.has(wordObj.id),
+          diff: diffPage ? diffPage.sides.get(wordObj.id) || null : null,
+          diffCurrent: !!diffPage && diffPage.current.has(wordObj.id),
           docLink: docLinkBoxes.some((b) => calcBoxOverlap(wordObj.bbox, b) >= 0.5),
           highlightColor: annot ? annot.color : null,
           highlightOpacity: annot ? annot.opacity : 1,

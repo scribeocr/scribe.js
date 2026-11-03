@@ -128,10 +128,13 @@ export class UiText {
    * @param {string} [options.markupComment=''] - Comment text attached to this line-markup group.
    * @param {import('../viewer.js').ScribeViewer} [options.viewer] - The viewer this word belongs to; falls back to the default viewer.
    * @param {boolean} [options.dom=true] - Build the word's `<span>`; false under the custom selection engine, which needs the word's geometry and highlight/search state but no element.
+   * @param {?('removed'|'added')} [options.diff=null] - How a version comparison marks this word.
+   * @param {boolean} [options.diffCurrent=false]
    */
   constructor({
     x, yActual, word, rotation = 0,
     outline = false, selected = false, fillBox = false, activeMatch = false, cited = false, docLink = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
+    diff = null, diffCurrent = false,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
     markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
@@ -267,6 +270,8 @@ export class UiText {
     this._activeMatch = activeMatch;
     // A cited passage is washed in the highlighter color, not the find bar's match color, so a reader never takes a citation for a search hit.
     this._cited = cited;
+    this._diff = diff;
+    this._diffCurrent = diffCurrent;
     this._docLink = docLink;
     this._docLinkHot = false;
     this._highlightColor = highlightColor;
@@ -384,6 +389,14 @@ export class UiText {
 
   set cited(v) { this._cited = v; this._applyStateStyle(); }
 
+  get diff() { return this._diff; }
+
+  set diff(v) { this._diff = v; this._applyStateStyle(); }
+
+  get diffCurrent() { return this._diffCurrent; }
+
+  set diffCurrent(v) { this._diffCurrent = v; this._applyStateStyle(); }
+
   get docLink() { return this._docLink; }
 
   set docLink(v) {
@@ -487,10 +500,12 @@ export class UiText {
     }
     if (this._activeMatch) this.el.style.backgroundColor = 'var(--scribe-match-active)';
     else if (this._fillBox) this.el.style.backgroundColor = 'var(--scribe-match)';
+    else if (this._diff) this.el.style.backgroundColor = this._diff === 'removed' ? 'var(--scribe-diff-removed-wash)' : 'var(--scribe-diff-added-wash)';
     else if (this._cited) this.el.style.backgroundColor = 'var(--scribe-cite)';
     else this.el.style.backgroundColor = '';
     // Multiplied like the custom engine's mark layer, so in invis mode the wash sits behind the raster's ink.
-    this.el.style.mixBlendMode = this._activeMatch || this._fillBox || this._cited ? 'multiply' : '';
+    this.el.style.mixBlendMode = this._activeMatch || this._fillBox || this._diff || this._cited ? 'multiply' : '';
+    this.el.style.boxShadow = this._diffCurrent ? '0 0 0 calc(2px / var(--scribe-zoom, 1)) var(--scribe-accent-ring)' : '';
 
     if (this._selected) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) this.el.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';
@@ -655,9 +670,11 @@ export class UiText {
   _applyStateStyleOn(elem) {
     if (this._activeMatch) elem.style.backgroundColor = 'var(--scribe-match-active)';
     else if (this._fillBox) elem.style.backgroundColor = 'var(--scribe-match)';
+    else if (this._diff) elem.style.backgroundColor = this._diff === 'removed' ? 'var(--scribe-diff-removed-wash)' : 'var(--scribe-diff-added-wash)';
     else if (this._cited) elem.style.backgroundColor = 'var(--scribe-cite)';
     else elem.style.backgroundColor = '';
-    elem.style.mixBlendMode = this._activeMatch || this._fillBox || this._cited ? 'multiply' : '';
+    elem.style.mixBlendMode = this._activeMatch || this._fillBox || this._diff || this._cited ? 'multiply' : '';
+    elem.style.boxShadow = this._diffCurrent ? '0 0 0 calc(2px / var(--scribe-zoom, 1)) var(--scribe-accent-ring)' : '';
 
     if (this._selected) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
     else if (this._outline) elem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid black';
@@ -1022,10 +1039,13 @@ export class UiOcrWord extends UiText {
    * @param {string} [options.markupComment='']
    * @param {import('../viewer.js').ScribeViewer} [options.viewer]
    * @param {boolean} [options.dom=true] - Build the word's `<span>`. See `UiText`.
+   * @param {?('removed'|'added')} [options.diff=null]
+   * @param {boolean} [options.diffCurrent=false]
    */
   constructor({
     visualLeft, yActual, topBaseline, word, rotation = 0,
     outline = false, fillBox = false, activeMatch = false, cited = false, docLink = false, listening = true, highlightColor = null, highlightOpacity = 1,
+    diff = null, diffCurrent = false,
     highlightGroupId = null, highlightComment = '',
     markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
@@ -1045,6 +1065,8 @@ export class UiOcrWord extends UiText {
       fillBox,
       activeMatch,
       cited,
+      diff,
+      diffCurrent,
       docLink,
       opacity,
       fill,

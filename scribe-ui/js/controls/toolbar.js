@@ -1755,6 +1755,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-warn-soft: #fbf1d3;
       --scribe-danger: #d1493d;
       --scribe-danger-soft: #fbe9e7;
+      --scribe-diff-removed: #d1493d;
+      --scribe-diff-added: #2e8b57;
+      --scribe-diff-removed-wash: #f6c9c4;
+      --scribe-diff-added-wash: #c7ead3;
       --scribe-scrollbar: rgba(28, 42, 68, .26);
       --scribe-shadow-pop: 0 8px 28px rgba(20, 30, 60, .17);
       --scribe-menu-shadow: 0 1px 2px rgba(20, 30, 60, .10), 0 5px 14px rgba(20, 30, 60, .12);
@@ -1790,6 +1794,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-warn-soft: #3a3117;
       --scribe-danger: #ef7a6c;
       --scribe-danger-soft: #33201d;
+      --scribe-diff-removed: #ef7a6c;
+      --scribe-diff-added: #5fcf8a;
+      --scribe-diff-removed-wash: #f6c9c4;
+      --scribe-diff-added-wash: #c7ead3;
       --scribe-scrollbar: rgba(255, 255, 255, .26);
       --scribe-shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
       --scribe-menu-shadow: 0 1px 2px rgba(0, 0, 0, .40), 0 6px 16px rgba(0, 0, 0, .48);
@@ -5033,6 +5041,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-rule: #ff0000; }
     .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-rule: #ffc800; }
     .${r} .scribe-proof-count { font-size: 12px; color: var(--scribe-ink); font-variant-numeric: tabular-nums; min-width: 9.5ch; text-align: center; padding: 0 2px; white-space: nowrap; }
+    /* Compare Versions */
+    .${r} .scribe-compare-tools { gap: 2px; }
+    .${r} .scribe-compare-count { font-size: 12px; color: var(--scribe-ink); font-variant-numeric: tabular-nums; min-width: 7ch; text-align: center; padding: 0 2px; white-space: nowrap; border-radius: 4px; outline: 0; }
+    .${r} .scribe-compare-count:focus-visible { box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-compare-list { width: 24px; height: 24px; border-radius: 6px; align-items: center; justify-content: center; margin-left: 6px; }
+    .${r} .scribe-compare-list > svg { width: 18px; height: 18px; display: block; }
+    .${r} .scribe-compare-chip { position: absolute; left: -6px; top: calc(50% - 10px); width: 19px; height: 19px; border-radius: 50%; background: var(--scribe-surface); border: 1px solid var(--scribe-line-strong); box-shadow: 0 1px 2px rgba(20, 30, 60, .14); display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-3); cursor: pointer; z-index: 5; }
+    .${r} .scribe-compare-chip svg { width: 13px; height: 13px; display: block; }
+    .${r} .scribe-compare-chip:hover { color: var(--scribe-ink); }
+    .${r} .scribe-compare-chip.on { color: var(--scribe-accent); border-color: var(--scribe-accent); }
     .${r} .scribe-recog-status { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
     .${r} .scribe-mode-banner-settings { display: inline-flex; align-items: center; gap: 2px; }

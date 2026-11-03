@@ -4330,3 +4330,48 @@ export function createProofreadTextTool(app) {
   });
   return { toolbarElem, isActive: () => active, close: () => setActive(false) };
 }
+
+const COMPARE_SVG = modeIcon('<path d="M5.5 5.5v-3h9v9h-3"/><rect x="2.5" y="5.5" width="9" height="9" rx="1"/><path d="M4.5 8.5h5M4.5 11.5h5"/>');
+
+/**
+ * Create the Compare Versions mode tool.
+ * The mode compares the lane's document against the right group's and marks the changes on both.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ */
+export function createCompareVersionsTool(app) {
+  const toolbarElem = makeIconButton('Compare Versions', COMPARE_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Compare Versions';
+  toolbarElem.appendChild(toolbarLabelElem);
+  let active = false;
+  /** @param {boolean} next */
+  const setActive = (next) => {
+    if (active === next) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+    if (active) app._startCompare(); else app._endCompare();
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (active) { setActive(false); return; }
+    if (toolbarElem.classList.contains('disabled')) return;
+    const provisional = app._compareDocs().filter((doc) => doc && doc.id < 0);
+    if (provisional.length) {
+      Promise.all(provisional.map((doc) => hydrateIfProvisional(doc))).then(async (oks) => {
+        if (oks.some((ok) => !ok)) return;
+        const docs = app._compareDocs();
+        if (docs.some((doc) => !doc || doc.id < 0)) return;
+        await Promise.all(docs.map((doc) => (doc.textReady ? doc.textReady.catch(() => {}) : null)));
+        app._syncDocGatedControls?.();
+        if (toolbarElem.classList.contains('disabled')) return;
+        // The exclusivity click saw this button inactive, so the mode that was on is closed here before this one opens.
+        for (const other of app._exclusiveToolBtns || []) if (other !== toolbarElem && other.classList.contains('active')) other.click();
+        setActive(true);
+      });
+      return;
+    }
+    setActive(true);
+  });
+  return { toolbarElem, isActive: () => active, close: () => setActive(false) };
+}

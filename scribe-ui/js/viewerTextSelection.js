@@ -56,6 +56,9 @@ export function ensureSelectionStyleSheet() {
     + '.scribe-mark-rect{position:absolute;background:var(--scribe-match);border-radius:calc(2px / var(--scribe-zoom,1));transition:background-color .12s ease}'
     + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active)}'
     + '.scribe-mark-rect.scribe-mark-cited{background:var(--scribe-cite)}'
+    + '.scribe-mark-rect.scribe-mark-diff-removed{background:var(--scribe-diff-removed-wash)}'
+    + '.scribe-mark-rect.scribe-mark-diff-added{background:var(--scribe-diff-added-wash)}'
+    + '.scribe-mark-rect.scribe-mark-diff-current{box-shadow:0 0 0 calc(2px / var(--scribe-zoom,1)) var(--scribe-accent-ring)}'
     + `.scribe-mark-doclink{position:absolute;${DOC_LINK_MARK_CSS}}`
     + '.scribe-mark-doclink.hot{--scribe-doclink-color:var(--scribe-accent,#1c62d4)}'
     + '@media (prefers-reduced-motion: reduce){.scribe-mark-rect{transition:none}}'
@@ -1772,7 +1775,7 @@ export class TextSelection {
       this.viewer._searchState.matchList.forEach((m, i) => { for (const id of m.wordIds) matchOf.set(id, i); });
       const air = 1 / (this.viewer.zoomLevel || 1);
       /**
-       * @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, kind: 'active'|'match'|'cited',
+       * @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, kind: 'active'|'match'|'cited'|'diff-removed'|'diff-added',
        *   left: number, right: number, top: number, bottom: number}}
        */
       let run = null;
@@ -1787,7 +1790,9 @@ export class TextSelection {
           pool.set(run.key, div);
           if (group) group.appendChild(div);
         }
-        div.className = run.kind === 'active' ? 'scribe-mark-rect scribe-mark-active' : run.kind === 'cited' ? 'scribe-mark-rect scribe-mark-cited' : 'scribe-mark-rect';
+        const ring = String(run.member).endsWith(':current') ? ' scribe-mark-diff-current' : '';
+        if (run.kind === 'diff-removed' || run.kind === 'diff-added') div.className = `scribe-mark-rect scribe-mark-${run.kind}${ring}`;
+        else div.className = `${run.kind === 'active' ? 'scribe-mark-rect scribe-mark-active' : run.kind === 'cited' ? 'scribe-mark-rect scribe-mark-cited' : 'scribe-mark-rect'}${ring}`;
         Object.assign(div.style, {
           left: `${run.left - air}px`,
           top: `${run.top - air}px`,
@@ -1799,13 +1804,13 @@ export class TextSelection {
       };
       for (const kw of words) {
         // A span-backed word (visible display modes) paints its own match background, so a mark rect on top would double-tint it.
-        if ((!kw.activeMatch && !kw.fillBox && !kw.cited) || kw.el) {
+        if ((!kw.activeMatch && !kw.fillBox && !kw.cited && !kw.diff) || kw.el) {
           flush();
           continue;
         }
-        const member = matchOf.has(kw.word.id) ? matchOf.get(kw.word.id) : 'citation';
-        // A find-bar match outranks the citation wash on a word that is both, as the span painter does.
-        const kind = kw.activeMatch ? 'active' : kw.fillBox ? 'match' : 'cited';
+        const member = `${matchOf.has(kw.word.id) ? matchOf.get(kw.word.id) : kw.diff ? 'diff' : 'citation'}${kw.diffCurrent ? ':current' : ''}`;
+        // Same precedence as the span painter.
+        const kind = kw.activeMatch ? 'active' : kw.fillBox ? 'match' : kw.diff ? (kw.diff === 'removed' ? 'diff-removed' : 'diff-added') : 'cited';
         const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
         const right = left + kw.width();
         // Em offsets, not `fontAscentPx`/`fontDescentPx`, which vary by font and overstate the ink.

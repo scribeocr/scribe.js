@@ -1788,10 +1788,12 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
 
   /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
   let reDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let editDoc;
 
   beforeAll(async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
-    const editDoc = await scribe.openDocument([`${ASSETS_PATH}/online-articles-text-overlap.pdf`]);
+    editDoc = await scribe.openDocument([`${ASSETS_PATH}/online-articles-text-overlap.pdf`]);
     const find = (n, prefix) => {
       const line = editDoc.ocr.active[n].lines.find((l) => lineText(l).startsWith(prefix));
       if (!line) throw new Error(`fixture line not found on page ${n}: ${prefix}`);
@@ -1830,12 +1832,12 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     await editDoc.replaceTextLine(find(0, 'Twitter'), 'TwitterX');
     await editDoc.replaceTextLine(find(0, 'Jewish community.'), 'Jewish communityX.');
     const pdfData = await editDoc.exportData('pdf');
-    await editDoc.close();
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
   });
 
   afterAll(async () => {
     await reDoc.close();
+    await editDoc.close();
   });
 
   test('A plain non-overlapping line deletes cleanly with intact neighbors', () => {
@@ -1909,6 +1911,40 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
       'a hidden white halo copy of the deleted sentence was stranded').toBe(false);
     expect(lines.some((t) => t.includes('against the company; the government redacted how')),
       'the line after the deleted sentence was co-deleted').toBe(true);
+  });
+
+  test('The edited document and its re-imported export read as the same text', async () => {
+    const diff = await editDoc.diffText(reDoc);
+    // Deleting the sentence with white halo copies also drops the "t" of "it" from the export, a defect in deleting overlapping text layers.
+    expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'a PDF export re-imported must diff to no changes against its source beyond the known glyph loss').toEqual(['replaced: it -> i']);
+    expect([diff.changes[0].a.pageN, diff.changes[0].b.pageN], 'the known glyph loss is on page 9').toEqual([8, 8]);
+    expect(diff.pages.length, 'every page of the source pairs with a page of the re-import').toBe(editDoc.ocr.active.length);
+    expect(diff.lines.length, 'every text line of the source pairs with its line in the re-import, the glyph-loss line on its other words').toBe(675);
+    expect(diff.lines[0], 'the first pair is the first text line of page 1 in both documents').toEqual({ a: { pageN: 0, wordId: 'word_1_1_1' }, b: { pageN: 0, wordId: 'word_1_1_1' } });
+    const self = await reDoc.diffText(reDoc);
+    expect([self.changes.length, self.pages.length], 'a document against itself has no changes and pairs every page').toEqual([0, reDoc.ocr.active.length]);
+    expect(self.lines.length, 'a document against itself pairs every text line').toBe(675);
+  });
+
+  test('A line replaced after the round trip is one replaced change with the old and new wording', async () => {
+    const line = reDoc.ocr.active[1].lines.find((l) => lineText(l) === '50 years of service to the county community and for his longstanding friendship to');
+    await reDoc.replaceTextLine(line, '50 years of service to the county community and for his lasting friendship to');
+    const diff = await editDoc.diffText(reDoc);
+    expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'one replaced word is one replaced change').toEqual(['replaced: longstanding -> lasting', 'replaced: it -> i']);
+    expect([diff.changes[0].a.pageN, diff.changes[0].b.pageN], 'the change sits on page 2 of both documents').toEqual([1, 1]);
+    expect(diff.changes[0].a.wordIds.length, 'the older side names the one word it covers').toBe(1);
+    expect(diff.lines.length, 'the replaced line still pairs on its unchanged words').toBe(675);
+  });
+
+  test('A line deleted after the round trip is one removed change', async () => {
+    const line = reDoc.ocr.active[2].lines[0];
+    const text = lineText(line);
+    await reDoc.deleteTextLines([line]);
+    const diff = await editDoc.diffText(reDoc);
+    expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'the earlier replacement and the deleted line').toEqual(['replaced: longstanding -> lasting', `removed: ${text} -> `, 'replaced: it -> i']);
+    expect(text, 'the deleted line is the first line of page 3').toBe('controversy, and you can’t just assume that everyone who uses force is doing it for');
+    expect(diff.changes[1].b.anchorId, 'the removed line\'s newer side anchors on the word that follows it').toBe(reDoc.ocr.active[2].lines[0].words[0].id);
+    expect([diff.lines.length, diff.lines.some((l) => l.a.wordId === diff.changes[1].a.wordIds[0])], 'the deleted line drops out of the pairs').toEqual([674, false]);
   });
 });
 
