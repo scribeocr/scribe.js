@@ -690,21 +690,12 @@ const brokenToUnicodeFont = (f) => {
 };
 
 /**
- * Process a single PDF page: parse fonts, extract text, compute type-detection scores.
- * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
- * @param {ObjectCache} objCache
- * @param {number} n - Page index
+ * A page's geometry for the parse at `dpi`.
+ * @param {{ mediaBox: number[], cropBox: number[]|null, rotate: number }} page
  * @param {number} dpi
- * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
- * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
- *   Without it only URI links are captured.
- * @param {?GlyphOpMap} [glyphOpMap] - When given, receives the page's streams, show operators, glyphs and words.
- * @param {?Array<ContentEdit>} [records] - The page's edit records, whose text patches are applied to its streams before they are parsed.
  */
-export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo, glyphOpMap = null, records = null) {
-  const {
-    objText, mediaBox, cropBox, rotate,
-  } = page;
+export function pageGeometry(page, dpi) {
+  const { mediaBox, cropBox, rotate } = page;
   const effectiveBox = cropBox || mediaBox;
   // Box corners may be stored in either order, so use absolute size and a lower-left origin.
   const contentWidthPts = Math.abs(effectiveBox[2] - effectiveBox[0]);
@@ -737,6 +728,208 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
 
   const pageWidth = Math.round(visualWidthPts * scale);
   const pageHeight = Math.round(visualHeightPts * scale);
+  return {
+    initialCtm, visualWidthPts, visualHeightPts, scale, pageWidth, pageHeight, boxOriginX, boxOriginY,
+  };
+}
+
+/**
+ * A page's own annotations, lifted from its dictionary.
+ * With `textLayer`, the words a URL covers are marked with it, and a visible text or choice field's value becomes text lines of the page.
+ * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
+ * @param {ObjectCache} objCache
+ * @param {number} n
+ * @param {{initialCtm: Array<number>, visualHeightPts: number, scale: number}} geometry - From `pageGeometry` at the parse's dpi.
+ * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
+ * @param {?{pageObj: OcrPage, langSet: Set<string>, pageStats: {printableVis: number}}} [textLayer]
+ * @returns {Annotation[]}
+ */
+export function liftPageAnnotations(page, objCache, n, geometry, destInfo, textLayer = null) {
+  const { objText } = page;
+  const { initialCtm, visualHeightPts, scale } = geometry;
+  const {
+    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, shapes: shapesRaw, redacts: redactsRaw, links: linksRaw, widgets: widgetsRaw,
+  } = extractPdfAnnotations(objCache, objText);
+
+  const mapPoint = (x, y) => {
+    const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
+    const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
+    return { x: cx * scale, y: (visualHeightPts - cy) * scale };
+  };
+
+  // URLs also mark the words their rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
+  // Internal links never touch words, since a word-level link marker would trip that same exemption on link-dense TOC pages.
+  // A link that resolves to neither a URL nor a destination (exotic action, dangling dest) stays passthrough, so its source object survives export verbatim.
+  /** @type {AnnotationLink[]} */
+  const linkAnnots = [];
+  if (linksRaw.length > 0) {
+    /** @type {Array<{left: number, top: number, right: number, bottom: number, uri: string}>} */
+    const uriBoxes = [];
+    for (const l of linksRaw) {
+      const p1 = mapPoint(l.rect[0], l.rect[1]);
+      const p2 = mapPoint(l.rect[2], l.rect[3]);
+      const bbox = {
+        left: Math.min(p1.x, p2.x), top: Math.min(p1.y, p2.y), right: Math.max(p1.x, p2.x), bottom: Math.max(p1.y, p2.y),
+      };
+      if (l.uri) {
+        linkAnnots.push({ type: 'link', bbox, uri: l.uri });
+        uriBoxes.push({ ...bbox, uri: l.uri });
+      } else if (l.annotText && destInfo) {
+        if (!destInfo.nameDests) {
+          const catalogObjNum = findRootObjNum(objCache.pdfBytes);
+          const catalogText = (catalogObjNum && objCache.getObjectText(catalogObjNum)) || '';
+          destInfo.nameDests = buildNameDests(objCache, catalogText);
+        }
+        const { dest } = resolveItemDest(l.annotText, destInfo.nameDests, destInfo.objNumToIndex, objCache);
+        if (dest) {
+          setDestYFrac(dest, destInfo.pages[dest.pageIndex]);
+          linkAnnots.push({ type: 'link', bbox, dest });
+        }
+      }
+    }
+    if (uriBoxes.length > 0 && textLayer) {
+      for (const line of textLayer.pageObj.lines) {
+        for (const word of line.words) {
+          const cx = (word.bbox.left + word.bbox.right) / 2;
+          const cy = (word.bbox.top + word.bbox.bottom) / 2;
+          const hit = uriBoxes.find((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
+          if (hit) word.style.link = hit.uri;
+        }
+      }
+    }
+  }
+  /** @type {Annotation[]} */
+  const annotations = highlightsRaw.map((raw) => pdfHighlightToAnnotation(raw, {
+    scale,
+    visualHeightPts,
+    initialCtm,
+    groupId: `_pdf_p${n}_a${raw.objNum}`,
+  }));
+  for (const raw of freeTextsRaw) {
+    annotations.push(pdfFreeTextToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
+  }
+  for (const raw of textAnnotsRaw) {
+    annotations.push(pdfTextAnnotToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
+  }
+  for (const raw of shapesRaw) {
+    annotations.push(pdfShapeToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
+  }
+  // A source /Redact is a pending redaction from another tool, lifted into marks so apply-at-export honors it.
+  for (const raw of redactsRaw) {
+    annotations.push(...pdfRedactToAnnotations(raw, {
+      scale, visualHeightPts, initialCtm, groupId: `_pdf_p${n}_a${raw.objNum}`,
+    }));
+  }
+
+  annotations.push(...linkAnnots);
+
+  let fieldIdx = 0;
+  for (const w of widgetsRaw) {
+    const p1 = mapPoint(w.rect[0], w.rect[1]);
+    const p2 = mapPoint(w.rect[2], w.rect[3]);
+    const bbox = {
+      left: Math.round(Math.min(p1.x, p2.x)), top: Math.round(Math.min(p1.y, p2.y)), right: Math.round(Math.max(p1.x, p2.x)), bottom: Math.round(Math.max(p1.y, p2.y)),
+    };
+    /** @type {AnnotationField['fieldType']} */
+    let fieldType = 'text';
+    if (w.ft === 'Ch') fieldType = 'choice';
+    else if (w.ft === 'Sig') fieldType = 'signature';
+    else if (w.ft === 'Btn') {
+      if (w.ff & 0x10000) fieldType = 'button';
+      else if (w.ff & 0x8000) fieldType = 'radio';
+      else fieldType = 'checkbox';
+    }
+    /** @type {AnnotationField} */
+    const field = {
+      type: 'field', fieldType, name: w.name, bbox, value: w.value, srcRef: w.objNum,
+    };
+    if (w.ff & 1) field.readOnly = true;
+    if (w.ff & 2) field.required = true;
+    if (w.ft === 'Tx' && (w.ff & 0x1000)) field.multiline = true;
+    if (w.ft === 'Tx' && (w.ff & 0x1000000)) field.comb = true;
+    if (field.comb && w.maxLen) field.maxLen = w.maxLen;
+    if (w.signed) field.signed = true;
+    if ((w.flags & 2) || (w.flags & 32)) field.hidden = true;
+    if (w.quadding) field.quadding = w.quadding;
+    if (w.da) field.da = w.da;
+    if (w.onState != null && (fieldType === 'checkbox' || fieldType === 'radio')) field.onState = w.onState;
+    if (w.options != null && fieldType === 'choice') field.options = w.options;
+    annotations.push(field);
+
+    if (!textLayer) continue;
+    if ((w.flags & 2) || (w.flags & 32)) continue;
+    if (!(w.ft === 'Tx' || w.ft === 'Ch') || !w.value || w.value.trim().length === 0) continue;
+    const rectW = Math.abs(w.rect[2] - w.rect[0]);
+    const rectH = Math.abs(w.rect[3] - w.rect[1]);
+    if (rectW <= 0 || rectH <= 0) continue;
+    const llx = Math.min(w.rect[0], w.rect[2]);
+    const lly = Math.min(w.rect[1], w.rect[3]);
+    const layout = layoutFieldValue(w.value, rectW, rectH, {
+      multiline: !!field.multiline, comb: !!field.comb, maxLen: w.maxLen, quadding: w.quadding, da: w.da,
+    });
+    fieldIdx++;
+    const asc = layout.fontSize * 0.8;
+    const desc = layout.fontSize * 0.2;
+    let liftLineIdx = 0;
+    for (const ll of layout.lines) {
+      if (ll.words.length === 0) continue;
+      liftLineIdx++;
+      const wordSpecs = ll.words.map((lw) => {
+        const pa = mapPoint(llx + lw.x0, lly + ll.y + asc);
+        const pb = mapPoint(llx + lw.x1, lly + ll.y - desc);
+        return {
+          text: lw.text,
+          bbox: {
+            left: Math.round(Math.min(pa.x, pb.x)), top: Math.round(Math.min(pa.y, pb.y)), right: Math.round(Math.max(pa.x, pb.x)), bottom: Math.round(Math.max(pa.y, pb.y)),
+          },
+        };
+      });
+      const lineBbox = {
+        left: Math.min(...wordSpecs.map((s) => s.bbox.left)),
+        top: Math.min(...wordSpecs.map((s) => s.bbox.top)),
+        right: Math.max(...wordSpecs.map((s) => s.bbox.right)),
+        bottom: Math.max(...wordSpecs.map((s) => s.bbox.bottom)),
+      };
+      const baseP = mapPoint(llx + ll.x, lly + ll.y);
+      const lineObj = new ocr.OcrLine(textLayer.pageObj, lineBbox, [0, Math.round(baseP.y) - lineBbox.bottom], asc * scale, null);
+      for (let wi = 0; wi < wordSpecs.length; wi++) {
+        const wordID = `word_${n + 1}_f${fieldIdx}_${liftLineIdx}_${wi + 1}`;
+        const wordObj = new ocr.OcrWord(lineObj, wordID, wordSpecs[wi].text, wordSpecs[wi].bbox);
+        wordObj.conf = 100;
+        wordObj.visualCoords = false;
+        wordObj.lang = calcLang(wordSpecs[wi].text);
+        textLayer.langSet.add(wordObj.lang);
+        wordObj.style.font = 'Helvetica';
+        wordObj.style.size = round3(layout.fontSize * scale);
+        lineObj.words.push(wordObj);
+      }
+      // Field values count toward the document's text-native vs. image-based verdict, so a form with no other text can still classify as text-native.
+      textLayer.pageStats.printableVis += wordSpecs.reduce((acc, s) => acc + s.text.length, 0);
+      const insertAt = textLayer.pageObj.lines.findIndex((l) => l.bbox.top > lineBbox.top);
+      if (insertAt === -1) textLayer.pageObj.lines.push(lineObj);
+      else textLayer.pageObj.lines.splice(insertAt, 0, lineObj);
+    }
+  }
+  return annotations;
+}
+
+/**
+ * Process a single PDF page: parse fonts, extract text, compute type-detection scores.
+ * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
+ * @param {ObjectCache} objCache
+ * @param {number} n - Page index
+ * @param {number} dpi
+ * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
+ * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
+ *   Without it only URI links are captured.
+ * @param {?GlyphOpMap} [glyphOpMap] - When given, receives the page's streams, show operators, glyphs and words.
+ * @param {?Array<ContentEdit>} [records] - The page's edit records, whose text patches are applied to its streams before they are parsed.
+ */
+export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo, glyphOpMap = null, records = null) {
+  const { objText, rotate } = page;
+  const {
+    initialCtm, visualWidthPts, visualHeightPts, scale, pageWidth, pageHeight, boxOriginX, boxOriginY,
+  } = pageGeometry(page, dpi);
 
   const fonts = parsePageFonts(objText, objCache, type3GlyphMappings);
   // A patched stream can name a synthesized substitute face that the page's /Resources do not list.
@@ -1324,168 +1517,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // Rects consumed as text underlines are excluded: on a page where every line carries a hyperlink underline, treating them as separators would shatter each paragraph into single lines.
   pageObj.rules = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
 
-  const {
-    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, shapes: shapesRaw, redacts: redactsRaw, links: linksRaw, widgets: widgetsRaw,
-  } = extractPdfAnnotations(objCache, objText);
-
-  const mapPoint = (x, y) => {
-    const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
-    const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
-    return { x: cx * scale, y: (visualHeightPts - cy) * scale };
-  };
-
-  // URLs also mark the words their rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
-  // Internal links never touch words, since a word-level link marker would trip that same exemption on link-dense TOC pages.
-  // A link that resolves to neither a URL nor a destination (exotic action, dangling dest) stays passthrough, so its source object survives export verbatim.
-  /** @type {AnnotationLink[]} */
-  const linkAnnots = [];
-  if (linksRaw.length > 0) {
-    /** @type {Array<{left: number, top: number, right: number, bottom: number, uri: string}>} */
-    const uriBoxes = [];
-    for (const l of linksRaw) {
-      const p1 = mapPoint(l.rect[0], l.rect[1]);
-      const p2 = mapPoint(l.rect[2], l.rect[3]);
-      const bbox = {
-        left: Math.min(p1.x, p2.x), top: Math.min(p1.y, p2.y), right: Math.max(p1.x, p2.x), bottom: Math.max(p1.y, p2.y),
-      };
-      if (l.uri) {
-        linkAnnots.push({ type: 'link', bbox, uri: l.uri });
-        uriBoxes.push({ ...bbox, uri: l.uri });
-      } else if (l.annotText && destInfo) {
-        if (!destInfo.nameDests) {
-          const catalogObjNum = findRootObjNum(objCache.pdfBytes);
-          const catalogText = (catalogObjNum && objCache.getObjectText(catalogObjNum)) || '';
-          destInfo.nameDests = buildNameDests(objCache, catalogText);
-        }
-        const { dest } = resolveItemDest(l.annotText, destInfo.nameDests, destInfo.objNumToIndex, objCache);
-        if (dest) {
-          setDestYFrac(dest, destInfo.pages[dest.pageIndex]);
-          linkAnnots.push({ type: 'link', bbox, dest });
-        }
-      }
-    }
-    if (uriBoxes.length > 0) {
-      for (const line of pageObj.lines) {
-        for (const word of line.words) {
-          const cx = (word.bbox.left + word.bbox.right) / 2;
-          const cy = (word.bbox.top + word.bbox.bottom) / 2;
-          const hit = uriBoxes.find((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
-          if (hit) word.style.link = hit.uri;
-        }
-      }
-    }
-  }
-  /** @type {Annotation[]} */
-  const annotations = highlightsRaw.map((raw) => pdfHighlightToAnnotation(raw, {
-    scale,
-    visualHeightPts,
-    initialCtm,
-    groupId: `_pdf_p${n}_a${raw.objNum}`,
-  }));
-  for (const raw of freeTextsRaw) {
-    annotations.push(pdfFreeTextToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
-  }
-  for (const raw of textAnnotsRaw) {
-    annotations.push(pdfTextAnnotToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
-  }
-  for (const raw of shapesRaw) {
-    annotations.push(pdfShapeToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
-  }
-  // A source /Redact is a pending redaction from another tool, lifted into marks so apply-at-export honors it.
-  for (const raw of redactsRaw) {
-    annotations.push(...pdfRedactToAnnotations(raw, {
-      scale, visualHeightPts, initialCtm, groupId: `_pdf_p${n}_a${raw.objNum}`,
-    }));
-  }
-
-  annotations.push(...linkAnnots);
-
-  let fieldIdx = 0;
-  for (const w of widgetsRaw) {
-    const p1 = mapPoint(w.rect[0], w.rect[1]);
-    const p2 = mapPoint(w.rect[2], w.rect[3]);
-    const bbox = {
-      left: Math.round(Math.min(p1.x, p2.x)), top: Math.round(Math.min(p1.y, p2.y)), right: Math.round(Math.max(p1.x, p2.x)), bottom: Math.round(Math.max(p1.y, p2.y)),
-    };
-    /** @type {AnnotationField['fieldType']} */
-    let fieldType = 'text';
-    if (w.ft === 'Ch') fieldType = 'choice';
-    else if (w.ft === 'Sig') fieldType = 'signature';
-    else if (w.ft === 'Btn') {
-      if (w.ff & 0x10000) fieldType = 'button';
-      else if (w.ff & 0x8000) fieldType = 'radio';
-      else fieldType = 'checkbox';
-    }
-    /** @type {AnnotationField} */
-    const field = {
-      type: 'field', fieldType, name: w.name, bbox, value: w.value, srcRef: w.objNum,
-    };
-    if (w.ff & 1) field.readOnly = true;
-    if (w.ff & 2) field.required = true;
-    if (w.ft === 'Tx' && (w.ff & 0x1000)) field.multiline = true;
-    if (w.ft === 'Tx' && (w.ff & 0x1000000)) field.comb = true;
-    if (field.comb && w.maxLen) field.maxLen = w.maxLen;
-    if (w.signed) field.signed = true;
-    if ((w.flags & 2) || (w.flags & 32)) field.hidden = true;
-    if (w.quadding) field.quadding = w.quadding;
-    if (w.da) field.da = w.da;
-    if (w.onState != null && (fieldType === 'checkbox' || fieldType === 'radio')) field.onState = w.onState;
-    if (w.options != null && fieldType === 'choice') field.options = w.options;
-    annotations.push(field);
-
-    if ((w.flags & 2) || (w.flags & 32)) continue;
-    if (!(w.ft === 'Tx' || w.ft === 'Ch') || !w.value || w.value.trim().length === 0) continue;
-    const rectW = Math.abs(w.rect[2] - w.rect[0]);
-    const rectH = Math.abs(w.rect[3] - w.rect[1]);
-    if (rectW <= 0 || rectH <= 0) continue;
-    const llx = Math.min(w.rect[0], w.rect[2]);
-    const lly = Math.min(w.rect[1], w.rect[3]);
-    const layout = layoutFieldValue(w.value, rectW, rectH, {
-      multiline: !!field.multiline, comb: !!field.comb, maxLen: w.maxLen, quadding: w.quadding, da: w.da,
-    });
-    fieldIdx++;
-    const asc = layout.fontSize * 0.8;
-    const desc = layout.fontSize * 0.2;
-    let liftLineIdx = 0;
-    for (const ll of layout.lines) {
-      if (ll.words.length === 0) continue;
-      liftLineIdx++;
-      const wordSpecs = ll.words.map((lw) => {
-        const pa = mapPoint(llx + lw.x0, lly + ll.y + asc);
-        const pb = mapPoint(llx + lw.x1, lly + ll.y - desc);
-        return {
-          text: lw.text,
-          bbox: {
-            left: Math.round(Math.min(pa.x, pb.x)), top: Math.round(Math.min(pa.y, pb.y)), right: Math.round(Math.max(pa.x, pb.x)), bottom: Math.round(Math.max(pa.y, pb.y)),
-          },
-        };
-      });
-      const lineBbox = {
-        left: Math.min(...wordSpecs.map((s) => s.bbox.left)),
-        top: Math.min(...wordSpecs.map((s) => s.bbox.top)),
-        right: Math.max(...wordSpecs.map((s) => s.bbox.right)),
-        bottom: Math.max(...wordSpecs.map((s) => s.bbox.bottom)),
-      };
-      const baseP = mapPoint(llx + ll.x, lly + ll.y);
-      const lineObj = new ocr.OcrLine(pageObj, lineBbox, [0, Math.round(baseP.y) - lineBbox.bottom], asc * scale, null);
-      for (let wi = 0; wi < wordSpecs.length; wi++) {
-        const wordID = `word_${n + 1}_f${fieldIdx}_${liftLineIdx}_${wi + 1}`;
-        const wordObj = new ocr.OcrWord(lineObj, wordID, wordSpecs[wi].text, wordSpecs[wi].bbox);
-        wordObj.conf = 100;
-        wordObj.visualCoords = false;
-        wordObj.lang = calcLang(wordSpecs[wi].text);
-        langSet.add(wordObj.lang);
-        wordObj.style.font = 'Helvetica';
-        wordObj.style.size = round3(layout.fontSize * scale);
-        lineObj.words.push(wordObj);
-      }
-      // Field values count toward the document's text-native vs. image-based verdict, so a form with no other text can still classify as text-native.
-      pageStats.printableVis += wordSpecs.reduce((acc, s) => acc + s.text.length, 0);
-      const insertAt = pageObj.lines.findIndex((l) => l.bbox.top > lineBbox.top);
-      if (insertAt === -1) pageObj.lines.push(lineObj);
-      else pageObj.lines.splice(insertAt, 0, lineObj);
-    }
-  }
+  const annotations = liftPageAnnotations(page, objCache, n, { initialCtm, visualHeightPts, scale }, destInfo, { pageObj, langSet, pageStats });
 
   return {
     pageObj,

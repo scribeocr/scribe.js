@@ -12,6 +12,7 @@ import { findText, goToMatch } from '../js/viewerSearch.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import {
   LibraryStore, folderNameProblem, sameEntry, titleOf,
+  hashBytes,
 } from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
 import { createSearchClient } from './search/searchClient.js';
@@ -19,7 +20,7 @@ import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
 import { makeIconButton } from '../js/controls/toolbar.js';
 import { barIcon, slotIcon } from '../js/controls/icons.js';
-import { createDocLoads } from './libraryDocLoads.js';
+import { createDocLoads, openLibraryDoc } from './libraryDocLoads.js';
 import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
 import { flyCopies } from '../js/controls/pageReorder.js';
@@ -146,6 +147,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} docOpened The viewer put a tab's document on screen.
  * @property {() => void} emptied
  * @property {(tab: ?Object) => Promise<void>} saveTabIfDirty
+ * @property {ReturnType<typeof createSearchClient>} engine
+ * @property {?LibraryIngest} ingest
  * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
  * @property {() => void} [syncResume] Document library only: rewrite the keys a relaunch reads from, once this window is the one it resumes.
  * @property {() => Promise<Object>} [searchStats] The search engine's own accounting of what it holds and of its index's shape.
@@ -617,6 +620,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-storage .opt .od { font-size: 12px; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-storage .mv { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 6px 0 2px; font-size: 12.5px; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-storage .mv[hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-storage .inv { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-storage .inv .lt { font-weight: 600; margin-bottom: 6px; }
+.scribe-pdf-viewer .scribe-library-storage .inv > .d { font-size: 12px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-storage .row .acts { display: flex; gap: 6px; }
 .scribe-pdf-viewer .scribe-library-storage .foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-storage .foot .tot { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; }
 /* Start screen: one sheet with the two ways in, and one Recent list of folders and files. */
@@ -895,6 +902,10 @@ export function createLibraryInstance(viewer, opts) {
   let storageOpen = false;
   /** @type {?{previews: number, index: number, notes: number}} */
   let storageSizes = null;
+  /** @type {?{files: number, edited: number, recognized: number, unknown: boolean}} */
+  let storageWork = null;
+  /** @type {?Awaited<ReturnType<typeof LibraryStore.inventory>>} */
+  let storageInventory = null;
   /** Set while the folder's data is being deleted, so closing the folder does not write it back. */
   let discardOnClose = false;
 
@@ -1692,9 +1703,9 @@ export function createLibraryInstance(viewer, opts) {
     if (!store || !manifest) return;
     const entry = Object.values(manifest.docs).find((e) => e.hash === hash);
     if (!entry) return;
-    entry.editedAt = Date.now();
+    entry.editedAt = doc.sessionMarks.editedAt ?? Date.now();
     if (recognized) {
-      entry.recognizedAt = Date.now();
+      entry.recognizedAt = doc.sessionMarks.recognizedAt ?? Date.now();
       delete entry.ocrError;
     }
     // A save can delete, insert or rotate pages, and a provisional document lays its pages out from these.
@@ -1724,13 +1735,19 @@ export function createLibraryInstance(viewer, opts) {
     tab.librarySaving = true;
     tab.libraryDirty = false;
     try {
-      // Sidecars are this application's session store, so they carry app-side state (pending text edits, native-text metadata) that a default export drops.
-      // They opt into the segmented layout so a session of any size stays reloadable.
-      const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, scribeSegments: true, includeCharBoxesScribe: false });
-      await store.writeSidecar(tab.libraryHash, data);
-      await store.writeChanges(tab.libraryHash, await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, includeOcrScribe: false }));
-      sessions.dropChanges(tab.libraryHash);
+      // The marks travel in the sidecar's session block, so a later ingest reads them back from the file.
       const recognized = !!tab.libraryRecognized;
+      const now = Date.now();
+      const doc = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (tab.doc);
+      doc.sessionMarks.editedAt = now;
+      if (recognized) doc.sessionMarks.recognizedAt = now;
+      // Sidecars are this application's session store, so they carry app-side state (pending text edits, native-text metadata) that a default export drops.
+      // They take the segmented form at any size, so the provisional open reads the first line alone.
+      const data = await doc.exportData('scribe', {
+        scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0, includeCharBoxesScribe: false,
+      });
+      await store.writeSidecar(tab.libraryHash, data);
+      sessions.dropHeader(tab.libraryHash);
       tab.libraryRecognized = false;
       await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
     } catch {
@@ -1758,9 +1775,6 @@ export function createLibraryInstance(viewer, opts) {
     const up = from !== '' && (dirPath === '' || from.startsWith(`${dirPath}/`));
     const came = up ? `${dirPath ? `${dirPath}/` : ''}${from.slice(dirPath ? dirPath.length + 1 : 0).split('/')[0]}/` : '';
     currentDir = dirPath;
-    selectedPaths.clear();
-    selAnchor = came || null;
-    if (came) selectedPaths.add(came);
     fullTextResults = null;
     filterText = '';
     searchInput.value = '';
@@ -2569,7 +2583,6 @@ export function createLibraryInstance(viewer, opts) {
       hint.textContent = 'or drop a file here';
       sheet.appendChild(hint);
       body.appendChild(sheet);
-      pruneRecents();
       if (recentFocusIndex >= 0) {
         // A removal from the keyboard keeps the focus in the list, on the row that took the removed one's place.
         const rows = sheet.querySelectorAll('.scribe-library-recent .r');
@@ -3089,7 +3102,7 @@ export function createLibraryInstance(viewer, opts) {
       addRecognizeItem(paths);
       if (canReveal && all.length === 1) addItem(revealLabel, false, () => { if (store) shell.revealFile(store.root.name, all[0]); });
       const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
-      const revertPath = single && single.status === 'indexed' && single.hash && single.editedAt ? paths[0] : null;
+      const revertPath = single && single.status === 'indexed' && single.hash && (single.editedAt || single.recognizedAt) ? paths[0] : null;
       // Removal is the library's own verb, because a portfolio's files are what the portfolio holds.
       const canRemove = isLibrary && paths.length > 0 && !otherPaths.length;
       if (revertPath || canRemove) menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
@@ -3257,9 +3270,8 @@ export function createLibraryInstance(viewer, opts) {
       if (entry.hash && !shared) {
         await engine.removeDoc(entry.hash).catch(() => {});
         await Promise.all([
-          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteChanges(entry.hash), store.deleteChangesBackup(entry.hash),
-          store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
-        ]).catch(() => {});
+          store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
+        ]).catch(() => { });
         sessions.invalidate(entry.hash);
       }
     }
@@ -5459,7 +5471,8 @@ export function createLibraryInstance(viewer, opts) {
         return;
       }
       if (entry.hash && target.query) loads.handOver(entry.hash, target.query, target.near ?? []);
-      const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash && ownsTab(t)) : -1;
+      // A tab opened while the entry's ingest waited carries the hash of its bytes, which can differ from the entry's, so the path is matched too.
+      const openIdx = viewer._tabs.findIndex((t) => ownsTab(t) && (t.libraryRelPath === relPath || (!!entry.hash && t.libraryHash === entry.hash)));
       if (openIdx >= 0) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
@@ -5540,7 +5553,11 @@ export function createLibraryInstance(viewer, opts) {
       let doc;
       loads.beginUserLoad();
       try {
-        doc = await scribeLib.openDocument([pdfFile], { deferText: true });
+      // The entry's hash can be unknown or stale here, before or during an ingest, so the open hashes the bytes itself.
+      // The entry learns a hash only when it had none, so an ingest can still find the superseded hash and drop it from the search index.
+      const hash = await hashBytes(await pdfFile.arrayBuffer());
+      if (!entry.hash) entry.hash = hash;
+        doc = await openLibraryDoc(store, relPath, { ...entry, hash }, { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
@@ -5552,7 +5569,7 @@ export function createLibraryInstance(viewer, opts) {
         entry.portfolio = true;
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
+        await viewer._openPortfolio(doc, titleOf(relPath), { libraryHash: hash, libraryRelPath: relPath, libraryOwner: instanceId });
         return;
       }
       entry.lastOpened = Date.now();
@@ -5560,7 +5577,7 @@ export function createLibraryInstance(viewer, opts) {
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), {
         libraryOwner: instanceId,
-        libraryHash: entry.hash,
+        libraryHash: hash,
         libraryRelPath: relPath,
         lastPage: target.pageN ?? 0,
         activate: !target.background,
@@ -5569,7 +5586,7 @@ export function createLibraryInstance(viewer, opts) {
         program: !!target.program,
       });
       wrapMutators(doc, tab);
-      if (entry.hash) /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = loads.findThroughIndex(entry.hash);
+      /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = loads.findThroughIndex(hash);
       if (!target.background) await markHits(viewer._viewerShowing(doc));
     } finally {
       openingDocs.delete(openKey);
@@ -5666,7 +5683,6 @@ export function createLibraryInstance(viewer, opts) {
     const entry = manifest?.docs[relPath];
     if (!store || !ingest || !entry || !entry.hash) return;
     await store.backupSidecar(entry.hash);
-    await store.backupChanges(entry.hash);
     closeTabsFor(entry.hash);
     revertUndo = {
       relPath, hash: entry.hash, editedAt: entry.editedAt, recognizedAt: entry.recognizedAt, phase: 'reverting',
@@ -5685,7 +5701,6 @@ export function createLibraryInstance(viewer, opts) {
     const entry = manifest.docs[relPath];
     if (!entry || entry.hash !== hash) return;
     if (!(await store.restoreSidecarBackup(hash))) return;
-    await store.restoreChangesBackup(hash);
     closeTabsFor(hash);
     if (editedAt) entry.editedAt = editedAt;
     if (recognizedAt) entry.recognizedAt = recognizedAt;
@@ -5824,13 +5839,17 @@ export function createLibraryInstance(viewer, opts) {
     storageSizes = null;
     if (!visible) activate({ render: false });
     render();
-    s.measure().then((sizes) => {
+    Promise.all([s.measure(), manifest ? s.savedWork(manifest) : null, isLibrary ? LibraryStore.inventory() : []]).then(([sizes, work, inventory]) => {
       if (store !== s || !storageOpen) return;
+    storageWork = null;
+    storageInventory = null;
       storageSizes = sizes;
       render();
     }).catch(() => { });
   };
   const closeStorage = () => {
+      storageWork = work;
+      storageInventory = inventory.filter((item) => item.id !== s.id);
     storageOpen = false;
     render();
   };
@@ -5841,14 +5860,17 @@ export function createLibraryInstance(viewer, opts) {
     const name = s.root.name;
     const sizes = storageSizes ?? await s.measure();
     const docs = Object.keys(manifest.docs).length;
-    const edited = Object.values(manifest.docs).filter((e) => e.editedAt).length;
+    const work = await s.savedWork(manifest);
+    const savedText = work.unknown ? 'documents that could not be counted' : `${work.files} document${work.files === 1 ? '' : 's'}`;
+    // Sidecars are deleted from both docs directories, so a directory left in the folder by an interrupted move counts as touching it.
+    const touchesFolder = !!s.notesBeside || !!s.otherDocsDir;
     const choice = await openStorageConfirm({
       title: 'Delete all notes and edits?',
       name,
-      meta: `${docs} document${docs === 1 ? '' : 's'} · ${edited} with notes or edits, kept ${notesWhere()}`,
+      meta: `${docs} document${docs === 1 ? '' : 's'} · saved work for ${savedText}, kept ${notesWhere()}`,
       intro: 'This discards the saved work for every document in the folder:',
-      items: [`Notes, edits and recognized text for ${edited} document${edited === 1 ? '' : 's'} (${fmtBytes(sizes.notes)})`],
-      note: s.notesBeside
+      items: [`Notes, edits and recognized text for ${savedText} (${fmtBytes(sizes.notes)})`],
+      note: touchesFolder
         ? 'The index and previews in this app are kept; the PDF files are not changed. This cannot be undone.'
         : `The index and previews are kept; nothing in ${name} is changed. This cannot be undone.`,
       confirmLabel: 'Delete notes and edits',
@@ -5858,10 +5880,16 @@ export function createLibraryInstance(viewer, opts) {
     await forgetDocs(Object.keys(manifest.docs));
     storageOpen = false;
     storageSizes = null;
+    if (touchesFolder && !(await s.ensureWritable())) {
+      viewer._showToast(`Editing ${name} wasn't allowed, so the notes inside its .scribe folder stay.`);
+      return;
+    }
     await ingest.scan();
     render();
     ingest.start();
   };
+    storageWork = null;
+    storageInventory = null;
 
   const deleteLibraryData = async () => {
     if (!store || !manifest) return;
@@ -5869,15 +5897,18 @@ export function createLibraryInstance(viewer, opts) {
     const name = s.root.name;
     const sizes = storageSizes ?? await s.measure();
     const docs = Object.keys(manifest.docs).length;
-    const edited = Object.values(manifest.docs).filter((e) => e.editedAt).length;
+    const work = await s.savedWork(manifest);
+    const saved = work.files > 0 || work.unknown;
     const beside = !!s.notesBeside;
     const plural = (/** @type {number} */ count) => (count === 1 ? '' : 's');
     const inApp = sizes.previews + sizes.index + (beside ? 0 : sizes.notes);
     const items = [`Page previews, thumbnails and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
-    if (beside) items.push(`The hidden .scribe folder inside ${name}${edited ? `, holding notes, edits and recognized text for ${edited} document${plural(edited)}` : ''} (${fmtBytes(sizes.notes)})`);
-    else if (edited) items.push(`Notes, edits and recognized text for ${edited} document${plural(edited)} (${fmtBytes(sizes.notes)})`);
+    if (beside) items.push(`The notes directory inside the hidden .scribe folder of ${name}${saved ? `, holding notes, edits and recognized text for ${savedText}` : ''} (${fmtBytes(sizes.notes)})`);
+    else if (saved) items.push(`Notes, edits and recognized text for ${savedText} (${fmtBytes(sizes.notes)})`);
+    if (!beside && s.otherDocsDir) items.push(`A notes directory left inside the hidden .scribe folder of ${name}`);
+    const savedText = work.unknown ? 'documents that could not be counted' : `${work.files} document${plural(work.files)}`;
     items.push('Its place in the Recent list');
-    const touchesFolder = beside;
+    const touchesFolder = beside || !!s.otherDocsDir;
     const choice = await openStorageConfirm({
       title: `Delete library data for ${name}?`,
       name,
@@ -5886,7 +5917,7 @@ export function createLibraryInstance(viewer, opts) {
         : `${docs} document${plural(docs)} · ${fmtBytes(inApp)} in this app`,
       intro: 'This deletes everything this app keeps for the folder:',
       items,
-      keep: edited ? `Keep notes and edits (${edited} document${plural(edited)}, ${fmtBytes(sizes.notes)}${beside ? ', beside the documents' : ''})` : undefined,
+      keep: saved ? `Keep notes and edits (${savedText}, ${fmtBytes(sizes.notes)}${beside ? ', beside the documents' : ''})` : undefined,
       note: touchesFolder ? 'The PDF files are not changed. This cannot be undone.' : `Nothing in ${name} is changed. This cannot be undone.`,
       confirmLabel: 'Delete library data',
     });
@@ -5902,7 +5933,9 @@ export function createLibraryInstance(viewer, opts) {
       return;
     }
     // Asked before the folder closes, while the confirmation's click still counts as a user gesture.
-    if (touchesFolder && !(await s.ensureWritable())) viewer._showToast(`Editing ${name} wasn't allowed, so its .scribe folder stays.`);
+      storageWork = null;
+      storageInventory = null;
+    if (touchesFolder && !(await s.ensureWritable())) viewer._showToast(`Editing ${name} wasn't allowed, so the notes inside its .scribe folder stay.`);
     const handle = s.root;
     discardOnClose = true;
     try {
@@ -5922,7 +5955,7 @@ export function createLibraryInstance(viewer, opts) {
     const name = s.root.name;
     const sizes = storageSizes;
     const docs = manifest ? Object.keys(manifest.docs).length : 0;
-    const edited = manifest ? Object.values(manifest.docs).filter((e) => e.editedAt).length : 0;
+    const saved = storageWork ? (storageWork.unknown ? null : storageWork.files) : 0;
     const sheet = document.createElement('div');
     sheet.className = 'scribe-library-storage';
     const back = document.createElement('button');
@@ -5972,9 +6005,11 @@ export function createLibraryInstance(viewer, opts) {
       closeStorage();
       rebuildIndex();
     });
-    row('Notes, edits and recognized text', edited
-      ? `${edited} of ${docs} document${docs === 1 ? '' : 's'} ${edited === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`
-      : `No document has saved work. Kept ${notesWhere()}.`, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
+    row('Notes, edits and recognized text', saved === null
+      ? `The saved work could not be counted. Kept ${notesWhere()}.`
+      : saved
+        ? `${saved} of ${docs} document${docs === 1 ? '' : 's'} ${saved === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`
+        : `No document has saved work. Kept ${notesWhere()}.`, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
     const loc = document.createElement('div');
     loc.className = 'loc';
     const lt = document.createElement('div');
@@ -6040,7 +6075,8 @@ export function createLibraryInstance(viewer, opts) {
     mvCancel.addEventListener('click', resetChoice);
     mvGo.addEventListener('click', async () => {
       const beside = chosen() === 'beside';
-      if (beside && !(await s.ensureWritable())) {
+      // Moving out removes the files inside the folder, so both directions write into it.
+      if ((beside || s.notesBeside) && !(await s.ensureWritable())) {
         viewer._showToast(`Couldn't move the notes — editing ${name} wasn't allowed.`);
         resetChoice();
         return;
@@ -6067,7 +6103,93 @@ export function createLibraryInstance(viewer, opts) {
     del.disabled = !sizes;
     del.addEventListener('click', deleteLibraryData);
     foot.append(tot, del);
-    sheet.append(loc, foot);
+    const inv = document.createElement('div');
+    inv.className = 'inv';
+    const it = document.createElement('div');
+    it.className = 'lt';
+    it.textContent = 'Other folders this app keeps data for';
+    inv.appendChild(it);
+    if (!storageInventory) {
+      const measuring = document.createElement('div');
+      measuring.className = 'd';
+      measuring.textContent = 'Measuring…';
+      inv.appendChild(measuring);
+    } else if (!storageInventory.length) {
+      const none = document.createElement('div');
+      none.className = 'd';
+      none.textContent = 'None.';
+      inv.appendChild(none);
+    }
+    (storageInventory ?? []).forEach((item) => {
+      const el = document.createElement('div');
+      el.className = 'row';
+      const text = document.createElement('div');
+      const l = document.createElement('div');
+      l.className = 'l';
+      l.textContent = item.name ?? `A folder no longer remembered (${item.id.slice(0, 8)})`;
+      const d = document.createElement('div');
+      d.className = 'd';
+      const parts = [];
+      if (!item.name) parts.push('Its record was lost before records were kept');
+      else if (!item.listed) parts.push('Not in the Recent list');
+      if (item.name && !item.available) parts.push('Folder not found');
+      const savedText = item.work.unknown ? 'saved work that could not be counted' : `saved work for ${item.work.files} document${item.work.files === 1 ? '' : 's'}`;
+      parts.push(item.notesBeside ? 'Notes beside the documents' : savedText);
+      d.textContent = parts.join(' · ');
+      text.append(l, d);
+      const size = document.createElement('div');
+      size.className = 'sz';
+      size.textContent = fmtBytes(item.sizes.previews + item.sizes.index + item.sizes.notes);
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      if (item.work.files > 0 || item.work.unknown) {
+        const exp = document.createElement('button');
+        exp.type = 'button';
+        exp.className = 'act';
+        exp.textContent = 'Export…';
+        exp.addEventListener('click', async () => {
+          // @ts-ignore - showDirectoryPicker is Chromium-only and absent from lib.dom.
+          const dest = await window.showDirectoryPicker({ mode: 'readwrite' }).catch(() => null);
+          if (!dest) return;
+          try {
+            const n = await LibraryStore.exportNotes(item.id, dest);
+            viewer._showToast(`Exported ${n} file${n === 1 ? '' : 's'} of saved work to ${dest.name}.`);
+          } catch (err) {
+            viewer._showToast(`Couldn't export the saved work — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the files could not be written'}.`);
+          }
+        });
+        acts.appendChild(exp);
+      }
+      const forget = document.createElement('button');
+      forget.type = 'button';
+      forget.className = 'act danger';
+      forget.textContent = 'Forget…';
+      forget.addEventListener('click', async () => {
+        const who = item.name ?? 'this folder';
+        const ok = await openStorageConfirm({
+          title: `Forget ${who}?`,
+          name: who,
+          meta: item.notesBeside ? 'Notes beside the documents' : savedText,
+          intro: 'This deletes everything this app keeps for the folder:',
+          items: item.notesBeside || !(item.work.files > 0 || item.work.unknown)
+            ? ['Page previews, thumbnails and the search index']
+            : ['Page previews, thumbnails and the search index', `Notes, edits and recognized text, ${savedText} (${fmtBytes(item.sizes.notes)})`],
+          note: item.name ? `Nothing in ${item.name} is changed. This cannot be undone.` : 'This cannot be undone.',
+          confirmLabel: 'Forget folder',
+        });
+        if (!ok) return;
+        await LibraryStore.deleteAppData(item.id);
+        if (item.handle) await LibraryStore.forgetFolder(item.handle);
+        recentFolders = await LibraryStore.recentFolders();
+        publishFolders();
+        storageInventory = storageInventory?.filter((other) => other.id !== item.id) ?? null;
+        if (store === s && storageOpen) render();
+      });
+      acts.appendChild(forget);
+      el.append(text, size, acts);
+      inv.appendChild(el);
+    });
+    sheet.append(loc, isLibrary ? inv : document.createDocumentFragment(), foot);
     return sheet;
   };
 
@@ -6178,12 +6300,7 @@ export function createLibraryInstance(viewer, opts) {
     const hash = entry.hash;
     const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash && ownsTab(tab))?.doc;
     const docPromise = openTabDoc ? Promise.resolve(openTabDoc)
-      : sessions.liveDocOrLoad(hash, async () => {
-        const files = [await store.readFile(relPath)];
-        const sidecar = await store.readSidecar(hash);
-        if (sidecar) files.push(new File([sidecar], `${hash}.scribe`));
-        return scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
-      });
+      : sessions.liveDocOrLoad(hash, () => openLibraryDoc(/** @type {LibraryStore} */ (store), relPath, entry, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 }));
     docPromise.then((doc) => {
       if (myToken !== token) return;
       // A text markup or redaction is stored as one row per word or quad, all sharing a groupId, so it counts once per group.
@@ -6295,67 +6412,46 @@ export function createLibraryInstance(viewer, opts) {
     if (!isLibrary) return;
     // A folder open in another window heads the list, so the way to that window is always in sight.
     const held = (/** @type {FileSystemDirectoryHandle} */ h) => Number(viewer._foldersOpenElsewhere.includes(h.name));
+  /**
+   * Take a folder off the Recent list, leaving its saved work where it is.
+   * A closed folder with no saved work in the app loses its record and its data.
+   * One with saved work keeps its record, unlisted, and loses its regenerable data.
+   * The open folder is only unlisted.
+   * @param {FileSystemDirectoryHandle} h
+   */
+  const hideFolder = async (h) => {
+    const rec = await LibraryStore.recordFor(h);
+    if (!rec) return;
+    if (!rec.id) {
+      await LibraryStore.forgetFolder(h);
+      return;
+    }
+    if (store && await sameEntry(store.root, h)) {
+      await LibraryStore.updateRecord(h, { listed: false });
+      return;
+    }
+    const work = await LibraryStore.savedWorkIn(rec.id);
+    if (work.files > 0 || work.unknown) {
+      await LibraryStore.deleteCachesIn(rec.id);
+      await LibraryStore.updateRecord(h, { listed: false });
+    } else {
+      await LibraryStore.deleteAppData(rec.id);
+      await LibraryStore.forgetFolder(h);
+    }
+  };
     const ordered = [...recentFolders].sort((a, b) => held(b) - held(a));
     viewer._recents.setFolders(ordered.map((h) => ({
       kind: 'folder',
       label: h.name,
       dir: folderDirs.get(h.name) ?? '',
       open: () => openRecentFolder(h),
-      // The open folder's data is in use, so only Library Storage deletes it.
       remove: async () => {
-        const rec = await LibraryStore.recordFor(h);
-        if (rec?.id && !(store && await sameEntry(store.root, h))) await LibraryStore.deleteAppData(rec.id);
-        await LibraryStore.forgetFolder(h);
+        await hideFolder(h);
         recentFolders = await LibraryStore.recentFolders();
         publishFolders();
       },
-      confirm: async () => {
-        const rec = await LibraryStore.recordFor(h);
-        // Notes kept beside the documents stay in the folder, so forgetting it loses only caches.
-        if (!rec?.id || rec.notesBeside || (store && await sameEntry(store.root, h))) return true;
-        const counts = await LibraryStore.countsIn(rec.id);
-        if (!counts.edited) return true;
-        return !!(await openStorageConfirm({
-          title: `Forget ${h.name}?`,
-          name: h.name,
-          meta: `${counts.docs} document${counts.docs === 1 ? '' : 's'} · notes or edits for ${counts.edited}`,
-          intro: 'This removes the folder from Recent and deletes what this app keeps for it:',
-          items: ['Page previews, thumbnails and the search index', `Notes, edits and recognized text for ${counts.edited} document${counts.edited === 1 ? '' : 's'}`],
-          note: `Nothing in ${h.name} is changed. This cannot be undone.`,
-          confirmLabel: 'Forget folder',
-          host: visible ? surface : viewer.pdfViewerElem,
-        }));
-      },
     })), async () => {
-      const records = await LibraryStore.recentRecords();
-      /** @type {string[]} */
-      const names = [];
-      let edited = 0;
-      for (const r of records) {
-        if (!r.id || r.notesBeside || (store && await sameEntry(store.root, r.handle))) continue;
-        const counts = await LibraryStore.countsIn(r.id);
-        if (!counts.edited) continue;
-        edited += counts.edited;
-        names.push(r.handle.name);
-      }
-      if (edited) {
-        const ok = await openStorageConfirm({
-          title: 'Clear the Recent list?',
-          name: names.join(', '),
-          meta: `notes or edits for ${edited} document${edited === 1 ? '' : 's'} in ${names.length} folder${names.length === 1 ? '' : 's'}`,
-          intro: 'This forgets every listed folder and deletes what this app keeps for them:',
-          items: ['Page previews, thumbnails and search indexes', `Notes, edits and recognized text for ${edited} document${edited === 1 ? '' : 's'}`],
-          note: 'The folders themselves are not changed. This cannot be undone.',
-          confirmLabel: 'Clear and delete',
-          host: visible ? surface : viewer.pdfViewerElem,
-        });
-        if (!ok) return;
-      }
-      for (const r of records) {
-        if (store && await sameEntry(store.root, r.handle)) continue;
-        if (r.id) await LibraryStore.deleteAppData(r.id);
-        await LibraryStore.forgetFolder(r.handle);
-      }
+      for (const r of await LibraryStore.recentRecords()) if (r.listed !== false) await hideFolder(r.handle);
       recentFolders = await LibraryStore.recentFolders();
       publishFolders();
     });
@@ -6395,22 +6491,6 @@ export function createLibraryInstance(viewer, opts) {
       window.setTimeout(() => { if (target.isConnected) done(); }, 400);
     }, 120);
   });
-
-  let recentsPruning = false;
-  const pruneRecents = async () => {
-    if (recentsPruning) return;
-    recentsPruning = true;
-    const gone = [];
-    try {
-      for (const h of recentFolders) if (!(await LibraryStore.folderExists(h))) gone.push(h);
-      for (const h of gone) await LibraryStore.forgetFolder(h);
-    } finally {
-      recentsPruning = false;
-    }
-    if (destroyed || !gone.length) return;
-    recentFolders = recentFolders.filter((h) => !gone.includes(h));
-    publishFolders();
-  };
 
   /** Each folder's parent directory, keyed by the folder's name, as the desktop shell reports it. @type {Map<string, string>} */
   const folderDirs = new Map();
@@ -6510,13 +6590,8 @@ export function createLibraryInstance(viewer, opts) {
       releaseFolderLock?.();
       releaseFolderLock = null;
       const gone = err instanceof DOMException && err.name === 'NotFoundError';
-      if (gone) {
-        await LibraryStore.forgetFolder(s.root);
-        recentFolders = await LibraryStore.recentFolders();
-        publishFolders();
-      }
       if (!resumed) {
-        viewer._showToast(gone ? `“${s.root.name}” is no longer there and was removed from Recent.`
+        viewer._showToast(gone ? `“${s.root.name}” is no longer there.`
           : `Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
       }
       render();
@@ -6565,8 +6640,8 @@ export function createLibraryInstance(viewer, opts) {
         const doneEntry = manifest?.docs[relPath];
         // A tab adopted by a copy into the folder learns its hash once the ingest has computed it.
         if (doneEntry?.hash) for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath === relPath && !t.libraryHash) t.libraryHash = doneEntry.hash;
-        // Ingest and recognition write changes files of their own, so the parsed changes must not outlive them.
-        if (doneEntry?.hash) sessions.dropChanges(doneEntry.hash);
+        // Recognition writes the sidecar and a revert deletes it, so the parsed header must not outlive it.
+        if (doneEntry?.hash) sessions.dropHeader(doneEntry.hash);
         if (recognizingPath === relPath && doneEntry?.ocrError) runRecognizeFailures++;
         if (revertUndo && revertUndo.relPath === relPath) {
           if (revertUndo.phase === 'reverting') {
@@ -6930,10 +7005,14 @@ export function createLibraryInstance(viewer, opts) {
     if (manifestTimer !== null) {
       window.clearTimeout(manifestTimer);
       manifestTimer = null;
-      if (manifest && !discardOnClose) store.writeManifest(manifest).catch(() => {});
+      // Awaited, so that a deletion of the folder's data that follows the close cannot be undone by a manifest write still in flight.
+      if (manifest && !discardOnClose) await store.writeManifest(manifest).catch(() => { });
+    storageWork = null;
+    storageInventory = null;
     }
 
-    engine.close().catch(() => {});
+    // Awaited, so that a deletion of the folder's data that follows the close never meets the index's files still open.
+    await engine.close().catch(() => { });
 
     sessions.reset();
     results.dispose();
@@ -7641,6 +7720,8 @@ export function createLibraryInstance(viewer, opts) {
     libraryHash: opts.libraryHash ?? null,
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
+    // Only a spec reads the search client from the instance.
+    engine,
     covering: () => visible && form === 'full',
     columnWidth: () => (visible && form === 'column' && columnOpen ? columnW : 0),
     containsNode: (/** @type {Node} */ node) => surface.contains(node),
@@ -7711,6 +7792,8 @@ export function createLibraryInstance(viewer, opts) {
 
   // --- Boot ---------------------------------------------------------------
 
+  // Only a spec drives the ingest queue through the instance.
+  Object.defineProperty(api, 'ingest', { get: () => ingest });
   (async () => {
     if (!isLibrary) {
       activate({ render: false });

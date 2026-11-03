@@ -337,14 +337,8 @@ export const createSearchEngine = (storage, settings = {}) => {
       closeFile(genName);
       const present = new Set(names);
       manifest.segments = manifest.segments.filter((s) => present.has(s.name));
-      if (manifest.nextIngestSeq === undefined) {
-        const all = manifest.segments.flatMap((seg) => seg.docs).sort((a, b) => (a.hash < b.hash ? -1 : a.hash > b.hash ? 1 : 0));
-        all.forEach((d, i) => { d.ingestSeq = i; });
-        manifest.nextIngestSeq = all.length;
-      }
     }
-    // An index built before the manifest recorded its rules was built under `TOKENIZER_DEFAULTS`, except that a marker took no position.
-    indexRules = manifest.segments.length ? { ...TOKENIZER_DEFAULTS, markersUnpositioned: true, ...(manifest.tokenizer || {}) } : { ...options.tokenizer };
+    indexRules = manifest.segments.length ? { ...manifest.tokenizer } : { ...options.tokenizer };
     const referenced = new Set();
     for (const s of manifest.segments) {
       referenced.add(s.name);

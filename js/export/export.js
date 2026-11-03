@@ -62,7 +62,8 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  * @property {boolean} [scribeSegments] - Allow compressed `.scribe` exports above `scribeSegmentThreshold` to use the segmented layout instead of a single JSON document; default false.
  *    Off, an export is a single JSON document whatever its size.
  *    A file past the JavaScript string limit then has no JavaScript reader, this library included, and is meant for consumers in other languages.
- * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented layout; default 400,000,000.
+ * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented form; default 400,000,000.
+ *    Zero selects the segmented form at any size.
  *    The default keeps every single-JSON file under the JavaScript string limit that a reader must fit it into.
  *    Ignored without `scribeSegments`.
  * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
@@ -219,8 +220,7 @@ function* scribeJsonChunks(ocrPages, serializeOpts, envelope) {
 }
 
 /**
- * Yield the `.scribe` segmented layout as string chunks.
- * Line 1 is a header of the doc-level fields, followed by one newline-separated JSON record per page.
+ * Yield the `.scribe` segmented form as string chunks.
  * Every line parses on its own, so a reader never needs the whole document as one string.
  * @param {Array<OcrPage>} ocrPages
  * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
@@ -241,16 +241,19 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
       ? {
         v: envelope.session.v,
         pageSourceIndices: envelope.session.pageSourceIndices,
+        contentEdits: envelope.session.contentEdits,
         fillText: envelope.session.fillText,
         assistantChats: envelope.session.assistantChats,
         redactions: envelope.session.redactions,
         type3GlyphMappings: envelope.session.type3GlyphMappings,
+        tableExport: envelope.session.tableExport,
+        editedAt: envelope.session.editedAt,
+        recognizedAt: envelope.session.recognizedAt,
         hocrSourceHead: envelope.session.hocrSource?.head,
       }
       : undefined,
   };
   yield JSON.stringify(header);
-  const contentEdits = envelope.session?.contentEdits || [];
   const nativeText = envelope.session?.nativeText || [];
   const fillShapes = envelope.session?.fillShapes || [];
   const truth = envelope.session?.truth || [];
@@ -260,7 +263,6 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     /** @type {Record<string, any>} */
     const rec = { i, ocr: page };
     if (envelope.session) {
-      rec.contentEdits = contentEdits[i] ?? null;
       rec.nativeText = nativeText[i] ?? null;
       rec.fillShapes = fillShapes[i] ?? null;
       if (envelope.session.truth) rec.truth = truth[i] ?? null;
@@ -883,6 +885,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
         fillText: collectFillTextRefs(doc),
         pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       };
+      if (doc.sessionMarks.editedAt != null) envelope.session.editedAt = doc.sessionMarks.editedAt;
+      if (doc.sessionMarks.recognizedAt != null) envelope.session.recognizedAt = doc.sessionMarks.recognizedAt;
       if (doc.truth.pages.some((p) => p)) envelope.session.truth = doc.truth.pages.map((p) => p ?? null);
       // Site matching pads by 2px, so rounding coordinates to 0.1px is lossless.
       const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
@@ -911,8 +915,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
       // Streaming page chunks lets this branch emit a single JSON document of any size, including past what a JavaScript reader can re-import.
       // Capping it here would put the interchange format back behind a layout only this library reads.
       // The segmented layout carries the session's per-page records inside the page records, so a file without pages stays one JSON document.
+      // A zero threshold skips the single-JSON attempt because `compressStringChunks` treats a zero limit as no limit.
       content = scribeSegments && includeOcrScribe
-        ? (await compressStringChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope), scribeSegmentThreshold)
+        ? ((scribeSegmentThreshold > 0 ? await compressStringChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope), scribeSegmentThreshold) : null)
           ?? await compressStringChunks(scribeSegmentChunks(ocrOut, serializeOpts, envelope)))
         : await compressStringChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope));
     } else {

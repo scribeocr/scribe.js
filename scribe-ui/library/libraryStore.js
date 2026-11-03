@@ -1,6 +1,5 @@
 const IDB_NAME = 'scribe-library';
 const IDB_STORE = 'handles';
-const HANDLE_KEY = 'library-root';
 const RECENTS_KEY = 'recent-folders';
 const RECENTS_MAX = 8;
 const DATA_DIR = '.scribe';
@@ -15,7 +14,6 @@ export const hashBytes = async (buf) => {
   return [...new Uint8Array(digest, 0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
-/** Byte cap for stored page rasters, enforced by the artifact sweep. */
 export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 
 // Display names are always the file name, never PDF metadata.
@@ -70,8 +68,6 @@ export const folderNameProblem = (name) => {
  * @property {number} [arrived] - Epoch ms when a drag last moved the document into its current folder; absent until then.
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
  *    Recorded only from an open the app performs anyway, never from one run to measure.
- * @property {number} [pageRasterW] - Pixel width of the stored page rasters.
- *    Read from older manifests, never written.
  * @property {boolean} [portfolio] - The file is a PDF portfolio (a catalog with a collection dictionary), so opening it lists its embedded files rather than showing its cover page.
  */
 
@@ -90,6 +86,21 @@ const openIdb = () => new Promise((resolve, reject) => {
   req.onsuccess = () => resolve(req.result);
   req.onerror = () => reject(req.error);
 });
+
+/**
+ * @type {Promise<unknown>}
+ */
+let registryTurn = Promise.resolve();
+/**
+ * @template T
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+const withRegistry = (fn) => {
+  const turn = registryTurn.then(fn, fn);
+  registryTurn = turn.catch(() => {});
+  return turn;
+};
 
 /**
  * @param {IDBTransaction['mode']} mode
@@ -196,6 +207,22 @@ const freeFolderNameIn = async (dir, base) => {
   throw new Error(`Couldn't find a free name for “${base}” — 999 numbered copies already exist.`);
 };
 
+/**
+ * @param {?FileSystemDirectoryHandle} dir
+ * @param {Set<string>} [skip]
+ * @returns {Promise<number>}
+ */
+const sizeOfDir = async (dir, skip = new Set()) => {
+  if (!dir) return 0;
+  let total = 0;
+  // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+  for await (const [name, handle] of dir.entries()) {
+    if (skip.has(name)) continue;
+    total += handle.kind === 'directory' ? await sizeOfDir(handle) : (await handle.getFile()).size;
+  }
+  return total;
+};
+
 export class LibraryStore {
   /**
    * @param {FileSystemDirectoryHandle} rootHandle
@@ -217,52 +244,50 @@ export class LibraryStore {
     this.dataDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.docsDir = null;
+    /**
+     * The docs directory of the other setting, when it exists.
+     * A move that stopped partway leaves notes in both, so reads consult both.
+     * @type {?FileSystemDirectoryHandle}
+     */
+    this.otherDocsDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.thumbsDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.pagesDir = null;
-    /** @type {?number} Running byte total of stored page rasters. Null until the first sweep establishes it. */
+    /**
+     * Running byte total of the stored page rasters.
+     * Null while the total is unknown, which makes a trim due.
+     * @type {?number}
+     */
     this.rasterBytes = null;
-    /** @type {number} Byte cap the sweep enforces on stored page rasters. */
+    /** @type {number} */
     this.rasterBudget = RASTER_BUDGET_BYTES;
+    /** Whether a trim is due at the ingest's next idle. */
+    this.trimDue = false;
   }
 
   static isSupported() {
     return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
   }
 
-  /** @returns {Promise<?FileSystemDirectoryHandle>} */
-  static async restoreHandle() {
-    try {
-      return (await idbOp('readonly', (s) => s.get(HANDLE_KEY))) || null;
-    } catch {
-      return null;
-    }
-  }
-
   /**
-   * The recents list as stored, newest first.
-   * @typedef {{handle: FileSystemDirectoryHandle, lastOpened: number, id?: string, notesBeside?: boolean}} RecentRecord
+   * @typedef {{handle: FileSystemDirectoryHandle, id?: string, notesBeside?: boolean, listed?: boolean}} RecentRecord
    * @returns {Promise<RecentRecord[]>}
    */
   static async recentRecords() {
     try {
       const list = await idbOp('readonly', (s) => s.get(RECENTS_KEY));
-      if (Array.isArray(list) && list.length) return list.filter((r) => r && r.handle);
-      // A profile from before the recents list holds its one folder under the old key.
-      const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
-      return legacy ? [{ handle: legacy, lastOpened: 0 }] : [];
+      return Array.isArray(list) ? list.filter((r) => r && r.handle) : [];
     } catch {
       return [];
     }
   }
 
   /**
-   * Folders opened before, newest first.
    * @returns {Promise<FileSystemDirectoryHandle[]>}
    */
   static async recentFolders() {
-    return (await LibraryStore.recentRecords()).map((r) => r.handle);
+    return (await LibraryStore.recentRecords()).filter((r) => r.listed !== false).slice(0, RECENTS_MAX).map((r) => r.handle);
   }
 
   /**
@@ -284,25 +309,28 @@ export class LibraryStore {
   }
 
   /**
-   * Record `handle` as the folder opened most recently, keeping what its record already holds.
+   * Record `handle` as the folder opened most recently and listed, keeping what its record already holds.
    * @param {FileSystemDirectoryHandle} handle
    * @param {{id?: string, notesBeside?: boolean}} [patch]
    */
-  static async persistHandle(handle, patch = {}) {
-    try {
-      /** @type {?RecentRecord} */
-      let own = null;
-      /** @type {RecentRecord[]} */
-      const kept = [];
-      for (const r of await LibraryStore.recentRecords()) {
-        if (await sameEntry(r.handle, handle)) own = own ?? r;
-        else kept.push(r);
-      }
-      const now = Date.now();
-      const list = [{ ...(own ?? {}), ...patch, handle }, ...kept].slice(0, RECENTS_MAX).map((r, i) => ({ ...r, lastOpened: now - i }));
-      await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
-      await idbOp('readwrite', (s) => s.put(handle, HANDLE_KEY));
-    } catch { /* Private mode or blocked storage. */ }
+  static persistHandle(handle, patch = {}) {
+    return withRegistry(async () => {
+      try {
+        /** @type {?RecentRecord} */
+        let own = null;
+        /** @type {RecentRecord[]} */
+        const kept = [];
+        for (const r of await LibraryStore.recentRecords()) {
+          if (await sameEntry(r.handle, handle)) own = own ?? r;
+          else kept.push(r);
+        }
+        // Every record stays, so a folder that leaves the Recent list keeps the id of its saved work.
+        const list = [{
+          ...(own ?? {}), ...patch, handle, listed: true,
+        }, ...kept];
+        await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
+      } catch { /* Private mode or blocked storage. */ }
+    });
   }
 
   /**
@@ -310,23 +338,19 @@ export class LibraryStore {
    * @param {FileSystemDirectoryHandle} handle
    * @param {{id?: string, notesBeside?: boolean}} patch
    */
-  static async updateRecord(handle, patch) {
-    try {
-      const list = await LibraryStore.recentRecords();
-      let found = false;
-      for (let i = 0; i < list.length; i++) {
-        if (!(await sameEntry(list[i].handle, handle))) continue;
-        list[i] = { ...list[i], ...patch };
-        found = true;
-      }
-      if (found) await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
-    } catch { /* Private mode or blocked storage. */ }
-  }
-
-  static async forgetHandle() {
-    try {
-      await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
-    } catch { /* Nothing to forget. */ }
+  static updateRecord(handle, patch) {
+    return withRegistry(async () => {
+      try {
+        const list = await LibraryStore.recentRecords();
+        let found = false;
+        for (let i = 0; i < list.length; i++) {
+          if (!(await sameEntry(list[i].handle, handle))) continue;
+          list[i] = { ...list[i], ...patch };
+          found = true;
+        }
+        if (found) await idbOp('readwrite', (s) => s.put(list, RECENTS_KEY));
+      } catch { /* Private mode or blocked storage. */ }
+    });
   }
 
   /**
@@ -347,27 +371,27 @@ export class LibraryStore {
   }
 
   /**
-   * Drop a folder from the recents list.
+   * Drop a folder's record.
+   * Call it only when the site's storage holds nothing for the folder.
    * @param {FileSystemDirectoryHandle} handle
    */
-  static async forgetFolder(handle) {
-    try {
-      const kept = [];
-      for (const r of await LibraryStore.recentRecords()) if (!(await sameEntry(r.handle, handle))) kept.push(r);
-      const now = Date.now();
-      await idbOp('readwrite', (s) => s.put(kept.map((r, i) => ({ ...r, lastOpened: now - i })), RECENTS_KEY));
-      // An emptied list falls back to the single-folder key, which would bring the folder back.
-      const legacy = await idbOp('readonly', (s) => s.get(HANDLE_KEY));
-      if (legacy && await sameEntry(legacy, handle)) await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
-    } catch { /* Private mode or blocked storage. */ }
+  static forgetFolder(handle) {
+    return withRegistry(async () => {
+      try {
+        const kept = [];
+        for (const r of await LibraryStore.recentRecords()) if (!(await sameEntry(r.handle, handle))) kept.push(r);
+        await idbOp('readwrite', (s) => s.put(kept, RECENTS_KEY));
+      } catch { /* Private mode or blocked storage. */ }
+    });
   }
 
   /** Empty the recents list. */
-  static async clearRecentFolders() {
-    try {
-      await idbOp('readwrite', (s) => s.put([], RECENTS_KEY));
-      await idbOp('readwrite', (s) => s.delete(HANDLE_KEY));
-    } catch { /* Private mode or blocked storage. */ }
+  static clearRecentFolders() {
+    return withRegistry(async () => {
+      try {
+        await idbOp('readwrite', (s) => s.put([], RECENTS_KEY));
+      } catch { /* Private mode or blocked storage. */ }
+    });
   }
 
   /**
@@ -427,8 +451,8 @@ export class LibraryStore {
   }
 
   /**
-   * Open the folder's data directories in the site's storage, and its sidecars where they live.
-   * Nothing is written into the folder unless its sidecars already live there.
+   * Open the folder's data directories in the site's storage, and its docs directory where the notes live.
+   * Nothing is written into the folder, so a folder picked read-only opens.
    */
   async init() {
     if (!this.id) this.id = newFolderId();
@@ -436,20 +460,34 @@ export class LibraryStore {
     this.dataDir = await appRoot.getDirectoryHandle(this.id, { create: true });
     this.thumbsDir = await this.dataDir.getDirectoryHandle('thumbs', { create: true });
     this.pagesDir = await this.dataDir.getDirectoryHandle('pages', { create: true });
-    // A folder opened without a record keeps the notes it already holds beside its documents.
-    if (this.notesBeside === null) this.notesBeside = !!(await this.root.getDirectoryHandle(DATA_DIR).then((d) => d.getDirectoryHandle('docs')).catch(() => null));
-    if (this.notesBeside) {
-      this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
-      this.docsDir = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
-    } else {
-      this.docsDir = await this.dataDir.getDirectoryHandle('docs', { create: true });
-    }
+    this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR).catch(() => null);
+    const besideDocs = this.folderDataDir ? await this.folderDataDir.getDirectoryHandle('docs').catch(() => null) : null;
+    // The record that holds this setting lives in one browser profile, so a folder opened without one keeps its notes beside its documents if they already live there.
+    if (this.notesBeside === null) this.notesBeside = !!besideDocs;
+    const appDocs = await this.dataDir.getDirectoryHandle('docs', { create: !this.notesBeside }).catch(() => null);
+    this.docsDir = this.notesBeside ? besideDocs : appDocs;
+    this.otherDocsDir = this.notesBeside ? appDocs : besideDocs;
     await LibraryStore.updateRecord(this.root, { id: this.id, notesBeside: this.notesBeside });
     try {
       // The previews must leave room in the site's storage quota for the notes and the index.
       const estimate = await navigator.storage.estimate();
       if (estimate.quota) this.rasterBudget = Math.min(RASTER_BUDGET_BYTES, Math.floor(estimate.quota / 4));
     } catch { /* The fixed budget stands. */ }
+  }
+
+  /**
+   * The docs directory for a write, created when it is missing.
+   * @returns {Promise<FileSystemDirectoryHandle>}
+   */
+  async docsDirForWrite() {
+    if (this.docsDir) return this.docsDir;
+    if (this.notesBeside) {
+      this.folderDataDir = this.folderDataDir ?? await this.root.getDirectoryHandle(DATA_DIR, { create: true });
+      this.docsDir = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
+    } else {
+      this.docsDir = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('docs', { create: true });
+    }
+    return this.docsDir;
   }
 
   /**
@@ -685,7 +723,7 @@ export class LibraryStore {
    * @param {ArrayBuffer|Uint8Array|Blob} data - Serialized `.scribe` data for this document.
    */
   async writeSidecar(hash, data) {
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`, data);
+    await writeFileIn(await this.docsDirForWrite(), `${hash}.scribe`, data);
     // Notes kept in the site's storage can be evicted under disk pressure unless the browser is asked to keep them.
     // Chromium decides that request without a prompt.
     if (!this.notesBeside && !this.persistAsked) {
@@ -694,32 +732,44 @@ export class LibraryStore {
     }
   }
 
+  /**
+   * @param {string} hash
+   * @returns {Promise<?File>}
+   */
+  async sidecarBlob(hash) {
+    for (const dir of [this.docsDir, this.otherDocsDir]) {
+      if (!dir) continue;
+      const file = await readFileIn(dir, `${hash}.scribe`);
+      if (file) return file;
+    }
+    return null;
+  }
+
   /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
   async readSidecar(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    const file = await this.sidecarBlob(hash);
     return file ? file.arrayBuffer() : null;
   }
 
   /** @param {string} hash @returns {Promise<?number>} Byte size of the stored sidecar without reading it, or null when absent. */
   async sidecarSize(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    const file = await this.sidecarBlob(hash);
     return file ? file.size : null;
   }
 
   /** @param {string} hash */
   async deleteSidecar(hash) {
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.scribe`);
   }
 
   /**
-   * Copy the sidecar into its one backup slot before a revert overwrites it.
    * @param {string} hash
-   * @returns {Promise<boolean>} Whether there was a sidecar to back up.
+   * @returns {Promise<boolean>}
    */
   async backupSidecar(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    const file = await this.sidecarBlob(hash);
     if (!file) return false;
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`, file);
+    await writeFileIn(await this.docsDirForWrite(), `${hash}.scribe.bak`, file);
     return true;
   }
 
@@ -729,65 +779,17 @@ export class LibraryStore {
    * @returns {Promise<boolean>} Whether a backup existed.
    */
   async restoreSidecarBackup(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
+    const dir = await this.docsDirForWrite();
+    const file = await readFileIn(dir, `${hash}.scribe.bak`);
     if (!file) return false;
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`, file);
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
+    await writeFileIn(dir, `${hash}.scribe`, file);
+    await deleteFileIn(dir, `${hash}.scribe.bak`);
     return true;
   }
 
   /** @param {string} hash */
   async deleteSidecarBackup(hash) {
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe.bak`);
-  }
-
-  /**
-   * Store the document's changes file, its `.scribe` export without the text.
-   * A provisional document reads it in place of the sidecar, so every save that writes the sidecar writes it too.
-   * @param {string} hash
-   * @param {ArrayBuffer|Uint8Array|Blob} data
-   */
-  async writeChanges(hash, data) {
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`, data);
-  }
-
-  /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
-  async readChanges(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
-    return file ? file.arrayBuffer() : null;
-  }
-
-  /** @param {string} hash */
-  async deleteChanges(hash) {
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
-  }
-
-  /**
-   * @param {string} hash
-   * @returns {Promise<boolean>} Whether there was a changes file to back up.
-   */
-  async backupChanges(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`);
-    if (!file) return false;
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`, file);
-    return true;
-  }
-
-  /**
-   * @param {string} hash
-   * @returns {Promise<boolean>} Whether a backup existed.
-   */
-  async restoreChangesBackup(hash) {
-    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
-    if (!file) return false;
-    await writeFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes`, file);
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
-    return true;
-  }
-
-  /** @param {string} hash */
-  async deleteChangesBackup(hash) {
-    await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.changes.bak`);
+    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.scribe.bak`);
   }
 
   /** @param {string} hash @param {Blob} blob */
@@ -806,15 +808,18 @@ export class LibraryStore {
   }
 
   /**
-   * Store one page's pre-rendered raster.
    * @param {string} hash
    * @param {number} n - 0-indexed page.
    * @param {Blob} blob
    */
   async writePageRaster(hash, n, blob) {
     const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash, { create: true });
+    const replaced = await readFileIn(dir, `${n}.webp`);
     await writeFileIn(dir, `${n}.webp`, blob);
-    if (this.rasterBytes !== null) this.rasterBytes += blob.size;
+    if (this.rasterBytes !== null) {
+      this.rasterBytes += blob.size - (replaced?.size ?? 0);
+      if (this.rasterBytes > this.rasterBudget) this.trimDue = true;
+    }
   }
 
   /** @param {string} hash @param {number} n @returns {Promise<?Blob>} */
@@ -827,11 +832,20 @@ export class LibraryStore {
     }
   }
 
-  /** @param {string} hash */
+  /**
+   * @param {string} hash
+   */
   async deletePageRasters(hash) {
-    await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).removeEntry(hash, { recursive: true }).catch(() => {});
-    // The deleted set's size is unknown here, so the running total is stale until the next sweep.
-    this.rasterBytes = null;
+    const pagesDir = /** @type {FileSystemDirectoryHandle} */ (this.pagesDir);
+    const dir = await pagesDir.getDirectoryHandle(hash).catch(() => null);
+    if (!dir) return;
+    let bytes = 0;
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [, handle] of dir.entries()) if (handle.kind === 'file') bytes += (await handle.getFile()).size;
+    try {
+      await pagesDir.removeEntry(hash, { recursive: true });
+      if (this.rasterBytes !== null) this.rasterBytes -= bytes;
+    } catch { /* A directory that would not go still counts. */ }
   }
 
   /**
@@ -840,25 +854,104 @@ export class LibraryStore {
    * @returns {Promise<{previews: number, index: number, notes: number}>}
    */
   async measure() {
-    /**
-     * @param {?FileSystemDirectoryHandle} dir
-     * @param {Set<string>} [skip]
-     * @returns {Promise<number>}
-     */
-    const sizeOf = async (dir, skip = new Set()) => {
-      if (!dir) return 0;
-      let total = 0;
-      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const [name, handle] of dir.entries()) {
-        if (skip.has(name)) continue;
-        total += handle.kind === 'directory' ? await sizeOf(handle) : (await handle.getFile()).size;
-      }
-      return total;
-    };
     return {
-      previews: await sizeOf(this.pagesDir),
-      index: await sizeOf(this.dataDir, new Set(['pages', 'docs'])),
-      notes: await sizeOf(this.docsDir),
+      previews: await sizeOfDir(this.pagesDir),
+      index: await sizeOfDir(this.dataDir, new Set(['pages', 'docs'])),
+      notes: (await sizeOfDir(this.docsDir)) + (await sizeOfDir(this.otherDocsDir)),
+    };
+  }
+
+  /**
+   * Every folder the app keeps data for, by its data directory in the site's storage.
+   * @returns {Promise<Array<{id: string, handle: ?FileSystemDirectoryHandle, name: ?string, listed: boolean, available: boolean,
+   *   notesBeside: boolean, sizes: {previews: number, index: number, notes: number}, work: {files: number, edited: number, recognized: number, unknown: boolean}}>>}
+   */
+  static async inventory() {
+    const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR).catch(() => null);
+    /** @type {Map<string, FileSystemDirectoryHandle>} */
+    const dirs = new Map();
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    if (appRoot) for await (const [name, handle] of appRoot.entries()) if (handle.kind === 'directory') dirs.set(name, handle);
+    /** @param {?FileSystemDirectoryHandle} dir */
+    const sizesOf = async (dir) => ({
+      previews: await sizeOfDir(dir ? await dir.getDirectoryHandle('pages').catch(() => null) : null),
+      index: await sizeOfDir(dir, new Set(['pages', 'docs'])),
+      notes: await sizeOfDir(dir ? await dir.getDirectoryHandle('docs').catch(() => null) : null),
+    });
+    const out = [];
+    for (const r of await LibraryStore.recentRecords()) {
+      if (!r.id) continue;
+      const dir = dirs.get(r.id) ?? null;
+      dirs.delete(r.id);
+      out.push({
+        id: r.id,
+        handle: r.handle,
+        name: r.handle.name,
+        listed: r.listed !== false,
+        available: await LibraryStore.folderExists(r.handle),
+        notesBeside: !!r.notesBeside,
+        sizes: await sizesOf(dir),
+        work: await LibraryStore.savedWorkIn(r.id),
+      });
+    }
+    for (const [id, dir] of dirs) {
+      out.push({
+        id,
+        handle: null,
+        name: null,
+        listed: false,
+        available: false,
+        notesBeside: false,
+        sizes: await sizesOf(dir),
+        work: await LibraryStore.savedWorkIn(id),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * @param {string} id
+   * @param {FileSystemDirectoryHandle} dest
+   * @returns {Promise<number>}
+   */
+  static async exportNotes(id, dest) {
+    const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR);
+    const docs = await (await appRoot.getDirectoryHandle(id)).getDirectoryHandle('docs').catch(() => null);
+    if (!docs) return 0;
+    let n = 0;
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [name, handle] of docs.entries()) {
+      if (handle.kind !== 'file') continue;
+      await writeFileIn(dest, await freeNameIn(dest, name), await handle.getFile());
+      n++;
+    }
+    return n;
+  }
+
+  /**
+   * Whether the folder holds saved work, and how much.
+   * A caller treats a result with `unknown` set as saved work present, since nothing may be deleted on a count that failed.
+   * @param {LibraryManifest} manifest
+   * @returns {Promise<{files: number, edited: number, recognized: number, unknown: boolean}>}
+   */
+  async savedWork(manifest) {
+    const entries = Object.values(manifest.docs);
+    const edited = entries.filter((e) => e && e.editedAt).length;
+    const recognized = entries.filter((e) => e && e.recognizedAt).length;
+    let files = 0;
+    try {
+      for (const dir of [this.docsDir, this.otherDocsDir]) {
+        if (!dir) continue;
+        // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+        for await (const [name, handle] of dir.entries()) if (handle.kind === 'file' && name.endsWith('.scribe')) files++;
+      }
+    } catch {
+      return {
+        files, edited, recognized, unknown: true,
+      };
+    }
+    return {
+      files, edited, recognized, unknown: false,
     };
   }
 
@@ -868,33 +961,50 @@ export class LibraryStore {
     // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
     for await (const name of pagesDir.keys()) names.push(name);
     for (const name of names) await pagesDir.removeEntry(name, { recursive: true }).catch(() => {});
-    this.rasterBytes = 0;
+    this.rasterBytes = null;
+  }
+
+  /** Delete the derived data: the search index, the thumbnails and the previews. */
+  async deleteCaches() {
+    const dataDir = /** @type {FileSystemDirectoryHandle} */ (this.dataDir);
+    await LibraryStore.deleteCachesUnder(dataDir);
+    this.thumbsDir = await dataDir.getDirectoryHandle('thumbs', { create: true });
+    this.pagesDir = await dataDir.getDirectoryHandle('pages', { create: true });
+    this.rasterBytes = null;
   }
 
   /**
-   * Delete the derived data: the search index, the thumbnails and the previews.
-   * The manifest stays, so each document keeps its record of edits and recognition.
-   * A rebuild then regenerates the rest from the sidecars.
+   * @param {FileSystemDirectoryHandle} dataDir
    */
-  async deleteCaches() {
-    const dataDir = /** @type {FileSystemDirectoryHandle} */ (this.dataDir);
+  static async deleteCachesUnder(dataDir) {
     const names = [];
     // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
     for await (const name of dataDir.keys()) if (name !== 'docs' && name !== MANIFEST_FILE) names.push(name);
     for (const name of names) await dataDir.removeEntry(name, { recursive: true }).catch(() => {});
-    this.thumbsDir = await dataDir.getDirectoryHandle('thumbs', { create: true });
-    this.pagesDir = await dataDir.getDirectoryHandle('pages', { create: true });
-    this.rasterBytes = 0;
   }
 
   /**
-   * Delete everything the app keeps for the folder, and the folder's `.scribe` directory when the notes live in it.
+   * Delete the regenerable data of a closed folder.
+   * @param {string} id
+   */
+  static async deleteCachesIn(id) {
+    if (!id) return;
+    try {
+      const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR);
+      await LibraryStore.deleteCachesUnder(await appRoot.getDirectoryHandle(id));
+    } catch { /* Nothing stored. */ }
+  }
+
+  /**
+   * Delete the folder's data in the site's storage, and any docs directory in the folder's `.scribe`.
    * Removing that directory needs write access to the folder, without which it silently stays.
    */
   async deleteAll() {
     await LibraryStore.deleteAppData(this.id);
-    if (this.folderDataDir) await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
-    this.folderDataDir = null;
+    // Only the docs directory goes, since other programs keep their own data in `.scribe`.
+    if (this.folderDataDir) await this.folderDataDir.removeEntry('docs', { recursive: true }).catch(() => {});
+    this.docsDir = null;
+    this.otherDocsDir = null;
   }
 
   /** @param {string} id */
@@ -907,18 +1017,28 @@ export class LibraryStore {
   }
 
   /**
+   * Whether a closed folder holds saved work in the app.
+   * A caller treats a result with `unknown` set as saved work present, since nothing may be deleted on a count that failed.
    * @param {string} id
-   * @returns {Promise<{docs: number, edited: number}>}
+   * @returns {Promise<{files: number, edited: number, recognized: number, unknown: boolean}>}
    */
-  static async countsIn(id) {
+  static async savedWorkIn(id) {
     try {
       const appRoot = await (await navigator.storage.getDirectory()).getDirectoryHandle(APP_DATA_DIR);
-      const file = await readFileIn(await appRoot.getDirectoryHandle(id), MANIFEST_FILE);
-      const parsed = file ? JSON.parse(await file.text()) : null;
-      const entries = Object.values(parsed?.docs ?? {});
-      return { docs: entries.length, edited: entries.filter((e) => e && e.editedAt).length };
+      const dataDir = await appRoot.getDirectoryHandle(id);
+      let files = 0;
+      const docs = await dataDir.getDirectoryHandle('docs').catch(() => null);
+      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+      if (docs) for await (const [name, handle] of docs.entries()) if (handle.kind === 'file' && name.endsWith('.scribe')) files++;
+      const file = await readFileIn(dataDir, MANIFEST_FILE);
+      const entries = file ? Object.values(JSON.parse(await file.text())?.docs ?? {}) : [];
+      return {
+        files, edited: entries.filter((e) => e && e.editedAt).length, recognized: entries.filter((e) => e && e.recognizedAt).length, unknown: false,
+      };
     } catch {
-      return { docs: 0, edited: 0 };
+      return {
+        files: 0, edited: 0, recognized: 0, unknown: true,
+      };
     }
   }
 
@@ -929,89 +1049,97 @@ export class LibraryStore {
    */
   async setNotesBeside(beside) {
     if (beside === this.notesBeside) return;
-    const from = /** @type {FileSystemDirectoryHandle} */ (this.docsDir);
+    const from = this.docsDir;
     let to;
     if (beside) {
-      this.folderDataDir = await this.root.getDirectoryHandle(DATA_DIR, { create: true });
+      this.folderDataDir = this.folderDataDir ?? await this.root.getDirectoryHandle(DATA_DIR, { create: true });
       to = await this.folderDataDir.getDirectoryHandle('docs', { create: true });
     } else {
       to = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('docs', { create: true });
     }
+    // Reads find the files already moved, even when the move stops partway.
+    this.otherDocsDir = to;
     const names = [];
     // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-    for await (const [name, handle] of from.entries()) if (handle.kind === 'file') names.push(name);
+    if (from) for await (const [name, handle] of from.entries()) if (handle.kind === 'file') names.push(name);
+    // A same-named file at the destination is a conflict unless it is empty or holds the same bytes, which a move that stopped partway leaves behind.
+    const waiting = [];
+    const copied = new Set();
     for (const name of names) {
-      await writeFileIn(to, name, await (await from.getFileHandle(name)).getFile());
-      await deleteFileIn(from, name);
+      const there = await to.getFileHandle(name).then((h) => h.getFile(), () => null);
+      if (!there || there.size === 0) continue;
+      const source = await (await /** @type {FileSystemDirectoryHandle} */ (from).getFileHandle(name)).getFile();
+      if (there.size === source.size && (await hashBytes(await there.arrayBuffer())) === (await hashBytes(await source.arrayBuffer()))) copied.add(name);
+      else waiting.push(name);
+    }
+    if (waiting.length) {
+      throw new Error(`${waiting.length} file${waiting.length === 1 ? '' : 's'} with the same name ${waiting.length === 1 ? 'is' : 'are'} already where the notes would go.`);
+    }
+    for (const name of names) {
+      if (!copied.has(name)) await writeFileIn(to, name, await (await /** @type {FileSystemDirectoryHandle} */ (from).getFileHandle(name)).getFile());
+      // A source that cannot be removed stops the move here, so the setting never flips while files remain.
+      try {
+        await /** @type {FileSystemDirectoryHandle} */ (from).removeEntry(name);
+      } catch (err) {
+        if (!(err instanceof DOMException && err.name === 'NotFoundError')) throw err;
+      }
     }
     this.docsDir = to;
+    this.otherDocsDir = from;
     this.notesBeside = beside;
     if (!beside && this.folderDataDir) {
-      await this.root.removeEntry(DATA_DIR, { recursive: true }).catch(() => {});
-      this.folderDataDir = null;
+      // Only the docs directory goes, since other programs keep their own data in `.scribe`.
+      await this.folderDataDir.removeEntry('docs', { recursive: true }).catch(() => {});
+      this.otherDocsDir = null;
     }
     await LibraryStore.updateRecord(this.root, { notesBeside: beside });
   }
 
   /**
-   * Delete derived artifacts no manifest entry references, then evict page rasters past the byte budget.
-   * Orphans appear when a changed file re-ingests under a new hash.
-   * Eviction removes whole documents, least recently opened first.
-   * Also establishes `rasterBytes`, the running total that `writePageRaster` keeps current between sweeps.
-   * Nothing is swept while an entry is pending.
+   * Delete the thumbnails and page previews no manifest entry references, evict previews past the budget, and record the total.
    * @param {LibraryManifest} manifest
    */
-  async sweepArtifacts(manifest) {
-    // A pending entry's hash is unknown until its ingest, so its sidecar can pass for an orphan.
-    if (Object.values(manifest.docs).some((e) => e.status === 'pending')) return;
-    /** @type {Map<string, number>} Referenced hash -> most recent open (falling back to added time). */
-    const lastUse = new Map();
-    for (const [relPath, e] of Object.entries(manifest.docs)) {
-      // An ingest that failed before it recorded a hash leaves a sidecar its retry reopens with, so the file is hashed here.
-      const hash = e.hash || (e.status === 'missing' ? '' : await this.readFile(relPath).then((f) => f.arrayBuffer()).then(hashBytes).catch(() => ''));
-      if (hash) lastUse.set(hash, Math.max(lastUse.get(hash) || 0, e.lastOpened || 0, e.added || 0));
+  async trimCaches(manifest) {
+    const entries = () => Object.values(manifest.docs);
+    const referenced = (/** @type {string} */ hash) => entries().some((e) => e.hash === hash);
+    const settled = !entries().some((e) => e.status === 'pending');
+    const { thumbsDir, pagesDir } = this;
+    if (settled && thumbsDir) {
+      const names = [];
+      // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const name of thumbsDir.keys()) if (name.endsWith('.jpg')) names.push(name);
+      for (const name of names) if (!referenced(name.slice(0, -4))) await deleteFileIn(thumbsDir, name);
     }
-    const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
-      [this.docsDir, '.scribe'], [this.docsDir, '.scribe.bak'], [this.docsDir, '.changes'], [this.docsDir, '.changes.bak'], [this.thumbsDir, '.jpg'],
-    ]);
-    for (const [dir, ext] of flatDirs) {
-      if (!dir) continue;
-      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const [name] of dir.entries()) {
-        if (name.endsWith(ext) && !lastUse.has(name.slice(0, -ext.length))) await deleteFileIn(dir, name);
-      }
-    }
-    const pagesDir = this.pagesDir;
     if (!pagesDir) return;
+    /** @type {Map<string, number>} */
+    const lastUse = new Map();
+    for (const e of entries()) if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
+    /** @type {Array<[string, FileSystemDirectoryHandle]>} */
+    const dirs = [];
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [hash, handle] of pagesDir.entries()) if (handle.kind === 'directory') dirs.push([hash, handle]);
     /** @type {Array<{hash: string, bytes: number, use: number}>} */
     const kept = [];
     let total = 0;
-    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-    for await (const [hash, handle] of pagesDir.entries()) {
-      if (handle.kind !== 'directory') continue;
-      if (!lastUse.has(hash)) {
+    for (const [hash, handle] of dirs) {
+      if (settled && !referenced(hash)) {
         await pagesDir.removeEntry(hash, { recursive: true }).catch(() => {});
         continue;
       }
       let bytes = 0;
       // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const [name, fileHandle] of handle.entries()) {
-        if (fileHandle.kind !== 'file') continue;
-        // Page rasters are WebP, so any other image here is stale and would otherwise hold budget forever.
-        if (name.endsWith('.jpg')) {
-          await deleteFileIn(handle, name);
-          continue;
-        }
-        bytes += (await fileHandle.getFile()).size;
-      }
-      kept.push({ hash, bytes, use: lastUse.get(hash) || 0 });
+      for await (const [, fileHandle] of handle.entries()) if (fileHandle.kind === 'file') bytes += (await fileHandle.getFile()).size;
+      // A directory no entry references may belong to a pending entry, so it is evicted last.
+      kept.push({ hash, bytes, use: lastUse.get(hash) ?? Infinity });
       total += bytes;
     }
     kept.sort((a, b) => a.use - b.use);
     for (const rec of kept) {
       if (total <= this.rasterBudget) break;
-      await pagesDir.removeEntry(rec.hash, { recursive: true }).catch(() => {});
-      total -= rec.bytes;
+      try {
+        await pagesDir.removeEntry(rec.hash, { recursive: true });
+        total -= rec.bytes;
+      } catch { /* A directory that would not go still counts. */ }
     }
     this.rasterBytes = total;
   }

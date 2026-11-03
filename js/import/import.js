@@ -235,7 +235,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           inputData: header.inputData,
           session: header.session ? {
             ...header.session,
-            contentEdits: new Array(n).fill(null),
+            contentEdits: header.session.contentEdits ?? new Array(n).fill(null),
             nativeText: new Array(n).fill(null),
             fillShapes: new Array(n).fill(null),
             truth: new Array(n).fill(null),
@@ -253,9 +253,6 @@ async function restoreSessionFromFile(doc, scribeFile) {
         }
         assembled.ocr[rec.i] = rec.ocr ?? null;
         if (assembled.session) {
-          // `textEdits` is the pre-rename key, still present in older saved sessions.
-          const recEdits = rec.contentEdits !== undefined ? rec.contentEdits : rec.textEdits;
-          if (recEdits !== undefined) assembled.session.contentEdits[rec.i] = recEdits;
           if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
           if (rec.fillShapes !== undefined) assembled.session.fillShapes[rec.i] = rec.fillShapes;
           if (rec.truth !== undefined) assembled.session.truth[rec.i] = rec.truth;
@@ -325,20 +322,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.annotations.restored = true;
   }
   if (scribeRestoreObj.session) {
-    // `textEdits` is the pre-rename key, still present in older saved sessions.
-    const sessionEdits = scribeRestoreObj.session.contentEdits || scribeRestoreObj.session.textEdits;
-    if (sessionEdits) {
-      let legacy = 0;
-      for (let i = 0; i < sessionEdits.length; i++) {
-        const records = sessionEdits[i];
-        if (!Array.isArray(records)) continue;
-        const kept = records.filter((rec) => !rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText'));
-        legacy += records.length - kept.length;
-        if (kept.length !== records.length) sessionEdits[i] = kept;
-      }
-      if (legacy > 0) console.warn(`${legacy} text edit${legacy === 1 ? '' : 's'} saved by an earlier version could not be restored; the edited text shows as the page drew it.`);
-      doc.contentEdits.pages = sessionEdits;
-    }
+    if (scribeRestoreObj.session.contentEdits) doc.contentEdits.pages = scribeRestoreObj.session.contentEdits;
+    if (scribeRestoreObj.session.editedAt != null) doc.sessionMarks.editedAt = scribeRestoreObj.session.editedAt;
+    if (scribeRestoreObj.session.recognizedAt != null) doc.sessionMarks.recognizedAt = scribeRestoreObj.session.recognizedAt;
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (scribeRestoreObj.session.tableExport) {
       doc.tableExport.excluded = { ...(scribeRestoreObj.session.tableExport.excluded || {}) };

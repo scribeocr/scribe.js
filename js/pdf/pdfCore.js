@@ -8,7 +8,7 @@ import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import ocr from '../objects/ocrObjects.js';
 import {
-  colorToRgb, executeRewrittenOperator, parseSinglePage, rgbToHex,
+  colorToRgb, executeRewrittenOperator, parseSinglePage, rgbToHex, liftPageAnnotations, pageGeometry,
 } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
 import {
@@ -71,6 +71,15 @@ export class PdfCore {
   parsePage({ pageIndex, dpi }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     return parseSinglePage(this.#pages[pageIndex], this.#objCache, pageIndex, dpi, undefined, this.#linkDestInfo ?? undefined);
+  }
+
+  /**
+   * @param {{ pageIndex: number, dpi: number }} args
+   */
+  parsePageAnnotations({ pageIndex, dpi }) {
+    if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
+    const page = this.#pages[pageIndex];
+    return liftPageAnnotations(page, this.#objCache, pageIndex, pageGeometry(page, dpi), this.#linkDestInfo ?? undefined);
   }
 
   /**

@@ -22,6 +22,14 @@ export async function parsePdfPage(args) {
 }
 
 /**
+ * A page's own annotations, lifted without its text.
+ * @param {{ pageIndex: number, dpi: number }} args
+ */
+export async function parsePdfPageAnnotations(args) {
+  return core.parsePageAnnotations(args);
+}
+
+/**
  * Render a single page to an image data URL, a JPEG/WebP blob, or a transferable ImageBitmap.
  * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
  * edits?: ?RenderEdits }} args
@@ -96,6 +104,7 @@ if (parentPort) {
     ({
       loadPdfForParsing,
       parsePdfPage,
+      parsePdfPageAnnotations,
       renderPdfPage,
       getPdfFontBytes,
       getPdfType3GlyphHashes,

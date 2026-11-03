@@ -24,6 +24,12 @@ export class PdfScheduler {
   parsePdfPage = (args) => this.scheduler.addJob('parsePdfPage', args);
 
   /**
+   * Dispatch a single page for its own annotations, lifted without a text parse.
+   * @param {{ pageIndex: number, dpi: number }} args
+   */
+  parsePdfPageAnnotations = (args) => this.scheduler.addJob('parsePdfPageAnnotations', args);
+
+  /**
    * Dispatch a single page for rendering via the scheduler.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
    * edits?: ?RenderEdits }} args
@@ -122,6 +128,12 @@ export class PdfSchedulerInProcess {
    * @param {{ pageIndex: number, dpi: number }} args
    */
   parsePdfPage = (args) => this.#core.parsePage(args);
+
+  /**
+   * A single page's own annotations, lifted without a text parse.
+   * @param {{ pageIndex: number, dpi: number }} args
+   */
+  parsePdfPageAnnotations = (args) => this.#core.parsePageAnnotations(args);
 
   /**
    * Render a single page to image data URL.

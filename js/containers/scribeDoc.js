@@ -854,6 +854,14 @@ export class ScribeDoc {
     this.redactions = { terms: [], matchCase: false, scannedAt: null };
 
     /**
+     * When this document was last edited and last recognized, as epoch milliseconds.
+     * Set by the app when it saves, never by edits or recognition.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{editedAt: ?number, recognizedAt: ?number}}
+     */
+    this.sessionMarks = { editedAt: null, recognizedAt: null };
+
+    /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
      * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
      * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
@@ -1828,6 +1836,21 @@ export class ScribeDoc {
    */
   getMetadata() {
     return getMetadataImpl(this);
+  }
+
+  /**
+   * The PDF's own annotations on page `n`, lifted from the file without a text parse.
+   * Coordinates are in the page's pixel space at the dpi the text parse uses.
+   * A page not backed by a PDF has none.
+   * @param {number} n
+   * @returns {Promise<Array<Annotation>>}
+   */
+  async liftPdfAnnotations(n) {
+    const dims = this.images.pdfDims300[n];
+    const pm = this.pageMetrics[n];
+    if (!dims || !pm) return [];
+    const scheduler = await this.images.resolveSource(pm).getScheduler();
+    return scheduler.parsePdfPageAnnotations({ pageIndex: pm.sourcePageN ?? n, dpi: 300 * Math.min(dims.width, 3500) / dims.width });
   }
 
   /**

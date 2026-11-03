@@ -138,6 +138,7 @@ export const scribeDocDefaults = {
 
   /**
    * Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented layout.
+   * Zero selects the segmented form at any size.
    * The default leaves headroom under the JavaScript string limit a single-JSON reader has to fit the whole payload into.
    */
   scribeSegmentThreshold: 400_000_000,

@@ -1,6 +1,8 @@
-// How the library's documents reach the viewer: provisional seeds built from the index and the raster store, and the index-backed find those documents keep.
+// How documents in the document library reach the viewer.
 // A gate here holds background raster work back while the reader waits on a load.
 
+import scribeLib from '../../scribe.js';
+import { openDocumentFromFile } from '../js/controls/tools.js';
 import { titleOf } from './libraryStore.js';
 
 /** Width of a thumbnail rail image, as the image store renders one. */
@@ -10,6 +12,27 @@ const THUMBNAIL_W = 300;
  * @typedef {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} NearMatches
  *   The near matches of a clicked result row.
  */
+
+/**
+ * Open a document from the document library as the ingest read it.
+ * With a sidecar, the sidecar supplies the text and the saved work.
+ * Without one the document opens from its source file with the OCR file the ingest used, if any.
+ * @param {{readFile: (relPath: string) => Promise<File>, readSidecar: (hash: string) => Promise<?ArrayBuffer>}} store
+ * @param {string} relPath
+ * @param {import('./libraryStore.js').LibraryDocEntry} entry
+ * @param {{deferText?: boolean, skipFontOpt?: boolean, pdfWorkerN?: number}} [opts]
+ * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
+ */
+export const openLibraryDoc = async (store, relPath, entry, { deferText = false, skipFontOpt = false, pdfWorkerN = undefined } = {}) => {
+  const file = await store.readFile(relPath);
+  const sidecar = entry.hash ? await store.readSidecar(entry.hash) : null;
+  if (sidecar) return scribeLib.openDocument([file, new File([sidecar], `${entry.hash}.scribe`)], { deferText, skipFontOpt, pdfWorkerN });
+  const ocrFile = entry.ocrFile ? await store.readFile(`${relPath.slice(0, relPath.lastIndexOf('/') + 1)}${entry.ocrFile}`).catch(() => null) : null;
+  // The viewer's open, because its fallback makes a scan's own OCR layer the active text.
+  return openDocumentFromFile(file, {
+    deferText, skipFontOpt, pdfWorkerN, ocrFiles: ocrFile ? [ocrFile] : [],
+  });
+};
 
 /**
  * @param {Object} deps
@@ -67,7 +90,7 @@ export function createDocLoads({ sessions, engine, getStore }) {
     const { hash } = entry;
     if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
     const ref = { relPath, entry, hash };
-    const [changes, pixels] = await Promise.all([sessions.changes(hash), sessions.pixels(ref)]);
+    const [header, pixels] = await Promise.all([sessions.header(hash), sessions.pixels(ref)]);
     const pageCount = entry.pageDims.length;
     /** @param {Object} a */
     const copyAnnot = (a) => ({ ...a, bbox: { ...a.bbox } });
@@ -81,20 +104,15 @@ export function createDocLoads({ sessions, engine, getStore }) {
       raster: (n) => sessions.raster(ref, n, true),
       render: (n, width) => sessions.renderAt(ref, n, width),
       ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
-      // Copies, because the seed's session edits must not leak into the cached changes.
-      // A page the changes file lists, even as empty, replaces the real page at the swap, so removals count.
-      // Without a changes file the page appends its session additions instead.
-      annots: (n) => Promise.resolve(changes?.annotations ? (changes.annotations[n] ?? []).map(copyAnnot) : null),
+      // Copies, because the seed's edits must not leak into the cached header.
+      // A page the saved header lists, even as empty, replaces the real page at the swap, so removals count.
+      // Without a sidecar the baseline is the PDF's own annotations, which is what hydration lifts too.
+      annots: (n) => (header?.annotations ? Promise.resolve((header.annotations[n] ?? []).map(copyAnnot)) : pixels.liftPdfAnnotations(n)),
       thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
       find: findThroughIndex(hash),
-      outline: changes?.outline ?? pixels.outline ?? [],
-      load: async () => {
-        const store = /** @type {import('./libraryStore.js').LibraryStore} */ (getStore());
-        const files = [await store.readFile(relPath)];
-        const sidecar = await store.readSidecar(hash);
-        if (sidecar) files.push(new File([sidecar], `${hash}.scribe`));
-        return files;
-      },
+      outline: header?.outline ?? pixels.outline ?? [],
+      // Without a sidecar the text is extracted before the open resolves, so the real document arrives with its text, as the modes that asked for it expect.
+      load: () => openLibraryDoc(/** @type {import('./libraryStore.js').LibraryStore} */ (getStore()), relPath, entry),
       hydration: 'on-demand',
     };
   };

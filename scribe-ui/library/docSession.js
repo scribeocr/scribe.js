@@ -13,8 +13,7 @@ const MAX_PAGE_URLS = 400;
 const NO_TEXT = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
 
 /**
- * A document's changes: the document-level blocks of its `.scribe` export, without the text.
- * @typedef {Object} DocChanges
+ * @typedef {Object} NotesHeader
  * @property {Array<Array<Object>>} [annotations]
  * @property {Array<Object>} [outline]
  * @property {Array<number>} [pageRotations]
@@ -53,8 +52,8 @@ class DocSession {
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
     this.pixelsDoc = null;
     this.pixelsUse = 0;
-    /** @type {?Promise<?DocChanges>} */
-    this.changesPromise = null;
+    /** @type {?Promise<?NotesHeader>} */
+    this.headerPromise = null;
     /** @type {?string} */
     this.coverUrl = null;
     /** @type {?Promise<?string>} */
@@ -170,37 +169,58 @@ export class DocSessions {
   }
 
   /**
-   * The document's changes, or null when it has none saved.
+   * The document-level blocks of the document's sidecar, or null when it has none saved.
    * Callers share one parsed object.
    * @param {string} hash
-   * @returns {Promise<?DocChanges>}
+   * @returns {Promise<?NotesHeader>}
    */
-  changes(hash) {
+  header(hash) {
     const s = this.session(hash);
-    if (!s.changesPromise) {
+    if (!s.headerPromise) {
       const store = this.store;
       if (!store) return Promise.resolve(null);
-      const p = store.readChanges(hash).then(async (data) => {
-        if (!data) return null;
-        const bytes = new Uint8Array(data);
-        let stream = new Blob([bytes]).stream();
-        if (bytes[0] === 0x1F && bytes[1] === 0x8B) stream = stream.pipeThrough(new DecompressionStream('gzip'));
-        return /** @type {DocChanges} */ (JSON.parse(await new Response(stream).text()));
+      const p = store.sidecarBlob(hash).then(async (blob) => {
+        if (!blob) return null;
+        const magic = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
+        let stream = blob.stream();
+        if (magic[0] === 0x1F && magic[1] === 0x8B) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+        const reader = stream.getReader();
+        /** @type {Uint8Array[]} */
+        const chunks = [];
+        let length = 0;
+        let ended = false;
+        // The sidecar's segmented form puts the document-level blocks on its first line, ahead of the page records.
+        while (!ended) {
+          const part = await reader.read();
+          if (part.done) break;
+          const nl = part.value.indexOf(0x0A);
+          const piece = nl === -1 ? part.value : part.value.subarray(0, nl);
+          chunks.push(piece);
+          length += piece.length;
+          ended = nl !== -1;
+        }
+        await reader.cancel().catch(() => {});
+        const line = new Uint8Array(length);
+        let at = 0;
+        for (const c of chunks) {
+          line.set(c, at);
+          at += c.length;
+        }
+        return /** @type {NotesHeader} */ (JSON.parse(new TextDecoder().decode(line)));
       }).catch(() => null);
-      s.changesPromise = p;
+      s.headerPromise = p;
     }
-    return s.changesPromise;
+    return s.headerPromise;
   }
 
   /**
-   * Forget the parsed changes and the pixel source built from them.
-   * Call after the changes file is written or deleted.
+   * Forget the parsed header and the pixel source built from it.
    * @param {string} hash
    */
-  dropChanges(hash) {
+  dropHeader(hash) {
     const s = this.map.get(hash);
     if (!s) return;
-    s.changesPromise = null;
+    s.headerPromise = null;
     closePixels(s);
   }
 
@@ -218,13 +238,13 @@ export class DocSessions {
       const store = this.store;
       if (!store) return Promise.reject(new Error('No library is open.'));
       const p = (async () => {
-        const [file, changes] = await Promise.all([store.readFile(ref.relPath), this.changes(ref.hash)]);
+        const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash)]);
         const doc = await scribeLib.openDocument([file], {
           usePDFText: NO_TEXT, keepPDFTextAlways: false, skipFontOpt: true, pdfWorkerN: 1,
         });
         const dims = ref.entry.pageDims;
         if (dims) {
-          const sources = changes?.session?.pageSourceIndices;
+          const sources = header?.session?.pageSourceIndices;
           const metrics = dims.map(([width, height], i) => {
             const pm = new PageMetrics({ width, height });
             pm.sourcePageN = sources?.[i] ?? i;
@@ -233,7 +253,7 @@ export class DocSessions {
           doc.pageMetrics.splice(0, doc.pageMetrics.length, ...metrics);
           doc.inputData.pageCount = metrics.length;
         }
-        if (changes?.session?.contentEdits) doc.contentEdits.pages = changes.session.contentEdits;
+        if (header?.session?.contentEdits) doc.contentEdits.pages = header.session.contentEdits;
         if (s.pixelsPromise === p) s.pixelsDoc = doc;
         else doc.close().catch(() => {});
         return doc;

@@ -20,9 +20,10 @@ export class PortfolioStore {
     this.doc = doc;
     /** Stands in for `LibraryStore.root`, the folder handle, of which the library reads only the name. */
     this.root = { name };
-    /** @type {?number} Running byte total of held page rasters, null until the first sweep. */
+    /** @type {?number} */
     this.rasterBytes = null;
     this.rasterBudget = RASTER_BUDGET_BYTES;
+    this.trimDue = false;
     /** @type {Map<string, PortfolioMember>} */
     this.members = new Map();
     /** @type {Map<string, Promise<ArrayBuffer>>} Decoded bytes by attachment key, so ingest, preview and open decode each member once. */
@@ -31,10 +32,6 @@ export class PortfolioStore {
     this.sidecars = new Map();
     /** @type {Map<string, ArrayBuffer>} */
     this.sidecarBackups = new Map();
-    /** @type {Map<string, ArrayBuffer>} */
-    this.changes = new Map();
-    /** @type {Map<string, ArrayBuffer>} */
-    this.changesBackups = new Map();
     /** @type {Map<string, Blob>} */
     this.thumbs = new Map();
     /** @type {Map<string, Map<number, Blob>>} */
@@ -82,8 +79,6 @@ export class PortfolioStore {
     this.bytes.clear();
     this.sidecars.clear();
     this.sidecarBackups.clear();
-    this.changes.clear();
-    this.changesBackups.clear();
     this.thumbs.clear();
     this.rasters.clear();
     this.rasterBytes = 0;
@@ -162,6 +157,12 @@ export class PortfolioStore {
     return this.sidecars.get(hash) ?? null;
   }
 
+  /** @param {string} hash @returns {Promise<?Blob>} */
+  async sidecarBlob(hash) {
+    const data = this.sidecars.get(hash);
+    return data ? new Blob([data]) : null;
+  }
+
   /** @param {string} hash @returns {Promise<?number>} */
   async sidecarSize(hash) {
     return this.sidecars.get(hash)?.byteLength ?? null;
@@ -194,43 +195,6 @@ export class PortfolioStore {
     this.sidecarBackups.delete(hash);
   }
 
-  /** @param {string} hash @param {ArrayBuffer|Blob} data */
-  async writeChanges(hash, data) {
-    this.changes.set(hash, data instanceof Blob ? await data.arrayBuffer() : data);
-  }
-
-  /** @param {string} hash @returns {Promise<?ArrayBuffer>} */
-  async readChanges(hash) {
-    return this.changes.get(hash) ?? null;
-  }
-
-  /** @param {string} hash */
-  async deleteChanges(hash) {
-    this.changes.delete(hash);
-  }
-
-  /** @param {string} hash @returns {Promise<boolean>} */
-  async backupChanges(hash) {
-    const data = this.changes.get(hash);
-    if (!data) return false;
-    this.changesBackups.set(hash, data);
-    return true;
-  }
-
-  /** @param {string} hash @returns {Promise<boolean>} */
-  async restoreChangesBackup(hash) {
-    const data = this.changesBackups.get(hash);
-    if (!data) return false;
-    this.changes.set(hash, data);
-    this.changesBackups.delete(hash);
-    return true;
-  }
-
-  /** @param {string} hash */
-  async deleteChangesBackup(hash) {
-    this.changesBackups.delete(hash);
-  }
-
   /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     this.thumbs.set(hash, blob);
@@ -254,6 +218,7 @@ export class PortfolioStore {
       this.rasters.set(hash, pages);
     }
     this.rasterBytes = (this.rasterBytes ?? 0) - (pages.get(n)?.size ?? 0) + blob.size;
+    if (this.rasterBytes > this.rasterBudget) this.trimDue = true;
     pages.set(n, blob);
   }
 
@@ -270,18 +235,26 @@ export class PortfolioStore {
     this.rasters.delete(hash);
   }
 
-  /**
-   * Drop artifacts no manifest entry references and recount the raster bytes.
-   * @param {import('./libraryStore.js').LibraryManifest} manifest
-   */
-  async sweepArtifacts(manifest) {
-    if (Object.values(manifest.docs).some((e) => e.status === 'pending')) return;
-    const live = new Set(Object.values(manifest.docs).map((e) => e.hash).filter(Boolean));
-    for (const map of [this.sidecars, this.sidecarBackups, this.changes, this.changesBackups, this.thumbs, this.rasters]) {
-      for (const hash of [...map.keys()]) if (!live.has(hash)) map.delete(hash);
+  /** @param {import('./libraryStore.js').LibraryManifest} manifest */
+  async trimCaches(manifest) {
+    const entries = Object.values(manifest.docs);
+    const referenced = (/** @type {string} */ hash) => entries.some((e) => e.hash === hash);
+    if (!entries.some((e) => e.status === 'pending')) {
+      for (const map of [this.thumbs, this.rasters]) for (const hash of [...map.keys()]) if (!referenced(hash)) map.delete(hash);
     }
-    let total = 0;
-    for (const pages of this.rasters.values()) for (const blob of pages.values()) total += blob.size;
+    /** @type {Map<string, number>} */
+    const lastUse = new Map();
+    for (const e of entries) if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
+    const kept = [...this.rasters].map(([hash, pages]) => ({
+      hash, bytes: [...pages.values()].reduce((acc, b) => acc + b.size, 0), use: lastUse.get(hash) ?? Infinity,
+    }));
+    kept.sort((a, b) => a.use - b.use);
+    let total = kept.reduce((acc, r) => acc + r.bytes, 0);
+    for (const rec of kept) {
+      if (total <= this.rasterBudget) break;
+      this.rasters.delete(rec.hash);
+      total -= rec.bytes;
+    }
     this.rasterBytes = total;
   }
 

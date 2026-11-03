@@ -675,8 +675,8 @@ declare global {
         /** Per-page index of the source page each slot shows, null before any page edit. */
         pageSourceIndices?: Array<number | null>;
         contentEdits?: ContentEdit[][];
-        /** Pre-rename key for `contentEdits`, read from sessions saved before 2026-08 and never written. */
-        textEdits?: ContentEdit[][];
+        editedAt?: number | null;
+        recognizedAt?: number | null;
         nativeText?: Array<Record<string, NativeTextWord>>;
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;
