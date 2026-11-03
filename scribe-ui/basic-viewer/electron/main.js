@@ -176,12 +176,15 @@ function createWindow({ fresh = false } = {}) {
     x: cascade.x + 28, y: cascade.y + 28, width: cascade.width, height: cascade.height,
   } : restoredBounds;
   const { workArea } = screen.getPrimaryDisplay();
+  // Wide enough for the whole toolbar with a folder open and the rotate pair shed.
+  // Windows counts its 138px caption-button overlay, Linux the shell's 1px borders.
+  const minWidth = process.platform === 'darwin' ? 788 : process.platform === 'win32' ? 878 : 850;
   const win = new BrowserWindow({
-    width: bounds ? bounds.width : 900,
+    width: Math.max(minWidth, bounds ? bounds.width : 900),
     // The portrait default must still fit a 1080p work area on first run.
     height: bounds ? bounds.height : Math.min(1100, workArea.height - 40),
     ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
-    minWidth: 620,
+    minWidth,
     minHeight: 440,
     // macOS: decorated window with the native traffic lights overlaying the toolbar.
     // Windows: hidden title bar with the native caption buttons, which is what keeps the Snap Layouts flyout.

@@ -16,9 +16,11 @@ if (window.electronAPI.isPackaged) scribe.opt.langPath = 'app://bundle/lang';
 pdfViewer.toolbarElem.style.webkitAppRegion = 'drag';
 pdfViewer.toolbarElemStart.classList.add('scribe-shell-drag-zone');
 pdfViewer.toolbarElemEnd.classList.add('scribe-shell-drag-zone');
+pdfViewer.pageCountElem.style.webkitAppRegion = 'drag';
 const dragOptOut = document.createElement('style');
-dragOptOut.textContent = '.scribe-shell-drag-zone > *, .scribe-shell-drag-zone > * *, .col-md, .col-md *, '
+dragOptOut.textContent = '.scribe-shell-drag-zone > *, .scribe-shell-drag-zone > * *, .col-md > *, .col-md > * *, '
   + '.scribe-search-group, .scribe-search-group * { -webkit-app-region: no-drag; }'
+  + ' .scribe-shell-drag-zone .vertical-separator, .col-md .vertical-separator { -webkit-app-region: drag; }'
   + ' .scribe-library-bar-title, .scribe-library-bar-title * { -webkit-app-region: drag; }'
   + ' .scribe-library-bar-title button, .scribe-library-bar-title button *, .scribe-library-title, .scribe-library-title *,'
   + ' .scribe-library-bar-title .scribe-library-menu, .scribe-library-bar-title .scribe-library-menu * { -webkit-app-region: no-drag; }';
