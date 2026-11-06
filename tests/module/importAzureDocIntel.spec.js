@@ -104,7 +104,10 @@ describe('Check Azure Document Intelligence import.', () => {
   test('Reflowed text export joins the lines of each Azure paragraph and nothing else', async () => {
     const text = await doc.exportData('text');
     // Each table header cell is its own Azure paragraph.
-    expect(text, 'the header cells export one per line, with the wrapped cells joined').toContain('\nSECTOR\nAgent Staffing*\nApprehensions\nOther Than Mexican Apprehensions\n');
+    const headerRow = ['SECTOR', 'Agent Staffing*', 'Apprehensions', 'Other Than Mexican Apprehensions', 'Marijuana (pounds)', 'Cocaine (pounds)',
+      'Accepted Prosecutions', 'Assaults', 'Rescues', 'Border Deaths'].join('\t');
+    const firstRow = ['Miami', '127', '1,891', '1,358', '594', '650', '241', '0', '0', '0'].join('\t');
+    expect(text, 'the header row exports as one tab-separated line, with the wrapped cells joined in reading order').toContain(`\n${headerRow}\n${firstRow}\n`);
     expect(text, 'a two-line footnote paragraph exports as one line, joined where its lines break')
       .toContain('\nSouthwest Border Sectors include: Big Bend, Del Rio, El Centro, El Paso, Laredo, Rio Grande Valley, San Diego, Tucson, and Yuma. Drug quantities are');
   });

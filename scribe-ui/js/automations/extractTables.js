@@ -998,27 +998,19 @@ export function buildTablesWorkspace(host, container) {
 }
 
 /**
- * @param {import('./registry.js').AutomationHost} host
+ * Build the workbook the Extract Tables mode exports.
+ * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
  * @param {{pageIndices: ?Array<number>, flat: boolean, formatting: boolean}} params - null `pageIndices` = all pages.
- * @param {(frac: number, caption: string) => void} progress
- * @returns {Promise<import('./registry.js').AutomationOutcome>}
+ * @returns {Promise<?{sheets: Array<{name: string, rows: Array<Array<string|TableCellRich>>, tableRanges: Array<XlsxTableRange>, columnWidths?: Array<number>}>, bytes: Uint8Array}>}
+ *    Null when the given pages hold no included table.
  */
-export async function run(host, params, progress) {
-  const doc = host.viewer.doc;
-  // A freshly-opened native PDF installs its detected tables only once text extraction settles.
-  if (doc._textReadySettle) {
-    progress(0, 'Waiting for text extraction…');
-    await doc.textReady;
-    if (host.viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
-  }
-
+export async function buildTablesWorkbook(doc, params) {
   const scope = (params?.pageIndices ?? doc.layoutDataTables.pages.map((_, i) => i))
     .filter((n) => n >= 0 && n < doc.layoutDataTables.pages.length);
 
   /** @type {Array<{name: string, rows: Array<Array<string|TableCellRich>>, range: XlsxTableRange, columnWidths?: Array<number>}>} */
   const harvested = [];
   const scopeSet = new Set(scope);
-  progress(0.2, 'Extracting tables\u2026');
   const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: params?.formatting });
   for (const chain of chains) {
     if (doc.tableExport.excluded[chain.fragments[0].table.id]) continue;
@@ -1057,11 +1049,8 @@ export async function run(host, params, progress) {
     });
   }
 
-  if (harvested.length === 0) {
-    return { rows: [{ kind: 'info', text: 'No tables found on the selected pages' }] };
-  }
+  if (harvested.length === 0) return null;
 
-  progress(1, 'Writing spreadsheet…');
   /** @type {Array<{name: string, rows: Array<Array<string|TableCellRich>>, tableRanges: Array<XlsxTableRange>, columnWidths?: Array<number>}>} */
   let sheets;
   if (params?.flat) {
@@ -1080,6 +1069,29 @@ export async function run(host, params, progress) {
     }));
   }
   const bytes = await scribe.utils.writeXlsxFromSheets(sheets, { columnWidths: 'auto' });
+  return { sheets, bytes };
+}
+
+/**
+ * @param {import('./registry.js').AutomationHost} host
+ * @param {{pageIndices: ?Array<number>, flat: boolean, formatting: boolean}} params
+ * @param {(frac: number, caption: string) => void} progress
+ * @returns {Promise<import('./registry.js').AutomationOutcome>}
+ */
+export async function run(host, params, progress) {
+  const doc = host.viewer.doc;
+  // A freshly-opened native PDF installs its detected tables only once text extraction settles.
+  if (doc._textReadySettle) {
+    progress(0, 'Waiting for text extraction…');
+    await doc.textReady;
+    if (host.viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
+  }
+
+  progress(0.2, 'Extracting tables\u2026');
+  const built = await buildTablesWorkbook(doc, params);
+  if (!built) return { rows: [{ kind: 'info', text: 'No tables found on the selected pages' }] };
+  progress(1, 'Writing spreadsheet…');
+  const { sheets, bytes } = built;
   const fileName = `${host.app._baseName().replace(/\.\w{1,6}$/, '')}-tables.xlsx`;
   await scribe.utils.saveAs(bytes, fileName);
 

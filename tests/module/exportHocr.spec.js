@@ -75,6 +75,15 @@ describe('Check .hocr export of a document from another format.', () => {
     expect(doc.redo(), 'an undone word edit is redoable').toBe(true);
     expect([redone.text, redone.conf], 'redo re-applies the correction and its confidence').toEqual(['to', 100]);
 
+    // The Export mode's role chips edit a paragraph's role through `editWords`, whose undo once left the role unchanged.
+    const rolePar = page0.lines[0].par;
+    expect([rolePar.type, rolePar.headingLevel], 'the first paragraph starts as body text').toEqual(['body', null]);
+    doc.editWords([0], 'Paragraph role', () => { rolePar.type = 'title'; rolePar.headingLevel = 2; });
+    expect(await doc.exportData('md', { pageArr: [0] }), 'a paragraph made a level-2 heading opens the Markdown export as one').toMatch(/^## /);
+    expect(doc.undo(), 'a paragraph role edit is undoable').toBe(true);
+    expect([rolePar.type, rolePar.headingLevel], 'undo restores the paragraph role').toEqual(['body', null]);
+    expect(await doc.exportData('md', { pageArr: [0] }), 'the undone heading leaves the Markdown export').not.toMatch(/^## /);
+
     const view1 = hocrView(doc.ocr.active);
 
     const hocrOutStr = /** @type {string} */ (await doc.exportData('hocr'));

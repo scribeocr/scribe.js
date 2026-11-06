@@ -506,6 +506,8 @@ export class ScribeViewer {
       rafId: null,
       /** @type {?HTMLDivElement} */
       indicator: null,
+      /** @type {?HTMLElement} */
+      elem: null,
     };
 
     this.runSetInitial = true;
@@ -1981,20 +1983,22 @@ export class ScribeViewer {
 
   /**
    * Begin browser-style middle-button autoscroll: the document scrolls toward the cursor's offset from the press point.
-   * Used in OCR viewing (`invis`) mode in place of the 1:1 drag-pan.
    * @param {MouseEvent} event
+   * @param {?HTMLElement} [scrollElem=null] - An element to scroll in place of the document.
    */
-  startAutoScroll(event) {
+  startAutoScroll(event, scrollElem = null) {
     this.stopAutoScroll(false);
     event.preventDefault(); // suppress the browser's own middle-click autoscroll
     const a = this.autoScroll;
     a.active = true;
+    a.elem = scrollElem;
     a.originX = event.clientX;
     a.originY = event.clientY;
     a.pointerX = event.clientX;
     a.pointerY = event.clientY;
 
-    if (this.scrollContainer) this.scrollContainer.style.cursor = 'all-scroll';
+    const cursorElem = scrollElem || this.scrollContainer;
+    if (cursorElem) cursorElem.style.cursor = 'all-scroll';
 
     // Anchor indicator: a circle with a center dot at the press point (the familiar autoscroll affordance).
     const ind = document.createElement('div');
@@ -2048,7 +2052,12 @@ export class ScribeViewer {
       };
       const vX = ramp(a.pointerX - a.originX);
       const vY = ramp(a.pointerY - a.originY);
-      if (vX !== 0 || vY !== 0) this.pan({ deltaX: -vX, deltaY: -vY });
+      if (a.elem) {
+        a.elem.scrollLeft += vX;
+        a.elem.scrollTop += vY;
+      } else if (vX !== 0 || vY !== 0) {
+        this.pan({ deltaX: -vX, deltaY: -vY });
+      }
       a.rafId = requestAnimationFrame(tick);
     };
     a.rafId = requestAnimationFrame(tick);
@@ -2067,10 +2076,15 @@ export class ScribeViewer {
       cancelAnimationFrame(a.rafId);
       a.rafId = null;
     }
-    if (this.scrollContainer) this.scrollContainer.style.cursor = '';
+    const cursorElem = a.elem || this.scrollContainer;
+    if (cursorElem) cursorElem.style.cursor = '';
     if (a.indicator) {
       a.indicator.remove();
       a.indicator = null;
+    }
+    if (a.elem) {
+      a.elem = null;
+      return;
     }
     if (!settle) return;
 

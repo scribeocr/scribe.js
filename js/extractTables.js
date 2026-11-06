@@ -22,6 +22,49 @@ export function extractTableContent(pageObj, layoutObj) {
   return tableWordObj;
 }
 
+/**
+ * Group words into the visual lines they sit on, top to bottom, with each line's words left to right.
+ * Two words share a line when their vertical extents overlap by more than half the shorter one.
+ * That keeps the two lines of a wrapped cell apart, and keeps the words of one line together even when they came from different OCR lines.
+ * @param {Array<OcrWord>} words
+ * @returns {Array<Array<OcrWord>>}
+ */
+export function clusterWordsByLine(words) {
+  const sorted = words.slice().sort((a, b) => (a.bbox.top + a.bbox.bottom) - (b.bbox.top + b.bbox.bottom));
+  /** @type {Array<{top: number, bottom: number, words: Array<OcrWord>}>} */
+  const lines = [];
+  for (const word of sorted) {
+    const line = lines[lines.length - 1];
+    if (line) {
+      const overlap = Math.min(line.bottom, word.bbox.bottom) - Math.max(line.top, word.bbox.top);
+      if (overlap > 0.5 * Math.min(word.bbox.bottom - word.bbox.top, line.bottom - line.top)) {
+        line.words.push(word);
+        line.top = Math.min(line.top, word.bbox.top);
+        line.bottom = Math.max(line.bottom, word.bbox.bottom);
+        continue;
+      }
+    }
+    lines.push({ top: word.bbox.top, bottom: word.bbox.bottom, words: [word] });
+  }
+  return lines.map((line) => line.words.sort((a, b) => a.bbox.left - b.bbox.left));
+}
+
+/**
+ * The gaps between a row's text lines, where a row split can land.
+ * @param {Array<OcrWord>} words - The row's words, across every column.
+ * @returns {Array<{y: number, top: number, bottom: number}>} Per gap: its midpoint `y`, the bottom of the line above (`top`) and the top of the line below (`bottom`).
+ */
+export function tableRowTextGaps(words) {
+  const lines = clusterWordsByLine(words);
+  const gaps = [];
+  for (let i = 1; i < lines.length; i++) {
+    const above = Math.max(...lines[i - 1].map((w) => w.bbox.bottom));
+    const below = Math.min(...lines[i].map((w) => w.bbox.top));
+    gaps.push({ y: Math.round((above + below) / 2), top: above, bottom: below });
+  }
+  return gaps;
+}
+
 // TODO: This currently creates junk rows with only punctuation, as those bounding boxes are so small they often do not overlap with other lines.
 /**
  * Extracts words from a page that are within the bounding boxes of the table, organized into arrays of rows and columns.
@@ -207,6 +250,11 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null, opts
     }
   }
 
+  // Cells read as printed: the top line first, left to right within each line.
+  for (const row of rowWordArr) {
+    for (let c = 0; c < row.length; c++) if (row[c].length > 1) row[c] = clusterWordsByLine(row[c]).flat();
+  }
+
   return { rowWordArr, rowBottomArr };
 }
 
@@ -308,7 +356,6 @@ export function extractTextFromTables(ocrPage, layoutPage, opts = {}) {
     const result = extractSingleTableContent(ocrPage, Object.values(table.boxes), table.rowBounds, { maxRows: opts.maxRows });
     const rows = result.rowWordArr.map((row) => row.map((col) => {
       if (!col || col.length === 0) return opts.cellFormats ? { text: '', runs: [] } : '';
-      col.sort((a, b) => a.bbox.left - b.bbox.left);
       const text = col.map((w) => w.text).join(' ');
       if (!opts.cellFormats) return text;
       /** @type {Array<{text: string, style: Style}>} */

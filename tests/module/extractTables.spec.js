@@ -50,6 +50,10 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(sheets[0].rows[0][0], 'the SECTOR header cell lands in the header row').toBe('SECTOR');
     expect(sheets[0].rows[1], 'the Miami data row buckets cleanly under the detected row bounds')
       .toEqual(['Miami', '127', '1,891', '1,358', '594', '650', '241', '0', '0', '0']);
+    // Regression: a cell spanning two text lines once had its words re-sorted by left edge, interleaving the two lines.
+    expect(sheets[0].rows[0][1], 'a two-line header cell reads its top line first').toBe('Agent Staffing*');
+    expect(sheets[0].rows[0][3], 'a two-line header cell keeps the words of each line together').toBe('Other Than Mexican Apprehensions');
+    expect(sheets[0].rows[0][9], 'the last two-line header cell reads in line order').toBe('Border Deaths');
 
     const bytes = await scribe.utils.writeXlsxFromSheets(sheets, { columnWidths: 'auto' });
     const { ZipReader, Uint8ArrayReader, TextWriter } = await import('../../lib/zip.js/index.js');
@@ -64,6 +68,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     const sheet1Xml = await byPath.get('xl/worksheets/sheet1.xml').getData(new TextWriter());
     const sheet2Xml = await byPath.get('xl/worksheets/sheet2.xml').getData(new TextWriter());
     expect(sheet1Xml.includes('<t xml:space="preserve">SECTOR</t>'), 'the SECTOR cell lands in the first worksheet').toBe(true);
+    expect(sheet1Xml.includes('<t xml:space="preserve">Other Than Mexican Apprehensions</t>'), 'the workbook writes a two-line header cell in line order').toBe(true);
     expect(sheet1Xml.includes('tabSelected="1"'), 'the first sheet claims the selected tab').toBe(true);
     expect(sheet2Xml.includes('tabSelected="1"'), 'later sheets do not claim the selected tab').toBe(false);
     await reader.close();

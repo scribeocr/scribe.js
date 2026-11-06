@@ -38,6 +38,7 @@ import {
   createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
   createProofreadTextTool, createCompareVersionsTool,
 } from '../js/controls/tools.js';
+import { createExportTool } from '../js/controls/exportTool.js';
 import { longestChain } from '../../js/textDiff.js';
 import {
   diffMarksFor, applyDiffMarks, setDiffCurrent, goToChange, diffRunsFor,
@@ -1929,6 +1930,13 @@ class ScribePDFViewer {
       }
       if (this._compareMenuRow && !this._compareTool) this._compareMenuRow.style.display = 'none';
 
+      /** @type {?ReturnType<typeof createExportTool>} */
+      this._exportTool = null;
+      if (this._modeTrackRow1) {
+        this._exportTool = createExportTool(this);
+        this._modeTrackRow1.insertBefore(this._exportTool.toolbarElem, this._modeTrackChev);
+      }
+
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
       if (this._graphicsEditTool) this._graphicsEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images and shapes · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
@@ -1938,10 +1946,12 @@ class ScribePDFViewer {
       if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
       if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
       if (this._compareTool) this._compareTool.toolbarElem.dataset.modeHint = 'Click a change on the page or in the list · Enter: next change';
+      if (this._exportTool) this._exportTool.toolbarElem.dataset.modeHint = 'Pick a format to preview it \u00b7 scroll either side to move the other \u00b7 click a block\u2019s chip to set its role';
 
       const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._graphicsEditTool?.toolbarElem,
         this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem, this._proofreadTool?.toolbarElem,
-        this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem, this._compareTool?.toolbarElem].filter((b) => !!b);
+        this._extractTablesTool?.toolbarElem, this._inspectTool?.toolbarElem, this._compareTool?.toolbarElem,
+        this._exportTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       // A tool that awaits before activating can mark its button active after the click listener below has synced the banner, so the banner follows the class itself.
       // Without this the session's history baseline waits for the next sync from elsewhere, and an edit made before it counts as nothing to save.
@@ -2481,6 +2491,7 @@ class ScribePDFViewer {
     await this._syncSideViewDoc(doc);
     this._extractTablesTool?.docChanged?.();
     this._inspectTool?.docChanged?.();
+    this._exportTool?.docChanged?.();
 
     // Deferred import painted the page raster-only, so rebuild the text-dependent surfaces once extraction lands.
     // Text that imported synchronously has no deferred phase and skips this.
@@ -2491,6 +2502,7 @@ class ScribePDFViewer {
         // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
         this._extractTablesTool?.docChanged?.();
         this._inspectTool?.docChanged?.();
+        this._exportTool?.docChanged?.();
         // The desktop shell's menu state reads the document, so it refreshes once extraction lands.
         this._notifyMenuState();
         if (this._commentsPanel && this._thumbnailPanel) {
@@ -3278,7 +3290,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * Show a second view of the lane's document as an item of the right group (Side by side).
+   * Show a second view of the lane's document, or of a document the view owns, as an item of the right group (Side by side).
    * @param {Object} view
    * @param {string} view.label - The item's name in the strip.
    * @param {string} view.icon - The mode's icon markup.
@@ -3286,28 +3298,61 @@ class ScribePDFViewer {
    * @param {(viewer: ScribeViewer) => void} view.release - Undoes it whenever the group viewer leaves the second view.
    * @param {() => void} [view.onClose] - Told once the item is gone, or at once when the view cannot open.
    * @param {(doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => boolean} [view.retarget] - Whether the view holds for a document the lane switched to.
+   * @param {boolean} [view.pane] - The view shows its own element over the group viewer instead of the group viewer itself.
+   *    Such a view mounts the element in `configure`, takes it down in `release`, and links its own scrolling.
+   * @param {(n: number) => void} [view.goToPage] - Shows page `n` in a pane view, for the group sidebar's thumbnails.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} [view.doc] - A document the view owns and disposes of, shown in place of the lane's.
    * @returns {Promise<?Object>} The item, or null when the view cannot open.
    */
   async _openSideView(view) {
-    if (this._sideView) this._closeSideView();
     if (!this.doc || this._phoneUi || !this._tabStrip || this._modeGroup === 1) {
+      if (this._sideView) this._closeSideView();
       view.onClose?.();
       return null;
     }
+    const prev = this._sideView;
     const tab = {
-      ...this._newTab(this.doc, view.label), group: 1, icon: view.icon, view,
+      ...this._newTab(view.doc || this.doc, view.label), group: 1, icon: view.icon, view,
     };
     // Registered before the group opens, since opening it syncs the banner, and a mode's sync opens the view when it finds none.
-    this._sideView = { tab, link: null };
+    this._sideView = { tab, link: null, replaced: null };
     const g = this._rightGroup || this._openGroup({ program: true });
     if (!g) {
-      this._sideView = null;
+      this._sideView = prev;
+      this._closeSideView();
       view.onClose?.();
       return null;
     }
-    this._tabs.push(tab);
+    // A view already open is replaced in place instead of closed, so the group never empties and the layout holds.
+    // A pane stays over the group viewer until the new view shows, which hides the document swap under it.
+    if (prev) {
+      const shown = g.viewer.doc === prev.tab.doc;
+      if (shown && prev.tab.view.pane) {
+        this._sideView.replaced = prev;
+      } else {
+        if (prev.link) { prev.link(); prev.link = null; }
+        if (shown) prev.tab.view.release(g.viewer);
+      }
+      this._tabs.push(tab);
+      this._removeTab(prev.tab);
+      if (g.active === prev.tab) g.active = null;
+      prev.tab.view.onClose?.();
+    } else {
+      this._tabs.push(tab);
+    }
     await this._activateGroupTab(tab);
     return tab;
+  }
+
+  /** Let go of the item the second view replaced, once the new view shows or the group viewer leaves it. */
+  _releaseReplaced() {
+    const sv = this._sideView;
+    const g = this._rightGroup;
+    if (!sv?.replaced || !g) return;
+    const old = sv.replaced;
+    sv.replaced = null;
+    if (old.link) { old.link(); old.link = null; }
+    old.tab.view.release(g.viewer);
   }
 
   /** Close the second view. */
@@ -3326,10 +3371,15 @@ class ScribePDFViewer {
     const g = this._rightGroup;
     const sv = this._sideView;
     if (!g || !sv || sv.tab !== tab || g.viewer.doc !== tab.doc) return;
+    this._releaseReplaced();
     const lane = this.scribe;
     const v = g.viewer;
     await tab.view.configure(v);
     if (this._rightGroup !== g || g.active !== tab || this._sideView !== sv) return;
+    if (tab.view.pane) {
+      this._positionBanners();
+      return;
+    }
     if (Math.abs(v.zoomLevel - lane.zoomLevel) > 1e-6) v.zoom(lane.zoomLevel / v.zoomLevel, v.getViewportCenter());
     const margin = (/** @type {ScribeViewer} */ x) => parseFloat(x.contentSizer?.style.marginLeft || '0') || 0;
     v.scrollContainer.scrollTop = lane.scrollContainer.scrollTop;
@@ -3343,6 +3393,7 @@ class ScribePDFViewer {
     const sv = this._sideView;
     const g = this._rightGroup;
     if (!sv || !g) return;
+    this._releaseReplaced();
     if (sv.link) { sv.link(); sv.link = null; }
     if (g.viewer.doc === sv.tab.doc) sv.tab.view.release(g.viewer);
     this._positionBanners();
@@ -3358,6 +3409,25 @@ class ScribePDFViewer {
     this._hideSideView();
     this._sideView = null;
     tab.view.onClose?.();
+  }
+
+  /**
+   * Show another document in the second view, for a view that owns the document it shows.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  async _retargetSideView(doc) {
+    const sv = this._sideView;
+    if (!sv || sv.tab.doc === doc) return;
+    const g = this._rightGroup;
+    const shown = !!g && g.active === sv.tab;
+    if (shown) this._hideSideView();
+    sv.tab.doc = doc;
+    if (shown && g) {
+      g.active = null;
+      await this._activateGroupTab(sv.tab);
+    } else {
+      this._renderTabs();
+    }
   }
 
   /**
@@ -3393,7 +3463,11 @@ class ScribePDFViewer {
     };
     if (!this._thumbnailPanel) return side;
     side.thumbnails = createThumbnailPanel(viewer, {
-      onSelect: (n) => viewer.displayPage(n, true, false),
+      onSelect: (n) => {
+        const item = this._rightGroup?.active;
+        if (item?.view?.pane && item.view.goToPage) item.view.goToPage(n);
+        else viewer.displayPage(n, true, false);
+      },
       onResize: (_width, phase) => {
         if (phase === 'start') {
           this._sidebarDragActive = true;
@@ -3573,7 +3647,8 @@ class ScribePDFViewer {
     const next = n === 1 && g ? 1 : 0;
     const changed = next !== this._activeGroup;
     // A mode is one document's session, so it ends on the group it ran in before the toolbar moves to the other.
-    if (changed && !this._sideView && !this._compare) {
+    // Closing the mode's second view can take the right group down and return the toolbar to the mode's group, which leaves the mode running.
+    if (changed && !this._sideView && !this._compare && this._modeGroup !== next) {
       const modeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
       if (modeBtn) {
         modeBtn.click();
@@ -3683,7 +3758,8 @@ class ScribePDFViewer {
   _syncPageBox() {
     if (!this.pageNumElem || !this.pageCountElem) return;
     const g = this._rightGroup;
-    if (this._activeGroup === 1 && g) {
+    // A pane view shows the lane's document at the lane's place, so the box reads the lane.
+    if (this._activeGroup === 1 && g && !g.active?.view?.pane) {
       const doc = g.active ? g.viewer.doc : null;
       if (document.activeElement !== this.pageNumElem) this.pageNumElem.value = doc ? String(g.viewer.state.cp.n + 1) : '';
       this.pageCountElem.textContent = doc ? String(doc.inputData.pageCount) : '';
@@ -3738,10 +3814,11 @@ class ScribePDFViewer {
     const g = this._rightGroup;
     if (!g || tab.group !== 1 || !this._tabs.includes(tab)) return;
     const prev = g.active;
-    if (prev && prev !== tab && g.viewer.doc === prev.doc) {
-      prev.lastPage = g.viewer.state.cp.n;
+    if (prev && prev !== tab) {
+      if (g.viewer.doc === prev.doc) prev.lastPage = g.viewer.state.cp.n;
+      // A view item is hidden even when its document has not shown yet, since it can still hold the item it replaced.
       if (prev.view) this._hideSideView();
-      else Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(prev))).catch(() => {});
+      else if (g.viewer.doc === prev.doc) Promise.all(this._libraryInstances.map((inst) => inst.saveTabIfDirty(prev))).catch(() => {});
     }
     g.active = tab;
     if (tab.view) tab.lastPage = this.scribe.state.cp.n;
@@ -3754,6 +3831,8 @@ class ScribePDFViewer {
       tab.placedByAddress = false;
       this._renderTabs();
       this._applyTabResourcePolicy();
+      // A second view replacing one of the same document finds it shown already, and still has to put the viewer in the view.
+      if (tab.view && prev !== tab) await this._showSideView(tab);
       return;
     }
     if (tab.asleep) tab.waking = true;
@@ -4656,6 +4735,18 @@ class ScribePDFViewer {
         if (xtSeg.parentElement !== this._modeBanner) this._modeBanner.insertBefore(xtSeg, this._modeBannerParts.name.nextSibling);
       } else {
         xtSeg.remove();
+      }
+    }
+
+    if (this._exportTool) {
+      const xSeg = this._exportTool.viewSegElem();
+      const xTools = this._exportTool.toolsElem();
+      if (activeBtn === this._exportTool.toolbarElem) {
+        if (xSeg.parentElement !== this._modeBanner) this._modeBanner.insertBefore(xSeg, this._modeBannerParts.name.nextSibling);
+        if (xTools.parentElement !== this._modeBanner) this._modeBanner.insertBefore(xTools, this._modeBannerParts.exit);
+      } else {
+        xSeg.remove();
+        xTools.remove();
       }
     }
 
@@ -6889,8 +6980,8 @@ class ScribePDFViewer {
       else this._closeInspectSheet();
       this._inspectTool.docChanged();
     }
-    // Extract Tables ends on a switch to the phone, which does not offer it.
     if (phone && this._extractTablesTool?.isActive()) this._extractTablesTool.close();
+    if (phone && this._exportTool?.isActive()) this._exportTool.close();
     // A mode can be running through the flip, so its bar moves between the banner and the dock.
     this._syncModeBanner();
     this.scribe._editTextRefreshFrames?.();
@@ -8011,6 +8102,14 @@ class ScribePDFViewer {
       cmpBtn.tabIndex = !comparable ? -1 : 0;
       this._compareMenuRow?.classList.toggle('disabled', !comparable);
     }
+    const exportBtn = this._exportTool?.toolbarElem;
+    if (exportBtn) {
+      const exportable = !disabled && !this._phoneUi && !!doc && doc.pageMetrics.length > 0;
+      if (!exportable && this._exportTool.isActive()) this._exportTool.close();
+      exportBtn.classList.toggle('disabled', !exportable);
+      exportBtn.ariaDisabled = !exportable ? 'true' : 'false';
+      exportBtn.tabIndex = !exportable ? -1 : 0;
+    }
     const graphicsBtn = this._graphicsEditTool?.toolbarElem;
     if (graphicsBtn) {
       // The area cut mirrors the tool's own picker, so on a real document the button never enables where nothing can be selected.
@@ -8219,6 +8318,11 @@ class ScribePDFViewer {
       this._menuCommands['export-pdf'] = async () => {
         // No-op at 0 pages (e.g. every page removed) rather than throwing deep in the PDF writer.
         if (this._frontSurface() || !this.doc || this.doc.pageMetrics.length === 0) return;
+        if (this._exportTool && !this._phoneUi && !this._exportTool.toolbarElem.classList.contains('disabled')) {
+          this._exportTool.open('pdf');
+          this._flashModeTrack();
+          return;
+        }
         exportItem.classList.add('busy');
         try {
           // The export itself applies the marks, so the toast is the honest cue right when it happens.
@@ -8247,6 +8351,11 @@ class ScribePDFViewer {
        */
       const exportAs = (format, label) => async () => {
         if (this._frontSurface() || !this.doc || this.doc.pageMetrics.length === 0) return;
+        if (format !== 'scribe' && this._exportTool && !this._phoneUi && !this._exportTool.toolbarElem.classList.contains('disabled')) {
+          this._exportTool.open(format);
+          this._flashModeTrack();
+          return;
+        }
         /** @type {import('../../js/export/export.js').ExportOptions} */
         const options = {};
         // This export requests no page image, so the searchable-PDF default of hidden text would produce a blank file.

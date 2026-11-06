@@ -83,6 +83,8 @@ describe('Check markdown import.', () => {
   let docPdfReimport;
   /** @type {string} */
   let plainText;
+  /** @type {string} */
+  let articleHtml;
   /** @type {Array<MdReaderBlock>} */
   let mdBlocks;
 
@@ -94,6 +96,7 @@ describe('Check markdown import.', () => {
 
     mdBlocks = readMarkdown(markdown);
 
+    articleHtml = /** @type {string} */ (await doc.exportData('html', { reflow: true }));
     docMdReimport = await scribe.openDocument([new File([markdown], 'roundtrip.md', { type: 'text/markdown' })]);
 
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
@@ -101,6 +104,14 @@ describe('Check markdown import.', () => {
     docPdfReimport = await scribe.openDocument({ pdfFiles: [pdf] });
     docPdfReimport.ocr.active = docPdfReimport.ocr.pdf;
   }, 120_000);
+
+  test('the HTML article writes list items whose markers are metadata as list elements, nested by their columns', () => {
+    expect(articleHtml, 'a bulleted list becomes <ul> with one <li> per item, a nested list inside the item above it')
+      .toContain('<ul>\n<li data-marker="•">A charged phone with the survey app installed\n<ul>\n<li data-marker="•">A battery pack, for a full day in the field</li>\n</ul>\n</li>\n'
+        + '<li data-marker="•">Waterproof boots and gloves</li>');
+    expect(articleHtml, 'a numbered list becomes <ol> with each item keeping its number')
+      .toContain('<ol>\n<li value="1" data-marker="1.">Photograph the quadrat from directly above.</li>\n<li value="2" data-marker="2.">Count every organism inside the frame.</li>');
+  });
 
   test('Markdown is laid out onto real pages tagged with the markdown source', () => {
     expect(doc.inputData.pageCount, 'markdown must paginate onto the number of pages its text fills').toBe(2);

@@ -56,7 +56,11 @@ describe('Check markdown escape characters.', () => {
     const exportedMd = await doc.exportData('md');
 
     // Bold word containing a literal `*` mid-word — escape keeps the `**...**` wrapper unambiguous.
-    expect(exportedMd).toContain('**Staffing\\* Agent**');
+    expect(exportedMd).toContain('**Agent Staffing\\***');
+
+    // The HTML article check rides on this document's load.
+    const exportedHtml = /** @type {string} */ (await doc.exportData('html', { reflow: true, includeImages: false }));
+    expect(exportedHtml, 'a wrapped table header cell reads out of order in the HTML article').toContain('<th>Agent Staffing*</th>');
 
     // Bold word ending with two literal `**` — would close the bold prematurely if not escaped.
     expect(exportedMd).toContain('**Southwest Border Sectors Total\\*\\***');
@@ -86,6 +90,9 @@ describe('Check non-contiguous pageArr subsetting for markdown export.', () => {
     expect(exportedMd).toContain('Security');
     // "Munger" only appears on page 1 — should not be present
     expect(exportedMd).not.toContain('Munger');
+
+    const page3Md = await doc.exportData('md', { pageArr: [3] });
+    expect(page3Md, 'a word the page breaks inside an italic citation is joined within one italic run').toContain('*A Treatise on the Law of Contracts* § 618');
   });
 
   afterAll(async () => {

@@ -68,6 +68,9 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  *    Ignored without `scribeSegments`.
  * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
+ * @property {boolean} [htmlFitWindow] - Scale the HTML export's pages down to the window's width; default false.
+ *    Ignored when `reflow` is set.
+ * @property {boolean} [dropPageHeadersFooters] - Leave page headers and footers, with page numbers and margin line numbers, out when a text, Markdown, Word or HTML export reflows; default false.
  * @property {boolean} [sanitize] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
  *    Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
  *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
@@ -334,6 +337,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const standardizePageSize = options.standardizePageSize ?? scribeDocDefaults.standardizePageSize;
   const humanReadablePDF = options.humanReadablePDF ?? scribeDocDefaults.humanReadablePDF;
   const reflow = options.reflow ?? scribeDocDefaults.reflow;
+  const htmlFitWindow = options.htmlFitWindow ?? scribeDocDefaults.htmlFitWindow;
+  const dropPageHeadersFooters = options.dropPageHeadersFooters ?? scribeDocDefaults.dropPageHeadersFooters;
   const lineNumbers = options.lineNumbers ?? scribeDocDefaults.lineNumbers;
   const removeMargins = options.removeMargins ?? scribeDocDefaults.removeMargins;
   const includeImagesOpt = options.includeImages ?? scribeDocDefaults.includeImages;
@@ -792,15 +797,19 @@ export async function exportData(doc, format = 'txt', options = {}) {
         if (redactRectsByPage.has(i)) {
           image = await paintRedactionsOntoImage(image, redactRectsByPage.get(i), doc.pageMetrics[i].dims, doc.pageMetrics[i].angle || 0);
         }
-        images.push(image);
+        // The writer reads each page's image by page index, so a subset leaves gaps.
+        images[i] = image;
       }
     }
 
     content = writeHtml({
       ocrPages: ocrDownload,
       images,
+      layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
-      reflowText: reflow,
+      // HTML ignores `scribeDocDefaults.reflow` and writes the exact layout unless the caller sets `reflow`.
+      reflowText: options.reflow ?? false,
+      dropPageHeadersFooters,
       removeMargins,
       docFonts: doc.fonts,
       pageMetrics: doc.pageMetrics,
@@ -808,14 +817,18 @@ export async function exportData(doc, format = 'txt', options = {}) {
       confThreshHigh,
       confThreshMed,
       overlayOpacity,
+      autoRotate,
       embedFonts,
+      htmlFitWindow,
       doc,
     });
   } else if (format === 'txt') {
     content = writeText({
       ocrCurrent: ocrDownload,
+      layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
       reflowText: reflow,
+      dropPageHeadersFooters,
       lineNumbers,
       pageMetrics: doc.pageMetrics,
       doc,
@@ -826,6 +839,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
       reflowText: reflow,
+      dropPageHeadersFooters,
       pageMetrics: doc.pageMetrics,
       doc,
     });
@@ -835,7 +849,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeDocx = (await import('./writeDocx.js')).writeDocx;
     content = await writeDocx({
-      hocrCurrent: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, reflowText: reflow, doc,
+      hocrCurrent: ocrDownload, layoutPageArr: doc.layoutDataTables.pages, pageArr, pageMetrics: doc.pageMetrics, reflowText: reflow, dropPageHeadersFooters, doc,
     });
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {

@@ -57,6 +57,17 @@ export function parIsFurniture(par) {
   return !!par && (par.type === 'pagenum' || par.type === 'header' || par.type === 'footer' || par.type === 'linenum');
 }
 
+/**
+ * Whether a paragraph's list marker is already part of its text.
+ * PDF and OCR paragraphs carry the enumerator as words on the page, while Markdown and Word imports keep it as metadata only.
+ * @param {OcrPar} par
+ * @returns {boolean}
+ */
+export function parMarkerInText(par) {
+  const word = par.lines[0] && par.lines[0].words[0];
+  return !!word && word.text.startsWith(/** @type {string} */ (par.marker));
+}
+
 export function ParDebugInfo() {
   /** @type {?string} */
   this.raw = null;

@@ -5051,6 +5051,30 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-compare-chip svg { width: 13px; height: 13px; display: block; }
     .${r} .scribe-compare-chip:hover { color: var(--scribe-ink); }
     .${r} .scribe-compare-chip.on { color: var(--scribe-accent); border-color: var(--scribe-accent); }
+    .${r} .scribe-export-pane { position: absolute; inset: 0; overflow: auto; padding: 6px 0; box-sizing: border-box; background: var(--scribe-canvas); z-index: 12; outline: none; scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar, var(--scribe-line-strong)) transparent; }
+    .${r} .scribe-export-pane-lane { top: 40px; }
+    .${r} .scribe-export-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; position: relative; }
+    .${r} .scribe-export-tools + .scribe-mode-banner-exit { margin-left: 0; }
+    .${r} .scribe-export-bpick { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: none; border-radius: 6px; background: transparent; font: inherit; font-size: 12px; color: var(--scribe-ink-2); cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-export-bpick:hover, .${r} .scribe-export-bpick.active { background: var(--scribe-active); }
+    .${r} .scribe-export-bpick svg { width: 11px; height: 11px; display: block; }
+    .${r} .scribe-export-brun { display: inline-flex; align-items: center; padding: 2px 12px; border: 1px solid var(--scribe-accent); border-radius: 6px; background: transparent; font: inherit; font-size: 12.5px; font-weight: 650; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-export-brun:hover { background: var(--scribe-active); }
+    .${r} .scribe-export-brun:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); cursor: default; }
+    .${r} .scribe-export-options { position: absolute; left: 0; top: 34px; z-index: 6; min-width: 300px; padding: 10px 12px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); display: grid; gap: 10px; font-size: 13px; line-height: normal; color: var(--scribe-ink); cursor: default; user-select: none; }
+    .${r} .scribe-export-opt-label { font-size: 12px; font-weight: 600; color: var(--scribe-ink-2); }
+    .${r} .scribe-export-opt-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+    .${r} .scribe-export-opt-row label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; }
+    .${r} .scribe-export-opt-row input[type=checkbox], .${r} .scribe-export-opt-row input[type=radio] { accent-color: var(--scribe-accent); margin: 0; }
+    .${r} .scribe-export-options[hidden] { display: none; }
+    .${r} .scribe-export-menu { position: absolute; left: 0; top: 34px; z-index: 6; min-width: 190px; padding: 4px; box-sizing: border-box; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; line-height: 18px; color: var(--scribe-ink); }
+    .${r} .scribe-export-menu[hidden] { display: none; }
+    .${r} .scribe-export-menu button { display: block; width: 100%; padding: 4px 10px; border: none; border-radius: 4px; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-export-menu button:hover, .${r} .scribe-export-menu button:focus { background: var(--scribe-hover); outline: none; }
+    .${r} .scribe-export-menu button.on { color: var(--scribe-accent); font-weight: 600; }
+    .${r} .scribe-export-menu button:disabled { color: var(--scribe-ink-3); cursor: default; background: transparent; }
+    .${r} .scribe-export-bpick.busy { opacity: .6; cursor: progress; }
+    .${r} .scribe-export-range { width: 96px; font: inherit; font-size: 12.5px; padding: 2px 6px; border: 1px solid var(--scribe-line-strong); border-radius: 4px; background: var(--scribe-surface); color: var(--scribe-ink); }
     .${r} .scribe-recog-status { font-size: 12px; color: var(--scribe-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .${r} .scribe-dock-mode .scribe-recog-tools { gap: 6px; }
     .${r} .scribe-mode-banner-settings { display: inline-flex; align-items: center; gap: 2px; }

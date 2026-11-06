@@ -1,6 +1,54 @@
 import { OcrPar } from '../objects/ocrObjects.js';
 import { calcBboxUnion, quantile } from './miscUtils.js';
 
+// The hyphen a typesetter breaks a word with: a hyphen-minus, a Unicode hyphen or a soft hyphen after a letter or digit.
+const LINE_END_HYPHEN_RE = /[\p{L}\p{N}][-‐­]$/u;
+
+// A number, ordinal or fraction word, or "self", before a line-end hyphen usually opens a compound rather than a broken word.
+const NUMBER_WORDS = new Set(['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
+  'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety', 'hundred',
+  'thousand', 'million', 'billion', 'half', 'third', 'quarter', 'fifth', 'first', 'second', 'self']);
+
+/**
+ * Collects the hyphenated words the pages print, lowercased and with their hyphens normalized to hyphen-minus.
+ * @param {Array<?OcrPage>} pages
+ * @returns {Set<string>}
+ */
+export function hyphenatedCompounds(pages) {
+  const compounds = new Set();
+  for (const page of pages) {
+    if (!page) continue;
+    for (const line of page.lines) {
+      for (const word of line.words) {
+        if (!word) continue;
+        const core = word.text.replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, '').replace(/[‐­]/g, '-');
+        if (/\S-\S/.test(core)) compounds.add(core.toLowerCase());
+      }
+    }
+  }
+  return compounds;
+}
+
+/**
+ * Decide how a line that ends in a hyphen joins the next line of its paragraph when a reflow export removes the line break.
+ * @param {{words: Array<?OcrWord>}} line
+ * @param {?{words: Array<?OcrWord>}} next - The next line of the same paragraph, or null at the paragraph's end.
+ * @param {Set<string>} compounds - The document's hyphenated words, lowercased, with hyphen-minus.
+ * @returns {{joinNext: boolean, dropHyphen: boolean}} Whether the next line's first word follows with no space, and whether the line's last word loses its hyphen.
+ */
+export function lineJoin(line, next, compounds) {
+  const none = { joinNext: false, dropHyphen: false };
+  if (!next) return none;
+  const last = line.words[line.words.length - 1];
+  const first = next.words[0];
+  if (!last || !first || !LINE_END_HYPHEN_RE.test(last.text)) return none;
+  if (!/^\p{Ll}/u.test(first.text)) return { joinNext: true, dropHyphen: false };
+  const base = last.text.slice(0, -1).replace(/^[\p{P}\p{S}]+/u, '').replace(/[‐­]/g, '-');
+  const core = first.text.replace(/[\p{P}\p{S}]+$/u, '').replace(/[‐­]/g, '-').toLowerCase();
+  const compound = NUMBER_WORDS.has(base.toLowerCase()) || compounds.has(`${base.toLowerCase()}-${core}`);
+  return { joinNext: true, dropHyphen: !compound };
+}
+
 /**
  * Assigns paragraphs based on our own heuristics.
  * This function assumes that the lines are already sorted according to their reading order,

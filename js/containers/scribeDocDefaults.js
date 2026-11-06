@@ -107,6 +107,14 @@ export const scribeDocDefaults = {
    */
   embedFonts: false,
 
+  htmlFitWindow: false,
+
+  /**
+   * Leave page headers and footers out of the reflow exports (text, Markdown, Word, and HTML with `reflow`).
+   * Page numbers and margin line numbers count as headers and footers.
+   */
+  dropPageHeadersFooters: false,
+
   enableLayout: false,
 
   xlsxFilenameColumn: true,

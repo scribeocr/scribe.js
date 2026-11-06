@@ -305,6 +305,24 @@ describe('Check superscripts are detected in PDF imports.', () => {
 
   // This document breaks when used with `mutool convert` so is not combined with the others.
   // Any more tests included in the main stacked document should be inserted above this point.
+  // On page 6 the detector's first column box stops short of the row stub "Most serious offense at adjudication", so the table takes every word of the line but "Most".
+  test('A table-edge word that no cell holds survives the reflow exports', async () => {
+    const text = /** @type {string} */ (await doc.exportData('text'));
+    expect(text, 'the text export writes the word the table left out after the table')
+      .toContain('\t314 days\t309 days\t302 days\t776 days\t415 days\t413 days\t314 days\nMost\nNote: Details may not sum to totals');
+    const md = /** @type {string} */ (await doc.exportData('md'));
+    expect(md, 'the Markdown export writes the word the table left out as its own paragraph').toContain('\n\nMost\n\n');
+    const html = /** @type {string} */ (await doc.exportData('html', { reflow: true, includeImages: false }));
+    expect(html, 'the HTML article writes the word the table left out, in its own style').toContain('</div>\n<p><b>Most</b></p>\n<p>Note: Details may not sum');
+    const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx'));
+    const zipModule = await import('../../lib/zip.js/index.js');
+    const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));
+    const entry = (await zipReader.getEntries()).find((e) => e.filename === 'word/document.xml');
+    const documentXml = await entry.getData(new zipModule.TextWriter());
+    expect(documentXml, 'the Word export writes the word the table left out as a paragraph after the table')
+      .toContain('</w:tbl><w:p><w:r><w:rPr><w:b/><w:rFonts w:ascii="MyriadPro" w:hAnsi="MyriadPro"/></w:rPr><w:t xml:space="preserve">Most</w:t></w:r></w:p><w:p>');
+  });
+
   test('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_example_report1.pdf`]);
 
@@ -791,6 +809,18 @@ describe('Check that text orientation is handled correctly.', () => {
     expect(doc.ocr.active[0].lines[2].words[0].line.orientation).toBe(3);
     expect(doc.ocr.active[3].lines[2].words[0].line.orientation).toBe(2);
     expect(doc.ocr.active[2].lines[2].words[0].line.orientation).toBe(1);
+
+    const html =/** @type {string} */ (await doc.exportData('html', { pageArr: [1, 2], displayMode: 'ebook' }));
+    expect(html, 'the lines of a page that are upright are placed as they are, with no wrapper')
+      .toContain('<div class="scribe-page" id="page1" style="position:absolute;top:0px;">\n    <div class="scribe-line" style=');
+    expect(html, 'the lines turned a quarter turn are wrapped in a group turned by the same quarter turn about the page center')
+      .toContain('<div class="scribe-group" style="position:absolute;left:-375px;top:375px;width:3300px;height:2550px;transform-origin:1650px 1275px;transform:rotate(90deg);">');
+    expect(html, 'the lines turned a half turn are wrapped in a group turned by a half turn')
+      .toContain('<div class="scribe-group" style="position:absolute;left:0px;top:0px;width:2550px;height:3300px;transform-origin:1275px 1650px;transform:rotate(180deg);">');
+    const withImages = /** @type {string} */ (await doc.exportData('html', { pageArr: [1, 2], includeImages: true }));
+    expect((withImages.match(/<img class="scribe-image"/g) || []).length, 'each page of a subset carries its own page image').toBe(2);
+    expect(withImages, 'the second page of a subset carries the image under its own page')
+      .toContain('id="page2" style="position:absolute;top:2560px;">\n  <img class="scribe-image" src="data:image/png;base64,');
   });
 
   // The following tests compare the coordinates of a rotated line to the same line in a non-rotated version of the same document.
@@ -1000,6 +1030,24 @@ describe('Check that font style is detected for PDF imports.', () => {
       expect(w.style.bold).toBe(true);
       expect(w.style.underline).toBe(true);
     }
+
+    const exact =/** @type {string} */ (await doc.exportData('html'));
+    expect(exact, 'HTML without reflow keeps the exact layout, whatever the document default for reflow').toContain('class="scribe-line"');
+    expect(exact, 'HTML without reflow writes no article').not.toContain('<article');
+    const article = /** @type {string} */ (await doc.exportData('html', { reflow: true }));
+    expect(article, 'the article writes the first title paragraph as the first heading, with no bold wrapper inside it')
+      .toContain('<h1>UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN</h1>');
+    expect(article, 'the page is titled by its first heading and sized to the viewport')
+      .toContain('<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN</title>');
+    expect(article, 'the article sits in a main element and carries no paragraph ids').toContain('<main>\n<article class="scribe-article">');
+    expect(article, 'the exported article carries paragraph ids, which only the preview fragment carries').not.toContain('data-par=');
+    expect(article, 'a numbered paragraph whose number is its own first word stays a paragraph in the article')
+      .toContain('<p>1. This is an action for breach of contract');
+    expect(article, 'the article keeps the running header by default, as a page-header paragraph')
+      .toContain('<p class="scribe-page-header">Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6</p>');
+    expect(article, 'the article keeps a page number by default, as a page-number paragraph').toContain('<p class="scribe-page-number">-2-</p>');
+    const dropped = /** @type {string} */ (await doc.exportData('html', { reflow: true, dropPageHeadersFooters: true }));
+    expect(dropped, 'dropPageHeadersFooters leaves the running header out of the article').not.toContain('Case 2:12-cv-13821-AC-DRG');
   });
 
   afterAll(async () => {

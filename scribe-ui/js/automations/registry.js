@@ -10,6 +10,7 @@ const REDACT_TERMS_SVG = lineIcon('<rect x="4.5" y="4.5" width="15" height="15" 
 const EXTRACT_HIGHLIGHTS_SVG = lineIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M4 14.5h16M10 10v9M15 10v9"/>');
 const EXTRACT_TABLES_SVG = lineIcon('<rect x="4" y="4.5" width="16" height="15" rx="1.5"/><path d="M4 9.5h16M4 14.5h16M9.5 9.5v10"/>');
 const GENERATE_BOOKMARKS_SVG = lineIcon('<path d="M5 4.5h6.2v14.6l-3.1-2.3-3.1 2.3z"/><path d="M14.8 7.5h4.7M14.8 12h4.7M14.8 16.5h3.2"/>');
+const EXPORT_SVG = lineIcon('<path d="M12 4v10m-4-4 4 4 4-4M5 19h14"/>');
 const BULK_EDIT_SVG = lineIcon('<rect x="4" y="5.5" width="16" height="13" rx="1.5" stroke-dasharray="2.6 2.6"/><path d="M7 9.5h10M7 12.5h10M7 15.5h6"/>');
 
 /**
@@ -86,6 +87,18 @@ export const AUTOMATIONS = [
     disabledWhy: (viewer) => (viewer.doc && viewer.doc.pageMetrics.length ? null : 'Open a document first'),
     openInstead: (host) => host.app._extractTablesTool?.open(),
     load: () => import('./extractTables.js'),
+  },
+  {
+    id: 'export',
+    title: 'Export…',
+    description: 'Preview the document in any export format beside it, then export the file you see.',
+    category: 'Extract',
+    engine: 'mechanical',
+    effects: 'read',
+    svg: EXPORT_SVG,
+    disabledWhy: (viewer) => (viewer.doc && viewer.doc.pageMetrics.length ? null : 'Open a document first'),
+    openInstead: (host) => host.app._exportTool?.open(),
+    load: async () => ({ run: async (host) => { host.app._exportTool?.open(); return { rows: [] }; } }),
   },
   {
     id: 'extract-highlights',

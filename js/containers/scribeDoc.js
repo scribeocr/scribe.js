@@ -1583,8 +1583,8 @@ export class ScribeDoc {
   }
 
   /**
-   * Run `fn`, which edits recognized words on `pages` in place, and record the change as one undoable step.
-   * Undo restores each page's lines, each line's words, box and baseline, and each word's text, confidence, readings, box, style and style runs.
+   * Run `fn`, which edits recognized words or paragraph roles on `pages` in place, and record the change as one step on the undo timeline.
+   * Undo restores each page's paragraphs and their roles, its lines, and its words with their text, boxes, styles and style runs.
    * `fn` must be synchronous: the step is captured when it returns.
    * @template T
    * @param {Array<number|OcrPage>} pages - The pages `fn` edits, as indices or page objects of the active layer.
@@ -1595,31 +1595,38 @@ export class ScribeDoc {
   editWords(pages, label, fn) {
     const pageObjs = pages.map((p) => (typeof p === 'number' ? this.ocr.active?.[p] : p)).filter((p) => !!p);
     const ns = pageObjs.map((p) => p.n);
-    // Lines and words are kept by reference and only their fields copied, so the viewer's word objects stay valid across an undo.
-    const capture = () => pageObjs.map((page) => page.lines.map((line) => ({
-      line,
-      bbox: { ...line.bbox },
-      baseline: line.baseline.slice(),
-      words: line.words.map((word) => ({
-        word,
-        text: word.text,
-        conf: word.conf,
-        readings: word.readings,
-        styleRuns: word.styleRuns,
-        chars: word.chars,
-        bbox: { ...word.bbox },
-        style: { ...word.style },
-        lang: word.lang,
-        visualCoords: word.visualCoords,
-        compTruth: word.compTruth,
-        matchTruth: word.matchTruth,
+    // Lines, words and paragraphs are kept by reference and only their fields copied, so outside references, such as the viewer's word objects and each line's `par`, stay valid across an undo.
+    const capture = () => pageObjs.map((page) => ({
+      pars: page.pars.map((par) => ({
+        par, type: par.type, headingLevel: par.headingLevel, marker: par.marker,
       })),
-    })));
+      lines: page.lines.map((line) => ({
+        line,
+        bbox: { ...line.bbox },
+        baseline: line.baseline.slice(),
+        words: line.words.map((word) => ({
+          word,
+          text: word.text,
+          conf: word.conf,
+          readings: word.readings,
+          styleRuns: word.styleRuns,
+          chars: word.chars,
+          bbox: { ...word.bbox },
+          style: { ...word.style },
+          lang: word.lang,
+          visualCoords: word.visualCoords,
+          compTruth: word.compTruth,
+          matchTruth: word.matchTruth,
+        })),
+      })),
+    }));
     /** @param {ReturnType<typeof capture>} snap */
     const apply = (snap) => () => {
       pageObjs.forEach((page, i) => {
-        page.lines.splice(0, page.lines.length, ...snap[i].map((l) => l.line));
-        for (const l of snap[i]) {
+        page.pars.splice(0, page.pars.length, ...snap[i].pars.map((p) => p.par));
+        for (const p of snap[i].pars) Object.assign(p.par, { type: p.type, headingLevel: p.headingLevel, marker: p.marker });
+        page.lines.splice(0, page.lines.length, ...snap[i].lines.map((l) => l.line));
+        for (const l of snap[i].lines) {
           l.line.bbox = { ...l.bbox };
           l.line.baseline = l.baseline.slice();
           l.line.words.splice(0, l.line.words.length, ...l.words.map((w) => w.word));

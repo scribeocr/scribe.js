@@ -1,7 +1,7 @@
-import { assignParagraphs } from '../utils/reflowPars.js';
+import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
-import { getWordStyleSegments } from '../objects/ocrObjects.js';
+import { getWordStyleSegments, parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 /**
@@ -26,16 +26,6 @@ const LIST_MARKERS = { '•': '-', '☐': '- [ ]', '☑': '- [x]' };
 function escapeLeadingSyntax(text) {
   if (/^(?:[#>|]|~{3}|=+[ \t]*$|-+[ \t]*$|[-+][ \t])/.test(text)) return `\\${text}`;
   return text.replace(/^(\d{1,9})([.)])([ \t])/, '$1\\$2$3');
-}
-
-/**
- * Whether the paragraph's list marker is already part of its text.
- * PDF and OCR paragraphs carry the enumerator as real words on the page, while markdown and docx imports keep it as metadata only.
- * @param {OcrPar} par
- */
-function markerInText(par) {
-  const word = par.lines[0] && par.lines[0].words[0];
-  return !!word && word.text.startsWith(/** @type {string} */ (par.marker));
 }
 
 /**
@@ -87,7 +77,6 @@ function renderMarkdownTable(tableResult, applyFormatting) {
       if (words.length === 0) {
         cells.push('');
       } else {
-        words.sort((a, b) => a.bbox.left - b.bbox.left);
         let cellText = '';
         let currentStyleKey = '';
         let styledGroup = [];
@@ -134,11 +123,12 @@ function renderMarkdownTable(tableResult, applyFormatting) {
  * @param {boolean} [params.applyFormatting=true] - Whether to apply markdown formatting (bold, italic, etc.)
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being exported.
  *   Required when reflow or preserveSpacing is enabled.
+ * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export function writeMarkdown({
   ocrCurrent, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
-  reflowText = false, applyFormatting = true, pageMetrics = null, doc = null,
+  reflowText = false, applyFormatting = true, pageMetrics = null, dropPageHeadersFooters = false, doc = null,
 }) {
   let mdStr = '';
 
@@ -154,9 +144,11 @@ export function writeMarkdown({
   for (const g of pageArr) {
     if (!ocrCurrent[g]) continue;
     for (const par of ocrCurrent[g].pars) {
-      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !markerInText(par)) fnLabelById.set(par.id, par.marker);
+      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par)) fnLabelById.set(par.id, par.marker);
     }
   }
+
+  const compounds = reflowText ? hyphenatedCompounds(ocrCurrent) : null;
 
   let isFirstContent = true;
 
@@ -222,25 +214,23 @@ export function writeMarkdown({
     const tableWordObj = layoutPage && layoutPage.tables && layoutPage.tables.length > 0
       ? extractTableContent(pageObj, layoutPage)
       : {};
+    // The table takes only the words inside its column boxes, so a word of a consumed line that no cell holds is written on its own.
+    const cellWordIds = new Set(Object.values(tableWordObj).flatMap((table) => (table?.rowWordArr || []).flat(2)).filter(Boolean).map((w) => w.id));
 
-    // Compute table bounding boxes and track which tables have been rendered.
+    /** @type {Array<{key: string, bbox: bbox}>} */
     const tableBboxes = [];
-    const tablesRendered = new Set();
-    if (layoutPage?.tables) {
-      for (let t = 0; t < layoutPage.tables.length; t++) {
-        const table = layoutPage.tables[t];
-        if (table.boxes.length > 0) {
-          tableBboxes.push({ idx: t, key: String(t), bbox: calcTableBbox(table) });
-        }
-      }
+    for (let t = 0; t < (layoutPage?.tables?.length || 0); t++) {
+      if (layoutPage.tables[t].boxes.length > 0) tableBboxes.push({ key: String(t), bbox: calcTableBbox(layoutPage.tables[t]) });
     }
+    const tableOf = (lineObj) => tableBboxes.find((tb) => calcBoxOverlap(lineObj.bbox, tb.bbox) > 0.5) || null;
+    const tablesWritten = new Set();
 
     // No paragraph field records list depth, so it is recovered from geometry.
     /** @type {Array<number>} */
     let depthLefts = [];
     if (reflowText) {
       const listLefts = [...new Set(pageObj.pars
-        .filter((par) => par.marker && par.type !== 'blockquote' && par.type !== 'footnote' && !markerInText(par))
+        .filter((par) => par.marker && par.type !== 'blockquote' && par.type !== 'footnote' && !parMarkerInText(par))
         .map((par) => par.bbox.left))].sort((a, b) => a - b);
       depthLefts = listLefts.filter((left, i) => i === 0 || left - listLefts[i - 1] > 5);
     }
@@ -250,26 +240,19 @@ export function writeMarkdown({
 
     /** @type {OcrPar | null | undefined} */
     let parCurrent;
+    let prevJoin = false;
 
     for (let h = 0; h < pageObj.lines.length; h++) {
       const lineObj = pageObj.lines[h];
 
-      // Check if this line falls inside a table.
-      let insideTable = null;
-      for (const tb of tableBboxes) {
-        const overlap = calcBoxOverlap(lineObj.bbox, tb.bbox);
-        if (overlap > 0.5) {
-          insideTable = tb;
-          break;
-        }
-      }
-
-      if (insideTable) {
+      const inTable = tableOf(lineObj);
+      if (inTable) {
+        // A table splits the paragraph it interrupts.
         parCurrent = undefined;
-        // If this table hasn't been rendered yet, render it now.
-        if (!tablesRendered.has(insideTable.key)) {
-          tablesRendered.add(insideTable.key);
-          const tableResult = tableWordObj[insideTable.key];
+        prevJoin = false;
+        if (!tablesWritten.has(inTable.key)) {
+          tablesWritten.add(inTable.key);
+          const tableResult = tableWordObj[inTable.key];
           if (tableResult) {
             closeFence();
             flushLine();
@@ -278,11 +261,21 @@ export function writeMarkdown({
             isFirstContent = false;
           }
         }
-        // Skip this line (it's part of the table).
+        const orphans = lineObj.words.filter((w) => !!w && !cellWordIds.has(w.id));
+        if (orphans.length > 0) {
+          closeFence();
+          flushLine();
+          lineSep = '\n\n';
+          linePrefix = '';
+          lineEscape = true;
+          lineBuf = orphans.map((w) => escapeMarkdown(w.text)).join(' ');
+          flushLine();
+        }
         continue;
       }
 
       if (reflowText) {
+        if (dropPageHeadersFooters && parIsFurniture(lineObj.par)) continue;
         if (lineObj.par !== parCurrent || parCurrent === undefined) {
           parCurrent = lineObj.par;
           closeFence();
@@ -299,11 +292,11 @@ export function writeMarkdown({
             linePrefix = `${'#'.repeat(Math.min(Math.max(par.headingLevel || 1, 1), 6))} `;
           } else if (par && par.type === 'blockquote') {
             linePrefix = '> ';
-            if (par.marker && !markerInText(par)) linePrefix += `${LIST_MARKERS[par.marker] || par.marker} `;
-          } else if (par && par.type === 'footnote' && par.marker && !markerInText(par) && /^[^\s\]]+$/.test(par.marker)) {
-            linePrefix = `[^${par.marker}]: `;
+            if (par.marker && !parMarkerInText(par)) linePrefix += `${LIST_MARKERS[par.marker] || par.marker} `;
+          } else if (par && fnLabelById.has(par.id)) {
+            linePrefix = `[^${fnLabelById.get(par.id)}]: `;
           } else if (par && par.marker) {
-            if (markerInText(par)) {
+            if (parMarkerInText(par)) {
               // Escaping here would turn the item's own `1.` into literal text and lose the list on re-import.
               lineEscape = false;
             } else {
@@ -337,23 +330,27 @@ export function writeMarkdown({
         continue;
       }
 
-      for (let i = 0; i < lineObj.words.length; i++) {
-        const wordObj = lineObj.words[i];
-        if (!wordObj) continue;
+      const next = pageObj.lines[h + 1];
+      const join = compounds && next && next.par === lineObj.par && !tableOf(next) ? lineJoin(lineObj, next, compounds) : { joinNext: false, dropHyphen: false };
+      const words = lineObj.words.filter((w) => !!w);
+      for (let i = 0; i < words.length; i++) {
+        const wordObj = words[i];
+        const joined = i === 0 && prevJoin;
 
         const fnLabel = reflowText && applyFormatting && wordObj.footnoteParId ? fnLabelById.get(wordObj.footnoteParId) : undefined;
         if (fnLabel !== undefined && wordObj.text === fnLabel) {
           flushStyledWords();
           if (lineBuf === null) lineBuf = '';
-          else lineBuf += ' ';
+          else if (!joined) lineBuf += ' ';
           lineBuf += `[^${fnLabel}]`;
           continue;
         }
 
+        const text = i === words.length - 1 && join.dropHyphen ? wordObj.text.replace(/[-‐­]$/, '') : wordObj.text;
         const styleSegments = applyFormatting ? getWordStyleSegments(wordObj) : null;
         const pieces = styleSegments
-          ? styleSegments.map((segment) => ({ text: wordObj.text.slice(segment.start, segment.end), style: segment.style }))
-          : [{ text: wordObj.text, style: wordObj.style }];
+          ? styleSegments.map((segment) => ({ text: text.slice(segment.start, segment.end), style: segment.style }))
+          : [{ text, style: wordObj.style }];
 
         for (let p = 0; p < pieces.length; p++) {
           const styleKey = applyFormatting ? (pieces[p].style?.bold ? 'b' : '') + (pieces[p].style?.italic ? 'i' : '') : '';
@@ -370,19 +367,21 @@ export function writeMarkdown({
           if (p === 0) {
             if (lineBuf === null) {
               lineBuf = '';
-            } else if (styledWords.length === 0) {
+            } else if (styledWords.length === 0 && !joined) {
               lineBuf += ' ';
             }
           }
 
           currentStyleKey = styleKey;
           currentGroupKey = groupKey;
-          styledWords.push(wordText);
+          if (p === 0 && joined && styledWords.length > 0) styledWords[styledWords.length - 1] += wordText;
+          else styledWords.push(wordText);
         }
       }
 
-      // Flush remaining words at end of line
-      flushStyledWords();
+      // A line joined to the next keeps its style group open, so the continued word completes the group's last word.
+      if (!join.joinNext) flushStyledWords();
+      prevJoin = join.joinNext;
     }
     closeFence();
     flushLine();
