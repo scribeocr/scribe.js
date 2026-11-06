@@ -559,12 +559,15 @@ export class UiText {
     elem.style.letterSpacing = `${charSpacingHTML}px`;
     // Line height must match the height of the font bounding box for the font metrics to be accurate.
     elem.style.lineHeight = `${(this.fontAscentPx + this.fontDescentPx) * scale}px`;
-    // Proofread Text's text-only view draws a rule under the two flagged tiers at the baseline, so the tier and the descent ride on the element.
+    // The descent, the tier and whether a reading is on offer are read by Proofread Text's text-only stylesheet in `addControlStyles`.
     elem.style.setProperty('--scribe-desc', `${this.fontDescentPx * scale}px`);
     const conf = this.word ? this.word.conf : null;
     const tier = conf === null || conf === undefined || conf > scribe.ScribeDoc.defaults.confThreshHigh ? '' : conf > scribe.ScribeDoc.defaults.confThreshMed ? 'mid' : 'low';
     if (tier) elem.dataset.proofTier = tier;
     else if (restyle) delete elem.dataset.proofTier;
+    const readingOnOffer = this.viewer.state.displayMode === 'proof' && scribe.utils.ocr.groupReadings(this.word).some((g) => !g.own);
+    if (readingOnOffer) elem.dataset.proofReading = '';
+    else if (restyle) delete elem.dataset.proofReading;
     // Text with opacity 0 is not selectable, so we make it transparent instead.
     if (opacity === 0) {
       elem.style.color = 'transparent';
@@ -643,8 +646,11 @@ export class UiText {
       elem.style.textDecorationThickness = `${underlineThickness}px`;
       elem.style.textDecorationColor = this._fill;
       elem.style.textUnderlineOffset = `${underlineOffset}px`;
+      // The document's own underline takes the element's one decoration, so the proof mark of such a word is drawn as a border instead.
+      elem.dataset.docUnderline = '';
     } else if (restyle) {
       elem.style.textDecoration = '';
+      delete elem.dataset.docUnderline;
     }
 
     if (!pad && scribe.utils.ocr.groupReadings(this.word).length > 1 && this.viewer.state.displayMode === 'proof') {

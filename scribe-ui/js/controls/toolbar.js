@@ -5037,9 +5037,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* The page's low-res preview is an inline background image on the container, so only a forced rule keeps it off. */
     .${r} .scribe-proof-textonly .scribe-page { background-image: none !important; background-color: #fff; }
     .${r} .scribe-proof-textonly .scribe-word { color: #141414 !important; opacity: 1 !important; }
-    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier]::after { content: ''; position: absolute; left: 0; right: 0; bottom: calc(var(--scribe-desc, 0px) - 2px / var(--scribe-zoom, 1)); border-bottom: calc(2.5px / var(--scribe-zoom, 1)) solid var(--scribe-proof-rule); pointer-events: none; }
-    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-rule: #ff0000; }
-    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-rule: #ffc800; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier]:not([contenteditable]):not([data-doc-underline]) { text-decoration-line: underline; text-decoration-style: solid; text-decoration-color: var(--scribe-proof-mark); text-decoration-thickness: calc(1.5px / var(--scribe-zoom, 1)); text-underline-offset: calc(3.2px / var(--scribe-zoom, 1)); text-decoration-skip-ink: auto; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier][data-proof-reading]:not([contenteditable]):not([data-doc-underline]) { text-decoration-style: dotted; text-decoration-thickness: calc(2px / var(--scribe-zoom, 1)); }
+    /* A document-underlined word's inline text-decoration would override the rules above, so its mark is drawn as a border. */
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier][data-doc-underline]:not([contenteditable])::after { content: ''; position: absolute; left: 0; right: 0; height: 0; bottom: calc(var(--scribe-desc, 0px) - 4.2px / var(--scribe-zoom, 1)); border-bottom: calc(1.5px / var(--scribe-zoom, 1)) solid var(--scribe-proof-mark); pointer-events: none; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier][data-proof-reading][data-doc-underline]:not([contenteditable])::after { border-bottom-style: dotted; border-bottom-width: calc(2px / var(--scribe-zoom, 1)); }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="low"] { --scribe-proof-mark: #ff0000; }
+    .${r} .scribe-proof-textonly .scribe-word[data-proof-tier="mid"] { --scribe-proof-mark: #ff9000; }
+    .${r} .scribe-proof-textonly .scribe-word-readings { display: none; }
     .${r} .scribe-proof-count { font-size: 12px; color: var(--scribe-ink); font-variant-numeric: tabular-nums; min-width: 9.5ch; text-align: center; padding: 0 2px; white-space: nowrap; }
     /* Compare Versions */
     .${r} .scribe-compare-tools { gap: 2px; }
