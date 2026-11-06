@@ -186,14 +186,7 @@ export function assignParagraphs(page, angle) {
         lineLeftMedian, lineRightMedian, lineWidthMedian, lineSpaceMedian,
       } = expected;
 
-      // Note: `+1` is used to indicate some non-infinitesimal difference, as sometimes infinitesimal differences exist, which are effectively 0.
-
-      // Indented = starts right of median AND next line is less indented.
-      // Deliberately not compared to prev line: a body opener after a heading
-      // ("Opinion of the Court" → "Justice X delivered…") sits at the indent
-      // column without being right of the heading's left edge.
-      // Suppress on hanging-indent continuation (same left as prev, prev par's
-      // first line is less indented) — that's wrap text, not a new paragraph.
+      // `indented` does not require the line to start right of the previous line, because an indented first line after a centered heading usually starts left of the heading.
       const parInProgress = parArr[parArr.length - 1];
       const parFirstLineLeft = parLineIndices && parLineIndices.length > 0
         ? lineLeftArr[parLineIndices[0]] : null;
@@ -203,9 +196,6 @@ export function assignParagraphs(page, angle) {
         && Math.abs(lineLeftArr[h] - lineLeftArr[h - 1]) < (lineWidthMedian * 0.025)
         && parFirstLineLeft !== null
         && parFirstLineLeft < lineLeftArr[h] - (lineWidthMedian * 0.025);
-      // Catches the case `continuesPrevIndent` misses: a par whose own first
-      // line is already at the indent column wrapping to a second line at the
-      // same indent (CV entries, definitions).
       const continuesAtSameIndent = parInProgress
         && parInProgress.lines.length >= 1
         && parInProgress.lines[parInProgress.lines.length - 1] === page.lines[h - 1]
@@ -219,8 +209,7 @@ export function assignParagraphs(page, angle) {
 
       const centerAlignedPrev = parLineIndices && parLineIndices.map((x) => lineCenterArr[x]).every((x) => Math.abs(x - lineCenterArr[h - 1]) < (lineWidthMedian * 0.0125));
 
-      // Fully-justified text trivially shares a center too. Require width variance
-      // as evidence of real centering vs. shared-edge alignment.
+      // Fully justified text trivially shares a center too.
       let trulyCenterAlignedPrev = false;
       if (centerAlignedPrev && parLineIndices) {
         if (parLineIndices.length > 1) {
