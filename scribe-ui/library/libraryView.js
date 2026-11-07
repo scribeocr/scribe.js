@@ -164,11 +164,10 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
 
 /**
  * List-view columns, left to right, per view mode.
- * Name carries no `def` because it is sized to fill whatever the other columns leave.
  */
 const LIST_COLUMNS = {
-  list: [{ min: 180 }, { min: 56, def: 90 }, { min: 56, def: 80 }, { min: 56, def: 130 }, { min: 56, def: 130 }],
-  compact: [{ min: 200 }, { min: 56, def: 80 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
+  list: [{ min: 180 }, { min: 56 }, { min: 56 }, { min: 56 }, { min: 56 }],
+  compact: [{ min: 200 }, { min: 56 }, { min: 56 }, { min: 56 }, { min: 56 }, { min: 56 }],
 };
 
 /**
@@ -895,6 +894,8 @@ export function createLibraryInstance(viewer, opts) {
   }
   /** Set while `openLibrary` is reopening recorded tabs, so interim writes cannot clobber the record mid-restore. */
   let restoringTabs = false;
+  /** Set while `openLibrary` is reopening recorded document tabs, so the column stands before the first of them opens. */
+  let restoringDocs = false;
   /**
    * Whether the record reopens into a document view rather than the library.
    * The drop zone is hidden here rather than in the boot below, so the placeholder never flashes before the restored document paints.
@@ -1296,7 +1297,7 @@ export function createLibraryInstance(viewer, opts) {
     } catch { /* localStorage unavailable. */ }
   };
   /** Whether an open document calls for the column. */
-  const columnForm = () => isLibrary && !viewer._phoneUi && viewer._tabs.length > 0;
+  const columnForm = () => isLibrary && !viewer._phoneUi && (viewer._tabs.length > 0 || restoringDocs);
   /** Whether the column can show. */
   const columnReady = () => columnForm() && !!store && !!manifest;
 
@@ -1504,6 +1505,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     const next = columnReady() ? 'column' : 'full';
     const changed = next !== form;
+    const wasShown = surface.style.display !== 'none';
     if (changed) {
       form = next;
       if (form === 'column') {
@@ -1546,6 +1548,8 @@ export function createLibraryInstance(viewer, opts) {
     viewer._syncFrontSurface();
     viewer._relayout();
     if (changed && doRender && store && manifest) render({ revealSelection: true });
+    // A list built while the surface was hidden had no width to fit, so it is fitted before the surface's first paint.
+    else if (!wasShown && surface.style.display !== 'none') listColsRefit?.();
   };
 
   /**
@@ -5061,6 +5065,8 @@ export function createLibraryInstance(viewer, opts) {
     const rows = document.createElement('div');
     rows.dataset.band = 'rows';
     const cols = LIST_COLUMNS[viewMode];
+    // A mode the user has not resized is fitted afresh to its content on every rebuild.
+    if (!colSized[viewMode]) colWidths[viewMode] = null;
     // Only a mode the user has resized is written, so the other keeps re-fitting Name to the window on later visits.
     const saveCols = () => {
       if (!persistPrefs) return;
@@ -5070,6 +5076,7 @@ export function createLibraryInstance(viewer, opts) {
         window.localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(sized));
       } catch { /* localStorage unavailable. */ }
     };
+    // Measure the scrolling host, never the header, which reports its own overflow once it carries wide tracks.
     const availCols = () => host.clientWidth - 16;
     /** @type {?number[]} The widths currently on screen. */
     let colLaid = null;
@@ -5241,6 +5248,18 @@ export function createLibraryInstance(viewer, opts) {
       const eff = paintCols(avail, w.length - 1);
       if (eff) colWidths[viewMode] = eff;
     };
+    /** Fit the columns to the host's width, seeding the widths first when none are chosen yet. */
+    const fitCols = () => {
+      const avail = availCols();
+      // A list built while the surface was hidden has no width, so its widths are seeded by the first fit after the surface shows.
+      if (avail > 0 && !colWidths[viewMode]) {
+        if (!colFits) colFits = measureFits();
+        const fits = colFits;
+        const rest = cols.slice(1).map((c, j) => Math.max(c.min, fits[j + 1]));
+        colWidths[viewMode] = [Math.max(cols[0].min, Math.round(avail - rest.reduce((sum, n) => sum + n, 0))), ...rest];
+      }
+      projectCols(avail);
+    };
     const headCols = [['name', 'Name'], ['pages', 'Pages'], ['size', 'Size'], ['added', 'Added'], ['opened', 'Last opened']];
     if (!comfortable) headCols.push([null, 'Status']);
     headCols.forEach(([key, label], i) => {
@@ -5360,20 +5379,12 @@ export function createLibraryInstance(viewer, opts) {
     host.appendChild(head);
     for (const item of listItems(shownDirs, shown, shownOthers)) rows.appendChild(buildListItem(item));
     host.appendChild(rows);
-    // Measure the scrolling host, never the header, which reports its own overflow once it carries wide tracks.
-    const avail = availCols();
-    if (avail > 0 && (!colSized[viewMode] || !colWidths[viewMode])) {
-      // A flat default hands a one-to-three-digit page count the same width as a date, so the data columns are sized to their own content instead.
-      if (!colFits) colFits = measureFits();
-      const rest = cols.slice(1).map((c, j) => (colFits ? Math.max(c.min, colFits[j + 1]) : c.def));
-      colWidths[viewMode] = [Math.max(cols[0].min, Math.round(avail - rest.reduce((sum, n) => sum + n, 0))), ...rest];
-    }
-    projectCols(avail);
+    fitCols();
     settleColsIfGrown();
     listColsRefit = () => {
       // An in-place row sync can change a column's content under the retained header, so the cached fits go stale.
       colFits = null;
-      projectCols(availCols());
+      fitCols();
       settleColsIfGrown();
     };
     // The sash and the window resize without a render, so width changes reach the columns through this observer.
@@ -5383,7 +5394,7 @@ export function createLibraryInstance(viewer, opts) {
       // Painting inside the observer callback re-triggers it in the same delivery, which the browser reports as a resize-loop error.
       cancelAnimationFrame(colProjectRaf);
       colProjectRaf = requestAnimationFrame(() => {
-        if (!colDragActive) projectCols(availCols());
+        if (!colDragActive) fitCols();
       });
       window.clearTimeout(colSettleTimer);
       colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
@@ -6711,10 +6722,17 @@ export function createLibraryInstance(viewer, opts) {
       },
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
     });
+    // The record is read before the surface is placed, so the column its documents need stands before the first of them opens.
+    const prior = resumeRecord;
+    resumeRecord = null;
+    const record = prior && prior.tabs.length && (!prior.dir || prior.dir === store.root?.name) ? prior : null;
+    restoringDocs = !!record && !record.lib;
     viewer._renderTabs();
     if (visible) applyForm();
     else if (columnReady()) activate({ render: false });
     else positionSurface();
+    // Rendered before the first await, so the surface never paints empty.
+    render();
     recentFolders = await LibraryStore.recentFolders();
     publishFolders();
     if (viewer._resumeOwner) {
@@ -6725,14 +6743,11 @@ export function createLibraryInstance(viewer, opts) {
       folderDirs.set(store.root.name, r.dir);
       publishFolders();
     }).catch(() => {});
-    render();
     syncBarForStore();
     syncFolderRows();
     viewer._notifyMenuState();
     // Restore before the folder scan, so restore latency does not scale with library size.
-    const record = resumeRecord;
-    resumeRecord = null;
-    if (record && record.tabs.length && (!record.dir || record.dir === store.root?.name)) {
+    if (record) {
       restoringTabs = true;
       try {
         // The recorded active tab opens first, so the document being read paints before its neighbors load.
@@ -6777,11 +6792,12 @@ export function createLibraryInstance(viewer, opts) {
         if (toLibrary && !visible && !destroyed) activate({ render: false });
       } finally {
         restoringTabs = false;
+        restoringDocs = false;
       }
       writeResumeRecord();
     }
-    // Documents the record brought back get the column beside them.
-    if (!visible && !destroyed && columnReady()) activate({ render: false });
+    // A restore that brought no document back lets the form follow what is open.
+    if (record && visible && !destroyed) applyForm({ render: false });
     await ingest.scan();
     render();
     ingest.start();
@@ -7854,7 +7870,7 @@ export function createLibraryInstance(viewer, opts) {
           render();
         }
         await openLibrary(s, { resumed: true });
-        // A restore that reopened nothing leaves the surface hidden, so fall back to the library rather than a bare drop zone.
+        // A restore that reopened nothing, or a folder that would not open, must not leave a bare drop zone.
         if (viewerRestorePending && !destroyed && viewer._tabs.length === 0) {
           if (viewer.dropZone) viewer.dropZone.style.display = '';
           if (!visible) {
