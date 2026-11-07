@@ -2773,7 +2773,7 @@ export function parseToUnicodeCMap(cmapText, map) {
   for (const m of bfcharMatches) {
     const entries = [...m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>/g)];
     for (const entry of entries) {
-      const cid = parseInt(entry[1], 16);
+      const cid = parseInt(entry[1].replace(/\s+/g, ''), 16);
       const unicode = hexToUnicode(entry[2]);
       if (isOnlyReplacementChars(unicode)) continue;
       map.set(cid, decodeC1(unicode));
@@ -2822,11 +2822,11 @@ export function parseToUnicodeCMap(cmapText, map) {
   for (const bfm of bfrangeMatches) {
     // Match each range entry: <start> <end> <unicodeStart> OR <start> <end> [<u1> <u2> ...]
     // Use a regex per-entry to handle CMaps without newlines between entries.
-    const entryRegex = /<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*(?:\[([\s\S]*?)\]|<([0-9A-Fa-f]+)>)/g;
+    const entryRegex = /<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s*(?:\[([\s\S]*?)\]|<([0-9A-Fa-f\s]+)>)/g;
     const entries = [...bfm[1].matchAll(entryRegex)];
     for (const entry of entries) {
-      const cidStart = parseInt(entry[1], 16);
-      const cidEnd = parseInt(entry[2], 16);
+      const cidStart = parseInt(entry[1].replace(/\s+/g, ''), 16);
+      const cidEnd = parseInt(entry[2].replace(/\s+/g, ''), 16);
       if (entry[4] !== undefined) {
         // Single start value: <start> <end> <dst>.
         // A range destination may be an astral code point encoded as a UTF-16BE surrogate pair (e.g. <D835DC34> = U+1D434).
@@ -2849,7 +2849,7 @@ export function parseToUnicodeCMap(cmapText, map) {
       } else if (entry[3] !== undefined) {
         flushRun();
         // Array form: <start> <end> [<u1> <u2> ...]
-        const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f]+)>/g)];
+        const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f\s]+)>/g)];
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
           const unicode = hexToUnicode(arrayTokens[idx][1]);
           if (isOnlyReplacementChars(unicode)) continue;
