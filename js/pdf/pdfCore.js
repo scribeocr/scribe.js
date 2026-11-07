@@ -771,6 +771,9 @@ export class PdfCore {
       imgCache.clear();
       this.#objCache.decodedImageCacheBytes = 0;
     }
+    for (const bitmap of this.#objCache.type3GlyphBitmapCache.values()) ca.closeDrawable(bitmap);
+    this.#objCache.type3GlyphBitmapCache.clear();
+    this.#objCache.type3GlyphBitmapCacheBytes = 0;
     this.#objCache = null;
     this.#pages = null;
     this.#linkDestInfo = null;

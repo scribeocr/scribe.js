@@ -126,6 +126,14 @@ export class ObjectCache {
     /** @type {number} Total bytes across all entries in `decodedImageCache`. */
     this.decodedImageCacheBytes = 0;
     /**
+     * Doc-wide cache of Type 3 bitmap glyphs, keyed `${charProcObjNum}|${fillColor}`.
+     * renderPdfPage.js fills it and evicts the oldest entries past its byte budget, and PdfCore.unload closes the rest.
+     * @type {Map<string, *>}
+     */
+    this.type3GlyphBitmapCache = new Map();
+    /** @type {number} Total bytes across all entries in `type3GlyphBitmapCache`. */
+    this.type3GlyphBitmapCacheBytes = 0;
+    /**
      * Parsed ICC profile transforms keyed by the profile stream's objNum.
      * @type {Map<number, {gamma: number[], matrix: number[]}|null>}
      */

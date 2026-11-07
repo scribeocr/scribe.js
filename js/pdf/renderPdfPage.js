@@ -145,6 +145,9 @@ function appendGenericFallbacks(registeredFontNames, fonts) {
   }
 }
 
+/** @type {Map<string, Promise<void>>} The load of each built-in substitute face this realm has started. */
+const builtInFaceLoads = new Map();
+
 /**
  * Register a non-embedded font using built-in substitution fonts.
  *
@@ -154,6 +157,8 @@ function appendGenericFallbacks(registeredFontNames, fonts) {
  * @param {string} fontTag - Font tag key for targetMap
  */
 async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag) {
+  // A Type 3 font draws through its CharProcs and never through a CSS family, so it needs no substitute face.
+  if (fontObj.type3) return;
   // FontFaces are registered at the variant's actual weight/style.
   // Otherwise Firefox stacks an extra faux-bold or italic on top of an already-bold/italic file.
   const hints = { bold: fontObj.bold, italic: fontObj.italic };
@@ -162,16 +167,24 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
     || genericToBuiltInFont(cssGenericForFontObj(fontObj), hints);
   if (sub) {
     try {
-      let fontBytes;
-      if (typeof process !== 'undefined') {
-        const { fileURLToPath } = await import('node:url');
-        const { readFileSync } = await import('node:fs');
-        fontBytes = readFileSync(fileURLToPath(sub.url));
-      } else {
-        fontBytes = await fetch(sub.url).then((r) => r.arrayBuffer());
+      const faceKey = `${sub.alias}|${sub.faceStyle}|${sub.faceWeight}`;
+      let loading = builtInFaceLoads.get(faceKey);
+      if (!loading) {
+        loading = (async () => {
+          let fontBytes;
+          if (typeof process !== 'undefined') {
+            const { fileURLToPath } = await import('node:url');
+            const { readFileSync } = await import('node:fs');
+            fontBytes = readFileSync(fileURLToPath(sub.url));
+          } else {
+            fontBytes = await fetch(sub.url).then((r) => r.arrayBuffer());
+          }
+          await loadFontFace(sub.alias, sub.faceStyle, sub.faceWeight, fontBytes).loaded;
+        })();
+        builtInFaceLoads.set(faceKey, loading);
+        loading.catch(() => builtInFaceLoads.delete(faceKey));
       }
-      const face = loadFontFace(sub.alias, sub.faceStyle, sub.faceWeight, fontBytes);
-      await face.loaded;
+      await loading;
       targetMap.set(fontTag, sub.alias);
       return;
     } catch (_e) {
@@ -702,6 +715,9 @@ const DECODED_IMAGE_CACHE_BUDGET = 64 * 1024 * 1024;
  * Cheap decodes (CCITT/Flate masks, small images) are faster to redo than the cost of holding their bitmaps.
  */
 const DECODED_IMAGE_MIN_DECODE_MS = 15;
+
+/** Memory budget for the doc-wide Type 3 glyph bitmap cache (`objCache.type3GlyphBitmapCache`). */
+const TYPE3_GLYPH_CACHE_BUDGET = 16 * 1024 * 1024;
 
 /**
  * Cache key for a decoded image. Plain images are shareable by objNum.
@@ -7130,12 +7146,29 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         } else if (pathData.inlineImage) {
         // Type3 glyph uses an inline bitmap image (BI/ID/EI)
           try {
-            const syntheticOp = {
-              dictText: pathData.inlineImage.dictText,
-              imageData: pathData.inlineImage.imageData,
-              fillColor: op.fillColor || 'rgb(0,0,0)',
-            };
-            const bitmap = await decodeInlineImage(syntheticOp);
+            // The document cache owns the glyph bitmap and closes it on eviction or unload, so the draw below leaves it open.
+            const glyphCache = objCache.type3GlyphBitmapCache;
+            const glyphKey = `${op.charProcObjNum}|${op.fillColor || 'rgb(0,0,0)'}`;
+            let bitmap = glyphCache.get(glyphKey);
+            if (!bitmap) {
+              const syntheticOp = {
+                dictText: pathData.inlineImage.dictText,
+                imageData: pathData.inlineImage.imageData,
+                fillColor: op.fillColor || 'rgb(0,0,0)',
+              };
+              bitmap = await decodeInlineImage(syntheticOp);
+              if (bitmap) {
+                glyphCache.set(glyphKey, bitmap);
+                objCache.type3GlyphBitmapCacheBytes += (bitmap.width || 0) * (bitmap.height || 0) * 4;
+                while (objCache.type3GlyphBitmapCacheBytes > TYPE3_GLYPH_CACHE_BUDGET && glyphCache.size > 1) {
+                  const [oldKey, old] = glyphCache.entries().next().value;
+                  if (oldKey === glyphKey) break;
+                  glyphCache.delete(oldKey);
+                  objCache.type3GlyphBitmapCacheBytes -= (old.width || 0) * (old.height || 0) * 4;
+                  ca.closeDrawable(old);
+                }
+              }
+            }
             if (bitmap) {
               rCtx.save();
               if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
@@ -7150,7 +7183,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               rCtx.transform(1, 0, 0, -1, 0, 1);
               rCtx.drawImage(bitmap, 0, 0, 1, 1);
               rCtx.restore();
-              ca.closeDrawable(bitmap);
             }
           } catch { /* skip failed Type3 inline image */ }
         } else if (pathData.nestedText) {
