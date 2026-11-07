@@ -182,9 +182,8 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
  * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
- * @param {import('../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
- *    Required; no active-document fallback.
- * @param {Array<PageMetrics>} [params.pageMetrics] - This document's page metrics. Required.
+ * @param {import('../containers/fontContainer.js').DocFonts} params.docFonts - Per-document fonts.
+ * @param {Array<PageMetrics>} params.pageMetrics - This document's page metrics.
  * @param {('invis'|'ebook'|'eval'|'proof'|'annot')} [params.displayMode] - Defaults to `scribeDocDefaults.displayMode`.
  * @param {number} [params.confThreshHigh] - Defaults to `scribeDocDefaults.confThreshHigh`.
  * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
@@ -258,7 +257,7 @@ export function writeHtmlFragment({
       let prevJoin = false;
       for (let li = 0; li < lines.length; li++) {
         const { joinNext, dropHyphen } = lines[li + 1] ? lineJoin(lines[li], lines[li + 1], compounds) : { joinNext: false, dropHyphen: false };
-        const words = lines[li].words.filter((w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id)));
+        const words = lines[li].words.filter(/** @returns {w is OcrWord} */ (w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id)));
         for (let i = 0; i < words.length; i++) {
           const word = words[i];
           const sep = (li === 0 && i === 0) || (i === 0 && prevJoin) ? '' : ' ';
@@ -377,12 +376,14 @@ export function writeHtmlFragment({
         return;
       }
       closeLists(0);
-      const roleClass = {
+      /** @type {Partial<Record<import('../objects/ocrObjects.js').ParType, string>>} */
+      const roleClasses = {
         header: 'scribe-page-header',
         footer: 'scribe-page-footer',
         pagenum: 'scribe-page-number',
         linenum: 'scribe-line-number',
-      }[par?.type];
+      };
+      const roleClass = roleClasses[par?.type];
       const cls = roleClass ? ` class="${roleClass}"` : '';
       body += `<p${cls}${attrs(par)}>${inline(lines)}</p>\n`;
     };
@@ -799,9 +800,8 @@ export function writeHtmlFragment({
  * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
  * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
- * @param {import('../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
- *    Required; no active-document fallback.
- * @param {Array<PageMetrics>} [params.pageMetrics] - This document's page metrics. Required.
+ * @param {import('../containers/fontContainer.js').DocFonts} params.docFonts - Per-document fonts.
+ * @param {Array<PageMetrics>} params.pageMetrics - This document's page metrics.
  * @param {('invis'|'ebook'|'eval'|'proof'|'annot')} [params.displayMode] - Defaults to `scribeDocDefaults.displayMode`.
  * @param {number} [params.confThreshHigh] - Defaults to `scribeDocDefaults.confThreshHigh`.
  * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
