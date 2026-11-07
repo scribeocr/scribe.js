@@ -3090,7 +3090,7 @@ class ScribePDFViewer {
     }
     const fromGroup = from && this._rightGroup && from === this._rightGroup.viewer ? 1 : 0;
     const g = this._rightGroup || this._openGroup({ program: true });
-    let to = g ? this._openTarget(1 - fromGroup) : 0;
+    let to = g ? this._openTarget(1 - fromGroup, { views: false }) : 0;
     this._setGroupNotice(null);
     let tab = this._tabs.find((t) => (t.group || 0) === to && t.libraryHash === address.hash) || null;
     if (!tab) {
@@ -3335,8 +3335,9 @@ class ScribePDFViewer {
       return null;
     }
     const prev = this._sideView;
+    // Pinned, so a click in the document library opens in the mode's group and leaves the view in front.
     const tab = {
-      ...this._newTab(view.doc || this.doc, view.label), group: 1, icon: view.icon, view,
+      ...this._newTab(view.doc || this.doc, view.label), group: 1, icon: view.icon, view, anchored: true,
     };
     // Registered before the group opens, since opening it syncs the banner, and a mode's sync opens the view when it finds none.
     this._sideView = { tab, link: null, replaced: null };
@@ -3377,6 +3378,13 @@ class ScribePDFViewer {
     sv.replaced = null;
     if (old.link) { old.link(); old.link = null; }
     old.tab.view.release(g.viewer);
+  }
+
+  /** Bring the second view forward when another tab of the right group covers it. */
+  _raiseSideView() {
+    const sv = this._sideView;
+    const g = this._rightGroup;
+    if (sv && g && g.active !== sv.tab) this._activateGroupTab(sv.tab).catch(() => {});
   }
 
   /** Close the second view. */
@@ -3787,12 +3795,14 @@ class ScribePDFViewer {
   /**
    * The group an open aimed at `g` lands in.
    * It is the other group while `g` holds a pinned tab and the other does not, since a pinned tab keeps its group's view.
+   * A mode's second view counts as pinned unless `views` is false.
    * @param {number} g
+   * @param {{views?: boolean}} [opts]
    * @returns {number}
    */
-  _openTarget(g) {
+  _openTarget(g, { views = true } = {}) {
     if (!this._rightGroup) return 0;
-    const anchoredIn = (n) => this._tabs.some((t) => (t.group || 0) === n && t.anchored);
+    const anchoredIn = (n) => this._tabs.some((t) => (t.group || 0) === n && t.anchored && (views || !t.view));
     return anchoredIn(g) && !anchoredIn(1 - g) ? 1 - g : g;
   }
 
@@ -5257,7 +5267,10 @@ class ScribePDFViewer {
       b.className = 'scribe-proof-viewbtn';
       b.textContent = label;
       b.addEventListener('mousedown', (e) => e.preventDefault());
-      b.addEventListener('click', () => this._setProofView(key));
+      b.addEventListener('click', () => {
+        if (key === 'beside' && this._proofView === 'beside') this._raiseSideView();
+        else this._setProofView(key);
+      });
       seg.appendChild(b);
       return b;
     };
@@ -8193,7 +8206,11 @@ class ScribePDFViewer {
     const exportBtn = this._exportTool?.toolbarElem;
     if (exportBtn) {
       const exportable = !disabled && !this._phoneUi && !!doc && doc.pageMetrics.length > 0;
-      if (!exportable && this._exportTool.isActive()) this._exportTool.close();
+      // The running mode is judged on its own viewer's document.
+      // With the preview's half active, the active viewer holds the PDF preview, which is blank while it rebuilds.
+      const modeDoc = this._modeViewer().doc;
+      const modeHolds = !!modeDoc && modeDoc.pageMetrics.length > 0 && !this._phoneUi && !this._frontSurface();
+      if (!modeHolds && this._exportTool.isActive()) this._exportTool.close();
       exportBtn.classList.toggle('disabled', !exportable);
       exportBtn.ariaDisabled = !exportable ? 'true' : 'false';
       exportBtn.tabIndex = !exportable ? -1 : 0;

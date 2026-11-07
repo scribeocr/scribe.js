@@ -1794,7 +1794,11 @@ export function createExportTool(app) {
   };
   /** @param {'page'|'preview'|'beside'} next */
   const setView = (next) => {
-    if (next === view || (next === 'beside' && (!active || besideBtn.disabled))) return;
+    if (next === view) {
+      if (next === 'beside') app._raiseSideView();
+      return;
+    }
+    if (next === 'beside' && (!active || besideBtn.disabled)) return;
     unmountSurface();
     view = next;
     // Closing the second view can close the right group, and the mode with it.
