@@ -256,7 +256,8 @@ describe('Extract CLI command.', () => {
     expect(fs.existsSync(outputPath), 'extracting a markdown file must write its output file').toBe(true);
     const lines = fs.readFileSync(outputPath, 'utf8').split('\n');
     expect(lines[0], 'the markdown heading must extract as plain text without its marker').toBe('Coastal Survey Field Guide');
-    expect(lines[5], 'a bullet item must extract without its marker').toBe('A charged phone with the survey app installed');
+    expect(lines[5], 'a bullet item must extract with its rendered bullet rather than its raw `-` syntax').toBe('• A charged phone with the survey app installed');
+    expect(lines[lines.length - 1], 'the final footnote must extract with its note number before its text').toBe('1 Photos larger than 10 MB upload only on wifi.');
   }, 30000);
 
   // Regression gate: cli/extract.js must enable `usePDFText.ocr.main` so OCR-layer PDFs
