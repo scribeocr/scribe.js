@@ -1,7 +1,7 @@
 {
   "type": "module",
   "dependencies": {
-    "@scribe.js/canvas": "^0.1.97-scribe.4"
+    "@scribe.js/canvas": "0.1.97-scribe.8"
   },
   "devDependencies": {
     "@types/node": "^20.11.20"

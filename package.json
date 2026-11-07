@@ -57,7 +57,7 @@
   },
   "homepage": "https://github.com/scribeocr/scribe.js#readme",
   "dependencies": {
-    "@scribe.js/canvas": "^0.1.97-scribe.7",
+    "@scribe.js/canvas": "0.1.97-scribe.8",
     "commander": "^11.1.0"
   },
   "overrides": {

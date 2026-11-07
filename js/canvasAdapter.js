@@ -141,6 +141,7 @@ export class ca {
    * Register a font from raw bytes. Callers must pass stable family names
    * for the same bytes (embedded: `_pdf_d${docId}_f${fontObjNum}` via
    * `pdfFontFamilyName`; substitutes: `_scribe_*`) to avoid re-registration.
+   * A name registered again with different bytes replaces the earlier face, as a browser's FontFace does.
    *
    * @param {FontContainerFont} fontObj
    */
@@ -149,16 +150,21 @@ export class ca {
       const CanvasNode = await ca.getCanvasNode();
       if (!ca._registeredFonts) ca._registeredFonts = new Map();
       const dedupKey = `${fontObj.fontFaceName}:${fontObj.fontFaceStyle}:${fontObj.fontFaceWeight}`;
-      if (ca._registeredFonts.has(dedupKey)) return;
       const fontBuffer = typeof fontObj.src === 'string'
         ? (await import('node:fs')).readFileSync(fontObj.src)
         : Buffer.from(fontObj.src);
+      const hash = (await import('node:crypto')).createHash('sha256').update(fontBuffer).digest('base64');
+      const existing = ca._registeredFonts.get(dedupKey);
+      if (existing) {
+        if (existing.hash === hash) return;
+        CanvasNode.GlobalFonts.remove(existing.fontKey);
+      }
       const weight = fontObj.fontFaceWeight === 'bold' ? 700 : 400;
       const fontKey = CanvasNode.GlobalFonts.register(fontBuffer, fontObj.fontFaceName, {
         style: fontObj.fontFaceStyle,
         weight,
       });
-      ca._registeredFonts.set(dedupKey, { fontKey, fontFaceName: fontObj.fontFaceName });
+      ca._registeredFonts.set(dedupKey, { fontKey, fontFaceName: fontObj.fontFaceName, hash });
     }
   };
 
@@ -200,9 +206,6 @@ export class ca {
         ca._registeredFonts.delete(dedupKey);
       }
       if (keys.length > 0) CanvasNode.GlobalFonts.removeBatch(keys);
-      if (typeof CanvasNode.GlobalFonts.clearRetired === 'function') {
-        CanvasNode.GlobalFonts.clearRetired();
-      }
     }
   };
 }
