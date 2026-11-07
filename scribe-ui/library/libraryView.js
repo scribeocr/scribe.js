@@ -5575,14 +5575,14 @@ export function createLibraryInstance(viewer, opts) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — the file is no longer at ${relPath}.`);
         return;
       }
-      /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
-      let doc;
-      loads.beginUserLoad();
-      try {
       // The entry's hash can be unknown or stale here, before or during an ingest, so the open hashes the bytes itself.
       // The entry learns a hash only when it had none, so an ingest can still find the superseded hash and drop it from the search index.
       const hash = await hashBytes(await pdfFile.arrayBuffer());
       if (!entry.hash) entry.hash = hash;
+      /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+      let doc;
+      loads.beginUserLoad();
+      try {
         doc = await openLibraryDoc(store, relPath, { ...entry, hash }, { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
@@ -5858,19 +5858,19 @@ export function createLibraryInstance(viewer, opts) {
     const s = store;
     storageOpen = true;
     storageSizes = null;
+    storageWork = null;
+    storageInventory = null;
     if (!visible) activate({ render: false });
     render();
     Promise.all([s.measure(), manifest ? s.savedWork(manifest) : null, isLibrary ? LibraryStore.inventory() : []]).then(([sizes, work, inventory]) => {
       if (store !== s || !storageOpen) return;
-    storageWork = null;
-    storageInventory = null;
       storageSizes = sizes;
+      storageWork = work;
+      storageInventory = inventory.filter((item) => item.id !== s.id);
       render();
     }).catch(() => { });
   };
   const closeStorage = () => {
-      storageWork = work;
-      storageInventory = inventory.filter((item) => item.id !== s.id);
     storageOpen = false;
     render();
   };
@@ -5897,20 +5897,20 @@ export function createLibraryInstance(viewer, opts) {
       confirmLabel: 'Delete notes and edits',
     });
     if (!choice || store !== s || !manifest || !ingest) return;
-    for (const entry of Object.values(manifest.docs)) if (entry.hash) closeTabsFor(entry.hash);
-    await forgetDocs(Object.keys(manifest.docs));
-    storageOpen = false;
-    storageSizes = null;
     if (touchesFolder && !(await s.ensureWritable())) {
       viewer._showToast(`Editing ${name} wasn't allowed, so the notes inside its .scribe folder stay.`);
       return;
     }
+    for (const entry of Object.values(manifest.docs)) if (entry.hash) closeTabsFor(entry.hash);
+    await forgetDocs(Object.keys(manifest.docs));
+    storageOpen = false;
+    storageSizes = null;
+    storageWork = null;
+    storageInventory = null;
     await ingest.scan();
     render();
     ingest.start();
   };
-    storageWork = null;
-    storageInventory = null;
 
   const deleteLibraryData = async () => {
     if (!store || !manifest) return;
@@ -5922,12 +5922,12 @@ export function createLibraryInstance(viewer, opts) {
     const saved = work.files > 0 || work.unknown;
     const beside = !!s.notesBeside;
     const plural = (/** @type {number} */ count) => (count === 1 ? '' : 's');
+    const savedText = work.unknown ? 'documents that could not be counted' : `${work.files} document${plural(work.files)}`;
     const inApp = sizes.previews + sizes.index + (beside ? 0 : sizes.notes);
     const items = [`Page previews, thumbnails and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
     if (beside) items.push(`The notes directory inside the hidden .scribe folder of ${name}${saved ? `, holding notes, edits and recognized text for ${savedText}` : ''} (${fmtBytes(sizes.notes)})`);
     else if (saved) items.push(`Notes, edits and recognized text for ${savedText} (${fmtBytes(sizes.notes)})`);
     if (!beside && s.otherDocsDir) items.push(`A notes directory left inside the hidden .scribe folder of ${name}`);
-    const savedText = work.unknown ? 'documents that could not be counted' : `${work.files} document${plural(work.files)}`;
     items.push('Its place in the Recent list');
     const touchesFolder = beside || !!s.otherDocsDir;
     const choice = await openStorageConfirm({
@@ -5947,15 +5947,15 @@ export function createLibraryInstance(viewer, opts) {
       ingest?.cancel();
       sessions.reset();
       await s.deleteCaches();
-      await engine.reset().catch(() => {});
+      await engine.reset().catch(() => { });
       storageOpen = false;
       storageSizes = null;
+      storageWork = null;
+      storageInventory = null;
       await rebuildIndex();
       return;
     }
     // Asked before the folder closes, while the confirmation's click still counts as a user gesture.
-      storageWork = null;
-      storageInventory = null;
     if (touchesFolder && !(await s.ensureWritable())) viewer._showToast(`Editing ${name} wasn't allowed, so the notes inside its .scribe folder stay.`);
     const handle = s.root;
     discardOnClose = true;
@@ -6429,10 +6429,6 @@ export function createLibraryInstance(viewer, opts) {
 
   /** @type {FileSystemDirectoryHandle[]} */
   let recentFolders = [];
-  const publishFolders = () => {
-    if (!isLibrary) return;
-    // A folder open in another window heads the list, so the way to that window is always in sight.
-    const held = (/** @type {FileSystemDirectoryHandle} */ h) => Number(viewer._foldersOpenElsewhere.includes(h.name));
   /**
    * Take a folder off the Recent list, leaving its saved work where it is.
    * A closed folder with no saved work in the app loses its record and its data.
@@ -6460,6 +6456,10 @@ export function createLibraryInstance(viewer, opts) {
       await LibraryStore.forgetFolder(h);
     }
   };
+  const publishFolders = () => {
+    if (!isLibrary) return;
+    // A folder open in another window heads the list, so the way to that window is always in sight.
+    const held = (/** @type {FileSystemDirectoryHandle} */ h) => Number(viewer._foldersOpenElsewhere.includes(h.name));
     const ordered = [...recentFolders].sort((a, b) => held(b) - held(a));
     viewer._recents.setFolders(ordered.map((h) => ({
       kind: 'folder',
@@ -7023,13 +7023,13 @@ export function createLibraryInstance(viewer, opts) {
     ingest?.cancel();
     storageOpen = false;
     storageSizes = null;
+    storageWork = null;
+    storageInventory = null;
     if (manifestTimer !== null) {
       window.clearTimeout(manifestTimer);
       manifestTimer = null;
       // Awaited, so that a deletion of the folder's data that follows the close cannot be undone by a manifest write still in flight.
       if (manifest && !discardOnClose) await store.writeManifest(manifest).catch(() => { });
-    storageWork = null;
-    storageInventory = null;
     }
 
     // Awaited, so that a deletion of the folder's data that follows the close never meets the index's files still open.
@@ -7737,12 +7737,12 @@ export function createLibraryInstance(viewer, opts) {
   document.addEventListener('keydown', onSelectAll, true);
 
   Object.assign(api, {
+    // Only a spec reads the search client from the instance.
+    engine,
     kind: opts.kind,
     libraryHash: opts.libraryHash ?? null,
     libraryOwner: opts.libraryOwner ?? null,
     visible: () => visible,
-    // Only a spec reads the search client from the instance.
-    engine,
     covering: () => visible && form === 'full',
     columnWidth: () => (visible && form === 'column' && columnOpen ? columnW : 0),
     containsNode: (/** @type {Node} */ node) => surface.contains(node),
@@ -7809,17 +7809,17 @@ export function createLibraryInstance(viewer, opts) {
       syncFoldersOpenElsewhere: () => publishFolders(),
     } : {}),
   });
+  // Only a spec drives the ingest queue through the instance.
+  Object.defineProperty(api, 'ingest', { get: () => ingest });
   viewer._libraryInstances.push(api);
 
   // --- Boot ---------------------------------------------------------------
 
-  // Only a spec drives the ingest queue through the instance.
-  Object.defineProperty(api, 'ingest', { get: () => ingest });
   (async () => {
     if (!isLibrary) {
       activate({ render: false });
       render();
-      await openLibrary(/** @type {LibraryStore} */ (/** @type {unknown} */ (opts.store)));
+      await openLibrary(/** @type {LibraryStore} */(/** @type {unknown} */ (opts.store)));
       if (destroyed) return;
       const first = opts.initialRelPath;
       const firstEntry = first ? manifest?.docs[first] : null;
