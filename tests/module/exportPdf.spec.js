@@ -1840,6 +1840,12 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     await editDoc.close();
   });
 
+  test('The HTML article keeps bold around a link whose neighbors are bold', async () => {
+    const article = /** @type {string} */ (await editDoc.exportData('html', { reflow: true, pageArr: [3] }));
+    expect(article, 'a bold link between bold words loses its bold wrapper')
+      .toContain('<a href="http://www.sfgate.com/sports/"><b>SPORTS</b></a> <a href="http://www.sfgate.com/entertainment/"><b>ENTERTAINMENT</b></a>');
+  });
+
   test('A plain non-overlapping line deletes cleanly with intact neighbors', () => {
     const lines = reDoc.ocr.active[1].lines.map(lineText);
     expect(lines.some((t) => t.includes('Bais Naftoli honored Baca')), 'the deleted plain line is still in the exported PDF').toBe(false);

@@ -806,6 +806,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       ocrPages: ocrDownload,
       images,
       layoutPageArr: doc.layoutDataTables.pages,
+      annotations: doc.annotations.pages,
       pageArr,
       // HTML ignores `scribeDocDefaults.reflow` and writes the exact layout unless the caller sets `reflow`.
       reflowText: options.reflow ?? false,

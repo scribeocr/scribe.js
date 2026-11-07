@@ -648,6 +648,21 @@ export function createExportTool(app) {
       e.preventDefault();
       return;
     }
+    const link = e.target instanceof Element ? /** @type {?HTMLAnchorElement} */ (e.target.closest('a[href]')) : null;
+    const href = link?.getAttribute('href') || '';
+    if (link && /^#page\d+$/.test(href)) {
+      e.preventDefault();
+      const slot = placed.get(Number(href.slice(5)));
+      // Set directly, not through scrollPaneTo, so the pane's scroll listener does not ignore it as an echo and the lane follows.
+      if (slot) pane.scrollTop = Math.max(0, slot.top * paneScale - band());
+      return;
+    }
+    if (link && /^(https?:|mailto:)/i.test(href)) {
+      e.preventDefault();
+      if (scribeLib.opt.openExternal) scribeLib.opt.openExternal(href);
+      else window.open(href, '_blank', 'noopener,noreferrer');
+      return;
+    }
     const back = e.target instanceof Element ? /** @type {?HTMLAnchorElement} */ (e.target.closest('.scribe-fnback')) : null;
     if (!back) return;
     e.preventDefault();
@@ -781,7 +796,7 @@ export function createExportTool(app) {
       }
       if (gen !== renderRun) return;
       const frag = writeHtmlFragment({
-        ocrPages: doc.ocr.active, images, pageArr: [n], docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode, parIds: true,
+        ocrPages: doc.ocr.active, images, annotations: doc.annotations.pages, pageArr: [n], docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode, parIds: true,
       });
       if (!paneStyle.textContent) paneStyle.textContent = frag.style + PANE_RULES + (format().surface === 'pages' ? BOXES_RULES : '');
       const tpl = document.createElement('template');
@@ -866,6 +881,7 @@ export function createExportTool(app) {
         const frag = writeHtmlFragment({
           ocrPages: doc.ocr.active,
           layoutPageArr: doc.layoutDataTables.pages,
+          annotations: doc.annotations.pages,
           pageArr: includedPages(doc),
           docFonts: doc.fonts,
           pageMetrics: doc.pageMetrics,

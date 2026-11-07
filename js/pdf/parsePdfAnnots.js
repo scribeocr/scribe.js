@@ -219,7 +219,7 @@ function resolveLinkUri(annotText, objCache) {
     if (hex.length % 2 === 1) hex += '0';
     let uri = '';
     for (let hi = 0; hi < hex.length; hi += 2) uri += String.fromCharCode(parseInt(hex.slice(hi, hi + 2), 16));
-    return uri || null;
+    return uri.replace(/\0+$/, '') || null;
   }
   let keyMatch = /\/URI\s*\(/.exec(actionText);
   if (!keyMatch) {
@@ -236,7 +236,7 @@ function resolveLinkUri(annotText, objCache) {
   const { value } = parsePdfLiteralString(bytes, parenOpen);
   let uri = '';
   for (const b of value) uri += String.fromCharCode(b);
-  return uri || null;
+  return uri.replace(/\0+$/, '') || null;
 }
 
 /**

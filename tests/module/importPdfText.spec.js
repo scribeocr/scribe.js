@@ -561,6 +561,35 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(all[0].uri, 'the first URI link region carries its exact target URL').toBe('https://en.wikipedia.org/wiki/Template:Taxonomy/Iris');
   });
 
+  test('HTML exports write the page links as links, leaving the link cue to the anchor', async () => {
+    const exact = /** @type {string} */ (await doc.exportData('html', { displayMode: 'ebook' }));
+    expect(exact, 'the exact layout wraps a link\'s words, and the underlined space between them, in one anchor')
+      .toMatch(/<a href="https:\/\/en\.wikipedia\.org\/wiki\/Iris_sibirica"><span class="scribe-word" id="word_1_2_1" [^>]*>Iris<\/span><span class="scribe-space" style=[^>]*text-decoration:underline[^>]*> <\/span><span class="scribe-word" id="word_1_2_2" [^>]*>sibirica<\/span><\/a>/);
+    expect(exact, 'the space after a link\'s last underlined word is underlined')
+      .toMatch(/>Tourn\.<\/span><\/a><span class="scribe-space" style=(?:(?!text-decoration)[^>])*> <\/span><span class="scribe-word" id="word_1_14_2"/);
+    const article = /** @type {string} */ (await doc.exportData('html', { reflow: true }));
+    expect(article, 'an italic link loses its italic or its anchor in the article')
+      .toContain('<p><a href="https://en.wikipedia.org/wiki/Iris_sibirica"><i>Iris sibirica</i></a></p>');
+    expect(article, 'a link whose bold is its cue keeps a bold wrapper in the article')
+      .toContain('<p><a href="https://en.wikipedia.org/wiki/Synonym_(taxonomy)">Synonyms</a> <sup>[1] [2] [3]</sup></p>');
+    expect(article, 'a linked heading loses its anchor or gains a bold wrapper')
+      .toContain('<h1><a href="https://en.wikipedia.org/wiki/Taxonomy_(biology)">Scientific classification</a></h1>');
+    expect((exact.match(/<a href=/g) || []).length, 'the exact layout does not write one anchor per link rect that holds words').toBe(86);
+    // The "I. dichotoma" link wraps onto a second line, so the exact layout writes an anchor on each line.
+    // The article joins the lines, so the link is one anchor there.
+    expect((article.match(/<a href="https:\/\//g) || []).length, 'the article does not write one anchor per link that holds words').toBe(85);
+
+    const plainWord = doc.ocr.active[0].lines.flatMap((line) => line.words).find((w) => w.id === 'word_1_14_2');
+    // eslint-disable-next-line no-script-url
+    const scriptScheme = 'javascript:';
+    doc.addLinks([{ page: 0, bbox: { ...plainWord.bbox }, uri: `${scriptScheme}alert(1)` }]);
+    const guarded = /** @type {string} */ (await doc.exportData('html'));
+    doc.undo();
+    expect(guarded, 'a javascript: link target reaches an href').not.toContain(scriptScheme);
+    expect(guarded, 'the word under a disallowed link is wrapped in an anchor').toMatch(/<\/span><span class="scribe-word" id="word_1_14_2"/);
+    expect(doc.annotations.pages.flat().filter((a) => a.type === 'link').length, 'undo does not remove the link added for the check').toBe(97);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -659,6 +688,15 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     withOcrFilePdfType = withOcr.inputData.pdfType;
     withOcrFileNativeWords = (withOcr.ocr.pdf?.[0]?.lines || []).reduce((n, l) => n + l.words.length, 0);
     withOcrFileActiveWords = withOcr.ocr.active[0].lines.reduce((n, l) => n + l.words.length, 0);
+  });
+
+  test('HTML exports write an internal link as a page anchor in the exact layout only', async () => {
+    const exact = /** @type {string} */ (await doc.exportData('html', { pageArr: [0] }));
+    expect(exact, 'the exact layout does not wrap the word under an internal link in an anchor to its page')
+      .toMatch(/<a href="#page0"><span class="scribe-word" id="word_1_26_9" /);
+    const article = /** @type {string} */ (await doc.exportData('html', { reflow: true, pageArr: [0] }));
+    expect(article, 'the article does not write the footnote reference under an internal link with its note anchor alone')
+      .toMatch(/recent years\.<sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">1<\/a><\/sup> Furthermore/);
   });
 
   test('Internal links parse to resolved same-page dests with a vertical position', () => {

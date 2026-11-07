@@ -181,6 +181,7 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {Array<OcrPage>} params.ocrPages -
  * @param {Array<ImageWrapper>} [params.images] -
  * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page, for the article's tables.
+ * @param {?Array<Array<Annotation>>} [params.annotations=null] - The document's annotations per page, whose links are written as links.
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
@@ -209,7 +210,7 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @returns {{body: string, style: string, fontsUsed: Set<FontContainerFont>, title?: string}} The body's markup, the stylesheet rules, the fonts the markup names, and the article's title.
  */
 export function writeHtmlFragment({
-  ocrPages, images, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1,
+  ocrPages, images, layoutPageArr = null, annotations = null, pageArr = null, minpage = 0, maxpage = -1,
   reflowText = false, dropPageHeadersFooters = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
   displayMode = scribeDocDefaults.displayMode,
   confThreshHigh = scribeDocDefaults.confThreshHigh,
@@ -234,6 +235,35 @@ export function writeHtmlFragment({
     pageArr = [];
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
+
+  /**
+   * The link target of each linked word of page `g`, by word id.
+   * @param {number} g
+   * @returns {Map<string, string>}
+   */
+  const linkHrefs = (g) => {
+    /** @type {Map<string, string>} */
+    const hrefs = new Map();
+    const links = (annotations?.[g] || []).filter(/** @returns {a is AnnotationLink} */ (a) => a.type === 'link');
+    if (links.length === 0 || !ocrPages[g]) return hrefs;
+    const words = ocr.getPageWords(ocrPages[g]);
+    for (const link of links) {
+      let href = null;
+      if (link.uri) {
+        const uri = link.uri.trim();
+        // A PDF can carry a javascript: URI, so only allowlisted schemes are written.
+        if (/^(https?:|mailto:)/i.test(uri)) href = uri;
+      } else if (link.dest && !reflowText) {
+        // Only the exact layout writes the page anchors an internal jump targets.
+        href = `#page${link.dest.pageIndex}`;
+      }
+      if (!href) continue;
+      for (const word of words) {
+        if (!hrefs.has(word.id) && calcBoxOverlap(word.bbox, link.bbox) > 0.5) hrefs.set(word.id, href);
+      }
+    }
+    return hrefs;
+  };
 
   if (reflowText) {
     const esc = ocr.escapeXml;
@@ -270,6 +300,8 @@ export function writeHtmlFragment({
       }
     }
     const referenced = new Set();
+    /** @type {Map<string, string>} */
+    let hrefs = new Map();
     /**
      * Write lines of words as inline markup.
      * @param {Array<{words: Array<?OcrWord>}>} lines
@@ -289,6 +321,18 @@ export function writeHtmlFragment({
         out += s;
         run = '';
       };
+      // Bold that sets a whole link apart from the words beside it is the link's cue, which the anchor replaces.
+      const parWords = lines.flatMap((line) => line.words.filter(/** @returns {w is OcrWord} */ (w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id))));
+      const cueBoldIds = new Set();
+      for (let i = 0; i < parWords.length; i++) {
+        const href = hrefs.get(parWords[i].id);
+        if (!href || (i > 0 && hrefs.get(parWords[i - 1].id) === href)) continue;
+        let end = i;
+        while (end + 1 < parWords.length && hrefs.get(parWords[end + 1].id) === href) end++;
+        const linked = parWords.slice(i, end + 1);
+        if (linked.every((w) => w.style.bold) && !parWords[i - 1]?.style.bold && !parWords[end + 1]?.style.bold) linked.forEach((w) => cueBoldIds.add(w.id));
+      }
+      let openHref = '';
       let prevJoin = false;
       let first = true;
       for (let li = 0; li < lines.length; li++) {
@@ -297,17 +341,28 @@ export function writeHtmlFragment({
         for (let i = 0; i < words.length; i++) {
           const word = words[i];
           if (stripLeader && first && isNoteLeader(word, lines[li].par || null)) continue;
-          const sep = first || (i === 0 && prevJoin) ? '' : ' ';
+          let sep = first || (i === 0 && prevJoin) ? '' : ' ';
           first = false;
           const label = word.footnoteParId ? fnLabelById.get(word.footnoteParId) : undefined;
           const ref = label !== undefined ? splitNoteReference(word) : null;
           const text = ref ? ref.head : i === words.length - 1 && dropHyphen ? word.text.replace(LINE_END_HYPHEN_RE, '') : word.text;
+          // A reference with no text of its own leaves the open anchor to the reference branch below.
+          const href = text ? hrefs.get(word.id) || '' : openHref;
+          if (href !== openHref) {
+            closeRun();
+            runKey = '';
+            if (openHref) out += '</a>';
+            out += sep;
+            sep = '';
+            if (href) out += `<a href="${esc(href)}">`;
+            openHref = href;
+          }
           const segments = ocr.getWordStyleSegments(word) || [{ start: 0, end: text.length, style: word.style }];
           for (let k = 0; k < segments.length; k++) {
             const segment = segments[k];
             const piece = text.slice(segment.start, segment.end);
             if (!piece) continue;
-            const key = `${segment.style?.bold && !plainBold ? 'b' : ''}${segment.style?.italic ? 'i' : ''}${segment.style?.sup ? 's' : ''}${runFonts && segment.style?.font ? `|${segment.style.font}` : ''}`;
+            const key = `${segment.style?.bold && !plainBold && !cueBoldIds.has(word.id) ? 'b' : ''}${segment.style?.italic ? 'i' : ''}${segment.style?.sup ? 's' : ''}${runFonts && segment.style?.font ? `|${segment.style.font}` : ''}`;
             const lead = k === 0 ? sep : '';
             if (key === runKey) {
               run += lead + esc(piece);
@@ -321,6 +376,10 @@ export function writeHtmlFragment({
           if (ref) {
             closeRun();
             runKey = '';
+            if (openHref) {
+              out += '</a>';
+              openHref = '';
+            }
             const firstRef = !referenced.has(word.footnoteParId);
             referenced.add(word.footnoteParId);
             // The reference stays attached to the word before it.
@@ -330,6 +389,7 @@ export function writeHtmlFragment({
         prevJoin = joinNext;
       }
       closeRun();
+      if (openHref) out += '</a>';
       return out;
     };
 
@@ -450,6 +510,7 @@ export function writeHtmlFragment({
       const pageObj = ocrPages[g];
       if (!pageObj || pageObj.lines.length === 0) continue;
       pageN = g;
+      hrefs = linkHrefs(g);
       const pageNotesStart = notes.length;
       lastBodyEnd = body.length;
 
@@ -541,12 +602,18 @@ export function writeHtmlFragment({
     /** @type {?string} */
     parId: null,
     orientation: 0,
+    /** @type {string} */
+    href: '',
   };
 
   /** @type {Map<number, string>} */
   let groups = new Map();
 
   const addLine = () => {
+    if (activeLine.href) {
+      activeLine.bodyWordsStr += '</a>';
+      activeLine.href = '';
+    }
     if (activeLine.bodyWordsStr !== '') {
       const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
       const parAttr = parIds && activeLine.parId ? ` data-par="${activeLine.parId}"` : '';
@@ -606,6 +673,7 @@ export function writeHtmlFragment({
       top += disp.height + 10;
     }
 
+    const hrefs = linkHrefs(g);
     groups = new Map();
     let wordObjPrev = /** @type {?OcrWord} */ (null);
     let advanceDiffPrev = 0;
@@ -748,6 +816,12 @@ export function writeHtmlFragment({
           styleStr += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
         }
 
+        const href = hrefs.get(wordObj.id) || '';
+        if (activeLine.href && href !== activeLine.href) {
+          activeLine.bodyWordsStr += '</a>';
+          activeLine.href = '';
+        }
+
         if (i > 0) {
           let styleStrSpace = '';
           const spaceAdvance = font.opentype.charToGlyph(' ').advanceWidth || font.opentype.unitsPerEm * 0.35;
@@ -769,7 +843,7 @@ export function writeHtmlFragment({
           styleStrSpace += `font-style:${font.fontFaceStyle};`;
           styleStrSpace += `font-weight:${font.fontFaceWeight};`;
 
-          if (underlinePrev && opacity !== 0) {
+          if (underlinePrev && wordObj.style.underline && opacity !== 0) {
             styleStrSpace += `color:${fill};`;
             styleStrSpace += `opacity:${opacity};`;
             styleStrSpace += 'text-decoration:underline;';
@@ -779,6 +853,11 @@ export function writeHtmlFragment({
           }
 
           activeLine.bodyWordsStr += `<span class="scribe-space" style=${styleStrSpace}> </span>`;
+        }
+
+        if (href && href !== activeLine.href) {
+          activeLine.bodyWordsStr += `<a href="${ocr.escapeXml(href)}">`;
+          activeLine.href = href;
         }
 
         activeLine.bodyWordsStr += `<span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
@@ -838,6 +917,11 @@ export function writeHtmlFragment({
   styleStr += '    text-decoration-skip-ink:none;\n';
   styleStr += '  }\n';
 
+  styleStr += '  .scribe-page a {\n';
+  styleStr += '    color:inherit;\n';
+  styleStr += '    text-decoration:none;\n';
+  styleStr += '  }\n';
+
   styleStr += '  .scribe-image {\n';
   styleStr += '    position:absolute;\n';
   styleStr += '    user-select:none;\n';
@@ -856,6 +940,7 @@ export function writeHtmlFragment({
  * @param {Array<OcrPage>} params.ocrPages -
  * @param {Array<ImageWrapper>} [params.images] -
  * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page, for the article's tables.
+ * @param {?Array<Array<Annotation>>} [params.annotations=null] - The document's annotations per page, whose links are written as links.
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
@@ -879,7 +964,7 @@ export function writeHtmlFragment({
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export function writeHtml({
-  ocrPages, images, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1,
+  ocrPages, images, layoutPageArr = null, annotations = null, pageArr = null, minpage = 0, maxpage = -1,
   reflowText = false, dropPageHeadersFooters = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
   displayMode = scribeDocDefaults.displayMode,
   confThreshHigh = scribeDocDefaults.confThreshHigh,
@@ -903,6 +988,7 @@ export function writeHtml({
     ocrPages,
     images,
     layoutPageArr,
+    annotations,
     pageArr,
     reflowText,
     dropPageHeadersFooters,
