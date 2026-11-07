@@ -1856,7 +1856,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                   const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
                     || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
                   if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
-                  if (/bold|black/.test(subfamily) || /bold|black/i.test(baseName)) bold = true;
+                  if (/bold|black/i.test(baseName)) bold = true;
                 }
               }
               let cidToGidMap = 'identity';
@@ -1896,8 +1896,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
 
     // For Type0 CFF fonts, use CFF charset to enrich toUnicode or build validCIDs
     let validCIDs = null;
+    let cffSummary = null;
     if (type0Info && type0Info.fontFile) {
       const summary = parseCFFSummary(type0Info.fontFile);
+      cffSummary = summary;
       if (summary.ok) {
         if (summary.isCID) {
           // CID CFF: store valid CIDs for filtering in showHexString.
@@ -2295,6 +2297,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       if (type1Info?.fontFile) {
         try {
           const summary = parseCFFSummary(type1Info.fontFile);
+          cffSummary = summary;
           if (summary.ok && !summary.isCID && !summary.predefinedCharset) {
             const cffEnc = summary.cffEncoding?.encoding;
             if (Array.isArray(cffEnc)) {
@@ -2496,6 +2499,44 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
       // An all-equal sample is a monospace claim, not a scramble, and those fonts need the squeeze into their constant cell to render acceptably.
       widthsUnreliable = sampled >= 8 && anyFar && !allEqual;
+    }
+
+    // A bold face's name and descriptor can both leave out its weight, so the embedded program's own declaration adds bold.
+    // The declaration never clears bold, because many programs declare a bold face as "Regular".
+    const programFile = type0Info?.fontFile || type1Info?.fontFile;
+    if (!bold && programFile && programFile.length >= 4) {
+      const b = programFile;
+      const boldWeightRe = /bold|black|heavy/i;
+      try {
+        if (b[0] === 1 && b[1] === 0) {
+          const summary = cffSummary && cffSummary.ok ? cffSummary : parseCFFSummary(b);
+          if (summary.ok && boldWeightRe.test(summary.weight || '')) bold = true;
+        } else if ((b[0] === 0x25 && b[1] === 0x21) || b[0] === 0x80) {
+          let txt = '';
+          const n = Math.min(b.length, 16384);
+          for (let i = 0; i < n; i++) txt += String.fromCharCode(b[i]);
+          const end = txt.indexOf('currentfile eexec');
+          const m = /\/Weight\s*\(([^)]*)\)/.exec(end > 0 ? txt.slice(0, end) : txt);
+          if (m && boldWeightRe.test(m[1])) bold = true;
+        } else {
+          const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+          const dir = opentype.readSfntTableDirectory(dv);
+          if (dir['OS/2']) {
+            const os2 = opentype.parseOS2Table(dv, dir['OS/2'].offset);
+            if (os2.usWeightClass >= 700 || (os2.fsSelection & 0x20)) bold = true;
+          }
+          if (dir.head && (opentype.parseHeadTable(dv, dir.head.offset).macStyle & 1)) bold = true;
+          if (dir.name) {
+            const names = opentype.parseNameTable(dv, dir.name.offset, undefined, dir.name.length);
+            const subfamily = (names.preferredSubfamily && names.preferredSubfamily.en) || (names.fontSubfamily && names.fontSubfamily.en) || '';
+            if (boldWeightRe.test(subfamily)) bold = true;
+          }
+          if (dir['CFF ']) {
+            const summary = parseCFFSummary(b.subarray(dir['CFF '].offset, dir['CFF '].offset + dir['CFF '].length));
+            if (summary.ok && boldWeightRe.test(summary.weight || '')) bold = true;
+          }
+        }
+      } catch { /* an unreadable program declares nothing */ }
     }
 
     const fontInfo = {

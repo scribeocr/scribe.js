@@ -1149,11 +1149,12 @@ function parseCidCharset(data, start, nGlyphs) {
  *   charsetNames: (string[]|null),
  *   cidToGID: (Map<number, number>|null),
  *   cffEncoding: (CffEncoding|null),
+ *   weight: (string|null),
  * }}
  */
 export function parseCFFSummary(cffData) {
   const empty = {
-    ok: false, isCID: false, nGlyphs: 0, predefinedCharset: false, charsetNames: null, cidToGID: null, cffEncoding: null,
+    ok: false, isCID: false, nGlyphs: 0, predefinedCharset: false, charsetNames: null, cidToGID: null, cffEncoding: null, weight: null,
   };
   try {
     if (!cffData || cffData.length < 4 || cffData[0] !== 1) return empty;
@@ -1181,6 +1182,7 @@ export function parseCFFSummary(cffData) {
         charsetNames: null,
         cidToGID: parseCidCharset(data, start + topDict.charset, nGlyphs),
         cffEncoding: null,
+        weight: topDict.weight || null,
       };
     }
 
@@ -1206,7 +1208,7 @@ export function parseCFFSummary(cffData) {
     }
 
     return {
-      ok: true, isCID: false, nGlyphs, predefinedCharset, charsetNames, cidToGID: null, cffEncoding,
+      ok: true, isCID: false, nGlyphs, predefinedCharset, charsetNames, cidToGID: null, cffEncoding, weight: topDict.weight || null,
     };
   } catch {
     return empty;
