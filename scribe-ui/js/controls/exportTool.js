@@ -865,13 +865,13 @@ export function createExportTool(app) {
     closeRoleMenu();
     paneBody.replaceChildren();
     paneStyle.textContent = '';
-    const surface = surfaceOf();
-    if (surface === 'summary') {
     if (format().needsWords && !docHasWords(doc)) {
       layoutPane();
       paneNote(`This document has no text, so there is nothing to export as ${format().label}.`);
       return;
     }
+    const surface = surfaceOf();
+    if (surface === 'summary') {
       layoutPane();
       paneStyle.textContent = SUMMARY_RULES;
       paneBody.innerHTML = summaryBody(doc);
@@ -971,8 +971,6 @@ export function createExportTool(app) {
     if (doc && doc !== docRendered) return renderAll();
     return Promise.resolve();
   };
-
-  // ---- The scroll link. ----
   /**
    * Show a note in the pane in place of a rendering.
    * @param {string} text
@@ -989,6 +987,8 @@ export function createExportTool(app) {
     note.textContent = text;
     paneBody.appendChild(note);
   };
+
+  // ---- The scroll link. ----
   const linkState = { on: true, expectLane: NaN, expectPane: NaN };
   /**
    * The mode banner's height.
@@ -1243,8 +1243,6 @@ export function createExportTool(app) {
     syncExportBtn();
     pickBtn.classList.toggle('busy', busy);
   };
-  const openBesidePdf = async () => {
-    const sv = viewerOf();
   /** @type {?import('../../../js/containers/scribeDoc.js').ScribeDoc} */
   let blankDoc = null;
   /** Take the PDF preview off the right half at once. */
@@ -1264,6 +1262,8 @@ export function createExportTool(app) {
     old?.close().catch(() => {});
     setBusy(true);
   };
+  const openBesidePdf = async () => {
+    const sv = viewerOf();
     if (!sv.doc) return;
     const run = ++pdfRun;
     setBusy(true);
@@ -1306,10 +1306,10 @@ export function createExportTool(app) {
       pdfTimer = null;
       const sv = viewerOf();
       if (!sv.doc || !active || mounted?.kind !== 'pdf') return;
-      const run = ++pdfRun;
-      setBusy(true);
       // A placeholder's real document reruns `docChanged`, which refreshes again.
       if (sv.doc.id < 0 && sv.doc._requestHydration) return;
+      const run = ++pdfRun;
+      setBusy(true);
       let next;
       try {
         next = await buildPdfPreviewDoc(sv.doc);
@@ -1862,8 +1862,6 @@ export function createExportTool(app) {
     setActive(!active);
   });
 
-  /** Carry the mode over to a newly opened document. */
-  const docChanged = () => {
   /**
    * Clear the preview before the mode's viewer paints another document.
    * `docChanged` fills it again once the document is on screen.
@@ -1874,6 +1872,8 @@ export function createExportTool(app) {
     else if (mounted?.kind !== 'sheet' && docRendered !== viewerOf().doc) paneNote('Building the preview…');
   };
 
+  /** Carry the mode over to a newly opened document. */
+  const docChanged = () => {
     if (!active) return;
     settings.range = '';
     if (settings.pages === 'range') settings.pages = 'all';
