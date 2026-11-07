@@ -167,8 +167,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * Name carries no `def` because it is sized to fill whatever the other columns leave.
  */
 const LIST_COLUMNS = {
-  list: [{ min: 180 }, { min: 56, def: 90 }, { min: 56, def: 130 }, { min: 56, def: 130 }],
-  compact: [{ min: 200 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
+  list: [{ min: 180 }, { min: 56, def: 90 }, { min: 56, def: 80 }, { min: 56, def: 130 }, { min: 56, def: 130 }],
+  compact: [{ min: 200 }, { min: 56, def: 80 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
 };
 
 /**
@@ -179,13 +179,23 @@ const SNUG_OVERFLOW_PX = 8;
 
 /**
  * Column indexes in the order the layout drops them when there is no room left, least useful first.
- * A page count is the least of these, and Name is absent because it is the column everything else yields to.
  */
-const COL_DROP_ORDER = { list: [1, 3, 2], compact: [1, 4, 3, 2] };
+const COL_DROP_ORDER = { list: [1, 2, 4, 3], compact: [1, 2, 5, 4, 3] };
 
 const SORT_DEFAULT_DIR = {
-  name: 1, added: -1, opened: -1, pages: 1, custom: 1,
+  name: 1, added: -1, opened: -1, pages: 1, size: -1, custom: 1,
 };
+
+/**
+ * A byte count as display text.
+ * @param {number} n
+ */
+const fmtBytes = (n) => (
+  // 1000-byte units match what Finder shows for the same file.
+  n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB`
+    : n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB`
+      : `${n ? Math.max(1, Math.round(n / 1000)) : 0} KB`
+);
 
 let instanceCounter = 0;
 
@@ -345,8 +355,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *) .actions, .scribe-pdf-viewer .scribe-library-card:focus-within .actions { display: flex; }
 .scribe-pdf-viewer .scribe-library-card .actions button { border: none; border-radius: 5px; background: rgba(20, 20, 20, 0.65); color: #fff; cursor: pointer; font-size: 12px; padding: 3px 7px; }
 .scribe-pdf-viewer .scribe-library-body.list-mode { padding: 0; }
-.scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: stretch; height: 30px; padding: 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
-.scribe-pdf-viewer .scribe-library-lhead.cols-cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); }
+.scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 80px 110px 110px 120px); min-width: min-content; align-items: stretch; height: 30px; padding: 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
+.scribe-pdf-viewer .scribe-library-lhead.cols-cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 80px 130px 130px); }
 /* The 8px edge and the 10px cell inset add up to the 18px gutter the rest of the library uses. */
 .scribe-pdf-viewer .scribe-library-lhead > * { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 10px; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-lhead > [data-sort-key] { cursor: pointer; }
@@ -364,7 +374,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-cols-drag * { cursor: col-resize !important; }
 .scribe-pdf-viewer.scribe-coarse .scribe-library-hres { display: none; }
 /* The scroll margin is the sticky column header's height, so a row scrolled into view is not hidden behind it. */
-.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; scroll-margin-top: 31px; }
+.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 80px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; scroll-margin-top: 31px; }
 .scribe-pdf-viewer .scribe-library-row > * { min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row:hover:where(.scribe-library-surface:not(.card-drag) *) { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-row.selected { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
@@ -374,7 +384,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-row .nm .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-row .nm .t.snug { overflow: visible; text-overflow: clip; }
-.scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
+.scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 80px 130px 130px); height: 64px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm { gap: 12px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm img { width: 40px; height: 52px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 3px; background: #fff; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row .nm .tt { min-width: 0; }
@@ -385,6 +395,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row .num { font-variant-numeric: tabular-nums; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-row .dt { font-variant-numeric: tabular-nums; color: var(--scribe-ink-2); font-size: 12.5px; }
 .scribe-pdf-viewer .scribe-library-row .none { color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-lhead > :nth-child(2), .scribe-pdf-viewer .scribe-library-lhead > :nth-child(3) { justify-content: flex-end; }
+.scribe-pdf-viewer .scribe-library-row > :nth-child(2), .scribe-pdf-viewer .scribe-library-row > :nth-child(3) { text-align: right; }
 .scribe-pdf-viewer .scribe-library-empty { text-align: center; opacity: 0.7; padding: 60px 20px; }
 .scribe-pdf-viewer .scribe-library-card-wall { max-width: 520px; margin: 60px auto; text-align: center; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 36px 32px; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-card-wall h3 { margin: 0 0 10px; font-size: 17px; }
@@ -422,6 +434,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-cols-drop-2 .scribe-library-lhead > :nth-child(3), .scribe-pdf-viewer .scribe-library-cols-drop-2 .scribe-library-row > :nth-child(3) { display: none; }
 .scribe-pdf-viewer .scribe-library-cols-drop-3 .scribe-library-lhead > :nth-child(4), .scribe-pdf-viewer .scribe-library-cols-drop-3 .scribe-library-row > :nth-child(4) { display: none; }
 .scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-lhead > :nth-child(5), .scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-row > :nth-child(5) { display: none; }
+.scribe-pdf-viewer .scribe-library-cols-drop-5 .scribe-library-lhead > :nth-child(6), .scribe-pdf-viewer .scribe-library-cols-drop-5 .scribe-library-row > :nth-child(6) { display: none; }
 /* Dividers move width between columns, which is meaningless once the layout is dropping them to fit. */
 .scribe-pdf-viewer .scribe-library-cols-dropped .scribe-library-hres { display: none; }
 .scribe-pdf-viewer .scribe-library-rlist { width: 100%; height: 100%; box-sizing: border-box; overflow-y: auto; overflow-x: hidden; background: var(--scribe-surface); outline: none; }
@@ -1043,7 +1056,7 @@ export function createLibraryInstance(viewer, opts) {
   sortBtn.innerHTML = `${SORT_SVG}<span class="scribe-library-sort-lbl"><span class="cur">Name</span>`
     + '<span class="ghost" aria-hidden="true">Name</span><span class="ghost" aria-hidden="true">Date added</span>'
     + '<span class="ghost" aria-hidden="true">Last opened</span><span class="ghost" aria-hidden="true">Pages</span>'
-    + `<span class="ghost" aria-hidden="true">Custom</span></span>${CHEVRON_SVG}`;
+    + `<span class="ghost" aria-hidden="true">Size</span><span class="ghost" aria-hidden="true">Custom</span></span>${CHEVRON_SVG}`;
   sortBtn.title = 'Sort';
   sortBtn.setAttribute('aria-label', 'Sort');
   sortBtn.setAttribute('aria-haspopup', 'menu');
@@ -1054,7 +1067,7 @@ export function createLibraryInstance(viewer, opts) {
   sortMenu.style.display = 'none';
   /** @type {HTMLElement[]} */
   const sortItems = [];
-  for (const [mode, label] of [['name', 'Name'], ['added', 'Date added'], ['opened', 'Last opened'], ['custom', 'Custom']]) {
+  for (const [mode, label] of [['name', 'Name'], ['added', 'Date added'], ['opened', 'Last opened'], ['size', 'Size'], ['custom', 'Custom']]) {
     const item = document.createElement('div');
     item.className = 'scribe-library-menu-item';
     item.setAttribute('role', 'menuitemradio');
@@ -2412,6 +2425,7 @@ export function createLibraryInstance(viewer, opts) {
       if (sortMode === 'added') d = a.added - b.added;
       else if (sortMode === 'opened') d = a.lastOpened - b.lastOpened;
       else if (sortMode === 'pages') d = (a.pageCount || 0) - (b.pageCount || 0);
+      else if (sortMode === 'size') d = (a.size || 0) - (b.size || 0);
       else if (sortMode === 'custom') {
         d = (a.order ?? Number.MAX_SAFE_INTEGER) - (b.order ?? Number.MAX_SAFE_INTEGER);
       } else d = titleOf(pa).localeCompare(titleOf(pb), undefined, { numeric: true });
@@ -3211,7 +3225,10 @@ export function createLibraryInstance(viewer, opts) {
       return;
     }
     meta.classList.remove('fb');
-    if (entry.pageCount) meta.appendChild(document.createTextNode(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`));
+    const facts = [];
+    if (entry.pageCount) facts.push(`${entry.pageCount} page${entry.pageCount === 1 ? '' : 's'}`);
+    if (entry.size) facts.push(fmtBytes(entry.size));
+    if (facts.length) meta.appendChild(document.createTextNode(facts.join(' · ')));
     const badge = badgeFor(relPath, entry);
     if (badge) meta.insertAdjacentHTML('beforeend', badge.html);
     if (badge?.title) meta.title = badge.title;
@@ -3393,6 +3410,7 @@ export function createLibraryInstance(viewer, opts) {
 
   /**
    * Counts, aggregates, ingest-state tallies, and cover entries over a folder's direct children.
+   * `bytes` alone covers every depth.
    * @param {string} dirPath
    * @param {import('./libraryStore.js').LibraryDocEntry[]} [except] - Children to leave out.
    */
@@ -3401,6 +3419,7 @@ export function createLibraryInstance(viewer, opts) {
       docs: 0,
       subdirs: 0,
       pages: 0,
+      bytes: 0,
       added: 0,
       lastOpened: 0,
       failed: 0,
@@ -3415,8 +3434,10 @@ export function createLibraryInstance(viewer, opts) {
     /** @type {Array<[string, import('./libraryStore.js').LibraryDocEntry]>} */
     const children = [];
     for (const [p, entry] of Object.entries(manifest.docs)) {
+      if (except.includes(entry)) continue;
+      if (p.startsWith(`${dirPath}/`)) stats.bytes += entry.size || 0;
       const cut = p.lastIndexOf('/');
-      if ((cut < 0 ? '' : p.slice(0, cut)) !== dirPath || except.includes(entry)) continue;
+      if ((cut < 0 ? '' : p.slice(0, cut)) !== dirPath) continue;
       children.push([p, entry]);
       stats.docs++;
       stats.pages += entry.pageCount || 0;
@@ -3674,7 +3695,7 @@ export function createLibraryInstance(viewer, opts) {
       nm.appendChild(line);
     }
     row.appendChild(nm);
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const cell = document.createElement('span');
       cell.className = 'none';
       cell.textContent = '—';
@@ -3718,7 +3739,7 @@ export function createLibraryInstance(viewer, opts) {
       nm.appendChild(line);
     }
     row.appendChild(nm);
-    for (let i = 0; i < (comfortable ? 3 : 4); i++) {
+    for (let i = 0; i < (comfortable ? 4 : 5); i++) {
       const cell = document.createElement('span');
       cell.className = 'none';
       cell.textContent = '—';
@@ -3732,8 +3753,9 @@ export function createLibraryInstance(viewer, opts) {
    * @param {HTMLElement} host
    * @param {string} dirPath
    * @param {ReturnType<typeof dirStatsOf>} stats
+   * @param {boolean} [withSize]
    */
-  const fillFolderLine = (host, dirPath, stats) => {
+  const fillFolderLine = (host, dirPath, stats, withSize = false) => {
     host.textContent = '';
     host.classList.remove('hasatt', 'live');
     if (undoInfo && undoInfo.dir === dirPath) {
@@ -3745,6 +3767,7 @@ export function createLibraryInstance(viewer, opts) {
     const parts = [];
     if (stats.docs) parts.push(`${stats.docs} document${stats.docs === 1 ? '' : 's'}`);
     if (stats.subdirs) parts.push(`${stats.subdirs} folder${stats.subdirs === 1 ? '' : 's'}`);
+    if (withSize && stats.bytes) parts.push(fmtBytes(stats.bytes));
     const base = document.createElement('span');
     base.textContent = parts.length ? parts.join(' · ') : 'Empty';
     host.appendChild(base);
@@ -3785,9 +3808,9 @@ export function createLibraryInstance(viewer, opts) {
       previewFolder(card, dirPath, inFlight);
     } else {
       if (!(undoInfo && undoInfo.dir === dirPath)) card.style.minHeight = '';
-      morphFold(/** @type {HTMLElement} */ (card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
+      morphFold(/** @type {HTMLElement} */(card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
     }
-    fillFolderLine(/** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta')), dirPath, stats);
+    fillFolderLine(/** @type {HTMLElement} */(card.querySelector(':scope > .body > .meta')), dirPath, stats, true);
   };
 
   /**
@@ -4151,12 +4174,14 @@ export function createLibraryInstance(viewer, opts) {
     const cells = /** @type {HTMLElement[]} */ ([...row.children]);
     cells[1].className = entry.pageCount ? 'num' : 'none';
     cells[1].textContent = entry.pageCount ? String(entry.pageCount) : '—';
-    cells[2].className = entry.added > 0 ? 'dt' : 'none';
-    cells[2].textContent = fmtDate(entry.added);
-    cells[3].className = entry.lastOpened > 0 ? 'dt' : 'none';
-    cells[3].textContent = fmtDate(entry.lastOpened);
+    cells[2].className = entry.size ? 'num' : 'none';
+    cells[2].textContent = entry.size ? fmtBytes(entry.size) : '—';
+    cells[3].className = entry.added > 0 ? 'dt' : 'none';
+    cells[3].textContent = fmtDate(entry.added);
+    cells[4].className = entry.lastOpened > 0 ? 'dt' : 'none';
+    cells[4].textContent = fmtDate(entry.lastOpened);
     if (!comfortable) {
-      const statusCell = cells[4];
+      const statusCell = cells[5];
       statusCell.removeAttribute('title');
       if (feedback) {
         statusCell.className = '';
@@ -4207,7 +4232,7 @@ export function createLibraryInstance(viewer, opts) {
       nm.appendChild(title);
     }
     row.appendChild(nm);
-    for (let i = 0; i < (comfortable ? 3 : 4); i++) row.appendChild(document.createElement('span'));
+    for (let i = 0; i < (comfortable ? 4 : 5); i++) row.appendChild(document.createElement('span'));
     updateRow(row, relPath, entry);
 
     const open = () => {
@@ -4274,10 +4299,12 @@ export function createLibraryInstance(viewer, opts) {
     const cells = /** @type {HTMLElement[]} */ ([...row.children]);
     cells[1].className = stats.pages ? 'roll pg' : 'none';
     cells[1].textContent = stats.pages ? String(stats.pages) : '—';
-    cells[2].className = stats.added > 0 ? 'roll' : 'none';
-    cells[2].textContent = fmtDate(stats.added);
-    cells[3].className = stats.lastOpened > 0 ? 'roll' : 'none';
-    cells[3].textContent = fmtDate(stats.lastOpened);
+    cells[2].className = stats.bytes ? 'roll' : 'none';
+    cells[2].textContent = stats.bytes ? fmtBytes(stats.bytes) : '—';
+    cells[3].className = stats.added > 0 ? 'roll' : 'none';
+    cells[3].textContent = fmtDate(stats.added);
+    cells[4].className = stats.lastOpened > 0 ? 'roll' : 'none';
+    cells[4].textContent = fmtDate(stats.lastOpened);
   };
 
   /**
@@ -4318,7 +4345,7 @@ export function createLibraryInstance(viewer, opts) {
       nm.appendChild(cnt);
     }
     row.appendChild(nm);
-    for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
+    for (let i = 0; i < 4; i++) row.appendChild(document.createElement('span'));
     updateFolderRow(row, dirPath);
 
     const open = () => {
@@ -4397,7 +4424,7 @@ export function createLibraryInstance(viewer, opts) {
       nm.appendChild(title);
     }
     row.appendChild(nm);
-    for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
+    for (let i = 0; i < 4; i++) row.appendChild(document.createElement('span'));
     if (!comfortable) {
       const statusCell = document.createElement('span');
       statusCell.appendChild(badge);
@@ -5161,8 +5188,7 @@ export function createLibraryInstance(viewer, opts) {
           need -= spent;
         }
         // A page count squeezed to a stub is worth less than the name it would cost, so drop it whole instead.
-        // The folder column drops the dates first, then the page count.
-        for (const j of (form === 'column' ? [3, 2, 1] : COL_DROP_ORDER[viewMode])) {
+        for (const j of (form === 'column' ? [4, 3, 2, 1] : COL_DROP_ORDER[viewMode])) {
           if (need <= 0) break;
           colHidden.add(j);
           need -= eff[j];
@@ -5215,7 +5241,7 @@ export function createLibraryInstance(viewer, opts) {
       const eff = paintCols(avail, w.length - 1);
       if (eff) colWidths[viewMode] = eff;
     };
-    const headCols = [['name', 'Name'], ['pages', 'Pages'], ['added', 'Added'], ['opened', 'Last opened']];
+    const headCols = [['name', 'Name'], ['pages', 'Pages'], ['size', 'Size'], ['added', 'Added'], ['opened', 'Last opened']];
     if (!comfortable) headCols.push([null, 'Status']);
     headCols.forEach(([key, label], i) => {
       const cell = document.createElement('span');
@@ -5719,11 +5745,6 @@ export function createLibraryInstance(viewer, opts) {
   let confirmScrim = null;
   /** @type {?() => void} */
   let confirmClose = null;
-
-  /** @param {number} n */
-  const fmtBytes = (n) => (n >= 1024 * 1024 * 1024 ? `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`
-    : n >= 1024 * 1024 ? `${(n / (1024 * 1024)).toFixed(1)} MB`
-      : `${n ? Math.max(1, Math.round(n / 1024)) : 0} KB`);
 
   /**
    * A confirmation dialog for deleting the library's own data.
@@ -7298,7 +7319,7 @@ export function createLibraryInstance(viewer, opts) {
   });
 
   const SORT_LABELS = {
-    name: 'Name', added: 'Date added', opened: 'Last opened', pages: 'Pages', custom: 'Custom',
+    name: 'Name', added: 'Date added', opened: 'Last opened', pages: 'Pages', size: 'Size', custom: 'Custom',
   };
   const syncSortUI = () => {
     sortLabelElem.textContent = SORT_LABELS[sortMode];
