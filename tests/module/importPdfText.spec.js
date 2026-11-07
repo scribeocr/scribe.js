@@ -111,6 +111,28 @@ describe('Check small caps are detected in PDF imports.', () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/small_caps_examples.pdf`]);
   });
 
+  test('A symbol footnote whose asterisk closes a title word links to it, and the exports make a footnote of it', async () => {
+    const page = doc.ocr.active[1];
+    const note = page.pars.find((par) => par.type === 'footnote' && par.lines[0].words[0].text === '*');
+    const ref = page.lines.flatMap((line) => line.words).find((word) => word.footnoteParId === note?.id);
+    expect(ref?.text, 'the title word that ends with the asterisk is the note\'s reference').toBe('EVIDENCE*');
+    const html = /** @type {string} */ (await doc.exportData('html', { reflow: true, includeImages: false, pageArr: [1] }));
+    expect(html, 'the article keeps the title word and links its asterisk to the note')
+      .toMatch(/EVIDENCE<sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">\*<\/a><\/sup><\/h1>/);
+    expect(html, 'the note is gathered under its asterisk, without the page\'s own asterisk word')
+      .toMatch(/<li id="scribe-fn-\w{8}"><span class="scribe-fnlabel">\*<\/span>Correspondence: alexancr@usdoj\.gov\. The author thanks David Reiffen/);
+    const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx', { pageArr: [1] }));
+    const zipModule = await import('../../lib/zip.js/index.js');
+    const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));
+    const entries = await zipReader.getEntries();
+    const documentXml = await entries.find((e) => e.filename === 'word/document.xml').getData(new zipModule.TextWriter());
+    expect(documentXml, 'the Word body keeps the title word and follows it with a custom-marked footnote reference')
+      .toMatch(/<w:t xml:space="preserve"> EVIDENCE<\/w:t><\/w:r><w:r><w:rPr><w:rStyle w:val="FootnoteReference"\/>[^<]*(?:<[^>]+>)*<w:footnoteReference w:customMarkFollows="1" w:id="\d+"\/><w:t>\*<\/w:t><\/w:r>/);
+    const footnotesXml = await entries.find((e) => e.filename === 'word/footnotes.xml').getData(new zipModule.TextWriter());
+    expect(footnotesXml, 'the Word footnote carries the asterisk as its mark and the note text without the page\'s own asterisk')
+      .toMatch(/<w:t>\*<\/w:t><\/w:r><w:r>(?:(?!<\/w:r>).)*<w:t xml:space="preserve"> Correspondence:<\/w:t>/);
+  });
+
   test('Should correctly import small caps printed using font size adjustments', async () => {
     const text1 = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
 
@@ -314,6 +336,15 @@ describe('Check superscripts are detected in PDF imports.', () => {
     expect(md, 'the Markdown export writes the word the table left out as its own paragraph').toContain('\n\nMost\n\n');
     const html = /** @type {string} */ (await doc.exportData('html', { reflow: true, includeImages: false }));
     expect(html, 'the HTML article writes the word the table left out, in its own style').toContain('</div>\n<p><b>Most</b></p>\n<p>Note: Details may not sum');
+    expect(html, 'the article links a footnote reference to its note, attached to the word before it')
+      .toMatch(/in recent years\.<sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">1<\/a><\/sup> Furthermore,/);
+    expect(html, 'the article gathers the note at the end under its label, without the page\'s own marker word')
+      .toMatch(/<section class="scribe-notes">\n<ol>\n<li id="scribe-fn-(\w{8})"><span class="scribe-fnlabel">1<\/span>See Acemoglu and Autor \(2011\)\. <a class="scribe-fnback" href="#scribe-fnref-\1">↩<\/a><\/li>/);
+    expect(html, 'a gathered note leaves the body').not.toContain('<p><sup>1</sup> See Acemoglu');
+    expect(md, 'the Markdown export writes the reference as a footnote reference attached to its word').toContain('in recent years.[^1] Furthermore,');
+    expect(md, 'the Markdown export writes the note as a footnote definition').toContain('\n\n[^1]: See Acemoglu and Autor (2011).');
+    expect(md, 'a label a later page reuses gets a suffix, so its definition stays its own').toContain('the cracks.[^1-2] Further, regulators');
+    expect(md, 'the suffixed definition carries that page\'s note').toContain('\n\n[^1-2]: A whistleblower in the Bernie Madoff Ponzi scheme');
     const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx'));
     const zipModule = await import('../../lib/zip.js/index.js');
     const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));
@@ -1046,6 +1077,10 @@ describe('Check that font style is detected for PDF imports.', () => {
     expect(article, 'the article keeps the running header by default, as a page-header paragraph')
       .toContain('<p class="scribe-page-header">Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6</p>');
     expect(article, 'the article keeps a page number by default, as a page-number paragraph').toContain('<p class="scribe-page-number">-2-</p>');
+    expect(article, 'the article links the complaint\'s footnote reference to its note')
+      .toMatch(/in this District\.<sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">1<\/a><\/sup> Novo/);
+    expect(article, 'the note is gathered at the end of the article in full, without its marker word')
+      .toMatch(/<li id="scribe-fn-\w{8}"><span class="scribe-fnlabel">1<\/span>The Agreement is not attached to this Complaint because certain terms are confidential\. A copy of the Agreement is in possession of the Defendants, and Plaintiffs are willing to submit a redacted version or a version under seal\. <a class="scribe-fnback"/);
     const dropped = /** @type {string} */ (await doc.exportData('html', { reflow: true, dropPageHeadersFooters: true }));
     expect(dropped, 'dropPageHeadersFooters leaves the running header out of the article').not.toContain('Case 2:12-cv-13821-AC-DRG');
   });

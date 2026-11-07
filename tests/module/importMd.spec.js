@@ -275,6 +275,16 @@ describe('Check markdown import.', () => {
     expect(notePar.footnoteRefId, 'the footnote paragraph must link back to its reference word').toBe(marker.id);
   });
 
+  test('A footnote reference written against its word re-imports as its own linked marker', () => {
+    const words = docMdReimport.ocr.active.flatMap((page) => page.lines.flatMap((line) => line.words));
+    const i = words.findIndex((word) => word.text === 'attached');
+    expect(words[i + 1].text, 'the reference must come back as its own word, not fused into the word before it').toBe('1');
+    expect(words[i + 1].style.sup, 'the reference must stay superscript').toBe(true);
+    const note = docMdReimport.ocr.active.flatMap((page) => page.pars).find((par) => par.id === words[i + 1].footnoteParId);
+    expect(note?.type, 'the reference must link to its footnote paragraph').toBe('footnote');
+    expect(note && parText(note), 'the linked note must be the one the reference names').toBe('Photos larger than 10 MB upload only on wifi.');
+  });
+
   test('Task-list checkboxes become visible markers', () => {
     expect(doc.ocr.active[1].pars[15].marker, 'an unchecked task imports with an empty-checkbox marker').toBe('☐');
     expect(parText(doc.ocr.active[1].pars[15]), 'the checkbox syntax must leave the item text').toBe('Confirm your tide-table subscription');

@@ -2888,9 +2888,10 @@ export function analyzeLayout(pages, opts = {}) {
       const line = lines[li];
       if (line.par && (line.par.type === 'footnote' || line.par.type === 'endnote')) continue; // a marker inside a note is not a body reference
       for (const word of line.words) {
-        if (!word.style || !word.style.sup) continue;
-        const label = labelOf(word.text);
-        if (!markerRe.test(label)) continue;
+        const text = labelOf(word.text);
+        const symbol = /[*†‡]{1,3}$/.exec(text);
+        const label = word.style && word.style.sup && markerRe.test(text) ? text : symbol ? symbol[0] : null;
+        if (!label) continue;
         bodyMarkers.push({
           order: p * 100000 + li, page: p, word, label,
         });
@@ -2905,7 +2906,8 @@ export function analyzeLayout(pages, opts = {}) {
       let label = par.marker && markerRe.test(labelOf(par.marker)) ? labelOf(par.marker) : null;
       if (!label) {
         const w0 = par.lines[0] && par.lines[0].words[0];
-        if (w0 && w0.style && w0.style.sup && markerRe.test(labelOf(w0.text))) label = labelOf(w0.text);
+        const t0 = w0 ? labelOf(w0.text) : '';
+        if (w0 && ((w0.style && w0.style.sup && markerRe.test(t0)) || /^[*†‡]{1,3}$/.test(t0))) label = t0;
       }
       if (!label) continue;
       const fnLineIdx = pages[p].lines.indexOf(par.lines[0]);

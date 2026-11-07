@@ -247,7 +247,8 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
         const tokenWidth = getTextWidth(token.text, block.fontSize, face);
         const lastWord = lineObj.words[lineObj.words.length - 1];
 
-        if (!token.space && lastWord) {
+        const fnRef = !!token.run.footnoteLabel && token.text === token.run.footnoteLabel;
+        if (!token.space && lastWord && !fnRef) {
           const tailStyle = lastWord.styleRuns && lastWord.styleRuns.length > 0
             ? { ...lastWord.style, ...lastWord.styleRuns[lastWord.styleRuns.length - 1].style }
             : lastWord.style;

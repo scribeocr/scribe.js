@@ -203,8 +203,9 @@ const wordStyles = () => {
     + `  .scribe-article table {\n    border-collapse:collapse;\n    margin:0 0 ${afterPt}pt;\n  }\n  .scribe-article th, .scribe-article td {\n    border:.5pt solid #000;\n`
       + `    padding:${cellPt('top')}pt ${cellPt('right')}pt ${cellPt('bottom') + afterPt}pt ${cellPt('left')}pt;\n    font-weight:inherit;\n    text-align:left;\n    vertical-align:top;\n  }\n`
     + '  .scribe-article .scribe-fnref a {\n    text-decoration:none;\n    color:inherit;\n  }\n'
-    + `  .scribe-article .scribe-notes {\n    margin-top:18pt;\n    border-top:1px solid #000;\n    width:33%;\n    padding-top:2pt;\n    font-size:${num(child(fn, 'sz')) / 2 || bodyPt}pt;\n`
-      + `    line-height:${Math.round((num(fnSpacing, 'line') / 240 || line) * 1000) / 1000};\n  }\n`
+    + `  .scribe-article .scribe-notes {\n    margin:18pt 0 ${afterPt}pt;\n    border-top:1px solid #000;\n    width:33%;\n    padding-top:2pt;\n    font-size:${num(child(fn, 'sz')) / 2 || bodyPt}pt;\n`
+      // Word's single spacing maps to 1.0 here, which sets lines tighter than Word does, so the notes keep at least the body's line height.
+      + `    line-height:${Math.round(Math.max(num(fnSpacing, 'line') / 240 || line, line) * 1000) / 1000};\n  }\n`
     + `  .scribe-article .scribe-notes ol {\n    width:300%;\n  }\n  .scribe-article .scribe-notes li {\n    margin:0 0 ${num(fnSpacing, 'after') / 20 || 0}pt;\n  }\n`
     + '  .scribe-article .scribe-fnlabel {\n    vertical-align:super;\n    font-size:.7em;\n    margin-right:.3em;\n  }\n';
   wordStylesCache = { css, family };
@@ -233,6 +234,21 @@ const DROP_RULES = '  .scribe-article .scribe-export-dropped {\n    position:rel
   + '  .scribe-article .scribe-export-dropped::before {\n    content:"";\n    position:absolute;\n    left:-12px;\n    top:0;\n    bottom:0;\n'
   + '    width:3px;\n    border-radius:1px;\n    background:#d1493d;\n  }\n'
   + '  .scribe-article .scribe-export-ghost {\n    color:#8b93a3;\n    text-decoration:line-through;\n    text-decoration-color:rgba(209,73,61,.6);\n    text-decoration-thickness:1px;\n  }\n';
+// The flash and the back arrow are fixed colors, because the paper is white in both themes.
+const NOTE_RULES = '  .scribe-export-chip .scribe-export-chip-sub {\n    color:var(--scribe-ink-3);\n  }\n'
+  + '  .scribe-export-notecard {\n    position:absolute;\n    z-index:4;\n    width:max-content;\n    max-width:280px;\n    padding:7px 10px 8px;\n'
+  + '    box-sizing:border-box;\n    border-radius:6px;\n    background:var(--scribe-tip-bg);\n    color:var(--scribe-tip-ink);\n'
+  + '    font:12px/1.45 system-ui,sans-serif;\n    box-shadow:var(--scribe-tip-shadow);\n'
+  + '    user-select:text;\n    cursor:text;\n  }\n  .scribe-export-notecard[hidden] {\n    display:none;\n  }\n'
+  + '  .scribe-export-notecard-h {\n    margin-bottom:2px;\n    font-size:11px;\n    font-weight:600;\n    letter-spacing:.02em;\n    color:var(--scribe-tip-ink-2);\n  }\n'
+  + '  .scribe-article .scribe-fnref a {\n    color:inherit;\n  }\n'
+  + '  .scribe-article .scribe-fnback {\n    margin-left:.3em;\n    font-size:.9em;\n    color:#8b93a3;\n    text-decoration:none;\n  }\n'
+  + '  .scribe-article .scribe-fnref a:focus-visible, .scribe-article .scribe-fnback:focus-visible {\n    outline:2px solid var(--scribe-accent);\n'
+  + '    outline-offset:1px;\n    border-radius:2px;\n  }\n'
+  + '  @keyframes scribe-export-fnflash {\n    from {\n      background:rgba(28,98,212,.18);\n      box-shadow:0 0 0 3px rgba(28,98,212,.18);\n    }\n'
+  + '    to {\n      background:transparent;\n      box-shadow:0 0 0 3px transparent;\n    }\n  }\n'
+  + '  .scribe-article .scribe-export-fnflash {\n    animation:scribe-export-fnflash 1.2s ease-out 1;\n    border-radius:2px;\n  }\n'
+  + '  @media (prefers-reduced-motion:reduce) {\n    .scribe-article .scribe-export-fnflash {\n      animation:none;\n    }\n  }\n';
 const SUMMARY_RULES = '  .scribe-export-summary {\n    max-width:420px;\n    margin:16px auto;\n    padding:12px 14px;\n    background:var(--scribe-surface);\n'
   + '    border:1px solid var(--scribe-line);\n    border-radius:8px;\n'
   + '    font:13px/1.5 system-ui,sans-serif;\n    color:var(--scribe-ink);\n  }\n  .scribe-export-summary h4 {\n    margin:0 0 8px;\n    font-size:13px;\n    word-break:break-all;\n  }\n'
@@ -445,7 +461,7 @@ export function createExportTool(app) {
   const chipBlockOf = (target) => {
     if (surfaceOf() !== 'document' || !(target instanceof Element)) return null;
     const el = /** @type {?HTMLElement} */ (target.closest('[data-par]'));
-    if (!el || el.closest('.scribe-notes') || !/^(H[1-6]|P|LI|BLOCKQUOTE)$/.test(el.tagName)) return null;
+    if (!el || !/^(H[1-6]|P|LI|BLOCKQUOTE)$/.test(el.tagName)) return null;
     return parInfo.has(el.dataset.par || '') ? el : null;
   };
   /** @param {HTMLElement} el */
@@ -454,10 +470,24 @@ export function createExportTool(app) {
     closeRoleMenu();
     chipBlock = el;
     const info = /** @type {{par: OcrPar, n: number}} */ (parInfo.get(el.dataset.par || ''));
-    const label = ROLES.find(([, key]) => key === roleKey(info.par))?.[0] || info.par.type;
+    let label = ROLES.find(([, key]) => key === roleKey(info.par))?.[0] || info.par.type;
+    let note = '';
+    let said = '';
+    if (info.par.type === 'footnote' || info.par.type === 'endnote') {
+      label = info.par.type === 'endnote' ? 'Endnote' : 'Footnote';
+      const own = el.dataset.ownLabel;
+      if (!el.closest('.scribe-notes')) {
+        note = ' <span class="scribe-export-chip-sub">· kept as text</span>';
+        said = ', kept as text in the export';
+      } else if (own) {
+        label += ` ${el.querySelector('.scribe-fnlabel')?.textContent || ''}`;
+        note = ` <span class="scribe-export-chip-sub">· ${esc(own)} on the page</span>`;
+        said = `, ${own} on the page`;
+      }
+    }
     const dropped = dropActive() && parIsFurniture(info.par);
-    chipEl.innerHTML = `${esc(label)}${dropped ? ' <span class="scribe-export-chip-drop">· dropped</span>' : ''} ${CARET_SVG}`;
-    chipEl.setAttribute('aria-label', `Paragraph role: ${label}${dropped ? ', dropped from the export' : ''}`);
+    chipEl.innerHTML = `${esc(label)}${dropped ? ' <span class="scribe-export-chip-drop">· dropped</span>' : ''}${note} ${CARET_SVG}`;
+    chipEl.setAttribute('aria-label', `Paragraph role: ${label}${dropped ? ', dropped from the export' : ''}${said}`);
     chipEl.hidden = false;
     const at = paneOffset(el);
     chipEl.style.top = `${at.y - 2}px`;
@@ -491,7 +521,8 @@ export function createExportTool(app) {
     if (!info) return;
     const current = roleKey(info.par);
     const tagged = dropActive();
-    menuEl.replaceChildren(...ROLES.map(([label, key]) => {
+    const rows = info.par.type === 'footnote' || info.par.type === 'endnote' ? [[info.par.type === 'endnote' ? 'Endnote' : 'Footnote', info.par.type], ...ROLES] : ROLES;
+    menuEl.replaceChildren(...rows.map(([label, key]) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.setAttribute('role', 'menuitem');
@@ -520,6 +551,125 @@ export function createExportTool(app) {
     if (el) showChip(el);
   });
   pane.addEventListener('mouseleave', () => { if (menuEl.hidden && !pane.contains(document.activeElement)) hideChip(); });
+
+  // ---- The note card. ----
+  const noteCard = document.createElement('div');
+  noteCard.className = 'scribe-export-notecard';
+  noteCard.setAttribute('role', 'tooltip');
+  noteCard.hidden = true;
+  shadow.append(noteCard);
+  /** @type {?HTMLAnchorElement} */
+  let noteCardRef = null;
+  /** @type {?ReturnType<typeof setTimeout>} */
+  let noteCardTimer = null;
+  let overNoteCard = false;
+  const hideNoteCard = () => {
+    if (noteCardTimer) clearTimeout(noteCardTimer);
+    noteCardTimer = null;
+    overNoteCard = false;
+    if (noteCard.hidden) return;
+    noteCard.hidden = true;
+    noteCardRef = null;
+    document.removeEventListener('keydown', onNoteCardKey, true);
+  };
+  const hideNoteCardSoon = () => {
+    if (noteCardTimer) clearTimeout(noteCardTimer);
+    noteCardTimer = setTimeout(() => {
+      noteCardTimer = null;
+      if (!overNoteCard && shadow.activeElement !== noteCardRef) hideNoteCard();
+    }, 150);
+  };
+  noteCard.addEventListener('mouseenter', () => {
+    overNoteCard = true;
+    if (noteCardTimer) clearTimeout(noteCardTimer);
+    noteCardTimer = null;
+  });
+  noteCard.addEventListener('mouseleave', () => {
+    overNoteCard = false;
+    hideNoteCardSoon();
+  });
+  // Esc closes the card before the mode's own Esc, which exits the mode, can see the press.
+  const onNoteCardKey = (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation();
+    hideNoteCard();
+  };
+  /** @param {?EventTarget} target */
+  const refOf = (target) => (target instanceof Element ? /** @type {?HTMLAnchorElement} */ (target.closest('.scribe-fnref a')) : null);
+  /** @param {HTMLAnchorElement} a */
+  const noteOf = (a) => /** @type {?HTMLElement} */ (paneBody.querySelector(`#${CSS.escape(a.getAttribute('href')?.slice(1) || '')}`));
+  /** @param {HTMLAnchorElement} a */
+  const showNoteCard = (a) => {
+    const li = noteOf(a);
+    if (!li || a === noteCardRef) return;
+    noteCardRef = a;
+    const text = /** @type {HTMLElement} */ (li.cloneNode(true));
+    for (const el of text.querySelectorAll('.scribe-fnlabel, .scribe-fnback')) el.remove();
+    const info = parInfo.get(li.dataset.par || '');
+    noteCard.innerHTML = `<div class="scribe-export-notecard-h">${info?.par.type === 'endnote' ? 'Endnote' : 'Footnote'} ${esc(li.querySelector('.scribe-fnlabel')?.textContent || '')}</div>${esc(text.textContent?.trim() || '')}`;
+    noteCard.hidden = false;
+    const at = paneOffset(a);
+    noteCard.style.top = `${at.y + a.offsetHeight + 4}px`;
+    noteCard.style.left = `${Math.max(8, Math.min(at.x, paneBody.clientWidth - noteCard.offsetWidth - 8))}px`;
+    document.addEventListener('keydown', onNoteCardKey, true);
+  };
+  /** @param {HTMLElement} li */
+  const goToNote = (li) => {
+    hideNoteCard();
+    // Set directly, not through scrollPaneTo, so the pane's scroll listener does not ignore it as an echo and the lane follows.
+    pane.scrollTop = Math.max(0, paneOffset(li).y - 120);
+    li.classList.remove('scribe-export-fnflash');
+    requestAnimationFrame(() => li.classList.add('scribe-export-fnflash'));
+    /** @type {?HTMLElement} */ (li.querySelector('.scribe-fnback'))?.focus({ preventScroll: true });
+  };
+  paneBody.addEventListener('mouseover', (e) => {
+    const a = refOf(e.target);
+    if (!a) return;
+    if (noteCardTimer) clearTimeout(noteCardTimer);
+    noteCardTimer = null;
+    showNoteCard(a);
+  });
+  paneBody.addEventListener('mouseout', (e) => {
+    const a = refOf(e.target);
+    if (a && a === noteCardRef) hideNoteCardSoon();
+  });
+  paneBody.addEventListener('focusin', (e) => {
+    const a = refOf(e.target);
+    if (a) showNoteCard(a);
+  });
+  paneBody.addEventListener('focusout', (e) => {
+    const a = refOf(e.target);
+    if (a && a === noteCardRef && !overNoteCard) hideNoteCardSoon();
+  });
+  // A reference's own link would set the page's hash and scroll nothing, since its target lives in this shadow root.
+  paneBody.addEventListener('click', (e) => {
+    if (refOf(e.target)) {
+      e.preventDefault();
+      return;
+    }
+    const back = e.target instanceof Element ? /** @type {?HTMLAnchorElement} */ (e.target.closest('.scribe-fnback')) : null;
+    if (!back) return;
+    e.preventDefault();
+    const ref = /** @type {?HTMLElement} */ (paneBody.querySelector(`#${CSS.escape(back.getAttribute('href')?.slice(1) || '')}`));
+    if (!ref) return;
+    pane.scrollTop = Math.max(0, paneOffset(ref).y - 100);
+    ref.focus({ preventScroll: true });
+  });
+  paneBody.addEventListener('dblclick', (e) => {
+    const a = refOf(e.target);
+    if (!a) return;
+    e.preventDefault();
+    const li = noteOf(a);
+    if (li) goToNote(li);
+  });
+  paneBody.addEventListener('keydown', (e) => {
+    const a = refOf(e.target);
+    if (!a || e.key !== 'Enter') return;
+    e.preventDefault();
+    const li = noteOf(a);
+    if (li) goToNote(li);
+  });
 
   /** @type {Map<number, {el: ?HTMLElement, top: number, width: number, height: number}>} The placed pages, by page index, in page pixels. */
   let placed = new Map();
@@ -725,9 +875,12 @@ export function createExportTool(app) {
           displayMode: 'ebook',
           runFonts: word,
           parIds: true,
+          gatherNotes: f.id !== 'txt',
+          notesPerPage: word,
+          noteNumbers: word ? 'sequential' : 'page',
         });
         body = frag.body;
-        paneStyle.textContent = docRules(f) + PAPER_RULES + CHIP_RULES + DROP_RULES;
+        paneStyle.textContent = docRules(f) + PAPER_RULES + CHIP_RULES + DROP_RULES + NOTE_RULES;
         for (const page of doc.ocr.active) {
           if (page) for (const par of page.pars) parInfo.set(par.id, { par, n: page.n });
         }

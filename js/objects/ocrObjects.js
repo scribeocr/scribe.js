@@ -68,6 +68,29 @@ export function parMarkerInText(par) {
   return !!word && word.text.startsWith(/** @type {string} */ (par.marker));
 }
 
+/**
+ * Whether a word looks like the marker a note paragraph opens with.
+ * @param {OcrWord} word
+ * @param {?OcrPar} par
+ * @returns {boolean}
+ */
+export function isNoteLeader(word, par) {
+  const text = word.text.trim();
+  // Unless it equals `par.marker`, a number is a leader only as a superscript, since a note's own text can open with a number.
+  return (word.style.sup && /^[\d*†‡]{1,3}[.)\]]?$/.test(text)) || /^[*†‡]{1,3}[.)\]]?$/.test(text) || (!!par && !!par.marker && text === par.marker);
+}
+
+/**
+ * Splits a footnote reference word into the text before its marker, the marker, and the punctuation after it.
+ * @param {OcrWord} word
+ * @returns {{head: string, label: string, tail: string}}
+ */
+export function splitNoteReference(word) {
+  const text = word.text.trim();
+  const m = /^(.*?)([*†‡]{1,3}|\d{1,3})([.)\]]*)$/.exec(text);
+  return m ? { head: m[1], label: m[2], tail: m[3] } : { head: '', label: text, tail: '' };
+}
+
 export function ParDebugInfo() {
   /** @type {?string} */
   this.raw = null;

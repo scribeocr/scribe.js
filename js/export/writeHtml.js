@@ -1,6 +1,8 @@
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { calcWordMetrics } from '../utils/fontUtils.js';
-import ocr, { parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
+import ocr, {
+  isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+} from '../objects/ocrObjects.js';
 import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
@@ -98,8 +100,13 @@ export const ARTICLE_RULES = `  .scribe-article {
     font-size:.8em;
     color:#777;
   }
-  .scribe-article .scribe-fnref a, .scribe-article .scribe-fnback {
+  .scribe-article .scribe-fnref a {
     text-decoration:none;
+    color:inherit;
+  }
+  .scribe-article .scribe-fnback {
+    text-decoration:none;
+    color:#777;
   }
   .scribe-article .scribe-notes {
     margin-top:3em;
@@ -194,6 +201,9 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {boolean} [params.parIds=false] - Mark each line of the exact layout with its paragraph's id, as `data-par`.
  *    Mark each block of the article with its paragraph's id and page, as `data-par` and `data-page`.
  * @param {boolean} [params.runFonts=false] - Mark each run of the article with the font its words record, as `data-font`.
+ * @param {boolean} [params.gatherNotes=true] - Write note paragraphs as the article's notes, linked from their references, instead of as paragraphs where the page prints them.
+ * @param {boolean} [params.notesPerPage=false] - Write each page's notes after the page's last body block instead of in one list at the end of the article.
+ * @param {('page'|'sequential')} [params.noteNumbers='page'] - The label a numbered note shows: the number the page prints, or its place among the numbered notes in reference order.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
  *    progress reporting.
  * @returns {{body: string, style: string, fontsUsed: Set<FontContainerFont>, title?: string}} The body's markup, the stylesheet rules, the fonts the markup names, and the article's title.
@@ -209,6 +219,9 @@ export function writeHtmlFragment({
   autoRotate = scribeDocDefaults.autoRotate,
   parIds = false,
   runFonts = false,
+  gatherNotes = true,
+  notesPerPage = false,
+  noteNumbers = 'page',
   doc = null,
 }) {
   /** @type {Set<FontContainerFont>} */
@@ -225,13 +238,35 @@ export function writeHtmlFragment({
   if (reflowText) {
     const esc = ocr.escapeXml;
     const compounds = hyphenatedCompounds(ocrPages);
-    // A marker can appear before its definition, so which footnotes become notes is settled before any block is written.
     /** @type {Map<string, string>} */
     const fnLabelById = new Map();
-    for (const g of pageArr) {
-      if (!ocrPages[g]) continue;
-      for (const par of ocrPages[g].pars) {
-        if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par)) fnLabelById.set(par.id, par.marker);
+    /** @type {Map<string, string>} */
+    const fnPageLabelById = new Map();
+    if (gatherNotes) {
+      const parById = new Map();
+      for (const g of pageArr) {
+        for (const par of ocrPages[g]?.pars || []) parById.set(par.id, par);
+      }
+      let numbered = 0;
+      for (const g of pageArr) {
+        for (const lineObj of ocrPages[g]?.lines || []) {
+          for (const word of lineObj.words) {
+            if (!word || !word.footnoteParId || (wordIds && !wordIds.includes(word.id))) continue;
+            const fnPar = parById.get(word.footnoteParId);
+            if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || fnLabelById.has(fnPar.id)) continue;
+            const own = fnPar.marker && /^[^\s\]]+$/.test(fnPar.marker) ? fnPar.marker : splitNoteReference(word).label;
+            if (!own) continue;
+            const label = noteNumbers === 'sequential' && !/\D/.test(own) ? String(++numbered) : own;
+            fnLabelById.set(fnPar.id, label);
+            if (label !== own) fnPageLabelById.set(fnPar.id, own);
+          }
+        }
+      }
+      // A Word or Markdown footnote is gathered even when nothing links to it, or writePar would take its metadata label for a list marker.
+      for (const g of pageArr) {
+        for (const par of ocrPages[g]?.pars || []) {
+          if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par) && !fnLabelById.has(par.id)) fnLabelById.set(par.id, par.marker);
+        }
       }
     }
     const referenced = new Set();
@@ -239,7 +274,7 @@ export function writeHtmlFragment({
      * Write lines of words as inline markup.
      * @param {Array<{words: Array<?OcrWord>}>} lines
      */
-    const inline = (lines, { plainBold = false } = {}) => {
+    const inline = (lines, { plainBold = false, stripLeader = false } = {}) => {
       let out = '';
       let runKey = '';
       let run = '';
@@ -255,22 +290,18 @@ export function writeHtmlFragment({
         run = '';
       };
       let prevJoin = false;
+      let first = true;
       for (let li = 0; li < lines.length; li++) {
         const { joinNext, dropHyphen } = lines[li + 1] ? lineJoin(lines[li], lines[li + 1], compounds) : { joinNext: false, dropHyphen: false };
         const words = lines[li].words.filter(/** @returns {w is OcrWord} */ (w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id)));
         for (let i = 0; i < words.length; i++) {
           const word = words[i];
-          const sep = (li === 0 && i === 0) || (i === 0 && prevJoin) ? '' : ' ';
+          if (stripLeader && first && isNoteLeader(word, lines[li].par || null)) continue;
+          const sep = first || (i === 0 && prevJoin) ? '' : ' ';
+          first = false;
           const label = word.footnoteParId ? fnLabelById.get(word.footnoteParId) : undefined;
-          if (label !== undefined && word.text === label && word.footnoteParId) {
-            closeRun();
-            runKey = '';
-            const first = !referenced.has(word.footnoteParId);
-            referenced.add(word.footnoteParId);
-            out += `${sep}<sup class="scribe-fnref"><a href="#scribe-fn-${word.footnoteParId}"${first ? ` id="scribe-fnref-${word.footnoteParId}"` : ''}>${esc(label)}</a></sup>`;
-            continue;
-          }
-          const text = i === words.length - 1 && dropHyphen ? word.text.replace(LINE_END_HYPHEN_RE, '') : word.text;
+          const ref = label !== undefined ? splitNoteReference(word) : null;
+          const text = ref ? ref.head : i === words.length - 1 && dropHyphen ? word.text.replace(LINE_END_HYPHEN_RE, '') : word.text;
           const segments = ocr.getWordStyleSegments(word) || [{ start: 0, end: text.length, style: word.style }];
           for (let k = 0; k < segments.length; k++) {
             const segment = segments[k];
@@ -286,6 +317,14 @@ export function writeHtmlFragment({
             out += lead;
             runKey = key;
             run = esc(piece);
+          }
+          if (ref) {
+            closeRun();
+            runKey = '';
+            const firstRef = !referenced.has(word.footnoteParId);
+            referenced.add(word.footnoteParId);
+            // The reference stays attached to the word before it.
+            out += `<sup class="scribe-fnref"><a href="#scribe-fn-${word.footnoteParId}"${firstRef ? ` id="scribe-fnref-${word.footnoteParId}"` : ''}>${esc(label)}</a></sup>${esc(ref.tail)}`;
           }
         }
         prevJoin = joinNext;
@@ -305,9 +344,19 @@ export function writeHtmlFragment({
         body += `${list.item ? '</li>\n' : ''}</${list.tag}>\n`;
       }
     };
-    /** @type {Array<{id: string, label: string, html: string, n: number}>} */
+    /** @type {Array<{id: string, label: string, own?: string, html: string, n: number}>} */
     const notes = [];
+    /** @param {Array<{id: string, label: string, own?: string, html: string, n: number}>} list */
+    const notesHtml = (list) => {
+      let s = '<section class="scribe-notes">\n<ol>\n';
+      for (const note of list) {
+        const back = referenced.has(note.id) ? ` <a class="scribe-fnback" href="#scribe-fnref-${note.id}">↩</a>` : '';
+        s += `<li id="scribe-fn-${note.id}"${parIds ? ` data-par="${note.id}" data-page="${note.n}"` : ''}${note.own ? ` data-own-label="${esc(note.own)}"` : ''}><span class="scribe-fnlabel">${esc(note.label)}</span>${note.html}${back}</li>\n`;
+      }
+      return `${s}</ol>\n</section>\n`;
+    };
     let pageN = 0;
+    let lastBodyEnd = 0;
     /** @type {Array<number>} The left edges the page's list items start at, one per nesting depth. */
     let depthLefts = [];
     /** @param {?OcrPar} par */
@@ -323,6 +372,7 @@ export function writeHtmlFragment({
         closeLists(0);
         const text = lines.map((line) => line.words.filter((w) => !!w).map((w) => esc(w.text)).join(' ')).join('\n');
         body += `<pre${attrs(par)}><code>${text}</code></pre>\n`;
+        lastBodyEnd = body.length;
         return;
       }
       if (par && par.type === 'title') {
@@ -330,18 +380,22 @@ export function writeHtmlFragment({
         const level = Math.min(Math.max(par.headingLevel || 1, 1), 6);
         if (!title) title = lines.flatMap((line) => line.words.map((w) => w.text)).join(' ');
         body += `<h${level}${attrs(par)}>${inline(lines, { plainBold: true })}</h${level}>\n`;
+        lastBodyEnd = body.length;
         return;
       }
       if (par && par.type === 'blockquote') {
         closeLists(0);
         const marker = par.marker && !parMarkerInText(par) ? `${esc(par.marker)} ` : '';
         body += `<blockquote${attrs(par)}><p>${marker}${inline(lines)}</p></blockquote>\n`;
+        lastBodyEnd = body.length;
         return;
       }
       if (par && fnLabelById.has(par.id)) {
+        const hadList = openLists.length > 0;
         closeLists(0);
+        if (hadList) lastBodyEnd = body.length;
         notes.push({
-          id: par.id, label: /** @type {string} */ (fnLabelById.get(par.id)), html: inline(lines), n: pageN,
+          id: par.id, label: /** @type {string} */ (fnLabelById.get(par.id)), own: fnPageLabelById.get(par.id), html: inline(lines, { stripLeader: true }), n: pageN,
         });
         return;
       }
@@ -372,9 +426,11 @@ export function writeHtmlFragment({
         const glyph = marker === '☐' || marker === '☑' ? `${marker} ` : '';
         const markerAttr = glyph ? '' : ` data-marker="${esc(marker)}"`;
         body += `<li${value}${markerAttr}${attrs(par)}>${glyph}${inline(lines)}`;
+        lastBodyEnd = body.length;
         top.item = true;
         return;
       }
+      const hadList = openLists.length > 0;
       closeLists(0);
       /** @type {Partial<Record<import('../objects/ocrObjects.js').ParType, string>>} */
       const roleClasses = {
@@ -385,12 +441,17 @@ export function writeHtmlFragment({
       };
       const roleClass = roleClasses[par?.type];
       const cls = roleClass ? ` class="${roleClass}"` : '';
+      // A list the page's notes follow must close before them, so the notes do not land inside its last item.
+      if (roleClass && hadList) lastBodyEnd = body.length;
       body += `<p${cls}${attrs(par)}>${inline(lines)}</p>\n`;
+      if (!roleClass) lastBodyEnd = body.length;
     };
     for (const g of pageArr) {
       const pageObj = ocrPages[g];
       if (!pageObj || pageObj.lines.length === 0) continue;
       pageN = g;
+      const pageNotesStart = notes.length;
+      lastBodyEnd = body.length;
 
       if (pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetricsArr[g]?.angle || 0);
 
@@ -429,12 +490,14 @@ export function writeHtmlFragment({
                 body += '</tr>\n';
               }
               body += '</table>\n</div>\n';
+              lastBodyEnd = body.length;
             }
           }
           const orphans = lineObj.words.filter((w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id)) && !cellWordIds.has(w.id));
           if (orphans.length > 0) {
             closeLists(0);
             body += `<p${attrs(lineObj.par)}>${inline([{ words: orphans }])}</p>\n`;
+            lastBodyEnd = body.length;
           }
           continue;
         }
@@ -443,17 +506,18 @@ export function writeHtmlFragment({
         parLines.push(lineObj);
       }
       writePar();
+      if (notesPerPage && notes.length > pageNotesStart) {
+        // The notes go before any header, footer or number line the reading order puts after the page's last body block.
+        if (openLists.length > 0) {
+          closeLists(0);
+          lastBodyEnd = body.length;
+        }
+        body = body.slice(0, lastBodyEnd) + notesHtml(notes.splice(pageNotesStart)) + body.slice(lastBodyEnd);
+      }
       doc?.progressHandler({ n: g, type: 'export', info: {} });
     }
     closeLists(0);
-    if (notes.length > 0) {
-      body += '<section class="scribe-notes">\n<ol>\n';
-      for (const note of notes) {
-        const back = referenced.has(note.id) ? ` <a class="scribe-fnback" href="#scribe-fnref-${note.id}">↩</a>` : '';
-        body += `<li id="scribe-fn-${note.id}"${parIds ? ` data-par="${note.id}" data-page="${note.n}"` : ''}><span class="scribe-fnlabel">${esc(note.label)}</span>${note.html}${back}</li>\n`;
-      }
-      body += '</ol>\n</section>\n';
-    }
+    if (notes.length > 0) body += notesHtml(notes);
     body += '</article>\n';
     return {
       body, style: ARTICLE_RULES, fontsUsed, title,

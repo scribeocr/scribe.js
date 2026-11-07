@@ -5,7 +5,9 @@ import {
 import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
-import ocr, { parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
+import ocr, {
+  isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+} from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 const LINE_END_HYPHEN_RE = /[-‐­]$/;
@@ -63,7 +65,7 @@ export function writeDocxContent({
         if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || footnoteIdByParId.has(fnPar.id)) continue;
         footnoteIdByParId.set(fnPar.id, String(footnoteParsOrdered.length + 1));
         footnoteParsOrdered.push(fnPar);
-        const label = wordObj.text.trim().replace(/[.)\]]+$/, '');
+        const { label } = splitNoteReference(wordObj);
         if (/\D/.test(label)) footnoteMarkByParId.set(fnPar.id, label);
       }
     }
@@ -94,12 +96,10 @@ export function writeDocxContent({
     return runsXml;
   };
 
-  const fnMarkerRe = /^[\d*†‡]{1,3}[.)\]]?$/;
-
   /**
    * The runs of a paragraph's lines, joined as one paragraph.
    * @param {Array<{words: Array<?OcrWord>}>} lines
-   * @param {{prefix?: string, leadSpace?: boolean, stripLeader?: boolean}} [opts] - `stripLeader` drops a footnote's own leading superscript marker word.
+   * @param {{prefix?: string, leadSpace?: boolean, stripLeader?: boolean}} [opts] - `stripLeader` drops a footnote's own leading marker word.
    */
   const runsOf = (lines, { prefix = '', leadSpace = false, stripLeader = false } = {}) => {
     let runs = '';
@@ -117,8 +117,7 @@ export function writeDocxContent({
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];
         if (!included(wordObj)) continue;
-        // Word renders a footnote's number from <w:footnoteRef/>, so a PDF footnote's own superscript marker word would double it.
-        if (strippingLeader && wordObj.style.sup && fnMarkerRe.test((wordObj.text || '').trim())) continue;
+        if (strippingLeader && isNoteLeader(wordObj, lineObj.par || null)) continue;
         strippingLeader = false;
 
         // The marker's text is dropped for a numbered reference, since Word renders the number itself.
@@ -126,10 +125,13 @@ export function writeDocxContent({
         const fnId = wordObj.footnoteParId ? footnoteIdByParId.get(wordObj.footnoteParId) : undefined;
         const mark = wordObj.footnoteParId ? footnoteMarkByParId.get(wordObj.footnoteParId) : undefined;
         if (fnId !== undefined) {
+          const { head, tail } = splitNoteReference(wordObj);
+          if (head) runs += textRun(wordObj, first ? (leadSpace ? ' ' : '') : (firstInLine && prevJoin ? '' : ' '), head);
           const rPr = `<w:rPr><w:rStyle w:val="FootnoteReference"/>${styleXml({ sup: true, font: wordObj.style.font })}</w:rPr>`;
           runs += mark === undefined
             ? `<w:r>${rPr}<w:footnoteReference w:id="${fnId}"/></w:r>`
             : `<w:r>${rPr}<w:footnoteReference w:customMarkFollows="1" w:id="${fnId}"/><w:t>${ocr.escapeXml(mark)}</w:t></w:r>`;
+          if (tail) runs += textRun(wordObj, '', tail);
           first = false;
           firstInLine = false;
           continue;

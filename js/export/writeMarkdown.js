@@ -1,7 +1,9 @@
 import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
-import { getWordStyleSegments, parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
+import {
+  getWordStyleSegments, isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+} from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 /**
@@ -138,13 +140,34 @@ export function writeMarkdown({
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
 
-  // A marker can appear before its definition, so which footnotes get `[^label]:` syntax is settled before any line is written.
   /** @type {Map<string, string>} */
   const fnLabelById = new Map();
+  const fnLabelsUsed = new Set();
+  /** @param {string} own */
+  const uniqueLabel = (own) => {
+    let label = own;
+    for (let k = 2; fnLabelsUsed.has(label); k++) label = `${own}-${k}`;
+    fnLabelsUsed.add(label);
+    return label;
+  };
+  const parById = new Map();
   for (const g of pageArr) {
-    if (!ocrCurrent[g]) continue;
-    for (const par of ocrCurrent[g].pars) {
-      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par)) fnLabelById.set(par.id, par.marker);
+    for (const par of ocrCurrent[g]?.pars || []) parById.set(par.id, par);
+  }
+  for (const g of pageArr) {
+    for (const lineObj of ocrCurrent[g]?.lines || []) {
+      for (const word of lineObj.words) {
+        if (!word || !word.footnoteParId) continue;
+        const fnPar = parById.get(word.footnoteParId);
+        if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || fnLabelById.has(fnPar.id)) continue;
+        const own = fnPar.marker && /^[^\s\]]+$/.test(fnPar.marker) ? fnPar.marker : splitNoteReference(word).label;
+        if (own) fnLabelById.set(fnPar.id, uniqueLabel(own));
+      }
+    }
+  }
+  for (const g of pageArr) {
+    for (const par of ocrCurrent[g]?.pars || []) {
+      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par) && !fnLabelById.has(par.id)) fnLabelById.set(par.id, uniqueLabel(par.marker));
     }
   }
 
@@ -240,6 +263,7 @@ export function writeMarkdown({
 
     /** @type {OcrPar | null | undefined} */
     let parCurrent;
+    let stripLeader = false;
     let prevJoin = false;
 
     for (let h = 0; h < pageObj.lines.length; h++) {
@@ -295,6 +319,7 @@ export function writeMarkdown({
             if (par.marker && !parMarkerInText(par)) linePrefix += `${LIST_MARKERS[par.marker] || par.marker} `;
           } else if (par && fnLabelById.has(par.id)) {
             linePrefix = `[^${fnLabelById.get(par.id)}]: `;
+            stripLeader = true;
           } else if (par && par.marker) {
             if (parMarkerInText(par)) {
               // Escaping here would turn the item's own `1.` into literal text and lose the list on re-import.
@@ -336,13 +361,18 @@ export function writeMarkdown({
       for (let i = 0; i < words.length; i++) {
         const wordObj = words[i];
         const joined = i === 0 && prevJoin;
+        if (stripLeader) {
+          stripLeader = false;
+          if (isNoteLeader(wordObj, lineObj.par)) continue;
+        }
 
         const fnLabel = reflowText && applyFormatting && wordObj.footnoteParId ? fnLabelById.get(wordObj.footnoteParId) : undefined;
-        if (fnLabel !== undefined && wordObj.text === fnLabel) {
+        if (fnLabel !== undefined) {
           flushStyledWords();
+          const { head, tail } = splitNoteReference(wordObj);
           if (lineBuf === null) lineBuf = '';
-          else if (!joined) lineBuf += ' ';
-          lineBuf += `[^${fnLabel}]`;
+          else if (head && !joined) lineBuf += ' ';
+          lineBuf += `${escapeMarkdown(head)}[^${fnLabel}]${escapeMarkdown(tail)}`;
           continue;
         }
 
