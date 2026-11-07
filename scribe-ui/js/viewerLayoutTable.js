@@ -672,23 +672,40 @@ export class UiDataTable {
       });
     }
 
-    // A separator breaks across a row only where a captured word's ink spans it, matching how a spreadsheet drops the border a cell overflows across.
-    // Testing the cell's whole span instead would also drop the borders between later columns whose own values never cross one.
+    // In the Preview Export a cell's text that runs past a column line is shown as a spreadsheet shows it.
     /** @type {Map<UiDataColSep, Array<[number, number]>>} */
     const sepGaps = new Map();
+    /** @type {Map<string, {left?: number, right?: number}>} */
+    this.previewClips = new Map();
     if (preview && this.tableContent) {
       const { rowWordArr, rowBottomArr } = this.tableContent;
       rowWordArr.forEach((colWordArr, r) => {
         const bandTop = r === 0 ? tableTop : rowBottomArr[r - 1];
         const bandBottom = r === rowWordArr.length - 1 ? tableBottom : Math.min(rowBottomArr[r], tableBottom);
         colWordArr.forEach((words, c) => {
-          if (this.layoutBoxesArr[c].inclusionLevel !== 'line' || words.length === 0) return;
-          this.colLines.forEach((colLine) => {
-            if (!colLine.columnLeft || !colLine.columnRight) return;
+          if (words.length === 0) return;
+          const cellLeft = Math.min(...words.map((w) => w.bbox.left));
+          const cellRight = Math.max(...words.map((w) => w.bbox.right));
+          /** @type {number|undefined} */
+          let clipLeft;
+          /** @type {number|undefined} */
+          let clipRight;
+          this.colLines.forEach((colLine, k) => {
             const x = colLine.x();
-            if (!words.some((w) => w.bbox.left < x && w.bbox.right > x)) return;
-            if (!sepGaps.has(colLine)) sepGaps.set(colLine, []);
-            sepGaps.get(colLine).push([bandTop - colLine.y(), bandBottom - colLine.y()]);
+            if (!(cellLeft < x - 2 && cellRight > x + 2)) return;
+            const far = k === 0 || k === this.colLines.length - 1 ? null : colWordArr[k > c ? k : k - 1];
+            if (!far || far.length === 0) {
+              if (!sepGaps.has(colLine)) sepGaps.set(colLine, []);
+              sepGaps.get(colLine).push([bandTop - colLine.y(), bandBottom - colLine.y()]);
+            } else if (k > c) {
+              clipRight = clipRight === undefined ? x : Math.min(clipRight, x);
+            } else {
+              clipLeft = clipLeft === undefined ? x : Math.max(clipLeft, x);
+            }
+          });
+          if (clipLeft === undefined && clipRight === undefined) return;
+          words.forEach((w) => {
+            if ((clipLeft !== undefined && w.bbox.left < clipLeft) || (clipRight !== undefined && w.bbox.right > clipRight)) this.previewClips.set(w.id, { left: clipLeft, right: clipRight });
           });
         });
       });

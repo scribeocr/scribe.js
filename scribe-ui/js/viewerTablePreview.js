@@ -67,8 +67,12 @@ export function applyTablePreview(viewer, n) {
   const fmtOn = viewer.state.tablePreviewFormatting !== false;
   const anyTableIds = new Set();
   uiTables.forEach((t) => t.tableContent?.rowWordArr.flat(2).forEach((w) => anyTableIds.add(w.id)));
+  /** @type {Map<string, {left?: number, right?: number}>} */
+  const clips = new Map();
+  uiTables.forEach((t) => t.previewClips?.forEach((bounds, id) => clips.set(id, bounds)));
   let leftOut = 0;
   for (const obj of viewer._wordObjs?.[n] || []) {
+    obj.clip(clips.get(obj.word.id) || null);
     if (anyTableIds.has(obj.word.id)) {
       // The plain export flattens text to black, so the plain preview does too.
       obj.fill(fmtOn ? obj.word.style.color || 'black' : 'black');
@@ -212,10 +216,14 @@ export function applyTablePreview(viewer, n) {
   }
 
   // A cell bar pinned to the page top would be scrolled out of view whenever the table sits further down, so this one tracks the table.
+  const railsLeft = `calc(${tc.left}px - 23px / ${Z})`;
+  const railsWidth = `calc(${dims.width - tc.left}px + 23px / ${Z})`;
+  // The floor on the rails' top is the clamped cell bar's own bottom edge, or a table near the page top slides them under that bar, whose higher z-index then swallows clicks on the column letters.
+  const railsTop = `max(calc(30px / ${Z}), calc(${tc.top}px - ${17 + stripH}px / ${Z}))`;
   const fx = mk({
-    left: '0',
+    left: railsLeft,
     top: `max(calc(4px / ${Z}), calc(${tc.top}px - ${47 + stripH}px / ${Z}))`,
-    width: `${dims.width}px`,
+    width: railsWidth,
     height: `calc(26px / ${Z})`,
     background: '#ffffff',
     border: `calc(1px / ${Z}) solid #d7dce4`,
@@ -352,10 +360,9 @@ export function applyTablePreview(viewer, n) {
     strip.appendChild(act);
   }
   const colRail = mk({
-    left: '0',
-    // The floor is the clamped cell bar's own bottom edge, or a table near the page top slides the rail under that bar, whose higher z-index then swallows clicks on the column letters.
-    top: `max(calc(30px / ${Z}), calc(${tc.top}px - ${17 + stripH}px / ${Z}))`,
-    width: `${dims.width}px`,
+    left: railsLeft,
+    top: railsTop,
+    width: railsWidth,
     height: `calc(16px / ${Z})`,
     background: '#eef1f6',
     borderBottom: `calc(1px / ${Z}) solid #d7dce4`,
@@ -365,7 +372,7 @@ export function applyTablePreview(viewer, n) {
   columns.forEach((col, c) => {
     const cell = mk({
       position: 'absolute',
-      left: `${col.coords.left}px`,
+      left: `calc(${col.coords.left - tc.left}px + 23px / ${Z})`,
       width: `${col.coords.right - col.coords.left}px`,
       top: '0',
       bottom: '0',
@@ -379,10 +386,10 @@ export function applyTablePreview(viewer, n) {
     cell.textContent = colLetter(c);
   });
   const rowRail = mk({
-    left: '0',
-    top: '0',
+    left: railsLeft,
+    top: railsTop,
     width: `calc(22px / ${Z})`,
-    height: `${dims.height}px`,
+    height: `calc(${dims.height}px - ${railsTop})`,
     background: '#eef1f6',
     borderRight: `calc(1px / ${Z}) solid #d7dce4`,
     zIndex: '2',
@@ -393,7 +400,7 @@ export function applyTablePreview(viewer, n) {
       position: 'absolute',
       left: '0',
       right: '0',
-      top: `${bandEdges[r]}px`,
+      top: `calc(${bandEdges[r]}px - ${railsTop})`,
       height: `${bandEdges[r + 1] - bandEdges[r]}px`,
       display: 'grid',
       placeItems: 'center',

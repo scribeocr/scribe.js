@@ -260,6 +260,8 @@ export class UiText {
     this._scaleX = stretch;
     this._fill = fill;
     this._opacity = opacity;
+    /** @type {?{left?: number, right?: number}} */
+    this._clip = null;
     this._listening = true;
     this._visible = true;
 
@@ -350,6 +352,18 @@ export class UiText {
 
   /** @param {number} [v] @returns {number} */
   opacity(v) { if (v === undefined) return this._opacity; this._opacity = v; if (this.el) this._styleElem(this.el); return this._opacity; }
+
+  /**
+   * The page-px bounds the word is cut to in the table Preview Export, or null for the whole word.
+   * @param {?{left?: number, right?: number}} [v] @returns {?{left?: number, right?: number}}
+   */
+  clip(v) {
+    if (v === undefined) return this._clip;
+    if ((!v && !this._clip) || (v && this._clip && v.left === this._clip.left && v.right === this._clip.right)) return this._clip;
+    this._clip = v;
+    if (this.el) this._styleElem(this.el);
+    return this._clip;
+  }
 
   /** @param {boolean} [v] @returns {boolean} */
   listening(v) {
@@ -618,6 +632,15 @@ export class UiText {
     } else if (restyle) {
       elem.style.transformOrigin = '';
       elem.style.transform = '';
+    }
+
+    if (this._clip) {
+      const sx = this._scaleX || 1;
+      const left = this._clip.left === undefined ? '0' : `${(this._clip.left - x1) / sx}px`;
+      const right = this._clip.right === undefined ? '0' : `calc(100% - ${(this._clip.right - x1) / sx}px)`;
+      elem.style.clipPath = `inset(-50% ${right} -50% ${left})`;
+    } else if (restyle) {
+      elem.style.clipPath = '';
     }
 
     // For small caps, real uppercasing would persist into the saved text, and the CSS small-caps property cannot size the caps.
