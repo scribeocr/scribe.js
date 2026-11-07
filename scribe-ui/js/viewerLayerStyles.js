@@ -67,6 +67,8 @@ export function ensureLayerStyleSheet() {
     + 'background:repeating-linear-gradient(45deg,rgba(209,73,61,.14) 0 calc(4px/var(--scribe-zoom,1)),'
     + 'transparent calc(4px/var(--scribe-zoom,1)) calc(7px/var(--scribe-zoom,1)));'
     + 'border:calc(2px/var(--scribe-zoom,1)) dashed #d1493d;pointer-events:none}'
+    + '.scribe-mode-mark{position:absolute;box-sizing:border-box;background:rgba(255,255,255,.6);'
+    + 'outline:calc(1px/var(--scribe-zoom,1)) dotted rgba(209,73,61,.85);outline-offset:calc(1px/var(--scribe-zoom,1));pointer-events:none}'
     // The wash sits in ::before so it still tints an edited field, where `.scribe-field-dirty` turns the element's own background opaque white.
     + '.scribe-field{position:absolute;box-sizing:border-box;pointer-events:auto;cursor:text;'
     + 'border:calc(1px/var(--scribe-zoom,1)) solid rgb(103,144,213)}'

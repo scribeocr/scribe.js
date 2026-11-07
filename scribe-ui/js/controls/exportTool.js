@@ -1,5 +1,7 @@
 import scribeLib from '../../../scribe.js';
 import { ARTICLE_RULES, writeHtmlFragment } from '../../../js/export/writeHtml.js';
+import { parIsFurniture } from '../../../js/objects/ocrObjects.js';
+import { bboxToPageSpace } from '../../../js/addHighlights.js';
 import { docxStrings } from '../../../js/export/resources/docxFiles.js';
 import { scribeDocDefaults } from '../../../js/containers/scribeDocDefaults.js';
 import { makeIconButton } from './toolbar.js';
@@ -217,12 +219,20 @@ const CHIP_RULES = '  .scribe-export-chip {\n    position:absolute;\n    display
   + '  .scribe-export-chip svg {\n    width:11px;\n    height:11px;\n  }\n'
   + '  .scribe-export-rolemenu {\n    position:absolute;\n    z-index:4;\n    min-width:150px;\n    padding:4px;\n    background:var(--scribe-surface);\n'
   + '    border:1px solid var(--scribe-line);\n    border-radius:8px;\n    box-shadow:var(--scribe-menu-shadow);\n    font:13px/18px system-ui,sans-serif;\n    color:var(--scribe-ink);\n  }\n'
-  + '  .scribe-export-rolemenu button {\n    display:block;\n    width:100%;\n    padding:4px 10px;\n    border:none;\n    border-radius:4px;\n    background:transparent;\n'
+  + '  .scribe-export-rolemenu button {\n    display:flex;\n    align-items:center;\n    gap:12px;\n    width:100%;\n    padding:4px 10px;\n'
+  + '    border:none;\n    border-radius:4px;\n    background:transparent;\n'
   + '    font:inherit;\n    color:inherit;\n    text-align:left;\n    cursor:pointer;\n    white-space:nowrap;\n  }\n'
   + '  .scribe-export-rolemenu button:hover, .scribe-export-rolemenu button:focus {\n    background:var(--scribe-hover);\n    outline:none;\n  }\n'
   + '  .scribe-export-rolemenu button.on {\n    color:var(--scribe-accent);\n    font-weight:600;\n  }\n'
   + '  [data-par]:focus {\n    outline:2px solid var(--scribe-accent);\n    outline-offset:2px;\n  }\n'
+  + '  .scribe-export-chip .scribe-export-chip-drop {\n    color:var(--scribe-danger);\n  }\n'
+  + '  .scribe-export-rolemenu .scribe-export-menu-drop {\n    margin-left:auto;\n    font-size:11px;\n    font-weight:600;\n    color:var(--scribe-danger);\n  }\n'
   + '  .scribe-export-chip[hidden], .scribe-export-rolemenu[hidden] {\n    display:none;\n  }\n';
+// The red and grays are fixed, not theme tokens, because the paper is white in both themes.
+const DROP_RULES = '  .scribe-article .scribe-export-dropped {\n    position:relative;\n  }\n'
+  + '  .scribe-article .scribe-export-dropped::before {\n    content:"";\n    position:absolute;\n    left:-12px;\n    top:0;\n    bottom:0;\n'
+  + '    width:3px;\n    border-radius:1px;\n    background:#d1493d;\n  }\n'
+  + '  .scribe-article .scribe-export-ghost {\n    color:#8b93a3;\n    text-decoration:line-through;\n    text-decoration-color:rgba(209,73,61,.6);\n    text-decoration-thickness:1px;\n  }\n';
 const SUMMARY_RULES = '  .scribe-export-summary {\n    max-width:420px;\n    margin:16px auto;\n    padding:12px 14px;\n    background:var(--scribe-surface);\n'
   + '    border:1px solid var(--scribe-line);\n    border-radius:8px;\n'
   + '    font:13px/1.5 system-ui,sans-serif;\n    color:var(--scribe-ink);\n  }\n  .scribe-export-summary h4 {\n    margin:0 0 8px;\n    font-size:13px;\n    word-break:break-all;\n  }\n'
@@ -277,6 +287,7 @@ export function createExportTool(app) {
   };
   const format = () => formatOf(settings.format);
   const reflowOn = () => settings.reflow[settings.format] ?? !!format().reflow;
+  const dropActive = () => settings.dropHeadersFooters && format().options.includes('dropHeadersFooters') && reflowOn();
   const surfaceOf = () => {
     const f = format();
     if (f.surface === 'pdf') return view === 'beside' ? 'pdf' : 'pages';
@@ -386,7 +397,10 @@ export function createExportTool(app) {
   };
 
   // ---- The role chips. ----
-  const ROLES = [['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Heading 3', 'h3'], ['Body', 'body'], ['Page header', 'header'], ['Page footer', 'footer']];
+  const ROLES = [
+    ['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Heading 3', 'h3'], ['Body', 'body'],
+    ['Page header', 'header'], ['Page footer', 'footer'], ['Page number', 'pagenum'], ['Line numbers', 'linenum'],
+  ];
   /** @param {OcrPar} par */
   const roleKey = (par) => (par.type === 'title' ? `h${Math.min(Math.max(par.headingLevel || 1, 1), 3)}` : par.type);
   const chipEl = document.createElement('button');
@@ -441,8 +455,9 @@ export function createExportTool(app) {
     chipBlock = el;
     const info = /** @type {{par: OcrPar, n: number}} */ (parInfo.get(el.dataset.par || ''));
     const label = ROLES.find(([, key]) => key === roleKey(info.par))?.[0] || info.par.type;
-    chipEl.innerHTML = `${label} ${CARET_SVG}`;
-    chipEl.setAttribute('aria-label', `Paragraph role: ${label}`);
+    const dropped = dropActive() && parIsFurniture(info.par);
+    chipEl.innerHTML = `${esc(label)}${dropped ? ' <span class="scribe-export-chip-drop">· dropped</span>' : ''} ${CARET_SVG}`;
+    chipEl.setAttribute('aria-label', `Paragraph role: ${label}${dropped ? ', dropped from the export' : ''}`);
     chipEl.hidden = false;
     const at = paneOffset(el);
     chipEl.style.top = `${at.y - 2}px`;
@@ -458,9 +473,10 @@ export function createExportTool(app) {
     if (!info || !doc) return;
     const { par, n } = info;
     doc.editWords([n], 'Paragraph role', () => {
-      if (key.startsWith('h')) {
+      const heading = /^h([1-3])$/.exec(key);
+      if (heading) {
         par.type = 'title';
-        par.headingLevel = Number(key.slice(1));
+        par.headingLevel = Number(heading[1]);
       } else {
         par.type = /** @type {import('../../../js/objects/ocrObjects.js').ParType} */ (key);
         par.headingLevel = null;
@@ -468,16 +484,19 @@ export function createExportTool(app) {
     });
     app._syncUndoState?.();
     renderAll();
+    syncPageMarks();
   };
   const openRoleMenu = () => {
     const info = chipBlock ? parInfo.get(chipBlock.dataset.par || '') : null;
     if (!info) return;
     const current = roleKey(info.par);
+    const tagged = dropActive();
     menuEl.replaceChildren(...ROLES.map(([label, key]) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.setAttribute('role', 'menuitem');
       b.textContent = label;
+      if (tagged && (key === 'header' || key === 'footer' || key === 'pagenum' || key === 'linenum')) b.insertAdjacentHTML('beforeend', '<span class="scribe-export-menu-drop">dropped</span>');
       b.classList.toggle('on', key === current);
       b.addEventListener('click', () => setRole(key));
       return b;
@@ -532,6 +551,24 @@ export function createExportTool(app) {
       if (pages.size > 0) return [...pages].sort((x, y) => x - y);
     }
     return null;
+  };
+
+  /**
+   * The dropped blocks of page `n`, as marks for the page beside the preview.
+   * @param {number} n
+   */
+  const pageMarks = (n) => {
+    const { doc } = viewerOf();
+    const page = doc?.ocr.active?.[n];
+    if (!active || !page || !dropActive()) return [];
+    const pages = includedPages(doc);
+    if (pages && !pages.includes(n)) return [];
+    return page.pars.filter((par) => parIsFurniture(par)).map((par) => ({ bbox: bboxToPageSpace(par.bbox, par.lines[0]?.orientation || 0, page.dims) }));
+  };
+  /** @param {import('../../viewer.js').ScribeViewer} [sv] */
+  const syncPageMarks = (sv = viewerOf()) => {
+    if (!sv.doc) return;
+    sv.pageContainerArr.forEach((pc, n) => { if (pc) sv.renderModeMarks(n); });
   };
 
   /**
@@ -683,13 +720,14 @@ export function createExportTool(app) {
           docFonts: doc.fonts,
           pageMetrics: doc.pageMetrics,
           reflowText: true,
-          dropPageHeadersFooters: settings.dropHeadersFooters,
+          // Dropped blocks stay in the preview, marked as ghosts below.
+          dropPageHeadersFooters: false,
           displayMode: 'ebook',
           runFonts: word,
           parIds: true,
         });
         body = frag.body;
-        paneStyle.textContent = docRules(f) + PAPER_RULES + CHIP_RULES;
+        paneStyle.textContent = docRules(f) + PAPER_RULES + CHIP_RULES + DROP_RULES;
         for (const page of doc.ocr.active) {
           if (page) for (const par of page.pars) parInfo.set(par.id, { par, n: page.n });
         }
@@ -700,6 +738,17 @@ export function createExportTool(app) {
       if (gen !== renderRun) return;
       paneBody.innerHTML = body;
       if (word) for (const span of paneBody.querySelectorAll('[data-font]')) /** @type {HTMLElement} */ (span).style.fontFamily = `"${span.getAttribute('data-font')}", ${wordStyles().family}`;
+      if (surface === 'document' && dropActive()) {
+        for (const el of paneBody.querySelectorAll('.scribe-page-header, .scribe-page-footer, .scribe-page-number, .scribe-line-number')) {
+          const info = parInfo.get(/** @type {HTMLElement} */ (el).dataset.par || '');
+          if (!info || !parIsFurniture(info.par)) continue;
+          const ghost = document.createElement('span');
+          ghost.className = 'scribe-export-ghost';
+          ghost.append(...el.childNodes);
+          el.classList.add('scribe-export-dropped');
+          el.appendChild(ghost);
+        }
+      }
       articleBlocks = /** @type {Array<HTMLElement>} */ ([...paneBody.querySelectorAll('[data-par], [data-line]')]);
       // A block takes focus so the keyboard reaches its role chip.
       for (const el of articleBlocks) if (chipBlockOf(el)) el.tabIndex = 0;
@@ -1330,6 +1379,7 @@ export function createExportTool(app) {
   optionsBtn.addEventListener('click', () => (options.hidden ? openOptions() : closeOptions()));
   const refresh = () => {
     syncOptions();
+    syncPageMarks();
     if (!active || view === 'page') return;
     if (mounted?.kind === 'pdf') { refreshPdfPreview(); return; }
     if (mounted?.kind === 'sheet') return;
@@ -1540,6 +1590,7 @@ export function createExportTool(app) {
     if (settings.format === id) return;
     settings.format = id;
     syncOptions();
+    syncPageMarks();
     if (active && view !== 'page') remount();
   };
 
@@ -1556,10 +1607,14 @@ export function createExportTool(app) {
       if (!formatAllowed(format(), sv.doc)) settings.format = 'pdf';
       syncOptions();
       hookEdits(sv);
+      sv.pageMarks = pageMarks;
+      syncPageMarks(sv);
       sv.scrollContainer.addEventListener('scroll', onLaneScroll, { passive: true });
       setView(besideBtn.disabled ? 'preview' : 'beside');
     } else {
       if (unhook) unhook();
+      sv.pageMarks = null;
+      syncPageMarks(sv);
       sv.scrollContainer.removeEventListener('scroll', onLaneScroll);
       closeOptions();
       closePick();

@@ -408,6 +408,13 @@ export class ScribeViewer {
     this._notesGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page redaction-mark layer (above highlights, below notes; never blocks the pointer). */
     this._redactGroups = [];
+    /** @type {Array<?HTMLDivElement>} Per-page layer for the marks a mode draws on the page. */
+    this._modeMarkGroups = [];
+    /**
+     * Returns the running mode's marks for page n, each a box in page pixels.
+     * @type {?(n: number) => Array<{bbox: {left: number, top: number, right: number, bottom: number}}>}
+     */
+    this.pageMarks = null;
     /** @type {Array<?HTMLDivElement>} */
     this._fieldGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page fill & sign items layer. */
@@ -784,6 +791,7 @@ export class ScribeViewer {
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
     this._redactGroups.length = 0;
+    this._modeMarkGroups.length = 0;
     this._fieldGroups.length = 0;
     this._itemGroups.length = 0;
     this._redactTabGroups.length = 0;
@@ -1530,6 +1538,7 @@ export class ScribeViewer {
       this.renderNotes(n);
       this.renderFillItems(n);
       this.renderRedactions(n);
+      this.renderModeMarks(n);
       this.renderFormFields(n);
       this.annotationsEdited(n);
       if (layoutRepaint(n)) {
@@ -2827,6 +2836,7 @@ export class ScribeViewer {
       if (!inDoc(p)) continue;
       this.renderNotes(p);
       this.renderRedactions(p);
+      this.renderModeMarks(p);
       this.renderFormFields(p);
       this.renderFillItems(p);
     }
@@ -3440,6 +3450,35 @@ export class ScribeViewer {
   renderRedactions(n) {
     renderPageRedactions(this, n);
     if (this.onAnnotationsRendered) this.onAnnotationsRendered(n);
+  }
+
+  /**
+   * Render the running mode's marks for page n into their layer.
+   * @param {number} n
+   */
+  renderModeMarks(n) {
+    const marks = this.pageMarks ? this.pageMarks(n) : [];
+    if (marks.length === 0 && !this._modeMarkGroups[n]) return;
+    if (!this._modeMarkGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '2';
+      group.style.pointerEvents = 'none';
+      group.classList.add('scribe-layer-mode-marks');
+      this._modeMarkGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    const group = this._modeMarkGroups[n];
+    group.replaceChildren();
+    for (const mark of marks) {
+      const el = document.createElement('div');
+      el.className = 'scribe-mode-mark';
+      el.style.left = `${mark.bbox.left}px`;
+      el.style.top = `${mark.bbox.top}px`;
+      el.style.width = `${Math.max(1, mark.bbox.right - mark.bbox.left)}px`;
+      el.style.height = `${Math.max(1, mark.bbox.bottom - mark.bbox.top)}px`;
+      group.appendChild(el);
+    }
   }
 
   /**
