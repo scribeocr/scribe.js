@@ -989,19 +989,19 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // Type3 fonts may use /Name instead of /BaseFont
     // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
     let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObj);
-    let baseNameHexMatch = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObj);
+    let baseNameHexMatch = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f\s]+)>/.exec(fontObj);
     if (!baseNameMatch && !baseNameHexMatch) {
       const bfRef = /\/BaseFont\s+(\d+)\s+\d+\s+R\b/.exec(fontObj);
       const bfBody = bfRef ? (objCache.getObjectText(Number(bfRef[1])) || '').trim() : '';
       baseNameMatch = /^\/([^\s/<>[\]]+)/.exec(bfBody);
-      baseNameHexMatch = !baseNameMatch && /^<([0-9A-Fa-f]+)>/.exec(bfBody);
+      baseNameHexMatch = !baseNameMatch && /^<([0-9A-Fa-f\s]+)>/.exec(bfBody);
     }
     const nameMatch = /\/Name\s*\/([^\s/<>[\]]+)/.exec(fontObj);
     let baseNameRaw;
     if (baseNameMatch) {
       baseNameRaw = baseNameMatch[1].replace(/^[A-Z]{6}\+/, '');
     } else if (baseNameHexMatch) {
-      const hex = baseNameHexMatch[1];
+      const hex = baseNameHexMatch[1].replace(/\s+/g, '');
       const bytes = [];
       for (let hi = 0; hi < hex.length; hi += 2) bytes.push(parseInt(hex.substring(hi, hi + 2), 16));
       // Check for UTF-16BE BOM (feff)
@@ -2849,10 +2849,11 @@ export function parseToUnicodeCMap(cmapText, map) {
       } else if (entry[3] !== undefined) {
         flushRun();
         // Array form: <start> <end> [<u1> <u2> ...]
-        const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f\s]+)>/g)];
+        // An empty string still holds its code's position in the array, so the token list keeps it.
+        const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f\s]*)>/g)];
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
           const unicode = hexToUnicode(arrayTokens[idx][1]);
-          if (isOnlyReplacementChars(unicode)) continue;
+          if (unicode.length === 0 || isOnlyReplacementChars(unicode)) continue;
           map.set(cidStart + idx, decodeC1(unicode));
         }
       }
@@ -2870,17 +2871,17 @@ function parseCIDEncodingCMap(cmapText, map) {
   // Parse begincidchar blocks: <charCode> <CID>
   const cidcharRegex = /begincidchar\s*([\s\S]*?)endcidchar/g;
   for (const m of cmapText.matchAll(cidcharRegex)) {
-    for (const entry of m[1].matchAll(/<([0-9A-Fa-f]+)>\s+(\d+)/g)) {
-      map.set(parseInt(entry[1], 16), parseInt(entry[2], 10));
+    for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s+(\d+)/g)) {
+      map.set(parseInt(entry[1].replace(/\s+/g, ''), 16), parseInt(entry[2], 10));
     }
   }
 
   // Parse begincidrange blocks: <start> <end> <CIDstart>
   const cidrangeRegex = /begincidrange\s*([\s\S]*?)endcidrange/g;
   for (const m of cmapText.matchAll(cidrangeRegex)) {
-    for (const entry of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s+(\d+)/g)) {
-      const start = parseInt(entry[1], 16);
-      const end = parseInt(entry[2], 16);
+    for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s+(\d+)/g)) {
+      const start = parseInt(entry[1].replace(/\s+/g, ''), 16);
+      const end = parseInt(entry[2].replace(/\s+/g, ''), 16);
       let cidStart = parseInt(entry[3], 10);
       for (let code = start; code <= end; code++) {
         map.set(code, cidStart++);
@@ -2892,18 +2893,18 @@ function parseCIDEncodingCMap(cmapText, map) {
   // Some PDFs use bfchar/bfrange syntax in encoding CMaps where both values are hex.
   const bfcharRegex = /beginbfchar\s*([\s\S]*?)endbfchar/g;
   for (const m of cmapText.matchAll(bfcharRegex)) {
-    for (const entry of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g)) {
-      map.set(parseInt(entry[1], 16), parseInt(entry[2], 16));
+    for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>/g)) {
+      map.set(parseInt(entry[1].replace(/\s+/g, ''), 16), parseInt(entry[2].replace(/\s+/g, ''), 16));
     }
   }
 
   // Parse beginbfrange blocks used as encoding CMaps: <start> <end> <CIDstart_hex>
   const bfrangeRegex = /beginbfrange\s*([\s\S]*?)endbfrange/g;
   for (const m of cmapText.matchAll(bfrangeRegex)) {
-    for (const entry of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g)) {
-      const start = parseInt(entry[1], 16);
-      const end = parseInt(entry[2], 16);
-      let cidStart = parseInt(entry[3], 16);
+    for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>/g)) {
+      const start = parseInt(entry[1].replace(/\s+/g, ''), 16);
+      const end = parseInt(entry[2].replace(/\s+/g, ''), 16);
+      let cidStart = parseInt(entry[3].replace(/\s+/g, ''), 16);
       for (let code = start; code <= end; code++) {
         map.set(code, cidStart++);
       }
@@ -2921,9 +2922,10 @@ function parseCIDCodespaceRanges(cmapText) {
   const ranges = [];
   const csRegex = /begincodespacerange\s*([\s\S]*?)endcodespacerange/g;
   for (const m of cmapText.matchAll(csRegex)) {
-    for (const entry of m[1].matchAll(/<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>/g)) {
-      const numBytes = Math.ceil(entry[1].length / 2);
-      ranges.push({ bytes: numBytes, low: parseInt(entry[1], 16), high: parseInt(entry[2], 16) });
+    for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>/g)) {
+      const low = entry[1].replace(/\s+/g, '');
+      const numBytes = Math.ceil(low.length / 2);
+      ranges.push({ bytes: numBytes, low: parseInt(low, 16), high: parseInt(entry[2].replace(/\s+/g, ''), 16) });
     }
   }
   // Sorted so 1-byte ranges are checked before wider ones.
@@ -3067,18 +3069,18 @@ function extractType0FontFile(fontObjText, objCache) {
   // Extract font name (strip subset prefix like AAAAAA+)
   // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
   let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObjText);
-  let baseNameHexMatch2 = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObjText);
+  let baseNameHexMatch2 = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f\s]+)>/.exec(fontObjText);
   if (!baseNameMatch && !baseNameHexMatch2) {
     const bfRef = /\/BaseFont\s+(\d+)\s+\d+\s+R\b/.exec(fontObjText);
     const bfBody = bfRef ? (objCache.getObjectText(Number(bfRef[1])) || '').trim() : '';
     baseNameMatch = /^\/([^\s/<>[\]]+)/.exec(bfBody);
-    baseNameHexMatch2 = !baseNameMatch && /^<([0-9A-Fa-f]+)>/.exec(bfBody);
+    baseNameHexMatch2 = !baseNameMatch && /^<([0-9A-Fa-f\s]+)>/.exec(bfBody);
   }
   let fontName;
   if (baseNameMatch) {
     fontName = baseNameMatch[1].replace(/^[A-Z]{6}\+/, '');
   } else if (baseNameHexMatch2) {
-    const hex = baseNameHexMatch2[1];
+    const hex = baseNameHexMatch2[1].replace(/\s+/g, '');
     const bytes = [];
     for (let hi = 0; hi < hex.length; hi += 2) bytes.push(parseInt(hex.substring(hi, hi + 2), 16));
     if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
