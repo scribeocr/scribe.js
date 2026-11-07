@@ -4413,9 +4413,10 @@ const TABLE_TITLE_RE = /^Table\s+\d+/i;
 function detectTableTitle(table, lines) {
   const maxAboveDist = 50;
 
+  // A line is above or inside the table by where its vertical center falls, so a title whose descenders cross the top border still counts as above it.
   let bestAbove = null;
   for (const line of lines) {
-    if (line.bbox.bottom > table.bbox.top) continue;
+    if ((line.bbox.top + line.bbox.bottom) / 2 > table.bbox.top) continue;
     if (line.bbox.bottom < table.bbox.top - maxAboveDist) continue;
     if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
     const text = line.words.map((w) => w.text).join(' ');
@@ -4435,7 +4436,8 @@ function detectTableTitle(table, lines) {
 
   let firstInside = null;
   for (const line of lines) {
-    if (line.bbox.top < table.bbox.top || line.bbox.top > table.bbox.bottom) continue;
+    const yC = (line.bbox.top + line.bbox.bottom) / 2;
+    if (yC <= table.bbox.top || yC > table.bbox.bottom) continue;
     if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
     if (!firstInside || line.bbox.top < firstInside.bbox.top) firstInside = line;
   }
