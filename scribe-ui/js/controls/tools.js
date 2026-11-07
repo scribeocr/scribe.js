@@ -1700,10 +1700,10 @@ export function createEditTextTool(initialViewer) {
       for (let li = 0; li < idx.lines.length; li++) if (idx.lines[li].line === line) return { n, li, e: idx.lines[li] };
       return null;
     };
-    // Edits and undo replace line objects, so a selection only ever keeps lines the document still has.
+    // Edits and undo replace line objects, and a switch replaces the document, so a selection only ever keeps lines the document on screen has.
     const validateSelection = () => {
       for (const line of [...selected]) {
-        if (!line.page || !line.page.lines.includes(line)) selected.delete(line);
+        if (!line.page || !line.page.lines.includes(line) || scribe.doc?.ocr?.active?.[line.page.n] !== line.page) selected.delete(line);
       }
     };
     const renderFrames = () => {
@@ -3141,7 +3141,18 @@ export function createEditTextTool(initialViewer) {
     };
   }
 
-  return { toolbarElem, installBehaviors };
+  /**
+   * Commit any open line edit and clear the selection when the bound viewer shows another document.
+   * @param {import('../../viewer.js').ScribeViewer} viewer
+   */
+  const docChanged = (viewer) => {
+    if (viewer !== scribe || !editMode) return;
+    // The commit lands in the document the edit was typed in.
+    if (editor?.isOpen()) editor.commit().catch((e) => console.error('Edit Text: commit failed:', e));
+    clearBoxSelection();
+  };
+
+  return { toolbarElem, installBehaviors, docChanged };
 }
 
 const IMAGE_EDIT_SVG = modeIcon('<rect x="2.5" y="3.5" width="12" height="10" rx="1"/><circle cx="5.5" cy="6.5" r="1"/><path d="M2.5 12.5l3-3 2 2 3-3 4 4"/>');
@@ -3493,6 +3504,8 @@ export function createGraphicsEditTool(initialViewer) {
       if (!graphicsMode) return;
       const t = ev.target;
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      // A selection left by another document is no selection, so it does not take Escape.
+      validateSelection();
       if (ev.key === 'Escape' && selected.size > 0) {
         ev.preventDefault();
         ev.stopPropagation();
@@ -3523,6 +3536,7 @@ export function createGraphicsEditTool(initialViewer) {
     // Virtualization rebuilds the page groups on scroll, so the frames re-parent themselves onto the new ones.
     const scrollHandler = () => {
       if (!graphicsMode) return;
+      validateSelection();
       renderFrames();
       renderHover(null);
     };
@@ -3576,7 +3590,17 @@ export function createGraphicsEditTool(initialViewer) {
     };
   }
 
-  return { toolbarElem, installBehaviors };
+  /**
+   * Drop any selected placement of a document the bound viewer no longer shows.
+   * @param {import('../../viewer.js').ScribeViewer} viewer
+   */
+  const docChanged = (viewer) => {
+    if (viewer !== scribe || !graphicsMode) return;
+    validateSelection();
+    renderFrames();
+  };
+
+  return { toolbarElem, installBehaviors, docChanged };
 }
 
 const FILL_SIGN_SVG = modeIcon('<path d="M2.5 12C4.3 8.1 5.7 6.4 6.4 7.1S4.8 11.9 5.7 12.4C6.5 12.9 7.8 10.6 8.5 10.8C9.2 11 8.7 12.4 9.6 12.4C10.3 12.4 10.9 11.7 11.7 11.7"/>'
@@ -3895,7 +3919,8 @@ export function createExtractTablesTool(app) {
       v._tpSel = null;
       if (v.onLayoutTablesEdited === paneEdited) v.onLayoutTablesEdited = null;
     };
-    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle;
+    // A placeholder holds no tables until its real document replaces it, even after its `_textReadySettle` clears.
+    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle || (doc.id < 0 && !!doc._requestHydration);
     const onClose = () => {
       if (view !== 'beside') return;
       view = 'page';
@@ -3988,17 +4013,18 @@ export function createExtractTablesTool(app) {
     const sv = viewerOf();
     if (view === 'preview') {
       const sheet = resolveActiveSheet(sv);
-      // A still-extracting document may yet detect tables, so only a settled tableless one drops the preview.
-      if (!sheet && !sv.doc._textReadySettle) setView('page');
+      // A still-extracting document may yet detect tables, and a placeholder's real document may hold them, so only a settled tableless one drops the preview.
+      if (!sheet && !sv.doc._textReadySettle && !(sv.doc.id < 0 && sv.doc._requestHydration)) setView('page');
       else if (sheet && sheet.n !== sv.state.cp.n) sv.displayPage(sheet.n, true, true);
     }
     app._automatePanel?.openTablesWorkspace();
   };
 
   // The catalog row's entry point, which unlike the toolbar button never toggles the mode off.
-  const open = () => {
-    if (active) app._automatePanel?.openTablesWorkspace();
-    else setActive(true);
+  const open = async () => {
+    if (active) { app._automatePanel?.openTablesWorkspace(); return; }
+    if (!(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    setActive(true);
   };
 
   const tool = {

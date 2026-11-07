@@ -546,7 +546,7 @@ export function renderChainChrome(viewer, n) {
  * @param {number} n
  */
 export function renderLayoutDataTables(viewer, n) {
-  Object.values(viewer.doc.layoutDataTables.pages[n].tables ?? []).forEach((table) => {
+  Object.values(viewer.doc.layoutDataTables.pages[n]?.tables ?? []).forEach((table) => {
     renderLayoutDataTable(viewer, table, true);
   });
   // A page with no tables still needs this pass, because in the sheet view all of its words ghost.

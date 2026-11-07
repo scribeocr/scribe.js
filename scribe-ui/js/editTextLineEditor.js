@@ -25,6 +25,7 @@ import { nativeTextForPage } from '../../js/textEdits.js';
  * The line currently open for editing.
  * @typedef {object} EditSession
  * @property {OcrLine} line
+ * @property {Object} doc
  * @property {number} n
  * @property {number} orientation
  * @property {{left: number, top: number, right: number, bottom: number}} box - The canvas's extent in the orientation group's local space.
@@ -958,15 +959,16 @@ export function createLineEditor(scribe, {
 
   const close = () => {
     if (!st) return;
-    const { n } = st;
+    const { n, doc } = st;
     // The lingering canvas keeps whatever detachInput's repaint drew, so the session must hold the original line again.
     st.text = st.origText;
     st.words = st.origWords;
     st.wordsText = st.origText;
     detachInput();
     st = null;
-    scribe.doc.images.setEphemeralRecords(n, null);
-    scribe.refreshPageRaster(n);
+    // The session's own document, since the viewer may show another by now.
+    doc.images.setEphemeralRecords(n, null);
+    if (scribe.doc === doc) scribe.refreshPageRaster(n);
     removeCanvasAfterRefresh(n);
   };
 
@@ -978,7 +980,7 @@ export function createLineEditor(scribe, {
     while (st === session && session.previewBusy) await session.previewDone;
     if (st !== session) return;
     const {
-      line, n, text, origText, styleOv,
+      line, n, text, origText, styleOv, doc,
     } = st;
     const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined || o.color !== undefined || o.font !== undefined || o.fontObjNum !== undefined);
     if ((text.trim() === origText || text.trim() === origText.trim()) && !hasToggles) {
@@ -994,15 +996,15 @@ export function createLineEditor(scribe, {
     session.committing = true;
     let res;
     try {
-      res = await scribe.doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
+      res = await doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
     } catch (e) {
       session.committing = false;
       if (st === session) {
         detachInput();
         st = null;
       }
-      if (!(st && st.n === n)) scribe.doc.images.setEphemeralRecords(n, null);
-      scribe.refreshPageRaster(n);
+      if (!(st && st.n === n)) doc.images.setEphemeralRecords(n, null);
+      if (scribe.doc === doc) scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
       throw e;
     }
@@ -1016,9 +1018,11 @@ export function createLineEditor(scribe, {
       st = null;
     }
     // A session that opened on this page while replaceTextLine ran relies on the page's ephemeral records to hide its line's original text.
-    if (!(st && st.n === n)) scribe.doc.images.setEphemeralRecords(n, null);
-    if (res && res.pages && onCommitted) onCommitted(res.pages);
-    else scribe.refreshPageRaster(n);
+    if (!(st && st.n === n)) doc.images.setEphemeralRecords(n, null);
+    if (scribe.doc === doc) {
+      if (res && res.pages && onCommitted) onCommitted(res.pages);
+      else scribe.refreshPageRaster(n);
+    }
     removeCanvasAfterRefresh(n);
   };
 
@@ -1426,6 +1430,7 @@ export function createLineEditor(scribe, {
 
     st = {
       line,
+      doc: scribe.doc,
       n,
       orientation,
       box: groupBox,

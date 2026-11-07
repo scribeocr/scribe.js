@@ -104,6 +104,8 @@ export async function initPdfWorker() {
 /** How long a released worker gets to answer the unload probe before it is judged wedged and destroyed. */
 const RELEASE_PROBE_MS = 3000;
 
+const MAX_SPARE = 6;
+
 /** @type {Array<Object>} */
 const spare = [];
 
@@ -158,7 +160,10 @@ export async function releaseWorkers(workers) {
       ]);
       // The worker stays in `leased` through the probe so a concurrent destroyAllPdfWorkers can still terminate it.
       // A failed delete means teardown got there first, so the now-dead worker must not be returned.
-      if (leased.delete(w)) spare.push(w);
+      if (leased.delete(w)) {
+        if (spare.length < MAX_SPARE) spare.push(w);
+        else w.terminate();
+      }
     } catch {
       leased.delete(w);
       try {

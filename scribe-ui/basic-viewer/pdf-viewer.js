@@ -255,6 +255,8 @@ const AUTO_FIT_MAX_RASTER_PX = 3500;
 
 /** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
 const MODE_BANNER_HEIGHT = 40;
+/** How long the reader rests on a provisional document under a mode before its real document loads. */
+const MODE_LOAD_REST_MS = 350;
 
 /** Air required to keep the rotate pair in the centered viewing cluster. */
 const ROTATE_MIN_AIR = 80;
@@ -830,6 +832,10 @@ class ScribePDFViewer {
     this._redoBtnElem = null;
     /** @type {?HTMLElement} Mode the baseline below was captured for, so repeated syncs of one mode do not recapture it. */
     this._modeSessionBtn = null;
+    /** @type {?Object} Document the baseline was captured on. */
+    this._modeSessionDoc = null;
+    /** @type {Map<Object, ReturnType<typeof setTimeout>>} Per viewer, the pending load of a provisional document under a mode. */
+    this._modeLoadTimers = new Map();
     /** @type {?MutationObserver} */
     this._modeBtnObserver = null;
     /** @type {number} Unified-history depth at mode entry, or -1 outside an editing-mode session. */
@@ -1408,6 +1414,10 @@ class ScribePDFViewer {
     // Document-level listeners, retained so `destroy()` can remove them.
     /** @type {Array<() => void>} */
     this._teardownCallbacks = [];
+    this._teardownCallbacks.push(() => {
+      for (const timer of this._modeLoadTimers.values()) clearTimeout(timer);
+      this._modeLoadTimers.clear();
+    });
     /** @type {Array<{tool: {installBehaviors: (viewer?: ScribeViewer) => (() => void)}, teardown: () => void}>} */
     this._toolBindings = [];
     this._teardownCallbacks.push(() => { for (const b of this._toolBindings) b.teardown(); });
@@ -2162,8 +2172,9 @@ class ScribePDFViewer {
     const {
       seedDoc, primed, hydrated, cancel,
     } = this._makeProvisional(seed, holder);
-    holder.current = await this._openDocAsTab(seedDoc, seed.name || 'Document', {
-      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress,
+    // The record reaches the hydration machinery before the first display, so a display that throws leaves a tab that still loads.
+    await this._openDocAsTab(seedDoc, seed.name || 'Document', {
+      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress, onCreated: (tab) => { holder.current = tab; },
     });
     if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
     return {
@@ -2225,12 +2236,13 @@ class ScribePDFViewer {
       return realDocP;
     };
     seedDoc._requestHydration = start;
+    seedDoc._hydrated = hydrated;
 
     seedDoc._onPageText = (n) => {
       const v = this._viewerShowing(seedDoc);
       if (cancelled || !v) return;
       // A page's text decides which rows the document gate enables.
-      if (v === this.scribe) this._syncDocGatedControls();
+      if (v === this._activeViewer()) this._syncDocGatedControls();
       const cp = v.state.cp.n;
       if (n !== cp && !v.windowPages(cp).includes(n)) return;
       // Highlights hang on the page's word objects, so they are drawn once the words are.
@@ -2304,6 +2316,7 @@ class ScribePDFViewer {
             v.scrollContainer.scrollTop = scrollTop;
             v.scrollContainer.scrollLeft = scrollLeft;
           }
+          this._groupDocChanged(g, realDoc);
           await seedDoc.close();
           if (veil) {
             const pc = v.imageCache.pageCanvases[cp];
@@ -2409,6 +2422,10 @@ class ScribePDFViewer {
     this.scribe.doc = doc;
     this.resetSearch();
     for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
+    this._loadUnderMode(this.scribe, doc);
+    this._editTextTool?.docChanged?.(this.scribe);
+    this._graphicsEditTool?.docChanged?.(this.scribe);
+    if (this._modeGroup !== 1) this._exportTool?.docChanging?.();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -2485,8 +2502,13 @@ class ScribePDFViewer {
     if (terminatePrev && displaced) displaced.close().catch(() => {});
 
     this.scribe.runSetInitial = true;
-    // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
-    await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+    try {
+      // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
+      await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+    } catch (err) {
+      // A failed first paint must not abort the switch, since the side view and the modes below still have to follow the new document.
+      console.error('The first display of the document failed:', err);
+    }
 
     await this._syncSideViewDoc(doc);
     this._extractTablesTool?.docChanged?.();
@@ -2718,6 +2740,7 @@ class ScribePDFViewer {
    *   `activate: false` adds the tab without switching to it.
    *   `fitWidth: true` fits the page to the group's width when the tab first shows in the group to the right.
    *   `openAddress` is a document address whose passage the tab opens at in the group to the right.
+   *   `onCreated` is called with the tab record once it is in the tab list, before the tab activates.
    * @returns {Promise<Object>} The created tab.
    */
   async _openDocAsTab(doc, name, extra = {}) {
@@ -2727,7 +2750,7 @@ class ScribePDFViewer {
       return this._openPortfolio(doc, name, { libraryHash, libraryRelPath, libraryOwner });
     }
     const {
-      activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
+      activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, onCreated = null, ...fields
     } = extra;
     const tab = {
       ...this._newTab(doc, name), ...fields, group: group === 1 && !this._phoneUi && this._tabStrip ? 1 : 0, preview: !!preview,
@@ -2739,6 +2762,7 @@ class ScribePDFViewer {
     const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
     if (prev) this._tabs.splice(this._tabs.indexOf(prev), 0, tab);
     else this._tabs.push(tab);
+    onCreated?.(tab);
     this._activeTab = act && act !== prev ? this._tabs.indexOf(act) : -1;
     if (prev) this._closeTab(this._tabs.indexOf(prev));
     if (activate) {
@@ -3437,6 +3461,8 @@ class ScribePDFViewer {
   async _syncSideViewDoc(doc) {
     const sv = this._sideView;
     if (!sv || sv.tab.doc === doc) return;
+    // A view that owns its document, the PDF export preview, is its mode's to rebuild for the new document.
+    if (sv.tab.view.doc) return;
     if (!sv.tab.view.retarget?.(doc)) { this._closeSideView(); return; }
     const g = this._rightGroup;
     const shown = !!g && g.active === sv.tab;
@@ -3683,6 +3709,32 @@ class ScribePDFViewer {
     return this._modeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
   }
 
+  /** Whether the active mode reads the document's stores. */
+  _modeNeedsLoadedDoc() {
+    const active = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
+    if (!active) return false;
+    return [this._editTextTool, this._graphicsEditTool, this._proofreadTool, this._extractTablesTool, this._inspectTool, this._compareTool, this._exportTool]
+      .some((tool) => tool && tool.toolbarElem === active);
+  }
+
+  /**
+   * Load the provisional document `viewer` shows, once the reader has rested on it under a mode that reads the document.
+   * @param {ScribeViewer} viewer
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  _loadUnderMode(viewer, doc) {
+    const pending = this._modeLoadTimers.get(viewer);
+    if (pending) clearTimeout(pending);
+    this._modeLoadTimers.delete(viewer);
+    if (!(doc.id < 0 && doc._requestHydration && this._modeNeedsLoadedDoc())) return;
+    // Each load leases PDF workers, which the pool keeps as idle spares afterwards, so a run of clicks loads only the document the reader stops on.
+    this._modeLoadTimers.set(viewer, setTimeout(() => {
+      this._modeLoadTimers.delete(viewer);
+      if (viewer.doc !== doc || !this._modeNeedsLoadedDoc()) return;
+      doc._requestHydration?.().catch(() => {});
+    }, MODE_LOAD_REST_MS));
+  }
+
   /**
    * @param {{installBehaviors: (viewer?: ScribeViewer) => (() => void)}} tool
    */
@@ -3840,6 +3892,10 @@ class ScribePDFViewer {
     await this._wakeTab(tab);
     if (this._rightGroup !== g || g.active !== tab) return;
     g.viewer.doc = tab.doc;
+    if (!tab.view && this._modeGroup === 1) {
+      this._loadUnderMode(g.viewer, tab.doc);
+      this._exportTool?.docChanging?.();
+    }
     const pageIndex = Math.min(tab.lastPage || 0, Math.max(0, tab.doc.inputData.pageCount - 1));
     if (tab.fitWidth) {
       delete tab.fitWidth;
@@ -3862,9 +3918,7 @@ class ScribePDFViewer {
     tab.placedByAddress = placed;
     if (!placed) await g.viewer.displayPage(pageIndex, true, false);
     if (tab.view) await this._showSideView(tab);
-    // Deferred text extraction can reveal comments after the load.
-    const { doc } = tab;
-    if (doc._textReadySettle) doc.textReady.then(() => { if (this._rightGroup === g && g.viewer.doc === doc) this._syncGroupSidebarDoc(g, g.viewer.state.cp.n); }).catch(() => {});
+    if (!tab.view) this._groupDocChanged(g, tab.doc);
     if (tab.waking) {
       tab.waking = false;
       tab.asleep = false;
@@ -3873,6 +3927,34 @@ class ScribePDFViewer {
     this._applyTabResourcePolicy();
     if (this._activeGroup === 1) this._syncPageBox();
     this._announceActiveDoc();
+  }
+
+  /**
+   * Tell the gate and the modes that the right group's viewer shows `doc`.
+   * @param {NonNullable<ScribePDFViewer['_rightGroup']>} g
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  _groupDocChanged(g, doc) {
+    const tell = () => {
+      // An edit mode's selection belongs to the viewer it is installed on, whichever group the mode runs in.
+      this._editTextTool?.docChanged?.(g.viewer);
+      this._graphicsEditTool?.docChanged?.(g.viewer);
+      if (this._modeGroup !== 1) return;
+      this._extractTablesTool?.docChanged?.();
+      this._inspectTool?.docChanged?.();
+      this._exportTool?.docChanged?.();
+    };
+    this._syncDocGatedControls();
+    tell();
+    // Deferred text extraction can reveal comments and tables after the load.
+    if (doc._textReadySettle) {
+      doc.textReady.then(() => {
+        if (this._rightGroup !== g || g.viewer.doc !== doc) return;
+        this._syncGroupSidebarDoc(g, g.viewer.state.cp.n);
+        this._syncDocGatedControls();
+        tell();
+      }).catch(() => {});
+    }
   }
 
   /**
@@ -5990,7 +6072,9 @@ class ScribePDFViewer {
       this._vbarParts.redo.disabled = !canRedo;
     }
     if (this._fsUndoBtn) this._fsUndoBtn.classList.toggle('disabled', !canUndo);
-    const dirty = !!doc && this._modeBaseline >= 0 && doc.docHistory.undoStack.length !== this._modeBaseline;
+    // Save measures the mode's document, which is the active viewer's unless a second view has moved the active viewer.
+    const modeDoc = this._modeViewer().doc;
+    const dirty = !!modeDoc && this._modeBaseline >= 0 && modeDoc.docHistory.undoStack.length !== this._modeBaseline;
     if (this._dockModeParts?.save) this._dockModeParts.save.disabled = !dirty;
     if (this._modeBannerParts?.save) this._modeBannerParts.save.disabled = !dirty;
     // Every edit and selection change passes through here, so the proofreading count follows them.
@@ -6020,9 +6104,11 @@ class ScribePDFViewer {
    * @param {?HTMLElement} activeBtn
    */
   _syncModeExitButtons(activeBtn) {
-    if (activeBtn !== this._modeSessionBtn) {
+    // The session belongs to the mode's viewer, not the active one, because a press into the right group during Side by side moves the active viewer and leaves the mode running.
+    const { doc } = this._modeViewer();
+    if (activeBtn !== this._modeSessionBtn || doc !== this._modeSessionDoc) {
       this._modeSessionBtn = activeBtn;
-      const { doc } = this._activeViewer();
+      this._modeSessionDoc = activeBtn ? doc : null;
       this._modeBaseline = activeBtn && doc ? doc.docHistory.undoStack.length : -1;
     }
     const sessionExit = !!activeBtn
@@ -6042,7 +6128,7 @@ class ScribePDFViewer {
    * The document history unwinds to the depth captured at mode entry, then the mode exits.
    */
   _discardModeSession() {
-    const sv = this._activeViewer();
+    const sv = this._modeViewer();
     const ed = sv._editTextLineEditor;
     if (ed?.isOpen()) ed.revert();
     const { doc } = sv;
@@ -8076,11 +8162,13 @@ class ScribePDFViewer {
     const proofBtn = this._proofreadTool?.toolbarElem;
     if (proofBtn) {
       // A provisional tab's pages carry their text source and the entry presence the document library recorded, so the row takes the same test as on a hydrated document.
-      const proofreadable = !disabled && !!doc.ocr?.active?.some((page) => {
+      // Until any page's words arrive the document is pending, so a mode on it stays on.
+      const pending = provisional && !doc.ocr?.active?.some((page) => page);
+      const proofreadable = !disabled && (pending || !!doc.ocr?.active?.some((page) => {
         if (!page || DOCUMENT_IMPORT_SOURCES.has(page.textSource)) return false;
         const nt = nativeTextForPage(doc, page);
         return page.lines.some((line) => line.words.some((w) => !nt[w.id]));
-      });
+      }));
       // The exit goes through the tool, not the button's click, so a row the gate has already disabled still leaves the mode.
       if (!proofreadable && this._proofreadTool.isActive()) this._proofreadTool.close();
       proofBtn.classList.toggle('disabled', !proofreadable);

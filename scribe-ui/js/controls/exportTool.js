@@ -265,7 +265,7 @@ const esc = (s) => String(s)
  * The Export mode tool.
  * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
  * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, open: (format?: string) => void, close: () => void, viewSegElem: () => HTMLElement,
- *   toolsElem: () => HTMLElement, docChanged: () => void, hintText: () => ?string, format: () => string }}
+ *   toolsElem: () => HTMLElement, docChanging: () => void, docChanged: () => void, hintText: () => ?string, format: () => string }}
  */
 export function createExportTool(app) {
   const toolbarElem = makeIconButton('Export', EXPORT_MODE_SVG);
@@ -867,6 +867,11 @@ export function createExportTool(app) {
     paneStyle.textContent = '';
     const surface = surfaceOf();
     if (surface === 'summary') {
+    if (format().needsWords && !docHasWords(doc)) {
+      layoutPane();
+      paneNote(`This document has no text, so there is nothing to export as ${format().label}.`);
+      return;
+    }
       layoutPane();
       paneStyle.textContent = SUMMARY_RULES;
       paneBody.innerHTML = summaryBody(doc);
@@ -968,6 +973,22 @@ export function createExportTool(app) {
   };
 
   // ---- The scroll link. ----
+  /**
+   * Show a note in the pane in place of a rendering.
+   * @param {string} text
+   */
+  const paneNote = (text) => {
+    docRendered = null;
+    paneBody.replaceChildren();
+    paneStyle.textContent = '';
+    const note = document.createElement('div');
+    note.className = 'scribe-export-note';
+    Object.assign(note.style, {
+      padding: '28px 16px', textAlign: 'center', color: 'var(--scribe-ink-3)', fontSize: '13px',
+    });
+    note.textContent = text;
+    paneBody.appendChild(note);
+  };
   const linkState = { on: true, expectLane: NaN, expectPane: NaN };
   /**
    * The mode banner's height.
@@ -1211,14 +1232,38 @@ export function createExportTool(app) {
   const buildPdfPreviewDoc = async (doc) => {
     const bytes = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', pdfOptions(doc)));
     const file = new File([bytes], 'preview.pdf', { type: 'application/pdf' });
-    return scribeLib.openDocument([file], { deferText: true });
+    return scribeLib.openDocument([file], { deferText: true, pdfWorkerN: 1 });
+  };
+  let previewBusy = false;
+  const syncExportBtn = () => {
+    exportBtn.disabled = previewBusy || !formatAllowed(format(), viewerOf().doc);
   };
   const setBusy = (busy) => {
-    exportBtn.disabled = busy;
+    previewBusy = busy;
+    syncExportBtn();
     pickBtn.classList.toggle('busy', busy);
   };
   const openBesidePdf = async () => {
     const sv = viewerOf();
+  /** @type {?import('../../../js/containers/scribeDoc.js').ScribeDoc} */
+  let blankDoc = null;
+  /** Take the PDF preview off the right half at once. */
+  const clearPdfPreview = () => {
+    const sv = app._sideView;
+    const g = app._rightGroup;
+    const old = pdfPreviewDoc;
+    pdfPreviewDoc = null;
+    if (sv && g && old && sv.tab.doc === old) {
+      blankDoc ??= new scribeLib.ScribeDoc();
+      sv.tab.doc = blankDoc;
+      if (g.active === sv.tab) {
+        g.viewer.doc = blankDoc;
+        app._syncGroupSidebarDoc?.(g, 0);
+      }
+    }
+    old?.close().catch(() => {});
+    setBusy(true);
+  };
     if (!sv.doc) return;
     const run = ++pdfRun;
     setBusy(true);
@@ -1233,7 +1278,7 @@ export function createExportTool(app) {
       return;
     }
     setBusy(false);
-    if (run !== pdfRun || !active || view !== 'beside' || mounted?.kind !== 'pdf') { previewDoc.clear(); return; }
+    if (run !== pdfRun || !active || view !== 'beside' || mounted?.kind !== 'pdf') { previewDoc.close().catch(() => {}); return; }
     pdfPreviewDoc = previewDoc;
     const token = ++sideSeq;
     app._openSideView({
@@ -1244,10 +1289,14 @@ export function createExportTool(app) {
       release: () => {},
       onClose: () => {
         onSideViewClosed(token);
-        if (pdfPreviewDoc === previewDoc) pdfPreviewDoc = null;
-        previewDoc.clear();
+        // A refresh may have swapped a later preview into the item, which closes with the item too.
+        const current = pdfPreviewDoc;
+        pdfPreviewDoc = null;
+        if (current && current !== previewDoc) current.close().catch(() => {});
+        previewDoc.close().catch(() => {});
       },
-      // The preview is of one document; the lane's next document gets its own.
+      // The editor never calls `retarget` for a view that owns its document.
+      // `docChanged` builds the preview of the lane's next document.
       retarget: () => false,
     });
   };
@@ -1259,6 +1308,8 @@ export function createExportTool(app) {
       if (!sv.doc || !active || mounted?.kind !== 'pdf') return;
       const run = ++pdfRun;
       setBusy(true);
+      // A placeholder's real document reruns `docChanged`, which refreshes again.
+      if (sv.doc.id < 0 && sv.doc._requestHydration) return;
       let next;
       try {
         next = await buildPdfPreviewDoc(sv.doc);
@@ -1268,11 +1319,11 @@ export function createExportTool(app) {
         return;
       }
       setBusy(false);
-      if (run !== pdfRun || !active || mounted?.kind !== 'pdf') { next.clear(); return; }
+      if (run !== pdfRun || !active || mounted?.kind !== 'pdf') { next.close().catch(() => {}); return; }
       const prev = pdfPreviewDoc;
       pdfPreviewDoc = next;
       await app._retargetSideView(next);
-      prev?.clear();
+      prev?.close().catch(() => {});
     }, 400);
   };
 
@@ -1631,7 +1682,7 @@ export function createExportTool(app) {
       console.error(`Export to ${f.id} failed:`, err);
       app._showToast(`Couldn’t export ${f.label}. Please try again.`);
     } finally {
-      exportBtn.disabled = false;
+      syncExportBtn();
     }
   });
 
@@ -1704,7 +1755,8 @@ export function createExportTool(app) {
         unmountPane();
       },
       onClose: () => onSideViewClosed(token),
-      retarget: (doc) => formatAllowed(format(), doc),
+      // The view holds even for a document without text, and the pane shows a note for it.
+      retarget: () => true,
     });
   };
   /** @param {boolean} [replacing] - The next mount opens a second view, which replaces this one in place. */
@@ -1808,21 +1860,45 @@ export function createExportTool(app) {
 
   /** Carry the mode over to a newly opened document. */
   const docChanged = () => {
+  /**
+   * Clear the preview before the mode's viewer paints another document.
+   * `docChanged` fills it again once the document is on screen.
+   */
+  const docChanging = () => {
+    if (!active || view === 'page') return;
+    if (mounted?.kind === 'pdf') clearPdfPreview();
+    else if (mounted?.kind !== 'sheet' && docRendered !== viewerOf().doc) paneNote('Building the preview…');
+  };
+
     if (!active) return;
     settings.range = '';
     if (settings.pages === 'range') settings.pages = 'all';
     const sv = viewerOf();
     if (!sv.doc) { setActive(false); return; }
-    // A document the document library holds as a placeholder has only the text its index kept, so the real one loads.
+    syncOptions();
+    syncExportBtn();
+    if (view === 'page') return;
+    // The editor loads a placeholder's real document once the reader rests on it.
     // Its arrival runs this again.
     if (sv.doc.id < 0 && sv.doc._requestHydration) {
-      hydrateIfProvisional(sv.doc).catch(() => {});
+      if (mounted?.kind === 'pdf') clearPdfPreview();
+      else if (mounted?.kind !== 'sheet') paneNote('Loading the document…');
+      const placeholder = sv.doc;
+      placeholder._hydrated?.catch(() => {
+        if (viewerOf().doc !== placeholder) return;
+        setBusy(false);
+        if (mounted?.kind !== 'pdf' && mounted?.kind !== 'sheet') paneNote('Couldn’t load the document.');
+      });
       return;
     }
-    if (!formatAllowed(format(), sv.doc)) settings.format = 'pdf';
-    syncOptions();
     // Text can arrive after the document shows, as deferred extraction's does, so the preview re-renders even for the same document.
-    if (view !== 'page') remount();
+    if (mounted?.kind === 'pdf') {
+      clearPdfPreview();
+      refreshPdfPreview();
+    } else {
+      if (mounted?.kind !== 'sheet' && docRendered !== sv.doc) paneNote('Building the preview…');
+      remount();
+    }
   };
 
   /**
@@ -1841,6 +1917,15 @@ export function createExportTool(app) {
   };
 
   return {
-    toolbarElem, isActive: () => active, open, close: () => setActive(false), viewSegElem: () => viewSeg, toolsElem: () => tools, docChanged, hintText: () => null, format: () => settings.format,
+    toolbarElem,
+    isActive: () => active,
+    open,
+    close: () => setActive(false),
+    viewSegElem: () => viewSeg,
+    toolsElem: () => tools,
+    docChanging,
+    docChanged,
+    hintText: () => null,
+    format: () => settings.format,
   };
 }

@@ -218,6 +218,19 @@ export function buildTablesWorkspace(host, container) {
   noteWrap.className = 'scribe-am-xtnote';
   const renderNote = () => {
     noteWrap.textContent = '';
+    if (viewer.doc.id < 0 && viewer.doc._requestHydration) {
+      // When a placeholder opens while the mode is active, `host.app._loadUnderMode` starts its load once the reader rests on it.
+      const busy = noteBlock(SPIN_SVG, 'Loading the document…');
+      busy.querySelector('.scribe-am-note-ic').style.color = 'var(--scribe-accent)';
+      noteWrap.appendChild(busy);
+      const placeholder = viewer.doc;
+      placeholder._hydrated?.catch(() => {
+        if (viewer.doc !== placeholder || !noteWrap.isConnected) return;
+        noteWrap.textContent = '';
+        noteWrap.appendChild(noteBlock(INFO_SVG, 'Couldn’t load the document.'));
+      });
+      return;
+    }
     if (viewer.doc._textReadySettle) {
       const busy = noteBlock(SPIN_SVG, 'Detecting tables\u2026');
       busy.querySelector('.scribe-am-note-ic').style.color = 'var(--scribe-accent)';

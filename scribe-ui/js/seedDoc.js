@@ -120,6 +120,12 @@ export class SeedDoc {
     this._cancelled = false;
     /** @type {?() => Promise<Object>} Starts hydration and resolves with the real document. */
     this._requestHydration = null;
+    /**
+     * The swap of this seed for the real document.
+     * It rejects when the load fails or is abandoned.
+     * @type {?Promise<void>}
+     */
+    this._hydrated = null;
     /** @type {?(n: number) => void} */
     this._onPageText = null;
     /** @type {?(n: number) => void} */

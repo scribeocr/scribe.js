@@ -954,7 +954,17 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const paintDocument = () => {
     const next = el('div', 'scribe-am-ins-part');
     next.hidden = !!drill;
-    next.append(documentGroup());
+    const placeholder = viewer.doc;
+    if (placeholder && placeholder.id < 0 && placeholder._requestHydration) {
+      // The app's `_loadUnderMode` starts the load once the reader rests on this document.
+      next.append(el('div', 'scribe-am-note', 'Loading the document…'));
+      placeholder._hydrated?.catch(() => {
+        if (viewer.doc !== placeholder || !next.isConnected) return;
+        next.replaceChildren(el('div', 'scribe-am-note', 'Couldn’t load the document.'));
+      });
+    } else {
+      next.append(documentGroup());
+    }
     if (docPart) docPart.replaceWith(next); else body.prepend(next);
     docPart = next;
   };

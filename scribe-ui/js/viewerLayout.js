@@ -284,7 +284,7 @@ export function renderLayoutBoxes(viewer, n) {
 
   if (!viewer.overlayGroupsRenderIndices.includes(n)) viewer.overlayGroupsRenderIndices.push(n);
 
-  Object.values(viewer.doc.layoutRegions.pages[n].boxes).forEach((box) => {
+  Object.values(viewer.doc.layoutRegions.pages[n]?.boxes ?? {}).forEach((box) => {
     const uiLayout = new UiRegion(box, viewer);
     group.appendChild(uiLayout.el);
     if (uiLayout.label) group.appendChild(uiLayout.label.el);
