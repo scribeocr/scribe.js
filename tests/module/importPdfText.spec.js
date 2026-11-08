@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { extractPDFTextDirect } from '../../js/pdf/parsePdfDoc.js';
+import { writeHtmlFragment } from '../../js/export/writeHtml.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 import { strayFields } from './_ocrFields.js';
 
@@ -121,6 +122,25 @@ describe('Check small caps are detected in PDF imports.', () => {
       .toMatch(/EVIDENCE<sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">\*<\/a><\/sup><\/h1>/);
     expect(html, 'the note is gathered under its asterisk, without the page\'s own asterisk word')
       .toMatch(/<li id="scribe-fn-\w{8}"><span class="scribe-fnlabel">\*<\/span>Correspondence: alexancr@usdoj\.gov\. The author thanks David Reiffen/);
+    // The Export preview renders this fragment.
+    const previewHtml = writeHtmlFragment({
+      ocrPages: doc.ocr.active,
+      layoutPageArr: doc.layoutDataTables.pages,
+      annotations: doc.annotations.pages,
+      pageArr: [1],
+      docFonts: doc.fonts,
+      pageMetrics: doc.pageMetrics,
+      reflowText: true,
+      displayMode: 'ebook',
+      runFonts: true,
+      gatherNotes: true,
+      notesPerPage: true,
+      noteNumbers: 'sequential',
+    }).body;
+    expect(previewHtml, 'the preview\'s footnote reference carries its word\'s font, so it does not fall to the Word default font beside text in the page font')
+      .toMatch(/EVIDENCE<\/span><span data-font="AGaramond"><sup class="scribe-fnref"><a href="#scribe-fn-(\w{8})" id="scribe-fnref-\1">\*<\/a><\/sup><\/span><\/h1>/);
+    expect(previewHtml, 'the preview\'s note label carries the note\'s font')
+      .toMatch(/<li id="scribe-fn-\w{8}"><span class="scribe-fnlabel" data-font="Times">\*<\/span><span data-font="Times">Correspondence: alexancr@usdoj\.gov\./);
     const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx', { pageArr: [1] }));
     const zipModule = await import('../../lib/zip.js/index.js');
     const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));

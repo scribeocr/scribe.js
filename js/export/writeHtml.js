@@ -383,7 +383,8 @@ export function writeHtmlFragment({
             const firstRef = !referenced.has(word.footnoteParId);
             referenced.add(word.footnoteParId);
             // The reference stays attached to the word before it.
-            out += `<sup class="scribe-fnref"><a href="#scribe-fn-${word.footnoteParId}"${firstRef ? ` id="scribe-fnref-${word.footnoteParId}"` : ''}>${esc(label)}</a></sup>${esc(ref.tail)}`;
+            const refHtml = `<sup class="scribe-fnref"><a href="#scribe-fn-${word.footnoteParId}"${firstRef ? ` id="scribe-fnref-${word.footnoteParId}"` : ''}>${esc(label)}</a></sup>${esc(ref.tail)}`;
+            out += runFonts && word.style.font ? `<span data-font="${esc(word.style.font)}">${refHtml}</span>` : refHtml;
           }
         }
         prevJoin = joinNext;
@@ -404,14 +405,14 @@ export function writeHtmlFragment({
         body += `${list.item ? '</li>\n' : ''}</${list.tag}>\n`;
       }
     };
-    /** @type {Array<{id: string, label: string, own?: string, html: string, n: number}>} */
+    /** @type {Array<{id: string, label: string, own?: string, font?: string, html: string, n: number}>} */
     const notes = [];
-    /** @param {Array<{id: string, label: string, own?: string, html: string, n: number}>} list */
+    /** @param {Array<{id: string, label: string, own?: string, font?: string, html: string, n: number}>} list */
     const notesHtml = (list) => {
       let s = '<section class="scribe-notes">\n<ol>\n';
       for (const note of list) {
         const back = referenced.has(note.id) ? ` <a class="scribe-fnback" href="#scribe-fnref-${note.id}">↩</a>` : '';
-        s += `<li id="scribe-fn-${note.id}"${parIds ? ` data-par="${note.id}" data-page="${note.n}"` : ''}${note.own ? ` data-own-label="${esc(note.own)}"` : ''}><span class="scribe-fnlabel">${esc(note.label)}</span>${note.html}${back}</li>\n`;
+        s += `<li id="scribe-fn-${note.id}"${parIds ? ` data-par="${note.id}" data-page="${note.n}"` : ''}${note.own ? ` data-own-label="${esc(note.own)}"` : ''}><span class="scribe-fnlabel"${note.font ? ` data-font="${esc(note.font)}"` : ''}>${esc(note.label)}</span>${note.html}${back}</li>\n`;
       }
       return `${s}</ol>\n</section>\n`;
     };
@@ -455,7 +456,12 @@ export function writeHtmlFragment({
         closeLists(0);
         if (hadList) lastBodyEnd = body.length;
         notes.push({
-          id: par.id, label: /** @type {string} */ (fnLabelById.get(par.id)), own: fnPageLabelById.get(par.id), html: inline(lines, { stripLeader: true }), n: pageN,
+          id: par.id,
+          label: /** @type {string} */ (fnLabelById.get(par.id)),
+          own: fnPageLabelById.get(par.id),
+          font: runFonts ? lines[0]?.words[0]?.style.font : undefined,
+          html: inline(lines, { stripLeader: true }),
+          n: pageN,
         });
         return;
       }
