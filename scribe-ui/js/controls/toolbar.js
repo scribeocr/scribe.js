@@ -3791,7 +3791,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       text-align: center;
     }
 
-    .${r} .scribe-thumb-box:hover {
+    .${r}:where(:not(.scribe-card-drag)) .scribe-thumb-box:hover {
       outline: 2px solid var(--scribe-line-strong);
     }
 

@@ -458,6 +458,8 @@ export function createDragReorder({
     d.ghost.style.transition = reducedMotion() || d.chip ? 'none' : `transform ${OVER_TARGET_MS}ms ease`;
     for (const p of d.carried) elemOf(p, d)?.classList.add('dragging');
     surface.classList.add('card-drag');
+    // The thumbnail rail's hover ring would read as a drop target, so the root flag pauses it for the drag.
+    viewer.pdfViewerElem.classList.add('scribe-card-drag');
     if (d.chip) surface.classList.add('chip-drag');
     if (d.canReorder && mainGridElem) {
       d.line = document.createElement('div');
@@ -917,6 +919,7 @@ export function createDragReorder({
     if (d.rafId) cancelAnimationFrame(d.rafId);
     d.line?.remove();
     surface.classList.remove('card-drag', 'chip-drag');
+    viewer.pdfViewerElem.classList.remove('scribe-card-drag');
     if (d.overBar) barApproach(false, commit && !!d.dropElem && d.dropDir != null && !d.dropElem.classList.contains('folder'));
     if (!d.started) {
       if (renderPending) {
