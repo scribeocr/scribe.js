@@ -1,5 +1,6 @@
 import scribeLib from '../../../scribe.js';
 import { ARTICLE_RULES, writeHtmlFragment } from '../../../js/export/writeHtml.js';
+import { docxFontEntry } from '../../../js/export/writeDocx.js';
 import { parIsFurniture } from '../../../js/objects/ocrObjects.js';
 import { bboxToPageSpace } from '../../../js/addHighlights.js';
 import { docxStrings } from '../../../js/export/resources/docxFiles.js';
@@ -153,10 +154,13 @@ const DOC_STYLES = {
       + '  .scribe-article .scribe-notes ol {\n    list-style:none;\n  }\n'
     + '  .scribe-article .scribe-fnlabel {\n    margin-right:1ch;\n  }\n  .scribe-article b {\n    font-weight:400;\n  }\n  .scribe-article i {\n    font-style:normal;\n  }\n',
 };
+const WORD_FAMILY_GENERIC = {
+  roman: 'serif', swiss: 'sans-serif', modern: 'monospace', script: 'cursive',
+};
 let wordStylesCache = null;
 /**
- * The Word preview's stylesheet and body font family.
- * @returns {{css: string, family: string}}
+ * The Word preview's stylesheet.
+ * @returns {string}
  */
 const wordStyles = () => {
   if (wordStylesCache) return wordStylesCache;
@@ -208,11 +212,11 @@ const wordStyles = () => {
       + `    line-height:${Math.round(Math.max(num(fnSpacing, 'line') / 240 || line, line) * 1000) / 1000};\n  }\n`
     + `  .scribe-article .scribe-notes ol {\n    width:300%;\n  }\n  .scribe-article .scribe-notes li {\n    margin:0 0 ${num(fnSpacing, 'after') / 20 || 0}pt;\n  }\n`
     + '  .scribe-article .scribe-fnlabel {\n    vertical-align:super;\n    font-size:.7em;\n    margin-right:.3em;\n  }\n';
-  wordStylesCache = { css, family };
-  return wordStylesCache;
+  wordStylesCache = css;
+  return css;
 };
 /** @param {ExportFormat} f */
-const docRules = (f) => (f.style === 'html' ? ARTICLE_RULES : f.style === 'word' ? wordStyles().css : DOC_STYLES[f.style || 'markdown']);
+const docRules = (f) => (f.style === 'html' ? ARTICLE_RULES : f.style === 'word' ? wordStyles() : DOC_STYLES[f.style || 'markdown']);
 const CHIP_RULES = '  .scribe-export-chip {\n    position:absolute;\n    display:inline-flex;\n    align-items:center;\n    gap:4px;\n    padding:2px 8px;\n'
   + '    border:1px solid var(--scribe-line-strong);\n    border-radius:999px;\n    background:var(--scribe-surface);\n    color:var(--scribe-ink-2);\n'
   + '    font:11px/1.4 system-ui,sans-serif;\n    cursor:pointer;\n    z-index:3;\n    white-space:nowrap;\n  }\n'
@@ -911,7 +915,14 @@ export function createExportTool(app) {
       }
       if (gen !== renderRun) return;
       paneBody.innerHTML = body;
-      if (word) for (const span of paneBody.querySelectorAll('[data-font]')) /** @type {HTMLElement} */ (span).style.fontFamily = `"${span.getAttribute('data-font')}", ${wordStyles().family}`;
+      // The preview falls back as Word will on a machine without the font, so it shows what the export will show.
+      if (word) {
+        for (const span of paneBody.querySelectorAll('[data-font]')) {
+          const font = /** @type {string} */ (span.getAttribute('data-font'));
+          const { altName, family } = docxFontEntry(font, doc.fonts);
+          /** @type {HTMLElement} */ (span).style.fontFamily = `"${font}", ${altName ? `"${altName}", ` : ''}${WORD_FAMILY_GENERIC[family]}`;
+        }
+      }
       if (surface === 'document' && dropActive()) {
         for (const el of paneBody.querySelectorAll('.scribe-page-header, .scribe-page-footer, .scribe-page-number, .scribe-line-number')) {
           const info = parInfo.get(/** @type {HTMLElement} */ (el).dataset.par || '');

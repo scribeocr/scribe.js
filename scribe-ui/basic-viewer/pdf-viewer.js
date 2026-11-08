@@ -2160,12 +2160,12 @@ class ScribePDFViewer {
    * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
    * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
-   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string}} [opts]
+   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string, [field: string]: any}} [opts]
    *   `group`, `preview`, `program`, `fitWidth` and `openAddress` go to the tab as `_openDocAsTab` takes them.
    * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void, tab: Object}>} `tab` is the record the document opened as.
    */
   async openProvisional(seed, {
-    activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null,
+    activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
   } = {}) {
     /** @type {{current: ?Object}} */
     const holder = { current: null };
@@ -2174,7 +2174,7 @@ class ScribePDFViewer {
     } = this._makeProvisional(seed, holder);
     // The record reaches the hydration machinery before the first display, so a display that throws leaves a tab that still loads.
     await this._openDocAsTab(seedDoc, seed.name || 'Document', {
-      provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress, onCreated: (tab) => { holder.current = tab; },
+      ...fields, provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress, onCreated: (tab) => { holder.current = tab; },
     });
     if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
     return {
@@ -2188,6 +2188,7 @@ class ScribePDFViewer {
    * Hydration starts through the document's `_requestHydration`, which the caller kicks itself for an eager seed.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
    * @param {{current: ?Object}} holder
+   *   Any other option is a field of the tab record, in place before the strip first draws the tab.
    * @returns {{seedDoc: SeedDoc, primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}}
    */
   _makeProvisional(seed, holder) {

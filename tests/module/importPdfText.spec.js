@@ -348,10 +348,18 @@ describe('Check superscripts are detected in PDF imports.', () => {
     const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx'));
     const zipModule = await import('../../lib/zip.js/index.js');
     const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));
-    const entry = (await zipReader.getEntries()).find((e) => e.filename === 'word/document.xml');
-    const documentXml = await entry.getData(new zipModule.TextWriter());
+    const entries = await zipReader.getEntries();
+    const documentXml = await entries.find((e) => e.filename === 'word/document.xml').getData(new zipModule.TextWriter());
     expect(documentXml, 'the Word export writes the word the table left out as a paragraph after the table')
       .toContain('</w:tbl><w:p><w:r><w:rPr><w:b/><w:rFonts w:ascii="MyriadPro" w:hAnsi="MyriadPro"/></w:rPr><w:t xml:space="preserve">Most</w:t></w:r></w:p><w:p>');
+    // Word substitutes by the font table's alternate name and family when the named font is not installed.
+    const fontTableXml = await entries.find((e) => e.filename === 'word/fontTable.xml').getData(new zipModule.TextWriter());
+    expect(fontTableXml, 'a run font no name pattern classifies takes the class of the document\'s text, so Word substitutes a serif face for it')
+      .toContain('<w:font w:name="Gulliver"><w:altName w:val="Times New Roman"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>');
+    expect(fontTableXml, 'a run font named as a sans family gets a sans substitute')
+      .toContain('<w:font w:name="MyriadPro"><w:altName w:val="Arial"/><w:family w:val="swiss"/><w:pitch w:val="variable"/></w:font>');
+    expect(fontTableXml, 'a standard family\'s PostScript name gets that family as its substitute')
+      .toContain('<w:font w:name="TimesNewRomanPSMT"><w:altName w:val="Times New Roman"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>');
   });
 
   test('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {

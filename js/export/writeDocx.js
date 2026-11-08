@@ -1,5 +1,5 @@
 import {
-  documentEnd, documentStart, docxStrings, footnotesStart, footnotesEnd,
+  documentEnd, documentStart, docxStrings, fontTableEnd, fontTableStart, footnotesStart, footnotesEnd,
 } from './resources/docxFiles.js';
 
 import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
@@ -9,8 +9,26 @@ import ocr, {
   isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
 } from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
+import { cssGenericForFontObj } from '../pdf/fonts/base14Substitution.js';
 
 const LINE_END_HYPHEN_RE = /[-‐­]$/;
+
+/**
+ * The font table entry for a run font.
+ * Word substitutes from it when the font is not installed.
+ *
+ * @param {string} font - A word's recorded font family.
+ * @param {import('../containers/fontContainer.js').DocFonts} docFonts
+ * @returns {{altName: ?string, family: 'roman'|'swiss'|'modern'|'script', pitch: 'variable'|'fixed'}}
+ */
+export function docxFontEntry(font, docFonts) {
+  // The class the document's fonts draw the word in stands in for the descriptor's serif flag, which the word does not carry.
+  const generic = cssGenericForFontObj({ baseName: font, serifFlag: docFonts.getFont({ font }).type !== 'sans' });
+  if (generic === 'monospace') return { altName: 'Courier New', family: 'modern', pitch: 'fixed' };
+  if (generic === 'cursive') return { altName: null, family: 'script', pitch: 'variable' };
+  if (generic === 'sans-serif') return { altName: 'Arial', family: 'swiss', pitch: 'variable' };
+  return { altName: 'Times New Roman', family: 'roman', pitch: 'variable' };
+}
 
 /**
  * Convert an array of ocrPage objects to XML for a Word document.
@@ -27,7 +45,7 @@ const LINE_END_HYPHEN_RE = /[-‐­]$/;
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
  *    exported. Required when reflow or preserveSpacing is enabled.
  * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document, for progress reporting and for the font table's run-font entries.
  */
 export function writeDocxContent({
   ocrCurrent, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, wordIds = null,
@@ -71,6 +89,8 @@ export function writeDocxContent({
     }
   }
 
+  /** @type {Set<string>} */
+  const runFonts = new Set();
   const styleXml = (style) => {
     let s = '';
     if (style.bold) s += '<w:b/>';
@@ -78,7 +98,10 @@ export function writeDocxContent({
     if (style.smallCaps) s += '<w:smallCaps/>';
     if (style.underline) s += '<w:u w:val="single"/>';
     if (style.sup) s += '<w:vertAlign w:val="superscript"/>';
-    if (style.font) s += `<w:rFonts w:ascii="${ocr.escapeXml(style.font)}" w:hAnsi="${ocr.escapeXml(style.font)}"/>`;
+    if (style.font) {
+      runFonts.add(style.font);
+      s += `<w:rFonts w:ascii="${ocr.escapeXml(style.font)}" w:hAnsi="${ocr.escapeXml(style.font)}"/>`;
+    }
     return s;
   };
 
@@ -235,7 +258,17 @@ export function writeDocxContent({
     doc?.progressHandler({ n: g, type: 'export', info: { } });
   }
 
-  return { body, footnotesXml };
+  let fontsXml = '';
+  if (doc?.fonts) {
+    const listed = new Set([...fontTableStart.matchAll(/w:name="([^"]*)"/g)].map((m) => m[1]));
+    for (const font of runFonts) {
+      if (listed.has(font)) continue;
+      const { altName, family, pitch } = docxFontEntry(font, doc.fonts);
+      fontsXml += `<w:font w:name="${ocr.escapeXml(font)}">${altName ? `<w:altName w:val="${altName}"/>` : ''}<w:family w:val="${family}"/><w:pitch w:val="${pitch}"/></w:font>`;
+    }
+  }
+
+  return { body, footnotesXml, fontsXml };
 }
 
 /**
@@ -267,7 +300,7 @@ export async function writeDocx({
   const zipFileWriter = new Uint8ArrayWriter();
   const zipWriter = new ZipWriter(zipFileWriter);
 
-  const { body, footnotesXml } = writeDocxContent({
+  const { body, footnotesXml, fontsXml } = writeDocxContent({
     ocrCurrent: hocrCurrent,
     layoutPageArr,
     pageArr,
@@ -279,6 +312,7 @@ export async function writeDocx({
 
   await zipWriter.add('word/document.xml', new TextReader(documentStart + body + documentEnd));
   await zipWriter.add('word/footnotes.xml', new TextReader(footnotesStart + footnotesXml + footnotesEnd));
+  await zipWriter.add('word/fontTable.xml', new TextReader(fontTableStart + fontsXml + fontTableEnd));
 
   for (let i = 0; i < docxStrings.length; i++) {
     const textReaderI = new TextReader(docxStrings[i].content);

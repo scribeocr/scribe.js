@@ -881,7 +881,7 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * The open-tab record the previous page load left in sessionStorage.
    * The first `openLibrary` consumes it, so a later folder switch cannot replay it.
-   * @type {?{v: number, dir: string, tabs: Array<{hash: string, relPath: string, page: number}>, active: number,
+   * @type {?{v: number, dir: string, tabs: Array<{hash: string, relPath: string, page: number, preview?: boolean}>, active: number,
    *   view: ?{zoom: number, sx: number, sy: number}, lib: number}}
    */
   let resumeRecord = null;
@@ -1677,6 +1677,7 @@ export function createLibraryInstance(viewer, opts) {
         zoom: viewer.scribe.zoomLevel,
         sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
         sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
+        ...(t.preview ? { preview: true } : {}),
       } : null,
       lib: visible && form === 'full' ? 1 : 0,
     };
@@ -3365,7 +3366,6 @@ export function createLibraryInstance(viewer, opts) {
       const entryNow = manifest?.docs[relPath];
       if (entryNow) openEntryHere(relPath, entryNow);
     };
-    // Touch keeps tap-to-open; select-then-double-click is a pointer-and-keyboard scheme.
     card.addEventListener('click', (e) => {
       if (viewer._coarsePointer) {
         open();
@@ -3475,6 +3475,8 @@ export function createLibraryInstance(viewer, opts) {
     return stats;
   };
 
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
   /**
    * Draw a folder with its first covers tucked inside.
    * @param {import('./libraryStore.js').LibraryDocEntry[]} covers
@@ -5420,7 +5422,15 @@ export function createLibraryInstance(viewer, opts) {
       const orig = d[name];
       if (typeof orig !== 'function') continue;
       d[name] = function markDirtyWrap(...args) {
-        if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryDirty = true;
+        const owner = d._libraryDirtyTarget;
+        if (owner) {
+          owner.libraryDirty = true;
+          // An edit keeps a preview tab.
+          if (owner.preview) {
+            owner.preview = false;
+            viewer._renderTabs();
+          }
+        }
         const result = orig.apply(this, args);
         // A completed recognition is what the next checkpoint stamps as the document's recognition state.
         if (name === 'recognize') Promise.resolve(result).then(() => { if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryRecognized = true; }).catch(() => {});
@@ -5555,12 +5565,17 @@ export function createLibraryInstance(viewer, opts) {
         saveManifestSoon();
         const seed = await loads.makeSeed(relPath, entry, target.pageN ?? 0);
         const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, {
-          activate: !target.background, group: target.group ?? 0, preview: !!target.preview, program: !!target.program, fitWidth: !!target.fitWidth, openAddress: target.openAddress ?? null,
+          activate: !target.background,
+          group: target.group ?? 0,
+          preview: !!target.preview,
+          program: !!target.program,
+          fitWidth: !!target.fitWidth,
+          openAddress: target.openAddress ?? null,
+          libraryOwner: instanceId,
+          libraryHash: entry.hash,
+          libraryRelPath: relPath,
         });
         const tab = /** @type {any} */ (handle.tab);
-        tab.libraryOwner = instanceId;
-        tab.libraryHash = entry.hash;
-        tab.libraryRelPath = relPath;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
         // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
         tab.onDocHydrated = (d) => {
@@ -5649,6 +5664,7 @@ export function createLibraryInstance(viewer, opts) {
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    */
+        // The owner fields go in with the open, so the strip's first draw already places the tab in the folder's group.
   const openEntrySide = (relPath, entry) => openEntry(relPath, entry, { group: sideGroup() });
   /**
    * Show a document as a preview tab, which the next preview replaces.
@@ -6776,7 +6792,9 @@ export function createLibraryInstance(viewer, opts) {
           // Set before the open, so the attach paints at this zoom rather than at a fit.
           if (!background && rec === activeRec && view) viewer._restoreView = { zoom: view.zoom, sx: view.sx, sy: view.sy };
           const tabsBefore = viewer._tabs.length;
-          await openEntry(entryPath, entry, { pageN: rec.page || 0, background });
+          const preview = !!rec.preview && !previewRestored;
+          if (preview) previewRestored = true;
+          await openEntry(entryPath, entry, { pageN: rec.page || 0, background, preview });
           // An open that failed before attaching must not leak the view onto whatever attaches next.
           viewer._restoreView = null;
           if (!background && rec === activeRec && viewer._tabs.length > tabsBefore) activeRestored = true;
@@ -6852,6 +6870,11 @@ export function createLibraryInstance(viewer, opts) {
       render({ revealSelection: true });
       ingest.start();
       await openEntry(relPath, manifest.docs[relPath]);
+        // The record keeps no groups, so every tab restores into the lane, where one preview replaces another.
+        // Only the first recorded preview restores as one, so a second group's preview is not lost.
+        let previewRestored = false;
+        /** @type {Array<{rec: {hash: string, relPath: string, page: number, preview?: boolean}, tab: Object}>} The restored tabs in the record's order. */
+        const placed = [];
     } finally {
       creatingPdf = false;
     }
@@ -6874,6 +6897,19 @@ export function createLibraryInstance(viewer, opts) {
         const relPath = await store.importSourceFile(file.name, file, currentDir);
         // The OCR file is copied in under the PDF's final name, so a PDF renamed by a name collision still pairs with it.
         const ocrName = filesNamedForPdf(file.name, names).ocrFiles[0];
+          // The active record opens first so its page paints first, and each open appends to the strip.
+          // Each restored tab therefore moves to its recorded place among those already restored.
+          const opened = viewer._tabs.length > tabsBefore
+            ? viewer._tabs.find((t) => ownsTab(t) && (t.libraryRelPath === entryPath || (!!entry.hash && t.libraryHash === entry.hash))) : null;
+          if (opened) {
+            const recIdx = record.tabs.indexOf(rec);
+            const before = placed.filter((p) => record.tabs.indexOf(p.rec) < recIdx).pop();
+            const others = viewer._groupTabs(0).filter((t) => t !== opened);
+            const to = before ? others.indexOf(before.tab) + 1 : (placed.length ? others.indexOf(placed[0].tab) : -1);
+            if (to >= 0) viewer._moveTabWithin(0, viewer._groupTabs(0).indexOf(opened), to);
+            placed.push({ rec, tab: opened });
+            placed.sort((a, b) => record.tabs.indexOf(a.rec) - record.tabs.indexOf(b.rec));
+          }
         const ocrFile = ocrName ? files.find((f) => f.name === ocrName) : null;
         if (ocrFile) {
           const finalStem = relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.pdf$/i, '');
@@ -7591,7 +7627,12 @@ export function createLibraryInstance(viewer, opts) {
   // Word-text and comment edits commit through editable elements rather than ScribeDoc methods, so any input event marks the active library tab dirty.
   const onInput = () => {
     const tab = viewer._tabs[viewer._activeTab];
-    if (tab?.libraryHash) tab.libraryDirty = true;
+    if (!tab?.libraryHash) return;
+    tab.libraryDirty = true;
+    if (tab.preview) {
+      tab.preview = false;
+      viewer._renderTabs();
+    }
   };
 
   viewer.pdfViewerElem.addEventListener('input', onInput, true);
@@ -7621,7 +7662,12 @@ export function createLibraryInstance(viewer, opts) {
     // A turn can settle after a tab switch, so this hook resolves the owner from the document rather than the active tab.
     viewer.onAssistantHistoryEdited = (doc) => {
       const target = /** @type {any} */ (doc)?._libraryDirtyTarget;
-      if (target) target.libraryDirty = true;
+      if (!target) return;
+      target.libraryDirty = true;
+      if (target.preview) {
+        target.preview = false;
+        viewer._renderTabs();
+      }
     };
   }
   const autosaveTimer = window.setInterval(() => {
@@ -7684,6 +7730,7 @@ export function createLibraryInstance(viewer, opts) {
       const segs = currentDir ? currentDir.split('/') : [];
       const rootLabel = isLibrary && store ? store.root.name : opts.name;
       const rows = segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') })).reverse();
+  // A typed edit keeps a preview tab too.
       rows.push({ label: rootLabel, path: '' });
       rows.forEach(({ label, path }) => {
         const item = document.createElement('div');
@@ -7709,6 +7756,7 @@ export function createLibraryInstance(viewer, opts) {
     titleDropdown.open(titleName, 'first');
   });
   titleName.addEventListener('click', (e) => {
+    // The edit keeps a preview tab here too.
     if (e.metaKey || e.ctrlKey) titleDropdown.open(titleName, 'first');
   });
   /** @param {KeyboardEvent} e */
