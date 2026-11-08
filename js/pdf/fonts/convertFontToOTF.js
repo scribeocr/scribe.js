@@ -322,64 +322,66 @@ export function isDefaultIgnorable(cp) {
     || (cp >= 0xFFF9 && cp <= 0xFFFB);
 }
 
+// Within each script block only the signs (anusvara/visarga), dependent vowel signs, and viramas combine, not base consonants or independent vowels.
+// Latin Combining Diacritical Marks (U+0300-U+036F) are excluded because Latin math/academic fonts may map precomposed glyphs at these codepoints.
+const COMBINING_SUBRANGES = [
+  [0x0981, 0x0983], // Bengali signs (candrabindu, anusvara, visarga)
+  [0x09BC, 0x09BC], // Bengali nuqta
+  [0x09BE, 0x09C4], // Bengali dependent vowel signs (aa, i, ii, u, uu, r̥, r̥̄)
+  [0x09C7, 0x09C8], // Bengali vowel signs e, ai
+  [0x09CB, 0x09CD], // Bengali vowel signs o, au, virama
+  [0x09D7, 0x09D7], // Bengali au length mark
+  [0x09E2, 0x09E3], // Bengali vowel signs vocalic l, ll
+  [0x0900, 0x0903], // Devanagari signs
+  [0x093A, 0x093C], // Devanagari signs
+  [0x093E, 0x094F], // Devanagari vowel signs + virama
+  [0x0951, 0x0957], // Devanagari stress/vedic signs
+  [0x0962, 0x0963], // Devanagari vocalic l/ll signs
+  [0x0A01, 0x0A03], // Gurmukhi signs
+  [0x0A3C, 0x0A3C], // Gurmukhi nuqta
+  [0x0A3E, 0x0A4D], // Gurmukhi vowel signs + virama
+  [0x0A70, 0x0A71], // Gurmukhi tippi/addak
+  [0x0A75, 0x0A75],
+  [0x0A81, 0x0A83], // Gujarati signs
+  [0x0ABC, 0x0ABC], // Gujarati nuqta
+  [0x0ABE, 0x0ACD], // Gujarati vowel signs + virama
+  [0x0AE2, 0x0AE3],
+  [0x0B01, 0x0B03], // Oriya signs
+  [0x0B3C, 0x0B3C],
+  [0x0B3E, 0x0B4D],
+  [0x0B55, 0x0B57],
+  [0x0B62, 0x0B63],
+  [0x0BBE, 0x0BCD], // Tamil signs
+  [0x0BD7, 0x0BD7],
+  [0x0C00, 0x0C04], // Telugu signs
+  [0x0C3C, 0x0C3C],
+  [0x0C3E, 0x0C4D],
+  [0x0C55, 0x0C56],
+  [0x0C62, 0x0C63],
+  [0x0C81, 0x0C83], // Kannada signs
+  [0x0CBC, 0x0CBC],
+  [0x0CBE, 0x0CCD],
+  [0x0CD5, 0x0CD6],
+  [0x0CE2, 0x0CE3],
+  [0x0D00, 0x0D03], // Malayalam signs
+  [0x0D3B, 0x0D3C],
+  [0x0D3E, 0x0D4D],
+  [0x0D57, 0x0D57],
+  [0x0D62, 0x0D63],
+  [0x0D81, 0x0D83], // Sinhala signs
+  [0x0DCA, 0x0DCA],
+  [0x0DCF, 0x0DDF],
+  [0x0DF2, 0x0DF3],
+];
+
 /**
  * Whether a codepoint is an Indic combining mark or dependent vowel/sign.
  * fillText() draws these as a "dotted circle + mark" placeholder when no base character precedes them.
  * @param {number} cp
  */
 export function isCombiningOrIndicMark(cp) {
-  // Within each script block only the signs (anusvara/visarga), dependent vowel signs, and viramas combine, not base consonants or independent vowels.
-  // Latin Combining Diacritical Marks (U+0300-U+036F) are excluded because Latin math/academic fonts may map precomposed glyphs at these codepoints.
-  const combiningSubranges = [
-    [0x0981, 0x0983], // Bengali signs (candrabindu, anusvara, visarga)
-    [0x09BC, 0x09BC], // Bengali nuqta
-    [0x09BE, 0x09C4], // Bengali dependent vowel signs (aa, i, ii, u, uu, r̥, r̥̄)
-    [0x09C7, 0x09C8], // Bengali vowel signs e, ai
-    [0x09CB, 0x09CD], // Bengali vowel signs o, au, virama
-    [0x09D7, 0x09D7], // Bengali au length mark
-    [0x09E2, 0x09E3], // Bengali vowel signs vocalic l, ll
-    [0x0900, 0x0903], // Devanagari signs
-    [0x093A, 0x093C], // Devanagari signs
-    [0x093E, 0x094F], // Devanagari vowel signs + virama
-    [0x0951, 0x0957], // Devanagari stress/vedic signs
-    [0x0962, 0x0963], // Devanagari vocalic l/ll signs
-    [0x0A01, 0x0A03], // Gurmukhi signs
-    [0x0A3C, 0x0A3C], // Gurmukhi nuqta
-    [0x0A3E, 0x0A4D], // Gurmukhi vowel signs + virama
-    [0x0A70, 0x0A71], // Gurmukhi tippi/addak
-    [0x0A75, 0x0A75],
-    [0x0A81, 0x0A83], // Gujarati signs
-    [0x0ABC, 0x0ABC], // Gujarati nuqta
-    [0x0ABE, 0x0ACD], // Gujarati vowel signs + virama
-    [0x0AE2, 0x0AE3],
-    [0x0B01, 0x0B03], // Oriya signs
-    [0x0B3C, 0x0B3C],
-    [0x0B3E, 0x0B4D],
-    [0x0B55, 0x0B57],
-    [0x0B62, 0x0B63],
-    [0x0BBE, 0x0BCD], // Tamil signs
-    [0x0BD7, 0x0BD7],
-    [0x0C00, 0x0C04], // Telugu signs
-    [0x0C3C, 0x0C3C],
-    [0x0C3E, 0x0C4D],
-    [0x0C55, 0x0C56],
-    [0x0C62, 0x0C63],
-    [0x0C81, 0x0C83], // Kannada signs
-    [0x0CBC, 0x0CBC],
-    [0x0CBE, 0x0CCD],
-    [0x0CD5, 0x0CD6],
-    [0x0CE2, 0x0CE3],
-    [0x0D00, 0x0D03], // Malayalam signs
-    [0x0D3B, 0x0D3C],
-    [0x0D3E, 0x0D4D],
-    [0x0D57, 0x0D57],
-    [0x0D62, 0x0D63],
-    [0x0D81, 0x0D83], // Sinhala signs
-    [0x0DCA, 0x0DCA],
-    [0x0DCF, 0x0DDF],
-    [0x0DF2, 0x0DF3],
-  ];
-  for (const [lo, hi] of combiningSubranges) {
+  if (cp < 0x0900 || cp > 0x0DF3) return false;
+  for (const [lo, hi] of COMBINING_SUBRANGES) {
     if (cp >= lo && cp <= hi) return true;
   }
   return false;
