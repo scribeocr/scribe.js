@@ -1,6 +1,6 @@
 // Disable linter rule.  Many async functions in this files draw on the canvas (a side effect) so need to be run one at a time.
 
-import ocr from '../objects/ocrObjects.js';
+import ocr, { bboxToPageSpace } from '../objects/ocrObjects.js';
 import { calcLineFontSize, calcWordFontSize, calcWordMetrics } from '../utils/fontUtils.js';
 
 import { FontCont } from '../containers/fontContainer.js';
@@ -462,6 +462,23 @@ async function penalizeWord(wordObjs) {
 }
 
 /**
+ * The core of a word's box for the overlap tests, in the page's frame.
+ * @param {OcrWord} word
+ * @param {number} orientation - the orientation of the word's line (0-3).
+ * @param {?dims} pageDims
+ * @returns {bbox}
+ */
+const coreBox = (word, orientation, pageDims) => {
+  const box = word.bbox;
+  const trim = Math.round((box.bottom - box.top) * (word.visualCoords ? 0.1 : 0.25));
+  // Trimming the left and right as well would hide legitimate one-to-many relationships.
+  const core = {
+    left: box.left, top: box.top + trim, right: box.right, bottom: box.bottom - trim,
+  };
+  return orientation && pageDims ? bboxToPageSpace(core, orientation, pageDims) : core;
+};
+
+/**
  * Checks words in pageA against words in pageB.
  * @param {object} params
  * @param {OcrPage} params.pageA
@@ -614,17 +631,19 @@ export async function compareOCRPageImp({
 
   // TODO: This assumes that the lines are in a specific order, which may not always be the case.
   //    Add a sorting step or otherwise make more robust.
-  // TODO: Does this need to consider rotation?  It does not do so at present.
   for (let i = 0; i < pageAInt.lines.length; i++) {
     const lineA = pageAInt.lines[i];
-    const lineBoxA = lineA.bbox;
+    const orientA = lineA.orientation || 0;
+    const lineBoxA = orientA && pageAInt.dims ? bboxToPageSpace(lineA.bbox, orientA, pageAInt.dims) : lineA.bbox;
 
     let lineWordsEditedNew = 0;
     let lineBReplace = null;
 
     for (let j = 0; j < pageB.lines.length; j++) {
       const lineB = pageB.lines[j];
-      const lineBoxB = lineB.bbox;
+      const orientB = lineB.orientation || 0;
+      const lineBoxB = orientB && pageB.dims ? bboxToPageSpace(lineB.bbox, orientB, pageB.dims) : lineB.bbox;
+      const turned = orientA !== 0 || orientB !== 0;
 
       // If top of line A is below bottom of line B, move to next line B
       if (lineBoxA.top > lineBoxB.bottom) {
@@ -634,6 +653,11 @@ export async function compareOCRPageImp({
         // If top of line B is below bottom of line A, move to next line A
         // (We assume no match is possible for any B)
       } else if (lineBoxB.top > lineBoxA.bottom) {
+        continue;
+      } else if (turned && (lineBoxA.left > lineBoxB.right || lineBoxB.left > lineBoxA.right)) {
+        continue;
+      } else if (mode === 'comb' && orientA !== orientB) {
+        // The merge reads the words' own boxes, which share a frame only when the two lines have the same orientation.
         continue;
 
         // Otherwise, there is possible overlap
@@ -656,47 +680,16 @@ export async function compareOCRPageImp({
           }
 
           const wordBoxA = wordA.bbox;
-
-          // Remove 10% from top/bottom of bounding box
-          // This prevents small overlapping (around the edges) from triggering a comparison.
-          // Nothing should be removed from left/right, as this would prevent legitimate one-to-many
-          // relationships from being identified.
-
-          const wordBoxAHeight = wordBoxA.bottom - wordBoxA.top;
-
-          const wordBoxACore = JSON.parse(JSON.stringify(wordBoxA));
-
-          if (wordA.visualCoords) {
-            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.1);
-            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.1);
-          } else {
-            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.25);
-            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.25);
-          }
+          const wordBoxACore = coreBox(wordA, orientA, pageAInt.dims);
 
           for (let l = minWordB; l < lineB.words.length; l++) {
             const wordB = lineB.words[l];
             const wordBoxB = wordB.bbox;
-
-            // Remove 10% from top/bottom of bounding box
-            // This prevents small overlapping (around the edges) from triggering a comparison.
-            // Nothing should be removed from left/right, as this would prevent legitimate one-to-many
-            // relationships from being identified.
-            const wordBoxBHeight = wordBoxB.bottom - wordBoxB.top;
-
-            const wordBoxBCore = JSON.parse(JSON.stringify(wordBoxB));
-
-            if (wordB.visualCoords) {
-              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.1);
-              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.1);
-            } else {
-              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.25);
-              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.25);
-            }
+            const wordBoxBCore = coreBox(wordB, orientB, pageB.dims);
 
             // If left of word A is past right of word B, move to next word B
             if (wordBoxACore.left > wordBoxBCore.right) {
-              minWordB += 1;
+              if (!turned) minWordB += 1;
               continue;
 
               // If left of word B is past right of word A, move to next word B
@@ -1090,6 +1083,18 @@ export async function compareOCRPageImp({
     }
   }
 
+  const lineBoxesB = pageB.lines.map((l) => (l.orientation && pageB.dims ? bboxToPageSpace(l.bbox, l.orientation, pageB.dims) : l.bbox));
+  let extraInText = 0;
+  let extraOutsideText = 0;
+  for (const line of pageAInt.lines) {
+    for (const word of line.words) {
+      if (!hocrAAll[word.id] || hocrAOverlap[word.id]) continue;
+      const core = coreBox(word, line.orientation || 0, pageAInt.dims);
+      if (lineBoxesB.some((b) => !(core.top > b.bottom || b.top > core.bottom || core.left > b.right || b.left > core.right))) extraInText++;
+      else extraOutsideText++;
+    }
+  }
+
   /** @type {EvalMetrics} */
   const metricsRet = {
     total: totalCountB,
@@ -1097,6 +1102,8 @@ export async function compareOCRPageImp({
     incorrect: incorrectCount,
     missed: totalCountB - overlapCountB,
     extra: totalCountA - overlapCountA,
+    extraInText,
+    extraOutsideText,
     correctLowConf: correctCountLowConf,
     incorrectHighConf: incorrectCountHighConf,
   };

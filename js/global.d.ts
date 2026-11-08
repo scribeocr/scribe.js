@@ -167,6 +167,10 @@ declare global {
         incorrect: number;
         missed: number;
         extra: number;
+        /** The number of extra words that overlap a text line of the ground truth. */
+        extraInText?: number;
+        /** The number of extra words that overlap no text line of the ground truth. */
+        extraOutsideText?: number;
         correctLowConf: number;
         incorrectHighConf: number;
     };

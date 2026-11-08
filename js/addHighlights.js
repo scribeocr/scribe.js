@@ -1,4 +1,4 @@
-import ocr from './objects/ocrObjects.js';
+import ocr, { bboxToPageSpace } from './objects/ocrObjects.js';
 import { calcBboxUnion } from './utils/miscUtils.js';
 import { TEXT_ANNOT_ICON_PX } from './pdf/parsePdfAnnots.js';
 
@@ -6,32 +6,7 @@ import { TEXT_ANNOT_ICON_PX } from './pdf/parsePdfAnnots.js';
 
 const GROUP_PREFIX = 'hl-';
 
-/**
- * Map a word/line bbox from scribe's internal "virtual horizontal" frame (how rotated lines are stored) back to page space.
- * @param {bbox} bbox - bbox in the line's orientation frame.
- * @param {number} orientation - line orientation (0-3).
- * @param {dims} dims - page dimensions.
- * @returns {bbox} bbox in page space.
- */
-export function bboxToPageSpace(bbox, orientation, dims) {
-  const { width: w, height: h } = dims;
-  if (orientation === 1) {
-    return {
-      left: w - bbox.bottom, top: bbox.left, right: w - bbox.top, bottom: bbox.right,
-    };
-  }
-  if (orientation === 2) {
-    return {
-      left: w - bbox.right, top: h - bbox.bottom, right: w - bbox.left, bottom: h - bbox.top,
-    };
-  }
-  if (orientation === 3) {
-    return {
-      left: bbox.top, top: h - bbox.right, right: bbox.bottom, bottom: h - bbox.left,
-    };
-  }
-  return { ...bbox };
-}
+export { bboxToPageSpace };
 
 /**
  * @typedef {Object} HighlightSpec

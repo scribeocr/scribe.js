@@ -139,6 +139,25 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', (
     expect(Math.abs((doc.pageMetrics[11].angle) - (-5))).toBeLessThanOrEqual(1);
   });
 
+  test('Two readings of a turned page compare by where their words lie, whatever frame each stores them in', async () => {
+    await doc.importFilesSupp([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.alto.xml`], 'Ground Truth');
+    const res = await doc.compareOCR(doc.ocr.active, doc.ocr['Ground Truth']);
+    const quarter = res.metrics[2];
+    expect(quarter.total, 'the quarter-turned page counts every word of the upright reading').toBe(240);
+    expect(quarter.correct, 'the quarter-turned page matches its words across the two frames').toBe(177);
+    expect(quarter.incorrect, 'the quarter-turned page reads the same words wrong across the two frames').toBe(13);
+    expect(quarter.missed, 'the quarter-turned page misses only the words the readings place apart').toBe(50);
+    expect(quarter.extra, 'the quarter-turned page counts the ABBYY words the ALTO reading lacks as extra').toBe(15);
+    expect(quarter.extraOutsideText, 'an extra word outside the other reading\'s text lines counts as outside the text').toBe(15);
+    const upsideDown = res.metrics[3];
+    expect(upsideDown.total, 'the upside-down page counts every word of the upright reading').toBe(195);
+    expect(upsideDown.correct, 'the upside-down page matches its words across the two frames').toBe(184);
+    expect(upsideDown.incorrect, 'the upside-down page reads the same words wrong across the two frames').toBe(11);
+    expect(upsideDown.missed, 'the upside-down page misses no word across the two frames').toBe(0);
+    expect(upsideDown.extra, 'the upside-down page counts the ABBYY words the ALTO reading lacks as extra').toBe(15);
+    expect(upsideDown.extraOutsideText, 'an extra word outside the other reading\'s text lines counts as outside the text').toBe(15);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

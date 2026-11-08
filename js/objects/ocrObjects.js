@@ -784,6 +784,33 @@ function rotateBbox(bbox, cosAngle, sinAngle, width, height) {
 }
 
 /**
+ * Map a bbox from the frame a line of `orientation` is stored in to page space.
+ * @param {bbox} bbox
+ * @param {number} orientation
+ * @param {dims} dims
+ * @returns {bbox}
+ */
+export function bboxToPageSpace(bbox, orientation, dims) {
+  const { width: w, height: h } = dims;
+  if (orientation === 1) {
+    return {
+      left: w - bbox.bottom, top: bbox.left, right: w - bbox.top, bottom: bbox.right,
+    };
+  }
+  if (orientation === 2) {
+    return {
+      left: w - bbox.right, top: h - bbox.bottom, right: w - bbox.left, bottom: h - bbox.top,
+    };
+  }
+  if (orientation === 3) {
+    return {
+      left: bbox.top, top: h - bbox.right, right: bbox.bottom, bottom: h - bbox.left,
+    };
+  }
+  return { ...bbox };
+}
+
+/**
  * Map a page-space bbox into the frame a line of `orientation` is stored in.
  * @param {bbox} box - bbox in page space.
  * @param {number} orientation - line orientation (0-3).
