@@ -990,6 +990,37 @@ export class ScribeViewer {
   }
 
   /**
+   * The first and last row whose boxes intersect the viewport, or null while the layout is incomplete.
+   * A row counts once more than a CSS pixel of it shows.
+   * @param {?number} [viewTop=null] - Content-space top of the viewport, for a view about to scroll there; the current scroll position when null.
+   * @returns {?[number, number]}
+   */
+  visibleRows(viewTop = null) {
+    if (!this.scrollContainer) return null;
+    if (this._rows.length === 0) this.calcPageLayout();
+    const nRows = this._rows.length;
+    if (nRows === 0 || this._pageRow.length !== this.doc.pageMetrics.length) return null;
+    const { clientHeight, scrollHeight } = this._scrollMetrics();
+    const viewH = clientHeight / this.zoomLevel;
+    const maxTop = Math.max(0, scrollHeight / this.zoomLevel - viewH);
+    const top = Math.max(0, Math.min(viewTop === null ? this.scrollContainer.scrollTop / this.zoomLevel : viewTop, maxTop));
+    const bottom = top + viewH;
+    const eps = 1 / this.zoomLevel;
+    const rowTop = (ri) => this._pageStopsStart[this._rows[ri].start];
+    const rowBottom = (ri) => this._pageStopsEnd[this._rows[ri].start] - ScribeViewer.pageMargin;
+    let lo = 0;
+    let hi = nRows - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rowBottom(mid) > top + eps) hi = mid; else lo = mid + 1;
+    }
+    const first = lo;
+    let last = first;
+    while (last + 1 < nRows && rowTop(last + 1) < bottom - eps) last += 1;
+    return [first, last];
+  }
+
+  /**
    * First page of the row `dir` rows from page `n`'s, the next/prev navigation target.
    * At a document edge the result is deliberately out of range, so the caller's `displayPage` bounds guard owns the no-op and still fires its callback.
    * @param {number} n
@@ -2789,6 +2820,19 @@ export class ScribeViewer {
       this.setInitialPositionZoom(rowDims || this.doc.pageMetrics[n].dims);
     }
 
+    // Where a landing scroll will put the viewport, decided before the raster request so the pages about to be on screen are the ones requested.
+    // The scroll fires `updateCurrentPage`, which picks the row at the viewport center.
+    // Top-aligning a short row with the usual 100px gap would put that center in the next row, so top-align only tall rows and center short ones to keep `n` current.
+    let landingTop = null;
+    if (scroll) {
+      const rowIdx = this.rowOfPage(n);
+      const rowDims = rowIdx === null ? null : this.rowDisplayDims(rowIdx);
+      const height = rowDims ? rowDims.height : this.getDisplayDims(n)?.height;
+      const pageTop = this.getPageStop(n);
+      const halfView = this._scrollMetrics().clientHeight / (2 * this.zoomLevel);
+      landingTop = Math.max(0, height && halfView > height + 100 ? pageTop + height / 2 - halfView : pageTop - 100);
+    }
+
     // Issue the raster request before the synchronous word-DOM build so render workers can start on the target page instead of waiting.
     // Must run after setInitialPositionZoom so the canvases raster at the correct zoom.
     if (this.doc.inputData.pdfMode || this.doc.inputData.imageMode) {
@@ -2798,7 +2842,7 @@ export class ScribeViewer {
         this.imageCache.ensurePreviewWindow(n, Math.sign(n - this.state.cp.n) || 1);
         if (IOS_WEBKIT) this.imageCache.sweepCaches(n);
       } else {
-        this.imageCache.renderAheadBehindBrowser(n, deferRaster === 'current' ? 0 : undefined);
+        this.imageCache.renderAheadBehindBrowser(n, deferRaster === 'current', landingTop);
         if (!deferRaster) {
           // A full-window render ends any preview glide, so the next boundaries return to the normal slow-scroll path.
           this._rasterDeferred = false;
@@ -2841,19 +2885,8 @@ export class ScribeViewer {
       this.renderFillItems(p);
     }
 
-    if (scroll) {
-      // Land page `n` as the current page.
-      // The scroll fires `updateCurrentPage`, which picks the row at the viewport centre.
-      // Top-aligning a short row with the usual 100px gap would put that centre in the next row,
-      // so top-align only tall rows and centre short ones to keep `n` current.
-      const rowIdx = this.rowOfPage(n);
-      const rowDims = rowIdx === null ? null : this.rowDisplayDims(rowIdx);
-      const height = rowDims ? rowDims.height : this.getDisplayDims(n)?.height;
-      const pageTop = this.getPageStop(n);
-      const halfView = this._scrollMetrics().clientHeight / (2 * this.zoomLevel);
-      const top = height && halfView > height + 100 ? pageTop + height / 2 - halfView : pageTop - 100;
-      this.scrollContainer.scrollTop = Math.max(0, top * this.zoomLevel);
-    }
+    // Land page `n` as the current page.
+    if (landingTop !== null) this.scrollContainer.scrollTop = landingTop * this.zoomLevel;
 
     if (DEBUG_RENDER_SCHED && this.state.cp.n !== n) {
       console.log(`[render-sched] current page -> ${n} (was ${this.state.cp.n})`);

@@ -125,6 +125,8 @@ export class ObjectCache {
     this.decodedImageCache = new Map();
     /** @type {number} Total bytes across all entries in `decodedImageCache`. */
     this.decodedImageCacheBytes = 0;
+    /** @type {?number} Byte budget of `decodedImageCache` set by the host, or null for the renderer's default. */
+    this.decodedImageCacheBudget = null;
     /**
      * Doc-wide cache of Type 3 bitmap glyphs, keyed `${charProcObjNum}|${fillColor}`.
      * renderPdfPage.js fills it and evicts the oldest entries past its byte budget, and PdfCore.unload closes the rest.

@@ -833,6 +833,24 @@ export class LibraryStore {
   }
 
   /**
+   * The pages of `hash` that have a stored raster, read once so a lookup for a page without one touches no file.
+   * @param {string} hash
+   * @returns {Promise<Set<number>>}
+   */
+  async listPageRasters(hash) {
+    /** @type {Set<number>} */
+    const out = new Set();
+    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash).catch(() => null);
+    if (!dir) return out;
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [name, handle] of dir.entries()) {
+      const m = /^(\d+)\.webp$/.exec(name);
+      if (m && handle.kind === 'file') out.add(Number(m[1]));
+    }
+    return out;
+  }
+
+  /**
    * @param {string} hash
    */
   async deletePageRasters(hash) {

@@ -2,12 +2,16 @@
 
 import scribeLib from '../../scribe.js';
 import { PageMetrics } from '../../js/objects/pageMetricsObjects.js';
-import { renderPageRaster } from './libraryIngest.js';
+import {
+  renderPageRaster, PAGE_RASTER_WIDTH, RASTER_LOSSY_QUALITY, RASTER_LOSSLESS_CAP,
+} from './libraryIngest.js';
 
 /** How many idle live documents the pool keeps open before evicting the least recently used. */
 const MAX_IDLE_LIVE = 2;
 // A pixel source is cheap to reopen, 2 to 8 ms, so the pool is small.
 const MAX_PIXEL_SOURCES = 3;
+/** How long after a viewer's last focus call a pixel source counts as on screen, which keeps the pool's eviction off it. */
+const FOCUS_PIN_MS = 30_000;
 /** How many page-image object URLs stay alive across all sessions. */
 const MAX_PAGE_URLS = 400;
 const NO_TEXT = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
@@ -64,6 +68,12 @@ class DocSession {
     this.pageBlobs = new Map();
     /** @type {Map<number, Promise<?string>>} */
     this.rasterPending = new Map();
+    /** @type {?Promise<Set<number>>} The pages with a stored raster, listed once, so a page without one is answered without a file read. */
+    this.storedPages = null;
+    /** When a viewer last told this session's pixel source which page it is on. */
+    this.lastFocusAt = -Infinity;
+    /** Whether the pool has asked this session's pixel source to close once its running job settles. */
+    this.closeWhenIdle = false;
   }
 }
 
@@ -85,6 +95,8 @@ export class DocSessions {
     this.urlOrder = [];
     /** @type {Set<(hash: string, n: number) => void>} */
     this.rasterListeners = new Set();
+    /** Stored-raster writes run one at a time: a write holds the directory a read of the same document waits on. */
+    this.writeQueue = Promise.resolve();
   }
 
   /**
@@ -310,6 +322,8 @@ export class DocSessions {
     if (cached) return cached;
     const store = this.store;
     if (!store) return null;
+    if (!s.storedPages) s.storedPages = store.listPageRasters(hash).catch(() => new Set());
+    if (!(await s.storedPages).has(n)) return s.pageUrls.get(n) ?? null;
     const blob = await store.readPageRaster(hash, n).catch(() => null);
     if (!blob) return s.pageUrls.get(n) ?? null;
     const again = s.pageUrls.get(n);
@@ -334,7 +348,11 @@ export class DocSessions {
     const storeBlob = (/** @type {Blob} */ blob) => {
       if (!store || (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget)) return;
       s.pageBlobs.delete(n);
-      store.writePageRaster(ref.hash, n, blob).catch(() => {});
+      this.writeQueue = this.writeQueue.then(async () => {
+        if (this.store !== store) return;
+        await store.writePageRaster(ref.hash, n, blob);
+        (await s.storedPages)?.add(n);
+      }).catch(() => {});
     };
     const cached = s.pageUrls.get(n);
     if (cached) {
@@ -366,17 +384,97 @@ export class DocSessions {
   }
 
   /**
+   * Store page `n`'s raster cut from a display render at least as wide, so a page the reader viewed is stored without a second render.
+   * The bitmap is drawn before this returns, since it may be closed afterwards, and encoded asynchronously: lossless, or lossy when the lossless encoding passes the cap.
+   * A narrower render falls back to a render in the store lane.
+   * @param {DocRef} ref
+   * @param {number} n
+   * @param {ImageBitmap} bitmap
+   * @returns {Promise<void>}
+   */
+  async storeFromBitmap(ref, n, bitmap) {
+    const s = this.session(ref.hash);
+    const store = this.store;
+    if (!store || s.pageUrls.has(n) || s.rasterPending.has(n)) return;
+    if (bitmap.width < PAGE_RASTER_WIDTH || typeof OffscreenCanvas === 'undefined') {
+      await this.raster(ref, n, true);
+      return;
+    }
+    const canvas = new OffscreenCanvas(PAGE_RASTER_WIDTH, Math.max(1, Math.round(PAGE_RASTER_WIDTH * (bitmap.height / bitmap.width))));
+    const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const p = (async () => {
+      let blob = await canvas.convertToBlob({ type: 'image/webp', quality: 1.0 });
+      if (blob.size > RASTER_LOSSLESS_CAP) blob = await canvas.convertToBlob({ type: 'image/webp', quality: RASTER_LOSSY_QUALITY });
+      if (s.pageUrls.has(n)) return s.pageUrls.get(n) ?? null;
+      const url = URL.createObjectURL(blob);
+      this.#rememberUrl(s, n, url);
+      if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) {
+        s.pageBlobs.set(n, blob);
+        return url;
+      }
+      this.writeQueue = this.writeQueue.then(async () => {
+        if (this.store !== store) return;
+        await store.writePageRaster(ref.hash, n, blob);
+        (await s.storedPages)?.add(n);
+      }).catch(() => {});
+      return url;
+    })().catch(() => null);
+    s.rasterPending.set(n, p);
+    p.finally(() => {
+      if (s.rasterPending.get(n) === p) s.rasterPending.delete(n);
+    });
+    await p;
+  }
+
+  /**
    * One page rendered through the pixel source at `width` pixels.
    * The caller owns the bitmap.
    * @param {DocRef} ref
    * @param {number} n
    * @param {number} width
+   * @param {import('../../tess/TessScheduler.js').Lane} [lane='display'] - A display render may be dropped when the viewer moves on, which resolves null.
    * @returns {Promise<?ImageBitmap>}
    */
-  async renderAt(ref, n, width) {
+  async renderAt(ref, n, width, lane = 'display') {
     const doc = await this.pixels(ref);
-    const wrapper = await doc.images.renderViewerRaster(n, width, false);
+    const wrapper = await doc.images.renderViewerRaster(n, width, lane);
     return wrapper && typeof wrapper === 'object' && 'imageBitmap' in wrapper ? wrapper.imageBitmap : null;
+  }
+
+  /**
+   * Tell the document's pixel source which page the viewer is on and which pages it still wants, so its staged display renders rank by the page and the rest are dropped.
+   * A source focused recently is the one on screen, and the pool's eviction leaves it alone.
+   * @param {DocRef} ref
+   * @param {?number} n
+   * @param {?Set<number>} keep
+   */
+  focus(ref, n, keep) {
+    const s = this.map.get(ref.hash);
+    if (!s) return;
+    s.lastFocusAt = performance.now();
+    s.pixelsDoc?.images.setViewerFocus(n, keep);
+  }
+
+  /**
+   * Tell the document's pixel source which page the thumbnail rail is centered on.
+   * @param {DocRef} ref
+   * @param {?number} n
+   */
+  thumbFocus(ref, n) {
+    this.map.get(ref.hash)?.pixelsDoc?.images.setThumbFocus(n);
+  }
+
+  /**
+   * Set the workers the document's pixel source holds, as the viewer's tier for it changes.
+   * @param {DocRef} ref
+   * @param {number} n
+   */
+  async setWorkerTarget(ref, n) {
+    const s = this.map.get(ref.hash);
+    const doc = s?.pixelsDoc ?? (s?.pixelsPromise ? await s.pixelsPromise.catch(() => null) : null);
+    if (doc && this.map.get(ref.hash)?.pixelsDoc === doc) await doc.images.setWorkerTarget(n);
   }
 
   /**
@@ -427,15 +525,29 @@ export class DocSessions {
     this.urlOrder.length = 0;
   }
 
-  /** @param {DocSession} keep */
+  /** @param {?DocSession} keep - The session that must survive this pass. */
   #evictPixels(keep) {
     const open = [...this.map.values()].filter((s) => s.pixelsPromise && s !== keep);
     open.sort((a, b) => a.pixelsUse - b.pixelsUse);
     let excess = open.length - (MAX_PIXEL_SOURCES - 1);
     for (const s of open) {
       if (excess <= 0) break;
-      // Closing a source drops the renders queued on it or waiting for it to open, so a busy or still-opening source waits for a later pass.
-      if (!s.pixelsDoc || s.pixelsDoc.images.pdfScheduler?.busy) continue;
+      // A source a viewer focused within the window is on screen, so it is never the victim.
+      if (performance.now() - s.lastFocusAt < FOCUS_PIN_MS) continue;
+      // A still-opening source waits for a later pass.
+      if (!s.pixelsDoc) continue;
+      const sched = s.pixelsDoc.images.pdfScheduler;
+      if (sched?.busy) {
+        // Closing a source drops the renders queued on it, so a busy one closes once its running jobs settle, if the pool is still over its cap then.
+        if (!s.closeWhenIdle) {
+          s.closeWhenIdle = true;
+          sched.onIdle(() => {
+            s.closeWhenIdle = false;
+            this.#evictPixels(null);
+          });
+        }
+        continue;
+      }
       closePixels(s);
       excess -= 1;
     }

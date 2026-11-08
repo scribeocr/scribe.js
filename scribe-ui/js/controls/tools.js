@@ -1373,13 +1373,14 @@ export function filesNamedForPdf(pdfName, names) {
  * @param {boolean} [options.deferText] - Resolve as soon as the document is renderable, leaving text extraction running behind `doc.textReady` (see `importFiles`).
  *    For open-and-display paths only.
  *    Callers that read the document's text right after opening must leave this unset.
+ * @param {Promise<unknown>} [options.textStart] - With `deferText`, extraction begins once this promise settles, so the first screen can render first.
  * @param {boolean} [options.skipFontOpt] - Skip font optimization.
  *    Safe only for callers that read text and never render styled overlays.
  * @param {number} [options.pdfWorkerN]
  * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
  */
 export async function openDocumentFromFile(file, {
-  deferText = false, skipFontOpt = false, pdfWorkerN = undefined, ocrFiles = [], scribeFiles = [], onOcrFileRejected = undefined,
+  deferText = false, textStart = undefined, skipFontOpt = false, pdfWorkerN = undefined, ocrFiles = [], scribeFiles = [], onOcrFileRejected = undefined,
 } = {}) {
   /** @type {Parameters<typeof scribeLib.openDocument>[0]} */
   let input;
@@ -1407,12 +1408,14 @@ export async function openDocumentFromFile(file, {
 
   let doc;
   try {
-    doc = await scribeLib.openDocument(input, (deferText || skipFontOpt || pdfWorkerN) ? { deferText, skipFontOpt, pdfWorkerN } : undefined);
+    doc = await scribeLib.openDocument(input, (deferText || skipFontOpt || pdfWorkerN) ? {
+      deferText, textStart, skipFontOpt, pdfWorkerN,
+    } : undefined);
   } catch (err) {
     if (!ocrFiles.length) throw err;
     onOcrFileRejected?.(err instanceof Error ? err : new Error(String(err)));
     return openDocumentFromFile(file, {
-      deferText, skipFontOpt, pdfWorkerN, scribeFiles,
+      deferText, textStart, skipFontOpt, pdfWorkerN, scribeFiles,
     });
   }
 

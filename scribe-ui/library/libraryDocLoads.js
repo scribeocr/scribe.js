@@ -101,18 +101,26 @@ export function createDocLoads({ sessions, engine, getStore }) {
       window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
       name: titleOf(relPath),
       pdfType: entry.pdfType ?? null,
-      raster: (n) => sessions.raster(ref, n, true),
-      render: (n, width) => sessions.renderAt(ref, n, width),
+      raster: (n) => sessions.pageImage(hash, n),
+      render: (n, width, lane) => sessions.renderAt(ref, n, width, lane).then((bitmap) => {
+        // A page the reader viewed is stored for its next preview, cut from this render when it is wide enough.
+        if (bitmap) sessions.storeFromBitmap(ref, n, bitmap).catch(() => {});
+        return bitmap;
+      }),
+      focus: (n, keep) => sessions.focus(ref, n, keep),
+      thumbFocus: (n) => sessions.thumbFocus(ref, n),
+      workers: (n) => sessions.setWorkerTarget(ref, n),
       ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
       // Copies, because the seed's edits must not leak into the cached header.
       // A page the saved header lists, even as empty, replaces the real page at the swap, so removals count.
       // Without a sidecar the baseline is the PDF's own annotations, which is what hydration lifts too.
       annots: (n) => (header?.annotations ? Promise.resolve((header.annotations[n] ?? []).map(copyAnnot)) : pixels.liftPdfAnnotations(n)),
-      thumb: (n) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W)),
+      thumb: (n, lane) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W, 0.6, false, 'jpeg', lane)),
       find: findThroughIndex(hash),
       outline: header?.outline ?? pixels.outline ?? [],
       // Without a sidecar the text is extracted before the open resolves, so the real document arrives with its text, as the modes that asked for it expect.
-      load: () => openLibraryDoc(/** @type {import('./libraryStore.js').LibraryStore} */ (getStore()), relPath, entry),
+      // One worker: the loaded document starts in the warm tier like every other.
+      load: () => openLibraryDoc(/** @type {import('./libraryStore.js').LibraryStore} */ (getStore()), relPath, entry, { pdfWorkerN: 1 }),
       hydration: 'on-demand',
     };
   };

@@ -20,18 +20,23 @@ const SEED_ENTRY = Object.freeze({ baselineY: Number.NaN });
  * @property {number} [initialPage=0]
  * @property {{from: number, to: number}} window - Pages whose annotations and words are fetched at open, inclusive on both ends.
  *   Every other page gets them as the view reaches it.
- * @property {(n: number, targetWidth: number) => Promise<?Blob|ImageBitmap|string>} raster
+ * @property {(n: number) => Promise<?Blob|ImageBitmap|string>} raster - The page's stored raster, when one is stored.
  *   A string return is a URL the browser can fetch.
- *   A null resolution leaves the page a pending placeholder.
- * @property {(n: number, width: number) => Promise<?ImageBitmap>} [render] - The page rendered at exactly `width` pixels wide.
- *   A page's first paint comes from `raster`, and the render at the view's own width replaces it when it lands.
+ *   A null resolution means none is stored, and the page's first paint is then the render at the view's own width.
+ * @property {(n: number, width: number, lane: import('../../tess/TessScheduler.js').Lane) => Promise<?ImageBitmap>} [render] - The page rendered at exactly `width` pixels wide, in `lane`.
+ *   A page with a stored raster paints it first and takes the render when it lands; a page without one waits for the render.
+ *   Without `render`, a page with no stored raster stays a pending placeholder.
+ * @property {(n: ?number, keep: ?Set<number>) => void} [focus] - The page the viewer is on and the pages it still wants, for the source's render queue.
+ * @property {(n: ?number) => void} [thumbFocus] - The page at the center of the thumbnail rail, for the source's render queue.
+ * @property {(n: number) => void|Promise<void>} [workers] - The workers the viewer wants the page source to hold: one for a document on screen, more while the reader moves around in it.
  * @property {(n: number) => Promise<?Object>} [ocr] - A page's words with their geometry, at minimum `{dims, lines: [{words: [{text, bbox}]}]}`.
  *   Providing it makes that page's text selectable, copyable, and findable.
  *   A line of rotated text must also carry its `orientation` (0-3) and give its word bboxes in that orientation's frame.
  * @property {(n: number) => Promise<?Array<Object>>} [annots] - The page's existing annotations.
  *   A page that resolves, even to `[]`, replaces the real document's page at the swap, so removals count.
  *   Pages that do not resolve append their session additions instead.
- * @property {(n: number) => Promise<?string>} [thumb]
+ * @property {(n: number, lane?: import('../../tess/TessScheduler.js').Lane) => Promise<?string>} [thumb] - The page's rail thumbnail, in `lane`.
+ *   preview for a row on screen, prefetch for one mounted beyond it.
  * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - The document's matches of a query, in page order.
  *   Its word ids must be those `ocr` gives, since the viewer marks the words by id.
  * @property {Array<Object>} [outline]
@@ -147,11 +152,11 @@ export class SeedDoc {
     /** @type {?(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} */
     this.findMatches = seed.find ? (query) => /** @type {NonNullable<typeof seed.find>} */ (seed.find)(query) : null;
 
-    // The image cache closes the bitmaps it is served, so the blob is what gets cached here and every request decodes a fresh bitmap from it.
-    const rasterBlob = (n, targetWidth) => {
+    // The image cache closes the bitmaps it is served, so a stored raster is cached here as its blob and every request decodes a fresh bitmap from it.
+    const storedBlob = (n) => {
       let p = this._blobs.get(n);
       if (p) return p;
-      p = Promise.resolve(seed.raster(n, targetWidth)).then(async (r) => {
+      p = Promise.resolve(seed.raster(n)).then(async (r) => {
         if (this._cancelled || !r) return null;
         if (r instanceof Blob) return r;
         if (typeof ImageBitmap !== 'undefined' && r instanceof ImageBitmap) {
@@ -163,7 +168,7 @@ export class SeedDoc {
         return (await fetch(/** @type {string} */ (r))).blob();
       }).catch(() => null);
       this._blobs.set(n, p);
-      // The viewer asks again for a page it left blank, and that ask must reach the source.
+      // A page with no stored raster is asked again on the viewer's next request, in case one has been stored since.
       p.then((blob) => { if (!blob && this._blobs.get(n) === p) this._blobs.delete(n); });
       return p;
     };
@@ -171,11 +176,12 @@ export class SeedDoc {
      * Order page `n` rendered at `width` through the seed's renderer and tell the viewer when it lands.
      * @param {number} n
      * @param {number} width
+     * @param {import('../../tess/TessScheduler.js').Lane} lane
      */
-    const orderExact = (n, width) => {
+    const orderExact = (n, width, lane) => {
       if (!seed.render || this._exactOrdered.get(n) === width) return;
       this._exactOrdered.set(n, width);
-      Promise.resolve(seed.render(n, width)).then((bitmap) => {
+      Promise.resolve(seed.render(n, width, lane)).then((bitmap) => {
         if (this._exactOrdered.get(n) === width) this._exactOrdered.delete(n);
         if (!bitmap) return;
         if (this._cancelled) {
@@ -196,7 +202,7 @@ export class SeedDoc {
       });
     };
     // A page's words come with its pixels, so the text layer is there when the viewer builds the page after the raster lands.
-    const rasterWrapper = async (n, targetWidth) => {
+    const rasterWrapper = async (n, targetWidth, lane = 'display') => {
       if (this._cancelled || n < 0 || n >= seed.pageCount) return SKIPPED;
       const exact = this._exact.get(n);
       /** @type {?ImageBitmap} */
@@ -205,17 +211,25 @@ export class SeedDoc {
         await this.pageText(n);
         bitmap = await createImageBitmap(exact.bitmap).catch(() => null);
       } else {
-        const [blob] = await Promise.all([rasterBlob(n, targetWidth), this.pageText(n)]);
-        if (!blob || this._cancelled) return SKIPPED;
-        // Decoded here rather than handed off as `src`, because the cache's re-decode path base64-decodes the string and hosts hand us Blobs or fetchable URLs.
-        bitmap = await createImageBitmap(blob).catch(() => null);
+        const [blob] = await Promise.all([storedBlob(n), this.pageText(n)]);
+        if (this._cancelled) return SKIPPED;
+        if (blob) {
+          // The cache's re-decode path base64-decodes `src`, and hosts hand us Blobs or fetchable URLs, so the bitmap is decoded here.
+          bitmap = await createImageBitmap(blob).catch(() => null);
+          if (bitmap && targetWidth !== bitmap.width) orderExact(n, targetWidth, lane);
+        } else if (seed.render) {
+          // Nothing stored: the first paint is the render at the view's own width, served in the viewer's lane, and the cache owns the bitmap.
+          bitmap = await Promise.resolve(seed.render(n, targetWidth, lane)).catch(() => null);
+        }
       }
       if (!bitmap || this._cancelled) return SKIPPED;
-      if (targetWidth !== bitmap.width) orderExact(n, targetWidth);
       return {
         imageBitmap: bitmap, src: null, rotated: false, upscaled: targetWidth > bitmap.width, colorMode: 'color',
       };
     };
+
+    /** @type {Map<object, Set<number>>} The pages each viewer of this document still wants, for the source's keep set. */
+    const keepByViewer = new Map();
 
     /** The ImageStore surface the viewer consumes. */
     this.images = {
@@ -231,15 +245,29 @@ export class SeedDoc {
       isRenderExpensive: () => !seed.render,
       releaseBitmapCache: () => {},
       invalidatePageRender: () => {},
-      renderViewerRaster: (n, targetWidth) => rasterWrapper(n, targetWidth),
+      renderViewerRaster: (n, targetWidth, lane = 'display') => rasterWrapper(n, targetWidth, lane),
       getNative: (n) => rasterWrapper(n, 0),
       getBinary: (n) => rasterWrapper(n, 0),
+      setViewerFocus: (n, keep, viewer = this) => {
+        if (!seed.focus || this._cancelled) return;
+        let union = null;
+        if (keep) {
+          keepByViewer.set(viewer, keep);
+          union = new Set();
+          for (const pages of keepByViewer.values()) for (const p of pages) union.add(p);
+        }
+        seed.focus(n, union);
+      },
+      setThumbFocus: (n) => { if (seed.thumbFocus && !this._cancelled) seed.thumbFocus(n); },
+      setWorkerTarget: async (n) => { if (seed.workers && !this._cancelled) await seed.workers(n); },
+      // A page source is kept by the document library's own pool, which leaves a focused source alone.
+      setPinned: () => {},
       renderThumbnail: async () => null,
-      thumbnailUrl: (n) => {
+      thumbnailUrl: (n, lane = 'preview') => {
         if (this._cancelled || !seed.thumb) return Promise.resolve(null);
         let p = this._thumbs.get(n);
         if (p) return p;
-        p = Promise.resolve(seed.thumb(n)).then((t) => {
+        p = Promise.resolve(seed.thumb(n, lane)).then((t) => {
           if (this._cancelled || !t) return null;
           if (t instanceof Blob) {
             const url = URL.createObjectURL(t);

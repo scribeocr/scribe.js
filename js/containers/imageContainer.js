@@ -9,8 +9,11 @@ import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
 import { initPdfScheduler, PdfScheduler } from '../pdfWorkerMain.js';
+import {
+  acquireWorkers, releaseWorkers, retireWorkers, setRoomMaker,
+} from '../pdfWorkerPool.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
-import { SKIPPED } from '../../tess/TessScheduler.js';
+import { SKIPPED, laneOf } from '../../tess/TessScheduler.js';
 import { ca } from '../canvasAdapter.js';
 
 /** @typedef {import('./scribeDoc.js').ScribeDoc} ScribeDoc */
@@ -91,6 +94,33 @@ function pdfBytesForScheduler(pdfData, usePdfSharedBuffer, scheduler) {
 
 let renderSourceIdCounter = 0;
 
+/** The renderer's decoded-image cache budget for a lease above one worker, the document the reader is moving around in. */
+const ACTIVE_IMAGE_CACHE_BYTES = 64 * 1024 * 1024;
+
+/** The budget for a single-worker lease, which renders one screen at a time. */
+const WARM_IMAGE_CACHE_BYTES = 16 * 1024 * 1024;
+
+/** @type {Set<RenderSource>} Sources with a live scheduler, for the pool's room-making. */
+const liveSources = new Set();
+
+setRoomMaker(async (shortfall) => {
+  let freed = 0;
+  const idle = [...liveSources]
+    .filter((src) => src.scheduler instanceof PdfScheduler && !src.pinned && !src.scheduler.busy && !(src.isExtracting && src.isExtracting()))
+    .sort((a, b) => a.lastUse - b.lastUse);
+  for (const src of idle) {
+    if (freed >= shortfall) break;
+    const n = src.scheduler instanceof PdfScheduler ? src.scheduler.workers.length : 0;
+    if (n > 1) {
+      await src.setWorkerTarget(1);
+      freed += n - 1;
+    } else {
+      await src.suspend();
+      freed += n;
+    }
+  }
+});
+
 /**
  * One render origin: a PDF's worker pool and its bytes.
  * Its `id` space is separate from `ScribeDoc.id`.
@@ -133,6 +163,18 @@ export class RenderSource {
   /** @type {?number} Fixed worker-pool size for this source. Null uses the global sizing. */
   workerN = null;
 
+  /** @type {boolean} Set by a host for the source of the document on screen, which the pool's room-making leaves alone. */
+  pinned = false;
+
+  /** @type {number} When this source last took a job, for the pool's room-making. */
+  lastUse = 0;
+
+  /** @type {?() => boolean} Whether the owning document is still extracting text, which a shrink or a suspend would cut short. */
+  isExtracting = null;
+
+  /** @type {boolean} Whether a host has asked for this source to sleep once its running job settles. */
+  sleepWhenIdle = false;
+
   /**
    * The source document's optimized substitute fonts, carried for overlay fidelity of pages copied out of it.
    * Placeholder in v1 (the basic editor is invisible-text-only), populated when font fidelity lands.
@@ -151,6 +193,7 @@ export class RenderSource {
    * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>}
    */
   getScheduler = async () => {
+    this.lastUse = performance.now();
     if (this.scheduler) return this.scheduler;
     if (!this.#schedulerReady) {
       const spawn = initPdfScheduler(this.workerN ?? undefined).then(async (s) => {
@@ -159,6 +202,7 @@ export class RenderSource {
           this.#reloadOnWake = false;
         }
         this.scheduler = s;
+        liveSources.add(this);
         return s;
       });
       // A failed spawn must not poison the source for the session, so the next call retries.
@@ -184,16 +228,48 @@ export class RenderSource {
     this.scheduler = null;
     this.#schedulerReady = null;
     this.#reloadOnWake = this.pdfData != null;
+    liveSources.delete(this);
     await s.terminate();
   };
 
   terminate = async () => {
     if (!this.scheduler && this.#schedulerReady) await this.#schedulerReady.catch(() => {});
+    liveSources.delete(this);
     if (this.scheduler) {
       await this.scheduler.terminate();
       this.scheduler = null;
       this.#schedulerReady = null;
     }
+  };
+
+  /**
+   * Grow or shrink this source's lease to `n` workers in place. New workers load the document and join the live scheduler, and surplus ones leave after their running job.
+   * A source with no pool yet records `n` as the size of its next spawn.
+   * @param {number} n
+   */
+  setWorkerTarget = async (n) => {
+    this.workerN = n;
+    const s = await this.getScheduler();
+    if (!(s instanceof PdfScheduler) || this.scheduler !== s) return;
+    const have = s.workers.length;
+    if (n > have) {
+      const fresh = await acquireWorkers(n - have);
+      // The source may have suspended or been asked for another size while the workers were coming.
+      if (this.scheduler !== s || this.workerN !== n || !this.pdfData) {
+        await releaseWorkers(fresh);
+        return;
+      }
+      const bytes = pdfBytesForScheduler(this.pdfData, opt.usePdfSharedBuffer, s);
+      await Promise.all(fresh.map((w) => w.loadPdfForParsing({ pdfBytes: bytes })));
+      if (this.scheduler !== s || this.workerN !== n) {
+        await releaseWorkers(fresh);
+        return;
+      }
+      s.addWorkers(fresh);
+    } else if (n < have) {
+      retireWorkers(s.removeWorkers(have - n));
+    }
+    await s.setImageCacheBudget(n > 1 ? ACTIVE_IMAGE_CACHE_BYTES : WARM_IMAGE_CACHE_BYTES);
   };
 }
 
@@ -360,6 +436,70 @@ export class ImageStore {
     const dims = this.#pageMetrics[n]?.dims;
     if (records.length === 0 || !dims) return null;
     return { records, dims: { width: dims.width, height: dims.height } };
+  };
+
+  /**
+   * Display and prefetch renders in flight, by display slot, so a thumbnail asked for the same page waits for the render and is cut from it.
+   * @type {Map<number, Promise<void>>}
+   */
+  #displayInFlight = new Map();
+
+  /** @type {Set<number>} The pages the viewer's last focus move said it will render, so a thumbnail asked for one of them waits for that render. */
+  #displayExpected = new Set();
+
+  /** @type {Map<number, Array<() => void>>} Thumbnail requests waiting for a display render of their page to be staged. */
+  #displayWaiters = new Map();
+
+  /** @type {Map<number, Promise<?Blob>>} Thumbnails cut from display renders, by display slot. */
+  #derivedThumbs = new Map();
+
+  /**
+   * Wait up to `ms` for a display render of page `n` to be staged.
+   * @param {number} n - Page number
+   * @param {number} ms
+   * @returns {Promise<void>}
+   */
+  #awaitDisplay = (n, ms) => new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      const list = this.#displayWaiters.get(n);
+      if (list) this.#displayWaiters.set(n, list.filter((f) => f !== done));
+      resolve();
+    }, ms);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const list = this.#displayWaiters.get(n) || [];
+    list.push(done);
+    this.#displayWaiters.set(n, list);
+  });
+
+  /**
+   * Cut page `n`'s thumbnail from a display raster at least as wide, so a page on screen never renders a second time for the rail.
+   * The raster is drawn before this returns, since the bitmap may be closed afterwards, and encoded asynchronously.
+   * @param {number} n - Page number
+   * @param {ImageBitmap} bitmap
+   */
+  #thumbnailFromBitmap = (n, bitmap) => {
+    if (this.#derivedThumbs.has(n) || bitmap.width < THUMBNAIL_W || typeof OffscreenCanvas === 'undefined') return;
+    const canvas = ca.makeCanvas(THUMBNAIL_W, Math.max(1, Math.round(THUMBNAIL_W * (bitmap.height / bitmap.width))));
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const p = canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 }).then((blob) => {
+      ca.closeDrawable(canvas);
+      return blob;
+    }).catch(() => {
+      ca.closeDrawable(canvas);
+      return null;
+    });
+    this.#derivedThumbs.set(n, p);
+    if (!this.thumbnails[n]) this.thumbnails[n] = p;
+    p.then((r) => {
+      if (r !== null) return;
+      if (this.#derivedThumbs.get(n) === p) this.#derivedThumbs.delete(n);
+      if (this.thumbnails[n] === p) this.thumbnails[n] = undefined;
+    });
   };
 
   /** @type {Map<string, Promise<?{ program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>>} */
@@ -532,6 +672,7 @@ export class ImageStore {
     this.binaryProps[n] = undefined;
     const oldThumb = this.thumbnails[n];
     this.thumbnails[n] = undefined;
+    this.#derivedThumbs.delete(n);
     if (oldThumb) {
       // A thumbnail rail keeps showing the old picture while the page re-renders, so this URL is retired instead of revoked.
       Promise.resolve(oldThumb).then((blob) => {
@@ -556,6 +697,8 @@ export class ImageStore {
     if (!src) {
       src = new RenderSource(++renderSourceIdCounter);
       src.refCount = 1;
+      // A deferred extraction holds this source's scheduler for its whole run, so the pool's room-making must not take it.
+      src.isExtracting = () => !!this.#doc._textReadySettle;
       this.sources.set(src.id, src);
       this.primarySourceId = src.id;
     }
@@ -593,6 +736,49 @@ export class ImageStore {
    * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>}
    */
   getPdfScheduler = async () => this.#ensurePrimarySource().getScheduler();
+
+  /** @type {Map<object, Set<number>>} The pages each viewer of this document still wants rendered, for the focus move's keep set. */
+  #keepByViewer = new Map();
+
+  /**
+   * Set the page the viewer is on and the pages it still wants, so this document's staged display renders rank by distance to the page and the rest are dropped.
+   * Several viewers can show one document, so the dropped set is what no viewer wants.
+   * @param {?number} n - Page number
+   * @param {?Set<number>} [keep] - The pages the viewer still wants; null leaves the staged renders alone.
+   * @param {object} [viewer] - The viewer asking, which owns its own keep set.
+   */
+  setViewerFocus = (n, keep = null, viewer = this) => {
+    let union = null;
+    if (keep) {
+      this.#keepByViewer.set(viewer, keep);
+      union = new Set();
+      for (const pages of this.#keepByViewer.values()) for (const p of pages) union.add(p);
+      this.#displayExpected = union;
+    }
+    this.#primarySource?.scheduler?.setViewerFocus(n, union);
+  };
+
+  /**
+   * Set the page at the center of the thumbnail rail, so this document's staged preview renders rank by distance to it.
+   * @param {?number} n - Page number
+   */
+  setThumbFocus = (n) => {
+    this.#primarySource?.scheduler?.setThumbFocus(n);
+  };
+
+  /**
+   * Grow or shrink this document's own lease to `n` workers in place.
+   * @param {number} n
+   */
+  setWorkerTarget = (n) => this.#ensurePrimarySource().setWorkerTarget(n);
+
+  /**
+   * Mark this document's own source as the one on screen, which the pool's room-making leaves alone.
+   * @param {boolean} pinned
+   */
+  setPinned = (pinned) => {
+    this.#ensurePrimarySource().pinned = pinned;
+  };
 
   loadCount = 0;
 
@@ -653,21 +839,42 @@ export class ImageStore {
    * The result is not cached in `native[n]`, so `getNative` consumers (OCR, export, coordinates) still get the full-resolution render.
    * @param {number} n - Page number
    * @param {number} targetWidth - Raster width in pixels; `pageMetrics[n].dims.width` renders the same pixels `getNative` would.
-   * @param {boolean} [forViewer=true] - Render in the viewer lane: prioritized, but droppable to `SKIPPED`.
-   *   Pass `false` when the render must complete.
+   * @param {import('../../tess/TessScheduler.js').Lane|boolean} [lane='display'] - The lane the render is served in; `true` is display and `false` background.
+   *   A display render, or a prefetch render of a page beyond the screen, serves the viewer's canvas and may be dropped to `SKIPPED` when the viewer moves on; a background render always completes.
    * @returns {Promise<ImageWrapper | typeof SKIPPED>}
    */
-  renderViewerRaster = async (n, targetWidth, forViewer = true) => {
+  renderViewerRaster = async (n, targetWidth, lane = 'display') => {
     if (!this.inputModes.pdf) throw new Error('renderViewerRaster requires PDF input.');
+    const forViewer = laneOf(lane) === 'display' || laneOf(lane) === 'prefetch';
+    /** @type {() => void} */
+    let settle = () => {};
+    if (forViewer) {
+      // Registered before the first await, so the rail's request for the same page, staged in the same task, finds the render coming.
+      const settled = new Promise((resolve) => { settle = resolve; });
+      this.#displayInFlight.set(n, settled);
+      settled.then(() => { if (this.#displayInFlight.get(n) === settled) this.#displayInFlight.delete(n); });
+      const waiters = this.#displayWaiters.get(n);
+      if (waiters) {
+        this.#displayWaiters.delete(n);
+        for (const w of waiters) w();
+      }
+    }
     const color = scribeDocDefaults.colorMode === 'color';
     const pm = this.#pageMetrics[n];
-    // Display slot `n` may hold a page copied from another document. Render it from its own source, not this doc's.
-    const pdfScheduler = await this.resolveSource(pm).getScheduler();
-    // Display slot `n` may have been reordered. Raster its source page, not its position.
-    const sourcePageN = pm.sourcePageN ?? n;
-    const result = await pdfScheduler.renderPdfPage({
-      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n, forViewer),
-    }, forViewer);
+    /** @type {Awaited<ReturnType<PdfScheduler['renderPdfPage']>>} */
+    let result;
+    try {
+      // Display slot `n` may hold a page copied from another document. Render it from its own source, not this doc's.
+      const pdfScheduler = await this.resolveSource(pm).getScheduler();
+      // Display slot `n` may have been reordered. Raster its source page, not its position.
+      const sourcePageN = pm.sourcePageN ?? n;
+      result = await pdfScheduler.renderPdfPage({
+        pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n, forViewer),
+      }, lane);
+      if (forViewer && result !== SKIPPED && result.bitmap) this.#thumbnailFromBitmap(n, result.bitmap);
+    } finally {
+      settle();
+    }
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);
     if (result.bitmap) return ImageWrapper.fromBitmap(n, result.bitmap, result.colorMode);
@@ -864,13 +1071,25 @@ export class ImageStore {
    * @param {boolean} [fresh=false] - Render at exactly `widthPx`, bypassing the thumbnail cache: no cached Blob is returned (first-requested width otherwise wins) and the result is not cached.
    * @param {'jpeg'|'webp'} [format='jpeg'] - Output encoding. The cache is format-blind, so a non-default format should pass `fresh`.
    *   JPEG stays the default because Safari cannot encode WebP (an unsupported type falls back to PNG).
+   * @param {import('../../tess/TessScheduler.js').Lane} [lane] - The lane the render is served in: preview for a cached thumbnail, store for a fresh one.
+   *   A preview render may be dropped, which resolves null, and the cleared slot is rendered again on the next ask.
    * @returns {Promise<?Blob>} An encoded image Blob, or `null` if the page cannot be rendered.
    */
-  renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false, format = 'jpeg') => {
+  renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false, format = 'jpeg', lane = fresh ? 'store' : 'preview') => {
     if (!fresh && this.thumbnails[n]) return this.thumbnails[n];
     if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
 
     const p = (async () => {
+      // A page whose display render is in flight, or that the viewer's focus move has named, gets its thumbnail cut from that render.
+      if (!fresh) {
+        if (!this.#displayInFlight.has(n) && this.#displayExpected.has(n)) await this.#awaitDisplay(n, 250);
+        const inFlight = this.#displayInFlight.get(n);
+        if (inFlight) {
+          await inFlight;
+          const cut = this.#derivedThumbs.get(n);
+          if (cut) return cut;
+        }
+      }
       if (this.inputModes.pdf) {
         const dims300 = this.pdfDims300[n];
         if (!dims300) return null;
@@ -882,7 +1101,7 @@ export class ImageStore {
         const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
           pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits: this.#editsForPage(n, false),
-        }, false);
+        }, lane);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }
       const native = await this.getNative(n);
@@ -912,10 +1131,11 @@ export class ImageStore {
   /**
    * A single object URL for page `n`'s thumbnail, created once and reused by every display surface.
    * @param {number} n
+   * @param {import('../../tess/TessScheduler.js').Lane} [lane='preview'] - preview for a row on screen, prefetch for one mounted beyond it.
    * @returns {Promise<?string>} The URL, or null if the page cannot be rendered.
    */
-  thumbnailUrl = async (n) => {
-    const blob = await this.renderThumbnail(n, THUMBNAIL_W);
+  thumbnailUrl = async (n, lane = 'preview') => {
+    const blob = await this.renderThumbnail(n, THUMBNAIL_W, 0.6, false, 'jpeg', lane);
     if (!blob) return null;
     // Two `<img>` elements pointing at one URL share a single decode.
     let url = this.thumbnailUrls.get(blob);
@@ -1030,6 +1250,11 @@ export class ImageStore {
     this.#editFontResolved.clear();
     this.#type3HashCache.clear();
     this.#type3HashResolved.clear();
+    this.#keepByViewer.clear();
+    this.#displayInFlight.clear();
+    this.#displayExpected = new Set();
+    this.#displayWaiters.clear();
+    this.#derivedThumbs.clear();
     if (typeof FontFace !== 'undefined') {
       // `doc.clear()` reissues the id right after this call.
       const prefix = `_edit_d${this.#doc.id}_`;

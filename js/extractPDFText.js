@@ -47,6 +47,9 @@ export async function extractInternalPDFText(doc, options = {}) {
   };
   await Promise.all(Array.from({ length: Math.min(Math.max(workerCount * 2, 4), pageCount || 1) }, pump));
 
+  // A document closed mid-extraction tears its pool down and the pump's remaining jobs settle as skipped, so there is nothing to compute on.
+  if (pageResults.some((r) => !r || typeof r !== 'object')) return null;
+
   doc.inputData.pageStats = pageResults.map((r) => r.pageStats || null);
 
   doc.inputData.requiresOCR = computeRequiresOCR(doc.inputData.pageStats);

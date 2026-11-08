@@ -751,7 +751,7 @@ function putDecodedImage(objCache, key, bitmap, maxW, maxH, bytes, decodeMs) {
     bitmap, maxW, maxH, bytes, decodeMs,
   });
   objCache.decodedImageCacheBytes += bytes;
-  while (objCache.decodedImageCacheBytes > DECODED_IMAGE_CACHE_BUDGET && cache.size > 1) {
+  while (objCache.decodedImageCacheBytes > (objCache.decodedImageCacheBudget ?? DECODED_IMAGE_CACHE_BUDGET) && cache.size > 1) {
     let evictKey = null;
     let worstDensity = Infinity;
     for (const [k, e] of cache) {

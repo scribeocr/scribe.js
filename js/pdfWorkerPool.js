@@ -1,6 +1,7 @@
 // Process-wide pool of reusable PDF workers, leased to per-source schedulers.
 // Spawning a PDF worker costs hundreds of milliseconds, so it is paid once per process here rather than on every document open, tab wake, and ingest step.
 import { Worker } from './utils/crossOriginWorker.js';
+import { opt } from './containers/app.js';
 
 /**
  * Creates a single PDF worker and returns an object with wrapped methods.
@@ -84,6 +85,7 @@ export async function initPdfWorker() {
     obj.previewPdfTextEdit = wrap('previewPdfTextEdit');
     obj.applyPdfTextEdit = wrap('applyPdfTextEdit');
     obj.getPdfEmbeddedFileBytes = wrap('getPdfEmbeddedFileBytes');
+    obj.setImageCacheBudget = wrap('setImageCacheBudget');
     obj.unloadPdf = wrap('unloadPdf');
 
     // A killed worker never answers, so teardown rejects outstanding calls too.
@@ -112,21 +114,82 @@ const spare = [];
 /** @type {Set<Object>} */
 const leased = new Set();
 
+/** @type {Set<Promise<void>>} Workers on their way back from a shrinking lease; each settles once its worker is a spare again or destroyed. */
+const retiring = new Set();
+
+/** @type {?(shortfall: number) => Promise<void>} */
+let roomMaker = null;
+
+let warnedOverCap = false;
+
 /**
- * Lease `n` workers, reusing spares and spawning the shortfall.
+ * Register the step that frees workers when a lease would pass the cap.
+ * @param {(shortfall: number) => Promise<void>} fn
+ */
+export function setRoomMaker(fn) {
+  roomMaker = fn;
+}
+
+/** The pool's normal maximum of leased workers: half the hardware threads, between four and eight. */
+export function poolCap() {
+  const threads = globalThis.navigator?.hardwareConcurrency || 8;
+  return Math.max(4, Math.min(8, Math.floor(threads / 2)));
+}
+
+/** The pool's counts, for tests and diagnostics. */
+export function poolStats() {
+  return { spare: spare.length, leased: leased.size, retiring: retiring.size };
+}
+
+/**
+ * Take back the workers a lease is shrinking by. A lease asked for meanwhile waits for them before it spawns.
+ * @param {Array<Promise<?Object>>} handoffs - Each settles with its worker once that worker's running job is over.
+ */
+export function retireWorkers(handoffs) {
+  for (const handoff of handoffs) {
+    /** @type {Promise<void>} */
+    const entry = Promise.resolve(handoff).then(async (w) => {
+      if (w) await releaseWorkers([w]);
+    }).catch(() => {}).finally(() => { retiring.delete(entry); });
+    retiring.add(entry);
+  }
+}
+
+/**
+ * Lease `n` workers: spares first, then the workers other leases are giving back, then spawns.
+ * A lease that would pass the cap first asks the room maker to free workers, and spawns anyway with one warning when none can be freed.
  * @param {number} n
  * @returns {Promise<Array<Object>>}
  */
 export async function acquireWorkers(n) {
   /** @type {Array<Object>} */
   const out = [];
-  while (out.length < n && spare.length) {
-    const w = spare.pop();
-    leased.add(w);
-    out.push(w);
+  const takeSpares = () => {
+    while (out.length < n && spare.length) {
+      const w = spare.pop();
+      leased.add(w);
+      out.push(w);
+    }
+  };
+  takeSpares();
+  if (out.length < n && retiring.size > 0) {
+    await Promise.allSettled([...retiring].slice(0, n - out.length));
+    takeSpares();
   }
-  const shortfall = n - out.length;
+  let shortfall = n - out.length;
+  if (shortfall > 0 && leased.size + shortfall > poolCap() && roomMaker) {
+    try {
+      await roomMaker(leased.size + shortfall - poolCap());
+    } catch { /* A room maker that fails leaves the spawn below to cover the lease. */ }
+    if (retiring.size > 0) await Promise.allSettled([...retiring]);
+    takeSpares();
+    shortfall = n - out.length;
+  }
   if (shortfall > 0) {
+    if (leased.size + shortfall > poolCap() && !warnedOverCap) {
+      warnedOverCap = true;
+      opt.warningHandler(`The PDF worker pool is past its cap of ${poolCap()} with ${leased.size + shortfall} leased; close or suspend documents that are not in use.`);
+    }
     const fresh = await Promise.all(Array.from({ length: shortfall }, async () => {
       const w = await initPdfWorker();
       w.id = `pdf-${Math.random().toString(16).slice(3, 8)}`;
@@ -183,6 +246,7 @@ export async function destroyAllPdfWorkers() {
   const all = [...spare, ...leased];
   spare.length = 0;
   leased.clear();
+  retiring.clear();
   await Promise.all(all.map((w) => {
     try {
       return w.terminate();

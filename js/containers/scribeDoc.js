@@ -892,6 +892,9 @@ export class ScribeDoc {
      */
     this._textReadySettle = null;
 
+    /** Whether a deferred extraction is still waiting for the host's `textStart`, with nothing yet in flight. */
+    this._textStartPending = false;
+
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
 

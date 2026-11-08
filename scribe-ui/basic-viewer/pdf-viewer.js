@@ -750,6 +750,14 @@ class ScribePDFViewer {
      * @type {number}
      */
     this._docBudgetBytes = (options.docMemoryBudgetMB ?? (IOS_WEBKIT ? 600 : Infinity)) * 1024 * 1024;
+    /** @type {?{doc: Object}} The one document in the active tier, holding several workers while the reader moves around in it. */
+    this._lease = null;
+    /** @type {WeakMap<Object, {page: number, railTop: ?number, railMoved: number}>} Where each document landed when it came to the front, which a non-trivial move is measured from. */
+    this._landing = new WeakMap();
+    /** Idle window after which the active document falls back to one worker, in ms. */
+    this._tierIdleMs = 20000;
+    /** @type {?ReturnType<typeof setTimeout>} */
+    this._tierIdleTimer = null;
 
     /**
      * The `ScribeViewer` instance backing this viewer. Each `ScribePDFViewer` owns its own
@@ -1061,6 +1069,8 @@ class ScribePDFViewer {
           if (phase === 'end') { this._endSidebarResize(); return; }
           this._relayout();
         },
+        onScrolled: (top, viewportH, own) => this._tierRailMoved(this.scribe.doc, top, viewportH, own),
+        onGridChange: (cols) => this._tierGridOpened(this.scribe.doc, cols),
       })
       : null;
     /**
@@ -1629,6 +1639,7 @@ class ScribePDFViewer {
     const origCallback = this.scribe.displayPageCallback;
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
+      this._tierPageMoved(this.scribe.doc, this.scribe.state.cp.n);
       // Every op that changes the page count (paste, insert, delete, move, undo/redo) ends in displayPage, so the count refreshes here.
       this._syncPageBox();
       this._syncDockPageNumWidth();
@@ -2117,8 +2128,16 @@ class ScribePDFViewer {
    */
   async importFile(file, initialPage = 0, { terminatePrevious } = {}) {
     // The trailing `await doc.textReady` keeps a resolved promise meaning fully loaded, since `deferText` lets the UI paint before extraction finishes.
-    const doc = await openDocumentFromFile(file, { deferText: true });
-    const displaced = await this._setDoc(doc, initialPage, true, terminatePrevious);
+    let startText = () => {};
+    const textStart = new Promise((resolve) => { startText = resolve; });
+    const doc = await openDocumentFromFile(file, { deferText: true, textStart, pdfWorkerN: 1 });
+    let displaced;
+    try {
+      displaced = await this._setDoc(doc, initialPage, true, terminatePrevious);
+    } finally {
+      // The first screen has asked for its pages, so extraction may start behind it; a failed attach must not leave it waiting forever.
+      startText();
+    }
     await doc.textReady;
     return displaced;
   }
@@ -2133,9 +2152,11 @@ class ScribePDFViewer {
     if (!prev) return false;
     const page = this.scribe.state.cp.n;
     const zoom = this.scribe.zoomLevel;
+    let startText = () => {};
+    const textStart = new Promise((resolve) => { startText = resolve; });
     let doc = null;
     try {
-      doc = await openDocumentFromFile(file, { deferText: true });
+      doc = await openDocumentFromFile(file, { deferText: true, textStart, pdfWorkerN: 1 });
       if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
     } catch (err) {
       console.error('Failed to reload the document:', err);
@@ -2146,7 +2167,12 @@ class ScribePDFViewer {
     // A document opened with `importFile` is the viewer's, which `_setDoc` closes.
     const tab = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
     if (tab) tab.doc = doc;
-    await this._setDoc(doc, Math.min(page, doc.inputData.pageCount - 1), !tab, tab ? false : undefined);
+    try {
+      await this._setDoc(doc, Math.min(page, doc.inputData.pageCount - 1), !tab, tab ? false : undefined);
+    } finally {
+      // The first screen has asked for its pages, so extraction may start behind it.
+      startText();
+    }
     if (tab) prev.close().catch(() => {});
     this.zoomTo(zoom);
     await doc.textReady;
@@ -2162,6 +2188,7 @@ class ScribePDFViewer {
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
    * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string, [field: string]: any}} [opts]
    *   `group`, `preview`, `program`, `fitWidth` and `openAddress` go to the tab as `_openDocAsTab` takes them.
+   *   Any other option is a field of the tab record, in place before the strip first draws the tab.
    * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void, tab: Object}>} `tab` is the record the document opened as.
    */
   async openProvisional(seed, {
@@ -2188,7 +2215,6 @@ class ScribePDFViewer {
    * Hydration starts through the document's `_requestHydration`, which the caller kicks itself for an eager seed.
    * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
    * @param {{current: ?Object}} holder
-   *   Any other option is a field of the tab record, in place before the strip first draws the tab.
    * @returns {{seedDoc: SeedDoc, primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}}
    */
   _makeProvisional(seed, holder) {
@@ -2222,13 +2248,20 @@ class ScribePDFViewer {
       started = true;
       (async () => {
         const loaded = await seed.load();
-        const realDoc = Array.isArray(loaded) ? await scribe.openDocument(loaded, { deferText: true }) : loaded;
+        // Extraction of a file-loaded document starts once the swap has asked for the screen's pages.
+        let startText = () => {};
+        const textStart = new Promise((resolve) => { startText = resolve; });
+        const realDoc = Array.isArray(loaded) ? await scribe.openDocument(loaded, { deferText: true, textStart, pdfWorkerN: 1 }) : loaded;
         if (cancelled) {
           realDoc?.close?.().catch(() => {});
           throw new Error('Hydration cancelled.');
         }
-        if (holder.current) await this._hydrateSwap(holder.current, seedDoc, realDoc);
-        else await seedDoc.close();
+        try {
+          if (holder.current) await this._hydrateSwap(holder.current, seedDoc, realDoc);
+          else await seedDoc.close();
+        } finally {
+          startText();
+        }
         return realDoc;
       })().then(resolveReal, (err) => {
         if (!cancelled) this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
@@ -2287,6 +2320,14 @@ class ScribePDFViewer {
       && Math.abs(a.pageMetrics[0].dims.height - b.pageMetrics[0].dims.height) < 1;
     holder.doc = realDoc;
     holder.provisional = false;
+    const landing = this._landing.get(seedDoc);
+    if (landing) this._landing.set(realDoc, landing);
+    if (this._lease?.doc === seedDoc) {
+      this._lease = { doc: realDoc };
+      realDoc.images.setPinned?.(true);
+      Promise.resolve(realDoc.images.setWorkerTarget?.(this._activeTierN())).catch(() => {});
+    }
+    Promise.resolve(seedDoc.images.setWorkerTarget?.(1)).catch(() => {});
     // Fired synchronously with the adoption rather than on `hydrated`.
     // A mutation arriving during the swap's paint tail must not escape the host's tracking.
     holder.onDocHydrated?.(realDoc);
@@ -2436,10 +2477,6 @@ class ScribePDFViewer {
       if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
       if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
     }
-    // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
-    // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
-    if (this._thumbnailPanel && samePages) this._thumbnailPanel.rebind();
-    else if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
     if (this._companionStrip) {
       this._companionStrip.rebuild(initialPage);
       this._companionStrip.setVisible(this._phoneUi);
@@ -2502,10 +2539,17 @@ class ScribePDFViewer {
     // Safe because each document's workers and fonts are namespaced by a unique docId.
     if (terminatePrev && displaced) displaced.close().catch(() => {});
 
+    // Before the first display, so it renders the warm window.
+    this._tierFront(doc, initialPage);
     this.scribe.runSetInitial = true;
+    // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
+    const firstDisplay = this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+    // The rail mounts once the first screen's renders are staged, in the same task, so its rows are cut from those renders.
+    // Passing the page keeps the rail from mounting the top and then jumping once the display lands on the active page.
+    if (this._thumbnailPanel && samePages) this._thumbnailPanel.rebind();
+    else if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
     try {
-      // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
-      await this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
+      await firstDisplay;
     } catch (err) {
       // A failed first paint must not abort the switch, since the side view and the modes below still have to follow the new document.
       console.error('The first display of the document failed:', err);
@@ -2662,9 +2706,13 @@ class ScribePDFViewer {
         // The notice says what the import did to the document, not the core's error message.
         /** @type {?{kind: 'danger'|'warn', lead: string, text: string}} */
         let notice = null;
-        // deferText: the tab displays immediately. Extraction continues behind `doc.textReady`.
+        // deferText: the tab displays immediately. Extraction continues behind `doc.textReady`, and starts once the tab has asked for its first screen.
+        let startText = () => {};
+        const textStart = new Promise((resolve) => { startText = resolve; });
         doc = await openDocumentFromFile(pdf, {
           deferText: true,
+          textStart,
+          pdfWorkerN: 1,
           ocrFiles: named.ocrFiles,
           scribeFiles: named.scribeFiles,
           onOcrFileRejected: (err) => {
@@ -2678,12 +2726,15 @@ class ScribePDFViewer {
         if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
         if (doc.attachments.collection) {
           // A portfolio's page is only its cover sheet, so the files inside are what opens.
+          startText();
           await this._openPortfolio(doc, pdf.name || 'Portfolio');
           continue;
         }
         const match = doc.inputData.ocrPageMatch;
         if (match) notice = { kind: 'warn', lead: 'Text misalignment repaired', text: `PDF has ${pages(doc.inputData.pageCount)}, text data has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.` };
-        opened.push({ doc, name: pdf.name || 'Document', notice });
+        opened.push({
+          doc, name: pdf.name || 'Document', notice, startText,
+        });
       } catch (err) {
         // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
         console.error(`Failed to open ${pdf.name}:`, err);
@@ -2715,6 +2766,8 @@ class ScribePDFViewer {
 
     for (const t of opened) this._tabs.push({ ...this._newTab(t.doc, t.name), notice: t.notice || null });
     await this._activateTab(this._tabs.length - 1);
+    // The active tab has asked for its first screen, so the parse pumps may start behind it.
+    for (const t of opened) if (t.startText) t.startText();
     // The active tab already painted. This await keeps the "openFiles resolved means all documents fully loaded" contract for callers.
     await Promise.all(opened.map((t) => t.doc.textReady));
     // Bulk-opened documents were skipped by the demotion policy while their text extraction was in flight; now it can run.
@@ -2828,11 +2881,19 @@ class ScribePDFViewer {
       if (tab.view || warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
       let suspendedAny = false;
       for (const src of tab.doc.images.sources.values()) {
-        // A source with staged or running jobs drains first, because suspending it drops those renders.
-        // The policy re-runs on the next tab switch, so a drained source is suspended then.
-        if (!warmSources.has(src) && src.scheduler && !src.scheduler.busy) {
+        if (warmSources.has(src) || !src.scheduler) continue;
+        if (!src.scheduler.busy) {
           src.suspend().catch(() => {});
           suspendedAny = true;
+        } else if (!src.sleepWhenIdle) {
+          // Suspending a source drops its running renders, so a busy one sleeps once they settle.
+          // Nothing will look at its staged renders meanwhile, and the policy comes back on the idle callback.
+          src.sleepWhenIdle = true;
+          src.scheduler.dropLanes(['display', 'preview', 'prefetch', 'store']);
+          src.scheduler.onIdle(() => {
+            src.sleepWhenIdle = false;
+            if (!this._destroyed) this._applyTabResourcePolicy();
+          });
         }
       }
       if (suspendedAny && !tab.asleep) {
@@ -2841,6 +2902,135 @@ class ScribePDFViewer {
       }
     }
     if (changed) this._renderTabs();
+  }
+
+  /** Workers the active tier holds on this machine: three on twelve or more hardware threads, else two, and one on the phone. */
+  _activeTierN() {
+    if (this._phoneUi || IOS_WEBKIT) return 1;
+    const threads = navigator.hardwareConcurrency || 4;
+    let n = threads >= 12 ? 3 : 2;
+    if (scribe.opt.workerN) n = Math.min(n, scribe.opt.workerN);
+    return n;
+  }
+
+  /**
+   * `doc` came to the front at `page`. It holds one worker and renders the warm window, whichever document held the active lease loses it, and a later move is measured from `page`.
+   * @param {?Object} doc
+   * @param {number} page
+   */
+  _tierFront(doc, page) {
+    if (!doc) return;
+    // The document's own lease shrinks without dropping its staged renders, which its first display may already have requested.
+    if (this._lease) this._demote(this._lease.doc !== doc);
+    this._landing.set(doc, { page, railTop: null, railMoved: 0 });
+    const v = this._viewerShowing(doc);
+    if (v) v.imageCache.tier = 'warm';
+    if (doc === this.doc) this._thumbnailPanel?.setPrefetch(false);
+  }
+
+  /**
+   * The viewer showing `doc` is on page `cp`. Two pages or more from the landing page promotes the document.
+   * @param {?Object} doc
+   * @param {number} cp
+   */
+  _tierPageMoved(doc, cp) {
+    if (!doc) return;
+    const landing = this._landing.get(doc);
+    if (!landing) {
+      this._landing.set(doc, { page: cp, railTop: null, railMoved: 0 });
+      return;
+    }
+    if (this._lease?.doc === doc) {
+      this._armTierIdle();
+      return;
+    }
+    if (Math.abs(cp - landing.page) >= 2) this._promote(doc);
+  }
+
+  /**
+   * The rail of `doc` scrolled to `top`. A viewport's worth of the reader's travel since the landing promotes the document.
+   * @param {?Object} doc
+   * @param {number} top
+   * @param {number} viewportH
+   * @param {boolean} own - The rail moved itself, so the travel re-anchors on it.
+   */
+  _tierRailMoved(doc, top, viewportH, own) {
+    if (!doc) return;
+    const landing = this._landing.get(doc);
+    if (!landing) return;
+    if (own || landing.railTop === null) {
+      landing.railTop = top;
+      return;
+    }
+    landing.railMoved = Math.max(landing.railMoved, Math.abs(top - landing.railTop));
+    if (this._lease?.doc === doc) {
+      this._armTierIdle();
+      return;
+    }
+    if (viewportH > 0 && landing.railMoved >= viewportH) this._promote(doc);
+  }
+
+  /**
+   * The rail of `doc` became a grid of `cols` columns. The grid over more than eight pages promotes the document.
+   * @param {?Object} doc
+   * @param {number} cols
+   */
+  _tierGridOpened(doc, cols) {
+    if (doc && cols > 1 && doc.inputData.pageCount > 8) this._promote(doc);
+  }
+
+  /**
+   * Give `doc` the active lease: the previous holder falls back first, so one document at a time holds several workers and the wide render window.
+   * @param {Object} doc
+   */
+  _promote(doc) {
+    if (this._lease?.doc === doc) {
+      this._armTierIdle();
+      return;
+    }
+    if (this._lease) this._demote(true);
+    this._lease = { doc };
+    doc.images.setPinned?.(true);
+    if (this._activeTierN() > 1) Promise.resolve(doc.images.setWorkerTarget?.(this._activeTierN())).catch(() => {});
+    const v = this._viewerShowing(doc);
+    if (v) {
+      v.imageCache.tier = 'active';
+      // The move that promoted the document rendered the warm window; the rows beyond it are requested now.
+      if (doc.inputData.pdfMode || doc.inputData.imageMode) v.imageCache.renderAheadBehindBrowser(v.state.cp.n).catch(() => {});
+    }
+    if (doc === this.doc) this._thumbnailPanel?.setPrefetch(true);
+    this._armTierIdle();
+  }
+
+  /**
+   * The active document falls back to one worker.
+   * @param {boolean} leftFront - Another document took the front, so the staged renders of this one are dropped too. An idle demotion keeps them.
+   */
+  _demote(leftFront) {
+    const lease = this._lease;
+    if (!lease) return;
+    this._lease = null;
+    if (this._tierIdleTimer) {
+      clearTimeout(this._tierIdleTimer);
+      this._tierIdleTimer = null;
+    }
+    const { doc } = lease;
+    doc.images.setPinned?.(false);
+    if (leftFront) doc.images.pdfScheduler?.dropLanes?.(['display', 'preview', 'prefetch', 'store']);
+    Promise.resolve(doc.images.setWorkerTarget?.(1)).catch(() => {});
+    const v = this._viewerShowing(doc);
+    if (v) v.imageCache.tier = 'warm';
+    if (doc === this.doc) this._thumbnailPanel?.setPrefetch(false);
+    this._landing.set(doc, { page: v ? v.state.cp.n : 0, railTop: null, railMoved: 0 });
+  }
+
+  /** Restart the idle window of the active lease. */
+  _armTierIdle() {
+    if (this._tierIdleTimer) clearTimeout(this._tierIdleTimer);
+    this._tierIdleTimer = setTimeout(() => {
+      this._tierIdleTimer = null;
+      this._demote(false);
+    }, this._tierIdleMs);
   }
 
   /**
@@ -2857,7 +3047,7 @@ class ScribePDFViewer {
     if (pageArr.length === 0) return;
     try {
       const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr });
-      const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
+      const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }), { pdfWorkerN: 1 });
       const baseName = this._shownName() || 'Document';
       const name = `${baseName.replace(/\.pdf$/i, '')} (extract).pdf`;
       this._tabs.push(this._newTab(doc, name));
@@ -2890,7 +3080,7 @@ class ScribePDFViewer {
         pageOffset += doc.pageMetrics.length;
       }
       const merged = await mergePdfs(buffers, { outline: concatOutlines(outlineParts) });
-      const combinedDoc = await openDocumentFromFile(new Blob([merged], { type: 'application/pdf' }));
+      const combinedDoc = await openDocumentFromFile(new Blob([merged], { type: 'application/pdf' }), { pdfWorkerN: 1 });
       this._tabs.push(this._newTab(combinedDoc, 'Combined.pdf'));
       await this._activateTab(this._tabs.length - 1);
     } catch (err) {
@@ -2916,7 +3106,7 @@ class ScribePDFViewer {
     try {
       for (const seg of segments) {
         const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr: seg.pageArr });
-        const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
+        const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }), { pdfWorkerN: 1 });
         pieces.push({ doc, name: `${seg.title}.pdf` });
       }
     } catch (err) {
@@ -2966,7 +3156,7 @@ class ScribePDFViewer {
     /** @type {Array<import('../../js/containers/scribeDoc.js').ScribeDoc>} */
     const temps = [];
     try {
-      for (const pdf of pdfs) temps.push(await openDocumentFromFile(pdf));
+      for (const pdf of pdfs) temps.push(await openDocumentFromFile(pdf, { pdfWorkerN: 1 }));
       if (images.length > 0) temps.push(await scribe.openDocument(images));
       let landingCp = this.scribe.state.cp.n;
       for (const temp of temps) {
@@ -3235,7 +3425,10 @@ class ScribePDFViewer {
       e.stopPropagation();
       clearCitation(viewer);
     });
-    viewer.displayPageCallback = () => { if (this._activeGroup === 1) this._syncPageBox(); };
+    viewer.displayPageCallback = () => {
+      if (this._activeGroup === 1) this._syncPageBox();
+      this._tierPageMoved(viewer.doc, viewer.state.cp.n);
+    };
     const side = this._buildGroupSidebar(viewer, body);
     this._rightGroup = {
       bars, el, sash, strip, body, empty, notice, noticeText, viewer, active: null, side,
@@ -3914,6 +4107,8 @@ class ScribePDFViewer {
       if (dims) g.viewer.setInitialPositionZoom(dims, { fitWidth: true });
     }
     this._syncGroupSidebarDoc(g, pageIndex);
+    // Before the first display, so it renders the warm window.
+    this._tierFront(tab.doc, pageIndex);
     // An address places the first display at its passage, so the view never shows the page's top first and then moves.
     const address = tab.openAddress ? scribe.utils.parseDocAddress(tab.openAddress) : null;
     delete tab.openAddress;
@@ -3922,6 +4117,8 @@ class ScribePDFViewer {
       if (tab.doc.pageText) await tab.doc.pageText(pageIndex).catch(() => {});
       const target = resolveDocAddress(tab.doc.ocr.active || [], address);
       if (target.state === 'ok' && target.words.length && this._rightGroup === g && g.viewer.doc === tab.doc) {
+        // The address chose this page, so later moves are measured from it.
+        this._tierFront(tab.doc, target.pageIndex);
         await showCitedWords(g.viewer, target.pageIndex, target.words);
         placed = true;
       }
@@ -8262,6 +8459,11 @@ class ScribePDFViewer {
    * @param {boolean} [options.resume=true] - Whether this viewer's window is the one a relaunch resumes.
    */
   async destroy({ terminateDoc, resume = true } = {}) {
+    if (this._tierIdleTimer) {
+      clearTimeout(this._tierIdleTimer);
+      this._tierIdleTimer = null;
+    }
+    this._lease = null;
     this._modeBtnObserver?.disconnect();
     this._modeBtnObserver = null;
     this._destroyed = true;

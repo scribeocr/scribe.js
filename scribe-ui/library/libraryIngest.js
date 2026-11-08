@@ -15,12 +15,12 @@ const THUMB_WIDTH = 300;
 /** Stored page rasters stand in for the live preview, so they need its pane width rather than thumbnail width. */
 export const PAGE_RASTER_WIDTH = 900;
 /** WebP quality for pages routed lossy. In Chromium, quality 1.0 switches the encoder to lossless, so 0.9 is the top lossy setting. */
-const RASTER_LOSSY_QUALITY = 0.9;
+export const RASTER_LOSSY_QUALITY = 0.9;
 /**
  * Byte cap for a lossless page raster. A page past it re-encodes lossy.
  * Catches gradient-heavy synthetic pages, which the geometry rule cannot see, and every photograph when a page comes without statistics.
  */
-const RASTER_LOSSLESS_CAP = 250 * 1024;
+export const RASTER_LOSSLESS_CAP = 250 * 1024;
 /** Page-area fraction covered by a single image at or above which a page's raster encodes lossy. */
 const RASTER_LOSSY_IMAGE_FRAC = 0.2;
 
@@ -419,7 +419,7 @@ export class LibraryIngest {
 
       await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
       try {
-        const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH);
+        const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH, 0.6, false, 'jpeg', 'store');
         if (thumb) await this.store.writeThumb(hash, thumb);
       } catch { /* A failed thumbnail leaves a blank card. */ }
     })();

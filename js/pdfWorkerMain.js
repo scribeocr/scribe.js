@@ -33,10 +33,10 @@ export class PdfScheduler {
    * Dispatch a single page for rendering via the scheduler.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number,
    * edits?: ?RenderEdits }} args
-   * @param {boolean} [forViewer=false] - Viewer renders are served ahead of background work.
-   *   A superseded viewer render may be dropped, resolving to SKIPPED.
+   * @param {import('../tess/TessScheduler.js').Lane|boolean} [lane='background'] - The lane the render is served in; `true` is display and `false` background.
+   *   A display or preview render the viewer no longer wants may be dropped, resolving to SKIPPED.
    */
-  renderPdfPage = (args, forViewer = false) => this.scheduler.addJob('renderPdfPage', args, forViewer);
+  renderPdfPage = (args, lane = 'background') => this.scheduler.addJob('renderPdfPage', args, lane);
 
   /**
    * The font program the renderer draws a given embedded font with.
@@ -76,10 +76,54 @@ export class PdfScheduler {
   getPdfEmbeddedFileBytes = (args) => this.scheduler.addJob('getPdfEmbeddedFileBytes', args);
 
   /**
-   * Set the page the main viewer is on, so staged viewer renders dispatch closest-to-current first.
+   * Set the page the main viewer is on, so staged display renders dispatch closest-to-current first.
+   * With `keep`, the staged display renders for pages outside it are dropped at once.
    * @param {?number} n
+   * @param {?Set<number>} [keep]
    */
-  setViewerFocus = (n) => this.scheduler.setViewerFocus(n);
+  setViewerFocus = (n, keep = null) => this.scheduler.setViewerFocus(n, keep);
+
+  /**
+   * Call `cb` once, the next time nothing is staged and nothing runs.
+   * @param {() => void} cb
+   */
+  onIdle = (cb) => this.scheduler.onIdle(cb);
+
+  /**
+   * Settle every staged job of the given lanes as skipped.
+   * @param {Array<import('../tess/TessScheduler.js').Lane>} lanes
+   */
+  dropLanes = (lanes) => this.scheduler.dropLanes(lanes);
+
+  /**
+   * Add leased workers that already hold the document.
+   * @param {Array<Object>} ws
+   */
+  addWorkers = (ws) => {
+    for (const w of ws) {
+      this.workers.push(w);
+      this.scheduler.addWorker(w);
+    }
+  };
+
+  /**
+   * Take `k` workers out of the lease, idle ones first. Each handoff settles with its worker once that worker has no running job.
+   * @param {number} k
+   * @returns {Array<Promise<?Object>>}
+   */
+  removeWorkers = (k) => {
+    const idle = this.workers.filter((w) => !this.scheduler.isRunning(w.id));
+    const busy = this.workers.filter((w) => this.scheduler.isRunning(w.id));
+    const leaving = [...idle, ...busy].slice(0, k);
+    this.workers = this.workers.filter((w) => !leaving.includes(w));
+    return leaving.map((w) => this.scheduler.removeWorker(w.id));
+  };
+
+  /**
+   * Set the decoded-image cache budget of every worker in the lease.
+   * @param {number} bytes
+   */
+  setImageCacheBudget = (bytes) => Promise.all(this.workers.map((w) => w.setImageCacheBudget({ bytes })));
 
   /**
    * Set the page at the centre of the thumbnail rail, so staged thumbnail renders dispatch closest-to-view first.
@@ -137,13 +181,13 @@ export class PdfSchedulerInProcess {
 
   /**
    * Render a single page to image data URL.
-   * The viewer lane (`forViewer`) only exists to keep the worker queue bounded.
+   * The lane only exists to order and bound a worker queue.
    * In-process renders always run, so it is accepted and ignored.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'webp'|'bitmap', quality?: number }} args
-   * @param {boolean} [forViewer=false]
+   * @param {import('../tess/TessScheduler.js').Lane|boolean} [lane='background']
    */
   // eslint-disable-next-line no-unused-vars
-  renderPdfPage = (args, forViewer = false) => this.#core.renderPage(args);
+  renderPdfPage = (args, lane = 'background') => this.#core.renderPage(args);
 
   /**
    * The font program the renderer draws a given embedded font with, for native-text editing.
@@ -184,11 +228,37 @@ export class PdfSchedulerInProcess {
   getPdfEmbeddedFileBytes = (args) => this.#core.getEmbeddedFileBytes(args);
 
   /**
-   * No-op: in-process renders run immediately, so there is no staged queue to prioritize.
+   * No-op: in-process renders run immediately, so there is no staged queue to prioritize or drop from.
    * @param {?number} n
+   * @param {?Set<number>} [keep]
    */
   // eslint-disable-next-line no-unused-vars, class-methods-use-this
-  setViewerFocus = (n) => {};
+  setViewerFocus = (n, keep = null) => {};
+
+  /**
+   * In process nothing is ever staged, so `cb` runs at once.
+   * @param {() => void} cb
+   */
+  // eslint-disable-next-line class-methods-use-this
+  onIdle = (cb) => { Promise.resolve().then(cb); };
+
+  /** No-op counterpart to `PdfScheduler.dropLanes`: nothing is ever staged in process. */
+  // eslint-disable-next-line no-unused-vars, class-methods-use-this
+  dropLanes = (lanes) => {};
+
+  /** In process there is no lease to grow. */
+  // eslint-disable-next-line no-unused-vars, class-methods-use-this
+  addWorkers = (ws) => {};
+
+  /** In process there is no lease to shrink. */
+  // eslint-disable-next-line no-unused-vars, class-methods-use-this
+  removeWorkers = (k) => [];
+
+  /**
+   * Set the decoded-image cache budget of the in-process renderer.
+   * @param {number} bytes
+   */
+  setImageCacheBudget = async (bytes) => { this.#core.setImageCacheBudget(bytes); };
 
   /**
    * No-op counterpart to `PdfScheduler.setThumbFocus` (see `setViewerFocus`).

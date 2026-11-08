@@ -71,9 +71,16 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
  */
 export class ViewerImageCache {
   /**
-   * Number of rows ahead and behind the current row to pre-render.
+   * Rows beyond the screen rendered on each side while the reader is active in the document; the warm tier renders one.
+   * Two on iOS, whose renders are serialized.
    */
-  static cacheRenderPages = IOS_WEBKIT ? 2 : 3;
+  static activeRenderRows = IOS_WEBKIT ? 2 : 3;
+
+  /**
+   * A second jump within this many ms of the first is a burst: it renders the rows on screen alone, and the rows around them once the jumps pause for this long.
+   * Below the time a flip settles on a scanned book, above a deliberate second click.
+   */
+  static burstGapMs = 300;
 
   /**
    * Number of pages ahead and behind the current page to keep the full-resolution decoded bitmap for.
@@ -191,6 +198,16 @@ export class ViewerImageCache {
      * @type {number}
      */
     this._iosRenderFocus = 0;
+    /**
+     * How far beyond the screen the viewer renders: one row on each side while the document is `'warm'`, `activeRenderRows` once the host sees the reader navigating it (`'active'`).
+     * The host sets it; a viewer without one keeps the full window.
+     * @type {'warm'|'active'}
+     */
+    this.tier = 'active';
+    /** When the last jump of two rows or more was requested, for the burst check. @type {number} */
+    this._lastJumpAt = -Infinity;
+    /** Pending render of the full window after a burst, once the jumps have paused. @type {?ReturnType<typeof setTimeout>} */
+    this._burstTimer = null;
   }
 
   _viewer() {
@@ -315,9 +332,10 @@ export class ViewerImageCache {
    * Get page `n`'s viewer source raster, rendering from the PDF when there is none at the width the current zoom calls for.
    * A page measured expensive to render keeps its existing raster, so the result can be coarser or finer than the screen density.
    * @param {number} n - Page number
+   * @param {'display'|'prefetch'} [lane='display'] - display for a page on screen, prefetch for one in the window beyond it.
    * @returns {Promise<{image: ImageBitmap, wrapper: ImageWrapper} | typeof SKIPPED>}
    */
-  async _getViewerSrc(n) {
+  async _getViewerSrc(n, lane = 'display') {
     const viewer = this._viewer();
     const images = viewer.doc.images;
     const wantW = this._wantSrcWidth(n);
@@ -328,7 +346,7 @@ export class ViewerImageCache {
       // Re-rendering an expensive page would hitch the zoom, so reuse the off-width raster.
       if (haveW < wantW) this._ensureCapUpgrade(n);
     } else if (!slot || !sufficient) {
-      const renderP = images.renderViewerRaster(n, wantW, true);
+      const renderP = images.renderViewerRaster(n, wantW, lane);
       // Waiting for GC to free the superseded raster lets rapid zoom cycles stack ~34 MB bitmaps faster than they collect.
       // iOS kills the tab on the uncollected total.
       const oldSlot = this._srcRasters[n];
@@ -382,7 +400,7 @@ export class ViewerImageCache {
     const images = this._viewer().doc.images;
     const contentSeq = this._contentSeq[n] || 0;
     this._capUpgrades[n] = (async () => {
-      const w = await images.renderViewerRaster(n, fullW, false);
+      const w = await images.renderViewerRaster(n, fullW, 'background');
       // A failure placeholder has no bitmap, and must not replace a working raster.
       if (!w || w === SKIPPED || !(/** @type {ImageWrapper} */ (w)).imageBitmap) return;
       // Rechecked after the await: the document may have been replaced, or the raster already re-rendered at full resolution.
@@ -403,9 +421,10 @@ export class ViewerImageCache {
    * Render page `n`'s raster into a `<canvas>` sized to the displayed device pixels, CSS-fit to the page's content box, with rotation baked in.
    * Returns `SKIPPED` when the bitmap render was dropped to keep the lane bounded.
    * @param {number} n - Page number
+   * @param {'display'|'prefetch'} [lane='display'] - display for a page on screen, prefetch for one in the window beyond it.
    * @returns {Promise<{canvas: HTMLCanvasElement, props: ImageProperties} | typeof SKIPPED>}
    */
-  async getPageCanvas(n) {
+  async getPageCanvas(n, lane = 'display') {
     const viewer = this._viewer();
 
     const binary = viewer.state.colorMode === 'binary';
@@ -415,7 +434,7 @@ export class ViewerImageCache {
     /** @type {ImageBitmap} */
     let image;
     if (this._usesViewerRaster()) {
-      const src = await this._getViewerSrc(n);
+      const src = await this._getViewerSrc(n, lane);
       if (src === SKIPPED) return SKIPPED;
       backgroundImage = src.wrapper;
       image = src.image;
@@ -524,8 +543,11 @@ export class ViewerImageCache {
     return binaryN.imageBitmap;
   }
 
-  /** @param {number} n - Page number */
-  async addPageCanvas(n) {
+  /**
+   * @param {number} n - Page number
+   * @param {'display'|'prefetch'} [lane='display'] - display for a page on screen, prefetch for one in the window beyond it.
+   */
+  async addPageCanvas(n, lane = 'display') {
     const viewer = this._viewer();
     // Both paths below leave the viewer holding a bitmap, so mark the page for the eviction sweep before branching.
     this._bitmapPages.add(n);
@@ -580,7 +602,7 @@ export class ViewerImageCache {
     // Mark the page as drawing for the whole render so eviction never transfers a bitmap this draw is mid-read of.
     this._drawing.set(n, (this._drawing.get(n) || 0) + 1);
     this.pageCanvasProps[n] = null;
-    const canvasPromise = this.getPageCanvas(n).then((res) => {
+    const canvasPromise = this.getPageCanvas(n, lane).then((res) => {
       if (res === SKIPPED) return SKIPPED;
       this.pageCanvasProps[n] = res.props;
       return res.canvas;
@@ -679,6 +701,10 @@ export class ViewerImageCache {
   }
 
   clear() {
+    if (this._burstTimer) {
+      clearTimeout(this._burstTimer);
+      this._burstTimer = null;
+    }
     for (let i = 0; i < this.pageCanvases.length; i++) {
       this.deletePageCanvas(i);
     }
@@ -748,44 +774,91 @@ export class ViewerImageCache {
   }
 
   /**
-   * Pages of the rows within `radiusRows` of `curr`'s row, nearest rows first and ahead before behind.
-   * Excludes `curr` itself and any page outside the loaded range.
+   * The pages to render for a view on `curr`: the rows on screen, `curr` first, and `radius` rows beyond the screen on each side, nearest first and the side the reader is moving toward first.
+   * Pages outside the loaded range are left out.
    * @param {number} curr
-   * @param {number} radiusRows
-   * @returns {Array<number>}
+   * @param {number} radius - Rows beyond the screen on each side.
+   * @param {?number} viewTop - Content-space top of the viewport once the view lands; the current scroll position when null.
+   * @param {number} dir - Direction of travel, +1 forward.
+   * @returns {{onScreen: Array<number>, beyond: Array<number>}}
    */
-  _rowWindowPages(curr, radiusRows) {
+  _windowPages(curr, radius, viewTop, dir) {
     const viewer = this._viewer();
-    const out = [];
-    const push = (n) => {
-      if (n !== curr && n >= 0 && n < viewer.doc.images.loadCount) out.push(n);
+    const count = viewer.doc.images.loadCount;
+    const onScreen = [curr];
+    const beyond = [];
+    const push = (list, n) => {
+      if (n >= 0 && n < count && !onScreen.includes(n) && !beyond.includes(n)) list.push(n);
     };
     const r = viewer.rowOfPage(curr);
-    if (r === null) {
-      for (let i = 1; i <= radiusRows; i++) { push(curr + i); push(curr - i); }
-      return out;
+    const rows = viewer.visibleRows(viewTop);
+    if (r === null || rows === null) {
+      // Without a layout only `curr` is known to be on screen.
+      for (let i = 1; i <= radius + 1; i++) {
+        push(beyond, curr + i * dir);
+        push(beyond, curr - i * dir);
+      }
+      return { onScreen, beyond };
     }
-    for (const n of viewer.rowPages(r)) push(n);
-    for (let i = 1; i <= radiusRows; i++) {
-      for (const n of viewer.rowPages(r + i)) push(n);
-      for (const n of viewer.rowPages(r - i)) push(n);
+    // The target row is on screen once the view lands, whatever viewport the rows were read from.
+    const first = Math.min(rows[0], r);
+    const last = Math.max(rows[1], r);
+    for (let ri = first; ri <= last; ri++) for (const n of viewer.rowPages(ri)) push(onScreen, n);
+    for (let i = 1; i <= radius; i++) {
+      for (const n of viewer.rowPages(dir >= 0 ? last + i : first - i)) push(beyond, n);
+      for (const n of viewer.rowPages(dir >= 0 ? first - i : last + i)) push(beyond, n);
     }
-    return out;
+    return { onScreen, beyond };
   }
 
   /**
-   * Render the current page and a few pages ahead and behind.
-   * Bitmaps for distant pages are freed.
+   * Render the current page and the window around it, and free the bitmaps of distant pages.
+   * The window is the rows on screen plus the tier's rows beyond them (`tier`), the rows on screen alone for the second jump of a burst, or `curr` alone in a glide tail.
    * @param {number} curr
-   * @param {number} [radius=ViewerImageCache.cacheRenderPages] - Rows to render on each side of `curr`'s row.
-   *   Pass 0 (render only `curr`) in the tail of a fast-scroll glide, so a window of full-page renders does not clump into the decelerating frames.
+   * @param {boolean} [currOnly=false] - Render only `curr`, in the tail of a fast-scroll glide, so a window of full-page renders does not clump into the decelerating frames.
    *   Cache sweeps run regardless.
+   * @param {?number} [viewTop=null] - Content-space top of the viewport once this view lands, for a jump whose scroll follows the request; the current scroll position when null.
    */
-  async renderAheadBehindBrowser(curr, radius = ViewerImageCache.cacheRenderPages) {
+  async renderAheadBehindBrowser(curr, currOnly = false, viewTop = null) {
     const viewer = this._viewer();
+    if (this._burstTimer) {
+      clearTimeout(this._burstTimer);
+      this._burstTimer = null;
+    }
+    // `state.cp.n` is still the page being left: `displayPage` updates it after issuing the request.
+    const prevRow = viewer.rowOfPage(viewer.state.cp.n);
+    const row = viewer.rowOfPage(curr);
+    const dir = row !== null && prevRow !== null && row < prevRow ? -1 : 1;
+    /** @type {Array<number>} The pages on screen, `curr` first. */
+    let onScreen;
+    /** @type {Array<number>} The pages of the rows beyond the screen, nearest first. */
+    let beyond = [];
+    if (currOnly) {
+      onScreen = [curr];
+    } else {
+      const jump = row !== null && prevRow !== null && Math.abs(row - prevRow) >= 2;
+      const now = performance.now();
+      const burst = jump && now - this._lastJumpAt < ViewerImageCache.burstGapMs;
+      if (jump) this._lastJumpAt = now;
+      if (burst) {
+        // A reader who jumps again this soon is not reading yet; the rows around the target come once the jumps pause.
+        ({ onScreen } = this._windowPages(curr, 0, viewTop, dir));
+        const doc = viewer.doc;
+        this._burstTimer = setTimeout(() => {
+          this._burstTimer = null;
+          const v = this._viewer();
+          if (v.doc === doc && v.state.cp.n === curr) this.renderAheadBehindBrowser(curr);
+        }, ViewerImageCache.burstGapMs);
+      } else {
+        const radius = this.tier !== 'active' ? 1
+          : (IOS_WEBKIT || viewer.doc.images.isRenderExpensive(curr) ? 2 : ViewerImageCache.activeRenderRows);
+        ({ onScreen, beyond } = this._windowPages(curr, radius, viewTop, dir));
+      }
+    }
 
-    // Staged renders dispatch closest-to-focus first, so setting the focus makes the current page win a backlogged queue whatever its enqueue order.
-    viewer.doc.images.pdfScheduler?.setViewerFocus(curr);
+    // A glide tail keeps its row, whose other page may still be rendering from the last full window.
+    const keep = currOnly ? new Set([curr, ...(row === null ? [] : viewer.rowPages(row))]) : new Set([...onScreen, ...beyond]);
+    viewer.doc.images.setViewerFocus?.(curr, keep, this);
 
     this.sweepCaches(curr);
 
@@ -803,28 +876,25 @@ export class ViewerImageCache {
       // Past fit-width the ahead-render is dropped: neighbor canvases are raster-cap-sized there, and the eviction-protected window would pin an over-budget set nothing can reclaim.
       // Previews cover the neighbors until they are scrolled to.
       const deepZoom = this._iosDeepZoom();
-      const pages = [curr, ...((deepZoom || radius === 0) ? [] : this._rowWindowPages(curr, radius))];
+      const chain = deepZoom ? [curr] : [...onScreen, ...beyond];
       if (deepZoom) this.ensurePreviewWindow(curr);
       this._iosRenderFocus = curr;
       this._iosRenderChain = this._iosRenderChain.then(async () => {
-        for (const n of pages) {
+        for (const n of chain) {
           // A page enqueued for an earlier focus the view has since moved away from would render only to be evicted by the next sweep.
           if (Math.abs(n - this._iosRenderFocus) > ViewerImageCache.cacheDeletePages) continue;
-          await this.addPageCanvas(n);
+          await this.addPageCanvas(n, onScreen.includes(n) ? 'display' : 'prefetch');
           try { await this.pageCanvases[n]; } catch { /* per-slot handlers own render failures */ }
         }
       }).catch(() => { /* a dead chain link must not block every later render */ });
       await this._iosRenderChain;
       return;
     }
-    const resArr = [this.addPageCanvas(curr)];
-    if (radius > 0) {
-      for (const n of this._rowWindowPages(curr, radius)) {
-        resArr.push(this.addPageCanvas(n));
-      }
-    }
-
-    await Promise.all(resArr);
+    // The rows beyond the screen go in the prefetch lane, so a rail row on screen never waits behind a page the reader has not reached.
+    await Promise.all([
+      ...onScreen.map((n) => this.addPageCanvas(n, 'display')),
+      ...beyond.map((n) => this.addPageCanvas(n, 'prefetch')),
+    ]);
   }
 
   /**

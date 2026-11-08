@@ -84,6 +84,14 @@ export async function getPdfEmbeddedFileBytes(args) {
 }
 
 /**
+ * Set the byte budget of this worker's decoded-image cache.
+ * @param {{ bytes: number }} args
+ */
+export async function setImageCacheBudget({ bytes }) {
+  return core.setImageCacheBudget(bytes);
+}
+
+/**
  * Release this worker's loaded PDF and its `_pdf_d${docId}_*` fonts.
  */
 export async function unloadPdf() {
@@ -112,6 +120,7 @@ if (parentPort) {
       previewPdfTextEdit,
       applyPdfTextEdit,
       getPdfEmbeddedFileBytes,
+      setImageCacheBudget,
       unloadPdf,
     })[func](args)
       .then((/** @type {any} */ x) => {

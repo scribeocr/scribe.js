@@ -385,7 +385,7 @@ export function createCompanionStrip(scribe, {
     // Only while showing: a hidden strip must not override the rail's live focus.
     if (stripElem.classList.contains('on')) {
       const centre = Math.max(0, Math.min(pageCount - 1, Math.round((row.scrollLeft + gRowW / 2 - gPad) / gStride)));
-      scribe.doc?.images?.pdfScheduler?.setThumbFocus(centre);
+      scribe.doc?.images?.setThumbFocus?.(centre);
     }
     for (let n = first; n <= last; n += 1) renderCell(n);
   }
@@ -518,7 +518,7 @@ export function createCompanionStrip(scribe, {
       stopFollow();
       if (restTimer) { clearTimeout(restTimer); restTimer = null; }
       resting = false;
-      scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
+      scribe.doc?.images?.setThumbFocus?.(null);
     } else if (changed) {
       if (dirty) {
         dirty = false;
@@ -766,7 +766,7 @@ export function createCompanionStrip(scribe, {
       requestAnimationFrame(() => { if (!destroyed) { renderVisible(); onFlip(); } });
     } else {
       // A hidden strip is idle: drop its focus hint so it stops skewing the background render order.
-      scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
+      scribe.doc?.images?.setThumbFocus?.(null);
     }
   }
 

@@ -114,6 +114,9 @@ function clearPageClipboard() {
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
  * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
  * @param {(width: number, phase?: 'start'|'move'|'end') => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden).
+ * @param {(scrollTop: number, viewportH: number, own: boolean) => void} [cfg.onScrolled] - Called as the rail scrolls, with its scroll offset and viewport height.
+ *   `own` marks a move the rail made itself (a rebuild, a resize, following the viewer's page, a drag), which is not the reader's travel.
+ * @param {(cols: number) => void} [cfg.onGridChange] - Called when the number of columns changes, so a host sees the rail become a grid.
  *   `phase` is set on handle-drag reports and absent on non-drag reports (view shown or hidden).
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
@@ -131,7 +134,7 @@ function clearPageClipboard() {
  * }}
  */
 export function createThumbnailPanel(scribe, {
-  onSelect, onPageOpen, onExtract, onInsertFromFile, onResize,
+  onSelect, onPageOpen, onExtract, onInsertFromFile, onResize, onScrolled, onGridChange,
 }) {
   let desktopCellW = THUMB_W;
   try {
@@ -292,6 +295,10 @@ export function createThumbnailPanel(scribe, {
   // Bumped on every teardown (rebuild, hide, destroy) so an in-flight render from a previous generation is ignored.
   let generation = 0;
   let visible = true;
+  // Set by `railScrollTo`, so the scroll event a programmatic move fires reports as the rail's own and not as the reader's travel.
+  let selfScroll = false;
+  // Whether the rows mounted beyond the viewport render their thumbnails ahead of the scroll that reveals them.
+  let prefetch = true;
   let activePage = -1;
   // Multi-selection of page indices for batch actions (rotate/delete/move), distinct from `activePage` (the single page shown in the main viewer).
   // `selAnchor` is the pivot for shift-click range selection.
@@ -520,7 +527,7 @@ export function createThumbnailPanel(scribe, {
     peekCrispT = setTimeout(() => {
       peekCrispT = null;
       const crispW = Math.round((rot % 180 === 90 ? h : w) * Math.min(window.devicePixelRatio || 1, 3));
-      scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true).then((blob) => {
+      scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true, 'jpeg', 'preview').then((blob) => {
         if (!blob || peekN !== n || !peekScrim.classList.contains('on')) return;
         if (peekCrispUrl) URL.revokeObjectURL(peekCrispUrl);
         peekCrispUrl = URL.createObjectURL(blob);
@@ -548,7 +555,7 @@ export function createThumbnailPanel(scribe, {
     const { w, h } = peekBoxSize(n);
     const rot = (scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].rotation) || 0;
     const crispW = Math.round((rot % 180 === 90 ? h : w) * Math.min(window.devicePixelRatio || 1, 3));
-    const render = scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true);
+    const render = scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true, 'jpeg', 'preview');
     if (!render) return;
     const seq = peekWarmSeq;
     peekWarmN = n;
@@ -843,13 +850,14 @@ export function createThumbnailPanel(scribe, {
    * Fetch page `n`'s shared thumbnail URL and display it, unless the row was unmounted or the generation was superseded before the fetch resolved.
    * @param {number} n
    * @param {ThumbRow} entry
+   * @param {'preview'|'prefetch'} lane - preview for a row on screen, prefetch for a buffer row.
    */
-  function requestRender(n, entry) {
+  function requestRender(n, entry, lane) {
     const doc = scribe.doc;
     if (!doc || !doc.images) return;
     entry.pending = true;
     const gen = generation;
-    doc.images.thumbnailUrl(n).then((url) => {
+    doc.images.thumbnailUrl(n, lane).then((url) => {
       if (destroyed || gen !== generation) return;
       // A reorder, delete or insert may have re-keyed the row meanwhile, so it is looked up by its element rather than by `n`.
       const now = Number(entry.thumbElem.dataset.page);
@@ -881,7 +889,7 @@ export function createThumbnailPanel(scribe, {
    * @param {?number} n
    */
   function reportThumbFocus(n) {
-    scribe.doc?.images?.pdfScheduler?.setThumbFocus(n);
+    scribe.doc?.images?.setThumbFocus?.(n);
   }
 
   /**
@@ -890,13 +898,18 @@ export function createThumbnailPanel(scribe, {
   function flushRenders() {
     if (destroyed || !visible) return;
     const f = focusPage();
-    /** @type {Array<[number, ThumbRow]>} */
+    const [first, last] = windowRange(0);
+    /** @type {Array<[number, ThumbRow, 'preview'|'prefetch']>} */
     const pending = [];
-    for (const [n, entry] of mounted) if (!entry.url && !entry.pending) pending.push([n, entry]);
+    for (const [n, entry] of mounted) {
+      if (entry.url || entry.pending) continue;
+      const onScreen = n >= first && n <= last;
+      if (onScreen || prefetch) pending.push([n, entry, onScreen ? 'preview' : 'prefetch']);
+    }
     // The scheduler re-ranks a backlog by focus, but with idle workers each request dispatches the instant it is queued,
     // so an ascending sweep would raster the off-screen buffer rows before the on-screen ones.
     pending.sort((a, b) => Math.abs(a[0] - f) - Math.abs(b[0] - f));
-    for (const [n, entry] of pending) requestRender(n, entry);
+    for (const [n, entry, lane] of pending) requestRender(n, entry, lane);
   }
 
   /**
@@ -916,13 +929,17 @@ export function createThumbnailPanel(scribe, {
     renderTimer = setTimeout(() => { renderTimer = null; flushRenders(); }, RENDER_DEBOUNCE_MS);
   }
 
-  /** First and last page index in the current scroll window (+buffer). @returns {[number, number]} */
-  function windowRange() {
+  /**
+   * First and last page index in the current scroll window, extended by `buffer` px above and below.
+   * @param {number} [buffer=BUFFER]
+   * @returns {[number, number]}
+   */
+  function windowRange(buffer = BUFFER) {
     const viewH = viewportH;
     // Snap the scroll band to whole rows, so every cell of a partially-visible edge row mounts.
     // In the rail (gridCols 1) row and page coincide.
-    const firstRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER)) / gridCols);
-    const lastRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER)) / gridCols);
+    const firstRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD - buffer)) / gridCols);
+    const lastRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + buffer)) / gridCols);
     return [firstRow * gridCols, Math.min(pageCount - 1, (lastRow + 1) * gridCols - 1)];
   }
 
@@ -947,6 +964,15 @@ export function createThumbnailPanel(scribe, {
     scheduleRenders(immediate);
   }
 
+  /**
+   * Scroll the rail from its own logic (a rebuild, a resize, following the viewer's page, a drag), so the scroll event reports as the rail's own move.
+   * @param {number} top
+   */
+  function railScrollTo(top) {
+    selfScroll = true;
+    scrollElem.scrollTop = top;
+  }
+
   let lastScrollTop = scrollElem.scrollTop;
   function onScroll() {
     lastScrollT = Date.now();
@@ -959,6 +985,9 @@ export function createThumbnailPanel(scribe, {
       const st = scrollElem.scrollTop;
       const speed = Math.abs(st - lastScrollTop);
       lastScrollTop = st;
+      const own = selfScroll;
+      selfScroll = false;
+      if (onScrolled) onScrolled(st, viewportH, own);
       // Render revealed rows immediately on a slow scroll.
       // A fast fling defers them (the trailing debounce in `scheduleRenders`), rastering only the landing window instead of every row flown past.
       const fling = speed > viewportH * FLING_VIEWPORT_FRACTION;
@@ -994,6 +1023,7 @@ export function createThumbnailPanel(scribe, {
     boxHeights = [];
     lefts = [];
     rowStrides = [];
+    const colsBefore = gridCols;
     gridCols = 1;
     if (!doc || pageCount === 0) {
       total = 0;
@@ -1017,6 +1047,7 @@ export function createThumbnailPanel(scribe, {
     if (compact && viewportW) cellW = Math.min(COMPACT_W, Math.floor((viewportW - 2 * PAD - 2 * GRID_GAP) / 3));
     gridCols = gridColsFor();
     layoutMode = gridCols > 1 ? 'grid' : 'rail';
+    if (onGridChange && gridCols !== colsBefore) onGridChange(gridCols);
 
     // Offsets start at `topInset`, the leading space reserved for host chrome overlaying the rail's top edge.
     // Baking it into the offsets shifts every consumer consistently: row tops, hit tests, slides, and the scroll range.
@@ -1083,9 +1114,9 @@ export function createThumbnailPanel(scribe, {
     // Same bottom-align as setActive.
     if (activePage > 0 && heights[activePage]) {
       const bottom = offsets[activePage] + heights[activePage];
-      scrollElem.scrollTop = Math.max(0, bottom + PAD - viewportH + 8);
+      railScrollTo(Math.max(0, bottom + PAD - viewportH + 8));
     } else {
-      scrollElem.scrollTop = 0;
+      railScrollTo(0);
     }
     updateWindow(true);
   }
@@ -1118,9 +1149,9 @@ export function createThumbnailPanel(scribe, {
     // when crossing boundaries back and forth (1->3->1). Restoring the same page+fraction is exact.
     if (resizeAnchorPage >= 0 && resizeAnchorPage < pageCount) {
       const newCenterY = PAD + offsets[resizeAnchorPage] + resizeAnchorFrac * heights[resizeAnchorPage];
-      scrollElem.scrollTop = Math.min(Math.max(0, newCenterY - viewportH / 2), Math.max(0, total - viewportH));
+      railScrollTo(Math.min(Math.max(0, newCenterY - viewportH / 2), Math.max(0, total - viewportH)));
     } else {
-      scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH));
+      railScrollTo(Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH)));
     }
 
     // Mount the new window's cells, position everything at its new slot, and play the slide.
@@ -1370,7 +1401,7 @@ export function createThumbnailPanel(scribe, {
         pageEditAppliedW = animateWidthTo(target);
         // A hidden rail skips reflow's anchored re-centre, so without this the reveal would land on the wrong pages.
         if (!visible && resizeAnchorPage >= 0) {
-          scrollElem.scrollTop = Math.max(0, PAD + offsets[resizeAnchorPage] + resizeAnchorFrac * heights[resizeAnchorPage] - viewportH / 2);
+          railScrollTo(Math.max(0, PAD + offsets[resizeAnchorPage] + resizeAnchorFrac * heights[resizeAnchorPage] - viewportH / 2));
         }
       } else {
         pageEditAppliedW = 0;
@@ -1438,7 +1469,7 @@ export function createThumbnailPanel(scribe, {
       entry.pm = null;
       restyleRow(entry, n);
     }
-    scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH));
+    railScrollTo(Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH)));
     if (visible) updateWindow(true);
   }
 
@@ -1612,7 +1643,7 @@ export function createThumbnailPanel(scribe, {
     const max = scrollElem.scrollHeight - scrollElem.clientHeight;
     const next = Math.max(0, Math.min(max, scrollElem.scrollTop + marquee.autoDir * MARQUEE_SPEED));
     if (next !== scrollElem.scrollTop) {
-      scrollElem.scrollTop = next;
+      railScrollTo(next);
       updateWindow();
       const rect = scrollElem.getBoundingClientRect();
       updateMarquee(
@@ -1895,7 +1926,7 @@ export function createThumbnailPanel(scribe, {
       if (box) visBefore.set(key, { rect: box.getBoundingClientRect(), img: entry.imgElem });
     }
     return () => {
-      scrollElem.scrollTop = scrollBefore;
+      railScrollTo(scrollBefore);
       updateWindow(true);
       const doc2 = scribe.doc;
       if (!doc2) return;
@@ -2454,9 +2485,20 @@ export function createThumbnailPanel(scribe, {
     // Host chrome overlays the first `topInset` px of the scrollport, so a row scrolled up must land below it, not under it.
     const viewTop = scrollElem.scrollTop + topInset - PAD;
     const viewBottom = scrollElem.scrollTop - PAD + viewportH;
-    if (top < viewTop) scrollElem.scrollTop = Math.max(0, top + PAD - 8 - topInset);
-    else if (bottom > viewBottom) scrollElem.scrollTop = bottom + PAD - viewportH + 8;
+    if (top < viewTop) railScrollTo(Math.max(0, top + PAD - 8 - topInset));
+    else if (bottom > viewBottom) railScrollTo(bottom + PAD - viewportH + 8);
     updateWindow(true);
+  }
+
+  /**
+   * Whether the rows mounted beyond the viewport render their thumbnails ahead of the scroll that reveals them.
+   * Turning it on renders the buffer rows now.
+   * @param {boolean} on
+   */
+  function setPrefetch(on) {
+    if (prefetch === on) return;
+    prefetch = on;
+    if (on) scheduleRenders(true);
   }
 
   /**
@@ -2699,6 +2741,7 @@ export function createThumbnailPanel(scribe, {
     cancelCut,
     setActive,
     setVisible,
+    setPrefetch,
     setWidth,
     setCompact,
     setRoomMode,

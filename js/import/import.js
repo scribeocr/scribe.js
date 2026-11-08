@@ -456,6 +456,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
  * @param {'width' | 'sentence'} [options.docxLineSplitMode]
  * @param {boolean} [options.deferText] - Resolve once the PDF is renderable, running text extraction in the background behind `doc.textReady` instead of blocking on it.
  *   PDF inputs only.
+ * @param {Promise<unknown>} [options.textStart] - With `deferText`, extraction begins once this promise settles, so a host can let its first screen render first.
+ *   Extraction begins at once when absent.
  */
 export async function importFiles(doc, files, options = {}) {
   const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
@@ -467,6 +469,8 @@ export async function importFiles(doc, files, options = {}) {
   if (!files) throw new Error('No files provided.');
 
   // Wait for any in-flight extraction before clearing, so its workers don't write stale pages into the new document.
+  // A held-back extraction has nothing in flight and would never settle on its own, so it is settled here.
+  if (doc._textStartPending) doc._textReadySettle?.();
   await doc.textReady;
 
   await doc.clear();
@@ -926,18 +930,26 @@ export async function importFiles(doc, files, options = {}) {
       // `terminate()` and `clear()` resolve this still-pending promise to null via `_textReadySettle`, so waiters never hang when the worker pool is torn down mid-extraction.
       // Extraction errors also resolve to null rather than reject, so awaiting `textReady` never throws.
       doc.textReady = new Promise((resolve) => {
-        doc._textReadySettle = () => resolve(null);
-        extractInternalPDFText(doc, extractOptions).then(
-          (res) => {
-            doc._textReadySettle = null;
-            resolve(res);
-          },
-          (err) => {
-            doc._textReadySettle = null;
-            console.error('Deferred PDF text extraction failed:', err);
-            resolve(null);
-          },
-        );
+        const settle = () => resolve(null);
+        doc._textReadySettle = settle;
+        doc._textStartPending = !!options.textStart;
+        const begin = options.textStart ? Promise.resolve(options.textStart).catch(() => {}) : Promise.resolve();
+        begin.then(() => {
+          doc._textStartPending = false;
+          // A clear or terminate settled this import while the host still held extraction back, so nothing runs on the cleared document.
+          if (doc._textReadySettle !== settle) return;
+          extractInternalPDFText(doc, extractOptions).then(
+            (res) => {
+              doc._textReadySettle = null;
+              resolve(res);
+            },
+            (err) => {
+              doc._textReadySettle = null;
+              console.error('Deferred PDF text extraction failed:', err);
+              resolve(null);
+            },
+          );
+        });
       });
     } else {
       await extractInternalPDFText(doc, extractOptions);

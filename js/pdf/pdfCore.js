@@ -41,6 +41,9 @@ export class PdfCore {
   /** @type {?import('./parsePdfDoc.js').LinkDestInfo} */
   #linkDestInfo = null;
 
+  /** @type {?number} The decoded-image cache budget a host set, kept across reloads; null leaves the renderer's default. */
+  #imageCacheBudget = null;
+
   /**
    * Load PDF bytes and parse the document structure.
    * @param {Uint8Array | ArrayBuffer} pdfBytes
@@ -51,6 +54,7 @@ export class PdfCore {
     const xrefOffset = findXrefOffset(arr);
     const xrefEntries = parseXref(arr, xrefOffset);
     this.#objCache = new ObjectCache(arr, xrefEntries);
+    if (this.#imageCacheBudget !== null) this.#objCache.decodedImageCacheBudget = this.#imageCacheBudget;
     this.#pages = getPageObjects(this.#objCache);
     // Shared across parsePage calls so the lazily-built named-destination map is walked at most once per document.
     this.#linkDestInfo = { objNumToIndex: new Map(this.#pages.map((p, i) => [p.objNum, i])), pages: this.#pages, nameDests: null };
@@ -753,6 +757,15 @@ export class PdfCore {
     const bytes = this.#objCache.getStreamBytes(objNum);
     if (!bytes) return null;
     return { bytes: bytes.slice().buffer };
+  }
+
+  /**
+   * Set the decoded-image cache budget. A cache already over it shrinks on its next insertion.
+   * @param {number} bytes
+   */
+  setImageCacheBudget(bytes) {
+    this.#imageCacheBudget = bytes;
+    if (this.#objCache) this.#objCache.decodedImageCacheBudget = bytes;
   }
 
   /**
