@@ -1671,13 +1671,13 @@ export function createLibraryInstance(viewer, opts) {
         hash: t.libraryHash || '',
         relPath: t.libraryRelPath || '',
         page: t === activeT ? viewer.scribe.state.cp.n : (t.lastPage ?? 0),
+        ...(t.preview ? { preview: true } : {}),
       })),
       active: activeT ? libTabs.indexOf(activeT) : -1,
       view: activeT && libTabs.includes(activeT) ? {
         zoom: viewer.scribe.zoomLevel,
         sx: viewer.scribe.scrollContainer?.scrollLeft ?? 0,
         sy: viewer.scribe.scrollContainer?.scrollTop ?? 0,
-        ...(t.preview ? { preview: true } : {}),
       } : null,
       lib: visible && form === 'full' ? 1 : 0,
     };
@@ -3380,6 +3380,8 @@ export function createLibraryInstance(viewer, opts) {
         : [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])])
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
+      const entryNow = manifest?.docs[relPath];
+      if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
     });
     card.addEventListener('dblclick', (e) => {
       if (e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -3475,8 +3477,6 @@ export function createLibraryInstance(viewer, opts) {
     return stats;
   };
 
-      const entryNow = manifest?.docs[relPath];
-      if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
   /**
    * Draw a folder with its first covers tucked inside.
    * @param {import('./libraryStore.js').LibraryDocEntry[]} covers
@@ -5664,7 +5664,6 @@ export function createLibraryInstance(viewer, opts) {
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    */
-        // The owner fields go in with the open, so the strip's first draw already places the tab in the folder's group.
   const openEntrySide = (relPath, entry) => openEntry(relPath, entry, { group: sideGroup() });
   /**
    * Show a document as a preview tab, which the next preview replaces.
@@ -6773,6 +6772,11 @@ export function createLibraryInstance(viewer, opts) {
         const view = record.view && Number.isFinite(record.view.zoom)
           && record.view.zoom > 0.01 && record.view.zoom < 100 ? record.view : null;
         let activeRestored = false;
+        // The record keeps no groups, so every tab restores into the lane, where one preview replaces another.
+        // Only the first recorded preview restores as one, so a second group's preview is not lost.
+        let previewRestored = false;
+        /** @type {Array<{rec: {hash: string, relPath: string, page: number, preview?: boolean}, tab: Object}>} */
+        const placed = [];
         for (const rec of ordered) {
           if (destroyed || !manifest) break;
           // The hash finds a document even after a move or rename.
@@ -6797,6 +6801,19 @@ export function createLibraryInstance(viewer, opts) {
           await openEntry(entryPath, entry, { pageN: rec.page || 0, background, preview });
           // An open that failed before attaching must not leak the view onto whatever attaches next.
           viewer._restoreView = null;
+          // The active record opens first so its page paints first, and each open appends to the strip.
+          // Each restored tab therefore moves to its recorded place among those already restored.
+          const opened = viewer._tabs.length > tabsBefore
+            ? viewer._tabs.find((t) => ownsTab(t) && (t.libraryRelPath === entryPath || (!!entry.hash && t.libraryHash === entry.hash))) : null;
+          if (opened) {
+            const recIdx = record.tabs.indexOf(rec);
+            const before = placed.filter((p) => record.tabs.indexOf(p.rec) < recIdx).pop();
+            const others = viewer._groupTabs(0).filter((t) => t !== opened);
+            const to = before ? others.indexOf(before.tab) + 1 : (placed.length ? others.indexOf(placed[0].tab) : -1);
+            if (to >= 0) viewer._moveTabWithin(0, viewer._groupTabs(0).indexOf(opened), to);
+            placed.push({ rec, tab: opened });
+            placed.sort((a, b) => record.tabs.indexOf(a.rec) - record.tabs.indexOf(b.rec));
+          }
           if (!background && rec === activeRec && viewer._tabs.length > tabsBefore) activeRestored = true;
         }
         if (activeRestored) {
@@ -6870,11 +6887,6 @@ export function createLibraryInstance(viewer, opts) {
       render({ revealSelection: true });
       ingest.start();
       await openEntry(relPath, manifest.docs[relPath]);
-        // The record keeps no groups, so every tab restores into the lane, where one preview replaces another.
-        // Only the first recorded preview restores as one, so a second group's preview is not lost.
-        let previewRestored = false;
-        /** @type {Array<{rec: {hash: string, relPath: string, page: number, preview?: boolean}, tab: Object}>} The restored tabs in the record's order. */
-        const placed = [];
     } finally {
       creatingPdf = false;
     }
@@ -6897,19 +6909,6 @@ export function createLibraryInstance(viewer, opts) {
         const relPath = await store.importSourceFile(file.name, file, currentDir);
         // The OCR file is copied in under the PDF's final name, so a PDF renamed by a name collision still pairs with it.
         const ocrName = filesNamedForPdf(file.name, names).ocrFiles[0];
-          // The active record opens first so its page paints first, and each open appends to the strip.
-          // Each restored tab therefore moves to its recorded place among those already restored.
-          const opened = viewer._tabs.length > tabsBefore
-            ? viewer._tabs.find((t) => ownsTab(t) && (t.libraryRelPath === entryPath || (!!entry.hash && t.libraryHash === entry.hash))) : null;
-          if (opened) {
-            const recIdx = record.tabs.indexOf(rec);
-            const before = placed.filter((p) => record.tabs.indexOf(p.rec) < recIdx).pop();
-            const others = viewer._groupTabs(0).filter((t) => t !== opened);
-            const to = before ? others.indexOf(before.tab) + 1 : (placed.length ? others.indexOf(placed[0].tab) : -1);
-            if (to >= 0) viewer._moveTabWithin(0, viewer._groupTabs(0).indexOf(opened), to);
-            placed.push({ rec, tab: opened });
-            placed.sort((a, b) => record.tabs.indexOf(a.rec) - record.tabs.indexOf(b.rec));
-          }
         const ocrFile = ocrName ? files.find((f) => f.name === ocrName) : null;
         if (ocrFile) {
           const finalStem = relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.pdf$/i, '');
@@ -7657,17 +7656,17 @@ export function createLibraryInstance(viewer, opts) {
     // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty.
     viewer.scribe.onAnnotationsEdited = () => {
       const target = /** @type {any} */ (viewer.doc)?._libraryDirtyTarget;
-      if (target) target.libraryDirty = true;
-    };
-    // A turn can settle after a tab switch, so this hook resolves the owner from the document rather than the active tab.
-    viewer.onAssistantHistoryEdited = (doc) => {
-      const target = /** @type {any} */ (doc)?._libraryDirtyTarget;
       if (!target) return;
       target.libraryDirty = true;
       if (target.preview) {
         target.preview = false;
         viewer._renderTabs();
       }
+    };
+    // A turn can settle after a tab switch, so this hook resolves the owner from the document rather than the active tab.
+    viewer.onAssistantHistoryEdited = (doc) => {
+      const target = /** @type {any} */ (doc)?._libraryDirtyTarget;
+      if (target) target.libraryDirty = true;
     };
   }
   const autosaveTimer = window.setInterval(() => {
@@ -7730,7 +7729,6 @@ export function createLibraryInstance(viewer, opts) {
       const segs = currentDir ? currentDir.split('/') : [];
       const rootLabel = isLibrary && store ? store.root.name : opts.name;
       const rows = segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') })).reverse();
-  // A typed edit keeps a preview tab too.
       rows.push({ label: rootLabel, path: '' });
       rows.forEach(({ label, path }) => {
         const item = document.createElement('div');
@@ -7756,7 +7754,6 @@ export function createLibraryInstance(viewer, opts) {
     titleDropdown.open(titleName, 'first');
   });
   titleName.addEventListener('click', (e) => {
-    // The edit keeps a preview tab here too.
     if (e.metaKey || e.ctrlKey) titleDropdown.open(titleName, 'first');
   });
   /** @param {KeyboardEvent} e */
