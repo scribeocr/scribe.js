@@ -2463,6 +2463,10 @@ export function createLibraryInstance(viewer, opts) {
     // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
     if (store && manifest && !fullTextResults && !storageOpen && !emptyLib
       && renderKey === lastRenderKey && renderSig === lastRenderSig) {
+      for (const shelfCard of /** @type {NodeListOf<HTMLElement>} */ (body.querySelectorAll('.scribe-library-grid.shelf > .scribe-library-card'))) {
+        const relPath = shelfCard.dataset.relPath ?? '';
+        updateCard(shelfCard, relPath, manifest.docs[relPath]);
+      }
       if (viewMode === 'grid') {
         /** @param {string} name */
         const band = (name) => /** @type {?HTMLElement} */ (body.querySelector(`[data-band="${name}"]`));
