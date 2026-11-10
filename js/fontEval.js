@@ -272,6 +272,8 @@ export async function runOptimization(doc, ocrArr) {
   const docFonts = doc.fonts;
   const { images, pageMetrics } = doc;
   await loadBuiltInFontsRaw();
+  // The import starts the workers without waiting for them, so a .scribe sidecar's font restore can reach this point while the worker list still has holes.
+  await gs.schedulerReady;
 
   const calculateOpt = docFonts.state.charMetrics && Object.keys(docFonts.state.charMetrics).length > 0;
 
@@ -335,8 +337,7 @@ export async function runOptimization(doc, ocrArr) {
     await syncToWorkers(docFonts);
   }
 
-  // Await optimization on the no-image path too (the image branch above already did). Otherwise this
-  // returns before the optimized fonts finish registering, and a prompt terminate() orphans them.
+  // Without this await, the no-image path returns before the optimized fonts finish registering, and a prompt terminate() orphans them.
   if (optimizeFontContainerAllPromise) await optimizeFontContainerAllPromise;
 
   return docFonts.state.enableOpt;
