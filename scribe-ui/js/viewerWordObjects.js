@@ -322,10 +322,10 @@ export class UiText {
       this.el.addEventListener('dblclick', (event) => {
         if (!UiText.enableEditing) return;
         if (event.button !== 0) return;
+        if (this.word?.line?.page && this.viewer?.doc && nativeTextForPage(this.viewer.doc, this.word.line.page)[this.word.id]) return;
         UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
         UiText.addTextInput(this);
       });
-        if (this.word?.line?.page && this.viewer?.doc && nativeTextForPage(this.viewer.doc, this.word.line.page)[this.word.id]) return;
     }
 
     this.select = () => { this.selected = true; };

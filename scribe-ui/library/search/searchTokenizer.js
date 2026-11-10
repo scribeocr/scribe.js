@@ -389,8 +389,8 @@ export const recordTokenTerm = (rec, k, rules) => {
 };
 
 /**
- * @param {Record<string, NativeTextWord>} [entries]
  * @param {?import('../../../js/objects/ocrObjects.js').OcrPage} page
+ * @param {Record<string, NativeTextWord>} [entries]
  * @returns {?PageInput}
  */
 export const pageInputOf = (page, entries = {}) => {
@@ -437,8 +437,8 @@ export const pageInputOf = (page, entries = {}) => {
         opacity: w.style?.opacity ?? 1,
         lang: w.lang ?? null,
         conf: w.conf ?? 0,
-        native: !!entries[w.id],
         visualCoords: w.visualCoords !== false,
+        native: !!entries[w.id],
         footnoteParId: w.footnoteParId ?? null,
       })),
     })),
