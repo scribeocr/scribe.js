@@ -153,14 +153,14 @@ describe('Check auto-rotate features.', () => {
     const words = lines.flatMap((line) => line.words);
     expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
     expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
-    expect(words.find((w) => w.text === 'Aragon’s')?.readings,
+    expect(words.find((w) => w.text === 'compound,')?.readings,
       'a word with a classifier reading and a losing engine reading carries its own reading first, then both, higher confidence first, each naming its origin in msg')
       .toEqual([{
-        source: 'scribe', text: 'Aragon’s', conf: 0,
+        source: 'scribe', text: 'compound,', conf: 80,
       }, {
-        source: 'scribe', text: 'Aragons', conf: 68, rank: 2, msg: 'c1',
+        source: 'scribe', text: 'compound', conf: 79, rank: 2, msg: 'c1',
       }, {
-        source: 'scribe', text: 'Aragon‘s', conf: 63, rank: 3, msg: 'a1',
+        source: 'scribe', text: 'compound.', conf: 75, rank: 3, msg: 'a1',
       }]);
     expect(words.find((w) => w.text === '2012')?.readings, 'a word the engines disagreed on carries the other engine\'s reading with its confidence and the arbiter\'s rule').toEqual([{
       source: 'scribe', text: '2012', conf: 80,

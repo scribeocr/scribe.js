@@ -608,6 +608,7 @@ const recognize = async ({
         }
       }
     }
+    if (output.imageGrey) optionsTess.scribe_mem_release_grey = '0';
     if (output.debug) {
       optionsTess.debug_file = '/debugInternal.txt';
       TessModule.FS.writeFile('/debugInternal.txt', '');
@@ -652,6 +653,7 @@ const recognize = async ({
     // TODO: Auto upscaling only works when auto rotation is enabled.
     // This is fine for Scribe.js but we may want to change this in the future.
     let upscaleFinal = upscale;
+    let detector = null;
     if (options.rotateAuto) {
       // The angle is only detected if auto page segmentation is used
       // Therefore, if this is not the mode specified by the user, it is enabled temporarily here
@@ -664,7 +666,8 @@ const recognize = async ({
 
       setImage(TessModule, api, image, 0, upscale);
       const findLinesStart = performance.now();
-      api.FindLines();
+      if (typeof TessModule.findLines === 'function') detector = await TessModule.findLines(api, options.gpu);
+      else api.FindLines();
       findLinesMs = performance.now() - findLinesStart;
 
       const rotateRadiansCalc = api.GetGradient();
@@ -704,7 +707,7 @@ const recognize = async ({
       api.SetRectangle(rec.left, rec.top, rec.width, rec.height);
     }
 
-    // The core's own phase times by timing code: 1 layout, 2 Legacy, 3 LSTM, 4 snapshot.
+    // The core's own phase times by timing code: 1 layout, 2 Legacy, 3 LSTM, 4 snapshot, 5 thresholding.
     let coreTiming = null;
     let gpu = false;
     let gpuReason = null;
@@ -712,6 +715,7 @@ const recognize = async ({
       const page = await TessModule.recognizePage(api, legacy, lstm, options.gpu);
       gpu = page.gpu;
       gpuReason = page.reason;
+      if (page.detector) detector = page.detector;
       if (typeof api.GetRecognitionTimings === 'function') coreTiming = JSON.parse(api.GetRecognitionTimings() || 'null');
     }
     const dumpStart = performance.now();
@@ -726,9 +730,10 @@ const recognize = async ({
       2: coreTiming ? coreTiming[2] : null,
       3: coreTiming ? coreTiming[3] : null,
       4: (coreTiming ? coreTiming[4] : 0) + dumpMs,
+      5: coreTiming && coreTiming[5] !== undefined ? coreTiming[5] : null,
     };
     result.dev = {
-      core: coreVariant, kernel: api.GetStringVariable('dotproduct'), gpu, gpuReason,
+      core: coreVariant, kernel: api.GetStringVariable('dotproduct'), gpu, gpuReason, detector,
     };
 
     if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
