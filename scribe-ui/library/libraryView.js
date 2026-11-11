@@ -673,11 +673,18 @@ const addLibraryStyles = () => {
  * Land a dropped card or row as the document it opens.
  * @param {?HTMLElement} pageImg - The drag ghost's page, an image or the canvas copy of one, at the size it had at release; null for a row's chip.
  * @param {?import('../viewer.js').ScribeViewer} target - The viewer the document will open in, when it exists at the drop.
+ * @param {HTMLElement} host - The app's root element, which holds the banners the landing stacks under.
  * @returns {{arrive: (viewer: import('../viewer.js').ScribeViewer) => void, cancel: () => void}} `arrive` names the viewer the document opened in, and `cancel` ends the landing at once.
  */
-const landCard = (pageImg, target) => {
+const landCard = (pageImg, target, host) => {
   const from = pageImg ? pageImg.getBoundingClientRect() : null;
   const cs = pageImg ? getComputedStyle(pageImg) : null;
+  /**
+   * The clip that keeps the flying page inside the document area it lands in.
+   * @param {DOMRect} box
+   * @param {DOMRect} area
+   */
+  const clipTo = (box, area) => `inset(${Math.max(0, area.top - box.top)}px ${Math.max(0, box.right - area.right)}px ${Math.max(0, box.bottom - area.bottom)}px ${Math.max(0, area.left - box.left)}px)`;
   /** @type {?HTMLDivElement} */
   let veil = null;
   const sc = target?.scrollContainer;
@@ -696,11 +703,11 @@ const landCard = (pageImg, target) => {
       top: `${r.top}px`,
       width: `${r.width}px`,
       height: `${r.height}px`,
-      zIndex: '999',
+      zIndex: '33',
       pointerEvents: 'none',
       background: bg,
     });
-    document.body.appendChild(veil);
+    host.appendChild(veil);
   }
   /** @type {?HTMLElement} */
   let copy = null;
@@ -723,7 +730,7 @@ const landCard = (pageImg, target) => {
       width: `${from.width}px`,
       height: `${from.height}px`,
       margin: '0',
-      zIndex: '1000',
+      zIndex: '34',
       pointerEvents: 'none',
       objectFit: 'cover',
       objectPosition: 'top',
@@ -731,8 +738,9 @@ const landCard = (pageImg, target) => {
       borderRadius: cs.borderRadius,
       boxShadow: cs.boxShadow,
       background: cs.backgroundColor || '#fff',
+      clipPath: sc ? clipTo(from, sc.getBoundingClientRect()) : '',
     });
-    document.body.appendChild(copy);
+    host.appendChild(copy);
   }
   let done = false;
   const finish = () => {
@@ -765,12 +773,13 @@ const landCard = (pageImg, target) => {
         finish();
         return;
       }
+      const area = viewer.scrollContainer.getBoundingClientRect();
       const flight = reduced() ? null : copy.animate([
         {
-          left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: cs.borderRadius,
+          left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: cs.borderRadius, clipPath: clipTo(from, area),
         },
         {
-          left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, borderRadius: '0px',
+          left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, borderRadius: '0px', clipPath: clipTo(to, area),
         },
       ], { duration: 240, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'forwards' });
       Promise.all([flight ? flight.finished : Promise.resolve(), paint]).then(() => {
@@ -6442,7 +6451,7 @@ export function createLibraryInstance(viewer, opts) {
         if (!entry) return true;
         const pageImg = ghost && !ghost.classList.contains('chip') ? /** @type {?HTMLElement} */ ([...ghost.querySelectorAll('.scribe-ghost-card :is(canvas, img)')].pop() ?? null) : null;
         const targetViewer = t.group === 1 ? (viewer._rightGroup?.viewer ?? null) : viewer.scribe;
-        const landing = ghost ? landCard(pageImg, targetViewer) : null;
+        const landing = ghost ? landCard(pageImg, targetViewer, viewer.pdfViewerElem) : null;
         openEntry(relPath, entry, { group: t.group, move: true }).then(() => {
           const tab = viewer._tabs.find((tb) => ownsTab(tb) && (entry.hash ? tb.libraryHash === entry.hash : tb.libraryRelPath === relPath));
           const shown = tab ? viewer._viewerShowing(tab.doc) : null;

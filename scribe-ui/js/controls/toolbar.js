@@ -3454,7 +3454,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-drag-pill {
       position: absolute;
-      top: 26px;
+      top: 96px;
       left: 50%;
       transform: translateX(-50%);
       display: flex;
@@ -5131,7 +5131,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active .scribe-tab-name { text-shadow: none; }
     .${r} .scribe-group-drop { position: absolute; z-index: 32; background: var(--scribe-accent-soft); opacity: .94; pointer-events: none; }
     .${r} .scribe-group-drop .scribe-drag-frame { inset: 10px; border-radius: 12px; }
-    .${r} .scribe-group-drop .scribe-drag-pill { top: 22px; padding: 7px 14px 7px 11px; font-size: 13px; }
+    .${r} .scribe-group-drop .scribe-drag-pill { padding: 7px 14px 7px 11px; font-size: 13px; }
     .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }
     .${r} .scribe-tab-ghost { position: fixed; z-index: 1000; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 28px; max-width: 340px; box-sizing: border-box; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 13px; border: 1px solid var(--scribe-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(20, 30, 60, .22); white-space: nowrap; overflow: hidden; }
     .${r} .scribe-tab-ghost .scribe-tab-icon { color: var(--scribe-ink-2); }
