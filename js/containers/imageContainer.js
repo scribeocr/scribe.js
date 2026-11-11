@@ -827,7 +827,7 @@ export class ImageStore {
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
       this.#recordRenderCost(n, result.perf);
-      // A failure/blank render always returns a `dataUrl`, even when a bitmap was requested.
+      // A failed render always returns a `dataUrl`, even when a bitmap was requested.
       if (result.bitmap) return ImageWrapper.fromBitmap(n, result.bitmap, result.colorMode);
       return new ImageWrapper(n, result.dataUrl, result.colorMode);
     }

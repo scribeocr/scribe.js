@@ -5864,7 +5864,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
   }
-  const effectiveColorMode = (pageHasColor && colorMode === 'color') ? 'color' : 'gray';
 
   // The 3500px width cap must match the one in imageContainer.js and extractPDFText.js.
   // Without it a wide page renders larger than the dimensions the viewer lays out against.
@@ -5883,17 +5882,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
   ctx.imageSmoothingQuality = 'high';
 
-  if (drawOps.length === 0) {
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-    perf.prepMs = performance.now() - tRenderStart;
-    const emptyImageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-    const out = {
-      dataUrl: await buildPngDataUrl(emptyImageData, 'gray'), colorMode: 'gray', ok: true, perf,
-    };
-    ca.closeDrawable(canvas);
-    return out;
-  }
+  // `pageHasColor` can count color that is never drawn, but a page with nothing to draw is white.
+  const effectiveColorMode = (drawOps.length > 0 && pageHasColor && colorMode === 'color') ? 'color' : 'gray';
 
   // Declare caches before try so they're accessible in the finally cleanup block.
   /** @type {Map<string, CanvasPattern>} */
@@ -6681,9 +6671,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       tilingPatternCache.set(cacheKey, tileBitmap);
     }
 
-    for (const [patName, patInfo] of pagePatterns) {
-      if (!patInfo.tiling) continue;
-      try { await renderTilingPatternTile(patName, patInfo.tiling); } catch { /* skip */ }
+    if (drawOps.length > 0) {
+      for (const [patName, patInfo] of pagePatterns) {
+        if (!patInfo.tiling) continue;
+        try { await renderTilingPatternTile(patName, patInfo.tiling); } catch { /* skip */ }
+      }
     }
 
     // Render any tiling patterns discovered in Form XObjects (referenced from draw ops)
@@ -8498,7 +8490,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     return blankResult;
   }
 
-  ctx.globalCompositeOperation = 'destination-over';
+  if (drawOps.length > 0) ctx.globalCompositeOperation = 'destination-over';
   ctx.fillStyle = 'white';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
   ctx.globalCompositeOperation = 'source-over';
