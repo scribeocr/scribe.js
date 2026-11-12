@@ -176,9 +176,9 @@ const ghostByViewer = new WeakMap();
 // Detected fillable areas: printed blanks and empty checkboxes offered as click-to-fill spots while the Fill & Sign palette is open.
 
 /**
- * Detected-target cache per viewer, page to target list.
- * Caching for the whole palette session is safe because Fill & Sign is mode-exclusive with text editing, so page text cannot change underneath it.
- * @type {WeakMap<object, Map<number, Array<Object>>>}
+ * Detected fill targets per viewer, by page, with the document they were found on.
+ * Text edits never invalidate it, because Fill & Sign is mode-exclusive with text editing.
+ * @type {WeakMap<object, {doc: object, byPage: Map<number, Array<Object>>}>}
  */
 const fdTargetsByViewer = new WeakMap();
 
@@ -190,16 +190,16 @@ const fdOverlayByViewer = new WeakMap();
 
 /** Detected fill targets for a page, computed on first use. */
 function fdTargets(viewer, n) {
-  let byPage = fdTargetsByViewer.get(viewer);
-  if (!byPage) {
-    byPage = new Map();
-    fdTargetsByViewer.set(viewer, byPage);
-    // An import may still be extracting text, and pages hovered before their text lands cache as empty.
-    // Dropping the cache once extraction settles lets later hovers recompute.
-    viewer.doc?.textReady?.then?.(() => fdTargetsByViewer.delete(viewer));
+  let cache = fdTargetsByViewer.get(viewer);
+  if (!cache || cache.doc !== viewer.doc) {
+    const fresh = { doc: viewer.doc, byPage: new Map() };
+    cache = fresh;
+    fdTargetsByViewer.set(viewer, fresh);
+    // Pages hovered before the document's text lands cache no targets, so the cache is dropped once the text is ready.
+    viewer.doc?.textReady?.then?.(() => { if (fdTargetsByViewer.get(viewer) === fresh) fdTargetsByViewer.delete(viewer); });
   }
-  if (!byPage.has(n)) byPage.set(n, viewer.doc?.detectFillTargets?.(n) || []);
-  return byPage.get(n);
+  if (!cache.byPage.has(n)) cache.byPage.set(n, viewer.doc?.detectFillTargets?.(n) || []);
+  return cache.byPage.get(n);
 }
 
 const FD_OCCUPYING = new Set(['ink', 'stamp', 'freetext', 'field']);
@@ -332,6 +332,8 @@ export function deleteSelectedFillItem(viewer) {
   }
   const rows = doc.annotations.pages[sel.n] || [];
   const idx = rows.indexOf(sel.row);
+  // The row that followed marks the place, since rows read from the PDF later go in ahead of it and shift every index.
+  const follower = idx >= 0 ? rows[idx + 1] : undefined;
   if (idx >= 0) rows.splice(idx, 1);
   // An array snapshot cannot undo this: a typed-text row's lifted words only sweep and regenerate through the sync path.
   if (idx >= 0) {
@@ -340,8 +342,9 @@ export function deleteSelectedFillItem(viewer) {
       surface: 'annot',
       label: 'Deleted item',
       undo: () => {
-        const at = Math.min(idx, (doc.annotations.pages[n] || []).length);
-        (doc.annotations.pages[n] || []).splice(at, 0, row);
+        const cur = doc.annotations.pages[n] || [];
+        const at = follower ? cur.indexOf(follower) : -1;
+        cur.splice(at >= 0 ? at : cur.length, 0, row);
         if (isText) {
           row.contents = contents;
           doc.syncFillText(n, row);

@@ -65,6 +65,8 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
   return new BitmapScheduler(scheduler, workers);
 };
 
+/** @typedef {HTMLDivElement & {_canvas?: ?HTMLCanvasElement}} PageContainer */
+
 /**
  * Per-viewer image cache. Owns its own page-canvas array and per-page bitmap promises.
  * Only the bitmap-worker scheduler is shared globally, because workers are expensive.
@@ -208,6 +210,17 @@ export class ViewerImageCache {
     this._lastJumpAt = -Infinity;
     /** Pending render of the full window after a burst, once the jumps have paused. @type {?ReturnType<typeof setTimeout>} */
     this._burstTimer = null;
+    /**
+     * Pages whose source raster is the one the document keeps stored for them.
+     * @type {Set<number>}
+     */
+    this._fromStored = new Set();
+    /**
+     * For each page, a promise that settles once the page's latest draw has put its canvas up or been dropped.
+     * A draw that showed a stored raster settles only once the render that follows it has too.
+     * @type {Array<Promise<void>|undefined>}
+     */
+    this._drawSettled = [];
   }
 
   _viewer() {
@@ -337,7 +350,8 @@ export class ViewerImageCache {
    */
   async _getViewerSrc(n, lane = 'display') {
     const viewer = this._viewer();
-    const images = viewer.doc.images;
+    const { doc } = viewer;
+    const images = doc.images;
     const wantW = this._wantSrcWidth(n);
     const haveW = this._srcWidths[n] ?? 0;
     let slot = this._srcRasters[n];
@@ -346,7 +360,37 @@ export class ViewerImageCache {
       // Re-rendering an expensive page would hitch the zoom, so reuse the off-width raster.
       if (haveW < wantW) this._ensureCapUpgrade(n);
     } else if (!slot || !sufficient) {
-      const renderP = images.renderViewerRaster(n, wantW, lane);
+      const render = () => images.renderViewerRaster(n, wantW, lane).then((w) => {
+        if (w && w !== SKIPPED && w.imageBitmap) doc.rasterRendered?.(n, w.imageBitmap);
+        return w;
+      });
+      // An empty slot does not mean the page is unchanged, because an edit clears the slot too.
+      // The change count is the document's, not this viewer's `_contentSeq`, so every viewer refuses the stored raster of an edited page.
+      const storedRaster = !slot && images.renderInvalidations(n) === 0 ? doc.storedRaster : null;
+      /** @type {Promise<ImageWrapper|typeof SKIPPED>} */
+      let renderP;
+      if (storedRaster) {
+        // A thumbnail asked for meanwhile is cut from the stored raster instead of rendering the page.
+        const storedLanded = images.expectViewerRaster(n);
+        renderP = Promise.resolve(storedRaster(n)).catch(() => null).then((bitmap) => {
+          if (!bitmap) {
+            // Ask for the render before ending the wait, so a waiting thumbnail is cut from it instead of rendering the page again.
+            const rendering = render();
+            storedLanded();
+            return rendering;
+          }
+          storedLanded(bitmap);
+          if (this._srcRasters[n] === renderP) {
+            this._srcWidths[n] = bitmap.width;
+            this._fromStored.add(n);
+          }
+          return /** @type {ImageWrapper} */ (/** @type {unknown} */ ({
+            imageBitmap: bitmap, src: null, rotated: false, upscaled: false, colorMode: 'color', n,
+          }));
+        });
+      } else {
+        renderP = render();
+      }
       // Waiting for GC to free the superseded raster lets rapid zoom cycles stack ~34 MB bitmaps faster than they collect.
       // iOS kills the tab on the uncollected total.
       const oldSlot = this._srcRasters[n];
@@ -602,9 +646,11 @@ export class ViewerImageCache {
     // Mark the page as drawing for the whole render so eviction never transfers a bitmap this draw is mid-read of.
     this._drawing.set(n, (this._drawing.get(n) || 0) + 1);
     this.pageCanvasProps[n] = null;
+    /** @type {?ImageProperties} */
+    let drawnProps = null;
     const canvasPromise = this.getPageCanvas(n, lane).then((res) => {
       if (res === SKIPPED) return SKIPPED;
-      this.pageCanvasProps[n] = res.props;
+      drawnProps = res.props;
       return res.canvas;
     });
     this.pageCanvases[n] = canvasPromise;
@@ -615,7 +661,8 @@ export class ViewerImageCache {
     };
     canvasPromise.then(drawDone, drawDone);
 
-    canvasPromise.then((canvas) => {
+    /** @type {Promise<void>} */
+    const settled = canvasPromise.then((canvas) => {
       if (canvas === SKIPPED) {
         // Render dropped to keep the lane bounded; leave the placeholder, allow a later re-render.
         if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;
@@ -627,6 +674,9 @@ export class ViewerImageCache {
         /** @type {HTMLCanvasElement} */ (canvas).height = 0;
         return;
       }
+      // Set only after the supersede check, not where drawnProps is captured.
+      // A superseded render's properties would describe a canvas that was never mounted.
+      this.pageCanvasProps[n] = drawnProps;
       const pc = viewer._ensurePageContainer(n);
       if (!pc) return;
       const prev = /** @type {any} */ (pc)._canvas;
@@ -645,17 +695,24 @@ export class ViewerImageCache {
       this._canvasBytes.set(n, c.width * c.height * 4);
       this._canvasLru.delete(n);
       this._canvasLru.add(n);
-      // Fresh pixels are attached, so the swap ghost `refreshPageRaster` left covering the page comes off now.
-      viewer._rasterAttached(n);
+      viewer._releaseRasterWaiters(n);
+      if (this._fromStored.delete(n) && (this._srcWidths[n] ?? 0) !== this._wantSrcWidth(n)) this.addPageCanvas(n, lane);
     }).catch(() => {
       // pageCanvasProps[n] stayed null, so the reuse check would read the leftover rejected promise as a cache hit and never re-render the page.
       if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;
+    }).then(() => {
+      // When the step above re-renders past a stored raster, this draw settles only once that render does.
+      const later = this._drawSettled[n];
+      return later === settled ? undefined : later;
     });
+    this._drawSettled[n] = settled;
   }
 
   /**
-   * Drop page `n`'s cached display raster and canvas after a content change.
-   * Only this viewer's copies are cleared. Document-level caches are dropped separately.
+   * Forget page `n`'s cached display raster after a content change.
+   * The next `addPageCanvas` renders the page again.
+   * The canvas on screen stays mounted until that render replaces it.
+   * Only this viewer's copies are cleared.
    * @param {number} n - Page number
    */
   invalidatePage(n) {
@@ -675,29 +732,38 @@ export class ViewerImageCache {
         old.imageBitmap = null;
       }).catch(() => {});
     }
-    this.deletePageCanvas(n);
+    if (!this.pageCanvases[n]) return;
+    // Supersede any in-flight render, whose pixels predate the change.
+    this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
+    this.pageCanvases[n] = null;
   }
 
-  /** @param {number} n - Page number */
+  /**
+   * Take page `n`'s canvas off the page and forget it.
+   * @param {number} n - Page number
+   */
   deletePageCanvas(n) {
     this._canvasBytes.delete(n);
     this._canvasLru.delete(n);
-    if (!this.pageCanvases[n]) return;
-    // Supersede any in-flight render so its result is discarded rather than added after deletion.
-    this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
-    const canvasPromise = this.pageCanvases[n];
-    this.pageCanvases[n] = null;
-    const pc = this._viewer().pageContainerArr[n];
-    canvasPromise.then((canvas) => {
-      if (canvas && canvas !== SKIPPED) {
-        /** @type {HTMLCanvasElement} */ (canvas).remove();
-        // Zeroing the dimensions releases the backing store now.
-        // A detached canvas otherwise holds its pixels until GC, which iOS's process kill does not wait for.
-        /** @type {HTMLCanvasElement} */ (canvas).width = 0;
-        /** @type {HTMLCanvasElement} */ (canvas).height = 0;
-        if (pc && /** @type {any} */ (pc)._canvas === canvas) /** @type {any} */ (pc)._canvas = null;
-      }
-    }).catch(() => {});
+    if (this.pageCanvases[n]) {
+      // Supersede any in-flight render so it cannot mount its canvas after the deletion.
+      this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
+      this.pageCanvases[n] = null;
+    }
+    const viewer = this._viewer();
+    const pc = /** @type {?PageContainer} */ (viewer.pageContainerArr[n]);
+    // After an invalidation or a dropped render, `pageCanvases[n]` is null while a canvas is still mounted.
+    const mounted = pc?._canvas;
+    if (pc && mounted) {
+      mounted.remove();
+      // Zeroing the dimensions releases the backing store now.
+      // A detached canvas otherwise holds its pixels until GC, which iOS's process kill does not wait for.
+      mounted.width = 0;
+      mounted.height = 0;
+      pc._canvas = null;
+    }
+    // No pixels are left for a waiting caller's overlay to cover.
+    viewer._releaseRasterWaiters(n);
   }
 
   clear() {
@@ -712,7 +778,7 @@ export class ViewerImageCache {
     this.pageCanvasProps.length = 0;
     this._nativeBitmapPromises.length = 0;
     this._binaryBitmapPromises.length = 0;
-    this._renderSeq.length = 0;
+    // `_renderSeq` is kept: counting from zero again would let a render still in flight for the outgoing document match a new render's number and attach.
     this._drawing.clear();
     this._compressPromises.length = 0;
     this._canvasBytes.clear();
@@ -723,6 +789,8 @@ export class ViewerImageCache {
     this._srcBitmapPromises.length = 0;
     this._srcCompressPromises.length = 0;
     this._capUpgrades.length = 0;
+    this._fromStored.clear();
+    this._drawSettled.length = 0;
     this._iosRenderChain = Promise.resolve();
   }
 
@@ -862,9 +930,11 @@ export class ViewerImageCache {
 
     this.sweepCaches(curr);
 
-    // Skip ahead-render when a PDF is being uploaded alongside OCR data and OCR dimensions are not yet available.
-    // No re-render mechanism currently exists for that case.
-    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.pageMetrics.length > curr + 1) {
+    // While OCR uploaded with a PDF is still converting, its dimensions are not yet available and nothing re-renders the neighbors once they are.
+    // Raw OCR without converted OCR marks the next page as still converting.
+    // A page with no text has neither.
+    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.ocrRaw?.active?.[curr + 1]
+      && viewer.doc.pageMetrics.length > curr + 1) {
       await this.addPageCanvas(curr);
       return;
     }
@@ -879,14 +949,24 @@ export class ViewerImageCache {
       const chain = deepZoom ? [curr] : [...onScreen, ...beyond];
       if (deepZoom) this.ensurePreviewWindow(curr);
       this._iosRenderFocus = curr;
+      // A page's render is asked for only when its turn comes, so a thumbnail asked for before then is told the render is coming and waits for it.
+      const lanes = chain.map((n) => (onScreen.includes(n) ? 'display' : 'prefetch'));
+      const turns = chain.map((n, i) => viewer.doc.images.expectViewerRaster(n, lanes[i]));
       this._iosRenderChain = this._iosRenderChain.then(async () => {
-        for (const n of chain) {
+        for (let i = 0; i < chain.length; i++) {
+          const n = chain[i];
           // A page enqueued for an earlier focus the view has since moved away from would render only to be evicted by the next sweep.
           if (Math.abs(n - this._iosRenderFocus) > ViewerImageCache.cacheDeletePages) continue;
-          await this.addPageCanvas(n, onScreen.includes(n) ? 'display' : 'prefetch');
-          try { await this.pageCanvases[n]; } catch { /* per-slot handlers own render failures */ }
+          await this.addPageCanvas(n, lanes[i]);
+          // The page's render has been asked for by now, when it needed one, and the thumbnail's wait passes to it.
+          turns[i]();
+          // Hold the chain until this page's canvas is up, including the render that follows a stored raster, so no two pages render at once.
+          await this._drawSettled[n];
         }
-      }).catch(() => { /* a dead chain link must not block every later render */ });
+      }).catch(() => { /* a dead chain link must not block every later render */ }).finally(() => {
+        // A page the chain skipped, or never reached, has no render coming.
+        for (const turn of turns) turn();
+      });
       await this._iosRenderChain;
       return;
     }

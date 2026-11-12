@@ -1112,10 +1112,10 @@ export function buildBulkEditWorkspace(host, container) {
   };
   viewer.displayPageCallback = ourDisplayCb;
 
-  (async () => {
-    // A freshly-opened PDF may still be extracting text, so a scan before it settles would miss lines.
-    if (doc._textReadySettle) await doc.textReady;
-  })().then(() => { if (!destroyed && stage === 'select') { scan(); render(); paintMarks(); } });
+  // A freshly-opened PDF may still be extracting text, so a scan before it settles would miss lines.
+  (doc._textReadySettle ? doc.ensureHydrated() : Promise.resolve(true)).then((loaded) => {
+    if (loaded && !destroyed && stage === 'select') { scan(); render(); paintMarks(); }
+  });
 
   render();
 

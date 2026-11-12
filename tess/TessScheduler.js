@@ -29,7 +29,7 @@ export const DEBUG_RENDER_SCHED = false;
  * background: parse, recognition, export and every consumer that cannot handle a drop, in arrival order, never dropped.
  */
 
-const LANE_RANK = {
+export const LANE_RANK = {
   display: 0, preview: 1, prefetch: 2, store: 3, background: 4,
 };
 

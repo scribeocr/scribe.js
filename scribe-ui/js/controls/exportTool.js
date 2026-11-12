@@ -119,7 +119,7 @@ const formatOf = (id) => /** @type {ExportFormat} */ (EXPORT_FORMATS.find((f) =>
  */
 export const docHasWords = (doc) => !!doc
   // The mode hydrates a provisional document and checks again once its text arrives.
-  && (doc.id < 0 || !!doc.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
+  && (doc.hydrationState !== 'hydrated' || !!doc.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
 
 const PANE_RULES = '  .scribe-export-body {\n    position:relative;\n    margin:0 auto;\n  }\n  .scribe-page {\n    background:#fff;\n    box-shadow:var(--scribe-page-shadow);\n  }\n';
 const BOXES_RULES = '  .scribe-word {\n    outline:1px solid rgba(28,98,212,.45);\n    outline-offset:1px;\n  }\n';
@@ -1317,8 +1317,8 @@ export function createExportTool(app) {
       pdfTimer = null;
       const sv = viewerOf();
       if (!sv.doc || !active || mounted?.kind !== 'pdf') return;
-      // A placeholder's real document reruns `docChanged`, which refreshes again.
-      if (sv.doc.id < 0 && sv.doc._requestHydration) return;
+      // A provisional document reruns `docChanged` once it has loaded, which refreshes again.
+      if (sv.doc.hydrationState !== 'hydrated') return;
       const run = ++pdfRun;
       setBusy(true);
       let next;
@@ -1678,7 +1678,7 @@ export function createExportTool(app) {
     const f = format();
     exportBtn.disabled = true;
     try {
-      if (sv.doc._textReadySettle) await sv.doc.textReady;
+      if (sv.doc._textReadySettle && !(await sv.doc.ensureHydrated())) return;
       if (f.id === 'xlsx') {
         const { buildTablesWorkbook } = await import('../automations/extractTables.js');
         const built = await buildTablesWorkbook(sv.doc, {
@@ -1893,17 +1893,12 @@ export function createExportTool(app) {
     syncOptions();
     syncExportBtn();
     if (view === 'page') return;
-    // The editor loads a placeholder's real document once the reader rests on it.
-    // Its arrival runs this again.
-    if (sv.doc.id < 0 && sv.doc._requestHydration) {
+    // The app loads a provisional document once the reader rests on it, and runs this again when the load ends, whether it worked or not.
+    if (sv.doc.hydrationState !== 'hydrated') {
+      const failed = !!(/** @type {typeof sv.doc & import('../../basic-viewer/pdf-viewer.js').SeededDocHooks} */ (sv.doc))._loadFailed;
       if (mounted?.kind === 'pdf') clearPdfPreview();
-      else if (mounted?.kind !== 'sheet') paneNote('Loading the document…');
-      const placeholder = sv.doc;
-      placeholder._hydrated?.catch(() => {
-        if (viewerOf().doc !== placeholder) return;
-        setBusy(false);
-        if (mounted?.kind !== 'pdf' && mounted?.kind !== 'sheet') paneNote('Couldn’t load the document.');
-      });
+      else if (mounted?.kind !== 'sheet') paneNote(failed ? 'Couldn’t load the document.' : 'Loading the document…');
+      if (failed) setBusy(false);
       return;
     }
     // Text can arrive after the document shows, as deferred extraction's does, so the preview re-renders even for the same document.

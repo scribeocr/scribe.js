@@ -59,6 +59,8 @@ function commitValue(viewer, row, newValue) {
       viewer.textSel.invalidatePage(n);
       viewer.textSel.renderPage(n);
     }
+    // A field's value lives on its annotation rows, so a value change counts as an annotation edit.
+    viewer.annotationsEdited(n);
   }
   if (viewer.onEditCallback) viewer.onEditCallback();
   return true;

@@ -45,7 +45,9 @@ import {
 } from '../js/viewerDiff.js';
 import { wordsToCheck, selectNextToCheck } from '../js/viewerShortcuts.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
-import { SeedDoc } from '../js/seedDoc.js';
+import {
+  OcrPage, OcrPar, OcrLine, OcrWord,
+} from '../../js/objects/ocrObjects.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { IS_MAC, shortcutLabel } from '../js/platform.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
@@ -255,8 +257,50 @@ const AUTO_FIT_MAX_RASTER_PX = 3500;
 
 /** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
 const MODE_BANNER_HEIGHT = 40;
-/** How long the reader rests on a provisional document under a mode before its real document loads. */
+/** How long the reader rests on a provisional document under a mode before it loads. */
 const MODE_LOAD_REST_MS = 350;
+/** How many pages of a document that has not loaded keep their words at once. */
+const SEEDED_RESIDENT_PAGES = 64;
+/**
+ * The native-text entry of a word shown before its document loads.
+ * Its presence alone marks the word native.
+ * It carries none of the parse-derived metadata a loaded word's entry holds.
+ * @type {NativeTextWord}
+ */
+const SEEDED_NATIVE_ENTRY = Object.freeze({ baselineY: Number.NaN });
+
+/**
+ * What `openProvisional` hangs on the document it is handed, for the viewers and the modes to read. None of it belongs to the scribe.js library.
+ * @typedef {Object} SeededDocHooks
+ * @property {boolean} [_seededWired] - Set once `openProvisional` has taken the document, which rebuilds its own text when it loads.
+ * @property {boolean} [_loadFailed] - Whether the document's last load failed.
+ * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [findMatches] - The seed's `find`.
+ * @property {(n: number) => Promise<void>} [pageText] - Have page `n`'s words and own annotations in the document. Gone once the document has loaded.
+ * @property {(n: number) => Promise<?ImageBitmap>} [storedRaster] - Page `n`'s stored raster, when one is stored.
+ * @property {(n: number, bitmap: ImageBitmap) => void} [rasterRendered] - The seed's `rendered`.
+ */
+
+/**
+ * A document opened for on-demand loading, with what a tab shows of it before it loads.
+ * @typedef {Object} ProvisionalSeed
+ * @property {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The document, opened with `openDocument`'s `seeded` option.
+ * @property {number} [initialPage=0]
+ * @property {{from: number, to: number}} window - Pages whose words are fetched at open, inclusive on both ends.
+ *   Every other page gets them as the view reaches it.
+ * @property {(n: number) => ?Promise<?Blob|ImageBitmap|string>} [raster] - The page's stored raster, when one is stored.
+ *   A string is a URL the browser can fetch.
+ *   A page with one paints it first, and the render at the view's own width replaces it.
+ * @property {(n: number, bitmap: ImageBitmap) => void} [rendered] - Called with each page render made for the view, for a host that stores them.
+ *   The bitmap may be closed once this returns.
+ * @property {(n: number) => Promise<?Object>} [ocr] - A page's words with their geometry, at minimum `{dims, lines: [{words: [{text, bbox}]}]}`.
+ *   Providing it makes that page's text selectable, copyable, and findable before the document loads.
+ *   A line of rotated text must also carry its `orientation` (0-3) and give its word bboxes in that orientation's frame.
+ * @property {(n: number) => Promise<?Array<Object>>} [annots] - The page's own annotations, for a document opened without a saved file, whose annotations are otherwise read only when it loads.
+ * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - The document's matches of a query, in page order.
+ *   Its word ids must be those `ocr` gives.
+ * @property {'eager'|'on-demand'} [hydration='eager'] - `'eager'` loads the document as soon as it is shown, and `'on-demand'` when something first needs it.
+ * @property {string} [name] - Display name for the tab.
+ */
 
 /** Air required to keep the rotate pair in the centered viewing cluster. */
 const ROTATE_MIN_AIR = 80;
@@ -680,12 +724,12 @@ class ScribePDFViewer {
     this._ownsDoc = false;
 
     /**
-     * Open documents, one per tab. The app owns these docs and terminates them on close / `destroy`.
-     * `asleep` marks a document whose worker pools are suspended (main-thread state retained).
+     * Open documents, one per tab.
+     * The app owns these docs and terminates them on tab close and on `destroy`.
+     * `asleep` marks a document whose worker pools are suspended while its main-thread state is kept.
      * `waking` marks one respawning its pools during activation.
-     * `lastUse` orders tabs for the warm set.
      * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number, lastUse: number,
-     *   asleep: boolean, waking: boolean, onDocHydrated?: (doc: Object) => void }>}
+     *   asleep: boolean, waking: boolean }>}
      */
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
@@ -799,6 +843,10 @@ class ScribePDFViewer {
      * @type {?{zoom: number, sx: number, sy: number}}
      */
     this._restoreView = null;
+    /** @type {WeakSet<object>} */
+    this._textLandingWatched = new WeakSet();
+    /** @type {WeakSet<object>} */
+    this._groupTextLandingWatched = new WeakSet();
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
@@ -2180,267 +2228,237 @@ class ScribePDFViewer {
   }
 
   /**
-   * Open a document provisionally, painting it from the seed's rasters and words before the real document exists.
-   * The real document replaces the seed in place, at the same scroll and zoom, when a verb needs it or when the seed is eager.
+   * Open the seed's document as a tab, showing what the seed provides until the document loads.
+   * The document loads in place, keeping its tab, scroll and zoom.
    * Resolves at first paint, or once the tab exists when it opens in the background.
-   * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
-   * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
-   * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
+   * @param {ProvisionalSeed} seed
    * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string, [field: string]: any}} [opts]
-   *   `group`, `preview`, `program`, `fitWidth` and `openAddress` go to the tab as `_openDocAsTab` takes them.
-   *   Any other option is a field of the tab record, in place before the strip first draws the tab.
-   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void, tab: Object}>} `tab` is the record the document opened as.
+   *   Any option not named here is a field of the tab record, in place before the strip first draws the tab.
+   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, tab: Object}>} `tab` is the record the document opened as.
+   *   `primed` settles once the window pages' words are in, so their text is selectable and searchable.
+   *   `hydrated` settles once the document has loaded, and rejects when it is closed first.
    */
   async openProvisional(seed, {
     activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
   } = {}) {
-    /** @type {{current: ?Object}} */
-    const holder = { current: null };
-    const {
-      seedDoc, primed, hydrated, cancel,
-    } = this._makeProvisional(seed, holder);
-    // The record reaches the hydration machinery before the first display, so a display that throws leaves a tab that still loads.
-    await this._openDocAsTab(seedDoc, seed.name || 'Document', {
-      ...fields, provisional: true, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress, onCreated: (tab) => { holder.current = tab; },
-    });
-    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
-    return {
-      primed, hydrated, cancel, tab: holder.current,
-    };
-  }
-
-  /**
-   * Build the provisional document for `seed` with its hydration wired, for the caller to attach as a tab or as a library preview.
-   * `holder.current` is the record whose `doc` the hydration swap replaces, a tab or a preview record, read at swap time so the document can change hands first.
-   * Hydration starts through the document's `_requestHydration`, which the caller kicks itself for an eager seed.
-   * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
-   * @param {{current: ?Object}} holder
-   * @returns {{seedDoc: SeedDoc, primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}}
-   */
-  _makeProvisional(seed, holder) {
-    const seedDoc = new SeedDoc(seed);
+    const { doc } = seed;
+    const seeded = doc._seeded;
     // Fonts back the word-object layer (search marks, carets).
     // The call is memoized process-wide, so it is not awaited here.
     scribe.init({ font: true }).catch(() => {});
 
-    let started = false;
-    let cancelled = false;
-    /** @type {(doc: any) => void} */
-    let resolveReal = () => {};
-    /** @type {(err: any) => void} */
-    let rejectReal = () => {};
-    /** @type {Promise<any>} */
-    const realDocP = new Promise((res, rej) => { resolveReal = res; rejectReal = rej; });
-    // The public handle reports completion without exposing the document.
-    // A cancelled hydration rejects, which is settled state rather than an error worth crashing on.
-    realDocP.catch(() => {});
-    const hydrated = realDocP.then(() => undefined);
-    hydrated.catch(() => {});
-
-    // Word geometry lands moments after the raster, so the text layer has to be rebuilt when it does.
-    const primed = seedDoc.prime().then(() => {
-      const v = this._viewerShowing(seedDoc);
-      if (!cancelled && v) v.displayPage(v.state.cp.n, false, true);
-    });
-
-    const start = () => {
-      if (started) return realDocP;
-      started = true;
-      (async () => {
-        const loaded = await seed.load();
-        // Extraction of a file-loaded document starts once the swap has asked for the screen's pages.
-        let startText = () => {};
-        const textStart = new Promise((resolve) => { startText = resolve; });
-        const realDoc = Array.isArray(loaded) ? await scribe.openDocument(loaded, { deferText: true, textStart, pdfWorkerN: 1 }) : loaded;
-        if (cancelled) {
-          realDoc?.close?.().catch(() => {});
-          throw new Error('Hydration cancelled.');
+    const hooks = /** @type {typeof doc & SeededDocHooks} */ (doc);
+    hooks._seededWired = true;
+    if (seed.find) hooks.findMatches = seed.find;
+    if (seed.rendered) hooks.rasterRendered = seed.rendered;
+    // The image cache closes the bitmaps it is served, so stored rasters are kept as blobs.
+    /** @type {Map<number, Promise<?Blob>>} */
+    const blobs = new Map();
+    const seedRaster = seed.raster;
+    if (seedRaster) {
+      // A stored raster is kept by the place its page had in the document when the document was opened.
+      const openedPages = doc.pageMetrics.slice();
+      hooks.storedRaster = async (/** @type {number} */ n) => {
+        if (doc.pageMetrics[n] !== openedPages[n]) return null;
+        let p = blobs.get(n);
+        if (!p) {
+          p = Promise.resolve(seedRaster(n)).then(async (r) => {
+            if (!r) return null;
+            if (r instanceof Blob) return r;
+            if (typeof ImageBitmap !== 'undefined' && r instanceof ImageBitmap) {
+              const canvas = new OffscreenCanvas(r.width, r.height);
+              /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d')).drawImage(r, 0, 0);
+              r.close();
+              return canvas.convertToBlob({ type: 'image/png' });
+            }
+            return (await fetch(/** @type {string} */ (r))).blob();
+          }).catch(() => null);
+          blobs.set(n, p);
+          // A page with no stored raster is asked again next time, in case one has been stored since.
+          const asked = p;
+          asked.then((blob) => { if (!blob && blobs.get(n) === asked) blobs.delete(n); });
         }
-        try {
-          if (holder.current) await this._hydrateSwap(holder.current, seedDoc, realDoc);
-          else await seedDoc.close();
-        } finally {
-          startText();
+        const blob = await p;
+        return blob ? createImageBitmap(blob).catch(() => null) : null;
+      };
+    }
+    /** @type {Promise<void>} */
+    let primed = Promise.resolve();
+    /** @type {Promise<void>} */
+    let hydrated = Promise.resolve();
+    if (seeded) {
+      const viewers = () => [this.scribe, this._rightGroup?.viewer].filter((v) => !!v && v.doc === doc);
+
+      /** Draws page `n`'s newly arrived words and annotations in the viewers showing it. */
+      const landed = (/** @type {number} */ n) => {
+        for (const v of viewers()) {
+          if (v === this._activeViewer()) this._syncDocGatedControls();
+          const cp = v.state.cp.n;
+          if (n !== cp && !v.windowPages(cp).includes(n)) continue;
+          // Highlights hang on the page's word objects, so they wait for the words.
+          // The other marks are redrawn because the page's annotations may have arrived after `displayPage` ran.
+          v.renderWords(n).then(() => {
+            if (v.doc !== doc) return;
+            v.renderHighlights?.(n);
+            v.renderNotes(n);
+            v.renderRedactions(n);
+            v.renderModeMarks(n);
+            v.renderFormFields(n);
+            v.renderFillItems(n);
+          }).catch(() => {});
         }
-        return realDoc;
-      })().then(resolveReal, (err) => {
-        if (!cancelled) this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
-        rejectReal(err);
+      };
+
+      /** @type {Map<number, Promise<void>>} */
+      const pages = new Map();
+      /** @type {Array<number>} */
+      const resident = [];
+      /**
+       * Have page `n`'s words in `ocr.active`, and its own annotations in place.
+       * Resolves when they are there or when the page has none.
+       * Pages far from `n` give up their words past the resident cap.
+       * @param {number} n
+       * @returns {Promise<void>}
+       */
+      const pageText = (n) => {
+        if (n < 0 || n >= doc.pageMetrics.length || (!seed.ocr && !seed.annots)) return Promise.resolve();
+        let p = pages.get(n);
+        if (p) return p;
+        // A document opened from a saved file holds every page's annotations already.
+        const annotsP = seed.annots && !doc.annotations.restored && !seeded.annotBaseline.has(n) ? Promise.resolve(seed.annots(n)).catch(() => null) : Promise.resolve(null);
+        p = Promise.all([seed.ocr ? seed.ocr(n) : null, annotsP]).then(([pageLike, annots]) => {
+          // The document may have loaded, or closed, while these were read.
+          if (doc._seeded !== seeded || seeded.closed) return;
+          if (Array.isArray(annots) && !seeded.annotBaseline.has(n)) {
+            const own = doc.annotations.pages[n] || [];
+            // Rows the user added before the page's own annotations arrived are kept, after them.
+            doc.annotations.pages[n] = own.length ? [...annots, ...own] : annots;
+            if (own.length) doc.docHistory.prependAnnotRows(doc.annotations, n, annots);
+            seeded.annotBaseline.set(n, JSON.stringify(annots));
+          }
+          if (!pageLike || !Array.isArray(pageLike.lines)) {
+            if (Array.isArray(annots)) landed(n);
+            return;
+          }
+          const dims = pageLike.dims || doc.pageMetrics[n].dims;
+          const page = new OcrPage(n, { width: dims.width, height: dims.height });
+          page.angle = pageLike.angle || 0;
+          if (pageLike.textSource) page.textSource = pageLike.textSource;
+          const pars = (pageLike.pars || []).map((/** @type {any} */ parLike) => {
+            const par = new OcrPar(page, parLike.bbox);
+            if (parLike.type) par.type = parLike.type;
+            par.headingLevel = parLike.headingLevel ?? null;
+            par.parNum = parLike.parNum ?? null;
+            par.marker = parLike.marker ?? null;
+            return par;
+          });
+          page.pars = pars;
+          /** @type {Record<string, NativeTextWord>} */
+          const entries = {};
+          for (const lineLike of pageLike.lines) {
+            const words = Array.isArray(lineLike.words) ? lineLike.words.filter((/** @type {any} */ w) => w && w.text && w.bbox) : [];
+            if (!words.length) continue;
+            const lineBbox = lineLike.bbox || {
+              left: Math.min(...words.map((/** @type {any} */ w) => w.bbox.left)),
+              top: Math.min(...words.map((/** @type {any} */ w) => w.bbox.top)),
+              right: Math.max(...words.map((/** @type {any} */ w) => w.bbox.right)),
+              bottom: Math.max(...words.map((/** @type {any} */ w) => w.bbox.bottom)),
+            };
+            const line = new OcrLine(page, lineBbox, lineLike.baseline || [0, 0], lineLike.ascHeight ?? null, lineLike.xHeight ?? null);
+            line.orientation = lineLike.orientation || 0;
+            line.lineNum = lineLike.lineNum ?? null;
+            line.pageNum = lineLike.pageNum ?? null;
+            const par = typeof lineLike.par === 'number' ? pars[lineLike.par] : null;
+            if (par) {
+              line.par = par;
+              par.lines.push(line);
+            }
+            for (const w of words) {
+              const word = new OcrWord(line, w.id || `seed-${n}-${page.lines.length}-${line.words.length}`, w.text, w.bbox);
+              if (w.style) Object.assign(word.style, w.style);
+              if (w.lang) word.lang = w.lang;
+              word.conf = w.conf ?? 100;
+              if (w.visualCoords === false) word.visualCoords = false;
+              if (w.footnoteParId) word.footnoteParId = w.footnoteParId;
+              if (Array.isArray(w.chars)) word.chars = w.chars;
+              if (w.native) entries[word.id] = SEEDED_NATIVE_ENTRY;
+              line.words.push(word);
+            }
+            page.lines.push(line);
+          }
+          // The mode gates read the entries the host recorded, so a tab answers before its document loads.
+          doc.nativeText.pages[n] = entries;
+          doc.ocr.active[n] = page;
+          doc.inputData.xmlMode[n] = true;
+          resident.push(n);
+          for (let over = resident.length - SEEDED_RESIDENT_PAGES; over > 0; over--) {
+            let far = 0;
+            for (let i = 1; i < resident.length; i++) if (Math.abs(resident[i] - n) > Math.abs(resident[far] - n)) far = i;
+            const [gone] = resident.splice(far, 1);
+            delete doc.ocr.active[gone];
+            pages.delete(gone);
+            blobs.delete(gone);
+          }
+          landed(n);
+        }).catch(() => { /* Without its words the page still renders, just without selectable text. */ });
+        pages.set(n, p);
+        return p;
+      };
+      hooks.pageText = pageText;
+
+      /** @type {Array<Promise<void>>} */
+      const windowTexts = [];
+      for (let n = seed.window.from; n <= seed.window.to; n++) windowTexts.push(pageText(n));
+      primed = Promise.all(windowTexts).then(() => {
+        if (doc._seeded === seeded) for (const v of viewers()) v.displayPage(v.state.cp.n, false, true);
       });
-      return realDocP;
-    };
-    seedDoc._requestHydration = start;
-    seedDoc._hydrated = hydrated;
 
-    seedDoc._onPageText = (n) => {
-      const v = this._viewerShowing(seedDoc);
-      if (cancelled || !v) return;
-      // A page's text decides which rows the document gate enables.
-      if (v === this._activeViewer()) this._syncDocGatedControls();
-      const cp = v.state.cp.n;
-      if (n !== cp && !v.windowPages(cp).includes(n)) return;
-      // Highlights hang on the page's word objects, so they are drawn once the words are.
-      v.renderWords(n).then(() => {
-        if (cancelled || this._viewerShowing(seedDoc) !== v) return;
-        v.renderHighlights?.(n);
-        v.renderNotes?.(n);
-      }).catch(() => {});
-    };
-    seedDoc._onPageRaster = (n) => {
-      const v = this._viewerShowing(seedDoc);
-      if (cancelled || !v) return;
-      v.refreshPageRaster(n).catch(() => {});
-    };
-
-    const cancel = () => {
-      if (cancelled) return;
-      cancelled = true;
-      rejectReal(new Error('Hydration cancelled.'));
-    };
-    // A seed closed by a tab close or a viewer destroy must never go on to hydrate.
-    seedDoc._onClose = cancel;
-    return {
-      seedDoc, primed, hydrated, cancel,
-    };
-  }
-
-  /**
-   * Replace a provisional document's seed with the hydrated document in place.
-   * When the seed's geometry was truthful, the swap preserves scroll and zoom exactly and re-anchors a linear text selection whose text survived unchanged.
-   * A snapshot of the on-screen canvases veils the viewport until the real render lands.
-   * A geometry mismatch degrades to a plain re-open at the current page.
-   * @param {{doc: Object, provisional?: boolean, onDocHydrated?: (doc: Object) => void}} holder - The tab or library preview record holding the seed.
-   * @param {SeedDoc} seedDoc
-   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} realDoc
-   */
-  async _hydrateSwap(holder, seedDoc, realDoc) {
-    /** @param {Object} a @param {Object} b */
-    const sameGeometry = (a, b) => a.inputData.pageCount === b.inputData.pageCount
-      && Math.abs(a.pageMetrics[0].dims.width - b.pageMetrics[0].dims.width) < 1
-      && Math.abs(a.pageMetrics[0].dims.height - b.pageMetrics[0].dims.height) < 1;
-    holder.doc = realDoc;
-    holder.provisional = false;
-    const landing = this._landing.get(seedDoc);
-    if (landing) this._landing.set(realDoc, landing);
-    if (this._lease?.doc === seedDoc) {
-      this._lease = { doc: realDoc };
-      realDoc.images.setPinned?.(true);
-      Promise.resolve(realDoc.images.setWorkerTarget?.(this._activeTierN())).catch(() => {});
-    }
-    Promise.resolve(seedDoc.images.setWorkerTarget?.(1)).catch(() => {});
-    // Fired synchronously with the adoption rather than on `hydrated`.
-    // A mutation arriving during the swap's paint tail must not escape the host's tracking.
-    holder.onDocHydrated?.(realDoc);
-    // A successful swap retires the seed on purpose, so its close must not read as a cancel.
-    seedDoc._onClose = null;
-    // Annotations made on the seed move to the real document, because the pointer UI writes doc.annotations directly.
-    // A page whose baseline came from the seed's annots callback replaces the real page wholesale, so removals count.
-    // Every other page appends its session additions.
-    for (let n = 0; n < seedDoc.annotations.pages.length; n++) {
-      const seedPage = seedDoc.annotations.pages[n];
-      if (seedDoc._annotBaseline.has(n)) realDoc.annotations.pages[n] = seedPage;
-      else if (seedPage.length) realDoc.annotations.pages[n] = (realDoc.annotations.pages[n] || []).concat(seedPage);
-    }
-    if (this.doc !== seedDoc) {
-      // A background tab swaps silently, and activation attaches the real document normally.
-      const g = this._rightGroup;
-      if (g && g.viewer.doc === seedDoc) {
-        const v = g.viewer;
-        const cp = Math.min(v.state.cp.n, realDoc.inputData.pageCount - 1);
-        const same = sameGeometry(realDoc, seedDoc);
-        if (!same) { const tab = this._tabs.find((t) => t.doc === seedDoc); if (tab) tab.placedByAddress = false; }
-        const { scrollTop, scrollLeft } = v.scrollContainer;
-        const veil = same ? this._buildSwapVeil(v) : null;
-        try {
-          v.doc = realDoc;
-          await v.displayPage(cp, !same, false);
-          if (same) {
-            v.scrollContainer.scrollTop = scrollTop;
-            v.scrollContainer.scrollLeft = scrollLeft;
-          }
-          this._groupDocChanged(g, realDoc);
-          await seedDoc.close();
-          if (veil) {
-            const pc = v.imageCache.pageCanvases[cp];
-            if (pc) await Promise.race([pc, new Promise((r) => { setTimeout(r, 2000); })]);
-            await new Promise((r) => { requestAnimationFrame(() => r(null)); });
-          }
-        } finally {
-          veil?.remove();
+      seeded.onError = (err) => {
+        console.error('The document could not be loaded:', err);
+        hooks._loadFailed = true;
+        this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
+        // A mode waiting on the document shows the load failure in place of its loading note.
+        if (this._modeViewer().doc === doc) {
+          this._extractTablesTool?.docChanged?.();
+          this._inspectTool?.docChanged?.();
+          this._exportTool?.docChanged?.();
         }
-        return;
-      }
-      await seedDoc.close();
-      return;
-    }
-    const sc = this.scribe.scrollContainer;
-    const zoom = this.scribe.zoomLevel;
-    const { scrollTop, scrollLeft } = sc;
-    const cpN = this.scribe.state.cp.n;
-    const geometryMatches = sameGeometry(realDoc, seedDoc);
+      };
 
-    const textSel = this.scribe.textSel;
-    const sel = geometryMatches && textSel && textSel.range?.kind === 'linear'
-      ? { start: { ...textSel.range.start }, end: { ...textSel.range.end }, text: textSel.getText() }
-      : null;
-    const veil = geometryMatches ? this._buildSwapVeil() : null;
-    // Restoring the zoom after the open would attach rasters rendered at the fit, which the compositor then scales and blurs.
-    if (geometryMatches) this._restoreView = { zoom, sx: scrollLeft, sy: scrollTop };
+      /** @type {Map<ScribeViewer, {start: Object, end: Object, text: string}>} */
+      const selections = new Map();
+      seeded.beforeCommit = () => {
+        for (const v of viewers()) {
+          const ts = v.textSel;
+          if (ts && ts.range?.kind === 'linear') selections.set(v, { start: { ...ts.range.start }, end: { ...ts.range.end }, text: ts.getText() });
+        }
+      };
 
-    try {
-      // A preview's swap stays a preview, so the library's tab keeps the front.
-      await this._setDoc(realDoc, cpN, false, false, { samePages: geometryMatches });
-      if (sel && this.scribe.textSel) {
-        const ts = this.scribe.textSel;
-        ts.range = { kind: 'linear', start: sel.start, end: sel.end };
-        ts._renderAll();
-        if (ts.getText() !== sel.text) ts.clear();
-      }
-      await seedDoc.close();
-      if (veil) {
-        const pc = this.scribe.imageCache.pageCanvases[cpN];
-        if (pc) await Promise.race([pc, new Promise((r) => { setTimeout(r, 2000); })]);
-        await new Promise((r) => { requestAnimationFrame(() => r(null)); });
-      }
-    } finally {
-      // An open that failed before its fit ran must not leak the view onto whatever attaches next.
-      this._restoreView = null;
-      veil?.remove();
+      hydrated = doc.textReady.then(async () => {
+        if (doc.hydrationState !== 'hydrated') throw new Error('The document was closed before it loaded.');
+        delete hooks.pageText;
+        hooks._loadFailed = false;
+        // Every page with built text still holds words from the seeded pages the load replaced, so all of it is cleared, not just the current page.
+        for (const v of viewers()) {
+          v.destroyText(false);
+          await v.displayPage(v.state.cp.n, false, true);
+          const sel = selections.get(v);
+          const ts = v.textSel;
+          if (sel && ts && v.doc === doc) {
+            ts.range = { kind: 'linear', start: sel.start, end: sel.end };
+            ts._renderAll();
+            if (ts.getText() !== sel.text) ts.clear();
+          }
+        }
+      });
+      hydrated.catch(() => {});
     }
-  }
 
-  /**
-   * A snapshot of the visible page canvases, absolutely positioned over the viewport.
-   * The hydration swap's clear-and-re-render then happens behind an image of exactly what was showing.
-   * @param {import('../viewer.js').ScribeViewer} [viewer]
-   * @returns {?HTMLCanvasElement}
-   */
-  _buildSwapVeil(viewer = this.scribe) {
-    const sc = viewer.scrollContainer;
-    const scRect = sc.getBoundingClientRect();
-    if (!scRect.width || !scRect.height) return null;
-    const rootRect = this.pdfViewerElem.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(scRect.width * dpr);
-    canvas.height = Math.round(scRect.height * dpr);
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.scale(dpr, dpr);
-    ctx.fillStyle = getComputedStyle(sc).backgroundColor || '#fff';
-    ctx.fillRect(0, 0, scRect.width, scRect.height);
-    for (const el of sc.querySelectorAll('canvas')) {
-      const r = el.getBoundingClientRect();
-      if (r.bottom < scRect.top || r.top > scRect.bottom || !r.width || !r.height) continue;
-      try {
-        ctx.drawImage(el, r.left - scRect.left, r.top - scRect.top, r.width, r.height);
-      } catch { /* An undrawable (zero-sized) canvas contributes nothing. */ }
-    }
-    canvas.className = 'scribe-swap-veil';
-    canvas.style.cssText = `position:absolute;left:${scRect.left - rootRect.left}px;top:${scRect.top - rootRect.top}px;`
-      + `width:${scRect.width}px;height:${scRect.height}px;z-index:20;pointer-events:none;`;
-    this.pdfViewerElem.appendChild(canvas);
-    return canvas;
+    const tab = await this._openDocAsTab(doc, seed.name || 'Document', {
+      ...fields, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress,
+    });
+    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => doc.ensureHydrated(), 0);
+    return { primed, hydrated, tab };
   }
 
   /**
@@ -2449,12 +2467,11 @@ class ScribePDFViewer {
    * @param {number} initialPage
    * @param {boolean} owns - Whether the viewer created `doc`.
    * @param {boolean | undefined} terminatePrevious - Explicit override of the outgoing-doc terminate.
-   * @param {{preview?: boolean, keepSurface?: boolean, samePages?: boolean}} [options] - `preview` marks the document as a library preview.
+   * @param {{preview?: boolean, keepSurface?: boolean}} [options] - `preview` marks the document as a document library preview.
    *   `keepSurface` leaves a lit library in front of a tab's document.
-   *   `samePages` marks a hydration swap whose document holds the pages the rail shows, in the same order, so the rail re-keys its rows instead of rebuilding.
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
    */
-  async _setDoc(doc, initialPage, owns, terminatePrevious, { keepSurface = false, samePages = false } = {}) {
+  async _setDoc(doc, initialPage, owns, terminatePrevious, { keepSurface = false } = {}) {
     const prev = this.doc;
     const displaced = prev && prev !== doc ? prev : null;
     const terminatePrev = terminatePrevious ?? this._ownsDoc;
@@ -2544,10 +2561,8 @@ class ScribePDFViewer {
     this.scribe.runSetInitial = true;
     // A restore view has already set the scroll offsets, and the page-landing scroll would overwrite them.
     const firstDisplay = this.scribe.displayPage(initialPage, initialPage > 0 && !this._restoreView);
-    // The rail mounts once the first screen's renders are staged, in the same task, so its rows are cut from those renders.
-    // Passing the page keeps the rail from mounting the top and then jumping once the display lands on the active page.
-    if (this._thumbnailPanel && samePages) this._thumbnailPanel.rebind();
-    else if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
+    // Rebuilt after the display call but before awaiting it, so the thumbnails of the pages on screen are cut from the renders it staged.
+    if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
     try {
       await firstDisplay;
     } catch (err) {
@@ -2560,12 +2575,13 @@ class ScribePDFViewer {
     this._inspectTool?.docChanged?.();
     this._exportTool?.docChanged?.();
 
-    // Deferred import painted the page raster-only, so rebuild the text-dependent surfaces once extraction lands.
-    // Text that imported synchronously has no deferred phase and skips this.
-    if (doc._textReadySettle) {
+    // Registered once per import, since a document can be attached many times before its deferred text lands.
+    if (doc._textReadySettle && !this._textLandingWatched.has(doc.textReady)) {
+      this._textLandingWatched.add(doc.textReady);
       doc.textReady.then(() => {
         if (this.doc !== doc) return;
-        this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+        // A document loaded on demand rebuilds its own text, in every viewer showing it.
+        if (!(/** @type {typeof doc & SeededDocHooks} */ (doc))._seededWired) this.scribe.displayPage(this.scribe.state.cp.n, false, true);
         // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
         this._extractTablesTool?.docChanged?.();
         this._inspectTool?.docChanged?.();
@@ -2794,7 +2810,6 @@ class ScribePDFViewer {
    *   `activate: false` adds the tab without switching to it.
    *   `fitWidth: true` fits the page to the group's width when the tab first shows in the group to the right.
    *   `openAddress` is a document address whose passage the tab opens at in the group to the right.
-   *   `onCreated` is called with the tab record once it is in the tab list, before the tab activates.
    * @returns {Promise<Object>} The created tab.
    */
   async _openDocAsTab(doc, name, extra = {}) {
@@ -2804,7 +2819,7 @@ class ScribePDFViewer {
       return this._openPortfolio(doc, name, { libraryHash, libraryRelPath, libraryOwner });
     }
     const {
-      activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, onCreated = null, ...fields
+      activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
     } = extra;
     const tab = {
       ...this._newTab(doc, name), ...fields, group: group === 1 && !this._phoneUi && this._tabStrip ? 1 : 0, preview: !!preview,
@@ -2816,7 +2831,6 @@ class ScribePDFViewer {
     const act = this._activeTab >= 0 ? this._tabs[this._activeTab] : null;
     if (prev) this._tabs.splice(this._tabs.indexOf(prev), 0, tab);
     else this._tabs.push(tab);
-    onCreated?.(tab);
     this._activeTab = act && act !== prev ? this._tabs.indexOf(act) : -1;
     if (prev) this._closeTab(this._tabs.indexOf(prev));
     if (activate) {
@@ -2878,7 +2892,7 @@ class ScribePDFViewer {
     let changed = false;
     for (const tab of this._tabs) {
       // Pool teardown would kill an in-flight text extraction, so still-extracting documents stay warm.
-      if (tab.view || warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
+      if (tab.view || warm.has(tab) || tab.waking || tab.doc._extracting) continue;
       let suspendedAny = false;
       for (const src of tab.doc.images.sources.values()) {
         if (warmSources.has(src) || !src.scheduler) continue;
@@ -3320,14 +3334,12 @@ class ScribePDFViewer {
     } else {
       await this._activateTab(this._tabs.indexOf(tab));
     }
-    // The passage needs the real document's text.
-    if (tab.doc._requestHydration) await tab.doc._requestHydration().catch(() => {});
     const { doc } = tab;
-    if (doc._textReadySettle) await doc.textReady;
+    if (!(await doc.ensureHydrated())) return;
     if (this._rightGroup !== g || toViewer.doc !== doc) return;
     const target = doc.resolveDocAddress(uri);
     const pageIndex = Math.min(target.pageIndex, doc.inputData.pageCount - 1);
-    // A view the activation placed at the passage stays put across the hydration swap, so the real document's words are marked where they are.
+    // A view the activation placed at the passage stays put while the document loads, so the loaded words are marked where they are.
     const placed = tab.placedByAddress === true;
     delete tab.placedByAddress;
     await showCitedWords(toViewer, pageIndex, target.words, { wholePage: target.state !== 'ok', scroll: !placed || target.state !== 'ok' });
@@ -3915,7 +3927,7 @@ class ScribePDFViewer {
   _modeNeedsLoadedDoc() {
     const active = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
     if (!active) return false;
-    return [this._editTextTool, this._graphicsEditTool, this._proofreadTool, this._extractTablesTool, this._inspectTool, this._compareTool, this._exportTool]
+    return [this._editTextTool, this._graphicsEditTool, this._fillSignTool, this._proofreadTool, this._extractTablesTool, this._inspectTool, this._compareTool, this._exportTool]
       .some((tool) => tool && tool.toolbarElem === active);
   }
 
@@ -3928,12 +3940,12 @@ class ScribePDFViewer {
     const pending = this._modeLoadTimers.get(viewer);
     if (pending) clearTimeout(pending);
     this._modeLoadTimers.delete(viewer);
-    if (!(doc.id < 0 && doc._requestHydration && this._modeNeedsLoadedDoc())) return;
+    if (!(doc.hydrationState !== 'hydrated' && this._modeNeedsLoadedDoc())) return;
     // Each load leases PDF workers, which the pool keeps as idle spares afterwards, so a run of clicks loads only the document the reader stops on.
     this._modeLoadTimers.set(viewer, setTimeout(() => {
       this._modeLoadTimers.delete(viewer);
       if (viewer.doc !== doc || !this._modeNeedsLoadedDoc()) return;
-      doc._requestHydration?.().catch(() => {});
+      doc.ensureHydrated();
     }, MODE_LOAD_REST_MS));
   }
 
@@ -4143,24 +4155,23 @@ class ScribePDFViewer {
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    */
   _groupDocChanged(g, doc) {
-    const tell = () => {
-      // An edit mode's selection belongs to the viewer it is installed on, whichever group the mode runs in.
-      this._editTextTool?.docChanged?.(g.viewer);
-      this._graphicsEditTool?.docChanged?.(g.viewer);
-      if (this._modeGroup !== 1) return;
+    this._syncDocGatedControls();
+    // An edit mode's selection belongs to the viewer it is installed on, whichever group the mode runs in.
+    this._editTextTool?.docChanged?.(g.viewer);
+    this._graphicsEditTool?.docChanged?.(g.viewer);
+    if (this._modeGroup === 1) {
       this._extractTablesTool?.docChanged?.();
       this._inspectTool?.docChanged?.();
       this._exportTool?.docChanged?.();
-    };
-    this._syncDocGatedControls();
-    tell();
+    }
     // Deferred text extraction can reveal comments and tables after the load.
-    if (doc._textReadySettle) {
+    if (doc._textReadySettle && !this._groupTextLandingWatched.has(doc.textReady)) {
+      this._groupTextLandingWatched.add(doc.textReady);
       doc.textReady.then(() => {
-        if (this._rightGroup !== g || g.viewer.doc !== doc) return;
-        this._syncGroupSidebarDoc(g, g.viewer.state.cp.n);
-        this._syncDocGatedControls();
-        tell();
+        const shown = this._rightGroup;
+        if (!shown || shown.viewer.doc !== doc) return;
+        this._syncGroupSidebarDoc(shown, shown.viewer.state.cp.n);
+        this._groupDocChanged(shown, doc);
       }).catch(() => {});
     }
   }
@@ -8356,8 +8367,8 @@ class ScribePDFViewer {
       fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
-    // A provisional document loads the real one when one of these tools opens, so the Edit Text and Edit Graphics gates read the real document's stores alone.
-    const provisional = !!doc && doc.id < 0 && !!doc._requestHydration;
+    // A provisional document passes the Edit Text and Edit Graphics gates, since opening either tool loads it.
+    const provisional = !!doc && doc.hydrationState !== 'hydrated';
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
     const editBtn = this._editTextTool?.toolbarElem;
     if (editBtn) {
@@ -8390,7 +8401,7 @@ class ScribePDFViewer {
     if (cmpBtn) {
       const [docA, docB] = this._compareDocs();
       // A provisional document passes, since entering the mode hydrates it and runs this gate again.
-      const hasWords = (d) => !!d && (d.id < 0 || !!d.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
+      const hasWords = (d) => !!d && (d.hydrationState !== 'hydrated' || !!d.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
       const sideShown = !!(this._sideView && this._rightGroup && this._rightGroup.active === this._sideView.tab);
       const comparable = !this._frontSurface() && !this._phoneUi && !!this._rightGroup && !sideShown && hasWords(docA) && hasWords(docB);
       if (this._compare && (this._compare.docA !== docA || this._compare.docB !== docB)) this._compareTool.close();
@@ -8415,7 +8426,7 @@ class ScribePDFViewer {
     }
     const graphicsBtn = this._graphicsEditTool?.toolbarElem;
     if (graphicsBtn) {
-      // The area cut mirrors the tool's own picker, so on a real document the button never enables where nothing can be selected.
+      // The area cap matches the tool's picker, so near-full-page graphics, which it never selects, do not enable the button.
       let pathsIneligibleSomewhere = false;
       const hasGraphics = !disabled && (provisional || !!doc?.fillShapes?.pages.some((shapes, n) => {
         const dims = doc?.pageMetrics?.[n]?.dims;

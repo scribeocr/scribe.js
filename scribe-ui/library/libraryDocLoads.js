@@ -5,9 +5,6 @@ import scribeLib from '../../scribe.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
 import { titleOf } from './libraryStore.js';
 
-/** Width of a thumbnail rail image, as the image store renders one. */
-const THUMBNAIL_W = 300;
-
 /**
  * @typedef {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} NearMatches
  *   The near matches of a clicked result row.
@@ -81,46 +78,30 @@ export function createDocLoads({ sessions, engine, getStore }) {
     .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds }))));
 
   /**
+   * Builds the seed that opens a document for on-demand loading, with what it shows before it loads.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
-   * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
+   * @returns {Promise<import('../basic-viewer/pdf-viewer.js').ProvisionalSeed>}
    */
   const makeSeed = async (relPath, entry, pageN) => {
     const { hash } = entry;
     if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
     const ref = { relPath, entry, hash };
-    const [header, pixels] = await Promise.all([sessions.header(hash), sessions.pixels(ref)]);
-    const pageCount = entry.pageDims.length;
-    /** @param {Object} a */
-    const copyAnnot = (a) => ({ ...a, bbox: { ...a.bbox } });
+    const [header, doc] = await Promise.all([sessions.header(hash), sessions.takePixels(ref)]);
+    const pageCount = doc.pageMetrics.length;
+    const edited = () => !!(/** @type {typeof doc & {_libraryEdited?: boolean}} */ (doc))._libraryEdited;
     return {
-      pageCount,
-      pageDims: entry.pageDims.map(([width, height, rotation]) => ({ width, height, rotation })),
-      initialPage: pageN,
+      doc,
+      initialPage: Math.min(pageN, pageCount - 1),
       window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
       name: titleOf(relPath),
-      pdfType: entry.pdfType ?? null,
-      raster: (n) => sessions.pageImage(hash, n),
-      render: (n, width, lane) => sessions.renderAt(ref, n, width, lane).then((bitmap) => {
-        // A page the reader viewed is stored for its next preview, cut from this render when it is wide enough.
-        if (bitmap) sessions.storeFromBitmap(ref, n, bitmap).catch(() => {});
-        return bitmap;
-      }),
-      focus: (n, keep) => sessions.focus(ref, n, keep),
-      thumbFocus: (n) => sessions.thumbFocus(ref, n),
-      workers: (n) => sessions.setWorkerTarget(ref, n),
+      raster: (n) => (edited() ? null : sessions.pageImage(hash, n)),
+      rendered: (n, bitmap) => { if (!edited()) sessions.storeFromBitmap(ref, n, bitmap).catch(() => {}); },
       ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
-      // Copies, because the seed's edits must not leak into the cached header.
-      // A page the saved header lists, even as empty, replaces the real page at the swap, so removals count.
-      // Without a sidecar the baseline is the PDF's own annotations, which is what hydration lifts too.
-      annots: (n) => (header?.annotations ? Promise.resolve((header.annotations[n] ?? []).map(copyAnnot)) : pixels.liftPdfAnnotations(n)),
-      thumb: (n, lane) => sessions.pixels(ref).then((d) => d.images.renderThumbnail(n, THUMBNAIL_W, 0.6, false, 'jpeg', lane)),
+      // A saved file's annotations are all in place at open.
+      annots: header?.annotations ? undefined : (n) => doc.liftPdfAnnotations(n),
       find: findThroughIndex(hash),
-      outline: header?.outline ?? pixels.outline ?? [],
-      // Without a sidecar the text is extracted before the open resolves, so the real document arrives with its text, as the modes that asked for it expect.
-      // One worker: the loaded document starts in the warm tier like every other.
-      load: () => openLibraryDoc(/** @type {import('./libraryStore.js').LibraryStore} */ (getStore()), relPath, entry, { pdfWorkerN: 1 }),
       hydration: 'on-demand',
     };
   };

@@ -116,6 +116,7 @@ function startNoteDrag(viewer, annot, icon, event, n) {
         undo: () => { Object.assign(annot.bbox, from); return [n]; },
         redo: () => { Object.assign(annot.bbox, to); return [n]; },
       });
+      viewer.annotationsEdited(n);
     }
   };
   window.addEventListener('pointermove', onMove);

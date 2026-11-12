@@ -114,17 +114,17 @@ function clearPageClipboard() {
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
  * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
  * @param {(width: number, phase?: 'start'|'move'|'end') => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden).
+ *   `phase` is set during a handle drag or width glide and absent otherwise.
  * @param {(scrollTop: number, viewportH: number, own: boolean) => void} [cfg.onScrolled] - Called as the rail scrolls, with its scroll offset and viewport height.
- *   `own` marks a move the rail made itself (a rebuild, a resize, following the viewer's page, a drag), which is not the reader's travel.
- * @param {(cols: number) => void} [cfg.onGridChange] - Called when the number of columns changes, so a host sees the rail become a grid.
- *   `phase` is set on handle-drag reports and absent on non-drag reports (view shown or hidden).
+ *   `own` marks a scroll the rail made itself rather than the reader's.
+ * @param {(cols: number) => void} [cfg.onGridChange] - Called when the number of columns changes.
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
  *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void,
  *   setPageEditMode: (on: boolean) => void, setTopInset: (px: number) => void, restyleRows: () => void, clearSelection: () => void,
- *   beginStructureSlide: () => (() => void), refit: () => void, rebind: () => void,
+ *   beginStructureSlide: () => (() => void), refit: () => void,
  *   getResizeBounds: () => { min: number, max: number },
  *   gridGeometry: () => { count: number, cols: number, cellW: number, pad: number, strideX: number,
  *     boxLeft: (n: number) => number, boxTop: (n: number) => number, boxH: (n: number) => number, thumbTop: (n: number) => number },
@@ -857,7 +857,15 @@ export function createThumbnailPanel(scribe, {
     if (!doc || !doc.images) return;
     entry.pending = true;
     const gen = generation;
-    doc.images.thumbnailUrl(n, lane).then((url) => {
+    doc.images.thumbnailUrl(n, lane, () => {
+      // Fires when the page's own render replaces the picture handed out, so the row asks for the new one.
+      // An earlier request still in flight is no race, because each answer is the page's picture when it arrives.
+      if (destroyed || gen !== generation) return;
+      const at = Number(entry.thumbElem.dataset.page);
+      if (mounted.get(at) !== entry) return;
+      entry.url = null;
+      requestRender(at, entry, 'preview');
+    }).then((url) => {
       if (destroyed || gen !== generation) return;
       // A reorder, delete or insert may have re-keyed the row meanwhile, so it is looked up by its element rather than by `n`.
       const now = Number(entry.thumbElem.dataset.page);
@@ -1448,28 +1456,6 @@ export function createThumbnailPanel(scribe, {
       if (n >= pageCount) unmountRow(n, entry);
       else restyleRow(entry, n);
     }
-    if (visible) updateWindow(true);
-  }
-
-  /**
-   * Re-key the mounted rows to the document that replaced the one they were built for.
-   * Every picture, the selection and the scroll position stay.
-   * The new document must hold the same pages in the same order, as after a hydration swap.
-   */
-  function rebind() {
-    // The replaced document revokes its thumbnail URLs when it closes, so each row fetches its picture from the new document.
-    generation += 1;
-    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-    measureViewport();
-    computeGeometry();
-    for (const [n, entry] of mounted) {
-      if (n >= pageCount) { unmountRow(n, entry); continue; }
-      entry.url = null;
-      entry.pending = false;
-      entry.pm = null;
-      restyleRow(entry, n);
-    }
-    railScrollTo(Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH)));
     if (visible) updateWindow(true);
   }
 
@@ -2751,7 +2737,6 @@ export function createThumbnailPanel(scribe, {
     clearSelection,
     beginStructureSlide,
     refit,
-    rebind,
     getResizeBounds,
     gridGeometry,
     dropIndicator,

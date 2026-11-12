@@ -259,16 +259,16 @@ const calcBestFonts = (fontMetrics) => {
 };
 
 /**
- * Run font optimization and validation for this document. Sets this document's default fonts to the
- * best-matching fonts, and returns `true` if sans or serif could be improved through optimization.
- *
- * This should still be run even when no character-level OCR data is present, as it is responsible for
- * picking the correct default sans/serif font. The only case where it does nothing is when there is
- * neither character-level OCR data nor images to compare against.
+ * Run font optimization and validation for this document.
+ * Sets the default sans and serif fonts to the best-matching fonts.
+ * Returns `true` if optimization improved sans or serif.
+ * Run it even without character-level OCR data, since it still picks the default fonts from the page images.
  * @param {ScribeDoc} doc
  * @param {Array<OcrPage>} ocrArr - Array of OCR pages to use for font optimization.
+ * @param {boolean} [evaluate=true] - Score the fonts against the page images.
+ *   When false, the default fonts and optimization choice already in the font state are kept.
  */
-export async function runOptimization(doc, ocrArr) {
+export async function runOptimization(doc, ocrArr, evaluate = true) {
   const docFonts = doc.fonts;
   const { images, pageMetrics } = doc;
   await loadBuiltInFontsRaw();
@@ -293,7 +293,7 @@ export async function runOptimization(doc, ocrArr) {
   }
 
   // If image data exists, select the correct font by comparing to the image.
-  if (images.inputModes.image || images.inputModes.pdf) {
+  if (evaluate && (images.inputModes.image || images.inputModes.pdf)) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(images.pageCount, 5);
 

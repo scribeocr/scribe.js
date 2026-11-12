@@ -6,21 +6,21 @@ const PX_PER_PT = 300 / 72;
 
 /**
  * Sets a form field's value by fully-qualified name.
- * The field's lifted words in the page text are regenerated so extracted text and exports stay in sync.
+ * The field's lifted words in the page text are regenerated.
+ * On a document that has not loaded, the value goes onto the widgets read so far, and the load sets it on every page once they are all in.
  * @param {import('./containers/scribeDoc.js').ScribeDoc} doc
  * @param {string} name
  * @param {string|null} value - New value; '' or null clears. For checkboxes/radios, the on-state name or 'Off'.
  * @returns {number} Number of widget rows updated.
  */
 export function setFormValue(doc, name, value) {
+  if (doc._seeded) doc._seeded.formValues.set(name, value);
   let prevSeen = false;
   let prev = null;
-  const fieldPages = [];
   for (let n = 0; n < doc.annotations.pages.length; n++) {
     for (const row of doc.annotations.pages[n] || []) {
       if (row.type !== 'field' || row.name !== name) continue;
       if (!prevSeen) { prev = row.value; prevSeen = true; }
-      if (!fieldPages.includes(n)) fieldPages.push(n);
     }
   }
   let updated = 0;
@@ -94,13 +94,15 @@ export function setFormValue(doc, name, value) {
     }
   }
   if (updated > 0) {
+    // Searched on each step, since pages loaded after the fill can also hold the field.
+    const fieldPages = () => doc.annotations.pages.flatMap((rows, n) => ((rows || []).some((row) => row.type === 'field' && row.name === name) ? [n] : []));
     // An array snapshot cannot undo this: the fill lifts words into the text layer, which only re-running the fill regenerates.
     // Re-entering here from that undo records nothing, since the timeline suspends recording while it restores an entry.
     doc.docHistory.record({
       surface: 'form',
       label: value === '' || value == null ? 'Cleared a form field' : 'Filled a form field',
-      undo: () => { setFormValue(doc, name, prev); return fieldPages; },
-      redo: () => { setFormValue(doc, name, value); return fieldPages; },
+      undo: () => { setFormValue(doc, name, prev); return fieldPages(); },
+      redo: () => { setFormValue(doc, name, value); return fieldPages(); },
     });
   }
   return updated;

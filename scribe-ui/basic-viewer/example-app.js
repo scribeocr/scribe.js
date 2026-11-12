@@ -84,8 +84,7 @@ async function handleLoadFile(file, page, readFileFn) {
 async function handleHighlights(highlights) {
   if (!pdfViewer) throw new Error('handleHighlights requires the auto-instantiated viewer.');
   const sv = pdfViewer.scribe;
-  // The lookups below need the extracted text, which a deferred import may still be producing.
-  if (sv.doc) await sv.doc.textReady;
+  if (sv.doc && !(await sv.doc.ensureHydrated())) return;
   for (const highlight of highlights) {
     const pageNum = highlight.page;
     const page = sv.doc.ocr.active[pageNum];

@@ -954,14 +954,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const paintDocument = () => {
     const next = el('div', 'scribe-am-ins-part');
     next.hidden = !!drill;
-    const placeholder = viewer.doc;
-    if (placeholder && placeholder.id < 0 && placeholder._requestHydration) {
+    if (viewer.doc && viewer.doc.hydrationState !== 'hydrated') {
       // The app's `_loadUnderMode` starts the load once the reader rests on this document.
-      next.append(el('div', 'scribe-am-note', 'Loading the document…'));
-      placeholder._hydrated?.catch(() => {
-        if (viewer.doc !== placeholder || !next.isConnected) return;
-        next.replaceChildren(el('div', 'scribe-am-note', 'Couldn’t load the document.'));
-      });
+      // A failed load rebuilds this workspace, which then shows the failure note.
+      next.append(el('div', 'scribe-am-note', viewer.doc._loadFailed ? 'Couldn’t load the document.' : 'Loading the document…'));
     } else {
       next.append(documentGroup());
     }

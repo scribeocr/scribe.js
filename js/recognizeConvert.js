@@ -1198,8 +1198,8 @@ export async function recognize(doc, options = {}) {
   const signal = options.signal;
   throwIfAborted(signal);
 
-  // The page selection below reads extraction outputs (pageStats, pdfType, ocr.pdf), which a deferred import may still be producing.
-  await doc.textReady;
+  // Page selection below reads pageStats, pdfType and ocr.pdf, which are not complete until an on-demand load and any deferred text extraction have finished.
+  if (!(await doc.ensureHydrated())) throw new Error('The document could not be loaded, so it was not recognized.');
   throwIfAborted(signal);
 
   // Decide which pages require OCR based on document contents and options specified.

@@ -1748,7 +1748,8 @@ export function createLibraryInstance(viewer, opts) {
 
   /**
    * Checkpoint-save one library tab's sidecar when it has unsaved edits.
-   * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: boolean, libraryRecognized?: boolean}} tab
+   * Resolves once no save of the tab is under way, so a caller that closes the document next never closes it under a save.
+   * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: ?Promise<void>, libraryRecognized?: boolean}} tab
    */
   const saveTabIfDirty = async (tab) => {
     // A tab another instance opened (the library's, or another portfolio's) checkpoints through that instance.
@@ -1758,29 +1759,35 @@ export function createLibraryInstance(viewer, opts) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
       if (entry && tab.libraryRelPath) loads.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */ (tab).lastPage ?? 0);
     }
-    if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
-    tab.librarySaving = true;
+    if (!tab || !tab.libraryHash || !store) return;
+    // What is edited during a save is still unsaved after it, and is saved here.
+    while (tab.librarySaving) await tab.librarySaving;
+    if (!tab.libraryDirty) return;
     tab.libraryDirty = false;
+    tab.librarySaving = (async () => {
+      try {
+        // The marks travel in the sidecar's session block, so a later ingest reads them back from the file.
+        const recognized = !!tab.libraryRecognized;
+        const now = Date.now();
+        const doc = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (tab.doc);
+        doc.sessionMarks.editedAt = now;
+        if (recognized) doc.sessionMarks.recognizedAt = now;
+        // The sidecar takes the segmented form at any size, since the provisional open reads only its first line.
+        const data = await doc.exportData('scribe', {
+          scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0, includeCharBoxesScribe: false,
+        });
+        await store.writeSidecar(tab.libraryHash, data);
+        sessions.dropHeader(tab.libraryHash);
+        tab.libraryRecognized = false;
+        await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
+      } catch {
+        tab.libraryDirty = true;
+      }
+    })();
     try {
-      // The marks travel in the sidecar's session block, so a later ingest reads them back from the file.
-      const recognized = !!tab.libraryRecognized;
-      const now = Date.now();
-      const doc = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (tab.doc);
-      doc.sessionMarks.editedAt = now;
-      if (recognized) doc.sessionMarks.recognizedAt = now;
-      // Sidecars are this application's session store, so they carry app-side state (pending text edits, native-text metadata) that a default export drops.
-      // They take the segmented form at any size, so the provisional open reads the first line alone.
-      const data = await doc.exportData('scribe', {
-        scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0, includeCharBoxesScribe: false,
-      });
-      await store.writeSidecar(tab.libraryHash, data);
-      sessions.dropHeader(tab.libraryHash);
-      tab.libraryRecognized = false;
-      await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
-    } catch {
-      tab.libraryDirty = true;
+      await tab.librarySaving;
     } finally {
-      tab.librarySaving = false;
+      tab.librarySaving = null;
     }
   };
 
@@ -5435,6 +5442,10 @@ export function createLibraryInstance(viewer, opts) {
       const orig = d[name];
       if (typeof orig !== 'function') continue;
       d[name] = function markDirtyWrap(...args) {
+        // Never cleared, because from its first edit on the document's pages no longer match the stored page rasters.
+        d._libraryEdited = true;
+        // An edit that succeeds on a seeded document, such as a bookmark, would otherwise leave the whole load to the save at the tab's close.
+        if (d.hydrationState !== 'hydrated') d.ensureHydrated();
         const owner = d._libraryDirtyTarget;
         if (owner) {
           owner.libraryDirty = true;
@@ -5492,7 +5503,8 @@ export function createLibraryInstance(viewer, opts) {
       if (!target.query || !shownViewer || !shownViewer.doc || !shownViewer.doc.pageMetrics.length) return;
       const { doc } = shownViewer;
       // Deferred-import text may still be extracting, and a find before it lands would mark nothing.
-      if (doc._textReadySettle) await doc.textReady;
+      // A document not yet hydrated finds through the index instead, which needs none of its text.
+      if (doc._textReadySettle && !(doc.hydrationState !== 'hydrated' && doc.findMatches) && !(await doc.ensureHydrated())) return;
       if (shownViewer.doc !== doc) return;
       if (!(await findText(shownViewer, target.query))) return;
       const { matchList } = shownViewer._searchState;
@@ -5577,7 +5589,14 @@ export function createLibraryInstance(viewer, opts) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await loads.makeSeed(relPath, entry, target.pageN ?? 0);
-        const handle = await viewer.openProvisional({ ...seed, hydration: 'on-demand' }, {
+        if (seed.doc.attachments.collection) {
+          // An entry indexed before ingest recorded portfolios lacks the flag, so it is backfilled here.
+          entry.portfolio = true;
+          saveManifestSoon();
+          await viewer._openPortfolio(seed.doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
+          return;
+        }
+        const handle = await viewer.openProvisional(seed, {
           activate: !target.background,
           group: target.group ?? 0,
           preview: !!target.preview,
@@ -5589,13 +5608,8 @@ export function createLibraryInstance(viewer, opts) {
           libraryRelPath: relPath,
         });
         const tab = /** @type {any} */ (handle.tab);
-        // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
-        // The loaded document keeps the index-backed find the seed had, so the find bar matches as the results list does.
-        tab.onDocHydrated = (d) => {
-          wrapMutators(d, tab);
-          /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (d)).findMatches = loads.findThroughIndex(entry.hash);
-        };
         wrapMutators(tab.doc, tab);
+        sessions.lendTab(entry.hash, tab.doc);
         handle.hydrated.catch(() => {});
         if (!target.background) {
           await handle.primed;
@@ -6732,9 +6746,7 @@ export function createLibraryInstance(viewer, opts) {
       liveDoc: async (hash) => {
         const tab = viewer._tabs.find((t) => t.libraryHash === hash && ownsTab(t));
         if (tab) {
-          // A seeded tab is still hydrating; recognition needs the real document behind it.
-          while (/** @type {any} */ (tab).provisional && viewer._tabs.includes(tab)) await new Promise((r) => { setTimeout(r, 250); });
-          if (viewer._tabs.includes(tab)) {
+          if (viewer._tabs.includes(tab) && await tab.doc.ensureHydrated() && viewer._tabs.includes(tab)) {
             return {
               doc: tab.doc,
               checkpoint: async (recognized) => {
@@ -7883,8 +7895,9 @@ export function createLibraryInstance(viewer, opts) {
       syncFoldersOpenElsewhere: () => publishFolders(),
     } : {}),
   });
-  // Only a spec drives the ingest queue through the instance.
+  // Only specs read these getters.
   Object.defineProperty(api, 'ingest', { get: () => ingest });
+  Object.defineProperty(api, 'sessions', { get: () => sessions });
   viewer._libraryInstances.push(api);
 
   // --- Boot ---------------------------------------------------------------

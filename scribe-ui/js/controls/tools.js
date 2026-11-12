@@ -1419,9 +1419,17 @@ export async function openDocumentFromFile(file, {
     });
   }
 
-  // A pure viewer never runs recognize(), so an image-based PDF's active (selectable) text layer would stay empty.
-  // When nothing else has filled it, fall back to the PDF's own parsed text, copying each page's deskew angle so the text overlay aligns.
-  // Reassign `textReady` to the chained promise so deferred waiters observe the post-fallback state.
+  fallBackToPdfText(doc);
+  if (!deferText) await doc.textReady;
+  return doc;
+}
+
+/**
+ * Make the PDF's own parsed text the document's active layer when nothing else has filled it by the time its text is in.
+ * Code that awaits `doc.textReady` after this call sees the fallback applied.
+ * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+ */
+export function fallBackToPdfText(doc) {
   doc.textReady = doc.textReady.then((res) => {
     if (doc.ocr.pdf && !doc.ocr.active.some(Boolean)) {
       doc.ocr.active = doc.ocr.pdf;
@@ -1431,8 +1439,6 @@ export async function openDocumentFromFile(file, {
     }
     return res;
   });
-  if (!deferText) await doc.textReady;
-  return doc;
 }
 
 const EDIT_TEXT_SVG = modeIcon('<path d="M2.5 4.5h12M2.5 7.5h7M2.5 10.5h4"/><path d="M12.5 7.5l2 2-5 5h-2v-2z"/>');
@@ -1510,6 +1516,8 @@ export function refreshEditedPages(scribe, pages) {
     if (!scribe.textGroupsRenderIndices.includes(n)) {
       scribe.doc?.images?.invalidatePageRender(n);
       scribe.imageCache.invalidatePage(n);
+      // Nothing re-renders this page now, so a kept canvas would show it as it was before the edit.
+      scribe.imageCache.deletePageCanvas(n);
       scribe.textSel?.invalidatePage(n);
       continue;
     }
@@ -1526,18 +1534,14 @@ export function refreshEditedPages(scribe, pages) {
 }
 
 /**
- * Load the real document behind a provisional one.
+ * Load a provisional document.
  * @param {?Object} doc
- * @returns {Promise<boolean>} Whether the document on screen is usable: the real one, or one that just loaded.
+ * @returns {Promise<boolean>} Whether the document is loaded, which is false when its load failed or it was closed first.
  */
 export const hydrateIfProvisional = async (doc) => {
-  if (!doc || doc.id >= 0 || !doc._requestHydration) return true;
-  try {
-    await doc._requestHydration();
-    return true;
-  } catch {
-    return false;
-  }
+  // A loaded document passes at once, without waiting on a deferred text import the way `ensureHydrated` does.
+  if (!doc || doc.hydrationState === 'hydrated') return true;
+  return doc.ensureHydrated();
 };
 
 /**
@@ -3638,6 +3642,8 @@ export function createFillSignTool(app) {
         app.pdfViewerElem.appendChild(palette.elem);
       }
       palette.show();
+      // The palette's offered spots come from the document's text and shapes, which a provisional document has not loaded.
+      hydrateIfProvisional(app._activeViewer().doc);
     } else if (palette) {
       palette.hide();
     }
@@ -3688,7 +3694,7 @@ export function createEditPagesTool(app) {
     // The open animation reads the panel width when it starts, so this order slides the rail in at the mode's final width.
     app._activeThumbnails()?.setPageEditMode(active);
     if (active) app._showActiveSidebar('thumbnails');
-    // A page edit waits for the real document behind a provisional one, so its load starts here, ahead of the first edit.
+    // A page edit waits for a provisional document to load, so the load starts here, ahead of the first edit.
     if (active) hydrateIfProvisional(app._activeViewer().doc);
   };
   toolbarElem.addEventListener('click', () => {
@@ -3922,8 +3928,8 @@ export function createExtractTablesTool(app) {
       v._tpSel = null;
       if (v.onLayoutTablesEdited === paneEdited) v.onLayoutTablesEdited = null;
     };
-    // A placeholder holds no tables until its real document replaces it, even after its `_textReadySettle` clears.
-    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle || (doc.id < 0 && !!doc._requestHydration);
+    // A provisional document holds no tables until it has loaded.
+    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle || doc.hydrationState !== 'hydrated';
     const onClose = () => {
       if (view !== 'beside') return;
       view = 'page';
@@ -4020,8 +4026,8 @@ export function createExtractTablesTool(app) {
     const sv = viewerOf();
     if (view === 'preview') {
       const sheet = resolveActiveSheet(sv);
-      // A still-extracting document may yet detect tables, and a placeholder's real document may hold them, so only a settled tableless one drops the preview.
-      if (!sheet && !sv.doc._textReadySettle && !(sv.doc.id < 0 && sv.doc._requestHydration)) setView('page');
+      // A document that is still extracting, or has not loaded, may yet hold tables, so only a settled tableless one drops the preview.
+      if (!sheet && !sv.doc._textReadySettle && sv.doc.hydrationState === 'hydrated') setView('page');
       else if (sheet && sheet.n !== sv.state.cp.n) sv.displayPage(sheet.n, true, true);
     }
     app._automatePanel?.openTablesWorkspace();
@@ -4340,15 +4346,14 @@ export function createProofreadTextTool(app) {
     if (active) { setActive(false); return; }
     if (toolbarElem.classList.contains('disabled')) return;
     const doc = app._activeViewer().doc;
-    // Only a provisional document, which has a negative id, waits for its real one.
     // Awaiting before the toggle would let the exclusivity click see this button inactive and leave the other mode on.
-    if (doc && doc.id < 0) {
+    if (doc && doc.hydrationState !== 'hydrated') {
       hydrateIfProvisional(doc).then(async (ok) => {
         if (!ok) return;
-        // Once its text is in, the real document decides whether there is anything to proofread.
-        // Activating on the provisional tab's answer could leave the mode on with its row disabled.
+        // Once its text is in, the loaded document decides whether there is anything to proofread.
+        // Activating on the unloaded document's answer could leave the mode on with its row disabled.
         const real = app._activeViewer().doc;
-        if (!real || real.id < 0) return;
+        if (!real || real.hydrationState !== 'hydrated') return;
         if (real.textReady) await real.textReady.catch(() => {});
         if (app._activeViewer().doc !== real) return;
         app._syncDocGatedControls?.();
@@ -4389,12 +4394,12 @@ export function createCompareVersionsTool(app) {
   toolbarElem.addEventListener('click', () => {
     if (active) { setActive(false); return; }
     if (toolbarElem.classList.contains('disabled')) return;
-    const provisional = app._compareDocs().filter((doc) => doc && doc.id < 0);
+    const provisional = app._compareDocs().filter((doc) => doc && doc.hydrationState !== 'hydrated');
     if (provisional.length) {
       Promise.all(provisional.map((doc) => hydrateIfProvisional(doc))).then(async (oks) => {
         if (oks.some((ok) => !ok)) return;
         const docs = app._compareDocs();
-        if (docs.some((doc) => !doc || doc.id < 0)) return;
+        if (docs.some((doc) => !doc || doc.hydrationState !== 'hydrated')) return;
         await Promise.all(docs.map((doc) => (doc.textReady ? doc.textReady.catch(() => {}) : null)));
         app._syncDocGatedControls?.();
         if (toolbarElem.classList.contains('disabled')) return;

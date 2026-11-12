@@ -10,6 +10,32 @@ import { ObjectCache } from './pdf/objectCache.js';
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /**
+ * Install the annotations parsed from page `i` of the PDF.
+ * @param {ScribeDoc} doc
+ * @param {number} i
+ * @param {Array<Annotation>} parsed - The page's own annotations, in document order.
+ * @param {?import('./import/import.js').SeededLoad} seeded - The on-demand load the parse serves, or null for an import.
+ */
+export function installParsedAnnotations(doc, i, parsed, seeded) {
+  const existing = doc.annotations.pages[i];
+  const baseline = seeded?.annotBaseline.get(i);
+  if (baseline !== undefined) {
+    // The page already holds a host's earlier read of its own annotations, so merging the parse in as below would duplicate them.
+    // The parse replaces that copy only while the user has not edited it.
+    if (JSON.stringify(existing) === baseline) doc.annotations.pages[i] = parsed;
+    return;
+  }
+  // The user may have added annotations while the deferred extraction was in flight, so merge rather than overwrite.
+  if (existing && existing.length) {
+    doc.annotations.pages[i] = [...parsed, ...existing];
+    // The parsed rows are not an edit, so the undo timeline's states of this page gain them too, and undoing the user's edit leaves them in place.
+    doc.docHistory.prependAnnotRows(doc.annotations, i, parsed);
+  } else {
+    doc.annotations.pages[i] = parsed;
+  }
+}
+
+/**
  * Extract and parse text from this document's loaded PDF.
  * @param {ScribeDoc} doc
  * @param {Object} [options]
@@ -20,6 +46,10 @@ import { ObjectCache } from './pdf/objectCache.js';
  *    Defaults to `scribeDocDefaults.keepPDFTextAlways`.
  * @param {boolean} [options.supplemental]
  *    Another source already owns the active text layer, so the parsed text is retained beside it rather than replacing it.
+ * @param {import('./import/import.js').SeededLoad} [options.seeded]
+ *    The on-demand load this extraction serves.
+ *    The words a host showed for single pages give way to the parse.
+ *    Nothing is written when the load has been abandoned.
  */
 export async function extractInternalPDFText(doc, options = {}) {
   if (!doc.images.pdfData) throw new Error('No PDF data loaded');
@@ -50,11 +80,34 @@ export async function extractInternalPDFText(doc, options = {}) {
   // A document closed mid-extraction tears its pool down and the pump's remaining jobs settle as skipped, so there is nothing to compute on.
   if (pageResults.some((r) => !r || typeof r !== 'object')) return null;
 
+  const { type } = determinePdfType(pageResults.map((r) => r.pageStats), pageCount);
+  const extractPDFTextNative = usePDFText.native.main || usePDFText.native.supp;
+  const extractPDFTextOCR = usePDFText.ocr.main || usePDFText.ocr.supp;
+  const keepText = keepPDFTextAlways || !((!extractPDFTextOCR && type === 'ocr') || (!extractPDFTextNative && type === 'text'));
+
+  // Awaited before any write, so the writes below run without yielding and a viewer never sees the text half-written.
+  if (keepText) {
+    const fontPromiseArr = [loadBuiltInFontsRaw()];
+    if (pageResults.some((r) => r.langSet && r.langSet.has('chi_sim'))) {
+      fontPromiseArr.push(loadChiSimFont());
+    }
+    await Promise.all(fontPromiseArr);
+  }
+
+  const seeded = options.seeded ?? null;
+  if (seeded) {
+    if (doc._seeded !== seeded || seeded.closed) return null;
+    seeded.beforeCommit?.();
+    // The words a host showed for single pages before the load give way to the parse.
+    doc.ocr.active = [];
+    doc.inputData.xmlMode.length = 0;
+    for (let i = 0; i < doc.nativeText.pages.length; i++) doc.nativeText.pages[i] = {};
+  }
+
   doc.inputData.pageStats = pageResults.map((r) => r.pageStats || null);
 
   doc.inputData.requiresOCR = computeRequiresOCR(doc.inputData.pageStats);
 
-  const { type } = determinePdfType(pageResults.map((r) => r.pageStats), pageCount);
   doc.inputData.pdfType = type;
 
   // Restored .scribe annotations may embed page-edit remaps and user deletions a fresh lift cannot reflect, so re-merging would duplicate kept entries and resurrect deleted ones.
@@ -68,23 +121,14 @@ export async function extractInternalPDFText(doc, options = {}) {
         seenFieldRefs.add(a.srcRef);
         return true;
       });
-      const existing = doc.annotations.pages[i];
-      // Merge rather than overwrite: the user may have added annotations (e.g. a highlight) while the deferred extraction was in flight.
-      // Parsed annotations come first, matching document order.
-      doc.annotations.pages[i] = existing && existing.length ? [...parsed, ...existing] : parsed;
+      installParsedAnnotations(doc, i, parsed, seeded);
     }
   }
-
-  const extractPDFTextNative = usePDFText.native.main || usePDFText.native.supp;
-  const extractPDFTextOCR = usePDFText.ocr.main || usePDFText.ocr.supp;
 
   /** @type {{ content: ?Array<OcrPage>, type: string }} */
   const res = { content: null, type };
 
-  if (!keepPDFTextAlways) {
-    if (!extractPDFTextOCR && type === 'ocr') return res;
-    if (!extractPDFTextNative && type === 'text') return res;
-  }
+  if (!keepText) return res;
 
   doc.ocr.pdf = pageResults.map((result) => result.pageObj);
 
@@ -124,12 +168,6 @@ export async function extractInternalPDFText(doc, options = {}) {
     // An accompanying OCR file may carry its own tables, which the parse must not overwrite.
     if (Object.keys(doc.layoutDataTables.pages[i]?.tables || {}).length === 0) doc.layoutDataTables.pages[i] = tablePages[i];
   }
-
-  const fontPromiseArr = [loadBuiltInFontsRaw()];
-  if (pageResults.some((r) => r.langSet && r.langSet.has('chi_sim'))) {
-    fontPromiseArr.push(loadChiSimFont());
-  }
-  await Promise.all(fontPromiseArr);
 
   // An image-based verdict can mean too little text rather than unreadable text.
   const stats = doc.inputData.pageStats || [];

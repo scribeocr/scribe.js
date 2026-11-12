@@ -214,7 +214,7 @@ export async function run(host, params, progress) {
   // A freshly-opened PDF may still be extracting text, so detecting before it settles would miss every heading.
   if (doc._textReadySettle) {
     progress(0, 'Waiting for text extraction…');
-    await doc.textReady;
+    if (!(await doc.ensureHydrated())) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
     if (host.viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
   progress(0.1, 'Detecting headings…');

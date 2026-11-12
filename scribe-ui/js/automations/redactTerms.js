@@ -218,8 +218,7 @@ export function buildRedactionsWorkspace(host, container) {
     const doc = viewer.doc;
     // A freshly-opened PDF may still be extracting text, so searching before it settles reports false misses.
     if (doc._textReadySettle) {
-      await doc.textReady;
-      if (viewer.doc !== doc) return null;
+      if (!(await doc.ensureHydrated()) || viewer.doc !== doc) return null;
     }
     /** @type {Array<Array<OcrWord>>} */
     const found = [];

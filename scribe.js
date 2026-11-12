@@ -75,7 +75,7 @@ const init = async (params) => {
  * @returns {Promise<ScribeDoc>}
  */
 const openDocument = async (files, options) => {
-  if (options && options.deferText) {
+  if (options && (options.deferText || options.seeded)) {
     // Not awaited: the render critical path needs neither the general worker pool nor the built-in fonts,
     // and the background extraction awaits the fonts it needs itself, so gating init here would only delay first paint.
     // It still starts now to be warm for later verbs.

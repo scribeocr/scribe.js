@@ -621,7 +621,7 @@ export async function runVerb(host, name, params) {
   const doc = host.viewer.doc;
   if (!doc || doc.pageMetrics.length === 0) return { isError: true, result: { error: 'No document is open.' } };
   // A freshly-opened PDF may still be extracting text, so reading or matching before it settles reports false misses.
-  if (doc._textReadySettle) await doc.textReady;
+  if (doc._textReadySettle && !(await doc.ensureHydrated())) return { isError: true, result: { error: 'The document could not be loaded.' } };
   if (host.viewer.doc !== doc) return { isError: true, result: { error: 'The document changed before the tool ran.' } };
   try {
     return await entry.run(host, params || {});

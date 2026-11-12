@@ -321,7 +321,8 @@ async function compressStringChunks(chunks, charLimit) {
 export async function exportData(doc, format = 'txt', options = {}) {
   if (format === 'text') format = 'txt';
 
-  await doc.textReady;
+  // Awaiting `textReady` alone would also resolve when a load is abandoned, exporting only the pages on hand as if they were the whole document.
+  if (!(await doc.ensureHydrated())) throw new Error('The document could not be loaded, so it was not exported.');
 
   const minPage = options.minPage ?? 0;
   let maxPage = options.maxPage ?? -1;

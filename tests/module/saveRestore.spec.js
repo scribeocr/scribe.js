@@ -3,7 +3,9 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
-import { LAYOUTS, saveRestoreSave, emptyStores } from './_scribeRoundTrip.js';
+import {
+  LAYOUTS, saveRestoreSave, emptyStores, scribeText, diffValues,
+} from './_scribeRoundTrip.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -366,6 +368,8 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
   const changed = {};
   /** @type {Record<string, any>} The first single-layout save of the filled state. */
   let filledFile;
+  /** @type {Record<string, any>} */
+  const onDemand = {};
 
   beforeAll(async () => {
     const filing = await scribe.openDocument([filingPath]);
@@ -414,9 +418,147 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
       }
     }
 
+    // A deleted and a moved page give the saved file a page order that differs from the PDF's.
+    filing.deletePages([5]);
+    filing.movePages([0], 1);
+    // The document library saves with these options.
+    // Segmenting puts the document-level blocks alone on the first line.
+    const sessionOptions = {
+      compressScribe: true, scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0,
+    };
+    const savedFile = /** @type {ArrayBuffer} */ (await filing.exportData('scribe', sessionOptions));
+    const savedText = await scribeText(savedFile);
+    let loads = 0;
+    const seeded = await scribe.openDocument({ pdfFiles: [filingPath] }, {
+      seeded: {
+        header: JSON.parse(savedText.slice(0, savedText.indexOf('\n'))),
+        load: async () => {
+          loads += 1;
+          if (loads === 1) throw new Error('unreadable');
+          return { scribeFiles: [savedFile.slice(0)] };
+        },
+      },
+    });
+    onDemand.atOpen = {
+      hydration: seeded.hydrationState,
+      sourcePages: seeded.pageMetrics.map((pm) => pm.sourcePageN),
+      rotations: seeded.pageMetrics.map((pm) => pm.rotation),
+      pagesWithWords: seeded.ocr.active.filter(Boolean).length,
+      annotations: seeded.annotations.pages.map((p) => p.length),
+      bookmarks: seeded.outline.map((node) => node.title),
+    };
+    seeded.deletePages([0]);
+    onDemand.sourcePagesAfterRefusedDelete = seeded.pageMetrics.map((pm) => pm.sourcePageN);
+    onDemand.failedExport = await seeded.exportData('scribe', sessionOptions).then(() => 'resolved', (err) => err.message);
+    onDemand.afterFailedLoad = seeded.hydrationState;
+    const resavedText = await scribeText(await seeded.exportData('scribe', sessionOptions));
+    onDemand.afterLoad = seeded.hydrationState;
+    const savedLines = savedText.split('\n').filter(Boolean);
+    const resavedLines = resavedText.split('\n').filter(Boolean);
+    onDemand.changed = [];
+    for (let i = 0; i < Math.max(savedLines.length, resavedLines.length); i++) {
+      diffValues(savedLines[i] ? JSON.parse(savedLines[i]) : undefined, resavedLines[i] ? JSON.parse(resavedLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, onDemand.changed);
+    }
+    await seeded.close();
+
+    // With no saved file, the rest of the document is the PDF's own text.
+    const plain = await scribe.openDocument({ pdfFiles: [filingPath] }, { seeded: { load: async () => ({}) } });
+    onDemand.plainAtOpen = { hydration: plain.hydrationState, pagesWithWords: plain.ocr.active.filter(Boolean).length };
+    onDemand.plainFirstLine = /** @type {string} */ (await plain.exportData('txt')).split('\n')[0];
+    onDemand.plainAfterLoad = { hydration: plain.hydrationState, pagesWithWords: plain.ocr.active.filter(Boolean).length };
+    await plain.close();
+
+    let releaseLoad = () => {};
+    const closing = await scribe.openDocument({ pdfFiles: [filingPath] }, {
+      seeded: { load: () => new Promise((resolve) => { releaseLoad = () => resolve({}); }) },
+    });
+    const closedExport = closing.exportData('txt').then(() => 'resolved', (err) => err.message);
+    await closing.close();
+    releaseLoad();
+    onDemand.closedExport = await closedExport;
+
+    // With an OCR file beside the PDF, the rest of the document is that file's text, as it is when the two open together.
+    const ocrPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`;
+    const together = await scribe.openDocument([filingPath, ocrPath]);
+    const togetherLines = (await scribeText(await together.exportData('scribe', sessionOptions))).split('\n').filter(Boolean);
+    const withOcr = await scribe.openDocument({ pdfFiles: [filingPath] }, {
+      seeded: {
+        pageDims: together.pageMetrics.map((pm) => [pm.dims.width, pm.dims.height]),
+        load: async () => ({ ocrFiles: [ocrPath] }),
+      },
+    });
+    await together.close();
+    // The undo also keeps the typed text out of the comparison with the OCR file below.
+    withOcr.addFillText(0, {
+      x: 300, y: 300, contents: 'Typed before', fontSize: 46,
+    });
+    await withOcr.ensureHydrated();
+    const typedState = () => ({
+      rows: withOcr.annotations.pages[0].filter((r) => r.type === 'freetext').map((r) => r.contents),
+      words: withOcr.ocr.active[0].lines.filter((l) => l.words.length > 0 && l.words.every((w) => /^word_\d+_txt/.test(w.id))).map((l) => l.words.map((w) => w.text).join(' ')),
+    });
+    onDemand.typedAfterLoad = typedState();
+    withOcr.undo();
+    onDemand.typedAfterUndo = typedState();
+    const withOcrLines = (await scribeText(await withOcr.exportData('scribe', sessionOptions))).split('\n').filter(Boolean);
+    /** @type {Array<string>} */
+    const ocrFileDiffs = [];
+    for (let i = 0; i < Math.max(togetherLines.length, withOcrLines.length); i++) {
+      diffValues(togetherLines[i] ? JSON.parse(togetherLines[i]) : undefined, withOcrLines[i] ? JSON.parse(withOcrLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, ocrFileDiffs);
+    }
+    // Every import draws fresh random ids for its lines, paragraphs and tables, so two imports of the same files differ in those and in nothing else.
+    const randomId = /\.(?:lines\[\d+\]\.(?:id|parId)|pars\[\d+\]\.(?:id|lineIds\[\d+\])|tables\[\d+\]\.(?:id|boxes\[\d+\]\.id))$/;
+    onDemand.ocrFileChanged = ocrFileDiffs.filter((d) => !randomId.test(d.slice(0, d.indexOf(':'))));
+    await withOcr.close();
+
     await filing.close();
     await image.close();
     await pages.close();
+  });
+
+  test('A filing opened for on-demand loading shows its saved pages before any text is read', () => {
+    expect(onDemand.atOpen, 'the saved page order, rotation, annotations and bookmarks must be in place at open, with no page of text read').toEqual({
+      hydration: 'seeded',
+      sourcePages: [1, 0, 2, 3, 4],
+      rotations: [0, 0, 0, 0, 90],
+      pagesWithWords: 0,
+      annotations: [0, 14, 0, 0, 0],
+      bookmarks: ['Added'],
+    });
+  });
+
+  test('A document that has not loaded refuses a page edit', () => {
+    expect(onDemand.sourcePagesAfterRefusedDelete, 'a page deleted before the document loaded would be lost or misplaced when its page records arrive').toEqual([1, 0, 2, 3, 4]);
+  });
+
+  test('A failed load rejects the export that asked for it, and the next ask loads the document', () => {
+    expect(onDemand.failedExport, 'an export of a document whose load failed must be rejected, never written from the pages on hand').toBe('The document could not be loaded, so it was not exported.');
+    expect(onDemand.afterFailedLoad, 'a failed load must leave the document as it opened, ready to be asked again').toBe('seeded');
+    expect(onDemand.afterLoad, 'the second ask must load the document').toBe('hydrated');
+  });
+
+  test('A filing loaded on demand saves the file it was opened from', () => {
+    expect(onDemand.changed, 'values changed between the saved file and the save made after loading it on demand').toEqual([]);
+  });
+
+  test('A PDF with no saved file loads its own text on demand', () => {
+    expect(onDemand.plainAtOpen, 'a PDF opened for on-demand loading must hold no text until asked').toEqual({ hydration: 'seeded', pagesWithWords: 0 });
+    expect(onDemand.plainFirstLine, 'an export must load the PDF\'s text first').toBe('UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
+    expect(onDemand.plainAfterLoad, 'every page of the PDF must hold its text once loaded').toEqual({ hydration: 'hydrated', pagesWithWords: 6 });
+  });
+
+  test('A PDF loaded on demand from its OCR file saves the file the two save when opened together', () => {
+    expect(onDemand.ocrFileChanged, 'values differ between a PDF opened with its OCR file and the same PDF loaded from that file on demand').toEqual([]);
+  });
+
+  test('text typed onto a page before the document loads from its OCR file stays on the page and in its text', () => {
+    expect(onDemand.typedAfterLoad, 'text typed before the load must keep its row, with its words lifted into the page the OCR file gave')
+      .toEqual({ rows: ['Typed before'], words: ['Typed before'] });
+    expect(onDemand.typedAfterUndo, 'undoing the typed text must take its row and its words off the loaded page').toEqual({ rows: [], words: [] });
+  });
+
+  test('An export waiting on a document that is closed mid-load is rejected', () => {
+    expect(onDemand.closedExport, 'an export must not be written from a document closed before its text arrived').toBe('The document could not be loaded, so it was not exported.');
   });
 
   for (const state of states) {

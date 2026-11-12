@@ -13,10 +13,22 @@ import {
   acquireWorkers, releaseWorkers, retireWorkers, setRoomMaker,
 } from '../pdfWorkerPool.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
-import { SKIPPED, laneOf } from '../../tess/TessScheduler.js';
+import { SKIPPED, laneOf, LANE_RANK } from '../../tess/TessScheduler.js';
 import { ca } from '../canvasAdapter.js';
 
 /** @typedef {import('./scribeDoc.js').ScribeDoc} ScribeDoc */
+
+/**
+ * A raster of a page that is on its way to a viewer, which the page's thumbnail can be cut from.
+ * @typedef {Object} ViewerRaster
+ * @property {?import('../../tess/TessScheduler.js').Lane} lane - The lane of the render it comes from, or null when no render stands behind it.
+ * @property {PageMetrics} pm - The page it pictures.
+ * @property {number} invalidations - How often the page's renders had been invalidated when the raster was asked for.
+ * @property {number} rendersLanded - How many renders of the page had landed when the raster was asked for.
+ * @property {boolean} wanted - Whether a thumbnail request waits for it.
+ * @property {Promise<?Blob>} thumbnail - The thumbnail cut from the raster once it lands, or null when none was.
+ * @property {(thumbnail: ?Promise<?Blob>) => void} settle - Settles `thumbnail`.
+ */
 
 // Background renders can fail when they reuse a viewer render that is then dropped (skipped).
 // The background render retries when this happens.
@@ -439,67 +451,124 @@ export class ImageStore {
   };
 
   /**
-   * Display and prefetch renders in flight, by display slot, so a thumbnail asked for the same page waits for the render and is cut from it.
-   * @type {Map<number, Promise<void>>}
+   * The raster on its way to a viewer for each display slot.
+   * A thumbnail asked for in the meantime is cut from it instead of rendering the page a second time.
+   * @type {Map<number, ViewerRaster>}
    */
-  #displayInFlight = new Map();
-
-  /** @type {Set<number>} The pages the viewer's last focus move said it will render, so a thumbnail asked for one of them waits for that render. */
-  #displayExpected = new Set();
-
-  /** @type {Map<number, Array<() => void>>} Thumbnail requests waiting for a display render of their page to be staged. */
-  #displayWaiters = new Map();
-
-  /** @type {Map<number, Promise<?Blob>>} Thumbnails cut from display renders, by display slot. */
-  #derivedThumbs = new Map();
+  #viewerRasters = new Map();
 
   /**
-   * Wait up to `ms` for a display render of page `n` to be staged.
-   * @param {number} n - Page number
-   * @param {number} ms
-   * @returns {Promise<void>}
+   * How many times each page's renders have been invalidated.
+   * Keyed by page rather than slot, since a page edit moves pages between slots.
+   * @type {WeakMap<PageMetrics, number>}
    */
-  #awaitDisplay = (n, ms) => new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      const list = this.#displayWaiters.get(n);
-      if (list) this.#displayWaiters.set(n, list.filter((f) => f !== done));
-      resolve();
-    }, ms);
-    const done = () => {
-      clearTimeout(timer);
-      resolve();
+  #invalidations = new WeakMap();
+
+  /**
+   * The number of this store's renders of each page that have landed.
+   * @type {WeakMap<PageMetrics, number>}
+   */
+  #rendersLanded = new WeakMap();
+
+  /**
+   * The thumbnails cut from a raster this store did not render, each with the promise that tells its holders it has been replaced.
+   * Such a thumbnail stands only until this store's own render of its page lands.
+   * @type {WeakMap<Promise<?Blob>, {replaced: Promise<void>, announce: () => void}>}
+   */
+  #interimThumbs = new WeakMap();
+
+  /**
+   * Record that a raster of page `n` is on its way to a viewer.
+   * @param {number} n - Page number
+   * @param {?import('../../tess/TessScheduler.js').Lane} lane - The lane of the render it comes from, or null when no render stands behind it.
+   * @returns {ViewerRaster}
+   */
+  #expectRaster = (n, lane) => {
+    const pm = this.#pageMetrics[n];
+    /** @type {(thumbnail: ?Promise<?Blob>) => void} */
+    let settle = () => {};
+    /** @type {Promise<?Blob>} */
+    const thumbnail = new Promise((resolve) => { settle = resolve; });
+    const coming = {
+      lane, pm, invalidations: this.#invalidations.get(pm) || 0, rendersLanded: this.#rendersLanded.get(pm) || 0, wanted: false, thumbnail, settle,
     };
-    const list = this.#displayWaiters.get(n) || [];
-    list.push(done);
-    this.#displayWaiters.set(n, list);
-  });
+    this.#viewerRasters.set(n, coming);
+    return coming;
+  };
 
   /**
-   * Cut page `n`'s thumbnail from a display raster at least as wide, so a page on screen never renders a second time for the rail.
-   * The raster is drawn before this returns, since the bitmap may be closed afterwards, and encoded asynchronously.
-   * @param {number} n - Page number
-   * @param {ImageBitmap} bitmap
+   * End the wait for a raster of page `n`, and cut the page's thumbnail from it when one is called for.
+   * The caller may close `raster` once this returns.
+   * @param {number} n - The slot the raster was asked for.
+   * @param {ViewerRaster} coming
+   * @param {?ImageBitmap} raster - Null when none came.
+   * @param {boolean} rendered - Whether this store rendered it.
    */
-  #thumbnailFromBitmap = (n, bitmap) => {
-    if (this.#derivedThumbs.has(n) || bitmap.width < THUMBNAIL_W || typeof OffscreenCanvas === 'undefined') return;
-    const canvas = ca.makeCanvas(THUMBNAIL_W, Math.max(1, Math.round(THUMBNAIL_W * (bitmap.height / bitmap.width))));
-    const ctx = canvas.getContext('2d');
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const p = canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 }).then((blob) => {
-      ca.closeDrawable(canvas);
-      return blob;
-    }).catch(() => {
-      ca.closeDrawable(canvas);
-      return null;
-    });
-    this.#derivedThumbs.set(n, p);
-    if (!this.thumbnails[n]) this.thumbnails[n] = p;
-    p.then((r) => {
-      if (r !== null) return;
-      if (this.#derivedThumbs.get(n) === p) this.#derivedThumbs.delete(n);
-      if (this.thumbnails[n] === p) this.thumbnails[n] = undefined;
-    });
+  #rasterLanded = (n, coming, raster, rendered) => {
+    if (this.#viewerRasters.get(n) === coming) this.#viewerRasters.delete(n);
+    /** @type {?Promise<?Blob>} */
+    let cut = null;
+    try {
+      if (rendered && raster && coming.pm) this.#rendersLanded.set(coming.pm, (this.#rendersLanded.get(coming.pm) || 0) + 1);
+      // A page edit can have moved the page since the raster was asked for, and the page's thumbnail has moved with it.
+      const slot = this.#pageMetrics.indexOf(coming.pm);
+      const held = slot >= 0 ? this.thumbnails[slot] : null;
+      const replaces = rendered && !!held && this.#interimThumbs.has(held);
+      const called = coming.wanted || held === undefined || replaces;
+      if (!raster || !called || (this.#invalidations.get(coming.pm) || 0) !== coming.invalidations) return;
+      // A thumbnail cut from a raster from elsewhere stands only until a render of its page replaces it.
+      // So none is cut for a page the document no longer holds, or once a render of the page has landed since the raster was asked for, because that render is the newer picture.
+      if (!rendered && (slot < 0 || (this.#rendersLanded.get(coming.pm) || 0) !== coming.rendersLanded)) return;
+      // This runs before the cut checks so the interim thumbnail is dropped even when this render cannot be cut into its replacement.
+      if (replaces) this.#retireThumbnail(slot);
+      if (raster.width < THUMBNAIL_W || typeof OffscreenCanvas === 'undefined') return;
+      const canvas = ca.makeCanvas(THUMBNAIL_W, Math.max(1, Math.round(THUMBNAIL_W * (raster.height / raster.width))));
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(raster, 0, 0, canvas.width, canvas.height);
+      const p = canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 }).then((blob) => {
+        ca.closeDrawable(canvas);
+        return blob;
+      }).catch(() => {
+        ca.closeDrawable(canvas);
+        return null;
+      });
+      // The page's thumbnail is this cut, or else the request that has been waiting for it.
+      const standing = held === undefined || replaces ? p : held;
+      if (standing === p) {
+        this.thumbnails[slot] = p;
+        p.then((r) => {
+          const at = r === null ? this.thumbnails.indexOf(p) : -1;
+          if (at >= 0) this.thumbnails[at] = undefined;
+        });
+      }
+      if (!rendered && standing) {
+        let announce = () => {};
+        /** @type {Promise<void>} */
+        const replaced = new Promise((resolve) => { announce = resolve; });
+        this.#interimThumbs.set(standing, { replaced, announce });
+      }
+      cut = p;
+    } finally {
+      coming.settle(cut);
+    }
+  };
+
+  /**
+   * Announce that a raster of page `n` is on its way to a viewer.
+   * A thumbnail asked for in the meantime is cut from that raster instead of rendering the page again.
+   * `renderViewerRaster` does this for its own renders.
+   * A viewer calls it for a raster it has from elsewhere, and for a render it will ask for only when the page's turn comes.
+   * @param {number} n - Page number
+   * @param {?import('../../tess/TessScheduler.js').Lane} [lane=null] - The lane of the render the raster will come from, which a thumbnail asked for in a lane served ahead of it does not wait for.
+   *   Null for a raster no render stands behind, which every thumbnail waits for.
+   * @returns {(raster?: ?ImageBitmap) => void} Ends the wait.
+   *   The viewer calls it once the raster has landed, the page's render has been asked for, or neither will happen.
+   *   A raster passed to it must be at the page's own orientation, and supplies the thumbnail only when it is at least thumbnail width.
+   */
+  expectViewerRaster = (n, lane = null) => {
+    const coming = this.#expectRaster(n, lane);
+    return (raster = null) => this.#rasterLanded(n, coming, raster, false);
   };
 
   /** @type {Map<string, Promise<?{ program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>>} */
@@ -670,20 +739,37 @@ export class ImageStore {
     this.binary[n] = undefined;
     this.nativeProps[n] = undefined;
     this.binaryProps[n] = undefined;
+    const pm = this.#pageMetrics[n];
+    if (pm) this.#invalidations.set(pm, (this.#invalidations.get(pm) || 0) + 1);
+    this.#viewerRasters.delete(n);
+    this.#retireThumbnail(n);
+  };
+
+  /**
+   * How many times page `n`'s renders have been invalidated.
+   * @param {number} n - Page number
+   * @returns {number}
+   */
+  renderInvalidations = (n) => this.#invalidations.get(this.#pageMetrics[n]) || 0;
+
+  /**
+   * Drop display slot `n`'s thumbnail.
+   * A thumbnail rail keeps showing the old picture until the next one is in, so its URL is retired instead of revoked.
+   * @param {number} n - Page number
+   */
+  #retireThumbnail = (n) => {
     const oldThumb = this.thumbnails[n];
     this.thumbnails[n] = undefined;
-    this.#derivedThumbs.delete(n);
-    if (oldThumb) {
-      // A thumbnail rail keeps showing the old picture while the page re-renders, so this URL is retired instead of revoked.
-      Promise.resolve(oldThumb).then((blob) => {
-        if (!blob) return;
-        const url = this.thumbnailUrls.get(blob);
-        if (url) {
-          this.thumbnailUrls.delete(blob);
-          (this.retiredThumbnailUrls[n] ||= []).push(url);
-        }
-      }).catch(() => {});
-    }
+    if (!oldThumb) return;
+    this.#interimThumbs.get(oldThumb)?.announce();
+    Promise.resolve(oldThumb).then((blob) => {
+      if (!blob) return;
+      const url = this.thumbnailUrls.get(blob);
+      if (url) {
+        this.thumbnailUrls.delete(blob);
+        (this.retiredThumbnailUrls[n] ||= []).push(url);
+      }
+    }).catch(() => {});
   };
 
   /** This document's own (primary) render source, or `null` before one is created. @returns {?RenderSource} */
@@ -697,8 +783,7 @@ export class ImageStore {
     if (!src) {
       src = new RenderSource(++renderSourceIdCounter);
       src.refCount = 1;
-      // A deferred extraction holds this source's scheduler for its whole run, so the pool's room-making must not take it.
-      src.isExtracting = () => !!this.#doc._textReadySettle;
+      src.isExtracting = () => this.#doc._extracting;
       this.sources.set(src.id, src);
       this.primarySourceId = src.id;
     }
@@ -753,7 +838,6 @@ export class ImageStore {
       this.#keepByViewer.set(viewer, keep);
       union = new Set();
       for (const pages of this.#keepByViewer.values()) for (const p of pages) union.add(p);
-      this.#displayExpected = union;
     }
     this.#primarySource?.scheduler?.setViewerFocus(n, union);
   };
@@ -845,35 +929,29 @@ export class ImageStore {
    */
   renderViewerRaster = async (n, targetWidth, lane = 'display') => {
     if (!this.inputModes.pdf) throw new Error('renderViewerRaster requires PDF input.');
-    const forViewer = laneOf(lane) === 'display' || laneOf(lane) === 'prefetch';
-    /** @type {() => void} */
-    let settle = () => {};
-    if (forViewer) {
-      // Registered before the first await, so the rail's request for the same page, staged in the same task, finds the render coming.
-      const settled = new Promise((resolve) => { settle = resolve; });
-      this.#displayInFlight.set(n, settled);
-      settled.then(() => { if (this.#displayInFlight.get(n) === settled) this.#displayInFlight.delete(n); });
-      const waiters = this.#displayWaiters.get(n);
-      if (waiters) {
-        this.#displayWaiters.delete(n);
-        for (const w of waiters) w();
-      }
-    }
+    const viewerLane = laneOf(lane);
+    const forViewer = viewerLane === 'display' || viewerLane === 'prefetch';
+    // Recorded before the first await, so the rail's request for the same page, staged in the same task, finds the render coming.
+    // A render that hides the line open in the editor does not picture the page as the document has it, so no thumbnail is cut from it.
+    const coming = forViewer && !this.#ephemeralRecords.has(n) ? this.#expectRaster(n, viewerLane) : null;
+    const edits = this.#editsForPage(n, forViewer);
     const color = scribeDocDefaults.colorMode === 'color';
     const pm = this.#pageMetrics[n];
     /** @type {Awaited<ReturnType<PdfScheduler['renderPdfPage']>>} */
     let result;
+    /** @type {?ImageBitmap} */
+    let bitmap = null;
     try {
       // Display slot `n` may hold a page copied from another document. Render it from its own source, not this doc's.
       const pdfScheduler = await this.resolveSource(pm).getScheduler();
       // Display slot `n` may have been reordered. Raster its source page, not its position.
       const sourcePageN = pm.sourcePageN ?? n;
       result = await pdfScheduler.renderPdfPage({
-        pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n, forViewer),
+        pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits,
       }, lane);
-      if (forViewer && result !== SKIPPED && result.bitmap) this.#thumbnailFromBitmap(n, result.bitmap);
+      if (result !== SKIPPED && result.bitmap) bitmap = result.bitmap;
     } finally {
-      settle();
+      if (coming) this.#rasterLanded(n, coming, bitmap, true);
     }
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);
@@ -1080,13 +1158,15 @@ export class ImageStore {
     if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
 
     const p = (async () => {
-      // A page whose display render is in flight, or that the viewer's focus move has named, gets its thumbnail cut from that render.
       if (!fresh) {
-        if (!this.#displayInFlight.has(n) && this.#displayExpected.has(n)) await this.#awaitDisplay(n, 250);
-        const inFlight = this.#displayInFlight.get(n);
-        if (inFlight) {
-          await inFlight;
-          const cut = this.#derivedThumbs.get(n);
+        // A raster of the page on its way to a viewer supplies the thumbnail.
+        // One in a lane served after this request's is not waited for, so a rail row on screen never waits for a page beyond the screen.
+        // A raster that lands without supplying it can have started the page's render, so the loop checks that one too.
+        for (let coming = this.#viewerRasters.get(n);
+          coming && coming.pm === this.#pageMetrics[n] && (coming.lane === null || LANE_RANK[coming.lane] <= LANE_RANK[lane]);
+          coming = this.#viewerRasters.get(n)) {
+          coming.wanted = true;
+          const cut = await coming.thumbnail;
           if (cut) return cut;
         }
       }
@@ -1130,13 +1210,21 @@ export class ImageStore {
 
   /**
    * A single object URL for page `n`'s thumbnail, created once and reused by every display surface.
+   * The URL is always of the thumbnail the page has when this resolves.
    * @param {number} n
    * @param {import('../../tess/TessScheduler.js').Lane} [lane='preview'] - preview for a row on screen, prefetch for one mounted beyond it.
+   * @param {?() => void} [onReplaced=null] - Called once when the thumbnail handed out has been replaced or dropped, if it was cut from a raster this store did not render.
+   *   The caller then asks again. It is never called before the URL is handed out.
    * @returns {Promise<?string>} The URL, or null if the page cannot be rendered.
    */
-  thumbnailUrl = async (n, lane = 'preview') => {
-    const blob = await this.renderThumbnail(n, THUMBNAIL_W, 0.6, false, 'jpeg', lane);
+  thumbnailUrl = async (n, lane = 'preview', onReplaced = null) => {
+    const pm = this.#pageMetrics[n];
+    const requested = this.renderThumbnail(n, THUMBNAIL_W, 0.6, false, 'jpeg', lane);
+    const blob = await requested;
     if (!blob) return null;
+    const slot = pm ? this.#pageMetrics.indexOf(pm) : -1;
+    if (slot >= 0 && this.thumbnails[slot] !== requested) return this.thumbnailUrl(slot, lane, onReplaced);
+    if (onReplaced) this.#interimThumbs.get(requested)?.replaced.then(onReplaced);
     // Two `<img>` elements pointing at one URL share a single decode.
     let url = this.thumbnailUrls.get(blob);
     if (!url) {
@@ -1251,10 +1339,7 @@ export class ImageStore {
     this.#type3HashCache.clear();
     this.#type3HashResolved.clear();
     this.#keepByViewer.clear();
-    this.#displayInFlight.clear();
-    this.#displayExpected = new Set();
-    this.#displayWaiters.clear();
-    this.#derivedThumbs.clear();
+    this.#viewerRasters.clear();
     if (typeof FontFace !== 'undefined') {
       // `doc.clear()` reissues the id right after this call.
       const prefix = `_edit_d${this.#doc.id}_`;

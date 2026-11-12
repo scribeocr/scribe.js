@@ -248,12 +248,6 @@ export class ScribeViewer {
     this.pageContainerArr = [];
 
     /**
-     * Per-page frozen copies of outgoing raster canvases.
-     * Each covers its page until a fresh canvas attaches.
-     * @type {?Object<number, ?HTMLCanvasElement>}
-     */
-    this._rasterGhosts = null;
-    /**
      * Per-page callers of `refreshPageRaster` waiting for the fresh raster to attach.
      * @type {?Object<number, Array<() => void>>}
      */
@@ -772,11 +766,15 @@ export class ScribeViewer {
   /** Remove every per-page DOM container (raster, text, overlay) and reset the page-group bookkeeping. */
   _clearPageDom() {
     for (const pc of this.pageContainerArr) {
-      if (pc) pc.remove();
-    }
-    if (this._rasterGhosts) {
-      for (const k of Object.keys(this._rasterGhosts)) this._removeRasterGhost(Number(k));
-      this._rasterGhosts = null;
+      if (!pc) continue;
+      // A detached canvas keeps its pixels until GC, so release them before removing the page.
+      // The image cache cannot do it later, since it finds a mounted canvas through its page.
+      const canvas = /** @type {import('./js/viewerImageCache.js').PageContainer} */ (pc)._canvas;
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      pc.remove();
     }
     if (this._rasterSwapWaiters) {
       for (const waiters of Object.values(this._rasterSwapWaiters)) for (const resolve of waiters) resolve();
@@ -1344,26 +1342,21 @@ export class ScribeViewer {
    * @returns {boolean}
    */
   _pageEditable() {
-    // A provisional document applies a page edit only after its real document has loaded.
-    // A real document ignores page edits while its deferred text import runs.
-    return !!this.doc && this.doc.id >= 0 && !this.doc._textReadySettle;
+    // A document ignores page edits until it has loaded, and while its deferred text import runs.
+    return !!this.doc && this.doc.hydrationState === 'hydrated' && !this.doc._textReadySettle;
   }
 
   /**
    * Resolve once the document can take a page edit.
-   * For a provisional document, calling it starts the real document's load.
+   * On a provisional document, calling it starts the load.
    * @returns {Promise<boolean>} False when no document is open, the load failed, or another document took the view meanwhile.
    */
   async _awaitPageEditable() {
     const doc = this.doc;
     if (!doc) return false;
-    if (doc.id < 0) {
-      const seed = /** @type {{_requestHydration?: () => Promise<unknown>}} */ (/** @type {unknown} */ (doc));
-      if (!seed._requestHydration) return false;
-      try { await seed._requestHydration(); } catch { return false; }
-    }
+    if (doc.hydrationState !== 'hydrated' && !(await doc.ensureHydrated())) return false;
     const real = this.doc;
-    if (!real || real.id < 0) return false;
+    if (!real || real.hydrationState !== 'hydrated') return false;
     if (real.textReady) await real.textReady.catch(() => {});
     return this.doc === real;
   }
@@ -2728,35 +2721,17 @@ export class ScribeViewer {
   }
 
   /**
-   * Re-render page `n`'s raster after a content change, e.g. a native-text edit.
+   * Re-render page `n`'s raster after a content change.
+   * The page's current canvas stays on screen until the fresh one replaces it.
    * @param {number} n
-   * @returns {Promise<void>} Settles once the fresh raster is attached (at once when no render was started).
+   * @returns {Promise<void>} Settles once the fresh raster is attached (at once when no render was started), or once the page's canvas is taken down.
+   *   A dropped or failed render leaves it pending until the page's next render.
    */
   refreshPageRaster(n) {
-    const pc = this.pageContainerArr[n];
-    const old = pc ? /** @type {?HTMLCanvasElement} */ (/** @type {any} */ (pc)._canvas) : null;
-    if (old && old.width > 0 && old.style.display !== 'none') {
-      if (!this._rasterGhosts) this._rasterGhosts = /** @type {Object<number, ?HTMLCanvasElement>} */ ({});
-      this._removeRasterGhost(n);
-      const ghost = document.createElement('canvas');
-      ghost.width = old.width;
-      ghost.height = old.height;
-      ghost.getContext('2d')?.drawImage(old, 0, 0);
-      // The copied class keeps the ghost subject to the image-layer hide rule.
-      ghost.className = old.className;
-      ghost.style.cssText = old.style.cssText;
-      pc.appendChild(ghost);
-      this._rasterGhosts[n] = ghost;
-    }
     this.doc?.images?.invalidatePageRender(n);
     this.imageCache.invalidatePage(n);
     this.imageCache.addPageCanvas(n);
-    // The ghost comes off when a fresh canvas attaches (`addPageCanvas`), not when a render promise settles.
-    // A superseded or failed render settles without attaching pixels, so removing the ghost on that settlement would blank the page until the surviving render lands.
-    if (!this.imageCache.pageCanvases[n]) {
-      this._removeRasterGhost(n);
-      return Promise.resolve();
-    }
+    if (!this.imageCache.pageCanvases[n]) return Promise.resolve();
     return new Promise((resolve) => {
       if (!this._rasterSwapWaiters) this._rasterSwapWaiters = {};
       (this._rasterSwapWaiters[n] ||= []).push(resolve);
@@ -2764,30 +2739,14 @@ export class ScribeViewer {
   }
 
   /**
-   * Drop page `n`'s swap ghost and release the `refreshPageRaster` callers waiting on it.
-   * Called once fresh pixels for the page are on screen.
+   * Release the `refreshPageRaster` callers waiting on page `n`.
    * @param {number} n
    */
-  _rasterAttached(n) {
-    this._removeRasterGhost(n);
+  _releaseRasterWaiters(n) {
     const waiters = this._rasterSwapWaiters?.[n];
     if (!waiters) return;
     delete /** @type {Object<number, Array<() => void>>} */ (this._rasterSwapWaiters)[n];
     for (const resolve of waiters) resolve();
-  }
-
-  /**
-   * Drop page `n`'s frozen swap ghost.
-   * @param {number} n
-   */
-  _removeRasterGhost(n) {
-    const ghost = this._rasterGhosts?.[n];
-    if (!ghost) return;
-    /** @type {Object<number, ?HTMLCanvasElement>} */ (this._rasterGhosts)[n] = null;
-    ghost.remove();
-    // Zeroing the dimensions frees the backing store now rather than at GC.
-    ghost.width = 0;
-    ghost.height = 0;
   }
 
   /**
@@ -2864,6 +2823,10 @@ export class ScribeViewer {
     // The awaits below yield, so a document swapped or shrunk meanwhile must not receive renders for pages it no longer has.
     const windowArr = [n, ...this.windowPages(n).filter((p) => p !== n)];
     const inDoc = (p) => p < this.doc.pageMetrics.length && (p === n || p < this.doc.ocr.active.length);
+
+    // A document that has not loaded holds a page's words only once they are asked for, and its host draws them when they arrive.
+    const unloaded = /** @type {{pageText?: (p: number) => Promise<void>}} */ (/** @type {unknown} */ (this.doc));
+    if (unloaded.pageText) for (const p of windowArr) if (inDoc(p)) unloaded.pageText(p);
 
     if (!deferText) {
       for (const p of windowArr) {
@@ -4223,7 +4186,7 @@ export class ScribeViewer {
    * @param {number} pageN
    */
   annotationsEdited(pageN) {
-    if (this.doc && this.doc.id < 0) this.doc._requestHydration?.();
+    if (this.doc && this.doc.hydrationState !== 'hydrated') this.doc.ensureHydrated();
     this.onAnnotationsEdited?.(pageN);
   }
 

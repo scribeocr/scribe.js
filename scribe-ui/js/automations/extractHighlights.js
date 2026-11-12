@@ -33,7 +33,7 @@ export async function run(host, params, progress) {
   const doc = viewer.doc;
   if (doc._textReadySettle) {
     progress(0, 'Waiting for text extraction…');
-    await doc.textReady;
+    if (!(await doc.ensureHydrated())) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
     if (viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
   const pageCount = doc.pageMetrics.length;

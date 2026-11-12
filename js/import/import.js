@@ -1,9 +1,11 @@
 import { opt } from '../containers/app.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
-import { markFillTextRefs } from '../fillSign.js';
+import { markFillTextRefs, syncFillText } from '../fillSign.js';
+import { setFormValue } from '../formFields.js';
 import {
   loadBuiltInFontsRaw,
 } from '../fontContainerMain.js';
+import { runOptimization } from '../fontEval.js';
 import { calcCharMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
@@ -20,7 +22,7 @@ import {
   readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
 } from '../utils/miscUtils.js';
 import { countOcrPages, importOCRFiles } from './importOCR.js';
-import { extractInternalPDFText } from '../extractPDFText.js';
+import { extractInternalPDFText, installParsedAnnotations } from '../extractPDFText.js';
 
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -159,12 +161,11 @@ export const importImageFilesP = async (files) => {
 };
 
 /**
- * Read a .scribe file and restore session data into this document.
- * @param {ScribeDoc} doc
+ * Read a .scribe file into the object its stores are restored from, without touching any document.
  * @param {string | File | FileNode | ArrayBuffer} scribeFile
- * @returns {Promise<{rotations: ?Array<number>, sourceIndices: ?Array<?number>, outline: ?Array<import('../objects/outlineObjects.js').OutlineNode>}>}
+ * @returns {Promise<{file: ScribeSaveData, segmentedNormalized: boolean}>} `segmentedNormalized` is set when the pages were normalized as they were read.
  */
-async function restoreSessionFromFile(doc, scribeFile) {
+async function readScribeFile(scribeFile) {
   /** @type {?Uint8Array} */
   let scribeBytes = null;
   if (scribeFile instanceof ArrayBuffer) scribeBytes = new Uint8Array(scribeFile);
@@ -303,25 +304,40 @@ async function restoreSessionFromFile(doc, scribeFile) {
       segmentedNormalized = true;
     }
   }
-  if (scribeRestoreObj.fontState) {
+  return { file: scribeRestoreObj, segmentedNormalized };
+}
+
+/**
+ * Restore the session data read from a .scribe file into this document.
+ * @param {ScribeDoc} doc
+ * @param {Awaited<ReturnType<typeof readScribeFile>>} read
+ * @param {'whole'|'docBlocks'|'pageRecords'} [part='whole'] - Which of the file's stores to restore.
+ *   'docBlocks' restores the document-level stores, which the document can be shown and annotated with before its text loads.
+ *   'pageRecords' restores the per-page records.
+ * @returns {Promise<{rotations: ?Array<number>, sourceIndices: ?Array<?number>, outline: ?Array<import('../objects/outlineObjects.js').OutlineNode>}>}
+ */
+async function restoreSession(doc, { file: scribeRestoreObj, segmentedNormalized }, part = 'whole') {
+  const docBlocks = part !== 'pageRecords';
+  const pageRecords = part !== 'docBlocks';
+  if (part === 'whole' && scribeRestoreObj.fontState) {
     objectAssignDefined(doc.fonts.state, scribeRestoreObj.fontState);
     await doc.runOptimization(doc.ocr.active).catch((err) => {
       if (err?.name === 'WorkerTerminatedError') throw err;
       doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
     });
   }
-  if (scribeRestoreObj.layoutRegions) {
+  if (pageRecords && scribeRestoreObj.layoutRegions) {
     doc.layoutRegions.pages = addCircularRefsRegions(scribeRestoreObj.layoutRegions);
   }
-  if (scribeRestoreObj.layoutDataTables) {
+  if (pageRecords && scribeRestoreObj.layoutDataTables) {
     addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
     doc.layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
   }
-  if (scribeRestoreObj.annotations) {
+  if (docBlocks && scribeRestoreObj.annotations) {
     doc.annotations.pages = scribeRestoreObj.annotations;
     doc.annotations.restored = true;
   }
-  if (scribeRestoreObj.session) {
+  if (docBlocks && scribeRestoreObj.session) {
     if (scribeRestoreObj.session.contentEdits) doc.contentEdits.pages = scribeRestoreObj.session.contentEdits;
     if (scribeRestoreObj.session.editedAt != null) doc.sessionMarks.editedAt = scribeRestoreObj.session.editedAt;
     if (scribeRestoreObj.session.recognizedAt != null) doc.sessionMarks.recognizedAt = scribeRestoreObj.session.recognizedAt;
@@ -331,15 +347,17 @@ async function restoreSessionFromFile(doc, scribeFile) {
       doc.tableExport.names = { ...(scribeRestoreObj.session.tableExport.names || {}) };
     }
     if (Array.isArray(scribeRestoreObj.session.assistantChats)) doc.assistantChats.chats = scribeRestoreObj.session.assistantChats;
-    if (Array.isArray(scribeRestoreObj.session.type3GlyphMappings)) {
-      for (const [hash, text] of scribeRestoreObj.session.type3GlyphMappings) doc.type3GlyphMappings.set(hash, text);
-    }
     if (Array.isArray(scribeRestoreObj.session.redactions?.terms)) {
       doc.redactions = {
         terms: scribeRestoreObj.session.redactions.terms,
         matchCase: !!scribeRestoreObj.session.redactions.matchCase,
         scannedAt: scribeRestoreObj.session.redactions.scannedAt ?? null,
       };
+    }
+  }
+  if (pageRecords && scribeRestoreObj.session) {
+    if (Array.isArray(scribeRestoreObj.session.type3GlyphMappings)) {
+      for (const [hash, text] of scribeRestoreObj.session.type3GlyphMappings) doc.type3GlyphMappings.set(hash, text);
     }
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
@@ -382,7 +400,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
 
   // `.inputData` added to .scribe in June 2026, do not assume this field exists for re-imports.
   // This line also skips when `inputData` has already been calculated for the active session, which is presumed more accurate.
-  if (scribeRestoreObj.inputData) {
+  if (docBlocks && scribeRestoreObj.inputData) {
     if (doc.inputData.pdfType == null && scribeRestoreObj.inputData.pdfType) {
       doc.inputData.pdfType = scribeRestoreObj.inputData.pdfType;
     }
@@ -396,29 +414,46 @@ async function restoreSessionFromFile(doc, scribeFile) {
     }
   }
 
-  const oemName = 'User Upload';
-  if (!doc.ocr[oemName]) doc.ocr[oemName] = Array(doc.inputData.pageCount);
-  if (!segmentedNormalized) {
-    updateOcrFormat(scribeRestoreObj.ocr);
-    addCircularRefsOcr(scribeRestoreObj.ocr);
-  }
-  doc.ocr[oemName] = scribeRestoreObj.ocr;
-  doc.ocr.active = doc.ocr[oemName];
-
   const savedRotations = scribeRestoreObj.pageRotations ?? null;
   const savedSourceIndices = scribeRestoreObj.session?.pageSourceIndices ?? null;
-  for (let i = 0; i < doc.ocr[oemName].length; i++) {
-    if (!doc.ocr[oemName][i]) {
-      doc.ocr[oemName][i] = new OcrPage(i, { height: 1920, width: 1080 });
+  if (pageRecords) {
+    const oemName = 'User Upload';
+    if (!doc.ocr[oemName]) doc.ocr[oemName] = Array(doc.inputData.pageCount);
+    if (!segmentedNormalized) {
+      updateOcrFormat(scribeRestoreObj.ocr);
+      addCircularRefsOcr(scribeRestoreObj.ocr);
     }
-    doc.inputData.xmlMode[i] = true;
-    doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
-    doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
-    doc.pageMetrics[i].rotation = savedRotations?.[i] || 0;
-    doc.pageMetrics[i].sourcePageN = savedSourceIndices?.[i] ?? null;
+    doc.ocr[oemName] = scribeRestoreObj.ocr;
+    doc.ocr.active = doc.ocr[oemName];
+
+    for (let i = 0; i < doc.ocr[oemName].length; i++) {
+      if (!doc.ocr[oemName][i]) {
+        doc.ocr[oemName][i] = new OcrPage(i, { height: 1920, width: 1080 });
+      }
+      doc.inputData.xmlMode[i] = true;
+      if (part === 'whole') {
+        doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
+        doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
+        doc.pageMetrics[i].rotation = savedRotations?.[i] || 0;
+        doc.pageMetrics[i].sourcePageN = savedSourceIndices?.[i] ?? null;
+      } else if (doc.pageMetrics[i]) {
+        // The pages were arranged when the document opened, so the deskew angle is all the page records add.
+        doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
+      }
+    }
+    // A saved line with no number holds null, so only a file from before these fields has `lineNum` undefined.
+    if (doc.ocr[oemName].some((page) => page && page.lines.some((line) => line.lineNum === undefined))) assignPageLineNums(doc.ocr[oemName]);
+
+    if (part === 'pageRecords' && scribeRestoreObj.fontState) {
+      objectAssignDefined(doc.fonts.state, scribeRestoreObj.fontState);
+      // The PDF is already open, so evaluating would re-score the fonts against the pages and overwrite the saved default fonts.
+      // A whole restore runs before the PDF opens, so it never scores them either.
+      await runOptimization(doc, [], false).catch((err) => {
+        if (err?.name === 'WorkerTerminatedError') throw err;
+        doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+      });
+    }
   }
-  // The page:line fields load as saved; a file from before they existed gets the pass run once on the restored layer.
-  if (doc.ocr[oemName].some((page) => page && page.lines.some((line) => line.lineNum === undefined))) assignPageLineNums(doc.ocr[oemName]);
 
   // The caller applies `outline` after the PDF loads, since openMainPDF's parse of the source /Outlines would otherwise clobber it.
   // A returned `null` (key absent) means a pre-outline .scribe, so the PDF's own bookmarks win; `[]` means the session deliberately had none.
@@ -458,6 +493,10 @@ async function restoreSessionFromFile(doc, scribeFile) {
  *   PDF inputs only.
  * @param {Promise<unknown>} [options.textStart] - With `deferText`, extraction begins once this promise settles, so a host can let its first screen render first.
  *   Extraction begins at once when absent.
+ * @param {SeededOpen} [options.seeded] - Open the PDF for on-demand loading.
+ *   Its pages are open and arranged when this resolves, and its text and saved work load when `doc.ensureHydrated()` is first called.
+ *   The input is one PDF alone.
+ *   For this application's own use, and not part of the documented API.
  */
 export async function importFiles(doc, files, options = {}) {
   const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
@@ -470,7 +509,8 @@ export async function importFiles(doc, files, options = {}) {
 
   // Wait for any in-flight extraction before clearing, so its workers don't write stale pages into the new document.
   // A held-back extraction has nothing in flight and would never settle on its own, so it is settled here.
-  if (doc._textStartPending) doc._textReadySettle?.();
+  // So is a document opened for on-demand loading, whose load the clear below abandons.
+  if (doc._textStartPending || doc._seeded) doc._textReadySettle?.();
   await doc.textReady;
 
   await doc.clear();
@@ -569,8 +609,15 @@ export async function importFiles(doc, files, options = {}) {
   let restoredSourceIndices = null;
   /** @type {Array<import('../objects/outlineObjects.js').OutlineNode>|null} */
   let restoredOutline = null;
-  if (scribeFiles[0]) {
-    const restoreRes = await restoreSessionFromFile(doc, scribeFiles[0]);
+  const seeded = options.seeded ?? null;
+  if (seeded && (pdfFiles.length !== 1 || imageFiles.length > 0 || ocrFiles.length > 0 || scribeFiles.length > 0)) {
+    throw new Error('A document opens for on-demand loading from its PDF alone. The files the rest of it loads from come through `seeded.load`.');
+  }
+  if (scribeFiles[0] || seeded?.header) {
+    // The header is cloned because the host may hold it for other opens, and the restore hands its arrays to the document.
+    const restoreRes = seeded
+      ? await restoreSession(doc, { file: structuredClone(seeded.header), segmentedNormalized: true }, 'docBlocks')
+      : await restoreSession(doc, await readScribeFile(scribeFiles[0]));
     restoredRotations = restoreRes.rotations;
     restoredSourceIndices = restoreRes.sourceIndices;
     restoredOutline = restoreRes.outline;
@@ -845,7 +892,7 @@ export async function importFiles(doc, files, options = {}) {
 
   // Re-apply page angles from .scribe data after PDF/image loading overwrites pageMetrics.
   // The PDF/image loading creates new PageMetrics with correct dimensions but angle=null.
-  if (scribeFiles[0] && doc.ocr.active) {
+  if ((scribeFiles[0] || seeded?.header) && doc.ocr.active) {
     // The source load builds its per-page arrays in source order, so a session whose pages were deleted or moved is put back in its own order.
     if (restoredSourceIndices?.some((s) => s != null)) {
       const order = restoredSourceIndices.map((s, i) => s ?? i);
@@ -883,6 +930,32 @@ export async function importFiles(doc, files, options = {}) {
       doc.outline.length = 0;
       for (const n of reassignOutlineIds(restoredOutline)) doc.outline.push(n);
     }
+  }
+
+  if (seeded) {
+    // An OCR file gives its pages a size of their own, which the PDF alone cannot supply before the file is read.
+    if (seeded.pageDims?.length === doc.pageMetrics.length) {
+      seeded.pageDims.forEach(([width, height], i) => { doc.pageMetrics[i].dims = { width, height }; });
+    }
+    // One slot per page, so a host can show a single page's words before the document loads.
+    doc.ocr.active = new Array(doc.inputData.pageCount);
+    doc.textReady = new Promise((resolve) => {
+      doc._textReadySettle = () => resolve(null);
+      doc._seeded = {
+        load: seeded.load,
+        onError: seeded.onError ?? null,
+        hasHeader: !!seeded.header,
+        importOptions: { usePDFText, keepPDFTextAlways },
+        resolve,
+        run: null,
+        closed: false,
+        beforeCommit: null,
+        annotBaseline: new Map(),
+        fillText: new Map(),
+        formValues: new Map(),
+      };
+    });
+    return;
   }
 
   if (xmlModeImport) {
@@ -955,6 +1028,153 @@ export async function importFiles(doc, files, options = {}) {
       await extractInternalPDFText(doc, extractOptions);
     }
   }
+}
+
+/**
+ * How a document opened for on-demand loading gets the rest of itself.
+ * @typedef {Object} SeededOpen
+ * @property {() => Promise<?{scribeFiles?: Array<File|FileNode|ArrayBuffer>, ocrFiles?: Array<File|FileNode>}>} load - Read the file the rest of the document loads from.
+ *   It is the document's saved `.scribe` file, or the OCR file that goes with the PDF.
+ *   Resolving with neither loads the PDF's own text.
+ *   Called when `doc.ensureHydrated()` first runs, and again after a load that failed.
+ * @property {Object} [header] - The document-level blocks of the saved `.scribe` file, which are the first line of its segmented form.
+ *   The saved page order, rotations, bookmarks, annotations and content edits are in place when the open resolves.
+ *   A document opened with a header loads from that saved file, and one opened without loads from its PDF.
+ * @property {Array<[number, number]>} [pageDims] - Each page's width and height as last recorded for the document, for one whose pages take their size from an OCR file.
+ * @property {(err: unknown) => void} [onError] - Called when a load fails.
+ *   Without it the failure goes to the document's error handler.
+ */
+
+/**
+ * The on-demand load of a document that has not loaded yet.
+ * @typedef {Object} SeededLoad
+ * @property {SeededOpen['load']} load
+ * @property {?(err: unknown) => void} onError
+ * @property {boolean} hasHeader - Whether the document was arranged from a saved file's header at open.
+ * @property {{usePDFText: typeof scribeDocDefaults.usePDFText, keepPDFTextAlways: boolean}} importOptions
+ * @property {(res: any) => void} resolve - Settles the document's `textReady`.
+ * @property {?Promise<boolean>} run - The load in flight, null while nothing has asked for the rest of the document.
+ * @property {boolean} closed - Set when the document is closed or cleared, which ends a load in flight without writing anything.
+ * @property {?() => void} beforeCommit - Called just before the loaded stores are written, in the same task.
+ * @property {Map<number, string>} annotBaseline - The pages whose own annotations a host has already read from the PDF, each with those rows as JSON.
+ * @property {Map<AnnotationFreeText, {n: number, swept: Array<bbox>}>} fillText - The typed fill text whose words were lifted before the document loaded.
+ *   Each entry holds its page and the areas its words were lifted into.
+ * @property {Map<string, ?string>} formValues - The form fields set before the document loaded, each with the value it holds.
+ */
+
+/**
+ * Load the rest of a document opened for on-demand loading.
+ * Nothing is written to the document until all of it has been read, so a load that fails or is abandoned leaves the document as it opened.
+ * @param {ScribeDoc} doc
+ * @param {SeededLoad} seeded
+ * @returns {Promise<boolean>} False when the document was closed or cleared before the load finished.
+ */
+export async function hydrateSeeded(doc, seeded) {
+  const files = (await seeded.load()) ?? {};
+  const scribeFile = files.scribeFiles?.[0] ?? null;
+  // The pages were arranged at open from this same source, and text from the other source would not match that arrangement.
+  if (!!scribeFile !== seeded.hasHeader) {
+    throw new Error(scribeFile ? 'A saved file appeared after this document was opened without one.' : 'The saved file this document was opened from is gone.');
+  }
+  /** @type {Awaited<ReturnType<typeof extractInternalPDFText>>} */
+  let res = null;
+  if (scribeFile) {
+    const read = await readScribeFile(scribeFile);
+    if (doc._seeded !== seeded || seeded.closed) return false;
+    const savedOrder = read.file.session?.pageSourceIndices ?? null;
+    if (read.file.ocr.length !== doc.pageMetrics.length || doc.pageMetrics.some((pm, i) => (pm.sourcePageN ?? i) !== (savedOrder?.[i] ?? i))) {
+      throw new Error('The saved file no longer holds the pages this document was opened with.');
+    }
+    seeded.beforeCommit?.();
+    // The words a host showed for single pages give way to the saved pages, in the same step that restores them.
+    doc.inputData.xmlMode.length = 0;
+    for (let i = 0; i < doc.nativeText.pages.length; i++) doc.nativeText.pages[i] = {};
+    await restoreSession(doc, read, 'pageRecords');
+  } else {
+    const { usePDFText, keepPDFTextAlways } = seeded.importOptions;
+    /** @type {?ScribeDoc} */
+    let scratch = null;
+    if (files.ocrFiles?.length) {
+      // An OCR file can be rejected after some of its pages have converted, so it is imported into a second document and moved across only once complete.
+      const pdfData = /** @type {ArrayBuffer|Uint8Array} */ (doc.images.pdfData);
+      scratch = new (/** @type {typeof import('../containers/scribeDoc.js').ScribeDoc} */ (doc.constructor))();
+      try {
+        await importFiles(scratch, { pdfFiles: [pdfData instanceof ArrayBuffer ? pdfData : pdfData.slice().buffer], ocrFiles: files.ocrFiles }, { usePDFText, keepPDFTextAlways, pdfWorkerN: 1 });
+      } catch {
+        // An OCR file that fails to import is left out, and the document loads with the PDF's own text.
+        await scratch.close().catch(() => {});
+        scratch = null;
+      }
+    }
+    if (scratch) {
+      try {
+        if (doc._seeded !== seeded || seeded.closed) return false;
+        if (scratch.pageMetrics.length !== doc.pageMetrics.length) throw new Error('The OCR file no longer matches the pages this document was opened with.');
+        seeded.beforeCommit?.();
+        for (const key of Object.keys(doc.ocr)) delete doc.ocr[key];
+        Object.assign(doc.ocr, scratch.ocr);
+        for (const key of Object.keys(doc.ocrRaw)) delete doc.ocrRaw[key];
+        Object.assign(doc.ocrRaw, scratch.ocrRaw);
+        doc.inputData.xmlMode = scratch.inputData.xmlMode;
+        doc.inputData.pageStats = scratch.inputData.pageStats;
+        doc.inputData.pdfType = scratch.inputData.pdfType;
+        doc.inputData.requiresOCR = scratch.inputData.requiresOCR;
+        doc.inputData.ocrApplied = scratch.inputData.ocrApplied;
+        doc.inputData.ocrPageMatch = scratch.inputData.ocrPageMatch;
+        // The pages keep the order and rotation they opened with, and take the size and deskew angle the OCR file gives them.
+        scratch.pageMetrics.forEach((pm, i) => {
+          doc.pageMetrics[i].dims = pm.dims;
+          doc.pageMetrics[i].angle = pm.angle;
+        });
+        doc.nativeText.pages = scratch.nativeText.pages;
+        doc.fillShapes.pages = scratch.fillShapes.pages;
+        doc.layoutRegions.pages = scratch.layoutRegions.pages;
+        doc.layoutDataTables.pages = scratch.layoutDataTables.pages;
+        doc.hocrSource.head = scratch.hocrSource.head;
+        doc.hocrSource.pages = scratch.hocrSource.pages;
+        doc.convertPageWarn = scratch.convertPageWarn;
+        doc.tableLinkSuggestions = scratch.tableLinkSuggestions;
+        for (let i = 0; i < scratch.annotations.pages.length; i++) installParsedAnnotations(doc, i, scratch.annotations.pages[i] || [], seeded);
+        // Copied, because closing the second document empties the state it holds.
+        objectAssignDefined(doc.fonts.state, structuredClone(scratch.fonts.state));
+      } finally {
+        await scratch.close().catch(() => {});
+      }
+      // The second document scored the fonts against the pages, so only the fonts themselves are rebuilt here, under this document's name.
+      await runOptimization(doc, [], false).catch((err) => {
+        if (err?.name === 'WorkerTerminatedError') throw err;
+        doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
+      });
+    } else {
+      res = await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways, seeded });
+    }
+    if (!scratch && res === null) {
+      if (doc._seeded !== seeded || seeded.closed) return false;
+      throw new Error('The PDF\'s text could not be read.');
+    }
+  }
+  if (doc._seeded !== seeded || seeded.closed) return false;
+  doc._seeded = null;
+  doc._textReadySettle = null;
+  // A loaded page can still hold a row's words as they were saved, so every area the row was lifted into is swept again.
+  for (const [row, { n, swept }] of seeded.fillText) {
+    const placed = (doc.annotations.pages[n] || []).includes(row);
+    const contents = row.contents;
+    if (!placed) row.contents = '';
+    for (const bbox of swept) syncFillText(doc, n, row, bbox);
+    row.contents = contents;
+  }
+  // A form value set before the load finished reached only the widgets read by then, so each is set again now that every page is in.
+  // Its undo step was recorded when it was first set, so this pass records none.
+  const recording = doc.docHistory.suspended;
+  doc.docHistory.suspended = true;
+  try {
+    for (const [name, value] of seeded.formValues) setFormValue(doc, name, value);
+  } finally {
+    doc.docHistory.suspended = recording;
+  }
+  seeded.resolve(res);
+  return true;
 }
 
 /**

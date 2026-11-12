@@ -38,7 +38,7 @@ import {
   evalOCRPage as evalOCRPageImpl,
   insertParsedPage as insertParsedPageImpl,
 } from '../recognizeConvert.js';
-import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
+import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl, hydrateSeeded as hydrateSeededImpl } from '../import/import.js';
 import {
   remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant, reassignOutlineIds,
 } from '../objects/outlineObjects.js';
@@ -446,6 +446,18 @@ class PageHistory {
 }
 
 /**
+ * One step of the document's undo timeline.
+ * @typedef {Object} DocHistoryEntry
+ * @property {string} surface
+ * @property {string} label
+ * @property {() => any} undo
+ * @property {() => any} redo
+ * @property {Array<DocHistoryEntry>} [children] - The steps a group folds into one.
+ * @property {{annotations: {pages: Array<Array<object>>}, list: Array<number>, before: Array<Array<object>>, after: Array<Array<object>>}} [annotStates]
+ *   The two states an annotation step moves between, one pair per page of `list`.
+ */
+
+/**
  * The document's single undo/redo timeline, ordered across every editing surface.
  * Each surface keeps its own restore logic and registers one entry here per user action.
  */
@@ -453,13 +465,13 @@ export class DocHistory {
   static LIMIT = 100;
 
   constructor() {
-    /** @type {Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    /** @type {Array<DocHistoryEntry>} */
     this.undoStack = [];
-    /** @type {Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    /** @type {Array<DocHistoryEntry>} */
     this.redoStack = [];
     // Undo handlers re-enter the same mutation functions that record entries, so recording is suspended while one is restoring.
     this.suspended = false;
-    /** @type {?Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    /** @type {?Array<DocHistoryEntry>} */
     this._fold = null;
   }
 
@@ -467,7 +479,7 @@ export class DocHistory {
 
   get canRedo() { return this.redoStack.length > 0; }
 
-  /** @param {{surface: string, label: string, undo: () => any, redo: () => any}} entry */
+  /** @param {DocHistoryEntry} entry */
   record(entry) {
     if (this.suspended) return;
     if (this._fold) { this._fold.push(entry); return; }
@@ -512,6 +524,8 @@ export class DocHistory {
           label,
           undo: () => runAll(reversed, 'undo'),
           redo: () => runAll(entries, 'redo'),
+          // Kept so `prependAnnotRows` can reach the annotation states its steps hold.
+          children: entries,
         });
       }
     }
@@ -626,7 +640,34 @@ export class DocHistory {
       label,
       undo: () => { changed.forEach((i) => { annotations.pages[list[i]] = before[i].slice(); }); return changed.map((i) => list[i]); },
       redo: () => { changed.forEach((i) => { annotations.pages[list[i]] = after[i].slice(); }); return changed.map((i) => list[i]); },
+      // `prependAnnotRows` edits these arrays in place, and the undo and redo closures read the same ones.
+      annotStates: {
+        annotations, list, before, after,
+      },
     });
+  }
+
+  /**
+   * Put `rows` at the start of every recorded state of page `n`'s annotations.
+   * Call it for rows that reach a page without being an edit, such as the page's own annotations read from the PDF after the user had already annotated it.
+   * Otherwise undoing the user's edit would restore a state from before the rows arrived, and remove them.
+   * @param {{ pages: Array<Array<object>> }} annotations - The document's annotation store.
+   * @param {number} n
+   * @param {Array<object>} rows
+   */
+  prependAnnotRows(annotations, n, rows) {
+    if (rows.length === 0) return;
+    const pending = [...this.undoStack, ...this.redoStack];
+    for (let k = 0; k < pending.length; k++) {
+      const entry = pending[k];
+      if (entry.children) pending.push(...entry.children);
+      const states = entry.annotStates;
+      if (!states || states.annotations !== annotations) continue;
+      const i = states.list.indexOf(n);
+      if (i < 0) continue;
+      states.before[i] = [...rows, ...states.before[i]];
+      states.after[i] = [...rows, ...states.after[i]];
+    }
   }
 
   /**
@@ -894,6 +935,14 @@ export class ScribeDoc {
 
     /** Whether a deferred extraction is still waiting for the host's `textStart`, with nothing yet in flight. */
     this._textStartPending = false;
+
+    /**
+     * The on-demand load this document was opened with, until that load has finished.
+     * Null for a document opened whole.
+     * While it is set, `textReady` stays pending, so whatever awaits the document's text does not read just the few pages on hand.
+     * @type {?import('../import/import.js').SeededLoad}
+     */
+    this._seeded = null;
 
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
@@ -1171,6 +1220,7 @@ export class ScribeDoc {
    * @returns {boolean} Whether any page was rotated (so a caller can skip a redundant rebuild).
    */
   rotatePages(indices, deltaDeg) {
+    if (this._seeded) { console.warn('Page edit ignored: the document has not loaded yet.'); return false; }
     const targets = [...new Set(indices)].filter((n) => this.pageMetrics[n]);
     if (targets.length === 0) return false;
     this.history.record(() => {
@@ -1290,10 +1340,64 @@ export class ScribeDoc {
   get canRedo() { return this.docHistory.canRedo; }
 
   /**
+   * The loading state of a document opened for on-demand loading.
+   * It is `'seeded'` while only its pages are open, `'hydrating'` while the rest of it loads, and `'hydrated'` once it is whole.
+   * A document opened whole is `'hydrated'` throughout.
+   * @returns {'seeded'|'hydrating'|'hydrated'}
+   */
+  get hydrationState() {
+    if (!this._seeded) return 'hydrated';
+    return this._seeded.run ? 'hydrating' : 'seeded';
+  }
+
+  /**
+   * Whether a text extraction or an on-demand load is running on this document's workers.
+   * Shrinking or suspending its worker pool while this is true would cut that work short.
+   * A seeded document has nothing running, although its text is still pending.
+   * @returns {boolean}
+   */
+  get _extracting() {
+    return !!this._textReadySettle && this.hydrationState !== 'seeded';
+  }
+
+  /**
+   * Load the rest of a document that was opened for on-demand loading, then wait for its text.
+   * Every caller shares one load, and a load that failed is tried again on the next call.
+   * On a document opened whole this only waits for its text.
+   * @returns {Promise<boolean>} False when the load failed, or the document was closed or cleared before it finished.
+   */
+  async ensureHydrated() {
+    const seeded = this._seeded;
+    if (seeded) {
+      if (seeded.closed) return false;
+      if (!seeded.run) {
+        seeded.run = hydrateSeededImpl(this, seeded).catch((err) => {
+          if (!seeded.closed) {
+            if (seeded.onError) seeded.onError(err);
+            else this.errorHandler({ message: `The document could not be loaded: ${err instanceof Error ? err.message : err}` });
+          }
+          return false;
+        }).then((loaded) => {
+          if (!loaded) seeded.run = null;
+          return loaded;
+        });
+      }
+      if (!(await seeded.run)) return false;
+    }
+    await this.textReady;
+    return true;
+  }
+
+  /**
    * Reset all of this document's data and issue it a new id.
    * The returned promise waits only for the previous file's fonts to leave the workers.
    */
   async clear() {
+    // An on-demand load in flight ends without writing into the emptied document.
+    if (this._seeded) {
+      this._seeded.closed = true;
+      this._seeded = null;
+    }
     // Settle any pending deferred extraction so its waiters resolve rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
@@ -1345,6 +1449,8 @@ export class ScribeDoc {
    * The document remains usable, and a later `importFiles` spawns a fresh pool.
    */
   async close() {
+    // The PDF an on-demand load reads is released below, so stop a load in flight from writing and keep later ones from starting.
+    if (this._seeded) this._seeded.closed = true;
     // In-flight extraction jobs die with the worker pool below and never settle `textReady`, so settle it now to let waiters proceed rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
@@ -1394,6 +1500,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addHighlightsImpl>}
    */
   addHighlights(highlights) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addHighlightsImpl(this, highlights);
   }
 
@@ -1422,6 +1529,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addFreeTextImpl>}
    */
   addFreeText(annotations) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addFreeTextImpl(this, annotations);
   }
 
@@ -1433,6 +1541,11 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof setFormValueImpl>}
    */
   setFormValue(name, value) {
+    // Before the load, the value reaches the widgets read so far and the load sets it on the rest.
+    // With no widget read, there is no prior value for the undo to restore.
+    if (this._seeded && !this.annotations.pages.some((rows) => (rows || []).some((row) => row.type === 'field' && row.name === name))) {
+      throw new Error('The document has not loaded yet, and no widget of this form field has been read. Await ensureHydrated() first.');
+    }
     return setFormValueImpl(this, name, value);
   }
 
@@ -1490,6 +1603,7 @@ export class ScribeDoc {
    * Remove all highlights previously added by `addHighlights`.
    */
   clearHighlights() {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearHighlightsImpl(this);
   }
 
@@ -1499,6 +1613,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addShapesImpl>}
    */
   addShapes(shapes) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addShapesImpl(this, shapes);
   }
 
@@ -1506,6 +1621,7 @@ export class ScribeDoc {
    * Remove all shape annotations previously added by `addShapes`.
    */
   clearShapes() {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearShapesImpl(this);
   }
 
@@ -1515,6 +1631,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addTextAnnotsImpl>}
    */
   addTextAnnots(textAnnots) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addTextAnnotsImpl(this, textAnnots);
   }
 
@@ -1522,6 +1639,7 @@ export class ScribeDoc {
    * Remove all freestanding /Text annotations previously added by `addTextAnnots`.
    */
   clearTextAnnots() {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearTextAnnotsImpl(this);
   }
 
@@ -1532,6 +1650,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addRedactionsImpl>}
    */
   addRedactions(redactions) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addRedactionsImpl(this, redactions);
   }
 
@@ -1540,6 +1659,7 @@ export class ScribeDoc {
    * @param {Parameters<typeof removeRedactionsImpl>[1]} [filter]
    */
   removeRedactions(filter) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     removeRedactionsImpl(this, filter);
   }
 
@@ -1549,6 +1669,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addLinksImpl>}
    */
   addLinks(links) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addLinksImpl(this, links);
   }
 
@@ -1557,6 +1678,7 @@ export class ScribeDoc {
    * @param {Parameters<typeof removeLinksImpl>[1]} [filter]
    */
   removeLinks(filter) {
+    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     removeLinksImpl(this, filter);
   }
 
@@ -1569,6 +1691,8 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof deleteTextLinesImpl>}
    */
   deleteTextLines(lines, label) {
+    // Lines taken before the load are replaced by it, so the edit is refused rather than deferred until the load finishes.
+    if (this._seeded) return Promise.reject(new Error('The document has not loaded yet, so its text cannot be edited. Await ensureHydrated() first.'));
     return deleteTextLinesImpl(this, lines, label);
   }
 
@@ -1582,6 +1706,8 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof replaceTextLineImpl>}
    */
   replaceTextLine(line, newText, opts) {
+    // See `deleteTextLines`.
+    if (this._seeded) return Promise.reject(new Error('The document has not loaded yet, so its text cannot be edited. Await ensureHydrated() first.'));
     return replaceTextLineImpl(this, line, newText, opts);
   }
 
@@ -1596,6 +1722,8 @@ export class ScribeDoc {
    * @returns {T} `fn`'s return value.
    */
   editWords(pages, label, fn) {
+    // The words on hand before an on-demand load are replaced when it finishes, and an edit to them would go with them.
+    if (this._seeded) { console.warn('Word edit ignored: the document has not loaded yet.'); return /** @type {T} */ (undefined); }
     const pageObjs = pages.map((p) => (typeof p === 'number' ? this.ocr.active?.[p] : p)).filter((p) => !!p);
     const ns = pageObjs.map((p) => p.n);
     // Lines, words and paragraphs are kept by reference and only their fields copied, so outside references, such as the viewer's word objects and each line's `par`, stay valid across an undo.
@@ -1668,6 +1796,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof deleteImagesImpl>}
    */
   deleteImages(items) {
+    if (this._seeded) { console.warn('Graphics edit ignored: the document has not loaded yet.'); return null; }
     return deleteImagesImpl(this, items);
   }
 
@@ -1677,6 +1806,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof deleteGraphicsImpl>}
    */
   deleteGraphics(items) {
+    if (this._seeded) { console.warn('Graphics edit ignored: the document has not loaded yet.'); return null; }
     return deleteGraphicsImpl(this, items);
   }
 
@@ -1762,7 +1892,8 @@ export class ScribeDoc {
    * @returns {Promise<import('../textDiff.js').TextDiff>}
    */
   async diffText(other, options) {
-    await Promise.all([this.textReady, other.textReady]);
+    const loaded = await Promise.all([this.ensureHydrated(), other.ensureHydrated()]);
+    if (loaded.includes(false)) throw new Error('A document could not be loaded, so the two were not compared.');
     return diffDocText(this.ocr.active || [], other.ocr.active || [], options);
   }
 

@@ -1,7 +1,7 @@
 // Per-document sessions for the library: one owner for the in-memory state of each content hash.
 
 import scribeLib from '../../scribe.js';
-import { PageMetrics } from '../../js/objects/pageMetricsObjects.js';
+import { fallBackToPdfText } from '../js/controls/tools.js';
 import {
   renderPageRaster, PAGE_RASTER_WIDTH, RASTER_LOSSY_QUALITY, RASTER_LOSSLESS_CAP,
 } from './libraryIngest.js';
@@ -10,11 +10,8 @@ import {
 const MAX_IDLE_LIVE = 2;
 // A pixel source is cheap to reopen, 2 to 8 ms, so the pool is small.
 const MAX_PIXEL_SOURCES = 3;
-/** How long after a viewer's last focus call a pixel source counts as on screen, which keeps the pool's eviction off it. */
-const FOCUS_PIN_MS = 30_000;
 /** How many page-image object URLs stay alive across all sessions. */
 const MAX_PAGE_URLS = 400;
-const NO_TEXT = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
 
 /**
  * @typedef {Object} NotesHeader
@@ -56,6 +53,12 @@ class DocSession {
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
     this.pixelsDoc = null;
     this.pixelsUse = 0;
+    /**
+     * The document a tab holds for this hash.
+     * It stands in for the pixel source while the tab has edited nothing.
+     * @type {?import('../../js/containers/scribeDoc.js').ScribeDoc}
+     */
+    this.tabDoc = null;
     /** @type {?Promise<?NotesHeader>} */
     this.headerPromise = null;
     /** @type {?string} */
@@ -70,8 +73,6 @@ class DocSession {
     this.rasterPending = new Map();
     /** @type {?Promise<Set<number>>} The pages with a stored raster, listed once, so a page without one is answered without a file read. */
     this.storedPages = null;
-    /** When a viewer last told this session's pixel source which page it is on. */
-    this.lastFocusAt = -Infinity;
     /** Whether the pool has asked this session's pixel source to close once its running job settles. */
     this.closeWhenIdle = false;
   }
@@ -237,39 +238,57 @@ export class DocSessions {
   }
 
   /**
-   * The document's pixel source: the PDF open in the worker with no text parse.
-   * It shows the pages as the document's changes arrange them: their order and content edits.
-   * The pixel source stays in the pool, so it is shared by every caller and closed by pool eviction.
+   * Open the document's PDF for on-demand loading.
+   * Its pages are arranged as its saved changes arrange them, and none of its text is read.
+   * @param {DocRef} ref
+   * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
+   */
+  async #openSeeded(ref) {
+    const store = this.store;
+    if (!store) throw new Error('No library is open.');
+    const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash)]);
+    const dims = ref.entry.pageDims;
+    const doc = await scribeLib.openDocument({ pdfFiles: [file] }, {
+      pdfWorkerN: 1,
+      seeded: {
+        header: header ?? undefined,
+        pageDims: dims ? dims.map(([width, height]) => [width, height]) : undefined,
+        load: async () => {
+          const sidecar = await store.readSidecar(ref.hash);
+          if (sidecar) return { scribeFiles: [sidecar] };
+          const { ocrFile } = ref.entry;
+          const ocr = ocrFile ? await store.readFile(`${ref.relPath.slice(0, ref.relPath.lastIndexOf('/') + 1)}${ocrFile}`).catch(() => null) : null;
+          return ocr ? { ocrFiles: [ocr] } : {};
+        },
+      },
+    });
+    // The mode gates read the type before the document loads, and a document with no saved file learns its own only then.
+    if (doc.inputData.pdfType == null) doc.inputData.pdfType = ref.entry.pdfType || 'text';
+    fallBackToPdfText(doc);
+    return doc;
+  }
+
+  /**
+   * The document's pixel source, showing its pages with their saved order and edits.
+   * It is the document an unedited tab holds, else a pooled copy shared by every caller.
+   * The caller does not own it and must not close it.
    * @param {DocRef} ref
    * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
    */
   pixels(ref) {
     const s = this.session(ref.hash);
+    if (s.tabDoc) {
+      // A closed document holds no PDF.
+      if (!s.tabDoc.images.pdfData) s.tabDoc = null;
+      else if (!(/** @type {typeof s.tabDoc & {_libraryEdited?: boolean}} */ (s.tabDoc))._libraryEdited) return Promise.resolve(s.tabDoc);
+    }
     s.pixelsUse = ++this.useTick;
     if (!s.pixelsPromise) {
-      const store = this.store;
-      if (!store) return Promise.reject(new Error('No library is open.'));
-      const p = (async () => {
-        const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash)]);
-        const doc = await scribeLib.openDocument([file], {
-          usePDFText: NO_TEXT, keepPDFTextAlways: false, skipFontOpt: true, pdfWorkerN: 1,
-        });
-        const dims = ref.entry.pageDims;
-        if (dims) {
-          const sources = header?.session?.pageSourceIndices;
-          const metrics = dims.map(([width, height], i) => {
-            const pm = new PageMetrics({ width, height });
-            pm.sourcePageN = sources?.[i] ?? i;
-            return pm;
-          });
-          doc.pageMetrics.splice(0, doc.pageMetrics.length, ...metrics);
-          doc.inputData.pageCount = metrics.length;
-        }
-        if (header?.session?.contentEdits) doc.contentEdits.pages = header.session.contentEdits;
+      const p = this.#openSeeded(ref).then((doc) => {
         if (s.pixelsPromise === p) s.pixelsDoc = doc;
         else doc.close().catch(() => {});
         return doc;
-      })();
+      });
       p.catch(() => {
         if (s.pixelsPromise === p) s.pixelsPromise = null;
       });
@@ -277,6 +296,33 @@ export class DocSessions {
       this.#evictPixels(s);
     }
     return s.pixelsPromise;
+  }
+
+  /**
+   * The document's pixel source, taken out of the pool for a tab to hold as its own document.
+   * The caller owns it and closes it.
+   * @param {DocRef} ref
+   * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
+   */
+  async takePixels(ref) {
+    const s = this.session(ref.hash);
+    const pooled = s.pixelsPromise ? await s.pixelsPromise.catch(() => null) : null;
+    if (pooled && s.pixelsDoc === pooled) {
+      s.pixelsDoc = null;
+      s.pixelsPromise = null;
+      return pooled;
+    }
+    return this.#openSeeded(ref);
+  }
+
+  /**
+   * Records the document a tab holds for `hash`.
+   * Page rasters come from it while the tab has edited nothing.
+   * @param {string} hash
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   */
+  lendTab(hash, doc) {
+    this.session(hash).tabDoc = doc;
   }
 
   /**
@@ -429,55 +475,6 @@ export class DocSessions {
   }
 
   /**
-   * One page rendered through the pixel source at `width` pixels.
-   * The caller owns the bitmap.
-   * @param {DocRef} ref
-   * @param {number} n
-   * @param {number} width
-   * @param {import('../../tess/TessScheduler.js').Lane} [lane='display'] - A display render may be dropped when the viewer moves on, which resolves null.
-   * @returns {Promise<?ImageBitmap>}
-   */
-  async renderAt(ref, n, width, lane = 'display') {
-    const doc = await this.pixels(ref);
-    const wrapper = await doc.images.renderViewerRaster(n, width, lane);
-    return wrapper && typeof wrapper === 'object' && 'imageBitmap' in wrapper ? wrapper.imageBitmap : null;
-  }
-
-  /**
-   * Tell the document's pixel source which page the viewer is on and which pages it still wants, so its staged display renders rank by the page and the rest are dropped.
-   * A source focused recently is the one on screen, and the pool's eviction leaves it alone.
-   * @param {DocRef} ref
-   * @param {?number} n
-   * @param {?Set<number>} keep
-   */
-  focus(ref, n, keep) {
-    const s = this.map.get(ref.hash);
-    if (!s) return;
-    s.lastFocusAt = performance.now();
-    s.pixelsDoc?.images.setViewerFocus(n, keep);
-  }
-
-  /**
-   * Tell the document's pixel source which page the thumbnail rail is centered on.
-   * @param {DocRef} ref
-   * @param {?number} n
-   */
-  thumbFocus(ref, n) {
-    this.map.get(ref.hash)?.pixelsDoc?.images.setThumbFocus(n);
-  }
-
-  /**
-   * Set the workers the document's pixel source holds, as the viewer's tier for it changes.
-   * @param {DocRef} ref
-   * @param {number} n
-   */
-  async setWorkerTarget(ref, n) {
-    const s = this.map.get(ref.hash);
-    const doc = s?.pixelsDoc ?? (s?.pixelsPromise ? await s.pixelsPromise.catch(() => null) : null);
-    if (doc && this.map.get(ref.hash)?.pixelsDoc === doc) await doc.images.setWorkerTarget(n);
-  }
-
-  /**
    * Cache a page-image object URL, revoking the oldest past the cap.
    * @param {DocSession} s
    * @param {number} n
@@ -532,8 +529,6 @@ export class DocSessions {
     let excess = open.length - (MAX_PIXEL_SOURCES - 1);
     for (const s of open) {
       if (excess <= 0) break;
-      // A source a viewer focused within the window is on screen, so it is never the victim.
-      if (performance.now() - s.lastFocusAt < FOCUS_PIN_MS) continue;
       // A still-opening source waits for a later pass.
       if (!s.pixelsDoc) continue;
       const sched = s.pixelsDoc.images.pdfScheduler;

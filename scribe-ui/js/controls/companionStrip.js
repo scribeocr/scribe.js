@@ -355,23 +355,35 @@ export function createCompanionStrip(scribe, {
   /** @type {WeakSet<HTMLButtonElement>} */
   const rendering = new WeakSet();
 
+  /** @type {WeakSet<HTMLButtonElement>} */
+  const replacedInFlight = new WeakSet();
+
   /**
    * Render cell `n`'s thumbnail if it is not already rendered or in flight.
    * @param {number} n
+   * @param {boolean} [again=false] - Ask again for a thumbnail the document has replaced.
    */
-  function renderCell(n) {
+  function renderCell(n, again = false) {
     const cell = cells[n];
-    if (!cell || rendering.has(cell)) return;
+    if (!cell) return;
+    if (rendering.has(cell)) {
+      if (again) replacedInFlight.add(cell);
+      return;
+    }
     const img = cell.querySelector('img');
-    if (!img || img.src) return;
+    if (!img || (img.src && !again)) return;
     const doc = scribe.doc;
     if (!doc || !doc.images) return;
     rendering.add(cell);
-    // Failures are swallowed: `renderVisible` retries on every scroll/reveal, so a transient failure never permanently blanks a cell.
-    doc.images.thumbnailUrl(n).then((url) => {
+    // Failures are swallowed because `renderVisible` retries any cell still without a picture.
+    // The URL can be a stand-in that lasts until the page's own render lands, and the callback asks again once that render replaces it.
+    doc.images.thumbnailUrl(n, 'preview', () => { if (!destroyed && cells[n] === cell) renderCell(n, true); }).then((url) => {
       if (destroyed || !url || cells[n] !== cell) return;
       img.src = url;
-    }).catch(() => {}).finally(() => { rendering.delete(cell); });
+    }).catch(() => {}).finally(() => {
+      rendering.delete(cell);
+      if (replacedInFlight.delete(cell) && !destroyed && cells[n] === cell) renderCell(n, true);
+    });
   }
 
   /** Render every cell currently in (or near) the strip's viewport. */

@@ -218,17 +218,16 @@ export function buildTablesWorkspace(host, container) {
   noteWrap.className = 'scribe-am-xtnote';
   const renderNote = () => {
     noteWrap.textContent = '';
-    if (viewer.doc.id < 0 && viewer.doc._requestHydration) {
-      // When a placeholder opens while the mode is active, `host.app._loadUnderMode` starts its load once the reader rests on it.
+    if (viewer.doc.hydrationState !== 'hydrated') {
+      // `host.app._loadUnderMode` starts this load.
+      // A load that fails opens this workspace again.
+      if (viewer.doc._loadFailed) {
+        noteWrap.appendChild(noteBlock(INFO_SVG, 'Couldn’t load the document.'));
+        return;
+      }
       const busy = noteBlock(SPIN_SVG, 'Loading the document…');
       busy.querySelector('.scribe-am-note-ic').style.color = 'var(--scribe-accent)';
       noteWrap.appendChild(busy);
-      const placeholder = viewer.doc;
-      placeholder._hydrated?.catch(() => {
-        if (viewer.doc !== placeholder || !noteWrap.isConnected) return;
-        noteWrap.textContent = '';
-        noteWrap.appendChild(noteBlock(INFO_SVG, 'Couldn’t load the document.'));
-      });
       return;
     }
     if (viewer.doc._textReadySettle) {
@@ -1096,7 +1095,7 @@ export async function run(host, params, progress) {
   // A freshly-opened native PDF installs its detected tables only once text extraction settles.
   if (doc._textReadySettle) {
     progress(0, 'Waiting for text extraction…');
-    await doc.textReady;
+    if (!(await doc.ensureHydrated())) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
     if (host.viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
 

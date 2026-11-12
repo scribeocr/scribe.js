@@ -163,9 +163,9 @@ export async function searchDoc(viewer, query, { pageN, navigate = true } = {}) 
   const doc = viewer.doc;
   if (!doc || doc.pageMetrics.length === 0) return;
   // Deferred-import text may still be extracting, so searching now would falsely report "No results".
-  if (doc._textReadySettle) {
-    await doc.textReady;
-    if (viewer.doc !== doc) return;
+  // A document that has not loaded and finds through its own index needs none of its text, and is not loaded for a find.
+  if (doc._textReadySettle && !(doc.hydrationState !== 'hydrated' && doc.findMatches)) {
+    if (!(await doc.ensureHydrated()) || viewer.doc !== doc) return;
   }
   if (!viewer.state.searchMode) return;
   if (!(await findText(viewer, query))) return;
@@ -244,8 +244,7 @@ export async function goToCitation(viewer, text, { highlight = true } = {}) {
   const doc = _viewer.doc;
   if (!doc) return [];
   if (doc._textReadySettle) {
-    await doc.textReady;
-    if (_viewer.doc !== doc) return [];
+    if (!(await doc.ensureHydrated()) || _viewer.doc !== doc) return [];
   }
   const spans = doc.resolveCitation(text);
   if (!spans.length) {
