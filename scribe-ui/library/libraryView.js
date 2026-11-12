@@ -277,9 +277,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; scrollbar-gutter: stable; position: relative; }
 .scribe-pdf-viewer .scribe-library-surface.column { right: auto; box-sizing: border-box; border-right: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-surface.column.closing { opacity: .55; }
-.scribe-pdf-viewer .scribe-library-colhead { flex: none; display: flex; align-items: center; gap: 4px; height: 36px; box-sizing: border-box; padding: 0 4px 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-canvas); }
+.scribe-pdf-viewer .scribe-library-colhead { flex: none; background: var(--scribe-canvas); }
 .scribe-pdf-viewer .scribe-library-colhead[hidden] { display: none; }
-.scribe-pdf-viewer .scribe-library-colhead > [hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-coltitle, .scribe-pdf-viewer .scribe-library-colbar { display: flex; align-items: center; gap: 4px; box-sizing: border-box; border-bottom: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-coltitle { height: 31px; padding: 0 8px; }
+.scribe-pdf-viewer .scribe-library-colbar { height: 36px; padding: 0 4px 0 8px; }
+.scribe-pdf-viewer .scribe-library-coltitle > [hidden], .scribe-pdf-viewer .scribe-library-colbar > [hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-colbar > * { flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-colbar > :not(.scribe-library-hicon) + .scribe-library-hicon, .scribe-pdf-viewer .scribe-library-colbar > .scribe-library-hicon[hidden] + .scribe-library-hicon { margin-left: auto; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-seg button { width: 28px; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-hbtn { padding: 0 7px; gap: 5px; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-hbtn.icon-only { padding: 0 4px; }
@@ -1313,6 +1318,11 @@ export function createLibraryInstance(viewer, opts) {
   const colHead = document.createElement('div');
   colHead.className = 'scribe-library-colhead';
   colHead.hidden = true;
+  const colTitle = document.createElement('div');
+  colTitle.className = 'scribe-library-coltitle';
+  const colBar = document.createElement('div');
+  colBar.className = 'scribe-library-colbar';
+  colHead.append(colTitle, colBar);
   const colUpBtn = document.createElement('button');
   colUpBtn.className = 'scribe-library-hicon scribe-library-colup';
   colUpBtn.innerHTML = slotIcon('back22');
@@ -1343,7 +1353,8 @@ export function createLibraryInstance(viewer, opts) {
   colViewBtn.setAttribute('aria-label', 'View');
   colViewBtn.setAttribute('aria-haspopup', 'menu');
   colViewBtn.hidden = true;
-  colHead.append(colUpBtn, colGlyph, colName, colSearchBtn, colMoreBtn);
+  colTitle.append(colUpBtn, colGlyph, colName);
+  colBar.append(colSearchBtn, colMoreBtn);
   const colSearchRow = document.createElement('div');
   colSearchRow.className = 'scribe-library-colsearch';
   colSearchRow.hidden = true;
@@ -1441,7 +1452,7 @@ export function createLibraryInstance(viewer, opts) {
     view: false, sort: false, new: false, refresh: false,
   };
   const fitColBar = () => {
-    if (form !== 'column' || colHead.hidden || viewSeg.parentElement !== colHead) return;
+    if (form !== 'column' || colHead.hidden || viewSeg.parentElement !== colBar) return;
     viewSeg.hidden = false;
     colViewBtn.hidden = true;
     sortBtn.classList.remove('icon-only');
@@ -1457,24 +1468,24 @@ export function createLibraryInstance(viewer, opts) {
     colFold.new = false;
     colFold.refresh = false;
     const need = () => {
-      let w = 12;
-      for (const el of colHead.children) {
+      let w = 12 - 4;
+      for (const el of colBar.children) {
         if (/** @type {HTMLElement} */ (el).hidden) continue;
-        w += (el === colName ? 64 : el.getBoundingClientRect().width) + 4;
+        w += el.getBoundingClientRect().width + 4;
       }
       return w;
     };
     const steps = [
-      () => { viewSeg.hidden = true; colViewBtn.hidden = false; },
-      () => sortBtn.classList.add('icon-only'),
-      () => newBtn.classList.add('icon-only'),
       () => { refreshBtn.hidden = true; colFold.refresh = !readOnly; },
+      () => newBtn.classList.add('icon-only'),
+      () => sortBtn.classList.add('icon-only'),
+      () => { viewSeg.hidden = true; colViewBtn.hidden = false; },
       () => { newWrap.hidden = true; colFold.new = !readOnly; },
       () => { sortWrap.hidden = true; colFold.sort = true; },
       () => { colViewBtn.hidden = true; colFold.view = true; },
     ];
     for (const step of steps) {
-      if (need() <= colHead.clientWidth) break;
+      if (need() <= colBar.clientWidth) break;
       step();
     }
   };
@@ -1521,7 +1532,7 @@ export function createLibraryInstance(viewer, opts) {
         searchField.hidden = false;
         searchField.classList.remove('popped');
         colSearchRow.appendChild(searchField);
-        for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colHead.insertBefore(el, colMoreBtn);
+        for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colBar.insertBefore(el, colSearchBtn);
       } else {
         colSearchRow.hidden = true;
         colSearchBtn.classList.remove('on');
@@ -2293,15 +2304,22 @@ export function createLibraryInstance(viewer, opts) {
       }
     }
   };
+  /**
+   * @param {HTMLElement} menu
+   * @param {HTMLElement} anchor
+   */
+  const hostMenuUnder = (menu, anchor) => {
+    const host = viewer.pdfViewerElem;
+    if (menu.parentElement !== host) host.appendChild(menu);
+    const hostRect = host.getBoundingClientRect();
+    const anchorRect = anchor.getBoundingClientRect();
+    Object.assign(menu.style, { left: `${Math.max(4, anchorRect.left - hostRect.left)}px`, top: `${anchorRect.bottom - hostRect.top + 4}px`, right: 'auto' });
+  };
   const moreDropdown = createDropdown({
     show: (anchor) => {
       buildMoreMenu();
       if (anchor === colMoreBtn) {
-        const host = viewer.pdfViewerElem;
-        if (moreMenu.parentElement !== host) host.appendChild(moreMenu);
-        const hostRect = host.getBoundingClientRect();
-        const anchorRect = anchor.getBoundingClientRect();
-        Object.assign(moreMenu.style, { left: `${Math.max(4, anchorRect.left - hostRect.left)}px`, top: `${anchorRect.bottom - hostRect.top + 4}px`, right: 'auto' });
+        hostMenuUnder(moreMenu, anchor);
       } else if (moreMenu.parentElement !== moreWrap) {
         moreWrap.appendChild(moreMenu);
         Object.assign(moreMenu.style, { left: '', top: '', right: '' });
@@ -7215,12 +7233,7 @@ export function createLibraryInstance(viewer, opts) {
         revealItem.classList.toggle('disabled', !known);
         revealItem.title = known ? '' : REVEAL_UNKNOWN_HINT;
       }
-      const host = viewer.pdfViewerElem;
-      if (folderMenu.parentElement !== host) host.appendChild(folderMenu);
-      const hostRect = host.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
-      folderMenu.style.left = `${Math.max(4, anchorRect.left - hostRect.left)}px`;
-      folderMenu.style.top = `${anchorRect.bottom - hostRect.top + 4}px`;
+      hostMenuUnder(folderMenu, anchor);
       folderMenu.style.display = '';
       return folderMenu;
     },
@@ -7403,8 +7416,14 @@ export function createLibraryInstance(viewer, opts) {
     fitColBar();
   };
   const sortDropdown = createDropdown({
-    show: () => {
+    show: (anchor) => {
       syncSortUI();
+      if (form === 'column') {
+        hostMenuUnder(sortMenu, anchor);
+      } else if (sortMenu.parentElement !== sortWrap) {
+        sortWrap.appendChild(sortMenu);
+        Object.assign(sortMenu.style, { left: '', top: '', right: '' });
+      }
       sortMenu.style.display = '';
       return sortMenu;
     },
@@ -7496,13 +7515,8 @@ export function createLibraryInstance(viewer, opts) {
         item.classList.toggle('on', item.dataset.mode === viewMode);
         item.setAttribute('aria-checked', String(item.dataset.mode === viewMode));
       }
-      const host = viewer.pdfViewerElem;
-      if (viewMenu.parentElement !== host) host.appendChild(viewMenu);
-      const hostRect = host.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
-      Object.assign(viewMenu.style, {
-        left: `${Math.max(4, anchorRect.left - hostRect.left)}px`, top: `${anchorRect.bottom - hostRect.top + 4}px`, right: 'auto', display: '',
-      });
+      hostMenuUnder(viewMenu, anchor);
+      viewMenu.style.display = '';
       return viewMenu;
     },
     hide: () => {
@@ -7513,7 +7527,13 @@ export function createLibraryInstance(viewer, opts) {
   viewDropdown.attachTrigger(colViewBtn);
 
   const newDropdown = createDropdown({
-    show: () => {
+    show: (anchor) => {
+      if (form === 'column') {
+        hostMenuUnder(newMenu, anchor);
+      } else if (newMenu.parentElement !== newWrap) {
+        newWrap.appendChild(newMenu);
+        Object.assign(newMenu.style, { left: '', top: '', right: '' });
+      }
       newMenu.style.display = '';
       return newMenu;
     },
