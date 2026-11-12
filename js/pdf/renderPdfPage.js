@@ -704,6 +704,74 @@ function boxDownsampleRgba(rgba, width, height, outW, outH) {
 }
 
 /**
+ * The scale, relative to its drawn size, at which a reduced decode is built.
+ * A decode built at the drawn size itself is resampled once more at about 1:1 when the image sits off the pixel grid or is drawn turned, which softens it.
+ */
+const REDUCED_DECODE_MARGIN = 2;
+
+const BYTE_BIT_COUNTS = new Uint8Array(256);
+for (let i = 1; i < 256; i++) BYTE_BIT_COUNTS[i] = (i & 1) + BYTE_BIT_COUNTS[i >> 1];
+
+/**
+ * Box-average a packed 1-bit raster (rows byte-aligned, most significant bit first) down to outW x outH.
+ * Each output byte is the share of set bits in its box, scaled to 0-255.
+ *
+ * @param {Uint8Array} data
+ * @param {number} width
+ * @param {number} height
+ * @param {number} outW
+ * @param {number} outH
+ * @returns {Uint8Array} length outW*outH
+ */
+function boxDownsampleBits(data, width, height, outW, outH) {
+  const rowBytes = Math.ceil(width / 8);
+  let bits = data;
+  if (data.length < rowBytes * height) {
+    bits = new Uint8Array(rowBytes * height);
+    bits.set(data);
+  }
+  const out = new Uint8Array(outW * outH);
+  const firstByte = new Int32Array(outW);
+  const lastByte = new Int32Array(outW);
+  const firstMask = new Uint8Array(outW);
+  const lastMask = new Uint8Array(outW);
+  const colW = new Int32Array(outW);
+  for (let ox = 0; ox < outW; ox++) {
+    const sx0 = Math.floor((ox * width) / outW);
+    const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW));
+    colW[ox] = sx1 - sx0;
+    firstByte[ox] = sx0 >> 3;
+    lastByte[ox] = (sx1 - 1) >> 3;
+    firstMask[ox] = 0xFF >> (sx0 & 7);
+    lastMask[ox] = 0xFF << (7 - ((sx1 - 1) & 7));
+  }
+  const sums = new Uint32Array(outW);
+  let di = 0;
+  for (let oy = 0; oy < outH; oy++) {
+    const sy0 = Math.floor((oy * height) / outH);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
+    sums.fill(0);
+    for (let sy = sy0; sy < sy1; sy++) {
+      const rowStart = sy * rowBytes;
+      for (let ox = 0; ox < outW; ox++) {
+        const first = rowStart + firstByte[ox];
+        const last = rowStart + lastByte[ox];
+        if (first === last) {
+          sums[ox] += BYTE_BIT_COUNTS[bits[first] & firstMask[ox] & lastMask[ox]];
+        } else {
+          let sum = BYTE_BIT_COUNTS[bits[first] & firstMask[ox]] + BYTE_BIT_COUNTS[bits[last] & lastMask[ox]];
+          for (let b = first + 1; b < last; b++) sum += BYTE_BIT_COUNTS[bits[b]];
+          sums[ox] += sum;
+        }
+      }
+    }
+    const rowH = sy1 - sy0;
+    for (let ox = 0; ox < outW; ox++) out[di++] = (((sums[ox] / (rowH * colW[ox])) * 255) + 0.5) | 0;
+  }
+  return out;
+}
+
+/**
  * Memory budget for the doc-wide decoded-image cache (`objCache.decodedImageCache`).
  * Decoded images dominate re-render cost and are otherwise never retained across page renders.
  * Bounded so image-heavy docs don't grow memory without limit.
@@ -734,7 +802,7 @@ function decodedImageKey(objNum, isMask, fillColor) {
 /**
  * Insert a decoded ImageBitmap into the doc-wide cache, evicting by lowest recompute-value-per-byte (decodeMs / bytes) first.
  * This means the images cheapest to regenerate per unit memory are evicted before the expensive ones.
- * Closes any prior bitmap held under the same key (e.g. on a render-resolution change).
+ * Closes any prior bitmap held under the same key.
  * @param {ObjectCache} objCache
  * @param {string} key
  * @param {*} bitmap
@@ -770,7 +838,8 @@ function putDecodedImage(objCache, key, bitmap, maxW, maxH, bytes, decodeMs) {
 
 /**
  * Convert decoded image bytes to an ImageBitmap suitable for canvas drawing.
- * `maxW`/`maxH` are the device px the image will be drawn within (0 = unbounded) and cap JPEG2000 decode resolution.
+ * `maxW`/`maxH` are the image's drawn extent in device px along its own width and height (0 = unbounded).
+ * A decode that can be made smaller than the image takes its size from them.
  *
  * @param {import('./parsePdfImages.js').ImageInfo} imageInfo
  * @param {ObjectCache} [objCache]
@@ -992,13 +1061,11 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       const h = jpegBitmap.height;
       if (sMaskWidth > w || sMaskHeight > h) {
         // Upsample the image to the mask dimensions to keep the mask's fine detail.
-        // Never build larger than the device area this image occupies (maxW/maxH).
         let outW = sMaskWidth;
         let outH = sMaskHeight;
-        if (maxW && maxH && (outW > maxW || outH > maxH)) {
-          const k = Math.min(maxW / outW, maxH / outH);
-          outW = Math.max(w, Math.round(sMaskWidth * k));
-          outH = Math.max(h, Math.round(sMaskHeight * k));
+        if (maxW && maxH && (outW > maxW * REDUCED_DECODE_MARGIN || outH > maxH * REDUCED_DECODE_MARGIN)) {
+          outW = Math.max(w, Math.min(sMaskWidth, maxW * REDUCED_DECODE_MARGIN));
+          outH = Math.max(h, Math.min(sMaskHeight, maxH * REDUCED_DECODE_MARGIN));
         }
         const canvas = ca.makeCanvas(w, h);
         const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
@@ -1174,13 +1241,11 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     if (sMask && sMaskWidth && sMaskHeight) {
       if (sMaskWidth > w || sMaskHeight > h) {
         // Upsample the image to the mask dimensions to keep the mask's fine detail.
-        // Never build larger than the device area this image occupies (maxW/maxH).
         let outW = sMaskWidth;
         let outH = sMaskHeight;
-        if (maxW && maxH && (outW > maxW || outH > maxH)) {
-          const k = Math.min(maxW / outW, maxH / outH);
-          outW = Math.max(w, Math.round(sMaskWidth * k));
-          outH = Math.max(h, Math.round(sMaskHeight * k));
+        if (maxW && maxH && (outW > maxW * REDUCED_DECODE_MARGIN || outH > maxH * REDUCED_DECODE_MARGIN)) {
+          outW = Math.max(w, Math.min(sMaskWidth, maxW * REDUCED_DECODE_MARGIN));
+          outH = Math.max(h, Math.min(sMaskHeight, maxH * REDUCED_DECODE_MARGIN));
         }
         const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
         const upsampled = upsampleImageWithMask(rgbaData, w, h, maskA, outW, outH);
@@ -1206,46 +1271,28 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     bitsPerComponent = 8;
   }
 
-  // The general path's cost on a huge scan is the full-resolution RGBA buffer and its ImageBitmap, not the draw, so box-average the packed bits straight to draw size.
+  // The general path's cost on a scan is the full-resolution RGBA buffer and its ImageBitmap, not the draw, so box-average the packed bits straight to a reduced size.
   // This returns before the per-pixel post-processing further down, so the gate must exclude every feature that needs it.
   const mask11 = sMask && sMaskWidth === width && sMaskHeight === height;
   if (bitsPerComponent === 1 && (colorSpace === 'DeviceGray' || colorSpace === 'CalGray')
     && !imageInfo.transparentWhite && (!(sMask && sMaskWidth && sMaskHeight) || mask11)
     && !colorKeyMask && !imageInfo.iccTransform
-    && maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
-    const k = Math.min(maxW / width, maxH / height);
-    const outW = Math.max(1, Math.round(width * k));
-    const outH = Math.max(1, Math.round(height * k));
-    if (width * height >= outW * outH * 2) {
-      const rowBytes = Math.ceil(width / 8);
-      const ma = mask11 ? sMask : null;
+    && maxW && maxH && (width > maxW || height > maxH)) {
+    const drawnW = Math.min(width, maxW);
+    const drawnH = Math.min(height, maxH);
+    const strongReduction = width * height >= drawnW * drawnH * 16;
+    const outW = strongReduction ? Math.min(width, drawnW * REDUCED_DECODE_MARGIN) : drawnW;
+    const outH = strongReduction ? Math.min(height, drawnH * REDUCED_DECODE_MARGIN) : drawnH;
+    if (strongReduction || (width * height >= 40e6 && width * height >= outW * outH * 2)) {
+      const setShare = boxDownsampleBits(imageData, width, height, outW, outH);
+      const alpha = mask11 ? boxDownsampleMask(sMask, width, height, outW, outH) : null;
       const out = new Uint8ClampedArray(outW * outH * 4);
-      for (let oy = 0; oy < outH; oy++) {
-        const sy0 = Math.floor((oy * height) / outH);
-        const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
-        for (let ox = 0; ox < outW; ox++) {
-          const sx0 = Math.floor((ox * width) / outW);
-          const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW));
-          let sum = 0;
-          let asum = 0;
-          let cnt = 0;
-          for (let sy = sy0; sy < sy1; sy++) {
-            const rb = sy * rowBytes;
-            const mrow = sy * width;
-            for (let sx = sx0; sx < sx1; sx++) {
-              sum += (imageData[rb + (sx >> 3)] >> (7 - (sx & 7))) & 1;
-              if (ma) asum += ma[mrow + sx];
-              cnt++;
-            }
-          }
-          let v = (((sum / cnt) * 255) + 0.5) | 0;
-          if (decodeInvert) v = 255 - v;
-          const di = (oy * outW + ox) * 4;
-          out[di] = v;
-          out[di + 1] = v;
-          out[di + 2] = v;
-          out[di + 3] = ma ? (((asum / cnt) + 0.5) | 0) : 255;
-        }
+      for (let i = 0, di = 0; i < setShare.length; i++, di += 4) {
+        const v = decodeInvert ? 255 - setShare[i] : setShare[i];
+        out[di] = v;
+        out[di + 1] = v;
+        out[di + 2] = v;
+        out[di + 3] = alpha ? alpha[i] : 255;
       }
       return ca.createImageBitmapFromImageData(new ImageData(out, outW, outH));
     }
@@ -1259,9 +1306,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     && !colorKeyMask && !imageInfo.iccTransform && !decodeInvert
     && maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
     const nc = (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB') ? 3 : 1;
-    const k = Math.min(maxW / width, maxH / height);
-    const outW = Math.max(1, Math.round(width * k));
-    const outH = Math.max(1, Math.round(height * k));
+    const outW = Math.min(width, maxW);
+    const outH = Math.min(height, maxH);
     if (width * height >= outW * outH * 2 && imageData.length >= width * height * nc) {
       const out = new Uint8ClampedArray(outW * outH * 4);
       const colStart = new Int32Array(outW);
@@ -1713,9 +1759,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
   // This still builds the full-resolution RGBA, but it removes the expensive createImageBitmap of a huge bitmap and the large-source drawImage downscale.
   // Those pay back the extra box pass in both Node and Chrome.
   if (maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
-    const k = Math.min(maxW / width, maxH / height);
-    const outW = Math.max(1, Math.round(width * k));
-    const outH = Math.max(1, Math.round(height * k));
+    const outW = Math.min(width, maxW);
+    const outH = Math.min(height, maxH);
     if (width * height >= outW * outH * 2) {
       const small = boxDownsampleRgba(rgbaData, width, height, outW, outH);
       return ca.createImageBitmapFromImageData(new ImageData(small, outW, outH));
@@ -1732,9 +1777,11 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
  * @param {import('./parsePdfImages.js').ImageInfo} imageInfo
  * @param {string} fillColor - CSS color string (e.g. 'rgb(20,20,20)')
  * @param {ObjectCache} [objCache]
+ * @param {number} [maxW] - The mask's drawn extent in device px along its own width (0 = unbounded).
+ * @param {number} [maxH] - The same along its height.
  * @returns {Promise<ImageBitmap>}
  */
-async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
+async function imageMaskToBitmap(imageInfo, fillColor, objCache, maxW = 0, maxH = 0) {
   if (imageInfo.imageData == null && objCache && imageInfo.objNum != null) {
     imageInfo.imageData = objCache.getStreamBytes(imageInfo.objNum);
   }
@@ -1747,10 +1794,29 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
   const g = colorMatch ? Number(colorMatch[2]) : 0;
   const b = colorMatch ? Number(colorMatch[3]) : 0;
 
-  const rgbaData = new Uint8ClampedArray(width * height * 4);
-  const rowBytes = Math.ceil(width / 8);
   // For an ImageMask the default /Decode [0 1] paints sample 0, and /Decode [1 0] paints sample 1.
   const paintBit = imageInfo.decodeInvert ? 1 : 0;
+
+  if (maxW && maxH && (width > maxW || height > maxH)) {
+    const drawnW = Math.min(width, maxW);
+    const drawnH = Math.min(height, maxH);
+    if (width * height >= drawnW * drawnH * 16) {
+      const outW = Math.min(width, drawnW * REDUCED_DECODE_MARGIN);
+      const outH = Math.min(height, drawnH * REDUCED_DECODE_MARGIN);
+      const setShare = boxDownsampleBits(imageData, width, height, outW, outH);
+      const out = new Uint8ClampedArray(outW * outH * 4);
+      for (let i = 0, di = 0; i < setShare.length; i++, di += 4) {
+        out[di] = r;
+        out[di + 1] = g;
+        out[di + 2] = b;
+        out[di + 3] = paintBit ? setShare[i] : 255 - setShare[i];
+      }
+      return ca.createImageBitmapFromImageData(new ImageData(out, outW, outH));
+    }
+  }
+
+  const rgbaData = new Uint8ClampedArray(width * height * 4);
+  const rowBytes = Math.ceil(width / 8);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -6929,16 +6995,25 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
 
         const maskFillColor = op.fillColor;
+        let maxW = Math.ceil(Math.hypot(op.ctm[0], op.ctm[1]) * scale - 0.001);
+        let maxH = Math.ceil(Math.hypot(op.ctm[2], op.ctm[3]) * scale - 0.001);
+        // An image no larger than its drawn size decodes at its own size, so it takes no bound and one decode serves every such placement.
+        if (imageInfo.width <= maxW && imageInfo.height <= maxH && (imageInfo.sMaskWidth || 0) <= maxW && (imageInfo.sMaskHeight || 0) <= maxH) {
+          maxW = 0;
+          maxH = 0;
+        }
         // Fall back to the doc-wide decoded-image cache when the per-page bitmapCache misses.
         // Its key is the objNum (stable across pages, unlike the per-page `op.name`), so a bitmap decoded for this image on another page can be reused.
         // Masks additionally key on the fill colour (see decodedImageKey).
+        // Either cache serves a placement only with a bitmap decoded for the same bound, so a reduced decode never stands in for a larger placement.
         const docImgCache = objCache && objCache.decodedImageCache;
         const canDocCache = !!docImgCache && imageInfo.objNum != null;
         const docKey = canDocCache ? decodedImageKey(imageInfo.objNum, imageInfo.imageMask, maskFillColor) : '';
-        let cachedBitmap = bitmapCache.get(op.name);
+        const pageKey = `${op.name}|${maxW}x${maxH}`;
+        let cachedBitmap = bitmapCache.get(pageKey);
         if (!cachedBitmap && canDocCache) {
           const dc = docImgCache.get(docKey);
-          if (dc && dc.maxW === canvasWidth && dc.maxH === canvasHeight) cachedBitmap = dc.bitmap;
+          if (dc && dc.maxW === maxW && dc.maxH === maxH) cachedBitmap = dc.bitmap;
         }
         // The image's visible region in image-pixel coordinates, so the expensive pure-JS CMYK JPEG decode can skip pixels clipped off the page canvas.
         let imageRoi = null;
@@ -6993,8 +7068,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (!bitmap) {
           const t0 = performance.now();
           bitmap = imageInfo.imageMask
-            ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
-            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight, imageRoi, decodeScale);
+            ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache, maxW, maxH)
+            : await imageInfoToBitmap(imageInfo, objCache, maxW, maxH, imageRoi, decodeScale);
           decodeMs = performance.now() - t0;
         }
         if (!bitmap) return;
@@ -7084,14 +7159,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         rCtx.restore();
 
         if (!cachedBitmap) {
+          // Neither cache keys on a region or a decode scale, so a region-of-interest or scaled decode goes in neither.
           if (canDocCache && !imageRoi && decodeScale === 1 && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
-            // Both image caches are keyed by objNum / op.name, not by size or region, so a roi or downscaled decode reused for a different placement would render clipped or blurry.
             const bytes = (bitmap.width || canvasWidth) * (bitmap.height || canvasHeight) * 4;
-            putDecodedImage(objCache, docKey, bitmap, canvasWidth, canvasHeight, bytes, decodeMs);
+            putDecodedImage(objCache, docKey, bitmap, maxW, maxH, bytes, decodeMs);
             // Admitted to the doc cache, so this decode will be a cache hit on a re-render.
             perf.decodeMs += decodeMs;
-          } else if (!imageInfo.imageMask && decodeScale === 1 && imageDrawCounts.get(op.name) > 1) {
-            bitmapCache.set(op.name, bitmap);
+          } else if (!imageInfo.imageMask && !imageRoi && decodeScale === 1 && imageDrawCounts.get(op.name) > 1) {
+            bitmapCache.set(pageKey, bitmap);
           } else {
             ca.closeDrawable(bitmap);
           }
@@ -7114,9 +7189,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               if (xObjText && /\/Subtype\s*\/Image/.test(xObjText)) {
                 const imageInfo = parseImageObject(xObjText, xObjNum, objCache);
                 if (imageInfo) {
+                  const placement = matMul(pathData.doXObject.cm, op.transform);
+                  const extentW = Math.ceil(Math.hypot(placement[0], placement[1]) * scale - 0.001);
+                  const extentH = Math.ceil(Math.hypot(placement[2], placement[3]) * scale - 0.001);
                   const bitmap = imageInfo.imageMask
                     ? await imageMaskToBitmap(imageInfo, op.fillColor || 'rgb(0,0,0)', objCache)
-                    : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight);
+                    : await imageInfoToBitmap(imageInfo, objCache, extentW, extentH);
                   rCtx.save();
                   if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
                   applyClips(rCtx, op);
