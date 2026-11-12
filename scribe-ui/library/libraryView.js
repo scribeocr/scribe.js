@@ -679,9 +679,10 @@ const addLibraryStyles = () => {
  * @param {?HTMLElement} pageImg - The drag ghost's page, an image or the canvas copy of one, at the size it had at release; null for a row's chip.
  * @param {?import('../viewer.js').ScribeViewer} target - The viewer the document will open in, when it exists at the drop.
  * @param {HTMLElement} host - The app's root element, which holds the banners the landing stacks under.
+ * @param {?{left: number, top: number, width: number, height: number}} [ahead] - Where a viewer the drop is about to create will show the document, veiled when given.
  * @returns {{arrive: (viewer: import('../viewer.js').ScribeViewer) => void, cancel: () => void}} `arrive` names the viewer the document opened in, and `cancel` ends the landing at once.
  */
-const landCard = (pageImg, target, host) => {
+const landCard = (pageImg, target, host, ahead = null) => {
   const from = pageImg ? pageImg.getBoundingClientRect() : null;
   const cs = pageImg ? getComputedStyle(pageImg) : null;
   /**
@@ -693,10 +694,10 @@ const landCard = (pageImg, target, host) => {
   /** @type {?HTMLDivElement} */
   let veil = null;
   const sc = target?.scrollContainer;
-  if (sc) {
-    const r = sc.getBoundingClientRect();
+  if (sc || ahead) {
+    const r = sc ? sc.getBoundingClientRect() : /** @type {NonNullable<typeof ahead>} */ (ahead);
     let bg = '#fff';
-    for (let el = /** @type {?HTMLElement} */ (sc); el; el = el.parentElement) {
+    for (let el = /** @type {?HTMLElement} */ (sc ?? host); el; el = el.parentElement) {
       const c = getComputedStyle(el).backgroundColor;
       if (c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)') { bg = c; break; }
     }
@@ -776,6 +777,31 @@ const landCard = (pageImg, target, host) => {
       const to = pageEl ? pageEl.getBoundingClientRect() : null;
       if (!to || !to.width) {
         finish();
+        return;
+      }
+      // A card shows its document's first page, so on any other page the page itself flies in from the card.
+      if (n > 0 && !reduced()) {
+        const cover = copy;
+        // A page that already shows a canvas takes off at once, because `paint` may be waiting on the render that replaces its stored raster.
+        (pageEl?.querySelector(':scope > canvas') ? Promise.resolve() : paint).then(() => {
+          if (done || !pageEl) return;
+          const box = pageEl.getBoundingClientRect();
+          const zoom = box.width / pageEl.offsetWidth;
+          const fit = Math.min(from.width / box.width, from.height / box.height);
+          veil?.remove();
+          Object.assign(cover.style, {
+            position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', clipPath: '',
+          });
+          pageEl.appendChild(cover);
+          cover.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, fill: 'forwards' });
+          for (const el of pageEl.parentElement?.children ?? []) {
+            if (el !== pageEl) el.animate([{ opacity: 0 }, { opacity: 0, offset: 0.5, easing: 'ease-out' }, { opacity: 1 }], { duration: 240 });
+          }
+          pageEl.animate([
+            { transform: `translate(${(from.left + from.width / 2 - box.left - box.width / 2) / zoom}px, ${(from.top + from.height / 2 - box.top - box.height / 2) / zoom}px) scale(${fit})` },
+            { transform: 'none' },
+          ], { duration: 240, easing: 'cubic-bezier(0, 0, .2, 1)' }).finished.then(finish, finish);
+        }, finish);
         return;
       }
       const area = viewer.scrollContainer.getBoundingClientRect();
@@ -6477,15 +6503,24 @@ export function createLibraryInstance(viewer, opts) {
     foreignDrop: (phase, x, y, carried, ghost) => {
       if (carried.length !== 1 || carried[0].endsWith('/') || !viewer._cardDragTarget) return false;
       const t = viewer._cardDragTarget(phase, x, y, titleOf(carried[0]));
+      const relPath = carried[0];
+      const entry = manifest?.docs[relPath];
+      /** @param {Object} tb */
+      const isTab = (tb) => ownsTab(tb) && (entry?.hash ? tb.libraryHash === entry.hash : tb.libraryRelPath === relPath);
+      const open = viewer._tabs.find(isTab);
+      if (t && open && viewer._viewerShowing(open.doc) === (t.group === 1 ? viewer._rightGroup?.viewer : viewer.scribe)) {
+        viewer._hideDropTarget();
+        return false;
+      }
       if (phase === 'drop' && t) {
-        const relPath = carried[0];
-        const entry = manifest?.docs[relPath];
         if (!entry) return true;
         const pageImg = ghost && !ghost.classList.contains('chip') ? /** @type {?HTMLElement} */ ([...ghost.querySelectorAll('.scribe-ghost-card :is(canvas, img)')].pop() ?? null) : null;
         const targetViewer = t.group === 1 ? (viewer._rightGroup?.viewer ?? null) : viewer.scribe;
-        const landing = ghost ? landCard(pageImg, targetViewer, viewer.pdfViewerElem) : null;
+        // Off its first page the document lands as the real page, so the area of a group this drop creates is veiled before the page can show there.
+        const leftOn = open ? (viewer._viewerShowing(open.doc)?.state.cp.n ?? open.lastPage) : 0;
+        const landing = ghost ? landCard(pageImg, targetViewer, viewer.pdfViewerElem, !targetViewer && leftOn > 0 ? t.rect : null) : null;
         openEntry(relPath, entry, { group: t.group, move: true }).then(() => {
-          const tab = viewer._tabs.find((tb) => ownsTab(tb) && (entry.hash ? tb.libraryHash === entry.hash : tb.libraryRelPath === relPath));
+          const tab = viewer._tabs.find(isTab);
           const shown = tab ? viewer._viewerShowing(tab.doc) : null;
           if (shown) landing?.arrive(shown);
           else landing?.cancel();

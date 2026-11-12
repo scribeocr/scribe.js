@@ -4503,7 +4503,7 @@ class ScribePDFViewer {
    * @param {number} x
    * @param {number} y
    * @param {string} label
-   * @returns {?{group: 0|1}} The target on a move or a drop, for the library to act on.
+   * @returns {?{group: 0|1, rect: {left: number, top: number, width: number, height: number}}} The target on a move or a drop, for the document library to act on.
    */
   _cardDragTarget(phase, x, y, label) {
     if (phase === 'cancel') {
@@ -4513,7 +4513,7 @@ class ScribePDFViewer {
     const target = this._dropTargetAt(x, y, 0, 'card');
     if (phase === 'move') this._showDropTarget(target, label, x, y, 'card');
     else this._hideDropTarget();
-    return target ? { group: target.group } : null;
+    return target ? { group: target.group, rect: target.rect } : null;
   }
 
   /**
