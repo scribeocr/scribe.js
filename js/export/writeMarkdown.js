@@ -1,4 +1,4 @@
-import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
+import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import {
@@ -171,7 +171,7 @@ export function writeMarkdown({
     }
   }
 
-  const compounds = reflowText ? hyphenatedCompounds(ocrCurrent) : null;
+  const evidence = reflowText ? lineEndEvidence(ocrCurrent) : null;
 
   let isFirstContent = true;
 
@@ -356,7 +356,7 @@ export function writeMarkdown({
       }
 
       const next = pageObj.lines[h + 1];
-      const join = compounds && next && next.par === lineObj.par && !tableOf(next) ? lineJoin(lineObj, next, compounds) : { joinNext: false, dropHyphen: false };
+      const join = evidence && next && next.par === lineObj.par && !tableOf(next) ? lineJoin(lineObj, next, evidence) : { joinNext: false, dropHyphen: false };
       const words = lineObj.words.filter((w) => !!w);
       for (let i = 0; i < words.length; i++) {
         const wordObj = words[i];

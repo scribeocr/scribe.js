@@ -1,4 +1,4 @@
-import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
+import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import { parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
@@ -45,7 +45,7 @@ export function writeText({
   // Character width of the full page when preserveSpacing is on.
   const lineWidth = 120;
 
-  const compounds = doReflow ? hyphenatedCompounds(ocrCurrent) : null;
+  const evidence = doReflow ? lineEndEvidence(ocrCurrent) : null;
   const included = (wordObj) => !!wordObj && (!wordIds || wordIds.includes(wordObj.id));
 
   let newLine = false;
@@ -112,8 +112,8 @@ export function writeText({
       let lastWritten = -1;
       lineObj.words.forEach((wordObj, i) => { if (included(wordObj)) lastWritten = i; });
       const next = pageObj.lines[h + 1];
-      const join = compounds && lastWritten === last && next && next.par === par && !tableOf(next)
-        ? lineJoin(lineObj, next, compounds)
+      const join = evidence && lastWritten === last && next && next.par === par && !tableOf(next)
+        ? lineJoin(lineObj, next, evidence)
         : { joinNext: false, dropHyphen: false };
 
       const prefixLen = lineNumbers ? `${g}:${h}  `.length : 0;

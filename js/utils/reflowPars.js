@@ -3,50 +3,131 @@ import { calcBboxUnion, quantile } from './miscUtils.js';
 
 // The hyphen a typesetter breaks a word with: a hyphen-minus, a Unicode hyphen or a soft hyphen after a letter or digit.
 const LINE_END_HYPHEN_RE = /[\p{L}\p{N}][-‐­]$/u;
-
-// A number, ordinal or fraction word, or "self", before a line-end hyphen usually opens a compound rather than a broken word.
-const NUMBER_WORDS = new Set(['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
-  'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety', 'hundred',
-  'thousand', 'million', 'billion', 'half', 'third', 'quarter', 'fifth', 'first', 'second', 'self']);
+const LINE_END_DASH_RE = /[-\u2010\u2011\u2012\u2013\u2014\u00AD\u00AC]$/;
+const OPENERS_RE = /^[\p{Ps}\p{Pi}"'`*_§¶†‡•·]*$/u;
+const CLOSERS_RE = /^[\p{Pe}\p{Pf}"'`.,;:!?*_†‡]*$/u;
+const POSSESSIVE_RE = /^['\u2019]s?[\p{Pe}\p{Pf}"'.,;:!?]*$/u;
+const URL_LIKE_RE = /:\/\/|\bwww\.|[\w.]@[\w-]+\.|\.(com|org|net|gov|edu|mil|io|co|us|uk|de|fr|ca|au|info|biz)(\/|\b)|\.(pdf|html?|aspx?|php|jsp)\b|^https?\b|[\\/][^\\/]*[\\/]/i;
+const EXPLICIT_URL_RE = /^[\p{Ps}\p{Pi}"'<]*(?:https?:\/\/|www\.)/iu;
+const URL_CHARS_RE = /^[A-Za-z0-9\-._~:/?#@!$&'()*+,;=%]+$/;
+const URL_TRIM_RE = /^[\p{Ps}\p{Pi}"'<]+|[\p{Pe}\p{Pf}"'.,;:!?>]+$/gu;
+// Words that follow a suspended hyphen ("pre- and post-trial"), where the space belongs to the text.
+const COORDINATORS = new Set(['and', 'or', 'nor', 'to', 'versus', 'und', 'oder']);
+// Hyphenated words that are a different word from their closed form, as "re-sign" is from "resign".
+const HOMOGRAPH_RE = /^(?:re-(?:act|claim|coil|collect|count|cover|creat|dress|fin|form|fund|fus|lay|leas|mark|pair|pos|present|press|prov|sent|serv|sign|solv|sort|sound|stor|strain|tir|trac|treat)(?:e|es|ed|d|ing|s)?|re-creations?|re-laid|un-ioni[sz](?:e|es|ed|ing)|multi-ply|co-ops?)$/;
+const LETTERS_RE = /\p{L}+/gu;
+const HYPHENATED_PAIR_RE = /(\p{L}+)[-\u2010\u2011](?=(\p{L}+))/gu;
 
 /**
- * Collects the hyphenated words the pages print, lowercased and with their hyphens normalized to hyphen-minus.
- * @param {Array<?OcrPage>} pages
- * @returns {Set<string>}
+ * Gets the letters on each side of a line-end hyphen and whether they have the shape of a word a typesetter broke.
+ * @param {string} last - The line's last word, with its hyphen.
+ * @param {string} first - The next line's first word.
+ * @returns {{left: string, right: string, breakShape: boolean}} The letters in lowercase, empty on a side where no letter touches the hyphen.
  */
-export function hyphenatedCompounds(pages) {
-  const compounds = new Set();
+function hyphenSides(last, first) {
+  const body = last.slice(0, -1);
+  const left = body.match(/\p{L}+$/u)?.[0] || '';
+  const right = first.match(/^\p{L}+/u)?.[0] || '';
+  const after = first.slice(right.length);
+  const breakShape = left.length >= 2 && right.length >= 2
+    && OPENERS_RE.test(body.slice(0, body.length - left.length)) && (CLOSERS_RE.test(after) || POSSESSIVE_RE.test(after))
+    && !URL_LIKE_RE.test(last) && !URL_LIKE_RE.test(first)
+    && ((right === right.toLowerCase() && right !== right.toUpperCase())
+      || (right === right.toUpperCase() && right !== right.toLowerCase() && left === left.toUpperCase() && left !== left.toLowerCase()));
+  return { left: left.toLowerCase(), right: right.toLowerCase(), breakShape };
+}
+
+/**
+ * Collects the evidence that decides how a line ending in a hyphen joins the next line.
+ * @param {Array<?OcrPage>} pages
+ * @returns {{words: Set<string>, pairs: Set<string>, urls: Set<string>, brokenWordsByPage: Map<number, Set<string>>}}
+ */
+export function lineEndEvidence(pages) {
+  /** @type {Set<string>} */
+  const words = new Set();
+  /** @type {Set<string>} */
+  const pairs = new Set();
+  /** @type {Set<string>} */
+  const urls = new Set();
   for (const page of pages) {
     if (!page) continue;
+    let afterDash = false;
     for (const line of page.lines) {
-      for (const word of line.words) {
-        if (!word) continue;
-        const core = word.text.replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, '').replace(/[‐­]/g, '-');
-        if (/\S-\S/.test(core)) compounds.add(core.toLowerCase());
+      const lineWords = line.words.filter((word) => !!word);
+      const endsInDash = lineWords.length > 0 && LINE_END_DASH_RE.test(lineWords[lineWords.length - 1].text);
+      for (let i = 0; i < lineWords.length; i++) {
+        // The word a line-end dash ends and the word after it are what the evidence decides, so they are not evidence themselves.
+        if ((i === 0 && afterDash) || (i === lineWords.length - 1 && endsInDash)) continue;
+        const text = lineWords[i].text.toLowerCase();
+        for (const match of text.matchAll(LETTERS_RE)) words.add(match[0]);
+        for (const match of text.matchAll(HYPHENATED_PAIR_RE)) pairs.add(`${match[1]}-${match[2]}`);
+        if (/:\/\/|www\./.test(text)) urls.add(lineWords[i].text.replace(URL_TRIM_RE, ''));
       }
+      afterDash = endsInDash;
     }
   }
-  return compounds;
+
+  /** @type {Map<number, Set<string>>} */
+  const brokenWordsByPage = new Map();
+  for (const page of pages) {
+    if (!page) continue;
+    /** @type {Set<string>} */
+    const brokenWords = new Set();
+    // Every line end counts, in or out of a paragraph, so the evidence is the same before and after an export assigns paragraphs.
+    for (let h = 0; h < page.lines.length - 1; h++) {
+      const last = page.lines[h].words[page.lines[h].words.length - 1];
+      const first = page.lines[h + 1].words[0];
+      if (!last || !first || !LINE_END_HYPHEN_RE.test(last.text)) continue;
+      const { left, right, breakShape } = hyphenSides(last.text, first.text);
+      if (breakShape && words.has(left + right) && !pairs.has(`${left}-${right}`)) brokenWords.add(left + right);
+    }
+    if (brokenWords.size > 0) brokenWordsByPage.set(page.n, brokenWords);
+  }
+
+  return {
+    words, pairs, urls, brokenWordsByPage,
+  };
 }
 
 /**
  * Decide how a line that ends in a hyphen joins the next line of its paragraph when a reflow export removes the line break.
  * @param {{words: Array<?OcrWord>}} line
  * @param {?{words: Array<?OcrWord>}} next - The next line of the same paragraph, or null at the paragraph's end.
- * @param {Set<string>} compounds - The document's hyphenated words, lowercased, with hyphen-minus.
+ * @param {ReturnType<typeof lineEndEvidence>} evidence
  * @returns {{joinNext: boolean, dropHyphen: boolean}} Whether the next line's first word follows with no space, and whether the line's last word loses its hyphen.
  */
-export function lineJoin(line, next, compounds) {
+export function lineJoin(line, next, evidence) {
   const none = { joinNext: false, dropHyphen: false };
   if (!next) return none;
   const last = line.words[line.words.length - 1];
   const first = next.words[0];
   if (!last || !first || !LINE_END_HYPHEN_RE.test(last.text)) return none;
-  if (!/^\p{Ll}/u.test(first.text)) return { joinNext: true, dropHyphen: false };
-  const base = last.text.slice(0, -1).replace(/^[\p{P}\p{S}]+/u, '').replace(/[‐­]/g, '-');
-  const core = first.text.replace(/[\p{P}\p{S}]+$/u, '').replace(/[‐­]/g, '-').toLowerCase();
-  const compound = NUMBER_WORDS.has(base.toLowerCase()) || compounds.has(`${base.toLowerCase()}-${core}`);
-  return { joinNext: true, dropHyphen: !compound };
+
+  const { left, right, breakShape } = hyphenSides(last.text, first.text);
+  const joined = left + right;
+  const pair = `${left}-${right}`;
+
+  // Other words broken on this page or the two beside it show a typesetter that breaks words here.
+  const pageN = last.line.page.n;
+  let brokenNearby = 0;
+  for (const n of [pageN - 1, pageN, pageN + 1]) {
+    for (const word of evidence.brokenWordsByPage.get(n) || []) if (word !== joined) brokenNearby++;
+  }
+
+  // A document prints both sides of a compound as words of their own, which tells a compound it also spells closed from a broken word.
+  if (breakShape && evidence.words.has(joined) && !evidence.pairs.has(pair) && !(evidence.words.has(left) && evidence.words.has(right))
+    && brokenNearby > 0 && !HOMOGRAPH_RE.test(pair)) return { joinNext: true, dropHyphen: true };
+
+  if (left && right && evidence.pairs.has(pair) && !COORDINATORS.has(first.text.replace(/[\p{P}\p{S}]+$/u, '').toLowerCase())) return { joinNext: true, dropHyphen: false };
+
+  if (EXPLICIT_URL_RE.test(last.text) && URL_CHARS_RE.test(first.text.replace(URL_TRIM_RE, ''))) {
+    // A typesetter that breaks words adds a hyphen where it splits a web address, so the address loses the hyphen where the document prints it whole elsewhere.
+    if (evidence.brokenWordsByPage.size > 0 && evidence.urls.has(last.text.slice(0, -1).replace(URL_TRIM_RE, '') + first.text.replace(URL_TRIM_RE, ''))) return { joinNext: true, dropHyphen: true };
+    // Where no word is broken nearby, the hyphen a web address wraps at is its own.
+    if (brokenNearby === 0) return { joinNext: true, dropHyphen: false };
+  }
+
+  return none;
 }
 
 /**

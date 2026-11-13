@@ -2,7 +2,7 @@ import {
   documentEnd, documentStart, docxStrings, fontTableEnd, fontTableStart, footnotesStart, footnotesEnd,
 } from './resources/docxFiles.js';
 
-import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
+import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import ocr, {
@@ -57,7 +57,7 @@ export function writeDocxContent({
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
 
-  const compounds = reflowText ? hyphenatedCompounds(ocrCurrent) : null;
+  const evidence = reflowText ? lineEndEvidence(ocrCurrent) : null;
   const included = (wordObj) => !!wordObj && (!wordIds || wordIds.includes(wordObj.id));
 
   // Pre-pass: assign each linked note paragraph (footnote or endnote) a Word footnote id in in-text reference order, which is how Word numbers footnotes.
@@ -135,7 +135,7 @@ export function writeDocxContent({
       const last = lineObj.words.length - 1;
       let lastWritten = -1;
       lineObj.words.forEach((wordObj, i) => { if (included(wordObj)) lastWritten = i; });
-      const join = compounds && lastWritten === last ? lineJoin(lineObj, lines[li + 1] || null, compounds) : { joinNext: false, dropHyphen: false };
+      const join = evidence && lastWritten === last ? lineJoin(lineObj, lines[li + 1] || null, evidence) : { joinNext: false, dropHyphen: false };
       let firstInLine = true;
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];

@@ -28,7 +28,7 @@ describe('Shared PDF worker pool crash containment', () => {
     // If release had returned the killed worker to the pool instead of destroying it, this open would lease it back and fail to load.
     const doc2 = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
     const txt = await doc2.exportData('text');
-    expect(txt.length, 'a document opened after a worker crash extracts full text on the healed pool').toBe(3364);
+    expect(txt.length, 'a document opened after a worker crash extracts full text on the healed pool').toBe(3375);
     await doc2.close();
   }, 30000);
 
@@ -43,7 +43,7 @@ describe('Shared PDF worker pool crash containment', () => {
     startText();
     await doc.textReady;
     const txt = await doc.exportData('text');
-    expect(txt.length, 'the deferred text lands in full once textStart resolves').toBe(33386);
+    expect(txt.length, 'the deferred text lands in full once textStart resolves').toBe(33389);
     await doc.close();
   }, 30000);
 
@@ -89,7 +89,7 @@ describe('Shared PDF worker pool crash containment', () => {
     const after = poolStats();
     expect(after.leased + after.spare + after.retiring, 'the growing document took over the retiring workers instead of spawning beside them').toBe(grown.leased + grown.spare);
     const txt = await b.exportData('text');
-    expect(txt.length, 'the grown document still reads its text through the pool').toBe(3364);
+    expect(txt.length, 'the grown document still reads its text through the pool').toBe(3375);
     await a.close();
     await b.close();
   }, 60000);

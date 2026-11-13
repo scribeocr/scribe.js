@@ -380,6 +380,13 @@ describe('Check superscripts are detected in PDF imports.', () => {
       .toContain('<w:font w:name="MyriadPro"><w:altName w:val="Arial"/><w:family w:val="swiss"/><w:pitch w:val="variable"/></w:font>');
     expect(fontTableXml, 'a standard family\'s PostScript name gets that family as its substitute')
       .toContain('<w:font w:name="TimesNewRomanPSMT"><w:altName w:val="Times New Roman"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font>');
+
+    const docxText = documentXml.replace(/<[^>]+>/g, '');
+    for (const [format, exported] of [['text', text], ['Markdown', md], ['HTML', html], ['Word', docxText]]) {
+      expect(exported, `the ${format} export did not repair a word broken at a line end that the document prints whole elsewhere`).toContain('lowers the average wage of high-skilled workers');
+      expect(exported, `the ${format} export did not write as printed a word broken at a line end that the document prints nowhere else`).toContain('by 12.2%, con- tributes 8.1% to');
+    }
+    expect(text, 'the text export joined or deleted the hyphen of a compound the document prints nowhere else').toContain('multiple attempts over a nine- year period to alert the SEC');
   });
 
   test('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {

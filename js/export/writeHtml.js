@@ -3,7 +3,7 @@ import { calcWordMetrics } from '../utils/fontUtils.js';
 import ocr, {
   isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
 } from '../objects/ocrObjects.js';
-import { assignParagraphs, hyphenatedCompounds, lineJoin } from '../utils/reflowPars.js';
+import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
@@ -267,7 +267,7 @@ export function writeHtmlFragment({
 
   if (reflowText) {
     const esc = ocr.escapeXml;
-    const compounds = hyphenatedCompounds(ocrPages);
+    const evidence = lineEndEvidence(ocrPages);
     /** @type {Map<string, string>} */
     const fnLabelById = new Map();
     /** @type {Map<string, string>} */
@@ -336,8 +336,9 @@ export function writeHtmlFragment({
       let prevJoin = false;
       let first = true;
       for (let li = 0; li < lines.length; li++) {
-        const { joinNext, dropHyphen } = lines[li + 1] ? lineJoin(lines[li], lines[li + 1], compounds) : { joinNext: false, dropHyphen: false };
         const words = lines[li].words.filter(/** @returns {w is OcrWord} */ (w) => !!w && !!w.text && (!wordIds || wordIds.includes(w.id)));
+        const lastWritten = words.length > 0 && words[words.length - 1] === lines[li].words[lines[li].words.length - 1];
+        const { joinNext, dropHyphen } = lastWritten && lines[li + 1] ? lineJoin(lines[li], lines[li + 1], evidence) : { joinNext: false, dropHyphen: false };
         for (let i = 0; i < words.length; i++) {
           const word = words[i];
           if (stripLeader && first && isNoteLeader(word, lines[li].par || null)) continue;
