@@ -756,6 +756,8 @@ class ScribePDFViewer {
     this._activeGroup = 0;
     /** @type {?HTMLDivElement} */
     this._dropOverlay = null;
+    /** @type {?Animation} */
+    this._dropFade = null;
     /** @type {?HTMLDivElement} */
     this._dragChip = null;
     /** @type {?HTMLDivElement} */
@@ -4512,7 +4514,7 @@ class ScribePDFViewer {
     }
     const target = this._dropTargetAt(x, y, 0, 'card');
     if (phase === 'move') this._showDropTarget(target, label, x, y, 'card');
-    else this._hideDropTarget();
+    else this._hideDropTarget(!!target);
     return target ? { group: target.group, rect: target.rect } : null;
   }
 
@@ -4530,6 +4532,9 @@ class ScribePDFViewer {
       return;
     }
     const root = this.pdfViewerElem.getBoundingClientRect();
+    // A drag that starts while the last drop's target is still fading out takes the target back at full strength.
+    this._dropFade?.cancel();
+    this._dropFade = null;
     if (!this._dropOverlay) {
       const ov = document.createElement('div');
       ov.className = 'scribe-group-drop';
@@ -4573,8 +4578,27 @@ class ScribePDFViewer {
     }
   }
 
-  _hideDropTarget() {
-    for (const el of [this._dropOverlay, this._dropIns, this._dragChip]) if (el) el.style.display = 'none';
+  /**
+   * Take the drop target off the screen.
+   * @param {boolean} [fade] - Fade the area's wash, frame and label out.
+   */
+  _hideDropTarget(fade = false) {
+    for (const el of [this._dropIns, this._dragChip]) if (el) el.style.display = 'none';
+    const ov = this._dropOverlay;
+    if (!ov) return;
+    this._dropFade?.cancel();
+    this._dropFade = null;
+    if (!fade || ov.style.display === 'none' || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+      ov.style.display = 'none';
+      return;
+    }
+    const anim = ov.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 100, easing: 'ease-out' });
+    this._dropFade = anim;
+    anim.finished.then(() => {
+      if (this._dropFade !== anim) return;
+      this._dropFade = null;
+      ov.style.display = 'none';
+    }, () => {});
   }
 
   /**

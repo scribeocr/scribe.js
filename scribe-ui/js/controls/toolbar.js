@@ -5129,7 +5129,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active, .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin .scribe-tab.active,
     .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { color: var(--scribe-ink-2); border-bottom-color: var(--scribe-line-strong); }
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active .scribe-tab-name { text-shadow: none; }
-    .${r} .scribe-group-drop { position: absolute; z-index: 32; background: var(--scribe-accent-soft); opacity: .94; pointer-events: none; }
+    .${r} .scribe-group-drop { position: absolute; z-index: 32; pointer-events: none; }
+    .${r} .scribe-group-drop::before { content: ''; position: absolute; inset: 0; background: var(--scribe-accent-soft); opacity: .3; }
     .${r} .scribe-group-drop .scribe-drag-frame { inset: 10px; border-radius: 12px; }
     .${r} .scribe-group-drop .scribe-drag-pill { padding: 7px 14px 7px 11px; font-size: 13px; }
     .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }

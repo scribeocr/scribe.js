@@ -676,6 +676,7 @@ const addLibraryStyles = () => {
 
 /**
  * Land a dropped card or row as the document it opens.
+ * A document already open there is kept in view until the new one takes its place.
  * @param {?HTMLElement} pageImg - The drag ghost's page, an image or the canvas copy of one, at the size it had at release; null for a row's chip.
  * @param {?import('../viewer.js').ScribeViewer} target - The viewer the document will open in, when it exists at the drop.
  * @param {HTMLElement} host - The app's root element, which holds the banners the landing stacks under.
@@ -686,13 +687,20 @@ const landCard = (pageImg, target, host, ahead = null) => {
   const from = pageImg ? pageImg.getBoundingClientRect() : null;
   const cs = pageImg ? getComputedStyle(pageImg) : null;
   /**
-   * The clip that keeps the flying page inside the document area it lands in.
+   * The clip that keeps the flying page and its shadow inside the document area it lands in.
    * @param {DOMRect} box
    * @param {DOMRect} area
    */
-  const clipTo = (box, area) => `inset(${Math.max(0, area.top - box.top)}px ${Math.max(0, box.right - area.right)}px ${Math.max(0, box.bottom - area.bottom)}px ${Math.max(0, area.left - box.left)}px)`;
+  const clipTo = (box, area) => `inset(${area.top - box.top}px ${box.right - area.right}px ${box.bottom - area.bottom}px ${area.left - box.left}px)`;
   /** @type {?HTMLDivElement} */
   let veil = null;
+  /**
+   * A copy of the open document's pages that were in view at the release.
+   * @type {?HTMLElement}
+   */
+  let outgoing = null;
+  /** @type {?Animation} */
+  let held = null;
   const sc = target?.scrollContainer;
   if (sc || ahead) {
     const r = sc ? sc.getBoundingClientRect() : /** @type {NonNullable<typeof ahead>} */ (ahead);
@@ -709,11 +717,43 @@ const landCard = (pageImg, target, host, ahead = null) => {
       top: `${r.top}px`,
       width: `${r.width}px`,
       height: `${r.height}px`,
-      zIndex: '33',
+      // Under the drop target, which fades out over the open document's pages.
+      zIndex: '31',
       pointerEvents: 'none',
       background: bg,
     });
     host.appendChild(veil);
+    const inView = sc ? (target?.pageContainerArr ?? []).filter((pc) => {
+      if (!pc || !pc.isConnected) return false;
+      const b = pc.getBoundingClientRect();
+      return b.bottom > r.top && b.top < r.bottom && b.right > r.left && b.left < r.right;
+    }) : [];
+    if (sc && inView.length) {
+      // The viewer drops its own pages as soon as the new document opens, so the ones in view are copied.
+      // The copy keeps every element between the scroll area and the pages, so the zoom and the styles that reach the pages through them still apply.
+      outgoing = /** @type {HTMLElement} */ (sc.cloneNode(false));
+      let holder = outgoing;
+      /** @type {HTMLElement[]} */
+      const between = [];
+      for (let el = inView[0].parentElement; el && el !== sc; el = el.parentElement) between.unshift(el);
+      for (const el of between) holder = holder.appendChild(/** @type {HTMLElement} */ (el.cloneNode(false)));
+      for (const pc of inView) {
+        const twin = /** @type {HTMLElement} */ (pc.cloneNode(true));
+        const drawn = pc.querySelectorAll('canvas');
+        twin.querySelectorAll('canvas').forEach((c, i) => {
+          if (drawn[i].width && drawn[i].height) c.getContext('2d')?.drawImage(drawn[i], 0, 0);
+        });
+        holder.appendChild(twin);
+      }
+      outgoing.removeAttribute('tabindex');
+      outgoing.inert = true;
+      Object.assign(outgoing.style, {
+        position: 'absolute', left: '0', top: '0', margin: '0', overflow: 'hidden',
+      });
+      veil.appendChild(outgoing);
+      outgoing.scrollLeft = sc.scrollLeft;
+      outgoing.scrollTop = sc.scrollTop;
+    }
   }
   /** @type {?HTMLElement} */
   let copy = null;
@@ -729,6 +769,8 @@ const landCard = (pageImg, target, host, ahead = null) => {
   }
   if (copy && from && cs) {
     copy.className = 'scribe-card-landing';
+    // The shadow and corners the page was carried in belong to its card, the image's parent.
+    const carried = outgoing && pageImg?.parentElement ? getComputedStyle(pageImg.parentElement) : null;
     Object.assign(copy.style, {
       position: 'fixed',
       left: `${from.left}px`,
@@ -741,8 +783,9 @@ const landCard = (pageImg, target, host, ahead = null) => {
       objectFit: 'cover',
       objectPosition: 'top',
       border: cs.border,
-      borderRadius: cs.borderRadius,
-      boxShadow: cs.boxShadow,
+      borderRadius: carried ? carried.borderRadius : cs.borderRadius,
+      boxShadow: carried ? carried.boxShadow : cs.boxShadow,
+      outline: carried ? '1px solid transparent' : '',
       background: cs.backgroundColor || '#fff',
       clipPath: sc ? clipTo(from, sc.getBoundingClientRect()) : '',
     });
@@ -754,7 +797,15 @@ const landCard = (pageImg, target, host, ahead = null) => {
     done = true;
     copy?.remove();
     veil?.remove();
+    outgoing?.remove();
+    held?.cancel();
   };
+  // The open document's pages go before the new document's other pages come, so the text of the two never visibly overlaps.
+  const OUT_FROM = 120;
+  const OUT_TO = 210;
+  const IN_FROM = 200;
+  const IN_TO = 290;
+  const LAND = 'cubic-bezier(0, 0, .2, 1)';
   const reduced = () => !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   return {
     arrive: (viewer) => {
@@ -768,8 +819,11 @@ const landCard = (pageImg, target, host, ahead = null) => {
             finish();
             return;
           }
-          const fade = veil.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 180, easing: 'ease', fill: 'forwards' });
-          fade.finished.then(finish, finish);
+          const backing = veil;
+          const gone = outgoing
+            ? outgoing.animate([{ opacity: 1 }, { opacity: 0 }], { duration: OUT_TO - OUT_FROM, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' }).finished
+            : Promise.resolve();
+          gone.then(() => backing.animate([{ opacity: 1 }, { opacity: 0 }], { duration: outgoing ? IN_TO - IN_FROM : 180, easing: 'ease', fill: 'forwards' }).finished).then(finish, finish);
         }, finish);
         return;
       }
@@ -788,14 +842,30 @@ const landCard = (pageImg, target, host, ahead = null) => {
           const box = pageEl.getBoundingClientRect();
           const zoom = box.width / pageEl.offsetWidth;
           const fit = Math.min(from.width / box.width, from.height / box.height);
+          const layer = pageEl.parentElement;
+          if (outgoing && veil && layer) {
+            // The page that flies in is the viewer's own and lies under the veil, so the open document's pages move into its layer, beneath it.
+            const at = veil.getBoundingClientRect();
+            const origin = layer.getBoundingClientRect();
+            const { scrollLeft, scrollTop } = outgoing;
+            Object.assign(outgoing.style, {
+              left: `${(at.left - origin.left) / zoom}px`, top: `${(at.top - origin.top) / zoom}px`, transformOrigin: '0 0', transform: `scale(${1 / zoom})`,
+            });
+            layer.insertBefore(outgoing, layer.firstChild);
+            outgoing.scrollLeft = scrollLeft;
+            outgoing.scrollTop = scrollTop;
+            outgoing.animate([{ opacity: 1 }, { opacity: 1, offset: OUT_FROM / OUT_TO, easing: 'cubic-bezier(.4, 0, 1, 1)' }, { opacity: 0 }], { duration: OUT_TO, fill: 'forwards' });
+          }
           veil?.remove();
           Object.assign(cover.style, {
-            position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', clipPath: '',
+            position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', clipPath: '', boxShadow: 'none', outline: '',
           });
           pageEl.appendChild(cover);
           cover.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 90, fill: 'forwards' });
-          for (const el of pageEl.parentElement?.children ?? []) {
-            if (el !== pageEl) el.animate([{ opacity: 0 }, { opacity: 0, offset: 0.5, easing: 'ease-out' }, { opacity: 1 }], { duration: 240 });
+          for (const el of layer?.children ?? []) {
+            if (el === pageEl || el === outgoing) continue;
+            if (outgoing) el.animate([{ opacity: 0 }, { opacity: 0, offset: IN_FROM / IN_TO, easing: LAND }, { opacity: 1 }], { duration: IN_TO });
+            else el.animate([{ opacity: 0 }, { opacity: 0, offset: 0.5, easing: 'ease-out' }, { opacity: 1 }], { duration: 240 });
           }
           pageEl.animate([
             { transform: `translate(${(from.left + from.width / 2 - box.left - box.width / 2) / zoom}px, ${(from.top + from.height / 2 - box.top - box.height / 2) / zoom}px) scale(${fit})` },
@@ -807,13 +877,31 @@ const landCard = (pageImg, target, host, ahead = null) => {
       const area = viewer.scrollContainer.getBoundingClientRect();
       const flight = reduced() ? null : copy.animate([
         {
-          left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: cs.borderRadius, clipPath: clipTo(from, area),
+          left: `${from.left}px`, top: `${from.top}px`, width: `${from.width}px`, height: `${from.height}px`, borderRadius: copy.style.borderRadius, clipPath: clipTo(from, area),
         },
         {
           left: `${to.left}px`, top: `${to.top}px`, width: `${to.width}px`, height: `${to.height}px`, borderRadius: '0px', clipPath: clipTo(to, area),
         },
-      ], { duration: 240, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'forwards' });
-      Promise.all([flight ? flight.finished : Promise.resolve(), paint]).then(() => {
+      ], { duration: 240, easing: LAND, fill: 'forwards' });
+      /** @type {?Animation} */
+      let settle = null;
+      if (flight && outgoing && veil) {
+        // The backing goes now, or the new document's other pages could not fade in under the veil.
+        veil.style.background = 'none';
+        held = pageEl.animate([{ opacity: 0 }, { opacity: 0 }], { duration: IN_TO, fill: 'forwards' });
+        for (const el of pageEl.parentElement?.children ?? []) {
+          if (el !== pageEl) el.animate([{ opacity: 0 }, { opacity: 0, offset: IN_FROM / IN_TO, easing: LAND }, { opacity: 1 }], { duration: IN_TO });
+        }
+        outgoing.animate([{ opacity: 1 }, { opacity: 1, offset: OUT_FROM / OUT_TO, easing: 'cubic-bezier(.4, 0, 1, 1)' }, { opacity: 0 }], { duration: OUT_TO, fill: 'forwards' });
+        // The viewer draws its pages with a 1px outline, so the copy brings one up before the page takes its place.
+        settle = copy.animate([
+          { boxShadow: copy.style.boxShadow, outlineColor: 'rgba(0, 0, 0, 0)', easing: LAND },
+          { outlineColor: 'rgba(0, 0, 0, 0)', offset: IN_FROM / IN_TO },
+          { boxShadow: '0 2px 8px rgba(0, 0, 0, .24)', offset: 240 / IN_TO },
+          { boxShadow: '0 2px 8px rgba(0, 0, 0, 0)', outlineColor: 'rgba(0, 0, 0, 1)' },
+        ], { duration: IN_TO, fill: 'forwards' });
+      }
+      Promise.all([(settle ?? flight)?.finished ?? Promise.resolve(), paint]).then(() => {
         requestAnimationFrame(finish);
       }, finish);
     },
