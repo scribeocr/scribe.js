@@ -36,6 +36,8 @@ export class PortfolioStore {
     this.thumbs = new Map();
     /** @type {Map<string, Map<number, Blob>>} */
     this.rasters = new Map();
+    /** @type {Map<string, Map<number, Blob>>} */
+    this.pageThumbs = new Map();
 
     const { files, collection } = doc.attachments;
     /** @type {Array<string>} The collection's folders as the paths the library keys its subdirectories by, parent-first. */
@@ -81,6 +83,7 @@ export class PortfolioStore {
     this.sidecarBackups.clear();
     this.thumbs.clear();
     this.rasters.clear();
+    this.pageThumbs.clear();
     this.rasterBytes = 0;
   }
 
@@ -210,16 +213,26 @@ export class PortfolioStore {
     this.thumbs.delete(hash);
   }
 
-  /** @param {string} hash @param {number} n @param {Blob} blob */
-  async writePageRaster(hash, n, blob) {
-    let pages = this.rasters.get(hash);
+  /**
+   * @param {Map<string, Map<number, Blob>>} byHash
+   * @param {string} hash
+   * @param {number} n
+   * @param {Blob} blob
+   */
+  #writePageBlob(byHash, hash, n, blob) {
+    let pages = byHash.get(hash);
     if (!pages) {
       pages = new Map();
-      this.rasters.set(hash, pages);
+      byHash.set(hash, pages);
     }
     this.rasterBytes = (this.rasterBytes ?? 0) - (pages.get(n)?.size ?? 0) + blob.size;
     if (this.rasterBytes > this.rasterBudget) this.trimDue = true;
     pages.set(n, blob);
+  }
+
+  /** @param {string} hash @param {number} n @param {Blob} blob */
+  async writePageRaster(hash, n, blob) {
+    this.#writePageBlob(this.rasters, hash, n, blob);
   }
 
   /** @param {string} hash @param {number} n @returns {Promise<?Blob>} */
@@ -227,12 +240,27 @@ export class PortfolioStore {
     return this.rasters.get(hash)?.get(n) ?? null;
   }
 
+  /** @param {string} hash @param {number} sourcePageN @param {Blob} blob */
+  async writePageThumb(hash, sourcePageN, blob) {
+    this.#writePageBlob(this.pageThumbs, hash, sourcePageN, blob);
+  }
+
+  /** @param {string} hash @param {number} sourcePageN @returns {Promise<?Blob>} */
+  async readPageThumb(hash, sourcePageN) {
+    return this.pageThumbs.get(hash)?.get(sourcePageN) ?? null;
+  }
+
+  /** @param {string} hash @returns {Promise<Set<number>>} The source pages of `hash` that have a stored thumbnail. */
+  async listPageThumbs(hash) {
+    return new Set(this.pageThumbs.get(hash)?.keys());
+  }
+
   /** @param {string} hash */
   async deletePageRasters(hash) {
-    const pages = this.rasters.get(hash);
-    if (!pages) return;
-    for (const blob of pages.values()) this.rasterBytes = (this.rasterBytes ?? 0) - blob.size;
-    this.rasters.delete(hash);
+    for (const byHash of [this.rasters, this.pageThumbs]) {
+      for (const blob of byHash.get(hash)?.values() ?? []) this.rasterBytes = (this.rasterBytes ?? 0) - blob.size;
+      byHash.delete(hash);
+    }
   }
 
   /** @param {import('./libraryStore.js').LibraryManifest} manifest */
@@ -240,19 +268,22 @@ export class PortfolioStore {
     const entries = Object.values(manifest.docs);
     const referenced = (/** @type {string} */ hash) => entries.some((e) => e.hash === hash);
     if (!entries.some((e) => e.status === 'pending')) {
-      for (const map of [this.thumbs, this.rasters]) for (const hash of [...map.keys()]) if (!referenced(hash)) map.delete(hash);
+      for (const map of [this.thumbs, this.rasters, this.pageThumbs]) for (const hash of [...map.keys()]) if (!referenced(hash)) map.delete(hash);
     }
     /** @type {Map<string, number>} */
     const lastUse = new Map();
     for (const e of entries) if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
-    const kept = [...this.rasters].map(([hash, pages]) => ({
-      hash, bytes: [...pages.values()].reduce((acc, b) => acc + b.size, 0), use: lastUse.get(hash) ?? Infinity,
-    }));
+    const kept = [...new Set([...this.rasters.keys(), ...this.pageThumbs.keys()])].map((hash) => {
+      let bytes = 0;
+      for (const byHash of [this.rasters, this.pageThumbs]) for (const blob of byHash.get(hash)?.values() ?? []) bytes += blob.size;
+      return { hash, bytes, use: lastUse.get(hash) ?? Infinity };
+    });
     kept.sort((a, b) => a.use - b.use);
     let total = kept.reduce((acc, r) => acc + r.bytes, 0);
     for (const rec of kept) {
       if (total <= this.rasterBudget) break;
       this.rasters.delete(rec.hash);
+      this.pageThumbs.delete(rec.hash);
       total -= rec.bytes;
     }
     this.rasterBytes = total;

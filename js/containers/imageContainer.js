@@ -26,8 +26,17 @@ import { ca } from '../canvasAdapter.js';
  * @property {number} invalidations - How often the page's renders had been invalidated when the raster was asked for.
  * @property {number} rendersLanded - How many renders of the page had landed when the raster was asked for.
  * @property {boolean} wanted - Whether a thumbnail request waits for it.
+ * @property {number} persistAs - The source page under which a thumbnail cut from the raster is stored in the host's thumbnail store, or -1 when it is not stored there.
  * @property {Promise<?Blob>} thumbnail - The thumbnail cut from the raster once it lands, or null when none was.
  * @property {(thumbnail: ?Promise<?Blob>) => void} settle - Settles `thumbnail`.
+ */
+
+/**
+ * A store of page thumbnails that outlives the document.
+ * @typedef {Object} PageThumbCache
+ * @property {(sourcePageN: number) => boolean} has
+ * @property {(sourcePageN: number) => Promise<?Blob>} get - The stored thumbnail, or null when it cannot be read.
+ * @property {(sourcePageN: number, blob: Blob) => void} put
  */
 
 // Background renders can fail when they reuse a viewer render that is then dropped (skipped).
@@ -477,20 +486,47 @@ export class ImageStore {
    */
   #interimThumbs = new WeakMap();
 
+  /** @type {?PageThumbCache} */
+  #thumbCache = null;
+
+  /**
+   * Give the document a store of page thumbnails that outlives it.
+   * The store must hold thumbnails of this document's own PDF alone, since a thumbnail is filed by its page's index in that file.
+   * @param {?PageThumbCache} cache
+   */
+  setThumbCache = (cache) => {
+    this.#thumbCache = cache;
+  };
+
+  /**
+   * The source page under which display slot `n`'s thumbnail is filed in the host's thumbnail store, or -1 when it is not kept there.
+   * @param {number} n - Page number
+   * @param {?RenderEdits} edits
+   * @returns {number}
+   */
+  #thumbCachePage = (n, edits) => {
+    const pm = this.#pageMetrics[n];
+    const sourcePageN = pm?.sourcePageN ?? n;
+    const ownPage = (pm?.sourceId ?? this.primarySourceId) === this.primarySourceId && sourcePageN >= 0;
+    const kept = this.#thumbCache && this.inputModes.pdf && this.pdfDims300[n] && ownPage && edits === null && !this.#ephemeralRecords.has(n);
+    return kept ? sourcePageN : -1;
+  };
+
   /**
    * Record that a raster of page `n` is on its way to a viewer.
    * @param {number} n - Page number
    * @param {?import('../../tess/TessScheduler.js').Lane} lane - The lane of the render it comes from, or null when no render stands behind it.
+   * @param {number} [persistAs=-1] - The source page under which a thumbnail cut from the raster is stored in the host's thumbnail store.
    * @returns {ViewerRaster}
    */
-  #expectRaster = (n, lane) => {
+  #expectRaster = (n, lane, persistAs = -1) => {
     const pm = this.#pageMetrics[n];
     /** @type {(thumbnail: ?Promise<?Blob>) => void} */
     let settle = () => {};
     /** @type {Promise<?Blob>} */
     const thumbnail = new Promise((resolve) => { settle = resolve; });
     const coming = {
-      lane, pm, invalidations: this.#invalidations.get(pm) || 0, rendersLanded: this.#rendersLanded.get(pm) || 0, wanted: false, thumbnail, settle,
+      lane, pm, invalidations: this.#invalidations.get(pm) || 0, rendersLanded: this.#rendersLanded.get(pm) || 0, wanted: false, persistAs, thumbnail, settle,
     };
     this.#viewerRasters.set(n, coming);
     return coming;
@@ -519,6 +555,8 @@ export class ImageStore {
       // A thumbnail cut from a raster from elsewhere stands only until a render of its page replaces it.
       // So none is cut for a page the document no longer holds, or once a render of the page has landed since the raster was asked for, because that render is the newer picture.
       if (!rendered && (slot < 0 || (this.#rendersLanded.get(coming.pm) || 0) !== coming.rendersLanded)) return;
+      const storedAs = rendered ? -1 : this.#thumbCachePage(slot, this.#editsForPage(slot, false));
+      if (storedAs >= 0 && this.#thumbCache?.has(storedAs)) return;
       // This runs before the cut checks so the interim thumbnail is dropped even when this render cannot be cut into its replacement.
       if (replaces) this.#retireThumbnail(slot);
       if (raster.width < THUMBNAIL_W || typeof OffscreenCanvas === 'undefined') return;
@@ -533,6 +571,8 @@ export class ImageStore {
         ca.closeDrawable(canvas);
         return null;
       });
+      // Whether the cut is stored was decided from what the render was asked to draw, since the page may have been edited while it ran.
+      if (rendered && coming.persistAs >= 0) p.then((blob) => { if (blob) this.#thumbCache?.put(coming.persistAs, blob); });
       // The page's thumbnail is this cut, or else the request that has been waiting for it.
       const standing = held === undefined || replaces ? p : held;
       if (standing === p) {
@@ -931,12 +971,13 @@ export class ImageStore {
     if (!this.inputModes.pdf) throw new Error('renderViewerRaster requires PDF input.');
     const viewerLane = laneOf(lane);
     const forViewer = viewerLane === 'display' || viewerLane === 'prefetch';
-    // Recorded before the first await, so the rail's request for the same page, staged in the same task, finds the render coming.
-    // A render that hides the line open in the editor does not picture the page as the document has it, so no thumbnail is cut from it.
-    const coming = forViewer && !this.#ephemeralRecords.has(n) ? this.#expectRaster(n, viewerLane) : null;
     const edits = this.#editsForPage(n, forViewer);
     const color = scribeDocDefaults.colorMode === 'color';
     const pm = this.#pageMetrics[n];
+    // Recorded before the first await, so the rail's request for the same page, staged in the same task, finds the render coming.
+    // A render that hides the line open in the editor does not picture the page as the document has it, so no thumbnail is cut from it.
+    // The host's thumbnail store holds color pictures, so a cut from a gray render is not stored there.
+    const coming = forViewer && !this.#ephemeralRecords.has(n) ? this.#expectRaster(n, viewerLane, color ? this.#thumbCachePage(n, edits) : -1) : null;
     /** @type {Awaited<ReturnType<PdfScheduler['renderPdfPage']>>} */
     let result;
     /** @type {?ImageBitmap} */
@@ -1154,37 +1195,63 @@ export class ImageStore {
    * @returns {Promise<?Blob>} An encoded image Blob, or `null` if the page cannot be rendered.
    */
   renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false, format = 'jpeg', lane = fresh ? 'store' : 'preview') => {
-    if (!fresh && this.thumbnails[n]) return this.thumbnails[n];
+    const held = fresh ? undefined : this.thumbnails[n];
+    if (held && !this.#interimThumbs.has(held)) return held;
+    // The host's thumbnail store keeps the one thumbnail every display surface asks for, so a request with other parameters neither reads nor fills it.
+    const storable = !fresh && widthPx === THUMBNAIL_W && format === 'jpeg' && quality === 0.6;
+    const storedAs = storable ? this.#thumbCachePage(n, this.#editsForPage(n, false)) : -1;
+    const storedIn = storedAs >= 0 && this.#thumbCache?.has(storedAs) ? this.#thumbCache : null;
+    if (held) {
+      if (!storedIn) return held;
+      this.#retireThumbnail(n);
+    }
     if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
 
+    // A page edit made while the request waits moves the page to another slot, and the request with it, so the page's slot is found again after each wait.
+    const pm = this.#pageMetrics[n];
     const p = (async () => {
+      let slot = n;
+      if (storedIn) {
+        const stored = await storedIn.get(storedAs);
+        if (stored) return stored;
+        if (pm) slot = this.#pageMetrics.indexOf(pm);
+      }
       if (!fresh) {
         // A raster of the page on its way to a viewer supplies the thumbnail.
         // One in a lane served after this request's is not waited for, so a rail row on screen never waits for a page beyond the screen.
         // A raster that lands without supplying it can have started the page's render, so the loop checks that one too.
-        for (let coming = this.#viewerRasters.get(n);
-          coming && coming.pm === this.#pageMetrics[n] && (coming.lane === null || LANE_RANK[coming.lane] <= LANE_RANK[lane]);
-          coming = this.#viewerRasters.get(n)) {
+        for (let coming = this.#viewerRasters.get(slot);
+          coming && coming.pm === pm && (coming.lane === null || LANE_RANK[coming.lane] <= LANE_RANK[lane]);
+          coming = this.#viewerRasters.get(slot)) {
           coming.wanted = true;
           const cut = await coming.thumbnail;
           if (cut) return cut;
+          if (pm) slot = this.#pageMetrics.indexOf(pm);
         }
       }
       if (this.inputModes.pdf) {
-        const dims300 = this.pdfDims300[n];
-        if (!dims300) return null;
-        const pm = this.#pageMetrics[n];
-        // Display slot `n` may hold a page copied from another document, so render it from its own source, not this doc's.
+        if (!this.pdfDims300[slot]) return null;
+        // The page may have been copied from another document, so it is rendered from its own source, not this doc's.
         const pdfScheduler = await this.resolveSource(pm).getScheduler();
+        // The page's size and edits are read after the last wait, from the slot the page then holds.
+        if (pm) slot = this.#pageMetrics.indexOf(pm);
+        const dims300 = this.pdfDims300[slot];
+        if (!dims300) return null;
         const dpi = 300 * (widthPx / dims300.width);
-        // Display slot `n` may have been reordered, so raster its source page, not its position.
-        const sourcePageN = pm?.sourcePageN ?? n;
+        // The page may have been reordered, so its source page is rastered, not its position.
+        const sourcePageN = pm?.sourcePageN ?? slot;
+        const edits = this.#editsForPage(slot, false);
+        // Whether the render is stored is decided here, from what it is asked to draw, since the page may be edited while it runs.
+        const persistAs = storable ? this.#thumbCachePage(slot, edits) : -1;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits: this.#editsForPage(n, false),
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: format, quality, edits,
         }, lane);
-        return result && result !== SKIPPED ? result.blob ?? null : null;
+        const blob = result && result !== SKIPPED ? result.blob ?? null : null;
+        if (blob && persistAs >= 0) this.#thumbCache?.put(persistAs, blob);
+        return blob;
       }
-      const native = await this.getNative(n);
+      if (slot < 0) return null;
+      const native = await this.getNative(slot);
       if (!native) return null;
       const bitmap = await ca.getImageBitmap(native.src);
       const canvas = ca.makeCanvas(widthPx, Math.max(1, Math.round(widthPx * (bitmap.height / bitmap.width))));
@@ -1202,8 +1269,11 @@ export class ImageStore {
     if (!fresh) {
       this.thumbnails[n] = p;
       // Clear the cache slot if the render failed, so a later call can retry.
-      p.then((r) => { if (r === null && this.thumbnails[n] === p) this.thumbnails[n] = undefined; })
-        .catch(() => { if (this.thumbnails[n] === p) this.thumbnails[n] = undefined; });
+      // The request is found where it stands, since a page edit can have moved it with its page.
+      p.then((r) => r === null, () => true).then((failed) => {
+        const at = failed ? this.thumbnails.indexOf(p) : -1;
+        if (at >= 0) this.thumbnails[at] = undefined;
+      });
     }
     return p;
   };
@@ -1340,6 +1410,7 @@ export class ImageStore {
     this.#type3HashResolved.clear();
     this.#keepByViewer.clear();
     this.#viewerRasters.clear();
+    this.#thumbCache = null;
     if (typeof FontFace !== 'undefined') {
       // `doc.clear()` reissues the id right after this call.
       const prefix = `_edit_d${this.#doc.id}_`;

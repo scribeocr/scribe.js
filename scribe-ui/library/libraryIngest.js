@@ -81,9 +81,10 @@ export class LibraryIngest {
    *    A tab-owned copy comes with `checkpoint`, which persists it through that tab.
    *    A copy without one is handed over until `releaseLiveDoc`.
    * @param {(hash: string, doc: import('../../js/containers/scribeDoc.js').ScribeDoc) => void} [callbacks.releaseLiveDoc] - Hands a copy taken through `liveDoc` back once recognition is over.
+   * @param {import('./docSession.js').DocSessions} [callbacks.sessions] - The registry whose stored page thumbnails a copy opened for recognition is given, since a tab can adopt that copy.
    */
   constructor(store, manifest, {
-    engine, onProgress, onDocDone, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc,
+    engine, onProgress, onDocDone, recognizeGate, langs, recognizeMode, liveDoc, releaseLiveDoc, sessions,
   }) {
     this.store = store;
     this.manifest = manifest;
@@ -95,6 +96,7 @@ export class LibraryIngest {
     this.recognizeMode = recognizeMode || null;
     this.liveDoc = liveDoc || null;
     this.releaseLiveDoc = releaseLiveDoc || null;
+    this.sessions = sessions || null;
     /**
      * The document a recognition task is running on, while one runs.
      * A viewer tab opening that document mid-run adopts this copy through `adoptRecognizing`, so the run and the tab never hold two copies.
@@ -477,7 +479,7 @@ export class LibraryIngest {
     try {
       if (!doc) {
         // One PDF worker, like the other background copies, because recognition is bound by the OCR engine rather than by page rendering.
-        doc = await openLibraryDoc(this.store, relPath, entry, { skipFontOpt: true, pdfWorkerN: 1 });
+        doc = await openLibraryDoc(this.store, relPath, entry, { skipFontOpt: true, pdfWorkerN: 1, sessions: this.sessions });
         this.recognizing.doc = doc;
       }
       const stats = doc.inputData.pageStats;

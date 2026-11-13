@@ -73,6 +73,8 @@ class DocSession {
     this.rasterPending = new Map();
     /** @type {?Promise<Set<number>>} The pages with a stored raster, listed once, so a page without one is answered without a file read. */
     this.storedPages = null;
+    /** @type {?Promise<Set<number>>} The source pages with a stored thumbnail. */
+    this.storedThumbs = null;
     /** Whether the pool has asked this session's pixel source to close once its running job settles. */
     this.closeWhenIdle = false;
   }
@@ -102,7 +104,7 @@ export class DocSessions {
 
   /**
    * Point the registry at a store, dropping every session from the previous one.
-   * @param {import('./libraryStore.js').LibraryStore} store
+   * @param {?import('./libraryStore.js').LibraryStore} store
    */
   connect(store) {
     this.reset();
@@ -246,7 +248,9 @@ export class DocSessions {
   async #openSeeded(ref) {
     const store = this.store;
     if (!store) throw new Error('No library is open.');
-    const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash)]);
+    const s = this.session(ref.hash);
+    if (!s.storedThumbs) s.storedThumbs = store.listPageThumbs(ref.hash).catch(() => new Set());
+    const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash), s.storedThumbs]);
     const dims = ref.entry.pageDims;
     const doc = await scribeLib.openDocument({ pdfFiles: [file] }, {
       pdfWorkerN: 1,
@@ -265,7 +269,46 @@ export class DocSessions {
     // The mode gates read the type before the document loads, and a document with no saved file learns its own only then.
     if (doc.inputData.pdfType == null) doc.inputData.pdfType = ref.entry.pdfType || 'text';
     fallBackToPdfText(doc);
+    doc.images.setThumbCache(await this.thumbCache(ref, file));
     return doc;
+  }
+
+  /**
+   * The store's thumbnails of a document's pages, for a copy of the document opened from `file`.
+   * Null when the file is not known to hold the bytes the entry's hash names.
+   * @param {DocRef} ref
+   * @param {File} file
+   * @returns {Promise<?import('../../js/containers/imageContainer.js').PageThumbCache>}
+   */
+  async thumbCache(ref, file) {
+    const store = this.store;
+    const { hash, entry } = ref;
+    // A changed file keeps its entry's old hash until it is indexed again.
+    // A file modified since the last scan still reads as indexed, so its size and time are checked against the entry's.
+    if (!store || !hash || entry.status !== 'indexed' || file.size !== entry.size || file.lastModified !== entry.mtime) return null;
+    const s = this.session(hash);
+    if (!s.storedThumbs) s.storedThumbs = store.listPageThumbs(hash).catch(() => new Set());
+    const stored = await s.storedThumbs;
+    return {
+      has: (sourcePageN) => stored.has(sourcePageN),
+      get: async (sourcePageN) => {
+        try {
+          const thumb = await store.readPageThumb(hash, sourcePageN);
+          // A file read from OPFS can lose its backing store later, which kills object URLs made directly from it.
+          if (thumb) return new Blob([await thumb.arrayBuffer()], { type: 'image/jpeg' });
+        } catch { /* Read as a thumbnail that is gone. */ }
+        stored.delete(sourcePageN);
+        return null;
+      },
+      put: (sourcePageN, blob) => {
+        if (stored.has(sourcePageN) || (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget)) return;
+        this.writeQueue = this.writeQueue.then(async () => {
+          if (this.store !== store || stored.has(sourcePageN)) return;
+          await store.writePageThumb(hash, sourcePageN, blob);
+          stored.add(sourcePageN);
+        }).catch(() => {});
+      },
+    };
   }
 
   /**
@@ -493,6 +536,25 @@ export class DocSessions {
         old.session.pageBlobs.delete(old.n);
       }
     }
+  }
+
+  /**
+   * Clear a store's page previews, and the sessions' record of which pages have one.
+   * @param {import('./libraryStore.js').LibraryStore} store
+   * @returns {Promise<void>}
+   */
+  clearPreviews(store) {
+    // The clear takes its turn in the write queue, so a write queued before it cannot put its file back afterwards.
+    const cleared = this.writeQueue.then(async () => {
+      await store.clearPreviews();
+      if (this.store !== store) return;
+      for (const s of [...this.map.values()]) {
+        s.storedPages = null;
+        (await s.storedThumbs)?.clear();
+      }
+    });
+    this.writeQueue = cleared.catch(() => {});
+    return cleared;
   }
 
   /**

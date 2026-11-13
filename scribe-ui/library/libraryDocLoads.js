@@ -17,18 +17,28 @@ import { titleOf } from './libraryStore.js';
  * @param {{readFile: (relPath: string) => Promise<File>, readSidecar: (hash: string) => Promise<?ArrayBuffer>}} store
  * @param {string} relPath
  * @param {import('./libraryStore.js').LibraryDocEntry} entry
- * @param {{deferText?: boolean, skipFontOpt?: boolean, pdfWorkerN?: number}} [opts]
+ * @param {{deferText?: boolean, skipFontOpt?: boolean, pdfWorkerN?: number, sessions?: ?import('./docSession.js').DocSessions}} [opts]
  * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
  */
-export const openLibraryDoc = async (store, relPath, entry, { deferText = false, skipFontOpt = false, pdfWorkerN = undefined } = {}) => {
+export const openLibraryDoc = async (store, relPath, entry, {
+  deferText = false, skipFontOpt = false, pdfWorkerN = undefined, sessions = null,
+} = {}) => {
   const file = await store.readFile(relPath);
+  const thumbCache = sessions && entry.hash ? sessions.thumbCache({ hash: entry.hash, relPath, entry }, file) : null;
   const sidecar = entry.hash ? await store.readSidecar(entry.hash) : null;
-  if (sidecar) return scribeLib.openDocument([file, new File([sidecar], `${entry.hash}.scribe`)], { deferText, skipFontOpt, pdfWorkerN });
-  const ocrFile = entry.ocrFile ? await store.readFile(`${relPath.slice(0, relPath.lastIndexOf('/') + 1)}${entry.ocrFile}`).catch(() => null) : null;
-  // The viewer's open, because its fallback makes a scan's own OCR layer the active text.
-  return openDocumentFromFile(file, {
-    deferText, skipFontOpt, pdfWorkerN, ocrFiles: ocrFile ? [ocrFile] : [],
-  });
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc;
+  if (sidecar) {
+    doc = await scribeLib.openDocument([file, new File([sidecar], `${entry.hash}.scribe`)], { deferText, skipFontOpt, pdfWorkerN });
+  } else {
+    const ocrFile = entry.ocrFile ? await store.readFile(`${relPath.slice(0, relPath.lastIndexOf('/') + 1)}${entry.ocrFile}`).catch(() => null) : null;
+    // The viewer's open, because its fallback makes a scan's own OCR layer the active text.
+    doc = await openDocumentFromFile(file, {
+      deferText, skipFontOpt, pdfWorkerN, ocrFiles: ocrFile ? [ocrFile] : [],
+    });
+  }
+  doc.images.setThumbCache(await thumbCache);
+  return doc;
 };
 
 /**

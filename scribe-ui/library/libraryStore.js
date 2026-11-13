@@ -16,6 +16,12 @@ export const hashBytes = async (buf) => {
 
 export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 
+/**
+ * Version of the PDF renderer's page thumbnails.
+ * Bump it when a change to PDF rendering changes how a thumbnail looks, so the thumbnails stored before the change are no longer read.
+ */
+export const PAGE_THUMB_VERSION = 1;
+
 // Display names are always the file name, never PDF metadata.
 // Info Titles in the wild are word-processor template paths, "untitled", and similar junk.
 /** @param {string} relPath */
@@ -809,27 +815,63 @@ export class LibraryStore {
 
   /**
    * @param {string} hash
-   * @param {number} n - 0-indexed page.
+   * @param {string} name
    * @param {Blob} blob
    */
-  async writePageRaster(hash, n, blob) {
+  async #writePageFile(hash, name, blob) {
     const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash, { create: true });
-    const replaced = await readFileIn(dir, `${n}.webp`);
-    await writeFileIn(dir, `${n}.webp`, blob);
+    const replaced = await readFileIn(dir, name);
+    await writeFileIn(dir, name, blob);
     if (this.rasterBytes !== null) {
       this.rasterBytes += blob.size - (replaced?.size ?? 0);
       if (this.rasterBytes > this.rasterBudget) this.trimDue = true;
     }
   }
 
-  /** @param {string} hash @param {number} n @returns {Promise<?Blob>} */
-  async readPageRaster(hash, n) {
+  /**
+   * @param {string} hash
+   * @param {string} name
+   * @returns {Promise<?File>}
+   */
+  async #readPageFile(hash, name) {
     try {
       const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash);
-      return await readFileIn(dir, `${n}.webp`);
+      return await readFileIn(dir, name);
     } catch {
       return null;
     }
+  }
+
+  /**
+   * @param {string} hash
+   * @param {RegExp} pattern
+   * @returns {Promise<Set<number>>}
+   */
+  async #listPageFiles(hash, pattern) {
+    /** @type {Set<number>} */
+    const out = new Set();
+    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash).catch(() => null);
+    if (!dir) return out;
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [name, handle] of dir.entries()) {
+      const m = pattern.exec(name);
+      if (m && handle.kind === 'file') out.add(Number(m[1]));
+    }
+    return out;
+  }
+
+  /**
+   * @param {string} hash
+   * @param {number} n - 0-indexed page.
+   * @param {Blob} blob
+   */
+  async writePageRaster(hash, n, blob) {
+    await this.#writePageFile(hash, `${n}.webp`, blob);
+  }
+
+  /** @param {string} hash @param {number} n @returns {Promise<?Blob>} */
+  async readPageRaster(hash, n) {
+    return this.#readPageFile(hash, `${n}.webp`);
   }
 
   /**
@@ -838,16 +880,31 @@ export class LibraryStore {
    * @returns {Promise<Set<number>>}
    */
   async listPageRasters(hash) {
-    /** @type {Set<number>} */
-    const out = new Set();
-    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash).catch(() => null);
-    if (!dir) return out;
-    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-    for await (const [name, handle] of dir.entries()) {
-      const m = /^(\d+)\.webp$/.exec(name);
-      if (m && handle.kind === 'file') out.add(Number(m[1]));
-    }
-    return out;
+    return this.#listPageFiles(hash, /^(\d+)\.webp$/);
+  }
+
+  /**
+   * @param {string} hash
+   * @param {number} sourcePageN
+   * @param {Blob} blob
+   */
+  async writePageThumb(hash, sourcePageN, blob) {
+    // A page thumbnail lives beside the document's page rasters, so the raster budget, the trim and the clearing of previews cover it with them.
+    await this.#writePageFile(hash, `t${PAGE_THUMB_VERSION}-${sourcePageN}.jpg`, blob);
+  }
+
+  /** @param {string} hash @param {number} sourcePageN @returns {Promise<?Blob>} */
+  async readPageThumb(hash, sourcePageN) {
+    return this.#readPageFile(hash, `t${PAGE_THUMB_VERSION}-${sourcePageN}.jpg`);
+  }
+
+  /**
+   * The source pages of `hash` that have a thumbnail stored by this version of the renderer.
+   * @param {string} hash
+   * @returns {Promise<Set<number>>}
+   */
+  async listPageThumbs(hash) {
+    return this.#listPageFiles(hash, new RegExp(`^t${PAGE_THUMB_VERSION}-(\\d+)\\.jpg$`));
   }
 
   /**
@@ -1145,8 +1202,22 @@ export class LibraryStore {
         continue;
       }
       let bytes = 0;
+      /** @type {Array<[string, number]>} */
+      const obsolete = [];
       // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      for await (const [, fileHandle] of handle.entries()) if (fileHandle.kind === 'file') bytes += (await fileHandle.getFile()).size;
+      for await (const [name, fileHandle] of handle.entries()) {
+        if (fileHandle.kind !== 'file') continue;
+        const { size } = await fileHandle.getFile();
+        bytes += size;
+        const version = /^t(\d+)-\d+\.jpg$/.exec(name)?.[1];
+        if (version !== undefined && Number(version) !== PAGE_THUMB_VERSION) obsolete.push([name, size]);
+      }
+      for (const [name, size] of obsolete) {
+        try {
+          await handle.removeEntry(name);
+          bytes -= size;
+        } catch { /* A file that would not go still counts. */ }
+      }
       // A directory no entry references may belong to a pending entry, so it is evicted last.
       kept.push({ hash, bytes, use: lastUse.get(hash) ?? Infinity });
       total += bytes;

@@ -5768,7 +5768,7 @@ export function createLibraryInstance(viewer, opts) {
       let doc;
       loads.beginUserLoad();
       try {
-        doc = await openLibraryDoc(store, relPath, { ...entry, hash }, { deferText: true });
+        doc = await openLibraryDoc(store, relPath, { ...entry, hash }, { deferText: true, sessions });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
@@ -6203,7 +6203,7 @@ export function createLibraryInstance(viewer, opts) {
       sheet.appendChild(el);
     };
     row('Page previews', 'Rendered pages, kept so documents open at once. Rendered again as pages are viewed.', sizes?.previews ?? 0, 'Clear', async () => {
-      await s.clearPreviews();
+      await sessions.clearPreviews(s);
       storageSizes = await s.measure();
       if (store === s && storageOpen) render();
     });
@@ -6506,7 +6506,9 @@ export function createLibraryInstance(viewer, opts) {
     const hash = entry.hash;
     const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash && ownsTab(tab))?.doc;
     const docPromise = openTabDoc ? Promise.resolve(openTabDoc)
-      : sessions.liveDocOrLoad(hash, () => openLibraryDoc(/** @type {LibraryStore} */ (store), relPath, entry, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 }));
+      : sessions.liveDocOrLoad(hash, () => openLibraryDoc(/** @type {LibraryStore} */ (store), relPath, entry, {
+        deferText: true, skipFontOpt: true, pdfWorkerN: 1, sessions,
+      }));
     docPromise.then((doc) => {
       if (myToken !== token) return;
       // A text markup or redaction is stored as one row per word or quad, all sharing a groupId, so it counts once per group.
@@ -6902,6 +6904,7 @@ export function createLibraryInstance(viewer, opts) {
         return pooled ? { doc: pooled } : null;
       },
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
+      sessions,
     });
     // The record is read before the surface is placed, so the column its documents need stands before the first of them opens.
     const prior = resumeRecord;
@@ -7252,7 +7255,10 @@ export function createLibraryInstance(viewer, opts) {
     // Awaited, so that a deletion of the folder's data that follows the close never meets the index's files still open.
     await engine.close().catch(() => { });
 
-    sessions.reset();
+    // The registry lets go of the store, which drops the preview writes still queued.
+    // The one under way is awaited, so that a deletion of the folder's data that follows the close never meets a preview file still open.
+    sessions.connect(null);
+    await sessions.writeQueue;
     results.dispose();
     selectedPaths.clear();
     clearUndo();
