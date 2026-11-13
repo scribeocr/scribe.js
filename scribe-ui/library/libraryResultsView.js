@@ -37,9 +37,14 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
  * @param {() => Array<{hash: string, pages: number[]}>} deps.getResults
  * @param {() => string} deps.getQuery
- * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, target: Object, keep: boolean) => Promise<void>} deps.openEntry
+ * @param {(relPath: string, entry: import('./libraryStore.js').LibraryDocEntry,
+ *   target: {pageN: number, query: string, near: import('./libraryDocLoads.js').NearMatches, group?: number}, keep: boolean) => Promise<void>} deps.openEntry
  *   Show the hit's page: a preview the next selection replaces, or, with `keep`, a tab that stays.
- * @param {() => void} deps.onBack - Leave the results and return to browsing.
+ *   `target.group` is the editor group to open in.
+ *   Left out, the page opens where a click would open it.
+ * @param {(clientX: number, clientY: number, relPath: string, anchor: HTMLElement, openHit: (group: number) => void) => void} deps.openCardMenu
+ *   Open a search result's context menu at the pointer.
+ * @param {() => void} deps.focusField - Put the keyboard back in the search field.
  * @param {() => ReturnType<typeof import('./search/searchClient.js').createSearchClient>} deps.getEngine
  * @param {() => ?import('./search/searchClient.js').SearchResponse} deps.getEngineResponse
  * @param {() => ?import('./search/searchClient.js').SearchResponse|undefined} deps.getEngineTiers - The ranked pass's answer.
@@ -47,7 +52,7 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => ?string} deps.getEngineError
  */
 export function createResultsView({
-  host, sessions, loads, getStore, getManifest, getResults, getQuery, openEntry, onBack,
+  host, sessions, loads, getStore, getManifest, getResults, getQuery, openEntry, openCardMenu, focusField,
   getEngine, getEngineResponse, getEngineTiers, getEngineError,
 }) {
   /**
@@ -59,6 +64,7 @@ export function createResultsView({
    * @property {() => void} attach
    * @property {() => void} repump
    * @property {() => void} tiers
+   * @property {() => boolean} focus
    * @property {() => void} dispose
    */
   /** @type {?ResultsBuild} */
@@ -104,11 +110,6 @@ export function createResultsView({
       summary.dataset.paintedAt = String(performance.now());
     }
     summary.appendChild(summaryN);
-    const backBtn = document.createElement('button');
-    backBtn.className = 'scribe-library-back';
-    backBtn.textContent = '‹ Back';
-    backBtn.addEventListener('click', onBack);
-    summary.appendChild(backBtn);
     wrap.appendChild(summary);
 
     const byHash = new Map();
@@ -121,15 +122,19 @@ export function createResultsView({
     const hits = [];
     let active = -1;
     let opening = false;
-    /** @type {?boolean} The request made while an open was in flight, run once it lands: the double-click's keep behind its click's preview, or the last of a run of arrow presses. */
+    /**
+     * The request made while an open was in flight, run once it lands: the double-click's keep behind its click's preview, or the last of a run of arrow presses.
+     * @type {?[boolean, (number|undefined)]}
+     */
     let queued = null;
     /**
      * @param {boolean} keep
+     * @param {number} [group] - The editor group to open in, by default the one a click opens in.
      */
-    const openActive = async (keep) => {
+    const openActive = async (keep, group) => {
       if (active < 0) return;
       if (opening) {
-        queued = keep;
+        queued = [keep, group];
         return;
       }
       const h = hits[active];
@@ -141,13 +146,14 @@ export function createResultsView({
           near: h.lowerTier && h.marks ? [{
             page: h.pageN, tier: /** @type {number} */ (h.tier), count: h.count, marks: h.marks,
           }] : [],
+          group,
         }, keep);
       } finally {
         opening = false;
         if (queued !== null) {
           const next = queued;
           queued = null;
-          openActive(next);
+          openActive(...next);
         }
       }
     };
@@ -159,6 +165,29 @@ export function createResultsView({
       openActive(false);
     };
 
+    /**
+     * Open a hit's page as a tab that stays, with its row the selected one.
+     * @param {typeof hits[number]} hit
+     * @param {number} [group]
+     */
+    const keepHit = (hit, group) => {
+      active = hits.indexOf(hit);
+      hits.forEach((h, j) => h.row.classList.toggle('on', j === active));
+      openActive(true, group);
+    };
+
+    /**
+     * Select a hit and leave the keyboard in the list.
+     * @param {number} i
+     */
+    const pickHit = (i) => {
+      // A name left highlighted would stay so, and the copy shortcut would go on taking it instead of this hit's name.
+      const selection = window.getSelection();
+      if (selection && wrap.contains(selection.anchorNode)) selection.removeAllRanges();
+      selectHit(i);
+      wrap.focus({ preventScroll: true });
+    };
+
     wrap.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -166,9 +195,33 @@ export function createResultsView({
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
         if (active > 0) selectHit(active - 1);
-      } else if (e.key === 'Enter') {
+        else focusField();
+      } else if (e.key === 'Escape' && !wrap.querySelector('.context')) {
+        // With a result's menu open, the key closes the menu and nothing more.
+        e.preventDefault();
+        focusField();
+      } else if (e.key === 'Enter' && e.target === wrap) {
         openActive(true);
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'c' && active >= 0 && window.getSelection()?.isCollapsed !== false) {
+        e.preventDefault();
+        navigator.clipboard?.writeText(titleOf(hits[active].relPath)).catch(() => { });
+      } else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && active >= 0) {
+        e.preventDefault();
+        const hit = hits[active];
+        const rect = hit.row.getBoundingClientRect();
+        openCardMenu(rect.left + 40, rect.top + 20, hit.relPath, hit.row, (group) => keepHit(hit, group));
       }
+    });
+    wrap.addEventListener('copy', (e) => {
+      // A triple click selects a name through the end of its line, so the browser's own copy would end in a line break.
+      const text = window.getSelection()?.toString().trim();
+      if (!text || !e.clipboardData) return;
+      e.clipboardData.setData('text/plain', text);
+      e.preventDefault();
+    });
+    wrap.addEventListener('focus', () => {
+      // The list shows keyboard focus as an outline on its selected result, so focus arriving by keyboard with none selected would be invisible.
+      if (active < 0 && hits.length && wrap.matches(':focus-visible')) selectHit(0);
     });
 
     /**
@@ -323,9 +376,12 @@ export function createResultsView({
     const buildHitRow = (docRef, pageN, info, insertAt, lowerTier = false) => {
       const row = document.createElement('div');
       row.className = 'scribe-library-hit';
+      const slot = document.createElement('span');
+      slot.className = 'phs';
       const ph = document.createElement('span');
       ph.className = 'ph';
-      row.appendChild(ph);
+      slot.appendChild(ph);
+      row.appendChild(slot);
       const hm = document.createElement('span');
       hm.className = 'hm';
       const ht = document.createElement('span');
@@ -349,15 +405,14 @@ export function createResultsView({
         relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, count: info.count, row, lowerTier, tier: info.tier, marks: info.marks,
       };
       hits.splice(insertAt, 0, hit);
-      row.addEventListener('click', () => {
-        selectHit(hits.indexOf(hit));
-        wrap.focus();
-      });
+      row.addEventListener('click', () => pickHit(hits.indexOf(hit)));
       row.addEventListener('dblclick', (e) => {
         if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-        active = hits.indexOf(hit);
-        hits.forEach((h, j) => h.row.classList.toggle('on', j === active));
-        openActive(true);
+        keepHit(hit);
+      });
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        openCardMenu(e.clientX, e.clientY, hit.relPath, row, (group) => keepHit(hit, group));
       });
       /** @type {ThumbItem} */
       const thumb = {
@@ -374,7 +429,7 @@ export function createResultsView({
      *   rects?: ?Array<Array<import('./search/searchClient.js').Box>>, dims?: ?{width: number, height: number}, thumb?: ThumbItem}} ListedPage
      */
     /**
-     * @typedef {{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}, head: HTMLElement, meta: HTMLElement, datePart: string,
+     * @typedef {{docRef: {relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}, head: HTMLElement, meta: HTMLElement,
      *   pages: ListedPage[], shown: number, more: ?HTMLButtonElement, lastRow: ?HTMLElement}} DocGroup
      */
     /** @type {Map<string, DocGroup>} */
@@ -399,15 +454,33 @@ export function createResultsView({
     /** @param {Array<{tier: number, count: number}>} pages */
     const matchesOn = (pages) => pages.reduce((sum, p) => sum + (p.tier === 5 ? 1 : p.count), 0);
 
-    const summaryText = () => {
-      if (!response) return '';
-      if (response.partial || (second && second.partial)) return PARTIAL_SUMMARY;
+    /** Write the line above the results, which holds the search's counts or says what became of it. */
+    const fillSummary = () => {
+      // A failed search has no answer, and its line already says so.
+      if (!response) return;
+      const partial = response.partial || !!(second && second.partial);
       const docCount = groups.size + restDocs.length;
       const total = response.matches + (second ? second.docs.reduce((sum, d) => sum + matchesOn(d.pages), 0) : 0);
-      if (response.bounded) return `${response.bound}+ matches · ${docCount} document${docCount === 1 ? '' : 's'}`;
-      const queryShown = /["“”„‟＂]/.test(fullTextQuery) ? fullTextQuery : `“${fullTextQuery}”`;
-      if (!total) return second === undefined ? 'Searching…' : `No matches for ${queryShown}`;
-      return `${total} match${total === 1 ? '' : 'es'} · ${docCount} document${docCount === 1 ? '' : 's'}${second === undefined ? ' · searching…' : ''}`;
+      const counted = !partial && (response.bounded || total > 0);
+      // The "Searching" line gives way to the counts, so it is set as they are.
+      summary.classList.toggle('count', counted || (!partial && second === undefined));
+      if (partial) {
+        summaryN.textContent = PARTIAL_SUMMARY;
+      } else if (!counted) {
+        const queryShown = /["“”„‟＂]/.test(fullTextQuery) ? fullTextQuery : `“${fullTextQuery}”`;
+        summaryN.textContent = second === undefined ? 'Searching…' : `No matches for ${queryShown}`;
+      } else {
+        const matches = document.createElement('b');
+        matches.textContent = response.bounded ? `${response.bound}+` : String(total);
+        const docs = document.createElement('b');
+        docs.textContent = String(docCount);
+        summaryN.replaceChildren(
+          matches,
+          ` match${!response.bounded && total === 1 ? '' : 'es'} · `,
+          docs,
+          ` document${docCount === 1 ? '' : 's'}${!response.bounded && second === undefined ? ' · searching…' : ''}`,
+        );
+      }
     };
 
     /**
@@ -480,7 +553,7 @@ export function createResultsView({
       }
       const total = matchesOn(g.pages);
       const { pageCount } = g.docRef.entry;
-      g.meta.textContent = `${g.datePart}${pageCount} page${pageCount === 1 ? '' : 's'} · ${total} match${total === 1 ? '' : 'es'} on ${g.pages.length} page${g.pages.length === 1 ? '' : 's'}`;
+      g.meta.textContent = `${pageCount} page${pageCount === 1 ? '' : 's'} · ${total} match${total === 1 ? '' : 'es'} on ${g.pages.length} page${g.pages.length === 1 ? '' : 's'}`;
     };
 
     /**
@@ -490,18 +563,24 @@ export function createResultsView({
       const d = info.docRef;
       const head = document.createElement('div');
       head.className = 'scribe-library-rdoc';
-      head.append(`${titleOf(d.relPath)} `);
+      const name = document.createElement('span');
+      name.className = 't';
+      // A long name wraps after its separators before it breaks inside a word.
+      titleOf(d.relPath).split(/([_\-.])/).forEach((part, k) => {
+        name.append(part);
+        if (k % 2) name.appendChild(document.createElement('wbr'));
+      });
       const meta = document.createElement('span');
       meta.className = 'm';
-      head.appendChild(meta);
+      head.append(name, ' ', meta);
+      head.addEventListener('contextmenu', (e) => {
+        // The system's own menu stays available only for copying selected text.
+        if (window.getSelection()?.isCollapsed !== false) e.preventDefault();
+      });
       wrap.insertBefore(head, before);
-      const dateMatch = /^(\d{4})-(\d{2})-(\d{2})[ _]/.exec(d.relPath.split('/').pop() || '');
-      const datePart = dateMatch
-        ? `${new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · `
-        : '';
       /** @type {DocGroup} */
       const g = {
-        docRef: d, head, meta, datePart, pages: info.perPage, shown: 0, more: null, lastRow: null,
+        docRef: d, head, meta, pages: info.perPage, shown: 0, more: null, lastRow: null,
       };
       groups.set(d.hash, g);
       showPages(g, RESULT_PAGES_PER_DOC);
@@ -538,7 +617,7 @@ export function createResultsView({
       for (const info of ranked.slice(0, RESULT_DOC_LIMIT)) appendGroup(info, null);
       restDocs.push(...ranked.slice(RESULT_DOC_LIMIT));
       syncMoreDocs();
-      summaryN.textContent = summaryText();
+      fillSummary();
       // Timing tools outside the app read `paintedAt` as the moment the answer's summary painted.
       summary.dataset.paintedAt = String(performance.now());
       pump();
@@ -577,7 +656,7 @@ export function createResultsView({
       // Timing tools outside the app read `tierPages` and `tiersAt`, so both are set even when the ranked pass adds no page.
       wrap.dataset.tierPages = String(pages);
       wrap.dataset.tiersAt = String(performance.now());
-      summaryN.textContent = summaryText();
+      fillSummary();
     };
     if (getEngineTiers() !== undefined) appendSecond(getEngineTiers() ?? null);
 
@@ -599,6 +678,11 @@ export function createResultsView({
       tiers: () => {
         const tiers = getEngineTiers();
         if (myGen === resultsGen && tiers !== undefined) appendSecond(tiers);
+      },
+      focus: () => {
+        if (!hits.length) return false;
+        pickHit(Math.max(0, active));
+        return true;
       },
       dispose: () => {
         resultsGen++;
@@ -632,5 +716,11 @@ export function createResultsView({
     appendTiers: () => {
       if (resultsView && resultsView.results === getResults()) resultsView.tiers();
     },
+
+    /**
+     * Put the keyboard in the list, on its selected result or else its first.
+     * @returns {boolean} Whether the list is showing with a result to take it.
+     */
+    focusList: () => !!resultsView && resultsView.wrap.isConnected && resultsView.focus(),
   };
 }

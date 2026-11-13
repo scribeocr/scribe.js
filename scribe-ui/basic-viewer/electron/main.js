@@ -286,10 +286,13 @@ function createWindow({ fresh = false } = {}) {
     if (/^https?:\/\//.test(url)) shell.openExternal(url);
   });
 
-  // Native cut/copy/paste menu in editable fields, which Electron does not provide on its own.
-  // Scoped to editables: the app draws its own menus elsewhere (bookmarks, comments, layout boxes).
+  // Native cut/copy/paste menu in editable fields, and Copy on selected text elsewhere, neither of which Electron provides on its own.
+  // The app draws its own menus everywhere else (bookmarks, comments, layout boxes), and a right-click it handles never arrives here.
   win.webContents.on('context-menu', (_event, params) => {
-    if (!params.isEditable) return;
+    if (!params.isEditable) {
+      if (params.selectionText.trim()) Menu.buildFromTemplate([{ role: 'copy' }]).popup();
+      return;
+    }
     Menu.buildFromTemplate([
       { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
       { type: 'separator' }, { role: 'selectAll' },

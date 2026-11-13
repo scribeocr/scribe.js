@@ -1652,6 +1652,10 @@ export class TextSelection {
     const active = document.activeElement;
     const owner = this.viewer.outerElem || this.viewer.elem;
     if (active && active !== document.body && !owner?.contains(active)) return;
+    // Text the browser itself shows selected, in a panel of the app or inside one of its fields, is what its copy takes.
+    const domSelection = window.getSelection();
+    if (domSelection && !domSelection.isCollapsed && !this.viewer.scrollContainer?.contains(domSelection.anchorNode)) return;
+    if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && active.selectionStart !== active.selectionEnd) return;
     const text = this.getText();
     if (!text) return;
     event.clipboardData.setData('text/plain', text);

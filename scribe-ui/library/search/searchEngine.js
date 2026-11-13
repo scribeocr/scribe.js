@@ -41,7 +41,10 @@ export const ENGINE_DEFAULTS = Object.freeze({
   rankSpan: false,
   firstScreenDocs: 20,
   firstScreenPages: 4,
-  snippetRadius: 70,
+  /** How far before its first match an excerpt starts, in characters, when no sentence starts nearer. */
+  snippetLead: 24,
+  /** How far after its first match an excerpt runs, in characters. */
+  snippetReach: 200,
   /**
    * The tokenizer rules an empty index is built under.
    * An index that holds documents keeps its own.
@@ -54,6 +57,46 @@ export const ENGINE_DEFAULTS = Object.freeze({
 });
 
 const CHUNK = 1 << 16;
+
+/** How far before its first match an excerpt looks for the start of the sentence that holds it, in characters. */
+const SNIPPET_SENTENCE_LOOKBACK = 36;
+/**
+ * The most characters an excerpt's cut gives up to land between two words.
+ * A longer word is cut where the reach ends.
+ */
+const SNIPPET_WORD_SNAP = 20;
+const CLOSING_MARKS = '"”’\')]';
+/** Words that a period follows without ending a sentence, as filings and citations print them. */
+const SNIPPET_ABBREVIATIONS = new Set([
+  'v', 'vs', 'no', 'nos', 'inc', 'co', 'corp', 'ltd', 'mr', 'mrs', 'ms', 'dr', 'jr', 'sr', 'st', 'cal', 'cir', 'fed', 'supp', 'app', 'civ', 'proc', 'rptr',
+  'id', 'cf', 'etc', 'al', 'sec', 'art', 'ex', 'dkt', 'doc', 'p', 'pp', 'ed', 'u.s', 'u.s.c', 'e.g', 'i.e',
+]);
+
+/**
+ * Where the sentence ended by the mark at `i` stops, past any closing quotes and brackets, or -1 when the mark ends no sentence.
+ * A mark ends one when a space and then a capital, a digit or an opening mark follow it, or the text ends there.
+ * @param {string} text
+ * @param {number} i
+ */
+const sentenceEndAt = (text, i) => {
+  const mark = text[i];
+  if (mark !== '.' && mark !== '!' && mark !== '?') return -1;
+  if (mark === '.' && (text[i - 1] === '.' || text[i + 1] === '.')) return -1;
+  let end = i + 1;
+  while (end < text.length && CLOSING_MARKS.includes(text[end])) end++;
+  if (end < text.length && !/\s/.test(text[end])) return -1;
+  let next = end;
+  while (next < text.length && /\s/.test(text[next])) next++;
+  if (next < text.length && !/[\p{Lu}0-9“"‘([§]/u.test(text[next])) return -1;
+  if (mark === '.') {
+    let wordStart = i;
+    while (wordStart > 0 && /[A-Za-z.]/.test(text[wordStart - 1])) wordStart--;
+    const word = text.slice(wordStart, i).toLowerCase();
+    // An initial, as in a name or "J. App.", ends no sentence either.
+    if (word.length === 1 || SNIPPET_ABBREVIATIONS.has(word)) return -1;
+  }
+  return end;
+};
 
 /**
  * @typedef {Object} SearchStorage
@@ -542,31 +585,74 @@ export const createSearchEngine = (storage, settings = {}) => {
   };
 
   /**
+   * Cut a page's excerpt around its first match.
+   * It starts at the match's sentence when that begins near, otherwise on a whole word, and ends on a whole word.
    * @param {import('./searchPageRecords.js').PageRecord} rec
    * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
    * @param {(v: number) => number} indexOf
    */
   const snippetOf = (rec, marks, indexOf) => {
+    // Runs of leader dots and form blanks are left out of the excerpt.
+    /** @type {Array<[number, number]>} */
+    const runs = [];
+    const text = rec.text.replace(/[._]{4,}/g, (run, offset) => {
+      runs.push([offset, run.length]);
+      return ' ';
+    });
+    const cleanOffset = (/** @type {number} */ offset) => {
+      let shift = 0;
+      for (const [runOffset, runLength] of runs) {
+        if (runOffset >= offset) break;
+        shift += runLength - 1;
+      }
+      return offset - shift;
+    };
     const ranges = [];
     for (const [a, b] of marks) {
       const i = indexOf(a);
       const j = indexOf(b);
       if (i < 0 || j < 0) continue;
-      ranges.push([rec.charStart[i], rec.charEnd[j]]);
+      ranges.push([cleanOffset(rec.charStart[i]), cleanOffset(rec.charEnd[j])]);
     }
     ranges.sort((x, y) => x[0] - y[0]);
-    if (!ranges.length) {
-      return {
-        text: rec.text.slice(0, options.snippetRadius * 2), marks: [], before: false, after: rec.text.length > options.snippetRadius * 2,
-      };
+
+    // Either cut moves to the nearest gap between words, unless that gives up the word holding the match or more than the snap allows.
+    let start = 0;
+    if (ranges.length) {
+      const matchStart = ranges[0][0];
+      start = -1;
+      for (let i = matchStart - 1; i >= Math.max(0, matchStart - SNIPPET_SENTENCE_LOOKBACK) && start < 0; i--) {
+        const sentenceEnd = sentenceEndAt(text, i);
+        if (sentenceEnd < 0 || sentenceEnd > matchStart) continue;
+        start = sentenceEnd;
+        while (start < matchStart && /\s/.test(text[start])) start++;
+      }
+      if (start < 0 && matchStart <= SNIPPET_SENTENCE_LOOKBACK) start = 0;
+      if (start < 0) {
+        const lead = Math.max(0, matchStart - options.snippetLead);
+        start = lead;
+        if (lead > 0 && !/\s/.test(text[lead - 1]) && !/\s/.test(text[lead])) while (start < text.length && !/\s/.test(text[start])) start++;
+        if (start - lead > SNIPPET_WORD_SNAP || start > matchStart) start = lead;
+        else while (start < matchStart && /\s/.test(text[start])) start++;
+      }
     }
-    const start = Math.max(0, ranges[0][0] - options.snippetRadius);
-    const end = Math.min(rec.text.length, ranges[0][1] + options.snippetRadius);
+
+    const matchEnd = ranges.length ? ranges[0][1] : 0;
+    const reach = ranges.length ? matchEnd + options.snippetReach : options.snippetLead + options.snippetReach;
+    let end = Math.min(text.length, reach);
+    if (end < text.length) {
+      if (!/\s/.test(text[end - 1]) && !/\s/.test(text[end])) while (end > matchEnd && !/\s/.test(text[end - 1])) end--;
+      if (reach - end > SNIPPET_WORD_SNAP || end <= matchEnd) end = reach;
+    }
+    while (end > start && /\s/.test(text[end - 1])) end--;
+
+    let last = end - 1;
+    while (last >= 0 && CLOSING_MARKS.includes(text[last])) last--;
     return {
-      text: rec.text.slice(start, end),
-      marks: ranges.filter(([s, e]) => s >= start && e <= end).map(([s, e]) => [s - start, e - start]),
-      before: start > 0,
-      after: end < rec.text.length,
+      text: text.slice(start, end),
+      marks: ranges.filter(([s]) => s < end).map(([s, e]) => [s - start, Math.min(e, end) - start]),
+      before: start > 0 && !/\s/.test(text[start - 1]) && !/\s/.test(text[start]),
+      after: end < text.length && (last < 0 || sentenceEndAt(text, last) < 0),
     };
   };
 

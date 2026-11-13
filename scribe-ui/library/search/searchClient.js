@@ -186,10 +186,10 @@ export const createSearchClient = (settings = {}) => {
 
 /**
  * @typedef {Object} Snippet
- * @property {string} text
+ * @property {string} text - The page's text around the first match, with runs of leader dots and form blanks left out.
  * @property {Array<[number, number]>} marks - Highlight offsets into `text`.
- * @property {boolean} before
- * @property {boolean} after
+ * @property {boolean} before - Whether `text` starts inside a word.
+ * @property {boolean} after - Whether `text` stops short of the end of a sentence and of the page.
  */
 
 /**

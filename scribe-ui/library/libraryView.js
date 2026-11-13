@@ -223,14 +223,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-field > svg { width: 16px; height: 16px; color: var(--scribe-ink-3); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-search { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 170px; padding: 0; text-align: left; text-overflow: ellipsis; caret-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-search::placeholder { color: var(--scribe-ink-3); }
-/* The key cap is a block-level flex item here, so without line-height: normal it would size to the toolbar's inherited 28px line-height. */
-.scribe-pdf-viewer .scribe-library-hint { display: none; align-items: center; gap: 4px; max-width: 160px; overflow: hidden; line-height: normal; font-size: 11.5px; color: var(--scribe-ink-3); white-space: nowrap; transition: opacity .12s ease-out, max-width .16s ease-out, margin-left .16s ease-out; }
-.scribe-pdf-viewer .scribe-library-field.has-text:focus-within .scribe-library-hint { display: inline-flex; }
-/* The fold collapses width and opacity rather than switching display, so a phrase takes the room without a jump. */
-.scribe-pdf-viewer .scribe-library-field.hint-yield .scribe-library-hint { opacity: 0; max-width: 0; margin-left: -6px; }
-@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-hint { transition: none; } }
-.scribe-pdf-viewer .scribe-library-hint kbd { font-family: inherit; border: 1px solid var(--scribe-line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 10.5px; color: var(--scribe-ink-2); background: var(--scribe-surface); }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.hint-tight .scribe-library-hint { display: none; }
+.scribe-pdf-viewer .scribe-library-search-inside { display: flex; align-items: center; gap: 8px; flex: none; width: 100%; box-sizing: border-box; height: 34px; padding: 0 18px; border: none; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-search-inside[hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-search-inside svg { width: 16px; height: 16px; flex: none; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-search-inside span { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-surface:not(.column) .scribe-library-search-inside span { flex: 0 1 auto; }
+.scribe-pdf-viewer .scribe-library-search-inside kbd { font-family: inherit; border: 1px solid var(--scribe-line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 10.5px; color: var(--scribe-ink-2); background: var(--scribe-surface); }
+.scribe-pdf-viewer .scribe-library-search-inside:hover { background: color-mix(in srgb, var(--scribe-ink) 6%, var(--scribe-surface)); }
+.scribe-pdf-viewer .scribe-library-search-inside:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-clear { display: none; width: 17px; height: 17px; padding: 2px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; border-radius: 4px; }
 .scribe-pdf-viewer .scribe-library-field.has-text .scribe-library-clear { display: block; }
 .scribe-pdf-viewer .scribe-library-clear:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
@@ -307,14 +307,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-colsearch { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-canvas); }
 .scribe-pdf-viewer .scribe-library-colsearch .scribe-library-field { width: 100%; margin: 0; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-colsearch .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
-.scribe-pdf-viewer .scribe-library-colsearch { container-type: inline-size; }
-@container (max-width: 340px) { .scribe-pdf-viewer .scribe-library-colsearch .scribe-library-field.has-text:focus-within .scribe-library-hint { display: none; } }
 .scribe-pdf-viewer .scribe-library-colsash { position: absolute; top: 0; bottom: 0; right: 0; width: 3px; cursor: col-resize; z-index: 4; touch-action: none; }
 .scribe-pdf-viewer .scribe-library-colsash::before { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
 .scribe-pdf-viewer .scribe-library-colsash:hover::before { opacity: 1; transition-delay: 0.25s; }
 .scribe-pdf-viewer .scribe-library-colsash.drag::before { opacity: 1; transition-delay: 0s; }
 .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-progress { padding: 0 8px 0 10px; }
 .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-rsummary { padding: 8px 10px 6px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-rsummary.count { padding: 9px 12px 3px 16px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-rdoc .m { display: block; margin-top: 1px; padding-bottom: 2px; }
 .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body { padding: 0; }
 .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body.list-mode { background: var(--scribe-surface); }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 6px; }
@@ -447,22 +447,31 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-rwrap { outline: none; }
 /* Stacked above the stage, so the find bar that hangs from it paints over the page. */
-.scribe-pdf-viewer .scribe-library-rsummary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 12px 16px 8px; }
+.scribe-pdf-viewer .scribe-library-rsummary { padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
-.scribe-pdf-viewer .scribe-library-back { margin-left: auto; border: none; background: none; padding: 0; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-rdoc { padding: 10px 16px 4px; font-weight: 600; }
-.scribe-pdf-viewer .scribe-library-rdoc .m { font-weight: 400; color: var(--scribe-ink-3); font-size: 12px; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-hit { display: flex; gap: 11px; padding: 7px 16px 7px 22px; cursor: pointer; align-items: flex-start; }
+.scribe-pdf-viewer .scribe-library-rsummary.count { padding: 12px 16px 4px; font-size: 12px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-rsummary.count .n { font-weight: 400; }
+.scribe-pdf-viewer .scribe-library-rsummary.count b { font-weight: 600; color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-rdoc { padding: 9px 12px 3px 16px; font-size: 13px; font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-rdoc .m { font-weight: 400; color: var(--scribe-ink-3); font-size: 12px; overflow-wrap: anywhere; }
+/* The name selects as text, so the heading must take no click or menu of its own. */
+.scribe-pdf-viewer .scribe-library-rdoc .t { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; cursor: text; }
+.scribe-pdf-viewer .scribe-library-hit.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
+.scribe-pdf-viewer .scribe-library-hit { display: flex; gap: 10px; padding: 6px 12px 6px 16px; cursor: pointer; align-items: flex-start; }
 .scribe-pdf-viewer .scribe-library-hit:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-hit.on { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-hit .ph { width: 56px; flex-shrink: 0; position: relative; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); box-shadow: var(--scribe-page-shadow); min-height: 73px; }
-.scribe-pdf-viewer .scribe-library-hit .ph img { display: block; width: 100%; height: auto; }
-.scribe-pdf-viewer .scribe-library-hit .hm { min-width: 0; }
-.scribe-pdf-viewer .scribe-library-hit .ht { font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-rwrap:focus-visible .scribe-library-hit.on { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-hit .phs { display: flex; align-items: flex-start; flex: none; width: 54px; height: 70px; }
+.scribe-pdf-viewer .scribe-library-hit .ph { flex: none; position: relative; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); box-shadow: var(--scribe-page-shadow); }
+.scribe-pdf-viewer .scribe-library-hit .ph:not(:has(img)) { width: 54px; height: 70px; }
+.scribe-pdf-viewer .scribe-library-hit .ph img { display: block; max-width: 54px; max-height: 70px; }
+.scribe-pdf-viewer .scribe-library-hit .hm { flex: 1 1 0; min-width: 0; container-type: inline-size; }
+.scribe-pdf-viewer .scribe-library-hit .ht { display: block; height: 16px; line-height: 16px; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; }
 .scribe-pdf-viewer .scribe-library-hit .ht .m { font-weight: 400; color: var(--scribe-ink-3); font-size: 12px; }
-.scribe-pdf-viewer .scribe-library-hit .sn { display: block; color: var(--scribe-ink-2); line-height: 1.45; margin-top: 1px; }
+@container (max-width: 139px) { .scribe-pdf-viewer .scribe-library-hit .ht .m { display: none; } }
+.scribe-pdf-viewer .scribe-library-hit .sn { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; color: var(--scribe-ink-2); font-size: 13px; line-height: 18px; }
 .scribe-pdf-viewer .scribe-library-hit .sn b { font-weight: 600; color: var(--scribe-ink); background: #4278f550; border-radius: 2px; padding: 0 1px; }
-.scribe-pdf-viewer .scribe-library-rmore { display: block; border: none; background: none; padding: 4px 16px 6px 89px; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-rmore { display: block; border: none; background: none; padding: 4px 16px 6px 80px; font: inherit; font-size: 12.5px; color: var(--scribe-accent); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-rmore:hover { text-decoration: underline; }
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
 .scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
@@ -1105,31 +1114,27 @@ export function createLibraryInstance(viewer, opts) {
   searchInput.placeholder = 'Search or filter by name';
   searchInput.setAttribute('aria-label', 'Search documents');
   searchField.appendChild(searchInput);
-  const searchHint = document.createElement('span');
-  searchHint.className = 'scribe-library-hint';
-  searchHint.innerHTML = '<kbd>↵</kbd> search contents';
-  searchField.appendChild(searchHint);
   const clearBtn = document.createElement('button');
   clearBtn.className = 'scribe-library-clear';
   clearBtn.setAttribute('aria-label', 'Clear');
   clearBtn.innerHTML = FIELD_CLEAR_SVG;
   searchField.appendChild(clearBtn);
   header.appendChild(searchField);
-  const hintMeasure = /** @type {CanvasRenderingContext2D} */ (document.createElement('canvas').getContext('2d'));
+  const textMeasure = /** @type {CanvasRenderingContext2D} */ (document.createElement('canvas').getContext('2d'));
   /**
    * @param {string} text
    * @param {number} maxPx
    * @param {string} font
    */
   const midTrunc = (text, maxPx, font) => {
-    hintMeasure.font = font;
-    if (hintMeasure.measureText(text).width <= maxPx) return text;
+    textMeasure.font = font;
+    if (textMeasure.measureText(text).width <= maxPx) return text;
     const cut = (/** @type {number} */ keep) => `${text.slice(0, Math.ceil(keep / 2))}…${keep > 1 ? text.slice(-Math.floor(keep / 2)) : ''}`;
     let lo = 0;
     let hi = text.length - 1;
     while (lo < hi) {
       const mid = Math.ceil((lo + hi) / 2);
-      if (hintMeasure.measureText(cut(mid)).width <= maxPx) lo = mid;
+      if (textMeasure.measureText(cut(mid)).width <= maxPx) lo = mid;
       else hi = mid - 1;
     }
     return cut(lo);
@@ -1139,22 +1144,11 @@ export function createLibraryInstance(viewer, opts) {
     const style = getComputedStyle(el);
     return `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
   };
-  const syncHint = () => {
-    if (!searchInput.value || searchField.classList.contains('hint-tight') || document.activeElement !== searchInput) return;
-    const style = getComputedStyle(searchInput);
-    hintMeasure.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-    const textWidth = hintMeasure.measureText(searchInput.value).width;
-    // The room beside a fully shown hint, read off the live layout so a fold in progress measures the same as a settled one.
-    const room = searchInput.clientWidth + searchHint.offsetWidth + parseFloat(getComputedStyle(searchHint).marginLeft) - searchHint.scrollWidth;
-    searchField.classList.toggle('hint-yield', textWidth + 8 > room);
-  };
   // A container query here would zero the field's contribution to the content-sized bar zone and pin it at its minimum width, so the signal comes from a resize observer.
-  const hintObserver = new ResizeObserver((entries) => {
-    searchField.classList.toggle('hint-tight', entries[0].contentRect.width < 250);
+  const fieldObserver = new ResizeObserver((entries) => {
     if (barControls) searchInput.placeholder = entries[0].contentRect.width < 250 ? 'Search' : 'Search or filter by name';
-    syncHint();
   });
-  hintObserver.observe(searchField);
+  fieldObserver.observe(searchField);
 
   const viewSeg = document.createElement('span');
   viewSeg.className = 'scribe-library-seg';
@@ -1318,6 +1312,11 @@ export function createLibraryInstance(viewer, opts) {
   progressHair.className = 'scribe-library-progress-hair';
   progressElem.appendChild(progressHair);
 
+  const searchInsideBtn = document.createElement('button');
+  searchInsideBtn.type = 'button';
+  searchInsideBtn.className = 'scribe-library-search-inside';
+  searchInsideBtn.innerHTML = `${FIELD_SEARCH_SVG}<span>Search inside documents</span><kbd>↵</kbd>`;
+  searchInsideBtn.hidden = true;
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
 
@@ -1357,6 +1356,7 @@ export function createLibraryInstance(viewer, opts) {
     surface.appendChild(header);
   }
   surface.appendChild(progressElem);
+  surface.appendChild(searchInsideBtn);
   surface.appendChild(body);
   if (finder) surface.appendChild(pathBar);
   viewer.pdfViewerElem.appendChild(surface);
@@ -1937,7 +1937,7 @@ export function createLibraryInstance(viewer, opts) {
     fullTextResults = null;
     filterText = '';
     searchInput.value = '';
-    searchField.classList.remove('has-text', 'hint-yield');
+    searchField.classList.remove('has-text');
     crumbFadeDue = true;
     render();
     body.scrollTop = 0;
@@ -2302,8 +2302,8 @@ export function createLibraryInstance(viewer, opts) {
     const sepW = sep ? sep.getBoundingClientRect().width : 0;
     const fonts = items.map(fontOf);
     const texts = items.map((item, i) => {
-      hintMeasure.font = fonts[i];
-      return hintMeasure.measureText(item.dataset.full ?? '').width;
+      textMeasure.font = fonts[i];
+      return textMeasure.measureText(item.dataset.full ?? '').width;
     });
     const budget = pathBar.clientWidth - 20 - items.length * 10 - (items.length - 1) * sepW;
     if (texts.reduce((a, b) => a + b, 0) <= budget) return;
@@ -2599,6 +2599,7 @@ export function createLibraryInstance(viewer, opts) {
     let emptyNote = '';
     if (!shown.length && !shownOthers.length && filter) emptyNote = 'filter';
     else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) emptyNote = 'dir';
+    searchInsideBtn.hidden = !store || !manifest || storageOpen || !!fullTextResults || !filter;
 
     let renderKey;
     if (!store || !manifest) renderKey = 'wall';
@@ -2830,7 +2831,7 @@ export function createLibraryInstance(viewer, opts) {
       if (emptyNote) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
-        empty.textContent = emptyNote === 'filter' ? 'No names match. Press Enter to search inside the documents.' : 'This folder is empty.';
+        empty.textContent = emptyNote === 'filter' ? 'No names match.' : 'This folder is empty.';
         host.appendChild(empty);
       }
       reveal();
@@ -2886,7 +2887,7 @@ export function createLibraryInstance(viewer, opts) {
     if (emptyNote) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
-      empty.textContent = emptyNote === 'filter' ? 'No names match. Press Enter to search inside the documents.' : 'This folder is empty.';
+      empty.textContent = emptyNote === 'filter' ? 'No names match.' : 'This folder is empty.';
       body.appendChild(empty);
     }
     if (shownOthers.length) {
@@ -3165,8 +3166,10 @@ export function createLibraryInstance(viewer, opts) {
    * @param {number} clientY
    * @param {string} relPath
    * @param {HTMLElement} card
+   * @param {(group: number) => void} [openHit] - Given for a search result, it opens the result's page as a tab that stays, in that editor group.
+   *   The menu then offers only Open and Copy name.
    */
-  const openCardMenu = (clientX, clientY, relPath, card) => {
+  const openCardMenu = (clientX, clientY, relPath, card, openHit) => {
     if (!store || !manifest) return;
     const canReveal = isLibrary && !!shell?.revealFile && folderDirs.has(store.root.name);
     closeCardMenu();
@@ -3229,7 +3232,13 @@ export function createLibraryInstance(viewer, opts) {
         ingest.start();
       });
     };
-    if (relPath.endsWith('/')) {
+    const split = !!viewer._rightGroup && !viewer._phoneUi;
+    const sideName = (/** @type {number} */ g) => (g === 1 ? 'Right' : 'Left');
+    if (openHit) {
+      addItem(split ? `Open on the ${sideName(targetGroup())}` : 'Open', false, () => openHit(targetGroup()));
+      if (split) addItem(`Open on the ${sideName(sideGroup())}`, false, () => openHit(sideGroup()));
+      addItem('Copy name', false, () => navigator.clipboard?.writeText(titleOf(relPath)).catch(() => { }));
+    } else if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
       if (!readOnly) addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
       if (!readOnly) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
@@ -3250,9 +3259,7 @@ export function createLibraryInstance(viewer, opts) {
         menuHeader.textContent = otherPaths.length ? `${all.length} files` : `${paths.length} documents`;
         menuElem.appendChild(menuHeader);
       }
-      const sides = !!viewer._tabStrip && !viewer._phoneUi;
-      const sideName = (/** @type {number} */ g) => (g === 1 ? 'Right' : 'Left');
-      const openItem = addItem(sides ? `Open on the ${sideName(targetGroup())}` : 'Open', false, async () => {
+      const openItem = addItem(split ? `Open on the ${sideName(targetGroup())}` : 'Open', false, async () => {
         for (const p of paths) {
           const entry = manifest && manifest.docs[p];
           if (entry) await openEntryHere(p, entry);
@@ -3260,7 +3267,7 @@ export function createLibraryInstance(viewer, opts) {
       });
       // Files Scribe cannot open keep the verb in place, greyed, so the menu reads the same on every row.
       if (!paths.length) openItem.classList.add('disabled');
-      if (paths.length === 1 && sides) {
+      if (paths.length === 1 && split) {
         addItem(`Open on the ${sideName(sideGroup())}`, false, () => {
           const entry = manifest && manifest.docs[paths[0]];
           if (entry) openEntrySide(paths[0], entry);
@@ -5136,7 +5143,7 @@ export function createLibraryInstance(viewer, opts) {
       fullTextResults = null;
       filterText = '';
       searchInput.value = '';
-      searchField.classList.remove('has-text', 'hint-yield');
+      searchField.classList.remove('has-text');
     }
     fsOpBusy = true;
     let relPath = '';
@@ -6546,7 +6553,7 @@ export function createLibraryInstance(viewer, opts) {
   const leaveResults = () => {
     fullTextResults = null;
     searchInput.value = '';
-    searchField.classList.remove('has-text', 'hint-yield');
+    searchField.classList.remove('has-text');
     filterText = '';
     render();
   };
@@ -6563,9 +6570,13 @@ export function createLibraryInstance(viewer, opts) {
     getEngineTiers: () => engineTiers,
     getEngineError: () => engineError,
     openEntry: (relPath, entry, where, keep) => (keep
-      ? openEntry(relPath, entry, { ...where, group: targetGroup() })
+      ? openEntry(relPath, entry, { ...where, group: where.group ?? targetGroup() })
       : previewEntry(relPath, entry, where)),
-    onBack: leaveResults,
+    openCardMenu,
+    focusField: () => {
+      focusSearch();
+      searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    },
   });
 
   const drag = createDragReorder({
@@ -7203,7 +7214,7 @@ export function createLibraryInstance(viewer, opts) {
       fullTextResults = null;
       filterText = '';
       searchInput.value = '';
-      searchField.classList.remove('has-text', 'hint-yield');
+      searchField.classList.remove('has-text');
     }
     selectedPaths.clear();
     selectedPaths.add(relPath);
@@ -7265,7 +7276,7 @@ export function createLibraryInstance(viewer, opts) {
     selAnchor = null;
     filterText = '';
     searchInput.value = '';
-    searchField.classList.remove('has-text', 'hint-yield');
+    searchField.classList.remove('has-text');
     fullTextResults = null;
     engineResponse = null;
     engineTiers = null;
@@ -7465,15 +7476,12 @@ export function createLibraryInstance(viewer, opts) {
   searchInput.addEventListener('input', () => {
     filterText = searchInput.value;
     searchField.classList.toggle('has-text', !!filterText);
-    if (filterText) syncHint();
-    else searchField.classList.remove('hint-yield');
     if (fullTextResults && !filterText) fullTextResults = null;
     if (!fullTextResults) render();
   });
-  // Focus raises the field's minimum width, so the bar refits before the hint measures the room beside it.
+  // Focus raises the field's minimum width, so the bar refits.
   searchInput.addEventListener('focus', () => {
     if (barSwapped) syncCrumbs();
-    syncHint();
   });
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -7481,7 +7489,7 @@ export function createLibraryInstance(viewer, opts) {
       if (searchInput.value) {
         searchInput.value = '';
         filterText = '';
-        searchField.classList.remove('has-text', 'hint-yield');
+        searchField.classList.remove('has-text');
         fullTextResults = null;
         render();
         return;
@@ -7491,7 +7499,14 @@ export function createLibraryInstance(viewer, opts) {
       else searchInput.blur();
       return;
     }
-    if (e.key !== 'Enter') return;
+    if (e.key === 'ArrowDown' && !e.isComposing && fullTextResults && searchInput.value.trim() === fullTextQuery && results.focusList()) {
+      e.preventDefault();
+      return;
+    }
+    if (e.key === 'Enter') runFullTextSearch();
+  });
+  /** Search inside the documents for the field's text, and show the results once the answer lands. */
+  const runFullTextSearch = () => {
     const query = searchInput.value.trim();
     if (!query) return;
     /** @type {?import('./search/searchClient.js').SearchResponse} */
@@ -7519,6 +7534,10 @@ export function createLibraryInstance(viewer, opts) {
       fullTextResults = [];
       render();
     });
+  };
+  searchInsideBtn.addEventListener('click', () => {
+    runFullTextSearch();
+    searchInput.focus();
   });
   // A blurred input scrolls back to the head of its value, so the browser's own caret placement would land there.
   searchInput.addEventListener('mousedown', (e) => {
@@ -7530,7 +7549,7 @@ export function createLibraryInstance(viewer, opts) {
   clearBtn.addEventListener('click', () => {
     searchInput.value = '';
     filterText = '';
-    searchField.classList.remove('has-text', 'hint-yield');
+    searchField.classList.remove('has-text');
     fullTextResults = null;
     render();
     searchInput.focus();
@@ -8119,7 +8138,7 @@ export function createLibraryInstance(viewer, opts) {
       closeCardMenu();
       ingest?.cancel();
       resizeObserver.disconnect();
-      hintObserver.disconnect();
+      fieldObserver.disconnect();
       colsObserver?.disconnect();
       window.clearTimeout(colSettleTimer);
       cancelAnimationFrame(colProjectRaf);
