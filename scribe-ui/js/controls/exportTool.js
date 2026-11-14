@@ -287,7 +287,7 @@ export function createExportTool(app) {
   const settings = {
     /** @type {ExportFormat['id']} */
     format: 'pdf',
-    /** @type {'all'|'current'|'range'} */
+    /** @type {'all'|'range'} */
     pages: 'all',
     range: '',
     /** @type {Partial<Record<ExportFormat['id'], boolean>>} */
@@ -698,7 +698,6 @@ export function createExportTool(app) {
   let renderRun = 0;
   /** @type {?import('../../../js/containers/scribeDoc.js').ScribeDoc} */
   let docRendered = null;
-  let shownCurrent = -1;
 
   /**
    * The pages the settings include, in order, or null for every page.
@@ -707,7 +706,6 @@ export function createExportTool(app) {
    */
   const includedPages = (doc) => {
     const count = doc.pageMetrics.length;
-    if (settings.pages === 'current') return [Math.min(viewerOf().state.cp.n, count - 1)];
     if (settings.pages === 'range') {
       const pages = new Set();
       for (const part of settings.range.split(',')) {
@@ -859,7 +857,6 @@ export function createExportTool(app) {
     if (!doc) return;
     const gen = ++renderRun;
     docRendered = doc;
-    shownCurrent = sv.state.cp.n;
     placed = new Map();
     placedOrder = [];
     articleBlocks = [];
@@ -1082,7 +1079,6 @@ export function createExportTool(app) {
   };
   const onLaneScroll = () => {
     const sv = viewerOf();
-    if (settings.pages === 'current' && pane.isConnected && sv.state.cp.n !== shownCurrent) renderAll();
     const echo = Math.abs(sv.scrollContainer.scrollTop - linkState.expectLane) <= 1;
     linkState.expectLane = NaN;
     if (echo || !linkState.on || view !== 'beside' || !pane.isConnected) return;
@@ -1498,14 +1494,13 @@ export function createExportTool(app) {
     return [lab, r];
   };
   const pagesAll = input('radio', 'scribe-export-pages');
-  const pagesCurrent = input('radio', 'scribe-export-pages');
   const pagesRange = input('radio', 'scribe-export-pages');
   const rangeInput = document.createElement('input');
   rangeInput.type = 'text';
   rangeInput.className = 'scribe-export-range';
   rangeInput.placeholder = 'e.g. 1-3, 7';
   rangeInput.setAttribute('aria-label', 'Page range');
-  row('pages', 'Pages', field('All pages', pagesAll), field('Current page', pagesCurrent), field('Range', pagesRange), rangeInput);
+  row('pages', 'Pages', field('All pages', pagesAll), field('Range', pagesRange), rangeInput);
   const reflowBox = input('checkbox', 'scribe-export-reflow');
   const headersFootersBox = input('checkbox', 'scribe-export-drop-headers-footers');
   const lineNumbersBox = input('checkbox', 'scribe-export-linenumbers');
@@ -1549,7 +1544,6 @@ export function createExportTool(app) {
       show(/** @type {HTMLElement} */ (el), !!rowOn[/** @type {HTMLElement} */ (el).dataset.option || '']);
     }
     pagesAll.checked = settings.pages === 'all';
-    pagesCurrent.checked = settings.pages === 'current';
     pagesRange.checked = settings.pages === 'range';
     rangeInput.style.display = settings.pages === 'range' ? '' : 'none';
     rangeInput.value = settings.range;
@@ -1618,14 +1612,13 @@ export function createExportTool(app) {
     if (mounted && mounted.kind !== kind) { remount(); return; }
     if (pane.isConnected) renderAll();
   };
-  /** @param {'all'|'current'|'range'} pages */
+  /** @param {'all'|'range'} pages */
   const setPages = (pages) => {
     settings.pages = pages;
     if (pages === 'range') { syncOptions(); rangeInput.focus(); return; }
     refresh();
   };
   pagesAll.addEventListener('change', () => setPages('all'));
-  pagesCurrent.addEventListener('change', () => setPages('current'));
   pagesRange.addEventListener('change', () => setPages('range'));
   rangeInput.addEventListener('change', () => { settings.range = rangeInput.value.trim(); refresh(); });
   rangeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); rangeInput.blur(); } });

@@ -97,9 +97,8 @@ function buildOptions(host, onChange) {
   const pagesRow = document.createElement('div');
   pagesRow.className = 'scribe-am-opts';
   const allPages = makeRadio('scribe-am-xt-pages', 'All pages', true);
-  const currentPage = makeRadio('scribe-am-xt-pages', 'Current page', false);
   const rangePages = makeRadio('scribe-am-xt-pages', 'Range', false);
-  pagesRow.append(allPages.lab, currentPage.lab, rangePages.lab);
+  pagesRow.append(allPages.lab, rangePages.lab);
   elem.appendChild(pagesRow);
   const rangeInput = document.createElement('input');
   rangeInput.type = 'text';
@@ -108,7 +107,7 @@ function buildOptions(host, onChange) {
   rangeInput.style.display = 'none';
   rangeInput.addEventListener('input', onChange);
   elem.appendChild(rangeInput);
-  for (const radio of [allPages, currentPage, rangePages]) {
+  for (const radio of [allPages, rangePages]) {
     radio.input.addEventListener('change', () => {
       rangeInput.style.display = rangePages.input.checked ? '' : 'none';
       if (rangePages.input.checked) rangeInput.focus();
@@ -157,25 +156,25 @@ function buildOptions(host, onChange) {
     elem,
     summarize: () => {
       let pagesPart = 'All pages';
-      if (currentPage.input.checked) pagesPart = 'Current page';
-      else if (rangePages.input.checked) pagesPart = rangeInput.value.trim() ? `Pages ${rangeInput.value.trim()}` : 'Range \u2014 set pages';
+      if (rangePages.input.checked) pagesPart = rangeInput.value.trim() ? `Pages ${rangeInput.value.trim()}` : 'Range \u2014 set pages';
       const wbPart = flatSheet.input.checked ? 'single flat sheet' : 'one sheet per table';
-      const chains = scribe.tableChains(host.viewer.doc.layoutDataTables.pages);
+      // A range that does not parse exports nothing, so its set is empty.
+      const scopeSet = rangePages.input.checked ? new Set(parsePageRange(rangeInput.value, host.viewer.doc.pageMetrics.length)) : null;
+      // These counts have to match the tables `buildTablesWorkbook` writes.
+      const chains = scribe.tableChains(host.viewer.doc.layoutDataTables.pages).filter((c) => !scopeSet || c.some((f) => scopeSet.has(f.n)));
       const included = chains.filter((c) => !host.viewer.doc.tableExport.excluded[c[0].table.id]).length;
       const fmtPart = formattingInput.checked ? '' : ' \u00b7 plain';
       if (included < chains.length) {
         const scopePart = pagesPart === 'All pages' ? '' : ` \u00b7 ${pagesPart.toLowerCase()}`;
         return `${included} of ${chains.length} tables \u00b7 ${wbPart}${scopePart}${fmtPart}`;
       }
-      const sheets = flatSheet.input.checked ? 1 : included;
+      const sheets = flatSheet.input.checked ? Math.min(included, 1) : included;
       return `${pagesPart} \u00b7 ${wbPart}${sheets > 0 ? ` \u00b7 ${sheets} sheet${sheets === 1 ? '' : 's'}` : ''}${fmtPart}`;
     },
     getParams: () => {
       /** @type {?Array<number>} null = all pages. */
       let pageIndices = null;
-      if (currentPage.input.checked) {
-        pageIndices = [host.viewer.state.cp.n];
-      } else if (rangePages.input.checked) {
+      if (rangePages.input.checked) {
         pageIndices = parsePageRange(rangeInput.value, host.viewer.doc.pageMetrics.length);
         if (!pageIndices) { rangeInput.focus(); return null; }
       }
