@@ -179,6 +179,7 @@ const TOOLBAR_HEIGHT_MAX = 80;
 
 const TAB_STRIP_HEIGHT = 30;
 const GROUP_NOTICE_HEIGHT = 32;
+const GROUP_MIN_WIDTH = 240;
 
 /**
  * Mirror scroll and zoom between two viewers of one document, both ways, until the returned function is called.
@@ -4408,7 +4409,7 @@ class ScribePDFViewer {
   /**
    * Where a drop at a client point would land, from a drag out of group `fromGroup`.
    * A tab lands on the other group's strip or its body; a card lands on either group.
-   * With one group, the right half of the lane splits the window.
+   * With one group, the right half of the lane splits the window, unless the lane is too narrow to hold two groups.
    * @param {number} x
    * @param {number} y
    * @param {0|1} fromGroup
@@ -4428,7 +4429,7 @@ class ScribePDFViewer {
     const lane = this._laneBox ? box(this._laneBox) : null;
     if (!g) {
       if (!lane || this._phoneUi || !inRect(lane)) return null;
-      if (x > lane.left + lane.width / 2) {
+      if (lane.width >= 2 * GROUP_MIN_WIDTH && x > lane.left + lane.width / 2) {
         const half = {
           left: this._laneBox.left + this._laneBox.width / 2, top: this._laneBox.top, width: this._laneBox.width / 2, height: this._laneBox.height,
         };
@@ -6531,7 +6532,7 @@ class ScribePDFViewer {
     const areaW = this._width - colW - inset - rightW;
     const areaH = this._height - top - this._docBottomInset();
     const group = this._rightGroup;
-    const groupW = group ? Math.round(Math.max(240, Math.min(areaW - 240, areaW * this._rightGroupFrac))) : 0;
+    const groupW = group ? Math.round(Math.max(GROUP_MIN_WIDTH, Math.min(areaW - GROUP_MIN_WIDTH, areaW * this._rightGroupFrac))) : 0;
     this._rightGroupAreaW = areaW;
     // The banners were placed above with the previous group width, so they are placed again once it changes.
     if (this._groupW !== groupW) {
