@@ -6,149 +6,28 @@
  */
 
 // Table C-2
-const QeTable = [
-  {
-    qe: 0x5601, nmps: 1, nlps: 1, switchFlag: 1,
-  },
-  {
-    qe: 0x3401, nmps: 2, nlps: 6, switchFlag: 0,
-  },
-  {
-    qe: 0x1801, nmps: 3, nlps: 9, switchFlag: 0,
-  },
-  {
-    qe: 0x0ac1, nmps: 4, nlps: 12, switchFlag: 0,
-  },
-  {
-    qe: 0x0521, nmps: 5, nlps: 29, switchFlag: 0,
-  },
-  {
-    qe: 0x0221, nmps: 38, nlps: 33, switchFlag: 0,
-  },
-  {
-    qe: 0x5601, nmps: 7, nlps: 6, switchFlag: 1,
-  },
-  {
-    qe: 0x5401, nmps: 8, nlps: 14, switchFlag: 0,
-  },
-  {
-    qe: 0x4801, nmps: 9, nlps: 14, switchFlag: 0,
-  },
-  {
-    qe: 0x3801, nmps: 10, nlps: 14, switchFlag: 0,
-  },
-  {
-    qe: 0x3001, nmps: 11, nlps: 17, switchFlag: 0,
-  },
-  {
-    qe: 0x2401, nmps: 12, nlps: 18, switchFlag: 0,
-  },
-  {
-    qe: 0x1c01, nmps: 13, nlps: 20, switchFlag: 0,
-  },
-  {
-    qe: 0x1601, nmps: 29, nlps: 21, switchFlag: 0,
-  },
-  {
-    qe: 0x5601, nmps: 15, nlps: 14, switchFlag: 1,
-  },
-  {
-    qe: 0x5401, nmps: 16, nlps: 14, switchFlag: 0,
-  },
-  {
-    qe: 0x5101, nmps: 17, nlps: 15, switchFlag: 0,
-  },
-  {
-    qe: 0x4801, nmps: 18, nlps: 16, switchFlag: 0,
-  },
-  {
-    qe: 0x3801, nmps: 19, nlps: 17, switchFlag: 0,
-  },
-  {
-    qe: 0x3401, nmps: 20, nlps: 18, switchFlag: 0,
-  },
-  {
-    qe: 0x3001, nmps: 21, nlps: 19, switchFlag: 0,
-  },
-  {
-    qe: 0x2801, nmps: 22, nlps: 19, switchFlag: 0,
-  },
-  {
-    qe: 0x2401, nmps: 23, nlps: 20, switchFlag: 0,
-  },
-  {
-    qe: 0x2201, nmps: 24, nlps: 21, switchFlag: 0,
-  },
-  {
-    qe: 0x1c01, nmps: 25, nlps: 22, switchFlag: 0,
-  },
-  {
-    qe: 0x1801, nmps: 26, nlps: 23, switchFlag: 0,
-  },
-  {
-    qe: 0x1601, nmps: 27, nlps: 24, switchFlag: 0,
-  },
-  {
-    qe: 0x1401, nmps: 28, nlps: 25, switchFlag: 0,
-  },
-  {
-    qe: 0x1201, nmps: 29, nlps: 26, switchFlag: 0,
-  },
-  {
-    qe: 0x1101, nmps: 30, nlps: 27, switchFlag: 0,
-  },
-  {
-    qe: 0x0ac1, nmps: 31, nlps: 28, switchFlag: 0,
-  },
-  {
-    qe: 0x09c1, nmps: 32, nlps: 29, switchFlag: 0,
-  },
-  {
-    qe: 0x08a1, nmps: 33, nlps: 30, switchFlag: 0,
-  },
-  {
-    qe: 0x0521, nmps: 34, nlps: 31, switchFlag: 0,
-  },
-  {
-    qe: 0x0441, nmps: 35, nlps: 32, switchFlag: 0,
-  },
-  {
-    qe: 0x02a1, nmps: 36, nlps: 33, switchFlag: 0,
-  },
-  {
-    qe: 0x0221, nmps: 37, nlps: 34, switchFlag: 0,
-  },
-  {
-    qe: 0x0141, nmps: 38, nlps: 35, switchFlag: 0,
-  },
-  {
-    qe: 0x0111, nmps: 39, nlps: 36, switchFlag: 0,
-  },
-  {
-    qe: 0x0085, nmps: 40, nlps: 37, switchFlag: 0,
-  },
-  {
-    qe: 0x0049, nmps: 41, nlps: 38, switchFlag: 0,
-  },
-  {
-    qe: 0x0025, nmps: 42, nlps: 39, switchFlag: 0,
-  },
-  {
-    qe: 0x0015, nmps: 43, nlps: 40, switchFlag: 0,
-  },
-  {
-    qe: 0x0009, nmps: 44, nlps: 41, switchFlag: 0,
-  },
-  {
-    qe: 0x0005, nmps: 45, nlps: 42, switchFlag: 0,
-  },
-  {
-    qe: 0x0001, nmps: 45, nlps: 43, switchFlag: 0,
-  },
-  {
-    qe: 0x5601, nmps: 46, nlps: 46, switchFlag: 0,
-  },
-];
+const QE = new Uint16Array([
+  0x5601, 0x3401, 0x1801, 0x0ac1, 0x0521, 0x0221, 0x5601, 0x5401, 0x4801, 0x3801, 0x3001, 0x2401, 0x1c01, 0x1601, 0x5601, 0x5401,
+  0x5101, 0x4801, 0x3801, 0x3401, 0x3001, 0x2801, 0x2401, 0x2201, 0x1c01, 0x1801, 0x1601, 0x1401, 0x1201, 0x1101, 0x0ac1, 0x09c1,
+  0x08a1, 0x0521, 0x0441, 0x02a1, 0x0221, 0x0141, 0x0111, 0x0085, 0x0049, 0x0025, 0x0015, 0x0009, 0x0005, 0x0001, 0x5601,
+]);
+const NMPS = new Uint8Array([
+  1, 2, 3, 4, 5, 38, 7, 8, 9, 10, 11, 12, 13, 29, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34,
+  35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 45, 46,
+]);
+const NLPS = new Uint8Array([
+  1, 6, 9, 12, 29, 33, 6, 14, 14, 14, 17, 18, 20, 21, 14, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+  31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 46,
+]);
+const SWITCH = new Uint8Array([
+  1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  0, 0, 0, 0,
+]);
+
+// The same arrays, for the JBIG2 kernels that carry readBit inline.
+export const QeTable = {
+  qe: QE, nmps: NMPS, nlps: NLPS, switchFlag: SWITCH,
+};
 
 export class ArithmeticDecoder {
   constructor(data, start, end) {
@@ -196,8 +75,7 @@ export class ArithmeticDecoder {
   readBit(contexts, pos) {
     let cx_index = contexts[pos] >> 1;
     let cx_mps = contexts[pos] & 1;
-    const qeTableIcx = QeTable[cx_index];
-    const qeIcx = qeTableIcx.qe;
+    const qeIcx = QE[cx_index];
     let d;
     let a = this.a - qeIcx;
 
@@ -206,14 +84,14 @@ export class ArithmeticDecoder {
       if (a < qeIcx) {
         a = qeIcx;
         d = cx_mps;
-        cx_index = qeTableIcx.nmps;
+        cx_index = NMPS[cx_index];
       } else {
         a = qeIcx;
         d = 1 ^ cx_mps;
-        if (qeTableIcx.switchFlag === 1) {
+        if (SWITCH[cx_index] === 1) {
           cx_mps = d;
         }
-        cx_index = qeTableIcx.nlps;
+        cx_index = NLPS[cx_index];
       }
     } else {
       this.chigh -= qeIcx;
@@ -224,13 +102,13 @@ export class ArithmeticDecoder {
       // exchangeMps
       if (a < qeIcx) {
         d = 1 ^ cx_mps;
-        if (qeTableIcx.switchFlag === 1) {
+        if (SWITCH[cx_index] === 1) {
           cx_mps = d;
         }
-        cx_index = qeTableIcx.nlps;
+        cx_index = NLPS[cx_index];
       } else {
         d = cx_mps;
-        cx_index = qeTableIcx.nmps;
+        cx_index = NMPS[cx_index];
       }
     }
     // C.3.3 renormD;

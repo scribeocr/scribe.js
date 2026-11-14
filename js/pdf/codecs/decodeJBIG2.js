@@ -5,10 +5,13 @@
  */
 
 import { CCITTFaxDecoder } from './decodeCCITT.js';
-import { ArithmeticDecoder } from './decodeMQ.js';
+import { ArithmeticDecoder, QeTable } from './decodeMQ.js';
 
 const MIN_INT_32 = -(2 ** 31);
 const MAX_INT_32 = 2 ** 31 - 1;
+
+// Keeps every bit position of a packed text-region row, plus the page's bit offset, inside a 32-bit integer.
+const MAX_PACKED_WIDTH = 0x7ffffff8;
 
 function log2(x) {
   if (x <= 0) {
@@ -37,11 +40,16 @@ class Jbig2Error extends Error {
 }
 
 class ContextCache {
-  getContexts(id) {
-    if (id in this) {
-      return this[id];
+  getContexts(id, size) {
+    const contexts = this[id];
+    if (contexts !== undefined && contexts.length >= size) {
+      return contexts;
     }
-    return this[id] = new Int8Array(1 << 16);
+    const sized = new Int8Array(size);
+    if (contexts !== undefined) {
+      sized.set(contexts);
+    }
+    return this[id] = sized;
   }
 }
 
@@ -65,34 +73,40 @@ class DecodingContext {
   }
 }
 
+const INTEGER_CONTEXTS = 512;
+const INTEGER_VALUE_BITS = [2, 4, 6, 8, 12, 32];
+const INTEGER_VALUE_OFFSETS = [0, 4, 20, 84, 340, 4436];
+
 function decodeInteger(contextCache, procedure, decoder) {
-  const contexts = contextCache.getContexts(procedure);
-  let prev = 1;
-  function readBits(length) {
-    let v = 0;
-    for (let i = 0; i < length; i++) {
-      const bit = decoder.readBit(contexts, prev);
-      prev = prev < 256 ? prev << 1 | bit : (prev << 1 | bit) & 511 | 256;
-      v = v << 1 | bit;
+  const contexts = contextCache.getContexts(procedure, INTEGER_CONTEXTS);
+  const sign = decoder.readBit(contexts, 1);
+  let prev = 2 | sign;
+  let ones = 0;
+  while (ones < 5) {
+    const bit = decoder.readBit(contexts, prev);
+    prev = prev << 1 | bit;
+    if (bit === 0) {
+      break;
     }
-    return v >>> 0;
+    ones++;
   }
-  const sign = readBits(1);
-  const value = readBits(1) ? readBits(1) ? readBits(1) ? readBits(1) ? readBits(1) ? readBits(32) + 4436 : readBits(12) + 340 : readBits(8) + 84 : readBits(6) + 20 : readBits(4) + 4 : readBits(2);
-  let signedValue;
-  if (sign === 0) {
-    signedValue = value;
-  } else if (value > 0) {
-    signedValue = -value;
+  const length = INTEGER_VALUE_BITS[ones];
+  let bits = 0;
+  for (let i = 0; i < length; i++) {
+    const bit = decoder.readBit(contexts, prev);
+    prev = prev < 256 ? prev << 1 | bit : (prev << 1 | bit) & 511 | 256;
+    bits = bits << 1 | bit;
   }
-  if (signedValue >= MIN_INT_32 && signedValue <= MAX_INT_32) {
-    return signedValue;
+  const value = (bits >>> 0) + INTEGER_VALUE_OFFSETS[ones];
+  if (sign) {
+    // A negative zero is the out-of-band value.
+    return value !== 0 && -value >= MIN_INT_32 ? -value : null;
   }
-  return null;
+  return value <= MAX_INT_32 ? value : null;
 }
 
 function decodeIAID(contextCache, decoder, codeLength) {
-  const contexts = contextCache.getContexts('IAID');
+  const contexts = contextCache.getContexts('IAID', codeLength < 16 ? 1 << codeLength : 1 << 16);
   let prev = 1;
   for (let i = 0; i < codeLength; i++) {
     const bit = decoder.readBit(contexts, prev);
@@ -314,9 +328,19 @@ const RefinementTemplates = [{
 const ReusedContexts = [0x9b25, 0x0795, 0x00e5, 0x0195];
 const RefinementReusedContexts = [0x0020, 0x0008];
 
+function isNominalTemplate0(templateIndex, at) {
+  return templateIndex === 0 && at.length === 4 && at[0].x === 3 && at[0].y === -1
+    && at[1].x === -3 && at[1].y === -1 && at[2].x === 2 && at[2].y === -2 && at[3].x === -2 && at[3].y === -2;
+}
+
+const MQ_QE = QeTable.qe;
+const MQ_NMPS = QeTable.nmps;
+const MQ_NLPS = QeTable.nlps;
+const MQ_SWITCH = QeTable.switchFlag;
+
 function decodeBitmapTemplate0(width, height, decodingContext) {
   const decoder = decodingContext.decoder;
-  const contexts = decodingContext.contextCache.getContexts('GB');
+  const contexts = decodingContext.contextCache.getContexts('GB', 1 << 16);
   const bitmap = [];
   const backing = new Uint8Array(width * height);
   let contextLabel; let i; let j; let pixel; let row; let row1; let
@@ -342,13 +366,593 @@ function decodeBitmapTemplate0(width, height, decodingContext) {
   return bitmap;
 }
 
+function decodeBitmapTemplate0Packed(width, height, prediction, decodingContext, out, offset, stride) {
+  const decoder = decodingContext.decoder;
+  const contexts = decodingContext.contextCache.getContexts('GB', 1 << 16);
+  if (width === 0) return;
+  const data = decoder.data;
+  const dataEnd = decoder.dataEnd;
+  let a = decoder.a;
+  let chigh = decoder.chigh;
+  let clow = decoder.clow;
+  let ct = decoder.ct;
+  let bp = decoder.bp;
+  const predictionLabel = ReusedContexts[0];
+  let ltp = 0;
+  // A page region can reach 2^31 pixels wide, so pixel widths and x coordinates avoid 32-bit shifts.
+  const rowBytes = Math.ceil(width / 8);
+  const lastByte = rowBytes - 1;
+  const lastShiftEnd = 8 - (width - lastByte * 8);
+  const whiteRow = new Uint8Array(rowBytes);
+  for (let i = 0, rowStart = offset; i < height; i++, rowStart += stride) {
+    if (prediction) {
+      const cx = contexts[predictionLabel];
+      let index = cx >> 1;
+      let mps = cx & 1;
+      const qe = MQ_QE[index];
+      let bit;
+      a -= qe;
+      if (chigh >= qe && (a & 0x8000) !== 0) {
+        chigh -= qe;
+        bit = mps;
+      } else {
+        if (chigh < qe) {
+          if (a < qe) {
+            bit = mps;
+            index = MQ_NMPS[index];
+          } else {
+            bit = mps ^ 1;
+            if (MQ_SWITCH[index] === 1) mps = bit;
+            index = MQ_NLPS[index];
+          }
+          a = qe;
+        } else {
+          chigh -= qe;
+          if (a < qe) {
+            bit = mps ^ 1;
+            if (MQ_SWITCH[index] === 1) mps = bit;
+            index = MQ_NLPS[index];
+          } else {
+            bit = mps;
+            index = MQ_NMPS[index];
+          }
+        }
+        do {
+          if (ct === 0) {
+            if (data[bp] === 0xff) {
+              if (data[bp + 1] > 0x8f) {
+                clow += 0xff00;
+                ct = 8;
+              } else {
+                bp++;
+                clow += data[bp] << 9;
+                ct = 7;
+              }
+            } else {
+              bp++;
+              clow += bp < dataEnd ? data[bp] << 8 : 0xff00;
+              ct = 8;
+            }
+            if (clow > 0xffff) {
+              chigh += clow >> 16;
+              clow &= 0xffff;
+            }
+          }
+          a <<= 1;
+          chigh = ((chigh << 1) & 0xffff) | ((clow >> 15) & 1);
+          clow = (clow << 1) & 0xffff;
+          ct--;
+        } while ((a & 0x8000) === 0);
+        contexts[predictionLabel] = index << 1 | mps;
+      }
+      ltp ^= bit;
+      if (ltp) {
+        if (i >= 1) out.copyWithin(rowStart, rowStart - stride, rowStart - stride + rowBytes);
+        else out.fill(0, rowStart, rowStart + rowBytes);
+        continue;
+      }
+    }
+    const above1 = i >= 1 ? out : whiteRow;
+    const above1Start = i >= 1 ? rowStart - stride : 0;
+    const above2 = i >= 2 ? out : whiteRow;
+    const above2Start = i >= 2 ? rowStart - 2 * stride : 0;
+    let window1 = above1[above1Start];
+    let window2 = above2[above2Start];
+    let pixels = 0;
+    let firstShift = 8;
+    bytes: for (let b = 0; b < rowBytes; b++) {
+      const notLast = b < lastByte;
+      window1 = (window1 << 8 | (notLast ? above1[above1Start + b + 1] : 0)) & 0xffffff;
+      window2 = (window2 << 8 | (notLast ? above2[above2Start + b + 1] : 0)) & 0xffffff;
+      const shiftEnd = notLast ? 0 : lastShiftEnd;
+      if (((window1 & 0x7ffe0) | (window2 & 0x3ffc0)) === 0) {
+        for (let shift = firstShift; shift > shiftEnd; shift--) {
+          const label = pixels & 0xf;
+          if (label === 0) {
+            const state = contexts[0];
+            const qe = MQ_QE[state >> 1];
+            const room = chigh < a - 0x8000 ? chigh : a - 0x8000;
+            if ((state & 1) === 0 && room >= qe << 1) {
+              const x = b * 8 + 8 - shift;
+              let stop = x + (room / qe | 0);
+              if (stop > width) stop = width;
+              const scanLast = Math.floor((stop + 2) / 8);
+              const scanEnd = scanLast < lastByte ? scanLast : lastByte;
+              for (let t = b + 1; t <= scanEnd; t++) {
+                const byte1 = above1[above1Start + t];
+                const byte2 = above2[above2Start + t];
+                if ((byte1 | byte2) !== 0) {
+                  if (byte1 !== 0 && t * 8 + Math.clz32(byte1) - 27 < stop) stop = t * 8 + Math.clz32(byte1) - 27;
+                  if (byte2 !== 0 && t * 8 + Math.clz32(byte2) - 26 < stop) stop = t * 8 + Math.clz32(byte2) - 26;
+                  break;
+                }
+              }
+              const m = stop - x;
+              if (m >= 2) {
+                const take = m * qe;
+                a -= take;
+                chigh -= take;
+                const left = shift - shiftEnd;
+                if (m < left) {
+                  pixels <<= m;
+                  shift -= m - 1;
+                  continue;
+                }
+                out[rowStart + b] = pixels << left << shiftEnd & 0xff;
+                let rest = m - left;
+                let next = b + 1;
+                for (; rest >= 8; rest -= 8) out[rowStart + next++] = 0;
+                if (next > lastByte) break bytes;
+                window1 = above1[above1Start + next - 1] << 8 | above1[above1Start + next];
+                window2 = above2[above2Start + next - 1] << 8 | above2[above2Start + next];
+                pixels = 0;
+                firstShift = 8 - rest;
+                b = next - 1;
+                continue bytes;
+              }
+            }
+          }
+          const cx = contexts[label];
+          let index = cx >> 1;
+          let mps = cx & 1;
+          const qe = MQ_QE[index];
+          let pixel;
+          a -= qe;
+          if (chigh >= qe && (a & 0x8000) !== 0) {
+            chigh -= qe;
+            pixel = mps;
+          } else {
+            if (chigh < qe) {
+              if (a < qe) {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              } else {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              }
+              a = qe;
+            } else {
+              chigh -= qe;
+              if (a < qe) {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              } else {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              }
+            }
+            do {
+              if (ct === 0) {
+                if (data[bp] === 0xff) {
+                  if (data[bp + 1] > 0x8f) {
+                    clow += 0xff00;
+                    ct = 8;
+                  } else {
+                    bp++;
+                    clow += data[bp] << 9;
+                    ct = 7;
+                  }
+                } else {
+                  bp++;
+                  clow += bp < dataEnd ? data[bp] << 8 : 0xff00;
+                  ct = 8;
+                }
+                if (clow > 0xffff) {
+                  chigh += clow >> 16;
+                  clow &= 0xffff;
+                }
+              }
+              a <<= 1;
+              chigh = ((chigh << 1) & 0xffff) | ((clow >> 15) & 1);
+              clow = (clow << 1) & 0xffff;
+              ct--;
+            } while ((a & 0x8000) === 0);
+            contexts[label] = index << 1 | mps;
+          }
+          pixels = pixels << 1 | pixel;
+        }
+      } else {
+        const window2Up = window2 << 6;
+        for (let shift = firstShift; shift > shiftEnd; shift--) {
+          const label = (window2Up >> shift & 0xf800) | (window1 >> shift & 0x07f0) | (pixels & 0xf);
+          const cx = contexts[label];
+          let index = cx >> 1;
+          let mps = cx & 1;
+          const qe = MQ_QE[index];
+          let pixel;
+          a -= qe;
+          if (chigh >= qe && (a & 0x8000) !== 0) {
+            chigh -= qe;
+            pixel = mps;
+          } else {
+            if (chigh < qe) {
+              if (a < qe) {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              } else {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              }
+              a = qe;
+            } else {
+              chigh -= qe;
+              if (a < qe) {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              } else {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              }
+            }
+            do {
+              if (ct === 0) {
+                if (data[bp] === 0xff) {
+                  if (data[bp + 1] > 0x8f) {
+                    clow += 0xff00;
+                    ct = 8;
+                  } else {
+                    bp++;
+                    clow += data[bp] << 9;
+                    ct = 7;
+                  }
+                } else {
+                  bp++;
+                  clow += bp < dataEnd ? data[bp] << 8 : 0xff00;
+                  ct = 8;
+                }
+                if (clow > 0xffff) {
+                  chigh += clow >> 16;
+                  clow &= 0xffff;
+                }
+              }
+              a <<= 1;
+              chigh = ((chigh << 1) & 0xffff) | ((clow >> 15) & 1);
+              clow = (clow << 1) & 0xffff;
+              ct--;
+            } while ((a & 0x8000) === 0);
+            contexts[label] = index << 1 | mps;
+          }
+          pixels = pixels << 1 | pixel;
+        }
+      }
+      out[rowStart + b] = pixels << shiftEnd & 0xff;
+      pixels &= 0xf;
+      firstShift = 8;
+    }
+  }
+  decoder.a = a;
+  decoder.chigh = chigh;
+  decoder.clow = clow;
+  decoder.ct = ct;
+  decoder.bp = bp;
+}
+
+// A larger symbol takes the byte-per-pixel path, so a size whose allocation an engine refuses there stays refused.
+const MAX_PACKED_SYMBOL_PIXELS = 1 << 28;
+
+// MSB-first packed rows with zeroed trailing pad bits.
+class PackedSymbol {
+  constructor(width, height, packedRows) {
+    this.width = width;
+    this.height = height;
+    this.packedRows = packedRows;
+    /** @type {Array<Uint8Array>|null} */
+    this.rows = null;
+  }
+}
+
+function symbolByteRows(symbol) {
+  if (symbol.rows !== null) {
+    return symbol.rows;
+  }
+  const { width, height, packedRows } = symbol;
+  const backing = new Uint8Array(width * height);
+  const rows = [];
+  for (let r = 0, at = 0; r < height; r++) {
+    const row = backing.subarray(r * width, (r + 1) * width);
+    let c = 0;
+    for (; c + 8 <= width; c += 8, at++) {
+      const v = packedRows[at];
+      if (v !== 0) {
+        row[c] = v >> 7;
+        row[c + 1] = v >> 6 & 1;
+        row[c + 2] = v >> 5 & 1;
+        row[c + 3] = v >> 4 & 1;
+        row[c + 4] = v >> 3 & 1;
+        row[c + 5] = v >> 2 & 1;
+        row[c + 6] = v >> 1 & 1;
+        row[c + 7] = v & 1;
+      }
+    }
+    if (c < width) {
+      const v = packedRows[at++];
+      for (let k = 7; c < width; c++, k--) {
+        row[c] = v >> k & 1;
+      }
+    }
+    rows.push(row);
+  }
+  symbol.rows = rows;
+  return rows;
+}
+
+function packByteRow(row, width, out, at) {
+  let c = 0;
+  for (; c + 8 <= width; c += 8) {
+    out[at++] = row[c] << 7 | row[c + 1] << 6 | row[c + 2] << 5 | row[c + 3] << 4 | row[c + 4] << 3 | row[c + 5] << 2
+      | row[c + 6] << 1 | row[c + 7];
+  }
+  if (c < width) {
+    let v = 0;
+    for (let k = 7; c < width; c++, k--) {
+      v |= row[c] << k;
+    }
+    out[at] = v;
+  }
+}
+
+// Every byte of the region in `out` must be 0 on entry.
+function decodeBitmapTemplate2Packed(width, height, prediction, decodingContext, out, offset, stride) {
+  const decoder = decodingContext.decoder;
+  const contexts = decodingContext.contextCache.getContexts('GB', 1 << 10);
+  if (width === 0) return;
+  const rowBytes = Math.ceil(width / 8);
+  const lastByte = rowBytes - 1;
+  const lastShiftEnd = 8 - (width - lastByte * 8);
+  const data = decoder.data;
+  const dataEnd = decoder.dataEnd;
+  let a = decoder.a;
+  let chigh = decoder.chigh;
+  let clow = decoder.clow;
+  let ct = decoder.ct;
+  let bp = decoder.bp;
+  const predictionLabel = ReusedContexts[2];
+  let ltp = 0;
+  for (let i = 0, rowStart = offset; i < height; i++, rowStart += stride) {
+    if (prediction) {
+      decoder.a = a;
+      decoder.chigh = chigh;
+      decoder.clow = clow;
+      decoder.ct = ct;
+      decoder.bp = bp;
+      ltp ^= decoder.readBit(contexts, predictionLabel);
+      a = decoder.a;
+      chigh = decoder.chigh;
+      clow = decoder.clow;
+      ct = decoder.ct;
+      bp = decoder.bp;
+      if (ltp) {
+        if (i >= 1) out.copyWithin(rowStart, rowStart - stride, rowStart - stride + rowBytes);
+        continue;
+      }
+    }
+    const above1 = i >= 1 ? rowStart - stride : rowStart;
+    const above2 = i >= 2 ? rowStart - 2 * stride : rowStart;
+    let window1 = out[above1];
+    let window2 = out[above2];
+    let pixels = 0;
+    let firstShift = 8;
+    bytes: for (let b = 0; b < rowBytes; b++) {
+      const notLast = b < lastByte;
+      window1 = (window1 << 8 | (notLast ? out[above1 + b + 1] : 0)) & 0xffffff;
+      window2 = (window2 << 8 | (notLast ? out[above2 + b + 1] : 0)) & 0xffffff;
+      const shiftEnd = notLast ? 0 : lastShiftEnd;
+      if (((window1 & 0x3ffc0) | (window2 & 0x1ff80)) === 0) {
+        for (let shift = firstShift; shift > shiftEnd; shift--) {
+          const label = pixels & 3;
+          if (label === 0) {
+            const state = contexts[0];
+            const qe = MQ_QE[state >> 1];
+            const room = chigh < a - 0x8000 ? chigh : a - 0x8000;
+            if ((state & 1) === 0 && room >= qe << 1) {
+              const x = b * 8 + 8 - shift;
+              let stop = x + (room / qe | 0);
+              if (stop > width) stop = width;
+              const scanLast = Math.floor((stop + 1) / 8);
+              const scanEnd = scanLast < lastByte ? scanLast : lastByte;
+              for (let t = b + 1; t <= scanEnd; t++) {
+                const byte1 = out[above1 + t];
+                const byte2 = out[above2 + t];
+                if ((byte1 | byte2) !== 0) {
+                  if (byte1 !== 0 && t * 8 + Math.clz32(byte1) - 26 < stop) stop = t * 8 + Math.clz32(byte1) - 26;
+                  if (byte2 !== 0 && t * 8 + Math.clz32(byte2) - 25 < stop) stop = t * 8 + Math.clz32(byte2) - 25;
+                  break;
+                }
+              }
+              const m = stop - x;
+              if (m >= 2) {
+                const take = m * qe;
+                a -= take;
+                chigh -= take;
+                const left = shift - shiftEnd;
+                if (m < left) {
+                  pixels <<= m;
+                  shift -= m - 1;
+                  continue;
+                }
+                out[rowStart + b] = pixels << left << shiftEnd & 0xff;
+                const rest = m - left;
+                const next = b + 1 + (rest >> 3);
+                if (next > lastByte) break bytes;
+                window1 = out[above1 + next - 1] << 8 | out[above1 + next];
+                window2 = out[above2 + next - 1] << 8 | out[above2 + next];
+                pixels = 0;
+                firstShift = 8 - (rest & 7);
+                b = next - 1;
+                continue bytes;
+              }
+            }
+          }
+          const cx = contexts[label];
+          let index = cx >> 1;
+          let mps = cx & 1;
+          const qe = MQ_QE[index];
+          let pixel;
+          a -= qe;
+          if (chigh >= qe && (a & 0x8000) !== 0) {
+            chigh -= qe;
+            pixel = mps;
+          } else {
+            if (chigh < qe) {
+              if (a < qe) {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              } else {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              }
+              a = qe;
+            } else {
+              chigh -= qe;
+              if (a < qe) {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              } else {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              }
+            }
+            do {
+              if (ct === 0) {
+                if (data[bp] === 0xff) {
+                  if (data[bp + 1] > 0x8f) {
+                    clow += 0xff00;
+                    ct = 8;
+                  } else {
+                    bp++;
+                    clow += data[bp] << 9;
+                    ct = 7;
+                  }
+                } else {
+                  bp++;
+                  clow += bp < dataEnd ? data[bp] << 8 : 0xff00;
+                  ct = 8;
+                }
+                if (clow > 0xffff) {
+                  chigh += clow >> 16;
+                  clow &= 0xffff;
+                }
+              }
+              a <<= 1;
+              chigh = ((chigh << 1) & 0xffff) | ((clow >> 15) & 1);
+              clow = (clow << 1) & 0xffff;
+              ct--;
+            } while ((a & 0x8000) === 0);
+            contexts[label] = index << 1 | mps;
+          }
+          pixels = pixels << 1 | pixel;
+        }
+      } else {
+        const window1Down = window1 >> 3;
+        const window2Up = window2 << 1;
+        for (let shift = firstShift; shift > shiftEnd; shift--) {
+          const label = (window2Up >> shift & 0x380) | (window1Down >> shift & 0x7c) | (pixels & 3);
+          const cx = contexts[label];
+          let index = cx >> 1;
+          let mps = cx & 1;
+          const qe = MQ_QE[index];
+          let pixel;
+          a -= qe;
+          if (chigh >= qe && (a & 0x8000) !== 0) {
+            chigh -= qe;
+            pixel = mps;
+          } else {
+            if (chigh < qe) {
+              if (a < qe) {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              } else {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              }
+              a = qe;
+            } else {
+              chigh -= qe;
+              if (a < qe) {
+                pixel = mps ^ 1;
+                if (MQ_SWITCH[index] === 1) mps = pixel;
+                index = MQ_NLPS[index];
+              } else {
+                pixel = mps;
+                index = MQ_NMPS[index];
+              }
+            }
+            do {
+              if (ct === 0) {
+                if (data[bp] === 0xff) {
+                  if (data[bp + 1] > 0x8f) {
+                    clow += 0xff00;
+                    ct = 8;
+                  } else {
+                    bp++;
+                    clow += data[bp] << 9;
+                    ct = 7;
+                  }
+                } else {
+                  bp++;
+                  clow += bp < dataEnd ? data[bp] << 8 : 0xff00;
+                  ct = 8;
+                }
+                if (clow > 0xffff) {
+                  chigh += clow >> 16;
+                  clow &= 0xffff;
+                }
+              }
+              a <<= 1;
+              chigh = ((chigh << 1) & 0xffff) | ((clow >> 15) & 1);
+              clow = (clow << 1) & 0xffff;
+              ct--;
+            } while ((a & 0x8000) === 0);
+            contexts[label] = index << 1 | mps;
+          }
+          pixels = pixels << 1 | pixel;
+        }
+      }
+      out[rowStart + b] = pixels << shiftEnd & 0xff;
+      pixels &= 3;
+      firstShift = 8;
+    }
+  }
+  decoder.a = a;
+  decoder.chigh = chigh;
+  decoder.clow = clow;
+  decoder.ct = ct;
+  decoder.bp = bp;
+}
+
 function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at, decodingContext) {
   if (mmr) {
     const input = new Reader(decodingContext.data, decodingContext.start, decodingContext.end);
     return decodeMMRBitmap(input, width, height, false);
   }
-  if (templateIndex === 0 && !skip && !prediction && at.length === 4 && at[0].x === 3 && at[0].y === -1
-    && at[1].x === -3 && at[1].y === -1 && at[2].x === 2 && at[2].y === -2 && at[3].x === -2 && at[3].y === -2) {
+  if (!skip && !prediction && isNominalTemplate0(templateIndex, at)) {
     return decodeBitmapTemplate0(width, height, decodingContext);
   }
   const useskip = !!skip;
@@ -395,7 +999,7 @@ function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at, d
   let row = new Uint8Array(width);
   const bitmap = [];
   const decoder = decodingContext.decoder;
-  const contexts = decodingContext.contextCache.getContexts('GB');
+  const contexts = decodingContext.contextCache.getContexts('GB', 1 << templateLength);
   let ltp = 0;
   let j;
   let i0;
@@ -458,7 +1062,92 @@ function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at, d
   return bitmap;
 }
 
-function decodeRefinement(width, height, templateIndex, referenceBitmap, offsetX, offsetY, prediction, at, decodingContext) {
+function slideRefinementWindow(window, pixel, above, refAbove, refRow, refBelow) {
+  return ((window << 1) & 0x116c) | ((window >> 3) & 0x200) | ((window >> 8) & 1)
+    | above << 11 | pixel << 10 | refAbove << 7 | refRow << 4 | refBelow << 1;
+}
+
+function refinementTemplate1Label(window) {
+  return (window & 0x200) | ((window >> 4) & 0x1c0) | ((window >> 3) & 0x20) | ((window >> 2) & 0x1c) | ((window >> 1) & 3);
+}
+
+function decodeRefinement(width, height, templateIndex, referenceBitmap, offsetX, offsetY, prediction, at, decodingContext,
+  packed = false) {
+  if (referenceBitmap instanceof PackedSymbol) {
+    referenceBitmap = symbolByteRows(referenceBitmap);
+  }
+  const referenceWidth = referenceBitmap[0].length;
+  const referenceHeight = referenceBitmap.length;
+  const pseudoPixelContext = RefinementReusedContexts[templateIndex];
+  const bitmap = [];
+  const decoder = decodingContext.decoder;
+  const contexts = decodingContext.contextCache.getContexts('GR', 1 << (templateIndex === 0 ? 13 : 10));
+  let ltp = 0;
+  // The general loop after this branch returns byte rows even when `packed` is set.
+  if (width >= 1 && height >= 1
+    && (templateIndex !== 0 || at[0].x === -1 && at[0].y === -1 && at[1].x === -1 && at[1].y === -1)) {
+    const columnShift = 2 - offsetX;
+    const spanStart = Math.max(0, -columnShift);
+    const spanEnd = Math.min(width - 2, referenceWidth - columnShift);
+    const zeroRow = new Uint8Array(referenceWidth);
+    const leftColumn = -1 - offsetX;
+    const centerColumn = leftColumn + 1;
+    const rightColumn = leftColumn + 2;
+    const leftInside = leftColumn >= 0 && leftColumn < referenceWidth;
+    const centerInside = centerColumn >= 0 && centerColumn < referenceWidth;
+    const rightInside = rightColumn >= 0 && rightColumn < referenceWidth;
+    const rowBytes = width + 7 >> 3;
+    const packedRows = packed ? new Uint8Array(rowBytes * height) : null;
+    const evenRow = packed ? new Uint8Array(width) : null;
+    const oddRow = packed && height > 1 ? new Uint8Array(width) : null;
+    for (let i = 0; i < height; i++) {
+      if (prediction) {
+        const sltp = decoder.readBit(contexts, pseudoPixelContext);
+        ltp ^= sltp;
+        if (ltp) {
+          throw new Jbig2Error('prediction is not supported');
+        }
+      }
+      let row;
+      let above;
+      if (packed) {
+        row = i & 1 ? oddRow : evenRow;
+        above = i === 0 ? row : i & 1 ? evenRow : oddRow;
+      } else {
+        row = new Uint8Array(width);
+        bitmap.push(row);
+        above = i > 0 ? bitmap[i - 1] : row;
+      }
+      const r = i - offsetY;
+      const refAbove = r >= 1 && r <= referenceHeight ? referenceBitmap[r - 1] : zeroRow;
+      const refRow = r >= 0 && r < referenceHeight ? referenceBitmap[r] : zeroRow;
+      const refBelow = r >= -1 && r < referenceHeight - 1 ? referenceBitmap[r + 1] : zeroRow;
+      let window = above[0] << 12 | (width > 1 ? above[1] << 11 : 0);
+      if (leftInside) window |= refAbove[leftColumn] | refRow[leftColumn] << 6 | refBelow[leftColumn] << 3;
+      if (centerInside) window |= refAbove[centerColumn] << 8 | refRow[centerColumn] << 5 | refBelow[centerColumn] << 2;
+      if (rightInside) window |= refAbove[rightColumn] << 7 | refRow[rightColumn] << 4 | refBelow[rightColumn] << 1;
+      for (let j = 0; j < width; j++) {
+        if (j === spanStart) {
+          for (; j < spanEnd; j++) {
+            const pixel = decoder.readBit(contexts, templateIndex === 0 ? window : refinementTemplate1Label(window));
+            row[j] = pixel;
+            const rc = j + columnShift;
+            window = slideRefinementWindow(window, pixel, above[j + 2], refAbove[rc], refRow[rc], refBelow[rc]);
+          }
+        }
+        const pixel = decoder.readBit(contexts, templateIndex === 0 ? window : refinementTemplate1Label(window));
+        row[j] = pixel;
+        const rc = j + columnShift;
+        const inside = rc >= 0 && rc < referenceWidth;
+        window = slideRefinementWindow(window, pixel, j + 2 < width ? above[j + 2] : 0,
+          inside ? refAbove[rc] : 0, inside ? refRow[rc] : 0, inside ? refBelow[rc] : 0);
+      }
+      if (packed) {
+        packByteRow(row, width, packedRows, i * rowBytes);
+      }
+    }
+    return packed ? new PackedSymbol(width, height, packedRows) : bitmap;
+  }
   let codingTemplate = RefinementTemplates[templateIndex].coding;
   if (templateIndex === 0) {
     codingTemplate = codingTemplate.concat([at[0]]);
@@ -482,13 +1171,6 @@ function decodeRefinement(width, height, templateIndex, referenceBitmap, offsetX
     referenceTemplateX[k] = referenceTemplate[k].x;
     referenceTemplateY[k] = referenceTemplate[k].y;
   }
-  const referenceWidth = referenceBitmap[0].length;
-  const referenceHeight = referenceBitmap.length;
-  const pseudoPixelContext = RefinementReusedContexts[templateIndex];
-  const bitmap = [];
-  const decoder = decodingContext.decoder;
-  const contexts = decodingContext.contextCache.getContexts('GR');
-  let ltp = 0;
   for (let i = 0; i < height; i++) {
     if (prediction) {
       const sltp = decoder.readBit(contexts, pseudoPixelContext);
@@ -545,6 +1227,14 @@ function decodeSymbolDictionary(huffman, refinement, symbols, numberOfNewSymbols
     symbolWidths = [];
     symbolCodeLength = Math.max(symbolCodeLength, 1);
   }
+  let packedTemplate = -1;
+  if (!huffman && !refinement) {
+    if (isNominalTemplate0(templateIndex, at)) {
+      packedTemplate = 0;
+    } else if (templateIndex === 2 && at.length === 1 && at[0].x === 2 && at[0].y === -1) {
+      packedTemplate = 2;
+    }
+  }
   while (newSymbols.length < numberOfNewSymbols) {
     const deltaHeight = huffman ? huffmanTables.tableDeltaHeight.decode(huffmanInput) : decodeInteger(contextCache, 'IADH', decoder);
     currentHeight += deltaHeight;
@@ -579,6 +1269,16 @@ function decodeSymbolDictionary(huffman, refinement, symbols, numberOfNewSymbols
         newSymbols.push(bitmap);
       } else if (huffman) {
         symbolWidths.push(currentWidth);
+      } else if (packedTemplate >= 0 && currentWidth > 0 && currentHeight > 0
+        && currentWidth * currentHeight <= MAX_PACKED_SYMBOL_PIXELS) {
+        const rowBytes = currentWidth + 7 >> 3;
+        const packedRows = new Uint8Array(rowBytes * currentHeight);
+        if (packedTemplate === 0) {
+          decodeBitmapTemplate0Packed(currentWidth, currentHeight, false, decodingContext, packedRows, 0, rowBytes);
+        } else {
+          decodeBitmapTemplate2Packed(currentWidth, currentHeight, false, decodingContext, packedRows, 0, rowBytes);
+        }
+        newSymbols.push(new PackedSymbol(currentWidth, currentHeight, packedRows));
       } else {
         bitmap = decodeBitmap(false, currentWidth, currentHeight, templateIndex, false, null, at, decodingContext);
         newSymbols.push(bitmap);
@@ -649,19 +1349,27 @@ function decodeSymbolDictionary(huffman, refinement, symbols, numberOfNewSymbols
 
 function decodeTextRegion(huffman, refinement, width, height, defaultPixelValue, numberOfSymbolInstances,
   stripSize, inputSymbols, symbolCodeLength, transposed, dsOffset, referenceCorner, combinationOperator,
-  huffmanTables, refinementTemplateIndex, refinementAt, decodingContext, logStripSize, huffmanInput) {
+  huffmanTables, refinementTemplateIndex, refinementAt, decodingContext, logStripSize, huffmanInput, packedTarget = null) {
   if (huffman && refinement) {
     throw new Jbig2Error('refinement with Huffman is not supported');
   }
   const bitmap = [];
   let i; let
     row;
-  for (i = 0; i < height; i++) {
-    row = new Uint8Array(width);
-    if (defaultPixelValue) {
-      row.fill(defaultPixelValue);
+  let target = null; let targetStart = 0; let targetStride = 0; let targetBitOffset = 0;
+  if (packedTarget) {
+    target = packedTarget.data;
+    targetStart = packedTarget.start;
+    targetStride = packedTarget.stride;
+    targetBitOffset = packedTarget.bitOffset;
+  } else {
+    for (i = 0; i < height; i++) {
+      row = new Uint8Array(width);
+      if (defaultPixelValue) {
+        row.fill(defaultPixelValue);
+      }
+      bitmap.push(row);
     }
-    bitmap.push(row);
   }
   const decoder = decodingContext.decoder;
   const contextCache = decodingContext.contextCache;
@@ -683,8 +1391,15 @@ function decodeTextRegion(huffman, refinement, width, height, defaultPixelValue,
       const symbolId = huffman ? huffmanTables.symbolIDTable.decode(huffmanInput) : decodeIAID(contextCache, decoder, symbolCodeLength);
       const applyRefinement = refinement && (huffman ? huffmanInput.readBit() : decodeInteger(contextCache, 'IARI', decoder));
       let symbolBitmap = inputSymbols[symbolId];
-      let symbolWidth = symbolBitmap[0].length;
-      let symbolHeight = symbolBitmap.length;
+      let symbolWidth;
+      let symbolHeight;
+      if (symbolBitmap instanceof PackedSymbol) {
+        symbolWidth = symbolBitmap.width;
+        symbolHeight = symbolBitmap.height;
+      } else {
+        symbolWidth = symbolBitmap[0].length;
+        symbolHeight = symbolBitmap.length;
+      }
       if (applyRefinement) {
         const rdw = decodeInteger(contextCache, 'IARDW', decoder);
         const rdh = decodeInteger(contextCache, 'IARDH', decoder);
@@ -693,7 +1408,7 @@ function decodeTextRegion(huffman, refinement, width, height, defaultPixelValue,
         symbolWidth += rdw;
         symbolHeight += rdh;
         symbolBitmap = decodeRefinement(symbolWidth, symbolHeight, refinementTemplateIndex, symbolBitmap, (rdw >> 1) + rdx, (rdh >> 1) + rdy,
-          false, refinementAt, decodingContext);
+          false, refinementAt, decodingContext, target !== null);
       }
       let increment = 0;
       if (!transposed) {
@@ -719,7 +1434,71 @@ function decodeTextRegion(huffman, refinement, width, height, defaultPixelValue,
       }
       let s2; let t2; let
         symbolRow;
-      if (transposed) {
+      if (!target && symbolBitmap instanceof PackedSymbol) {
+        symbolBitmap = symbolByteRows(symbolBitmap);
+      }
+      if (target) {
+        const top = transposed ? offsetS : offsetT;
+        const left = transposed ? offsetT : offsetS;
+        const firstRow = Math.max(0, -top);
+        const endRow = Math.min(symbolHeight, height - top);
+        const symbolRowBytes = symbolWidth + 7 >> 3;
+        let packedRows = symbolBitmap.packedRows;
+        if (packedRows === undefined && firstRow < endRow) {
+          packedRows = new Uint8Array(symbolRowBytes * symbolHeight);
+          for (let r = 0; r < symbolHeight; r++) {
+            packByteRow(symbolBitmap[r], symbolWidth, packedRows, r * symbolRowBytes);
+          }
+          symbolBitmap.packedRows = packedRows;
+        }
+        if (left >= 0 && left + symbolWidth <= width) {
+          const bit = targetBitOffset + left;
+          const shift = bit & 7;
+          const back = 8 - shift;
+          for (let r = firstRow; r < endRow; r++) {
+            const at = targetStart + (top + r) * targetStride + (bit >> 3);
+            const from = r * symbolRowBytes;
+            let carry = 0;
+            let k = 0;
+            if (combinationOperator === 0) {
+              for (; k < symbolRowBytes; k++) {
+                const v = packedRows[from + k];
+                target[at + k] |= carry | v >> shift;
+                carry = v << back & 0xff;
+              }
+              if (carry) {
+                target[at + k] |= carry;
+              }
+            } else {
+              for (; k < symbolRowBytes; k++) {
+                const v = packedRows[from + k];
+                target[at + k] ^= carry | v >> shift;
+                carry = v << back & 0xff;
+              }
+              if (carry) {
+                target[at + k] ^= carry;
+              }
+            }
+          }
+        } else {
+          const from = Math.max(0, -left);
+          const to = Math.min(symbolWidth, width - left);
+          for (let r = firstRow; r < endRow; r++) {
+            const symbolRowStart = r * symbolRowBytes;
+            const rowStart = targetStart + (top + r) * targetStride;
+            for (let c = from; c < to; c++) {
+              if (packedRows[symbolRowStart + (c >> 3)] & 0x80 >> (c & 7)) {
+                const p = targetBitOffset + left + c;
+                if (combinationOperator === 0) {
+                  target[rowStart + (p >> 3)] |= 0x80 >> (p & 7);
+                } else {
+                  target[rowStart + (p >> 3)] ^= 0x80 >> (p & 7);
+                }
+              }
+            }
+          }
+        }
+      } else if (transposed) {
         for (s2 = 0; s2 < symbolHeight; s2++) {
           row = bitmap[offsetS + s2];
           if (!row) {
@@ -1269,19 +2048,18 @@ class SimpleSegmentVisitor {
       }
       this.buffer = buffer;
     } else {
-      // Height is initially unknown (0xFFFFFFFF); buffer will grow in drawBitmap.
       this.buffer = new Uint8ClampedArray(0);
     }
+    // The regions drawn on this page so far, or null once one has written outside its own box.
+    this.drawnRegions = [];
   }
 
-  drawBitmap(regionInfo, bitmap) {
+  preparePage(regionInfo) {
     const pageInfo = this.currentPageInfo;
-    const width = regionInfo.width;
-    const height = regionInfo.height;
     const rowSize = pageInfo.width + 7 >> 3;
     const combinationOperator = pageInfo.combinationOperatorOverride ? regionInfo.combinationOperator : pageInfo.combinationOperator;
     // Grow buffer if page height was initially unknown.
-    const requiredSize = (regionInfo.y + height) * rowSize;
+    const requiredSize = (regionInfo.y + regionInfo.height) * rowSize;
     if (requiredSize > this.buffer.length) {
       const newBuffer = new Uint8ClampedArray(requiredSize);
       if (pageInfo.defaultPixelValue) {
@@ -1291,14 +2069,30 @@ class SimpleSegmentVisitor {
       newBuffer.set(this.buffer);
       this.buffer = newBuffer;
     }
+    if (combinationOperator !== 0 && combinationOperator !== 2) {
+      throw new Jbig2Error(`operator ${combinationOperator} is not supported`);
+    }
+    // A region wider than what is left of the page row runs on into the next row, outside its own box.
+    if (this.drawnRegions) {
+      if (regionInfo.x + regionInfo.width <= rowSize * 8) {
+        this.drawnRegions.push(regionInfo);
+      } else {
+        this.drawnRegions = null;
+      }
+    }
+    return combinationOperator;
+  }
+
+  drawBitmap(regionInfo, bitmap) {
+    const combinationOperator = this.preparePage(regionInfo);
+    const width = regionInfo.width;
+    const height = regionInfo.height;
+    const rowSize = this.currentPageInfo.width + 7 >> 3;
     const buffer = this.buffer;
     const mask0 = 128 >> (regionInfo.x & 7);
     let offset0 = regionInfo.y * rowSize + (regionInfo.x >> 3);
     let i; let j; let mask; let
       offset;
-    if (combinationOperator !== 0 && combinationOperator !== 2) {
-      throw new Jbig2Error(`operator ${combinationOperator} is not supported`);
-    }
     // Pack 8 pixels per output byte across the aligned middle of each row.
     // The unaligned lead and the tail fall back to the per-pixel mask walk.
     const lead = Math.min((8 - (regionInfo.x & 7)) & 7, width);
@@ -1347,11 +2141,67 @@ class SimpleSegmentVisitor {
     }
   }
 
+  drawPackedBitmap(regionInfo, packed, rowBytes) {
+    const combinationOperator = this.preparePage(regionInfo);
+    const height = regionInfo.height;
+    const rowSize = this.currentPageInfo.width + 7 >> 3;
+    const buffer = this.buffer;
+    const page = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
+    const shift = regionInfo.x & 7;
+    const back = 8 - shift;
+    let offset = regionInfo.y * rowSize + (regionInfo.x >> 3);
+    for (let i = 0, at = 0; i < height; i++, offset += rowSize) {
+      let carry = 0;
+      let b = 0;
+      if (combinationOperator === 0) {
+        for (; b < rowBytes; b++, at++) {
+          const v = packed[at];
+          const out = carry | v >> shift;
+          if (out) page[offset + b] |= out;
+          carry = v << back & 0xff;
+        }
+        if (carry) page[offset + b] |= carry;
+      } else {
+        for (; b < rowBytes; b++, at++) {
+          const v = packed[at];
+          const out = carry | v >> shift;
+          if (out) page[offset + b] ^= out;
+          carry = v << back & 0xff;
+        }
+        if (carry) page[offset + b] ^= carry;
+      }
+    }
+  }
+
   onImmediateGenericRegion(region, data, start, end) {
     const regionInfo = region.info;
     const decodingContext = new DecodingContext(data, start, end);
-    const bitmap = decodeBitmap(region.mmr, regionInfo.width, regionInfo.height, region.template, region.prediction, null, region.at, decodingContext);
-    this.drawBitmap(regionInfo, bitmap);
+    const width = regionInfo.width;
+    const height = regionInfo.height;
+    const pageInfo = this.currentPageInfo;
+    const template2 = region.template === 2 && region.at.length === 1 && region.at[0].x === 2 && region.at[0].y === -1;
+    if (region.mmr || !(template2 || isNominalTemplate0(region.template, region.at)) || !pageInfo
+      || width * height > 2 ** 32) {
+      const bitmap = decodeBitmap(region.mmr, width, height, region.template, region.prediction, null, region.at, decodingContext);
+      this.drawBitmap(regionInfo, bitmap);
+      return;
+    }
+    const kernel = template2 ? decodeBitmapTemplate2Packed : decodeBitmapTemplate0Packed;
+    const rowSize = pageInfo.width + 7 >> 3;
+    const combinationOperator = pageInfo.combinationOperatorOverride ? regionInfo.combinationOperator : pageInfo.combinationOperator;
+    if (this.drawnRegions !== null && this.drawnRegions.length === 0 && !pageInfo.defaultPixelValue
+      && (combinationOperator === 0 || combinationOperator === 2) && (regionInfo.x & 7) === 0
+      && regionInfo.x + width <= pageInfo.width && pageInfo.height != null && regionInfo.y + height <= pageInfo.height) {
+      this.preparePage(regionInfo);
+      const buffer = this.buffer;
+      const page = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
+      kernel(width, height, region.prediction, decodingContext, page, regionInfo.y * rowSize + (regionInfo.x >> 3), rowSize);
+      return;
+    }
+    const rowBytes = Math.ceil(width / 8);
+    const packed = new Uint8Array(rowBytes * height);
+    kernel(width, height, region.prediction, decodingContext, packed, 0, rowBytes);
+    this.drawPackedBitmap(regionInfo, packed, rowBytes);
   }
 
   onImmediateLosslessGenericRegion() {
@@ -1401,12 +2251,43 @@ class SimpleSegmentVisitor {
       huffmanTables = getTextRegionHuffmanTables(region, referredSegments, this.customTables, inputSymbols.length, huffmanInput);
     }
     const decodingContext = new DecodingContext(data, start, end);
+    const textOperator = region.combinationOperator;
+    let packedTarget = null;
+    let direct = false;
+    if (!region.defaultPixelValue && (textOperator === 0 || textOperator === 2) && regionInfo.width <= MAX_PACKED_WIDTH) {
+      const pageInfo = this.currentPageInfo;
+      const rowSize = pageInfo.width + 7 >> 3;
+      const pageOperator = pageInfo.combinationOperatorOverride ? regionInfo.combinationOperator : pageInfo.combinationOperator;
+      const {
+        x, y, width, height,
+      } = regionInfo;
+      // The page grows only after a region has decoded, so a region that fails to decode never allocates it.
+      direct = (pageOperator === 0 || pageOperator === 2) && x + width <= rowSize * 8 && (y + height) * rowSize <= this.buffer.length
+        && (pageOperator === textOperator || (!pageInfo.defaultPixelValue && this.drawnRegions !== null
+          && !this.drawnRegions.some((d) => d.x < x + width && x < d.x + d.width && d.y < y + height && y < d.y + d.height)));
+      if (direct) {
+        this.preparePage(regionInfo);
+        const page = this.buffer;
+        packedTarget = {
+          data: new Uint8Array(page.buffer, page.byteOffset, page.length), start: y * rowSize + (x >> 3), stride: rowSize, bitOffset: x & 7,
+        };
+      } else {
+        const rowBytes = width + 7 >> 3;
+        packedTarget = {
+          data: new Uint8Array(rowBytes * height), start: 0, stride: rowBytes, bitOffset: 0,
+        };
+      }
+    }
     const bitmap = decodeTextRegion(region.huffman, region.refinement, regionInfo.width,
       regionInfo.height, region.defaultPixelValue, region.numberOfSymbolInstances,
       region.stripSize, inputSymbols, symbolCodeLength, region.transposed, region.dsOffset,
-      region.referenceCorner, region.combinationOperator, huffmanTables, region.refinementTemplate,
-      region.refinementAt, decodingContext, region.logStripSize, huffmanInput);
-    this.drawBitmap(regionInfo, bitmap);
+      region.referenceCorner, textOperator, huffmanTables, region.refinementTemplate,
+      region.refinementAt, decodingContext, region.logStripSize, huffmanInput, packedTarget);
+    if (!packedTarget) {
+      this.drawBitmap(regionInfo, bitmap);
+    } else if (!direct) {
+      this.drawPackedBitmap(regionInfo, packedTarget.data, packedTarget.stride);
+    }
   }
 
   onImmediateLosslessTextRegion() {
@@ -1931,7 +2812,13 @@ export function decodeJBIG2(data, globals = null) {
   const result = parseJbig2Chunks(chunks);
   // JBIG2 uses 1=black, 0=white; PDF uses the opposite convention.
   // Invert the packed bit buffer to match PDF expectations.
-  for (let i = 0; i < result.length; i++) {
+  const length = result.length;
+  const wordCount = length >> 2;
+  const words = new Uint32Array(result.buffer, result.byteOffset, wordCount);
+  for (let i = 0; i < wordCount; i++) {
+    words[i] = ~words[i];
+  }
+  for (let i = wordCount << 2; i < length; i++) {
     result[i] ^= 0xFF;
   }
   return result;
