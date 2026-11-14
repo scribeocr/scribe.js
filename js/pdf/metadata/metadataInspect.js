@@ -175,8 +175,11 @@ export function getMetadata(pdfBytes) {
   }
 
   // Per-object sweep: XMP, PieceInfo, OCG names, Filespec (embedded files), Sig
+  // The repair runs first because it adds objects the parsed cross-reference data does not list, and the sweep visits only the keys taken here.
+  objCache.ensureXrefRepaired();
   for (const objNumStr of Object.keys(xrefEntries)) {
     const objNum = Number(objNumStr);
+    if (xrefEntries[objNum].type === 0) continue;
     const text = objCache.getObjectText(objNum);
     if (!text) continue;
     // per-object XMP (image/page/form) — excludes the catalog one (handled above)

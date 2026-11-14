@@ -134,6 +134,8 @@ export function parseXref(pdfBytes, xrefOffset) {
   const entries = {};
   const visited = new Set();
   const len = pdfBytes.length;
+  // A file's tables do not overlap, so their reads walk less than the file's length in total unless the file is built to make each read walk the same bytes again.
+  let walkLeft = 2 * len + 1024 * 1024;
 
   // Detect junk before %PDF header — xref offsets are relative to %PDF position
   const pdfHeaderOffset = byteIndexOf(pdfBytes, '%PDF');
@@ -141,7 +143,7 @@ export function parseXref(pdfBytes, xrefOffset) {
 
   /** @type {number|null} */
   let currentOffset = xrefOffset;
-  while (currentOffset !== null && !visited.has(currentOffset)) {
+  while (currentOffset !== null && !visited.has(currentOffset) && walkLeft > 0) {
     visited.add(currentOffset);
     // Skip leading whitespace (linearized PDFs may pad xref stream offsets)
     let effectiveOffset = currentOffset;
@@ -154,9 +156,10 @@ export function parseXref(pdfBytes, xrefOffset) {
       prevOffset = parseXrefStream(pdfBytes, effectiveOffset, entries);
       if (prevOffset !== null) prevOffset += headerAdjust;
     } else if (bytesEqualAt(pdfBytes, effectiveOffset, 'xref')) {
-      parseXrefTable(pdfBytes, effectiveOffset, entries);
+      const [tableEnd, walkEnd] = parseXrefTable(pdfBytes, effectiveOffset + 4, entries, false);
+      walkLeft -= walkEnd - effectiveOffset;
       // Check trailer for /Prev
-      const trailerStart = byteIndexOf(pdfBytes, 'trailer', effectiveOffset);
+      const trailerStart = byteIndexOf(pdfBytes, 'trailer', tableEnd);
       if (trailerStart !== -1) {
         const trailerDict = bytesToLatin1(pdfBytes, trailerStart, Math.min(trailerStart + 1000, len));
         const prevMatch = /\/Prev\s+(\d+)/.exec(trailerDict);
@@ -169,8 +172,9 @@ export function parseXref(pdfBytes, xrefOffset) {
       }
     } else if (matchesBareXrefEntry(pdfBytes, effectiveOffset)) {
       // Bare xref table: entries without "xref" keyword or subsection header
-      parseBareXrefTable(pdfBytes, effectiveOffset, entries);
-      const trailerStart = byteIndexOf(pdfBytes, 'trailer', effectiveOffset);
+      const [tableEnd, walkEnd] = parseXrefTable(pdfBytes, effectiveOffset, entries, true);
+      walkLeft -= walkEnd - effectiveOffset;
+      const trailerStart = byteIndexOf(pdfBytes, 'trailer', tableEnd);
       if (trailerStart !== -1) {
         const trailerDict = bytesToLatin1(pdfBytes, trailerStart, Math.min(trailerStart + 1000, len));
         const prevMatch = /\/Prev\s+(\d+)/.exec(trailerDict);
@@ -192,82 +196,83 @@ export function parseXref(pdfBytes, xrefOffset) {
 }
 
 /**
- * Find an end bound for the byte slice holding the xref section at `offset`.
+ * Read a classic xref table into `entries`.
  * @param {Uint8Array} bytes
- * @param {number} offset
- */
-function findXrefSectionEnd(bytes, offset) {
-  // The cap keeps a missing or far-away trailer from materializing the rest of the file as a string.
-  const trailerIdx = byteIndexOf(bytes, 'trailer', offset);
-  const cap = Math.min(bytes.length, offset + 256 * 1024);
-  if (trailerIdx !== -1 && trailerIdx < cap) return trailerIdx + 7;
-  return cap;
-}
-
-/**
- * Parse a traditional xref table.
- * @param {Uint8Array} bytes
- * @param {number} offset
+ * @param {number} pos - First byte after the `xref` keyword, or the first entry of a bare table.
  * @param {{ [objNum: number]: any }} entries
+ * @param {boolean} bare - The table has no `xref` keyword and no subsection headers, and its entries number from 0.
+ * @returns {[number, number]} Where the search for the `trailer` keyword starts, and where the read stopped.
  */
-function parseXrefTable(bytes, offset, entries) {
-  const sectionEnd = findXrefSectionEnd(bytes, offset);
-  const section = bytesToLatin1(bytes, offset, sectionEnd);
-  const lines = section.split(/\r?\n|\r/);
-  let i = 1; // skip "xref" line
-  while (i < lines.length) {
-    const line = lines[i].trim();
-    if (line === 'trailer' || line === '') break;
-    const subsectionMatch = /^(\d+)\s+(\d+)$/.exec(line);
-    if (subsectionMatch) {
-      const startObj = Number(subsectionMatch[1]);
-      const count = Number(subsectionMatch[2]);
-      for (let j = 0; j < count; j++) {
-        i++;
-        if (i >= lines.length) break;
-        const entryLine = lines[i].trim();
-        const entryMatch = /^(\d+)\s+(\d+)\s+(n|f)$/.exec(entryLine);
-        if (!entryMatch) continue;
+function parseXrefTable(bytes, pos, entries, bare) {
+  const len = bytes.length;
+  let startObj = 0;
+  let count = bare ? Infinity : 0;
+  let slot = 0;
+  let tableEnd = pos;
+  if (!bare) {
+    while (pos < len && bytes[pos] !== 0x0A && bytes[pos] !== 0x0D && pos - tableEnd <= 256 * 1024) pos++;
+    if (bytes[pos] === 0x0D) pos++;
+    if (bytes[pos] === 0x0A) pos++;
+  }
+  // The walk ends 256 KiB past the last header or entry, so bytes that are no table cannot carry it through the rest of the file.
+  while (pos < len && pos - tableEnd <= 256 * 1024) {
+    const stop = Math.min(len, tableEnd + 256 * 1024 + 1);
+    const lineStart = pos;
+    let c = bytes[pos];
+    while (pos < stop && (c === 0x20 || c === 0x09 || c === 0x0B || c === 0x0C || c === 0xA0)) c = bytes[++pos];
+    if (c === 0x74 && bytesEqualAt(bytes, pos, 'trailer')) return [pos, pos];
+    const aStart = pos;
+    let a = 0;
+    while (pos < stop && c >= 0x30 && c <= 0x39) { a = a * 10 + (c - 0x30); c = bytes[++pos]; }
+    const aEnd = pos;
+    while (pos < stop && (c === 0x20 || c === 0x09 || c === 0x0B || c === 0x0C || c === 0xA0)) c = bytes[++pos];
+    const bStart = pos;
+    let b = 0;
+    while (pos < stop && c >= 0x30 && c <= 0x39) { b = b * 10 + (c - 0x30); c = bytes[++pos]; }
+    const bEnd = pos;
+    while (pos < stop && (c === 0x20 || c === 0x09 || c === 0x0B || c === 0x0C || c === 0xA0)) c = bytes[++pos];
+    const flagAt = pos;
+    const flag = pos < stop ? c : 0;
+    if (flag === 0x6E || flag === 0x66) {
+      c = bytes[++pos];
+      while (pos < stop && (c === 0x20 || c === 0x09 || c === 0x0B || c === 0x0C || c === 0xA0)) c = bytes[++pos];
+    }
+    const lineEnds = pos >= len || c === 0x0A || c === 0x0D;
+    const twoInts = lineEnds && aEnd > aStart && bEnd > bStart && bStart > aEnd;
+    // A bare table has no header to say that entries follow, so a line counts as an entry only in the fixed widths.
+    const isEntry = twoInts && pos > flagAt && flagAt > bEnd && (!bare || (aEnd - aStart === 10 && bEnd - bStart === 5));
+    const isHeader = twoInts && pos === flagAt && !bare && slot >= count;
+    // An entry in the 20-byte form may end in two carriage returns, which are then one line end, not a line end and an empty line.
+    const crPair = isEntry && pos - lineStart === 18 && aEnd - aStart === 10 && bEnd - bStart === 5;
+    if (isEntry) {
+      if (slot < count) {
+        const objNum = startObj + slot;
         // Newer xref sections are processed first, so keeping the first entry seen gives them precedence.
         // Free entries take precedence too, since an incremental update that deletes an obj must shadow the obj's earlier in-use entry.
-        const objNum = startObj + j;
-        if (entries[objNum]) continue;
-        if (entryMatch[3] === 'n') {
-          entries[objNum] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
-        } else {
-          entries[objNum] = { type: 0, gen: Number(entryMatch[2]) };
-        }
+        if (!entries[objNum]) entries[objNum] = flag === 0x6E ? { type: 1, offset: a, gen: b } : { type: 0, gen: b };
       }
+      slot++;
+    } else if (isHeader) {
+      startObj = a;
+      count = b;
+      slot = 0;
+    } else if (lineEnds && pos === aStart && (bare || slot >= count)) {
+      return [tableEnd, pos];
+    } else if (!bare && slot < count) {
+      // Where an entry is due, any other line, an empty one included, is a damaged entry that keeps its number, so the entries after it stay aligned.
+      slot++;
     }
-    i++;
-  }
-}
-
-/**
- * Parse a bare xref table (missing "xref" keyword and subsection header).
- * Entries start directly at the offset as "NNNNNNNNNN NNNNN n/f" lines, starting from obj 0.
- * @param {Uint8Array} bytes
- * @param {number} offset
- * @param {{ [objNum: number]: any }} entries
- */
-function parseBareXrefTable(bytes, offset, entries) {
-  const sectionEnd = findXrefSectionEnd(bytes, offset);
-  const section = bytesToLatin1(bytes, offset, sectionEnd);
-  const lines = section.split(/\r?\n|\r/);
-  let objNum = 0;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === 'trailer' || trimmed === '') break;
-    const entryMatch = /^(\d{10})\s+(\d{5})\s+(n|f)$/.exec(trimmed);
-    if (entryMatch && !entries[objNum]) {
-      if (entryMatch[3] === 'n') {
-        entries[objNum] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
-      } else {
-        entries[objNum] = { type: 0, gen: Number(entryMatch[2]) };
-      }
+    while (pos < stop && bytes[pos] !== 0x0A && bytes[pos] !== 0x0D) pos++;
+    if (bytes[pos] === 0x0D) {
+      pos++;
+      if (bytes[pos] === 0x0A || (crPair && bytes[pos] === 0x0D)) pos++;
+    } else if (bytes[pos] === 0x0A) {
+      pos++;
     }
-    if (entryMatch) objNum++;
+    if (isEntry || isHeader) tableEnd = pos;
   }
+  // The search for `trailer` starts back at the last header or entry, so it still finds a keyword that does not begin its line, which the walk passes over.
+  return [tableEnd, pos];
 }
 
 /**

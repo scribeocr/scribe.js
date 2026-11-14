@@ -441,23 +441,14 @@ export class ObjectCache {
 
     const bytes = this.pdfBytes;
     let entry = this.xrefEntries[objNum];
-    // If the xref offset is beyond the file size, the entry is corrupt — scan instead
-    if (entry && entry.type === 1 && entry.offset >= bytes.length) {
-      entry = null;
+    // The entry is tested as `_readObjectTextDirect` tests it, so an object's dictionary and its stream are read from the same place.
+    // A stale offset read as it stands would return the stream of whatever object it lands in.
+    if (!this._xrefRepaired && (!entry || entry.type === 0 || (entry.type === 1 && !matchesObjMarker(bytes, entry.offset, objNum)))) {
+      this.ensureXrefRepaired();
+      entry = this.xrefEntries[objNum];
     }
     let result = null;
-    if (!entry) {
-      // Fallback for broken xref: scan raw bytes for "N 0 obj" marker at line boundary
-      const marker = `${objNum} 0 obj`;
-      let idx = 0;
-      while ((idx = byteIndexOf(bytes, marker, idx)) !== -1) {
-        if (idx === 0 || isPdfWhitespace(bytes[idx - 1])) {
-          result = extractStream(bytes, idx, this, objNum);
-          break;
-        }
-        idx += marker.length;
-      }
-    } else if (entry.type === 1) {
+    if (entry && entry.type === 1 && matchesObjMarker(bytes, entry.offset, objNum)) {
       result = extractStream(bytes, entry.offset, this, objNum);
     }
 
