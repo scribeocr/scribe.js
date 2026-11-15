@@ -282,7 +282,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-coltitle, .scribe-pdf-viewer .scribe-library-colbar { display: flex; align-items: center; gap: 4px; box-sizing: border-box; border-bottom: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-coltitle { height: 31px; padding: 0 8px; }
 .scribe-pdf-viewer .scribe-library-colbar { height: 36px; padding: 0 4px 0 8px; }
-.scribe-pdf-viewer .scribe-library-coltitle > [hidden], .scribe-pdf-viewer .scribe-library-colbar > [hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-coltitle > [hidden], .scribe-pdf-viewer .scribe-library-colbar > [hidden], .scribe-pdf-viewer .scribe-library-colbar[hidden] { display: none; }
+.scribe-pdf-viewer .scribe-library-colup:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 0; }
 .scribe-pdf-viewer .scribe-library-colbar > * { flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-colbar > :not(.scribe-library-hicon) + .scribe-library-hicon, .scribe-pdf-viewer .scribe-library-colbar > .scribe-library-hicon[hidden] + .scribe-library-hicon { margin-left: auto; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-seg button { width: 28px; }
@@ -652,6 +653,38 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-storage .row .acts { display: flex; gap: 6px; }
 .scribe-pdf-viewer .scribe-library-storage .foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-storage .foot .tot { color: var(--scribe-ink-2); font-variant-numeric: tabular-nums; }
+/* The Library Storage sheet in the column. */
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-body:has(> .scribe-library-storage) { background: var(--scribe-surface); }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage { width: auto; max-width: none; margin: 0; border: none; border-radius: 0; padding: 0 0 6px; container-type: inline-size; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .sub { margin: 0; padding: 10px 14px 12px; font-size: 12.5px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row { grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; align-items: start; padding: 10px 14px 12px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > div:first-child { display: contents; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .l { grid-area: 1 / 1; overflow-wrap: anywhere; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .sz { grid-area: 1 / 2; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .d { grid-area: 2 / 1 / 3 / -1; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .act, .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .acts { grid-area: 3 / 1 / 4 / -1; justify-self: start; margin-top: 6px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .acts { flex-wrap: wrap; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .loc, .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .inv { margin: 0; padding: 0; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .loc { padding-bottom: 8px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .lt { margin: 0; padding: 11px 14px 4px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .opt { padding: 5px 14px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .mv { flex-wrap: wrap; justify-content: flex-start; gap: 7px 8px; padding: 2px 14px 8px 36px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .mv > span { flex: 1 1 100%; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .inv > .d { padding: 0 14px 10px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .inv .lt + .row { border-top: none; padding-top: 6px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .foot { flex-wrap: wrap; gap: 8px 12px; margin: 0; padding: 12px 14px; }
+@container (min-width: 400px) {
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row { grid-template-columns: minmax(0, 1fr) auto auto; column-gap: 14px; align-items: center; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .d { grid-area: 2 / 1; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .sz { grid-area: 1 / 2 / 3 / 3; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .act, .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .acts { grid-area: 1 / 3 / 3 / 4; margin-top: 0; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .acts { flex-wrap: nowrap; }
+}
+@container (max-width: 239px) {
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .l { grid-area: 1 / 1 / 2 / -1; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .act, .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row > .acts { grid-area: 3 / 1; }
+  .scribe-pdf-viewer .scribe-library-surface.column .scribe-library-storage .row .sz { grid-area: 3 / 2; align-self: center; margin-top: 6px; }
+}
 /* Start screen: one sheet with the two ways in, and one Recent list of folders and files. */
 .scribe-pdf-viewer .scribe-library-sheet { width: 560px; max-width: calc(100% - 44px); margin: 44px auto 0; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 26px 28px 22px; box-sizing: border-box; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-sheet-acts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -1443,7 +1476,10 @@ export function createLibraryInstance(viewer, opts) {
   colUpBtn.title = 'Up one folder';
   colUpBtn.setAttribute('aria-label', 'Up one folder');
   colUpBtn.hidden = true;
-  colUpBtn.addEventListener('click', () => openDir(currentDir.includes('/') ? currentDir.slice(0, currentDir.lastIndexOf('/')) : ''));
+  colUpBtn.addEventListener('click', () => {
+    if (storageOpen) closeStorage();
+    else openDir(currentDir.includes('/') ? currentDir.slice(0, currentDir.lastIndexOf('/')) : '');
+  });
   const colGlyph = document.createElement('span');
   colGlyph.className = 'scribe-library-colglyph';
   colGlyph.innerHTML = opts.glyph;
@@ -1556,17 +1592,32 @@ export function createLibraryInstance(viewer, opts) {
   };
   const syncColumnHead = () => {
     if (form !== 'column') return;
-    const leaf = currentDir ? (currentDir.split('/').pop() || currentDir) : (store?.root.name ?? opts.name);
-    colName.textContent = leaf;
-    colName.title = currentDir ? `${store?.root.name ?? opts.name}/${currentDir}` : leaf;
-    colUpBtn.hidden = !currentDir;
+    const barWasHidden = colBar.hidden;
+    colGlyph.hidden = storageOpen;
+    colBar.hidden = storageOpen;
+    colSearchRow.hidden = storageOpen || !colSearchBtn.classList.contains('on');
+    if (storageOpen) {
+      colName.textContent = 'Library storage';
+      colName.title = '';
+      colUpBtn.hidden = false;
+      colUpBtn.title = `Back to ${store?.root.name ?? opts.name}`;
+    } else {
+      const leaf = currentDir ? (currentDir.split('/').pop() || currentDir) : (store?.root.name ?? opts.name);
+      colName.textContent = leaf;
+      colName.title = currentDir ? `${store?.root.name ?? opts.name}/${currentDir}` : leaf;
+      colUpBtn.hidden = !currentDir;
+      colUpBtn.title = 'Up one folder';
+      // The bar could not be measured while it was hidden.
+      if (barWasHidden) fitColBar();
+    }
+    colUpBtn.setAttribute('aria-label', colUpBtn.title);
   };
   /** What the column's head has folded into its actions menu. */
   const colFold = {
     view: false, sort: false, new: false, refresh: false,
   };
   const fitColBar = () => {
-    if (form !== 'column' || colHead.hidden || viewSeg.parentElement !== colBar) return;
+    if (form !== 'column' || colHead.hidden || colBar.hidden || viewSeg.parentElement !== colBar) return;
     viewSeg.hidden = false;
     colViewBtn.hidden = true;
     sortBtn.classList.remove('icon-only');
@@ -1676,12 +1727,14 @@ export function createLibraryInstance(viewer, opts) {
       swapBarOut();
       surface.style.display = columnOpen ? 'flex' : 'none';
     }
+    const endsStorage = form === 'column' && !columnOpen && storageOpen;
+    if (endsStorage) storageOpen = false;
     syncColumnHead();
     syncColumnToggle();
     positionSurface();
     viewer._syncFrontSurface();
     viewer._relayout();
-    if (changed && doRender && store && manifest) render({ revealSelection: true });
+    if ((changed || endsStorage) && doRender && store && manifest) render({ revealSelection: changed });
     // A list built while the surface was hidden had no width to fit, so it is fitted before the surface's first paint.
     else if (!wasShown && surface.style.display !== 'none') listColsRefit?.();
   };
@@ -1707,6 +1760,7 @@ export function createLibraryInstance(viewer, opts) {
   /** Take the surface off screen, giving a document the front. */
   const deactivate = () => {
     visible = false;
+    storageOpen = false;
     closeCardMenu();
     swapBarOut();
     viewer._searchBar?.rehome();
@@ -5944,13 +5998,13 @@ export function createLibraryInstance(viewer, opts) {
 
   /**
    * A confirmation dialog for deleting the library's own data.
-   * @param {{title: string, name: string, meta: string, intro: string, items: string[], note: string, confirmLabel: string, keep?: string, host?: HTMLElement}} spec
+   * @param {{title: string, name: string, meta: string, intro: string, items: string[], note: string, confirmLabel: string, keep?: string}} spec
    *   A `keep` label adds a checkbox under the list.
-   *   `host` is the element the scrim covers, the library surface by default.
    * @returns {Promise<?{keep: boolean}>} Null when the dialog was dismissed.
    */
   const openStorageConfirm = (spec) => new Promise((resolve) => {
     confirmClose?.();
+    const opener = /** @type {?HTMLElement} */ (document.activeElement);
     const scrim = document.createElement('div');
     scrim.className = 'scribe-library-confirm-scrim';
     const dlg = document.createElement('div');
@@ -6012,7 +6066,8 @@ export function createLibraryInstance(viewer, opts) {
     }
     dlg.append(note, foot);
     scrim.appendChild(dlg);
-    (spec.host ?? surface).appendChild(scrim);
+    // The column can be narrower than the dialog, so there the dialog is centered on the whole viewer.
+    (form === 'column' ? viewer.pdfViewerElem : surface).appendChild(scrim);
     confirmScrim = scrim;
     /** @param {?{keep: boolean}} result */
     const close = (result) => {
@@ -6022,6 +6077,7 @@ export function createLibraryInstance(viewer, opts) {
         confirmScrim = null;
         confirmClose = null;
       }
+      if (!result && opener?.isConnected) opener.focus({ preventScroll: true });
       resolve(result);
     };
     confirmClose = () => close(null);
@@ -6049,15 +6105,29 @@ export function createLibraryInstance(viewer, opts) {
 
   const notesWhere = () => (store?.notesBeside ? 'beside the documents' : 'in this app');
 
+  /** @type {?Element} */
+  let storageReturnFocus = null;
+
   const openStorage = () => {
     if (!store) return;
     const s = store;
-    storageOpen = true;
-    storageSizes = null;
-    storageWork = null;
-    storageInventory = null;
-    if (!visible) activate({ render: false });
-    render();
+    // Asked for again while it shows, the sheet keeps its sizes on screen until the new ones arrive.
+    if (!storageOpen || !visible || surface.style.display === 'none') {
+      storageOpen = true;
+      storageSizes = null;
+      storageWork = null;
+      storageInventory = null;
+      // A visit ended by anything but closeStorage leaves its element here.
+      storageReturnFocus = null;
+      if (columnReady()) columnOpen = true;
+      if (!visible) activate({ render: false });
+      else if (surface.style.display === 'none') applyForm({ render: false });
+      render();
+      if (visible && form === 'column') {
+        storageReturnFocus = document.activeElement;
+        colUpBtn.focus({ preventScroll: true });
+      }
+    }
     Promise.all([s.measure(), manifest ? s.savedWork(manifest) : null, isLibrary ? LibraryStore.inventory() : []]).then(([sizes, work, inventory]) => {
       if (store !== s || !storageOpen) return;
       storageSizes = sizes;
@@ -6069,7 +6139,15 @@ export function createLibraryInstance(viewer, opts) {
   const closeStorage = () => {
     storageOpen = false;
     render();
+    const returnTo = /** @type {?HTMLElement} */ (storageReturnFocus);
+    storageReturnFocus = null;
+    if (form === 'column' && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
   };
+  surface.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || !storageOpen || form !== 'column') return;
+    e.preventDefault();
+    closeStorage();
+  });
 
   const deleteAllNotes = async () => {
     if (!store || !manifest || !ingest) return;
@@ -6175,18 +6253,21 @@ export function createLibraryInstance(viewer, opts) {
     const saved = storageWork ? (storageWork.unknown ? null : storageWork.files) : 0;
     const sheet = document.createElement('div');
     sheet.className = 'scribe-library-storage';
-    const back = document.createElement('button');
-    back.type = 'button';
-    back.className = 'back';
-    back.innerHTML = `${BACK_SVG}<span></span>`;
-    /** @type {HTMLElement} */ (back.querySelector('span')).textContent = `Back to ${name}`;
-    back.addEventListener('click', closeStorage);
-    const heading = document.createElement('h3');
-    heading.textContent = 'Library storage';
+    if (form !== 'column') {
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'back';
+      back.innerHTML = `${BACK_SVG}<span></span>`;
+      /** @type {HTMLElement} */ (back.querySelector('span')).textContent = `Back to ${name}`;
+      back.addEventListener('click', closeStorage);
+      const heading = document.createElement('h3');
+      heading.textContent = 'Library storage';
+      sheet.append(back, heading);
+    }
     const sub = document.createElement('div');
     sub.className = 'sub';
     sub.textContent = `What this app keeps for ${name}. The PDF files themselves are never touched.`;
-    sheet.append(back, heading, sub);
+    sheet.appendChild(sub);
     /**
      * @param {string} label @param {string} detail @param {number} bytes @param {string} action @param {() => void} onAct @param {boolean} [danger]
      */
@@ -6222,11 +6303,11 @@ export function createLibraryInstance(viewer, opts) {
       closeStorage();
       rebuildIndex();
     });
-    row('Notes, edits and recognized text', saved === null
-      ? `The saved work could not be counted. Kept ${notesWhere()}.`
-      : saved
-        ? `${saved} of ${docs} document${docs === 1 ? '' : 's'} ${saved === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`
-        : `No document has saved work. Kept ${notesWhere()}.`, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
+    let notesDetail = `No document has saved work. Kept ${notesWhere()}.`;
+    if (!storageWork && form === 'column') notesDetail = `Kept ${notesWhere()}.`;
+    else if (saved === null) notesDetail = `The saved work could not be counted. Kept ${notesWhere()}.`;
+    else if (saved) notesDetail = `${saved} of ${docs} document${docs === 1 ? '' : 's'} ${saved === 1 ? 'has' : 'have'} saved work, which cannot be regenerated. Kept ${notesWhere()}.`;
+    row('Notes, edits and recognized text', notesDetail, sizes?.notes ?? 0, 'Delete…', deleteAllNotes, true);
     const loc = document.createElement('div');
     loc.className = 'loc';
     const lt = document.createElement('div');
@@ -7893,6 +7974,7 @@ export function createLibraryInstance(viewer, opts) {
 
   const focusSearch = () => {
     if (form === 'column') {
+      if (storageOpen) closeStorage();
       colSearchRow.hidden = false;
       colSearchBtn.classList.add('on');
     }
