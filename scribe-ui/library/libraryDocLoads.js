@@ -113,6 +113,9 @@ export function createDocLoads({ sessions, engine, getStore }) {
       annots: header?.annotations ? undefined : (n) => doc.liftPdfAnnotations(n),
       find: findThroughIndex(hash),
       hydration: 'on-demand',
+      // A saved file carries its own record of both, which the document holds from the open.
+      textFromOcrFile: !header && !!entry.ocrFile,
+      deepOcrPages: header ? undefined : entry.ocrDeep,
     };
   };
 

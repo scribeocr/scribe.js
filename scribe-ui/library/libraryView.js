@@ -3133,7 +3133,7 @@ export function createLibraryInstance(viewer, opts) {
       menuTargetElem = null;
     }
     document.removeEventListener('pointerdown', onMenuOutside);
-    document.removeEventListener('keydown', onMenuKey);
+    document.removeEventListener('keydown', onMenuKey, true);
   };
   /** @param {PointerEvent} e */
   const onMenuOutside = (e) => {
@@ -3141,7 +3141,11 @@ export function createLibraryInstance(viewer, opts) {
   };
   /** @param {KeyboardEvent} e */
   const onMenuKey = (e) => {
-    if (e.key === 'Escape') closeCardMenu();
+    if (e.key !== 'Escape') return;
+    // preventDefault marks the Escape used, so the viewer's mode-exit handler does not also fire.
+    // The listener runs in the capture phase, because the viewer's handler was registered first and would act before this mark.
+    e.preventDefault();
+    closeCardMenu();
   };
 
   /**
@@ -3307,7 +3311,7 @@ export function createLibraryInstance(viewer, opts) {
     menuElem.style.top = `${Math.max(4, top)}px`;
     // Deferred so the pointerdown that opened the menu does not immediately close it.
     setTimeout(() => document.addEventListener('pointerdown', onMenuOutside), 0);
-    document.addEventListener('keydown', onMenuKey);
+    document.addEventListener('keydown', onMenuKey, true);
   };
 
   /**
@@ -5188,7 +5192,7 @@ export function createLibraryInstance(viewer, opts) {
     menuElem.style.left = `${Math.max(4, left)}px`;
     menuElem.style.top = `${Math.max(4, top)}px`;
     setTimeout(() => document.addEventListener('pointerdown', onMenuOutside), 0);
-    document.addEventListener('keydown', onMenuKey);
+    document.addEventListener('keydown', onMenuKey, true);
   };
 
   // Blank-area right-click is the thumbnail view's create gesture.
@@ -6905,7 +6909,12 @@ export function createLibraryInstance(viewer, opts) {
               doc: tab.doc,
               checkpoint: async (recognized) => {
                 tab.libraryDirty = true;
-                if (recognized) tab.libraryRecognized = true;
+                if (recognized) {
+                  tab.libraryRecognized = true;
+                  // The viewer redraws and syncs only after a run of its own, so a run from this queue does both here.
+                  viewer._redrawRecognized(tab.doc).catch(() => { });
+                  viewer._syncDocGatedControls();
+                }
                 await saveTabIfDirty(tab);
               },
             };

@@ -2034,6 +2034,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       return;
     }
     if (e.key === 'Escape') {
+      // A consumed Escape is preventDefaulted, so the viewer's mode-exit handler leaves the mode on.
+      if (editState || (compact && (composingRow || openRow)) || selected.size > 0) e.preventDefault();
       // The field handles Esc while focused; this catches it after focus leaves the editor.
       if (editState) { foldEditor(false); return; }
       if (compact && composingRow) {

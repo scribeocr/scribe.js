@@ -1212,7 +1212,12 @@ export function createBookmarksPanel(scribe, {
       selectAll();
       return;
     }
-    if (e.key === 'Escape') { clearSelection(); return; }
+    if (e.key === 'Escape') {
+      // A consumed Escape is preventDefaulted, so the viewer's mode-exit handler leaves the mode on.
+      if (selected.size > 0) e.preventDefault();
+      clearSelection();
+      return;
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size > 0) {
       e.preventDefault();
       deleteSelected();

@@ -279,6 +279,10 @@ const SEEDED_NATIVE_ENTRY = Object.freeze({ baselineY: Number.NaN });
  * @property {(n: number) => Promise<void>} [pageText] - Have page `n`'s words and own annotations in the document. Gone once the document has loaded.
  * @property {(n: number) => Promise<?ImageBitmap>} [storedRaster] - Page `n`'s stored raster, when one is stored.
  * @property {(n: number, bitmap: ImageBitmap) => void} [rasterRendered] - The seed's `rendered`.
+ * @property {boolean} [textFromOcrFile] - The seed's `textFromOcrFile`.
+ *   Gone once the document has loaded.
+ * @property {number} [deepOcrPages] - The seed's `deepOcrPages`.
+ *   Gone once the document has loaded.
  */
 
 /**
@@ -300,6 +304,10 @@ const SEEDED_NATIVE_ENTRY = Object.freeze({ baselineY: Number.NaN });
  * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - The document's matches of a query, in page order.
  *   Its word ids must be those `ocr` gives.
  * @property {'eager'|'on-demand'} [hydration='eager'] - `'eager'` loads the document as soon as it is shown, and `'on-demand'` when something first needs it.
+ * @property {boolean} [textFromOcrFile] - Whether the document's text will come from an OCR file when it loads.
+ *   Until it loads, the highlighter's prompt to recognize and the Recognize Text page count go by this.
+ * @property {number} [deepOcrPages] - How many pages a Recognize Text run would recognize, for a document with no saved file.
+ *   Without it, Recognize Text offers every page until the document loads.
  * @property {string} [name] - Display name for the tab.
  */
 
@@ -931,6 +939,8 @@ class ScribePDFViewer {
      *   save: HTMLButtonElement, discard: HTMLButtonElement, exit: HTMLSpanElement}}
      */
     this._modeBannerParts = null;
+    /** @type {?HTMLDivElement} The prompt to recognize, shown while the highlighter is on over a document with no text. */
+    this._highlightPrompt = null;
     /** @type {?Object} The running comparison of the Compare Versions mode, or null. */
     this._compare = null;
     /** @type {?HTMLSpanElement} */
@@ -1057,6 +1067,7 @@ class ScribePDFViewer {
         colors: highlightColors, defaultColor: defaultHighlightColor ?? highlightColors[0], rootClass: ROOT_CLASS,
       })
       : null;
+    this._highlightTool?.highlightElem.addEventListener('click', () => this._syncHighlightPrompt());
 
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
@@ -1811,6 +1822,26 @@ class ScribePDFViewer {
     // Apply the initial document inset for the visible panel.
     if (this._thumbnailPanel) this._relayout();
 
+    // Escape exits the active tool mode, once every closer surface (find bar, editors, menus, selections) has passed on the press.
+    // Each of those consumers marks a used Escape with preventDefault, so an unconsumed press is the mode's to take.
+    /** @param {KeyboardEvent} e */
+    const onEscape = (e) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      const t = e.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.isConnected);
+      if (activeBtn) {
+        e.preventDefault();
+        activeBtn.click();
+      } else if (this._highlightTool?.isArmed()) {
+        e.preventDefault();
+        // Set directly, because a click on the marker highlights a standing selection in place of turning the tool off.
+        this._highlightTool.setArmed(false);
+        this._syncHighlightPrompt();
+      }
+    };
+    this._teardownCallbacks.push(() => document.removeEventListener('keydown', onEscape));
+
     // Built last: the editing UI extends hooks (app menu, toolbar end zone, find bar, scroll container) that must already exist.
     if (edit) {
       ScribePDFViewer._addEditorStyles();
@@ -2043,20 +2074,8 @@ class ScribePDFViewer {
         });
       }
 
-      // Escape exits the active tool mode, once every closer surface (find bar, editors, menus, selections) has passed on the press.
-      // Each of those consumers marks a used Escape with preventDefault, so an unconsumed press is the mode's to take.
-      const onModeEscape = (e) => {
-        if (e.key !== 'Escape' || e.defaultPrevented) return;
-        const t = e.target;
-        if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
-        const activeBtn = exclusiveToolBtns.find((b) => b.classList.contains('active') && b.isConnected);
-        if (activeBtn) {
-          e.preventDefault();
-          activeBtn.click();
-        }
-      };
-      document.addEventListener('keydown', onModeEscape);
-      this._teardownCallbacks.push(() => document.removeEventListener('keydown', onModeEscape));
+      // Registered here, after the tools' own Escape listeners, which take the press first.
+      document.addEventListener('keydown', onEscape);
 
       this.scribe.onSignatureFieldClick = (n, row) => signIntoField(this, n, row);
       // The boot-time sync ran before these tools existed, so apply the empty-viewer gating to them now.
@@ -2068,6 +2087,9 @@ class ScribePDFViewer {
         if (this._dockEditBtn) this._dockElem.insertBefore(this._dockEditBtn, this._sheetPanelsBtn || null);
         this._syncDocGatedControls();
       }
+    } else {
+      // A read-only viewer has no modes, so the listener serves its highlighter alone.
+      document.addEventListener('keydown', onEscape);
     }
 
     // The library is Chromium-only (File System Access API) and dynamically imported so disabled or unsupported viewers never fetch its code or styles.
@@ -2254,6 +2276,8 @@ class ScribePDFViewer {
     hooks._seededWired = true;
     if (seed.find) hooks.findMatches = seed.find;
     if (seed.rendered) hooks.rasterRendered = seed.rendered;
+    if (seed.textFromOcrFile) hooks.textFromOcrFile = true;
+    if (seed.deepOcrPages != null) hooks.deepOcrPages = seed.deepOcrPages;
     // The image cache closes the bitmaps it is served, so stored rasters are kept as blobs.
     /** @type {Map<number, Promise<?Blob>>} */
     const blobs = new Map();
@@ -2440,6 +2464,8 @@ class ScribePDFViewer {
       hydrated = doc.textReady.then(async () => {
         if (doc.hydrationState !== 'hydrated') throw new Error('The document was closed before it loaded.');
         delete hooks.pageText;
+        delete hooks.textFromOcrFile;
+        delete hooks.deepOcrPages;
         hooks._loadFailed = false;
         // Every page with built text still holds words from the seeded pages the load replaced, so all of it is cleared, not just the current page.
         for (const v of viewers()) {
@@ -4728,16 +4754,20 @@ class ScribePDFViewer {
   /** Stack the overlay banners across the top of the document area, the mode banner above the message banner. */
   _positionBanners() {
     const top = this._topBarsHeight();
-    if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
     const panelW = (!this._phoneUi && this._automatePanel?.isOpen()) ? this._automatePanel.width : 0;
     const g = this._rightGroup;
     const spans = !!(this._sideView && g && g.active === this._sideView.tab) || !!this._compare;
     const onGroup = (this._modeBannerBtn ? this._modeGroup === 1 : this._activeGroup === 1) && !!g && !!this._laneBox && !spans;
     const bannerRight = `${panelW + (g && !onGroup && !spans ? this._groupW : 0)}px`;
     const bannerLeft = `${onGroup ? this._laneBox.left + this._laneBox.width : this._columnWidth()}px`;
-    if (this._modeBanner) { this._modeBanner.style.right = bannerRight; this._modeBanner.style.left = bannerLeft; }
+    const modeBanners = [this._modeBanner, this._highlightPrompt].filter((el) => !!el);
+    for (const el of modeBanners) {
+      el.style.top = `${top}px`;
+      el.style.right = bannerRight;
+      el.style.left = bannerLeft;
+    }
     if (this._banner) { this._banner.style.right = bannerRight; this._banner.style.left = bannerLeft; }
-    const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
+    const modeH = modeBanners.some((el) => el.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
     // The banners span the sidebar too, so the rail reserves leading scroll space for them to keep its first row's controls reachable.
@@ -4911,10 +4941,56 @@ class ScribePDFViewer {
   }
 
   /**
+   * Show the prompt to recognize while the highlighter is on and the active document has no text for it to mark.
+   */
+  _syncHighlightPrompt() {
+    const { doc } = this._activeViewer();
+    // An empty viewer still holds a document object, so a document counts as open only when it has pages.
+    let show = !!this._highlightTool?.isArmed() && !!this._recognizeTool && !this._phoneUi
+      && !(this._exclusiveToolBtns || []).some((b) => b.classList.contains('active') && b.dataset.modeHint)
+      && !!doc && doc.pageMetrics.length > 0 && !this._frontSurface()
+      && !(this._recognizeRun && this._recognizeRun.doc === doc);
+    // A file's verdict arrives with its text, a moment after it opens.
+    // The prompt stays as it was until then, so it does not drop and return when one scan is opened after another.
+    if (show && doc.hydrationState === 'hydrated' && doc._textReadySettle) return;
+    if (show) {
+      // A scan can hold words of its own, such as a stamped header, so the test goes by the document's verdict and its recognition record, not by whether it has words.
+      // A tab that has not loaded answers the source of its text from what it was told at open, so its answer cannot change as its pages arrive.
+      const { pdfMode, imageMode, pdfType, ocrApplied } = doc.inputData;
+      show = (pdfMode ? pdfType === 'image' : imageMode) && !ocrApplied?.some(Boolean)
+        && !(doc.hydrationState === 'hydrated'
+          ? doc.ocr.active?.some((page) => page && page.lines.length > 0 && page.textSource !== 'pdf')
+          : /** @type {typeof doc & SeededDocHooks} */ (doc).textFromOcrFile);
+    }
+    if (show && !this._highlightPrompt) {
+      const prompt = document.createElement('div');
+      prompt.className = 'scribe-hl-prompt';
+      prompt.setAttribute('role', 'status');
+      const text = document.createElement('span');
+      text.className = 'scribe-hl-prompt-text';
+      text.textContent = 'This document has no text to highlight yet.';
+      const recognize = document.createElement('button');
+      recognize.type = 'button';
+      recognize.className = 'scribe-mode-banner-run';
+      recognize.textContent = 'Recognize Text';
+      recognize.addEventListener('click', () => this._recognizeTool.toolbarElem.click());
+      prompt.append(text, recognize);
+      this.pdfViewerElem.appendChild(prompt);
+      this._highlightPrompt = prompt;
+    }
+    const display = show ? 'flex' : 'none';
+    if (!this._highlightPrompt || this._highlightPrompt.style.display === display) return;
+    this._highlightPrompt.style.display = display;
+    this._positionBanners();
+  }
+
+  /**
    * Reflect the active tool mode in the banner floating over the top of the document area: its name, hint, and Done.
    * The banner is hidden while no mode is on.
    */
   _syncModeBanner() {
+    // This sync runs for every change of mode and of document, which is how the highlight prompt hears of either.
+    this._syncHighlightPrompt();
     // A tool with no hint (the unmounted Redact button) gets no banner, so the hint doubles as the banner-eligibility test.
     const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.dataset.modeHint) || null;
     if (this._automatePanel) this._automatePanel.syncMode(activeBtn ? activeBtn.ariaLabel : null);
@@ -8801,18 +8877,29 @@ class ScribePDFViewer {
   }
 
   /**
-   * Pages deep OCR would recognize for the current document, or 0 when there is none.
+   * Pages a Recognize Text run would send to the engine, or 0 when there is none.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} [doc] - The active viewer's document when omitted.
    * @returns {number}
    */
-  _deepOcrPageCount() {
-    const { doc } = this._activeViewer();
+  _deepOcrPageCount(doc = this._activeViewer().doc) {
     if (!doc) return 0;
+    const loaded = doc.hydrationState === 'hydrated';
     // While a deferred import's stats are still extracting, return 0 so the recognition surfaces start quiet instead of flashing on then vanishing.
     // `_setDoc` re-runs this once `textReady` lands.
-    if (doc._textReadySettle) return 0;
-    const { pageStats, pageCount, pdfType } = doc.inputData;
-    if (this.scribe.opt.ignorePdfText || doc.ocr?.['User Upload'] || !pageStats || pageStats.length !== pageCount) return pageCount;
-    return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
+    // A tab that has not loaded keeps its text pending until something loads it, so the guard leaves it out.
+    if (loaded && doc._textReadySettle) return 0;
+    const { pageStats, pageCount, pdfType, ocrApplied } = doc.inputData;
+    if (this.scribe.opt.ignorePdfText) return pageCount;
+    // A run recognizes every page of a document that holds text from an OCR file or a saved recognition, by the test `recognize` applies to the restored layer.
+    // That layer arrives with the load, so before it a tab goes by the OCR file it was told of and the recognition its saved file records.
+    const upload = doc.ocr['User Upload'];
+    const hooks = /** @type {typeof doc & SeededDocHooks} */ (doc);
+    const otherText = loaded
+      ? !!upload && (!!doc.ocr.pdf || upload.some((page) => page && page.lines.length > 0 && page.textSource !== 'pdf'))
+      : !!hooks.textFromOcrFile || !!ocrApplied?.some(Boolean);
+    if (otherText) return pageCount;
+    if (pageStats && pageStats.length === pageCount) return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
+    return loaded ? pageCount : hooks.deepOcrPages ?? pageCount;
   }
 
   /**
@@ -8896,7 +8983,6 @@ class ScribePDFViewer {
   async _recognizeAll() {
     const { doc } = this._activeViewer();
     if (!doc || this._recognizeRun) return;
-    const total = this._deepOcrPageCount();
     const runSig = this._recognizeRunSig();
     const controller = new AbortController();
     const run = {
@@ -8904,7 +8990,7 @@ class ScribePDFViewer {
       controller,
       phase: /** @type {'running'|'canceling'|'finishing'} */ ('running'),
       seen: new Set(),
-      total,
+      total: this._deepOcrPageCount(doc),
       mode: /** @type {'speed'|'quality'} */ (this.scribe.opt.vanillaMode ? 'speed' : this.scribe.opt.recognizeMode),
       statusWidth: 0,
     };
@@ -8929,15 +9015,15 @@ class ScribePDFViewer {
     doc.progressHandler = (msg) => {
       prevProgress?.(msg);
       if (msg && msg.type === 'convert' && typeof msg.n === 'number') run.seen.add(msg.n);
-      if (bar && total > 0) bar.style.transform = `scaleX(${Math.max(0.04, 0.9 * Math.min(1, run.seen.size / total))})`;
+      if (bar && run.total > 0) bar.style.transform = `scaleX(${Math.max(0.04, 0.9 * Math.min(1, run.seen.size / run.total))})`;
       // A one-page job has no wind bar to fill, so the icon and button cues carry its whole run.
-      if (run.seen.size > 0 && total > 1) {
+      if (run.seen.size > 0 && run.total > 1) {
         this.pdfViewerElem.classList.remove('scribe-recog-alive');
         // Mid-run, a tab switch moves this.doc to another document, whose strip must not show this run's band.
-        if (this.doc === doc) this._companionStrip?.setRecognition(Math.min(1, run.seen.size / total));
+        if (this.doc === doc) this._companionStrip?.setRecognition(Math.min(1, run.seen.size / run.total));
       }
       // Once every page has landed, an Accurate run's end (font optimization and the compare pass) cannot be canceled.
-      if (run.phase === 'running' && run.mode === 'quality' && total > 0 && run.seen.size >= total) run.phase = 'finishing';
+      if (run.phase === 'running' && run.mode === 'quality' && run.total > 0 && run.seen.size >= run.total) run.phase = 'finishing';
       this._syncRecognizeRow();
     };
 
@@ -8951,10 +9037,20 @@ class ScribePDFViewer {
         recognizeOptions.ocrPages = 'all';
         recognizeOptions.usePDFText = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
       }
-      await doc.recognize(recognizeOptions);
-      ok = true;
-      this._recognizeRuns.set(doc, runSig);
-      await this._redrawRecognized(doc);
+      // The count a tab gave before it loaded is every page when it was handed none.
+      // `recognize` would load the document itself, so it is loaded here only to count its pages again before the run reports progress against them.
+      if (doc.hydrationState !== 'hydrated') {
+        await doc.ensureHydrated();
+        run.total = this._deepOcrPageCount(doc);
+        run.statusWidth = 0;
+      }
+      // With no page to recognize the run ends here, so no receipt claims a recognition that did not happen.
+      if (run.total > 0) {
+        await doc.recognize(recognizeOptions);
+        ok = true;
+        this._recognizeRuns.set(doc, runSig);
+        await this._redrawRecognized(doc);
+      }
     } catch (err) {
       if (err && err.name === 'AbortError') {
         // The library put the document back. The page is drawn again from the restored text, and nothing is recorded or announced.
@@ -8976,7 +9072,7 @@ class ScribePDFViewer {
         setTimeout(() => { bar.style.transform = 'scaleX(0)'; }, 600);
       }
       if (this._companionStrip && this.doc === doc) {
-        if (ok && total > 1) this._companionStrip.finishRecognition();
+        if (ok && run.total > 1) this._companionStrip.finishRecognition();
         else this._companionStrip.setRecognition(null);
       }
       // The mode stays open on the run's own result, so these syncs repaint the row as the receipt, Ready, or the failure.

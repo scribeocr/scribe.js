@@ -854,7 +854,7 @@ export function createTabStrip({
   function closeTabMenu() {
     menuElem.style.display = 'none';
     document.removeEventListener('pointerdown', onTabMenuOutside);
-    document.removeEventListener('keydown', onTabMenuKey);
+    document.removeEventListener('keydown', onTabMenuKey, true);
   }
   /** @param {PointerEvent} e */
   function onTabMenuOutside(e) {
@@ -863,7 +863,10 @@ export function createTabStrip({
   }
   /** @param {KeyboardEvent} e */
   function onTabMenuKey(e) {
-    if (e.key === 'Escape') closeTabMenu();
+    if (e.key !== 'Escape') return;
+    // preventDefault marks the Escape used, so the viewer's mode-exit handler does not also fire.
+    e.preventDefault();
+    closeTabMenu();
   }
 
   /**
@@ -924,7 +927,8 @@ export function createTabStrip({
     // Deferred so the pointer sequence that opened the menu cannot immediately dismiss it.
     setTimeout(() => {
       document.addEventListener('pointerdown', onTabMenuOutside);
-      document.addEventListener('keydown', onTabMenuKey);
+      // In the capture phase, so the menu takes the press ahead of the viewer's handler, which was registered first.
+      document.addEventListener('keydown', onTabMenuKey, true);
     }, 0);
   }
 
@@ -4973,12 +4977,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-banner-close:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-banner-close svg { width: 16px; height: 16px; display: block; }
 
-    .${r} .scribe-mode-banner {
+    .${r} .scribe-mode-banner, .${r} .scribe-hl-prompt {
       position: absolute; left: 0; right: 0; height: 40px; z-index: 35; box-sizing: border-box;
       display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px;
       background: var(--scribe-accent-soft); border-bottom: 1px solid var(--scribe-line);
       color: var(--scribe-ink); user-select: none;
     }
+    .${r} .scribe-hl-prompt { padding-right: 14px; }
+    .${r} .scribe-hl-prompt-text { flex: 1 1 auto; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .${r} .scribe-mode-banner-ic { display: inline-flex; width: 17px; height: 17px; color: var(--scribe-accent); flex: none; }
     .${r} .scribe-mode-banner-name { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
     .${r} .scribe-mode-banner-dot { color: var(--scribe-ink-3); }

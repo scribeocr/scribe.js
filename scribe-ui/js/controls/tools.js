@@ -74,7 +74,8 @@ function nameForSelection(el, label, viewer) {
  * @returns {{
  *   highlightElem: HTMLSpanElement, toolbarElem: HTMLSpanElement,
  *   updateCommentIcons: () => void,
- *   installBehaviors: (viewer?: import('../../viewer.js').ScribeViewer) => (() => void)
+ *   installBehaviors: (viewer?: import('../../viewer.js').ScribeViewer) => (() => void),
+ *   setArmed: (on: boolean) => void, isArmed: () => boolean
  * }}
  */
 export function createHighlightTool(initialViewer, rootElem, { colors, defaultColor, rootClass }) {
@@ -126,11 +127,16 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     return true;
   }
 
-  highlightElem.addEventListener('click', () => {
-    if (applyToSelection()) return;
-    highlightMode = !highlightMode;
+  /** @param {boolean} on */
+  const setArmed = (on) => {
+    highlightMode = on;
     highlightElem.classList.toggle('active', highlightMode);
     updateHighlightCursorStyle();
+  };
+
+  highlightElem.addEventListener('click', () => {
+    if (applyToSelection()) return;
+    setArmed(!highlightMode);
   });
 
   // Color-picker swatches and the popover that holds them, plus the factory that builds each swatch button.
@@ -1071,6 +1077,8 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     toolbarElem,
     updateCommentIcons,
     installBehaviors,
+    setArmed,
+    isArmed: () => highlightMode,
   };
 }
 
