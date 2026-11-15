@@ -330,7 +330,7 @@ export const metadataCLI = async (pdfFile, options) => {
       if (report.images.length > 20) lines.push(`    …and ${report.images.length - 20} more`);
     }
     if (report.signatures.length) lines.push(`\n  Digital signatures: ${report.signatures.length}`);
-    if (report.priorRevisions > 1) lines.push(`\n  Prior saved revisions retained: ${report.priorRevisions - 1}`);
+    if (report.priorRevisions > 0) lines.push(`\n  Prior saved revisions retained: ${report.priorRevisions}`);
     if (report.encrypted) lines.push('\n  Encrypted: yes');
     const kept = [];
     if (report.structTree) kept.push('accessibility tags');

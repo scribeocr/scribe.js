@@ -4166,8 +4166,15 @@ class ScribePDFViewer {
     }
     tab.placedByAddress = placed;
     if (!placed) await g.viewer.displayPage(pageIndex, true, false);
-    if (tab.view) await this._showSideView(tab);
-    if (!tab.view) this._groupDocChanged(g, tab.doc);
+    if (tab.view) {
+      await this._showSideView(tab);
+      // A second view is not announced to the modes.
+      // A view that owns its document still puts a new one in the group viewer, so the gate reads it.
+      this._syncDocGatedControls();
+      tab.doc.textReady?.then(() => { if (this._rightGroup === g && g.viewer.doc === tab.doc) this._syncDocGatedControls(); }).catch(() => {});
+    } else {
+      this._groupDocChanged(g, tab.doc);
+    }
     if (tab.waking) {
       tab.waking = false;
       tab.asleep = false;
@@ -8417,7 +8424,8 @@ class ScribePDFViewer {
   /** Disable the controls that need a document while none is loaded or a pinned surface is in front of it. */
   _syncDocGatedControls() {
     const { doc } = this._activeViewer();
-    const disabled = !doc || !!this._frontSurface();
+    // An empty viewer still holds a document object, so a document counts as open only when it has pages.
+    const disabled = !doc || doc.pageMetrics.length === 0 || !!this._frontSurface();
     if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
     if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
@@ -8515,7 +8523,7 @@ class ScribePDFViewer {
     }
     const exportBtn = this._exportTool?.toolbarElem;
     if (exportBtn) {
-      const exportable = !disabled && !this._phoneUi && !!doc && doc.pageMetrics.length > 0;
+      const exportable = !disabled && !this._phoneUi;
       // The running mode is judged on its own viewer's document.
       // With the preview's half active, the active viewer holds the PDF preview, which is blank while it rebuilds.
       const modeDoc = this._modeViewer().doc;
@@ -8882,7 +8890,7 @@ class ScribePDFViewer {
    * @returns {number}
    */
   _deepOcrPageCount(doc = this._activeViewer().doc) {
-    if (!doc) return 0;
+    if (!doc || doc.pageMetrics.length === 0) return 0;
     const loaded = doc.hydrationState === 'hydrated';
     // While a deferred import's stats are still extracting, return 0 so the recognition surfaces start quiet instead of flashing on then vanishing.
     // `_setDoc` re-runs this once `textReady` lands.
@@ -8908,7 +8916,7 @@ class ScribePDFViewer {
    */
   _recognizeAlreadyRan() {
     const { doc } = this._activeViewer();
-    return !!doc && this._recognizeRuns.get(doc) === this._recognizeRunSig();
+    return !!doc && doc.pageMetrics.length > 0 && this._recognizeRuns.get(doc) === this._recognizeRunSig();
   }
 
   /**
@@ -8982,7 +8990,7 @@ class ScribePDFViewer {
    */
   async _recognizeAll() {
     const { doc } = this._activeViewer();
-    if (!doc || this._recognizeRun) return;
+    if (!doc || doc.pageMetrics.length === 0 || this._recognizeRun) return;
     const runSig = this._recognizeRunSig();
     const controller = new AbortController();
     const run = {

@@ -1203,12 +1203,23 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
 
-    const originalMeta = getMetadata(await readPdfBytes(`${ASSETS_PATH}/fti_filing_p25.pdf`));
-    expect(originalMeta.info?.Author, 'fixture must carry an /Info author for the strip test to be meaningful').toBe('rr615379');
+    const originalMeta = getMetadata(await readPdfBytes(`${ASSETS_PATH}/border_patrol_tables.pdf`));
+    expect(originalMeta.info?.Author, 'fixture must carry an /Info author for the strip test to be meaningful').toBe('U.S. Border Patrol');
     expect(!!originalMeta.xmp.catalog, 'fixture must carry a document XMP packet').toBe(true);
-    expect(originalMeta.priorRevisions, 'fixture must carry prior incremental-save revisions to strip').toBe(2);
+    expect(originalMeta.docId, 'fixture must carry an /ID file identifier').toBe('<D718250D51E0394A8877AAF82E487583>');
+    expect(originalMeta.priorRevisions, 'a linearized file with two incremental saves holds two prior saves').toBe(2);
+    expect(originalMeta.marked, 'a catalog that sets /MarkInfo /Marked true reads as marked').toBe(true);
 
-    doc = await scribe.openDocument([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
+    expect(getMetadata(await readPdfBytes(`${ASSETS_PATH}/academic_article_1.pdf`)).priorRevisions, 'a file saved once holds no prior save').toBe(0);
+    const linearizedMeta = getMetadata(await readPdfBytes(`${ASSETS_PATH}/fti_filing_p25.pdf`));
+    expect(linearizedMeta.priorRevisions, 'a linearized file saved once holds no prior save').toBe(0);
+    expect(linearizedMeta.marked, 'a catalog without /MarkInfo reads as not marked').toBe(false);
+    expect(getMetadata(await readPdfBytes(`${ASSETS_PATH}/TSLA-Q4-2020-Update.pdf`)).priorRevisions,
+      'a Microsoft Office file, whose one save ends in an empty cross-reference table, holds no prior save').toBe(0);
+    expect(getMetadata(await readPdfBytes(`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`)).priorRevisions,
+      'a file with one incremental save holds one prior save').toBe(1);
+
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
     const strippedBytes = new Uint8Array(await doc.stripMetadata());
     await doc.clear();
 
@@ -1217,11 +1228,12 @@ describe('Check export for .pdf files.', () => {
     expect(strippedMeta.docId, 'stripMetadata removes the /ID file identifier').toBe(null);
     expect(strippedMeta.xmp.catalog, 'stripMetadata removes the document XMP packet').toBe(null);
     expect(strippedMeta.xmp.perObject.length, 'stripMetadata removes per-object XMP packets').toBe(0);
-    expect(strippedMeta.priorRevisions, 'stripMetadata collapses prior incremental-save revisions to one').toBe(1);
+    expect(strippedMeta.priorRevisions, 'stripMetadata leaves no prior save in the file').toBe(0);
+    expect(strippedMeta.marked, 'the Tagged PDF mark survives a default metadata strip').toBe(true);
 
     doc = await scribe.openDocument({ pdfFiles: [strippedBytes.buffer] });
-    expect(doc.inputData.pageCount, 'page count survives metadata strip').toBe(1);
-    expect(doc.ocr.active[0].lines[0].words[0].text, 'body text survives metadata strip').toBe('UNITED');
+    expect(doc.inputData.pageCount, 'page count survives metadata strip').toBe(4);
+    expect(doc.ocr.active[0].lines[0].words[0].text, 'body text survives metadata strip').toBe('SECTOR');
 
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = false;

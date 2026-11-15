@@ -669,9 +669,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
       contents.push(['Attachments', attached.length
         ? `${attached.length}: ${attached.map((f) => (f.size == null ? f.name : `${f.name} (${fmtBytes(f.size)})`)).join(', ')}`
         : (meta?.embeddedFiles?.length ? String(meta.embeddedFiles.length) : null)]);
-      contents.push(['Tagged (accessible)', meta?.structTree ? 'Yes' : 'No']);
+      // The PDF specification calls a file tagged only when its catalog also sets `/MarkInfo` `/Marked`, so a structure tree alone reads as No.
+      contents.push(['Tagged PDF', !meta?.structTree ? 'No' : meta.marked ? 'Yes' : 'No (structure tree present)']);
       contents.push(['Document ID', meta?.docId ? String(meta.docId).replace(/[<>()]/g, '') : null]);
-      contents.push(['Saved versions', meta?.priorRevisions ? `${meta.priorRevisions + 1} (${meta.priorRevisions} prior revision${meta.priorRevisions > 1 ? 's' : ''} kept)` : null]);
+      contents.push(['Prior saves', meta?.priorRevisions ? `${meta.priorRevisions} retained in file` : null]);
     } else if (doc) {
       contents.push(['Text', doc.inputData.ocrApplied ? 'Recognized' : 'None yet — run Recognize Text']);
     }
@@ -723,7 +724,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       };
       row.addEventListener('click', toggle);
       row.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
-      const anchor = [...grid.children].find((r) => /^(Document ID|Saved versions)$/.test(r.firstChild?.textContent || '')) || null;
+      const anchor = [...grid.children].find((r) => /^(Document ID|Prior saves)$/.test(r.firstChild?.textContent || '')) || null;
       grid.insertBefore(row, anchor);
       grid.insertBefore(block, anchor);
     }
@@ -947,7 +948,8 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const paintInventory = () => {
     const next = el('div', 'scribe-am-ins-part');
     next.hidden = !!drill;
-    next.append(inventoryGroups());
+    // An empty viewer still holds a document object, with no pages.
+    if (viewer.doc && viewer.doc.pageMetrics.length > 0) next.append(inventoryGroups());
     if (invPart) invPart.replaceWith(next); else if (drill?.part) body.insertBefore(next, drill.part); else body.append(next);
     invPart = next;
   };
@@ -958,6 +960,8 @@ export function buildInspectWorkspace(host, container, nav = null) {
       // The app's `_loadUnderMode` starts the load once the reader rests on this document.
       // A failed load rebuilds this workspace, which then shows the failure note.
       next.append(el('div', 'scribe-am-note', viewer.doc._loadFailed ? 'Couldn’t load the document.' : 'Loading the document…'));
+    } else if (!viewer.doc || viewer.doc.pageMetrics.length === 0) {
+      next.append(el('div', 'scribe-am-note', 'No document open.'));
     } else {
       next.append(documentGroup());
     }

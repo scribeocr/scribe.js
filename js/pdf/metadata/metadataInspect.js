@@ -9,8 +9,8 @@ import {
 } from '../parsePdfUtils.js';
 import { ObjectCache } from '../objectCache.js';
 import {
-  extractDict, extractDictFromBytes, parseDictEntries, findTopLevelKeyIndex, bytesToLatin1, byteLastIndexOf, byteIndexOf,
-  derefStringToken, resolveArrayValue, resolveNameValue, decodeTextStringBytes,
+  extractDict, extractDictFromBytes, parseDictEntries, findTopLevelKeyIndex, bytesToLatin1, byteLastIndexOf, byteIndexOf, bytesEqualAt, isPdfWhitespace,
+  derefStringToken, resolveArrayValue, resolveBoolValue, resolveDictValue, resolveNameValue, decodeTextStringBytes,
 } from '../pdfPrimitives.js';
 import { extractImages } from '../parsePdfImages.js';
 import { inspectJpegMetadata, inspectJpxMetadata } from './imageMetadata.js';
@@ -50,35 +50,35 @@ function readString(objCache, objNum, key, valueText) {
 }
 
 /**
- * Count cross-reference sections in the `/Prev` chain.
- * >1 means the file retains prior incremental-save revisions that still carry old metadata.
+ * Count the earlier saves a PDF still holds.
  * @param {Uint8Array} pdfBytes
- * @returns {number}
+ * @returns {number} 0 for a file saved once.
  */
-export function countXrefRevisions(pdfBytes) {
+export function countPriorRevisions(pdfBytes) {
   let off = findXrefOffset(pdfBytes);
   const seen = new Set();
-  let count = 0;
+  let saves = 0;
   const headerOff = Math.max(0, byteIndexOf(pdfBytes, '%PDF'));
-  while (off != null && off >= 0 && !seen.has(off) && count < 64) {
+  while (off != null && off >= 0 && !seen.has(off) && seen.size < 64) {
     seen.add(off);
-    count += 1;
-    const abs = off + (off < pdfBytes.length ? 0 : 0);
-    // Read a window and find this section's trailer/xref-stream dict, then its /Prev.
-    const isTable = bytesToLatin1(pdfBytes, abs, Math.min(abs + 4, pdfBytes.length)) === 'xref';
-    let dictText = '';
-    if (isTable) {
-      const tIdx = byteIndexOf(pdfBytes, 'trailer', abs);
-      if (tIdx !== -1) dictText = bytesToLatin1(pdfBytes, tIdx, Math.min(tIdx + 600, pdfBytes.length));
-    } else {
-      let ds = -1;
-      for (let i = abs; i < Math.min(abs + 400, pdfBytes.length - 1); i++) if (pdfBytes[i] === 0x3C && pdfBytes[i + 1] === 0x3C) { ds = i; break; }
-      if (ds !== -1) dictText = extractDictFromBytes(pdfBytes, ds);
+    let start = off;
+    while (start < pdfBytes.length && isPdfWhitespace(pdfBytes[start])) start++;
+    const isTable = bytesEqualAt(pdfBytes, start, 'xref');
+    const dictFrom = isTable ? byteIndexOf(pdfBytes, 'trailer', start) : start;
+    let ds = -1;
+    if (dictFrom !== -1) {
+      for (let i = dictFrom; i < Math.min(dictFrom + 400, pdfBytes.length - 1); i++) if (pdfBytes[i] === 0x3C && pdfBytes[i + 1] === 0x3C) { ds = i; break; }
     }
-    const m = /\/Prev\s+(\d+)/.exec(dictText);
-    off = m ? Number(m[1]) + headerOff : null;
+    const m = ds !== -1 ? /\/Prev\s+(\d+)/.exec(extractDictFromBytes(pdfBytes, ds)) : null;
+    const prev = m ? Number(m[1]) + headerOff : null;
+    // A linearized save writes two sections, and the one for its first page sits near the start of the file with a `/Prev` that points forward to the other.
+    const linearizedFirstPage = prev != null && prev > off;
+    // A Microsoft Office save writes two as well, the last a table that lists no objects.
+    const emptyTable = isTable && /^xref\s+(?:\d+\s+0\s+)*trailer/.test(bytesToLatin1(pdfBytes, start, Math.min(start + 64, pdfBytes.length)));
+    if (!linearizedFirstPage && !emptyTable) saves += 1;
+    off = prev;
   }
-  return count;
+  return Math.max(0, saves - 1);
 }
 
 /** Latest trailer / xref-stream dict text (for /Info, /ID, /Encrypt). */
@@ -113,6 +113,7 @@ export function getMetadata(pdfBytes) {
     actions: { openAction: false, aa: false, javascript: false },
     images: [],
     structTree: false,
+    marked: false,
     lang: null,
     pageLabels: false,
     viewerPreferences: false,
@@ -161,17 +162,18 @@ export function getMetadata(pdfBytes) {
     report.actions.openAction = findTopLevelKeyIndex(catBody, '/OpenAction') !== -1;
     report.actions.aa = findTopLevelKeyIndex(catBody, '/AA') !== -1;
     report.structTree = findTopLevelKeyIndex(catBody, '/StructTreeRoot') !== -1;
+    const markInfoAt = findTopLevelKeyIndex(catBody, '/MarkInfo');
+    const markInfo = markInfoAt !== -1 ? resolveDictValue(catBody.slice(markInfoAt), 'MarkInfo', objCache) : null;
+    report.marked = !!markInfo && resolveBoolValue(markInfo, 'Marked', objCache);
     report.pageLabels = findTopLevelKeyIndex(catBody, '/PageLabels') !== -1;
     report.viewerPreferences = findTopLevelKeyIndex(catBody, '/ViewerPreferences') !== -1;
     const langV = topValue(catBody, '/Lang');
     if (langV) report.lang = readString(objCache, rootNum, 'Lang', langV);
-    const namesV = topValue(catBody, '/Names');
-    if (namesV) {
-      const namesBody = /^\d+\s+\d+\s+R/.test(namesV) ? dictBodyOf(objCache.getObjectText(Number(namesV))) : (namesV.startsWith('<<') ? namesV.slice(2, -2) : '');
-      if (namesBody) {
-        report.actions.javascript = findTopLevelKeyIndex(namesBody, '/JavaScript') !== -1;
-      }
-    }
+    const namesAt = findTopLevelKeyIndex(catBody, '/Names');
+    const names = namesAt !== -1 ? resolveDictValue(catBody.slice(namesAt), 'Names', objCache) : null;
+    const scripts = names ? resolveDictValue(names, 'JavaScript', objCache) : null;
+    // Some files carry an empty `/JavaScript` name tree, which holds no script.
+    report.actions.javascript = !!scripts && (!!resolveArrayValue(scripts, 'Names', objCache) || !!resolveArrayValue(scripts, 'Kids', objCache));
   }
 
   // Per-object sweep: XMP, PieceInfo, OCG names, Filespec (embedded files), Sig
@@ -242,7 +244,7 @@ export function getMetadata(pdfBytes) {
     }
   }
 
-  report.priorRevisions = countXrefRevisions(pdfBytes);
+  report.priorRevisions = countPriorRevisions(pdfBytes);
   return report;
 }
 
