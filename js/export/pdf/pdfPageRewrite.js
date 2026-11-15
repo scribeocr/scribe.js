@@ -1,5 +1,5 @@
 import {
-  extractDict, bytesToLatin1,
+  extractDict, bytesToLatin1, findTopLevelKeyIndex, parseTopLevelPairs,
   resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue, resolveArrayValue, resolveDictValue,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
@@ -236,39 +236,47 @@ export async function rewriteContentsStripAndConvert({
   };
 }
 
+/** The keys a resource dictionary may hold (ISO 32000-2 Table 34). */
+const RESOURCE_CATEGORIES = new Set(['ExtGState', 'ColorSpace', 'Pattern', 'Shading', 'XObject', 'Font', 'ProcSet', 'Properties']);
+
 /**
- * Resolve the effective /Resources dictionary for a page.
+ * Resolve the /Resources dictionary an export writes for a page.
  * Handles inline dicts, indirect references, and inherited resources.
+ * The result holds the specification's resource categories only, each once.
  * @param {string} pageObjText
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  */
 export function resolvePageResources(pageObjText, objCache) {
-  const resIdx = pageObjText.indexOf('/Resources');
-  if (resIdx >= 0) {
-    const afterRes = pageObjText.substring(resIdx + '/Resources'.length).trimStart();
-    if (afterRes.startsWith('<<')) {
-      const dictStart = pageObjText.indexOf('<<', resIdx);
-      return extractDict(pageObjText, dictStart);
+  let resourcesDict = '<<>>';
+  /** @type {?string} */
+  let nodeText = pageObjText;
+  for (let depth = 0; depth < 32 && nodeText; depth++) {
+    const nodeDictStart = nodeText.indexOf('<<');
+    if (nodeDictStart < 0) break;
+    /** @type {string} */
+    const nodeBody = extractDict(nodeText, nodeDictStart).slice(2, -2);
+    const resIdx = findTopLevelKeyIndex(nodeBody, '/Resources');
+    const resValue = resIdx < 0 ? '' : nodeBody.slice(resIdx + '/Resources'.length).trimStart();
+    const resRefMatch = /^(\d+)\s+\d+\s+R/.exec(resValue);
+    const resText = resRefMatch ? objCache.getObjectText(Number(resRefMatch[1])) || '' : resValue;
+    const dictStart = resText.indexOf('<<');
+    // An inline value must itself be the dict, while a referenced object's text can open with a comment ahead of its dict.
+    if (dictStart === 0 || (dictStart > 0 && resRefMatch)) {
+      resourcesDict = extractDict(resText, dictStart);
+      break;
     }
-    const refMatch = /^(\d+)\s+\d+\s+R/.exec(afterRes);
-    if (refMatch) {
-      const resText = objCache.getObjectText(Number(refMatch[1]));
-      if (resText) {
-        const dictStart = resText.indexOf('<<');
-        if (dictStart >= 0) return extractDict(resText, dictStart);
-      }
-    }
+    const parentIdx = findTopLevelKeyIndex(nodeBody, '/Parent');
+    /** @type {?RegExpExecArray} */
+    const parentMatch = parentIdx < 0 ? null : /^\/Parent\s+(\d+)\s+\d+\s+R/.exec(nodeBody.slice(parentIdx));
+    nodeText = parentMatch ? objCache.getObjectText(Number(parentMatch[1])) : null;
   }
 
-  const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
-  if (parentMatch) {
-    const parentText = objCache.getObjectText(Number(parentMatch[1]));
-    if (parentText) {
-      return resolvePageResources(parentText, objCache);
-    }
-  }
-
-  return '<<>>';
+  // No reader uses any other key (a copy of the /Pages dict, a misspelt /ProcSets), yet the export would copy every object such a key refers to.
+  // A category written twice keeps its first entry, the one this codebase's readers take, so no second entry outlives the prune or a redaction.
+  const pairs = parseTopLevelPairs(resourcesDict)?.pairs;
+  if (!pairs) return resourcesDict;
+  const kept = pairs.filter((p, i) => RESOURCE_CATEGORIES.has(p.key) && pairs.findIndex((q) => q.key === p.key) === i);
+  return `<<${kept.map((p) => `/${p.key} ${resourcesDict.slice(p.valStart, p.valEnd)}`).join('\n')}>>`;
 }
 
 /**
@@ -577,16 +585,12 @@ export function buildReplacementPageDict(
   if (resourcesObjNum !== null) {
     dictStr += `/Resources ${resourcesObjNum} 0 R`;
   } else {
-    const resRefMatch = /\/Resources\s+(\d+\s+\d+\s+R)/.exec(originalObjText);
-    if (resRefMatch) {
-      dictStr += `/Resources ${resRefMatch[1]}`;
-    } else {
-      const resInlineMatch = /\/Resources\s*<</.exec(originalObjText);
-      if (resInlineMatch) {
-        const dictStart = resInlineMatch.index + resInlineMatch[0].length - 2;
-        dictStr += `/Resources${extractDict(originalObjText, dictStart)}`;
-      }
-    }
+    const pageBody = extractDict(originalObjText, originalObjText.indexOf('<<')).slice(2, -2);
+    const resIdx = findTopLevelKeyIndex(pageBody, '/Resources');
+    const resValue = resIdx < 0 ? '' : pageBody.slice(resIdx + '/Resources'.length).trimStart();
+    const resRefMatch = /^\d+\s+\d+\s+R/.exec(resValue);
+    if (resRefMatch) dictStr += `/Resources ${resRefMatch[0]}`;
+    else if (resValue.startsWith('<<')) dictStr += `/Resources${extractDict(resValue, 0)}`;
   }
 
   dictStr += '>>\nendobj\n\n';

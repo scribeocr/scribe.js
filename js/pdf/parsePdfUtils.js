@@ -8,7 +8,7 @@ import {
   byteIndexOf, byteLastIndexOf, bytesEqualAt, bytesToLatin1, extractDict, extractDictFromBytes,
   findTopLevelKeyIndex, isAsciiDigit, isPdfWhitespace, matchesBareXrefEntry, matchesObjHeader,
   objTextEnd, readInt, resolveBoolValue, resolveIntValue, resolveArrayValue, resolveNumArray,
-  resolveNameValue, resolveDictValue, parseDictEntries,
+  resolveNameValue, resolveDictValue, parseDictEntries, scopeDictKeys,
 } from './pdfPrimitives.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -1156,8 +1156,13 @@ function getKidsArrayContent(objText, objCache) {
  * @param {number} inheritedRotate
  * @param {string} inheritedResources
  * @param {Array<{ objNum: number, objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }>} pages
+ * @param {Set<number>} [ancestors]
  */
-function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inheritedRotate, inheritedResources, pages) {
+function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inheritedRotate, inheritedResources, pages, ancestors = new Set()) {
+  if (ancestors.has(objNum)) {
+    console.warn(`collectPages: skipping page-tree ref ${objNum} — it refers back to a node above it`);
+    return;
+  }
   const objText = objCache.getObjectText(objNum);
   if (!objText) {
     console.warn(`collectPages: skipping page-tree ref ${objNum} — object not found, document may be truncated`);
@@ -1174,23 +1179,25 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
   const hasRotate = /\/Rotate\s/.test(objText);
   const rotate = hasRotate ? ((resolveIntValue(objText, 'Rotate', objCache) % 360) + 360) % 360 : inheritedRotate;
 
+  // A page's /Resources can hold a copy of the /Pages dict, /Kids and /Resources included, so the node's kind, kids and resources come from its own top-level keys.
+  const nodeKeys = scopeDictKeys(objText);
+
   let resources = inheritedResources;
-  const resInlineMatch = /\/Resources\s*<</.exec(objText);
-  const resRefMatch = /\/Resources\s+\d+\s+\d+\s+R/.exec(objText);
-  if (resInlineMatch || resRefMatch) {
-    if (resRefMatch) {
-      resources = resRefMatch[0];
-    } else {
-      const dictStart = resInlineMatch.index + resInlineMatch[0].length - 2;
-      resources = `/Resources${extractDict(objText, dictStart)}`;
-    }
+  const ownResources = nodeKeys.keyText('Resources');
+  const resInlineMatch = /\/Resources\s*<</.exec(ownResources);
+  const resRefMatch = /\/Resources\s+\d+\s+\d+\s+R/.exec(ownResources);
+  // The form that comes first is the node's own value, since a reference further in sits inside an inline dict.
+  if (resRefMatch && (!resInlineMatch || resRefMatch.index < resInlineMatch.index)) {
+    resources = resRefMatch[0];
+  } else if (resInlineMatch) {
+    resources = `/Resources${extractDict(ownResources, resInlineMatch.index + resInlineMatch[0].length - 2)}`;
   }
 
-  const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
-    || (/\/Kids\s*(?:[[<]|\d+\s+\d+\s+R)/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
-  if (looksLikePagesNode) {
-    const kidsContent = getKidsArrayContent(objText, objCache);
+  const nodeType = resolveNameValue(nodeKeys.keyText('Type'), 'Type', objCache);
+  if (nodeType === 'Pages' || (nodeType !== 'Page' && nodeKeys.has('Kids'))) {
+    const kidsContent = getKidsArrayContent(nodeKeys.keyText('Kids'), objCache);
     if (kidsContent === null) return;
+    ancestors.add(objNum);
 
     if (/<</.test(kidsContent)) {
       let pos = 0;
@@ -1198,7 +1205,7 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
         const dictIdx = kidsContent.indexOf('<<', pos);
         const refMatch = /(\d+)\s+\d+\s+R/.exec(kidsContent.substring(pos, dictIdx >= 0 ? dictIdx : undefined));
         if (refMatch && (dictIdx < 0 || pos + refMatch.index < dictIdx)) {
-          collectPages(Number(refMatch[1]), objCache, mediaBox, cropBoxResolved, rotate, resources, pages);
+          collectPages(Number(refMatch[1]), objCache, mediaBox, cropBoxResolved, rotate, resources, pages, ancestors);
           pos += refMatch.index + refMatch[0].length;
         } else if (dictIdx >= 0) {
           const inlineDict = extractDict(kidsContent, dictIdx);
@@ -1235,9 +1242,10 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
     } else {
       const kidRefs = [...kidsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
       for (const kidNum of kidRefs) {
-        collectPages(kidNum, objCache, mediaBox, cropBoxResolved, rotate, resources, pages);
+        collectPages(kidNum, objCache, mediaBox, cropBoxResolved, rotate, resources, pages, ancestors);
       }
     }
+    ancestors.delete(objNum);
   } else {
     let finalObjText = objText;
     if (!resInlineMatch && !resRefMatch && resources) {
@@ -1308,13 +1316,18 @@ export function getPageObjects(objCache) {
 function collectPageTreeNodes(objNum, objCache, nodeSet) {
   const objText = objCache.getObjectText(objNum);
   if (!objText) return;
-  const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
-    || (/\/Kids\s*(?:[[<]|\d+\s+\d+\s+R)/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
-  if (looksLikePagesNode) {
-    const kidsContent = getKidsArrayContent(objText, objCache);
+  const nodeKeys = scopeDictKeys(objText);
+  const nodeType = resolveNameValue(nodeKeys.keyText('Type'), 'Type', objCache);
+  if (nodeType === 'Pages' || (nodeType !== 'Page' && nodeKeys.has('Kids'))) {
+    let kidsContent = getKidsArrayContent(nodeKeys.keyText('Kids'), objCache);
     if (kidsContent === null) return;
+    // A page dict written inline in /Kids holds refs (/Contents, /Parent) that are not page-tree nodes.
+    for (let at = kidsContent.indexOf('<<'); at !== -1; at = kidsContent.indexOf('<<', at)) {
+      kidsContent = kidsContent.slice(0, at) + kidsContent.slice(at + extractDict(kidsContent, at).length);
+    }
     const kidRefs = [...kidsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
     for (const kidNum of kidRefs) {
+      if (nodeSet.has(kidNum)) continue;
       nodeSet.add(kidNum);
       collectPageTreeNodes(kidNum, objCache, nodeSet);
     }

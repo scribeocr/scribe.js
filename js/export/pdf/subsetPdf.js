@@ -3,7 +3,7 @@ import {
   getPageObjects, collectPageTreeObjNums, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import {
-  extractDict, parseDictEntries, bytesToLatin1, decodePdfName, mergeResources,
+  extractDict, parseDictEntries, bytesToLatin1, decodePdfName, mergeResources, findTopLevelKeyIndex,
 } from '../../pdf/pdfPrimitives.js';
 import { tokenizeContentStream } from '../../pdf/contentStream.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
@@ -171,7 +171,7 @@ function collectUsedResourceNames(pageObjText, objCache) {
  * @param {ObjectCache} objCache
  */
 function locateResourceSubdict(resourcesDictBody, key, objCache) {
-  const keyIdx = resourcesDictBody.indexOf(key);
+  const keyIdx = findTopLevelKeyIndex(resourcesDictBody, key);
   if (keyIdx < 0) return null;
   let i = keyIdx + key.length;
   while (i < resourcesDictBody.length && /\s/.test(resourcesDictBody[i])) i++;

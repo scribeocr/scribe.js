@@ -516,7 +516,7 @@ export function parseDictEntries(dictBody) {
  * @param {string} objText
  */
 function stripObjWrapper(objText) {
-  return objText.replace(/^\s*\d+\s+\d+\s+obj\s*/, '').replace(/\s*endobj[\s\S]*$/, '').trim();
+  return objText.replace(/^\s*\d+\s+\d+\s+obj\s*/, '').replace(/^(?:\s*%[^\r\n]*)+/, '').replace(/\s*endobj[\s\S]*$/, '').trim();
 }
 
 const KEY_RE_CACHE = new Map();

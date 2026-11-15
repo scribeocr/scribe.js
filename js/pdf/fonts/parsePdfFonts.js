@@ -4,7 +4,7 @@ import {
   findXrefOffset, parseXref,
 } from '../parsePdfUtils.js';
 import {
-  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveDictValue, decodePdfName,
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveDictValue, decodePdfName, scopeDictKeys,
 } from '../pdfPrimitives.js';
 import { ObjectCache } from '../objectCache.js';
 import {
@@ -885,29 +885,8 @@ function parseGlyphStream(streamText) {
 export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   const fonts = new Map();
 
-  // Find Resources — may be inline or indirect reference
-  let resourcesText = pageObjText;
-  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
-  if (resRefMatch) {
-    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
-    if (resObj) resourcesText = resObj;
-  }
-
-  // Find Font dictionary within Resources
-  const fontDictStart = resourcesText.indexOf('/Font');
-  if (fontDictStart === -1) return fonts;
-
-  let fontDictText;
-  const afterFont = resourcesText.substring(fontDictStart + 5).trim();
-  if (afterFont.startsWith('<<')) {
-    fontDictText = extractDict(resourcesText, fontDictStart + 5 + resourcesText.substring(fontDictStart + 5).indexOf('<<'));
-  } else {
-    const fontRefMatch = /^(\d+)\s+\d+\s+R/.exec(afterFont);
-    if (fontRefMatch) {
-      const fObj = objCache.getObjectText(Number(fontRefMatch[1]));
-      if (fObj) fontDictText = fObj;
-    }
-  }
+  const resourcesText = resolveDictValue(scopeDictKeys(pageObjText).keyText('Resources'), 'Resources', objCache);
+  const fontDictText = resourcesText && resolveDictValue(scopeDictKeys(resourcesText).keyText('Font'), 'Font', objCache);
   if (!fontDictText) return fonts;
 
   // Extract each font entry — indirect references (/F7 N 0 R) and inline dicts (/F7 << ... >>)
