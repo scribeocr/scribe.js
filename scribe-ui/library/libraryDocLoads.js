@@ -82,10 +82,15 @@ export function createDocLoads({ sessions, engine, getStore }) {
 
   /**
    * @param {string} hash
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @returns {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>}
    */
-  const findThroughIndex = (hash) => (query) => engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : [])
-    .then((r) => r.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds }))));
+  const findThroughIndex = (hash, doc) => async (query) => {
+    // The index does not hold every open document, as while it is rebuilt.
+    if (!(await engine.hasDoc(hash))) return (await doc.ensureHydrated()) ? scribeLib.utils.ocr.getDocMatches(query, doc.ocr.active) : [];
+    const found = await engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : []);
+    return found.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })));
+  };
 
   /**
    * Builds the seed that opens a document for on-demand loading, with what it shows before it loads.
@@ -111,7 +116,7 @@ export function createDocLoads({ sessions, engine, getStore }) {
       ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
       // A saved file's annotations are all in place at open.
       annots: header?.annotations ? undefined : (n) => doc.liftPdfAnnotations(n),
-      find: findThroughIndex(hash),
+      find: findThroughIndex(hash, doc),
       hydration: 'on-demand',
       // A saved file carries its own record of both, which the document holds from the open.
       textFromOcrFile: !header && !!entry.ocrFile,

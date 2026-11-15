@@ -50,10 +50,11 @@ const THUMB_QUIET_MS = 1000;
  * @param {() => ?import('./search/searchClient.js').SearchResponse|undefined} deps.getEngineTiers - The ranked pass's answer.
  *   Undefined while the pass runs, null once none will come.
  * @param {() => ?string} deps.getEngineError
+ * @param {() => boolean} deps.indexing - Whether documents are still being indexed.
  */
 export function createResultsView({
   host, sessions, loads, getStore, getManifest, getResults, getQuery, openEntry, openCardMenu, focusField,
-  getEngine, getEngineResponse, getEngineTiers, getEngineError,
+  getEngine, getEngineResponse, getEngineTiers, getEngineError, indexing,
 }) {
   /**
    * The retained search-results view: the built DOM plus its interaction state.
@@ -64,6 +65,7 @@ export function createResultsView({
    * @property {() => void} attach
    * @property {() => void} repump
    * @property {() => void} tiers
+   * @property {() => void} summary
    * @property {() => boolean} focus
    * @property {() => void} dispose
    */
@@ -462,13 +464,14 @@ export function createResultsView({
       const docCount = groups.size + restDocs.length;
       const total = response.matches + (second ? second.docs.reduce((sum, d) => sum + matchesOn(d.pages), 0) : 0);
       const counted = !partial && (response.bounded || total > 0);
+      const stillIndexing = indexing();
       // The "Searching" line gives way to the counts, so it is set as they are.
       summary.classList.toggle('count', counted || (!partial && second === undefined));
       if (partial) {
         summaryN.textContent = PARTIAL_SUMMARY;
       } else if (!counted) {
         const queryShown = /["“”„‟＂]/.test(fullTextQuery) ? fullTextQuery : `“${fullTextQuery}”`;
-        summaryN.textContent = second === undefined ? 'Searching…' : `No matches for ${queryShown}`;
+        summaryN.textContent = second === undefined ? 'Searching…' : `No matches for ${queryShown}${stillIndexing ? ' yet · indexing…' : ''}`;
       } else {
         const matches = document.createElement('b');
         matches.textContent = response.bounded ? `${response.bound}+` : String(total);
@@ -478,7 +481,7 @@ export function createResultsView({
           matches,
           ` match${!response.bounded && total === 1 ? '' : 'es'} · `,
           docs,
-          ` document${docCount === 1 ? '' : 's'}${!response.bounded && second === undefined ? ' · searching…' : ''}`,
+          ` document${docCount === 1 ? '' : 's'}${!response.bounded && second === undefined ? ' · searching…' : ''}${stillIndexing ? ' · indexing…' : ''}`,
         );
       }
     };
@@ -679,6 +682,7 @@ export function createResultsView({
         const tiers = getEngineTiers();
         if (myGen === resultsGen && tiers !== undefined) appendSecond(tiers);
       },
+      summary: fillSummary,
       focus: () => {
         if (!hits.length) return false;
         pickHit(Math.max(0, active));
@@ -716,6 +720,9 @@ export function createResultsView({
     appendTiers: () => {
       if (resultsView && resultsView.results === getResults()) resultsView.tiers();
     },
+
+    /** Write the summary line again, after indexing has started or stopped. */
+    syncSummary: () => resultsView?.summary(),
 
     /**
      * Put the keyboard in the list, on its selected result or else its first.

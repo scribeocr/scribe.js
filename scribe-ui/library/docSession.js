@@ -98,6 +98,8 @@ export class DocSessions {
     this.urlOrder = [];
     /** @type {Set<(hash: string, n: number) => void>} */
     this.rasterListeners = new Set();
+    /** @type {Set<(hash: string, url: string) => void>} */
+    this.coverListeners = new Set();
     /** Stored-raster writes run one at a time: a write holds the directory a read of the same document waits on. */
     this.writeQueue = Promise.resolve();
   }
@@ -387,16 +389,42 @@ export class DocSessions {
     if (!s.coverPromise) {
       const store = this.store;
       if (!store) return Promise.resolve(null);
-      s.coverPromise = store.readThumb(hash).then(async (blob) => {
+      /** @type {Promise<?string>} */
+      const p = store.readThumb(hash).then(async (blob) => {
         if (!blob) return null;
-        s.coverUrl = await stableUrl(blob);
-        return s.coverUrl;
+        const url = await stableUrl(blob);
+        // `invalidate` puts a new session object in the map, so the session is looked up again here.
+        const now = this.map.get(hash);
+        if (now?.coverPromise !== p) {
+          URL.revokeObjectURL(url);
+          return now?.coverUrl ?? null;
+        }
+        now.coverUrl = url;
+        return url;
       }).catch(() => null);
-      s.coverPromise.then((url) => {
-        if (url === null) s.coverPromise = null;
+      s.coverPromise = p;
+      p.then((url) => {
+        const now = this.map.get(hash);
+        if (url === null && now?.coverPromise === p) now.coverPromise = null;
       });
     }
     return s.coverPromise;
+  }
+
+  /**
+   * Take a cover just written to the store as the document's cover, in place of the one handed out before it.
+   * @param {string} hash
+   * @param {Blob} blob
+   */
+  setCover(hash, blob) {
+    const s = this.map.get(hash);
+    if (!s || (s.coverUrl === null && s.coverPromise === null)) return;
+    const replaced = s.coverUrl;
+    const url = URL.createObjectURL(blob);
+    s.coverUrl = url;
+    s.coverPromise = Promise.resolve(url);
+    for (const listener of this.coverListeners) listener(hash, url);
+    if (replaced) setTimeout(() => URL.revokeObjectURL(replaced), 0);
   }
 
   /**
@@ -558,7 +586,7 @@ export class DocSessions {
   }
 
   /**
-   * Drop everything cached for one document.
+   * Drop everything cached for one document but its cover.
    * Call when its content or stored artifacts changed.
    * @param {string} hash
    */
@@ -568,8 +596,13 @@ export class DocSessions {
     if (s.liveDoc) s.liveDoc.close().catch(() => {});
     closePixels(s);
     for (const url of s.pageUrls.values()) URL.revokeObjectURL(url);
-    if (s.coverUrl) URL.revokeObjectURL(s.coverUrl);
     this.map.delete(hash);
+    if (s.coverUrl === null && s.coverPromise === null) return;
+    // Cards on screen show the cover, so it stays until `setCover` replaces it.
+    const kept = new DocSession(hash);
+    kept.coverUrl = s.coverUrl;
+    kept.coverPromise = s.coverPromise;
+    this.map.set(hash, kept);
   }
 
   /** Close every pooled document and revoke every URL. */

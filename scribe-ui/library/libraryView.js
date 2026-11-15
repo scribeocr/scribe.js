@@ -16,7 +16,9 @@ import {
 } from './libraryStore.js';
 import { PortfolioStore } from './portfolioStore.js';
 import { createSearchClient } from './search/searchClient.js';
-import { LibraryIngest } from './libraryIngest.js';
+import {
+  LibraryIngest, renderCover, coverOf, PRISTINE_COVER,
+} from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
 import { makeIconButton } from '../js/controls/toolbar.js';
 import { barIcon, slotIcon } from '../js/controls/icons.js';
@@ -1084,7 +1086,7 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {?string} Pivot card for Shift ranges. */
   let selAnchor = null;
   let storageOpen = false;
-  /** @type {?{previews: number, index: number, notes: number}} */
+  /** @type {?{previews: number, index: number, searchAndCovers: number, notes: number}} */
   let storageSizes = null;
   /** @type {?{files: number, edited: number, recognized: number, unknown: boolean}} */
   let storageWork = null;
@@ -1923,6 +1925,19 @@ export function createLibraryInstance(viewer, opts) {
     try {
       await engine.addDoc(hash, doc.ocr.active, doc.nativeText?.pages || []);
     } catch { /* The sidecar is saved; a stale index entry is repaired by the next rebuild. */ }
+    try {
+      const pictured = await coverOf(doc);
+      if (pictured !== (entry.coverOf ?? PRISTINE_COVER)) {
+        const cover = await renderCover(doc);
+        if (cover) {
+          await store.writeThumb(hash, cover);
+          sessions.setCover(hash, cover);
+          // Recorded only once the cover is stored, so a save cut short before that leaves the next save to write it.
+          entry.coverOf = pictured;
+          saveManifestSoon();
+        }
+      }
+    } catch { /* The card keeps the cover it had. */ }
   };
 
   /**
@@ -3123,17 +3138,22 @@ export function createLibraryInstance(viewer, opts) {
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    */
   const setThumbSrc = (img, entry) => {
-    if (!entry.hash) return;
-    const cachedUrl = sessions.coverUrlNow(entry.hash);
+    const { hash } = entry;
+    if (!hash) return;
+    img.dataset.cover = hash;
+    const cachedUrl = sessions.coverUrlNow(hash);
     if (cachedUrl) {
       // Re-assigning the same src reloads from an object URL that may since have been revoked, blanking the cover.
       if (img.src !== cachedUrl) img.src = cachedUrl;
       return;
     }
-    sessions.cover(entry.hash).then((url) => {
-      if (!destroyed && url && img.src !== url) img.src = url;
-    }).catch(() => {});
+    sessions.cover(hash).then((url) => {
+      if (!destroyed && url && img.dataset.cover === hash && img.src !== url) img.src = url;
+    }).catch(() => { });
   };
+  sessions.coverListeners.add((hash, url) => {
+    for (const img of /** @type {NodeListOf<HTMLImageElement>} */ (surface.querySelectorAll(`img[data-cover="${hash}"]`))) img.src = url;
+  });
 
   /**
    * Sync `host`'s children to `items` in display order, reusing any child whose `data-key` matches instead of recreating it.
@@ -5777,7 +5797,7 @@ export function createLibraryInstance(viewer, opts) {
           openAddress: target.openAddress ?? null,
         });
         wrapMutators(pooled, tab);
-        /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = loads.findThroughIndex(entry.hash);
+        /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (pooled)).findMatches = loads.findThroughIndex(entry.hash, pooled);
         loads.persistRasterWindow(relPath, entry, target.pageN ?? 0);
         if (!target.background) await markHits(viewer._viewerShowing(pooled));
         return;
@@ -5808,6 +5828,8 @@ export function createLibraryInstance(viewer, opts) {
         wrapMutators(tab.doc, tab);
         sessions.lendTab(entry.hash, tab.doc);
         handle.hydrated.catch(() => {});
+        // The index gives no words for a document it does not hold, as while it is rebuilt, so such a document loads now for its text.
+        engine.hasDoc(entry.hash).then((indexed) => { if (!indexed) tab.doc.ensureHydrated(); }).catch(() => { });
         if (!target.background) {
           await handle.primed;
           await markHits(viewer._viewerShowing(tab.doc));
@@ -5862,7 +5884,7 @@ export function createLibraryInstance(viewer, opts) {
         program: !!target.program,
       });
       wrapMutators(doc, tab);
-      /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = loads.findThroughIndex(hash);
+      /** @type {{findMatches?: ?ReturnType<typeof loads.findThroughIndex>}} */ (/** @type {unknown} */ (doc)).findMatches = loads.findThroughIndex(hash, doc);
       if (!target.background) await markHits(viewer._viewerShowing(doc));
     } finally {
       openingDocs.delete(openKey);
@@ -6198,7 +6220,7 @@ export function createLibraryInstance(viewer, opts) {
     const plural = (/** @type {number} */ count) => (count === 1 ? '' : 's');
     const savedText = work.unknown ? 'documents that could not be counted' : `${work.files} document${plural(work.files)}`;
     const inApp = sizes.previews + sizes.index + (beside ? 0 : sizes.notes);
-    const items = [`Page previews, thumbnails and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
+    const items = [`Page previews and thumbnails, document covers and the search index (${fmtBytes(sizes.previews + sizes.index)})`];
     if (beside) items.push(`The notes directory inside the hidden .scribe folder of ${name}${saved ? `, holding notes, edits and recognized text for ${savedText}` : ''} (${fmtBytes(sizes.notes)})`);
     else if (saved) items.push(`Notes, edits and recognized text for ${savedText} (${fmtBytes(sizes.notes)})`);
     if (!beside && s.otherDocsDir) items.push(`A notes directory left inside the hidden .scribe folder of ${name}`);
@@ -6218,15 +6240,12 @@ export function createLibraryInstance(viewer, opts) {
     });
     if (!choice || store !== s || !manifest) return;
     if (choice.keep) {
-      ingest?.cancel();
-      sessions.reset();
-      await s.deleteCaches();
-      await engine.reset().catch(() => { });
       storageOpen = false;
       storageSizes = null;
       storageWork = null;
       storageInventory = null;
-      await rebuildIndex();
+      render();
+      await rebuildIndex({ dropCaches: true });
       return;
     }
     // Asked before the folder closes, while the confirmation's click still counts as a user gesture.
@@ -6270,8 +6289,9 @@ export function createLibraryInstance(viewer, opts) {
     sheet.appendChild(sub);
     /**
      * @param {string} label @param {string} detail @param {number} bytes @param {string} action @param {() => void} onAct @param {boolean} [danger]
+     * @param {boolean} [enabled] - Whether the action has anything to act on.
      */
-    const row = (label, detail, bytes, action, onAct, danger = false) => {
+    const row = (label, detail, bytes, action, onAct, danger = false, enabled = bytes > 0) => {
       const el = document.createElement('div');
       el.className = 'row';
       const text = document.createElement('div');
@@ -6289,20 +6309,23 @@ export function createLibraryInstance(viewer, opts) {
       btn.type = 'button';
       btn.className = danger ? 'act danger' : 'act';
       btn.textContent = action;
-      btn.disabled = !sizes || !bytes;
+      btn.disabled = !sizes || !enabled;
       btn.addEventListener('click', onAct);
       el.append(text, size, btn);
       sheet.appendChild(el);
     };
-    row('Page previews', 'Rendered pages, kept so documents open at once. Rendered again as pages are viewed.', sizes?.previews ?? 0, 'Clear', async () => {
+    const previewsDetail = 'Cached page images for faster opening, page-thumbnail scrolling and search previews. Re-created automatically as you view pages.';
+    row('Page previews and thumbnails', previewsDetail, sizes?.previews ?? 0, 'Clear', async () => {
       await sessions.clearPreviews(s);
       storageSizes = await s.measure();
       if (store === s && storageOpen) render();
     });
-    row('Search index and thumbnails', 'Rebuilt from the documents and their notes.', sizes?.index ?? 0, 'Rebuild', () => {
+    const indexDetail = 'Lets you search text across every document in this folder, including recognized text and edits. Rebuilding does not affect your files or saved work.';
+    // The row's size counts the manifest too, which is there in a folder with nothing to rebuild.
+    row('Search index', indexDetail, sizes?.index ?? 0, 'Rebuild', () => {
       closeStorage();
       rebuildIndex();
-    });
+    }, false, docs > 0 || (sizes?.searchAndCovers ?? 0) > 0);
     let notesDetail = `No document has saved work. Kept ${notesWhere()}.`;
     if (!storageWork && form === 'column') notesDetail = `Kept ${notesWhere()}.`;
     else if (saved === null) notesDetail = `The saved work could not be counted. Kept ${notesWhere()}.`;
@@ -6470,8 +6493,8 @@ export function createLibraryInstance(viewer, opts) {
           meta: item.notesBeside ? 'Notes beside the documents' : savedText,
           intro: 'This deletes everything this app keeps for the folder:',
           items: item.notesBeside || !(item.work.files > 0 || item.work.unknown)
-            ? ['Page previews, thumbnails and the search index']
-            : ['Page previews, thumbnails and the search index', `Notes, edits and recognized text, ${savedText} (${fmtBytes(item.sizes.notes)})`],
+            ? ['Page previews and thumbnails, document covers and the search index']
+            : ['Page previews and thumbnails, document covers and the search index', `Notes, edits and recognized text, ${savedText} (${fmtBytes(item.sizes.notes)})`],
           note: item.name ? `Nothing in ${item.name} is changed. This cannot be undone.` : 'This cannot be undone.',
           confirmLabel: 'Forget folder',
         });
@@ -6654,6 +6677,7 @@ export function createLibraryInstance(viewer, opts) {
     getEngineResponse: () => engineResponse,
     getEngineTiers: () => engineTiers,
     getEngineError: () => engineError,
+    indexing: () => !!ingest && (ingest.userLane.length > 0 || ingest.discoveryLane.length > 0 || (!!ingest.current && ingest.current.kind !== 'recognize')),
     openEntry: (relPath, entry, where, keep) => (keep
       ? openEntry(relPath, entry, { ...where, group: where.group ?? targetGroup() })
       : previewEntry(relPath, entry, where)),
@@ -6931,15 +6955,21 @@ export function createLibraryInstance(viewer, opts) {
               : `Text recognition didn’t finish for ${n} documents. They were left unchanged.`);
           }
           // The queue also drains here after idle ticks, which change nothing a card or row displays.
-          if (done > 0) render();
-          // Rasters stored meanwhile can fill result rows that were blank at pump time.
-          else results.repump();
+          if (done > 0) {
+            render();
+            results.syncSummary();
+            if (fullTextResults) runFullTextSearch(fullTextQuery);
+          } else {
+            // Rasters stored meanwhile can fill result rows that were blank at pump time.
+            results.repump();
+          }
           return;
         }
         progressElem.style.display = 'grid';
         progressCount.textContent = `${kind === 'recognize' ? 'Recognizing' : 'Indexing'} ${done} of ${total}`;
         progressName.textContent = current.split('/').pop() || current;
         progressHair.style.width = `${(done / total) * 100}%`;
+        results.syncSummary();
         for (const rp of new Set([recognizingPath, wasRecognizing])) {
           if (!rp) continue;
           const entry = manifest?.docs[rp];
@@ -7436,15 +7466,51 @@ export function createLibraryInstance(viewer, opts) {
     activate({ render: false });
     await openLibrary(s);
   };
-  // Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
-  const rebuildIndex = async () => {
-    if (!store || !manifest || !ingest) return;
-    for (const [p, e] of Object.entries(manifest.docs)) {
-      if (e.status === 'indexed' && e.hash) await ingest.enqueue(p, {}, { writeManifest: false });
+  let rebuildPreparing = false;
+  /**
+   * Rebuild the search index from an empty one, and with it every document's cover.
+   * Sidecars are untouched, so rebuilding the derived data cannot lose a user edit.
+   * @param {{dropCaches?: boolean}} [opts] - `dropCaches` also deletes the covers and the page previews.
+   */
+  const rebuildIndex = async ({ dropCaches = false } = {}) => {
+    if (!store || !manifest || !ingest || fsOpBusy || rebuildPreparing) return;
+    const s = store;
+    const queue = ingest;
+    rebuildPreparing = true;
+    // The queue is held, not canceled, so a revert or a recognition the user asked for stays queued.
+    queue.held = true;
+    let scanning = false;
+    try {
+      for (const tab of viewer._tabs.filter((t) => ownsTab(t) && (t.libraryHash || t.libraryRelPath))) await saveTabIfDirty(tab);
+      // The task in flight ends first, a recognition included, since it writes to the index and nothing queued here could run before it ends.
+      await queue.settling;
+      // A folder move or rename that began meanwhile ends first as well, since the scan must not walk a half-moved tree.
+      while (fsOpBusy) await new Promise((resolve) => { setTimeout(resolve, 50); });
+      if (store !== s || ingest !== queue) return;
+      fsOpBusy = true;
+      scanning = true;
+      if (dropCaches) {
+        sessions.reset();
+        await s.deleteCaches();
+        if (store !== s) return;
+      }
+      // The one search client answers for whichever folder is open, so no await stands between the check above and this call.
+      await engine.reset().catch((err) => console.error('The search index could not be emptied.', err));
+      if (store !== s || ingest !== queue) return;
+      queue.discoveryLane.length = 0;
+      await queue.scan().catch(() => { });
+      if (store !== s || ingest !== queue) return;
+      queue.enqueueRebuild();
+      await s.writeManifest(queue.manifest);
+    } finally {
+      queue.held = false;
+      if (scanning) fsOpBusy = false;
+      rebuildPreparing = false;
     }
-    await store.writeManifest(manifest);
+    if (store !== s || ingest !== queue) return;
     render();
-    ingest.start();
+    if (fullTextResults) runFullTextSearch(fullTextQuery);
+    queue.start();
   };
   // --- Folder menu --------------------------------------------------------
   const folderMenu = document.createElement('div');
@@ -7595,10 +7661,14 @@ export function createLibraryInstance(viewer, opts) {
     }
     if (e.key === 'Enter') runFullTextSearch();
   });
-  /** Search inside the documents for the field's text, and show the results once the answer lands. */
-  const runFullTextSearch = () => {
-    const query = searchInput.value.trim();
+  /**
+   * Search inside the documents for the field's text, and show the results once the answer lands.
+   * @param {?string} [standing] - A query whose results are showing, to be answered again.
+   */
+  const runFullTextSearch = (standing = null) => {
+    const query = standing ?? searchInput.value.trim();
     if (!query) return;
+    const superseded = () => standing !== null && (!fullTextResults || fullTextQuery !== standing);
     /** @type {?import('./search/searchClient.js').SearchResponse} */
     let answered = null;
     engine.query(query, undefined, (tiers) => {
@@ -7606,7 +7676,7 @@ export function createLibraryInstance(viewer, opts) {
       engineTiers = tiers;
       results.appendTiers();
     }).then((response) => {
-      if (destroyed || !store) return;
+      if (destroyed || !store || superseded()) return;
       fullTextQuery = query;
       answered = response;
       engineResponse = response;
@@ -7616,7 +7686,7 @@ export function createLibraryInstance(viewer, opts) {
       render();
     }).catch((err) => {
       console.error('Library search failed.', err);
-      if (destroyed || !store) return;
+      if (destroyed || !store || superseded()) return;
       fullTextQuery = query;
       engineResponse = null;
       engineTiers = null;

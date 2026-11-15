@@ -1055,6 +1055,9 @@ export const createSearchEngine = (storage, settings = {}) => {
     async reset() {
       for (const name of [...open.keys()]) closeFile(name);
       readers.clear();
+      // A file closed to stay under the cap keeps its bytes cached, and the files written from here on take the same names.
+      chunks.clear();
+      cacheBytes = 0;
       for (const n of await storage.list()) await storage.remove(n).catch(() => {});
       manifest = {
         generation: 0, next: 1, nextIngestSeq: 0, segments: [],
@@ -1068,6 +1071,8 @@ export const createSearchEngine = (storage, settings = {}) => {
     close() {
       for (const name of [...open.keys()]) closeFile(name);
       readers.clear();
+      chunks.clear();
+      cacheBytes = 0;
       opened = null;
     },
   };

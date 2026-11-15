@@ -75,6 +75,8 @@ export const folderNameProblem = (name) => {
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
  *    Recorded only from an open the app performs anyway, never from one run to measure.
  * @property {boolean} [portfolio] - The file is a PDF portfolio (a catalog with a collection dictionary), so opening it lists its embedded files rather than showing its cover page.
+ * @property {boolean} [checkHash] - The next ingest must find the file's bytes still under `hash`, and badges the entry changed when it does not.
+ * @property {string} [coverOf] - What the stored cover pictures: the first page's source page, its rotation and a hash of the edits to its content.
  */
 
 /**
@@ -925,13 +927,16 @@ export class LibraryStore {
 
   /**
    * Byte totals of what the app keeps for the folder.
-   * `index` covers the manifest, the search index and the thumbnails.
-   * @returns {Promise<{previews: number, index: number, notes: number}>}
+   * `index` covers the manifest, the search index and the covers.
+   * @returns {Promise<{previews: number, index: number, searchAndCovers: number, notes: number}>}
    */
   async measure() {
+    const index = await sizeOfDir(this.dataDir, new Set(['pages', 'docs']));
+    const manifestFile = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.dataDir), MANIFEST_FILE);
     return {
       previews: await sizeOfDir(this.pagesDir),
-      index: await sizeOfDir(this.dataDir, new Set(['pages', 'docs'])),
+      index,
+      searchAndCovers: index - (manifestFile?.size ?? 0),
       notes: (await sizeOfDir(this.docsDir)) + (await sizeOfDir(this.otherDocsDir)),
     };
   }

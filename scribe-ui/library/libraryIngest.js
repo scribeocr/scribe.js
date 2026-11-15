@@ -44,6 +44,45 @@ export const renderPageRaster = async (doc, n) => {
   return blob;
 };
 
+/** The description of a cover that pictures the file's own first page, neither rotated nor edited. */
+export const PRISTINE_COVER = ':0:0:';
+
+/**
+ * Describe what a cover of the document pictures, as a string that changes only when the cover would.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @returns {Promise<string>}
+ */
+export const coverOf = async (doc) => {
+  const pm = doc.pageMetrics[0];
+  const edits = doc.contentEdits?.pages?.[0];
+  const editsHash = edits?.length ? await hashBytes(new TextEncoder().encode(JSON.stringify(edits)).buffer) : '';
+  const ownPage = (pm?.sourceId ?? doc.images.primarySourceId) === doc.images.primarySourceId;
+  return `${ownPage ? '' : pm.sourceId}:${pm?.sourcePageN ?? 0}:${pm?.rotation || 0}:${editsHash}`;
+};
+
+/**
+ * Render the document's first page as its cover, turned as the page is rotated.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * @returns {Promise<?Blob>} The cover, or null when the page cannot be rendered.
+ */
+export const renderCover = async (doc) => {
+  const pm = doc.pageMetrics[0];
+  const rotation = pm?.rotation || 0;
+  if (!rotation) return doc.images.renderThumbnail(0, THUMB_WIDTH, 0.6, true, 'jpeg');
+  // A turned page is rendered lossless, so the JPEG encoding after the turn is its only lossy one.
+  const sideways = rotation % 180 !== 0;
+  const page = await doc.images.renderThumbnail(0, sideways ? Math.round(THUMB_WIDTH * (pm.dims.width / pm.dims.height)) : THUMB_WIDTH, 1.0, true, 'webp');
+  if (!page) return null;
+  const bitmap = await createImageBitmap(page);
+  const canvas = new OffscreenCanvas(sideways ? bitmap.height : bitmap.width, sideways ? bitmap.width : bitmap.height);
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.rotate(rotation * Math.PI / 180);
+  ctx.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
+  bitmap.close();
+  return canvas.convertToBlob({ type: 'image/jpeg', quality: 0.6 });
+};
+
 /**
  * Record the import's text verdict and per-mode OCR page counts on a manifest entry.
  * @param {import('./libraryStore.js').LibraryDocEntry} entry
@@ -113,6 +152,13 @@ export class LibraryIngest {
     this.done = 0;
     /** When set, start() stops draining after the in-flight task, so a folder operation can run against a quiet queue. */
     this.paused = false;
+    /**
+     * When set, start() stops draining after the in-flight task, as with `paused`.
+     * A rebuild of the index sets it, since folder operations clear `paused` when they end.
+     */
+    this.held = false;
+    /** @type {?Promise<void>} Settles once the running loop has ended and written what it had pending. */
+    this.settling = null;
     /** @type {?{relPath: string, kind: 'ingest'|'verify'|'recognize'}} */
     this.current = null;
   }
@@ -217,6 +263,21 @@ export class LibraryIngest {
     if (!this.recognizeLane.some((r) => r.relPath === relPath)) this.recognizeLane.push({ relPath, kind: 'recognize', explicit: true });
   }
 
+  /** Queue every indexed, waiting and failed document for a rebuild of the index. */
+  enqueueRebuild() {
+    const asked = new Set(this.userLane.map((t) => t.relPath));
+    for (const [relPath, entry] of Object.entries(this.manifest.docs)) {
+      if (asked.has(relPath) || (entry.status !== 'indexed' && entry.status !== 'pending' && entry.status !== 'error')) continue;
+      if (entry.status !== 'error' && entry.hash) entry.checkHash = true;
+      entry.status = 'pending';
+      delete entry.retried;
+      this.userLane.push({ relPath, kind: 'ingest' });
+      asked.add(relPath);
+    }
+    this.discoveryLane = this.discoveryLane.filter((t) => !asked.has(t.relPath));
+    this.store.trimDue = true;
+  }
+
   /**
    * Discard every queued lane.
    * The document already in flight still finishes.
@@ -255,14 +316,18 @@ export class LibraryIngest {
    * Safe to call when already running.
    */
   async start() {
-    if (this.running || this.paused) return;
+    if (this.running || this.paused || this.held) return;
     this.running = true;
+    /** @type {() => void} */
+    let settle = () => {};
+    const settling = new Promise((resolve) => { settle = () => resolve(undefined); });
+    this.settling = settling;
     let manifestPending = false;
     let manifestWrittenAt = 0;
     try {
       let idle = false;
       while (!idle) {
-        if (this.paused) break;
+        if (this.paused || this.held) break;
         let task = this.userLane.shift() || this.discoveryLane.shift();
         if (!task && this.recognizeLane.length && this.recognizeGate?.(this.recognizeLane[0].explicit)) task = this.recognizeLane.shift();
         if (task) {
@@ -307,9 +372,14 @@ export class LibraryIngest {
     } finally {
       this.running = false;
       this.current = null;
-      if (manifestPending) await this.store.writeManifest(this.manifest).catch(() => {});
-      this.onProgress?.({ done: this.done, total: this.done + this.pendingCount(), current: '' });
-      this.done = 0;
+      try {
+        if (manifestPending) await this.store.writeManifest(this.manifest).catch(() => {});
+        this.onProgress?.({ done: this.done, total: this.done + this.pendingCount(), current: '' });
+      } finally {
+        this.done = 0;
+        if (this.settling === settling) this.settling = null;
+        settle();
+      }
     }
   }
 
@@ -334,7 +404,10 @@ export class LibraryIngest {
       entry.status = hash === entry.hash ? 'indexed' : 'changed';
     } catch {
       entry.status = 'missing';
+      return;
     }
+    // An index rebuilt while the file was missing or changed does not hold it, so the file is imported again.
+    if (entry.status === 'indexed' && !(await this.engine.hasDoc(entry.hash).catch(() => true))) await this._ingest(relPath);
   }
 
   /**
@@ -352,24 +425,42 @@ export class LibraryIngest {
     let timer = null;
     let hash = '';
     let timedOut = false;
+    let outcome = /** @type {'indexed'|'changed'|'pending'} */ ('indexed');
     const work = (async () => {
       const file = await this.store.readFile(relPath);
       const buf = await file.arrayBuffer();
       hash = await hashBytes(buf);
       entry.size = file.size;
       entry.mtime = file.lastModified;
-      if (resetSidecar) await this.store.deleteSidecar(hash);
-
-      for (const [oldPath, oldEntry] of Object.entries(this.manifest.docs)) {
-        if (oldPath !== relPath && oldEntry.hash === hash && oldEntry.status === 'missing') {
-          this.manifest.docs[relPath] = {
-            ...oldEntry, size: file.size, mtime: file.lastModified, status: 'indexed',
-          };
-          delete this.manifest.docs[oldPath];
-          return;
-        }
+      if (entry.checkHash && entry.hash && entry.hash !== hash) {
+        outcome = 'changed';
+        return;
+      }
+      if (resetSidecar) {
+        await this.store.deleteSidecar(hash);
+        delete entry.editedAt;
+        delete entry.recognizedAt;
       }
 
+      const moved = Object.entries(this.manifest.docs).find(([oldPath, oldEntry]) => oldPath !== relPath && oldEntry.hash === hash && oldEntry.status === 'missing');
+      if (moved) {
+        const [oldPath, oldEntry] = moved;
+        const indexed = await this.engine.hasDoc(hash);
+        delete this.manifest.docs[oldPath];
+        if (indexed) {
+          /** @type {import('./libraryStore.js').LibraryDocEntry} */
+          const adopted = {
+            ...oldEntry, size: file.size, mtime: file.lastModified, status: 'indexed',
+          };
+          delete adopted.checkHash;
+          this.manifest.docs[relPath] = adopted;
+          return;
+        }
+        Object.assign(entry, oldEntry, { size: file.size, mtime: file.lastModified, status: 'pending' });
+      }
+
+      // Read before the sidecar, so a save that lands at any point after it shows as a newer edit mark on the entry.
+      const editedAtRead = entry.editedAt;
       const sidecar = resetSidecar ? null : await this.store.readSidecar(hash);
       // The hashed buffer doubles as the import input, so the file's bytes are read and held once.
       if (sidecar) {
@@ -403,6 +494,10 @@ export class LibraryIngest {
           if (match) entry.ocrFileNote = `Text misalignment repaired — PDF has ${pages(doc.inputData.pageCount)}, text data (${ocrName}) has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.`;
         }
       }
+      if (entry.editedAt !== editedAtRead) {
+        outcome = 'pending';
+        return;
+      }
       const superseded = entry.hash && entry.hash !== hash && !Object.values(this.manifest.docs).some((e) => e !== entry && e.hash === entry.hash) ? entry.hash : '';
       if (entry.hash !== hash) this.store.trimDue = true;
       entry.hash = hash;
@@ -419,11 +514,17 @@ export class LibraryIngest {
       if (sidecar && doc.sessionMarks.recognizedAt != null) entry.recognizedAt = doc.sessionMarks.recognizedAt;
       else delete entry.recognizedAt;
 
+      const editedAtWritten = entry.editedAt;
       await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
       try {
-        const thumb = await doc.images.renderThumbnail(0, THUMB_WIDTH, 0.6, false, 'jpeg', 'store');
-        if (thumb) await this.store.writeThumb(hash, thumb);
-      } catch { /* A failed thumbnail leaves a blank card. */ }
+        const cover = await renderCover(doc);
+        const pictured = await coverOf(doc);
+        if (cover && entry.editedAt === editedAtWritten) {
+          await this.store.writeThumb(hash, cover);
+          entry.coverOf = pictured;
+          this.sessions?.setCover(hash, cover);
+        }
+      } catch { /* A failed cover leaves the card with the cover it had, or blank. */ }
     })();
     try {
       await Promise.race([
@@ -437,10 +538,15 @@ export class LibraryIngest {
           }, LibraryIngest.docTimeoutMs);
         }),
       ]);
-      entry.status = 'indexed';
-      delete entry.error;
-      delete entry.errorKind;
-      delete entry.retried;
+      if (outcome === 'pending') {
+        this.userLane.unshift({ relPath, kind: 'ingest' });
+      } else {
+        entry.status = outcome;
+        delete entry.checkHash;
+        delete entry.error;
+        delete entry.errorKind;
+        delete entry.retried;
+      }
     } catch (err) {
       entry.status = 'error';
       entry.error = err instanceof Error ? err.message : String(err);
