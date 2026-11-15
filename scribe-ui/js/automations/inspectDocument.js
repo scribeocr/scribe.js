@@ -659,10 +659,8 @@ export function buildInspectWorkspace(host, container, nav = null) {
       }
       const countNodes = (nodes) => nodes.reduce((a, n) => a + 1 + (n.children ? countNodes(n.children) : 0), 0);
       const bookmarks = countNodes(doc.outline || []);
-      const annots = (doc.annotations?.pages || []).flat();
-      const comments = annots.filter((a) => a.type !== 'field' && a.type !== 'link').length;
-      const fields = annots.filter((a) => a.type === 'field').length;
-      contents.push(['Bookmarks', bookmarks ? String(bookmarks) : null], ['Comments', comments ? String(comments) : null], ['Form fields', fields ? String(fields) : null]);
+      const fields = (doc.annotations?.pages || []).flat().filter((a) => a.type === 'field').length;
+      contents.push(['Bookmarks', bookmarks ? String(bookmarks) : null], ['Form fields', fields ? String(fields) : null]);
       // The name tree lists every attachment with its size.
       // The object sweep only counts file specifications, so it stands in when the tree is empty.
       const attached = doc.attachments?.files || [];
