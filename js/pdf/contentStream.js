@@ -45,6 +45,77 @@ TOK_OP_CHAR[0x27] = 1; TOK_OP_CHAR[0x22] = 1; TOK_OP_CHAR[0x2A] = 1;
  */
 const TEXT_ONLY_DROP_OPS = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're', 'S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n', 'W', 'W*', 'J', 'j', 'M', 'd', 'ri', 'i', 'sh']);
 
+// The tables are exported through this object because V8 reads a directly exported table through a module cell, which measured up to 10% slower in `tokenizeContentStream`.
+export const TOKENIZER_TABLES = {
+  operators: PDF_CONTENT_OPERATORS,
+  ws: TOK_WS,
+  nameDelim: TOK_NAME_DELIM,
+  digit: TOK_DIGIT,
+  numStart: TOK_NUM_START,
+  opChar: TOK_OP_CHAR,
+  wsOrSlash: TOK_WS_OR_SLASH,
+};
+
+/**
+ * Find the parts of an inline image (`BI <dict> ID <data> EI`).
+ * @param {string} streamText
+ * @param {number} i - Index just past `BI`.
+ * @returns {{ dictText: string, dataStart: number, dataEnd: number, end: number }} `end` is the index just past `EI`.
+ */
+export function locateInlineImage(streamText, i) {
+  const len = streamText.length;
+  const dictStart = i;
+  let dictEnd = len;
+  while (i < len) {
+    if (streamText.charCodeAt(i) === 0x49 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x44
+        && (i === 0 || TOK_WS[streamText.charCodeAt(i - 1)])
+        && i + 2 < len && TOK_WS[streamText.charCodeAt(i + 2)]) {
+      dictEnd = i;
+      i += 3;
+      break;
+    }
+    i++;
+  }
+  const dataStart = i;
+  const dictText = streamText.slice(dictStart, dictEnd).trim();
+  // Some PDFs write EI directly after raw image data, and the scan below finds EI only after whitespace.
+  if (!/\/(?:F|Filter)\b/.test(dictText)) {
+    const wMatch = /\/(?:W|Width)\s+(\d+)/.exec(dictText);
+    const hMatch = /\/(?:H|Height)\s+(\d+)/.exec(dictText);
+    const bpcMatch = /\/(?:BPC|BitsPerComponent)\s+(\d+)/.exec(dictText);
+    if (wMatch && hMatch) {
+      const bpc = bpcMatch ? Number(bpcMatch[1]) : 8;
+      let nComp = 1;
+      if (/\/CS\s*\/(?:RGB|DeviceRGB|CalRGB)\b/.test(dictText)) nComp = 3;
+      else if (/\/CS\s*\/(?:CMYK|DeviceCMYK)\b/.test(dictText)) nComp = 4;
+      else if (/\/CS\s*\/(?:G|DeviceGray|CalGray)\b/.test(dictText)) nComp = 1;
+      else if (/\/(?:IM|ImageMask)\s+true\b/.test(dictText)) { nComp = 1; } else nComp = 0;
+      if (nComp > 0) {
+        const dataEnd = dataStart + Math.ceil((Number(wMatch[1]) * nComp * bpc) / 8) * Number(hMatch[1]);
+        if (dataEnd + 2 <= len
+            && streamText.charCodeAt(dataEnd) === 0x45
+            && streamText.charCodeAt(dataEnd + 1) === 0x49
+            && (dataEnd + 2 === len || TOK_WS_OR_SLASH[streamText.charCodeAt(dataEnd + 2)])) {
+          return {
+            dictText, dataStart, dataEnd, end: dataEnd + 2,
+          };
+        }
+      }
+    }
+  }
+  while (i < len) {
+    if (streamText.charCodeAt(i) === 0x45 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x49
+        && i > dataStart && TOK_WS[streamText.charCodeAt(i - 1)]
+        && (i + 2 >= len || TOK_WS_OR_SLASH[streamText.charCodeAt(i + 2)])) {
+      break;
+    }
+    i++;
+  }
+  return {
+    dictText, dataStart, dataEnd: i > dataStart ? i - 1 : i, end: i + 2,
+  };
+}
+
 /**
  * Tokenize a PDF content stream into tokens.
  * @param {string} streamText
@@ -52,6 +123,7 @@ const TEXT_ONLY_DROP_OPS = new Set(['m', 'l', 'c', 'v', 'y', 'h', 're', 'S', 's'
  * @returns {Array<PDFToken>}
  */
 export function tokenizeContentStream(streamText, opts = null) {
+  // `scanResourceOps` in js/export/pdf/resourceOpScan.js repeats this function's lexing rules without building tokens, so a change to a rule here goes there too.
   const textOnly = !!(opts && opts.textOnly);
   // Token index just past the last kept operator or inline image.
   let runStart = 0;
@@ -274,70 +346,9 @@ export function tokenizeContentStream(streamText, opts = null) {
       // Inline image BI ... ID ... EI
       if (cc === 0x42 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x49
           && (i + 2 >= len || TOK_WS_OR_SLASH[streamText.charCodeAt(i + 2)])) {
-        i += 2;
-        let dictText = '';
-        while (i < len) {
-          const dc = streamText.charCodeAt(i);
-          if (dc === 0x49 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x44
-              && (i === 0 || TOK_WS[streamText.charCodeAt(i - 1)])
-              && i + 2 < len && TOK_WS[streamText.charCodeAt(i + 2)]) {
-            i += 3;
-            break;
-          }
-          dictText += streamText[i];
-          i++;
-        }
-        const dataStart = i;
-        // Some PDFs emit raw image data whose last byte is non-whitespace.
-        // The spec-strict whitespace-bounded scan below would miss EI, so for
-        // raw images (no /F filter) match EI at the offset computed from /W /H /BPC.
-        const dictTrim = dictText.trim();
-        const hasFilter = /\/(?:F|Filter)\b/.test(dictTrim);
-        let computedDataLen = -1;
-        if (!hasFilter) {
-          const wMatch = /\/(?:W|Width)\s+(\d+)/.exec(dictTrim);
-          const hMatch = /\/(?:H|Height)\s+(\d+)/.exec(dictTrim);
-          const bpcMatch = /\/(?:BPC|BitsPerComponent)\s+(\d+)/.exec(dictTrim);
-          if (wMatch && hMatch) {
-            const w = Number(wMatch[1]);
-            const h = Number(hMatch[1]);
-            const bpc = bpcMatch ? Number(bpcMatch[1]) : 8;
-            let nComp = 1;
-            if (/\/CS\s*\/(?:RGB|DeviceRGB|CalRGB)\b/.test(dictTrim)) nComp = 3;
-            else if (/\/CS\s*\/(?:CMYK|DeviceCMYK)\b/.test(dictTrim)) nComp = 4;
-            else if (/\/CS\s*\/(?:G|DeviceGray|CalGray)\b/.test(dictTrim)) nComp = 1;
-            else if (/\/(?:IM|ImageMask)\s+true\b/.test(dictTrim)) { nComp = 1; } else nComp = 0; // Indexed or unknown — leave to scan
-            if (nComp > 0) {
-              const rowBytes = Math.ceil((w * nComp * bpc) / 8);
-              computedDataLen = rowBytes * h;
-            }
-          }
-        }
-        if (computedDataLen >= 0) {
-          const dataEnd = dataStart + computedDataLen;
-          if (dataEnd + 2 <= len
-              && streamText.charCodeAt(dataEnd) === 0x45
-              && streamText.charCodeAt(dataEnd + 1) === 0x49
-              && (dataEnd + 2 === len || TOK_WS_OR_SLASH[streamText.charCodeAt(dataEnd + 2)])) {
-            const imageData = streamText.substring(dataStart, dataEnd);
-            i = dataEnd + 2;
-            tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
-            runStart = tokens.length;
-            continue;
-          }
-        }
-        while (i < len) {
-          const ec = streamText.charCodeAt(i);
-          if (ec === 0x45 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x49
-              && i > dataStart && TOK_WS[streamText.charCodeAt(i - 1)]
-              && (i + 2 >= len || TOK_WS_OR_SLASH[streamText.charCodeAt(i + 2)])) {
-            break;
-          }
-          i++;
-        }
-        const imageData = streamText.substring(dataStart, i > dataStart ? i - 1 : i);
-        i += 2;
-        tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
+        const image = locateInlineImage(streamText, i + 2);
+        i = image.end;
+        tokens.push({ type: 'inlineImage', value: { dictText: image.dictText, imageData: streamText.substring(image.dataStart, image.dataEnd) }, start: tokStart });
         runStart = tokens.length;
         continue;
       }

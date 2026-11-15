@@ -5,7 +5,7 @@ import {
 import {
   extractDict, parseDictEntries, bytesToLatin1, decodePdfName, mergeResources, findTopLevelKeyIndex,
 } from '../../pdf/pdfPrimitives.js';
-import { tokenizeContentStream } from '../../pdf/contentStream.js';
+import { scanResourceOps } from './resourceOpScan.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { buildOutlineObjects } from './writeOutline.js';
@@ -84,88 +84,72 @@ function dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums) {
   return pageText.slice(0, indirectMatch.index) + replacement + pageText.slice(indirectMatch.index + indirectMatch[0].length);
 }
 
+const RESOURCE_KEYS = ['/Font', '/XObject', '/ExtGState'];
+
 /**
- * Collect the /Font, /XObject, and /ExtGState resource names a page's content streams use.
- * Returned names have their #xx escapes decoded, because a resource key and its use can spell the same name differently.
+ * A page's /Resources dict with its /Font, /XObject and /ExtGState subdicts cut down to the names the page uses.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
  */
-function collectUsedResourceNames(pageObjText, objCache) {
-  const usedFonts = new Set();
-  const usedXObjects = new Set();
-  const usedExtGStates = new Set();
+function prunePageResources(pageObjText, objCache) {
+  const resourcesDictText = resolvePageResources(pageObjText, objCache);
+  if (!resourcesDictText.startsWith('<<') || !resourcesDictText.endsWith('>>')) return resourcesDictText;
 
-  /** @param {string} name */
-  const resolvePageXObjectName = (name) => {
-    const resolvedRes = resolvePageResources(pageObjText, objCache);
-    const xobjMatch = /\/XObject\s*(?:<<([\s\S]*?)>>|(\d+)\s+\d+\s+R)/.exec(resolvedRes);
-    if (!xobjMatch) return null;
-    let xobjBody = xobjMatch[1];
-    if (!xobjBody && xobjMatch[2]) {
-      const indirectText = objCache.getObjectText(Number(xobjMatch[2]));
-      if (!indirectText) return null;
-      xobjBody = indirectText;
-    }
-    if (!xobjBody) return null;
-    const wanted = decodePdfName(name);
-    const entry = parseDictEntries(xobjBody).find((e) => decodePdfName(e.name) === wanted);
-    const m = entry ? /^(\d+)\s+\d+\s+R/.exec(entry.valueText.trim()) : null;
-    return m ? Number(m[1]) : null;
-  };
+  /** @type {Array<?{body: string, entries: Array<{name: string, valueText: string}>}>} */
+  const parsed = [null, null, null];
+  const allKept = pruneResourcesDict(resourcesDictText, null, objCache, parsed);
+  const declared = parsed.map((sub) => new Set(sub ? sub.entries.map((e) => decodePdfName(e.name)) : []));
+  let unmatched = declared[0].size + declared[1].size + declared[2].size;
+  if (unmatched === 0) return allKept;
 
-  /** @param {string} streamText */
-  const walk = (streamText, onXObject) => {
-    const tokens = tokenizeContentStream(streamText);
-    let lastName = null;
-    for (const tok of tokens) {
-      if (tok.type === 'name') { lastName = tok.value; continue; }
-      if (tok.type === 'operator') {
-        if (lastName !== null) {
-          if (tok.value === 'Tf') usedFonts.add(decodePdfName(lastName));
-          else if (tok.value === 'Do') {
-            usedXObjects.add(decodePdfName(lastName));
-            if (onXObject) onXObject(lastName);
-          } else if (tok.value === 'gs') usedExtGStates.add(decodePdfName(lastName));
-        }
-        lastName = null;
-        continue;
-      }
-      if (tok.type === 'number') continue;
-      lastName = null;
-    }
-  };
+  /** @type {Map<string, ?number>} */
+  const xobjectNums = new Map();
+  for (const e of parsed[1] ? parsed[1].entries : []) {
+    const name = decodePdfName(e.name);
+    const m = /^(\d+)\s+\d+\s+R/.exec(e.valueText.trim());
+    if (!xobjectNums.has(name)) xobjectNums.set(name, m ? Number(m[1]) : null);
+  }
 
-  // A form XObject resolves resource names via its own /Resources first, then falls through to the page's /Resources (PDF 32000-1:2008 7.8.3).
-  // Walk used form XObjects recursively so fall-through names count as used, otherwise pruning drops resources the page actually needs.
+  const used = [new Set(), new Set(), new Set()];
   const visited = new Set();
-  /** @param {string} xobjName */
-  const recurseForm = (xobjName) => {
-    const objNum = resolvePageXObjectName(xobjName);
-    if (objNum == null || visited.has(objNum)) return;
-    visited.add(objNum);
-    const xobjText = objCache.getObjectText(objNum);
-    if (!xobjText || !/\/Subtype\s*\/Form\b/.test(xobjText)) return;
-    let formStreamBytes;
-    try { formStreamBytes = objCache.getStreamBytes(objNum); } catch { formStreamBytes = null; }
-    if (!formStreamBytes) return;
-    walk(bytesToLatin1(formStreamBytes), recurseForm);
+  /** @type {number[]} */
+  const xobjectQueue = [];
+  /**
+   * @param {number} key - Index into RESOURCE_KEYS.
+   * @param {string} rawName
+   * @returns {boolean}
+   */
+  const onUse = (key, rawName) => {
+    const name = rawName.includes('#') ? decodePdfName(rawName) : rawName;
+    if (!used[key].has(name)) {
+      used[key].add(name);
+      if (declared[key].has(name) && --unmatched === 0) return true;
+    }
+    if (key === 1) {
+      const objNum = xobjectNums.get(name);
+      if (objNum != null && !visited.has(objNum)) { visited.add(objNum); xobjectQueue.push(objNum); }
+    }
+    return false;
   };
 
+  // A page's content streams are read as one because an operand and its operator can sit in different streams.
   const streams = getPageContentStreams(pageObjText, objCache);
-  if (!streams) return { usedFonts, usedXObjects, usedExtGStates };
-  // A page's multiple content streams are interpreted as concatenated.
-  // Walking them separately drops a name/operator pair when the split lands between them
-  // (e.g. `/Fm1` at end of one stream, `Do` at start of the next),
-  // causing /Fm1 to look unused and get pruned.
-  walk(streams.join('\n'), recurseForm);
+  let allMatched = !!streams && scanResourceOps(streams.join('\n'), onUse);
 
-  return { usedFonts, usedXObjects, usedExtGStates };
+  // A form XObject resolves a name in its own /Resources first and then in the page's (PDF 32000-1:2008 7.8.3), so a name its content uses counts as used by the page.
+  for (let k = 0; k < xobjectQueue.length && !allMatched; k++) {
+    const xobjText = objCache.getObjectText(xobjectQueue[k]);
+    if (!xobjText || !/\/Subtype\s*\/Form\b/.test(xobjText)) continue;
+    let formStreamBytes;
+    try { formStreamBytes = objCache.getStreamBytes(xobjectQueue[k]); } catch { formStreamBytes = null; }
+    if (formStreamBytes) allMatched = scanResourceOps(bytesToLatin1(formStreamBytes), onUse);
+  }
+
+  return allMatched ? allKept : pruneResourcesDict(resourcesDictText, used, objCache, parsed);
 }
 
 /**
- * Resolve a /Subtype subdict inside a resources dict — returns its inner body
- * (between << and >>). Handles both inline `/Font <<...>>` and indirect
- * `/Font N M R`. Returns null if the subdict is missing or malformed.
+ * Locate the subdict of a /Resources dict that `key` names, such as /Font.
  * @param {string} resourcesDictBody
  * @param {string} key
  * @param {ObjectCache} objCache
@@ -204,38 +188,28 @@ function locateResourceSubdict(resourcesDictBody, key, objCache) {
 }
 
 /**
- * Prune a /Resources dict's /Font, /XObject, and /ExtGState entries to only the names a page's content streams use.
+ * Prune a /Resources dict's /Font, /XObject and /ExtGState subdicts to the names in `used`.
  * Other subdicts pass through unchanged.
+ * With `used` null every entry is kept.
  * @param {string} resourcesDictText - Full /Resources dict including outer << >>
- * @param {{usedFonts: Set<string>, usedXObjects: Set<string>, usedExtGStates: Set<string>}} used
+ * @param {?Array<Set<string>>} used - Decoded names in use, in the order of RESOURCE_KEYS.
  * @param {ObjectCache} objCache
+ * @param {Array<?{body: string, entries: Array<{name: string, valueText: string}>}>} parsed - Each subdict's text and entries as last parsed.
  */
-function pruneResourcesDict(resourcesDictText, used, objCache) {
-  if (!resourcesDictText.startsWith('<<') || !resourcesDictText.endsWith('>>')) {
-    return resourcesDictText;
-  }
+function pruneResourcesDict(resourcesDictText, used, objCache, parsed) {
   let body = resourcesDictText.slice(2, -2);
-
-  /** @type {(key: string, usedSet: Set<string>) => void} */
-  const pruneOne = (key, usedSet) => {
+  RESOURCE_KEYS.forEach((key, k) => {
     const loc = locateResourceSubdict(body, key, objCache);
     if (!loc) return;
-    const entries = parseDictEntries(loc.body);
-    const kept = entries.filter((e) => usedSet.has(decodePdfName(e.name)));
-    let replacement;
-    if (kept.length === 0) {
-      replacement = '';
-    } else {
-      const inner = kept.map((e) => `/${e.name} ${e.valueText}`).join(' ');
-      replacement = `${key}<<${inner}>>`;
+    let sub = parsed[k];
+    if (!sub || sub.body !== loc.body) {
+      sub = { body: loc.body, entries: parseDictEntries(loc.body) };
+      parsed[k] = sub;
     }
+    const kept = used ? sub.entries.filter((e) => used[k].has(decodePdfName(e.name))) : sub.entries;
+    const replacement = kept.length === 0 ? '' : `${key}<<${kept.map((e) => `/${e.name} ${e.valueText}`).join(' ')}>>`;
     body = body.slice(0, loc.startInBody) + replacement + body.slice(loc.endInBody);
-  };
-
-  pruneOne('/Font', used.usedFonts);
-  pruneOne('/XObject', used.usedXObjects);
-  pruneOne('/ExtGState', used.usedExtGStates);
-
+  });
   return `<<${body}>>`;
 }
 
@@ -850,9 +824,7 @@ export async function rebuildPdfSubset({
       pageText = pageText.replace(/\/Parent\s+\d+\s+\d+\s+R/, `/Parent ${pagesRootObjNum} 0 R`);
     }
 
-    const resolvedRes = resolvePageResources(pageInfo.objText, objCache);
-    const used = collectUsedResourceNames(pageInfo.objText, objCache);
-    const prunedRes = pruneResourcesDict(resolvedRes, used, objCache);
+    const prunedRes = prunePageResources(pageInfo.objText, objCache);
     pageText = replacePageResources(pageText, prunedRes);
     pageText = dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums);
     if (pageMetricsArr?.[i]?.rotation) pageText = composePageRotation(pageText, pageMetricsArr[i].rotation, objCache);
