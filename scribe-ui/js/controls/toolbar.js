@@ -3434,46 +3434,35 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       letter-spacing: .2px;
     }
 
-    /* Shown/hidden by toggling opacity (not display) so it can fade in and out.
-       pointer-events:none keeps it click-through. */
-    .${r} .scribe-drag-overlay {
-      position: absolute;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      opacity: 0;
-      pointer-events: none;
-      /* Above a pinned surface (30), so a drop onto the library home is labeled too. */
-      z-index: 31;
-      background: var(--scribe-accent-soft);
-      transition: opacity .06s ease-out;
-    }
-
     .${r} .scribe-drag-frame {
       position: absolute;
-      inset: 14px;
+      inset: 10px;
       border: 2px dashed var(--scribe-accent);
-      border-radius: 14px;
+      border-radius: 12px;
     }
 
+    /* Centered by its margins, since a left of 50% would halve the width a long label has before it wraps in the folder column. */
     .${r} .scribe-drag-pill {
       position: absolute;
       top: 96px;
-      left: 50%;
-      transform: translateX(-50%);
+      left: 22px;
+      right: 22px;
+      width: fit-content;
+      margin: 0 auto;
       display: flex;
       align-items: center;
       gap: 9px;
-      padding: 9px 16px 9px 13px;
+      padding: 7px 14px 7px 11px;
       border-radius: 8px;
       background: var(--scribe-accent);
       color: var(--scribe-accent-ink);
-      font-size: 13.5px;
+      font-size: 13px;
       font-weight: 500;
       letter-spacing: .2px;
-      white-space: nowrap;
       box-shadow: var(--scribe-shadow-pop);
     }
+
+    .${r} .scribe-drag-pill span:last-child { min-width: 0; overflow-wrap: anywhere; }
 
     .${r} .scribe-drag-pill svg {
       width: 17px;
@@ -5135,10 +5124,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active, .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin .scribe-tab.active,
     .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { color: var(--scribe-ink-2); border-bottom-color: var(--scribe-line-strong); }
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active .scribe-tab-name { text-shadow: none; }
+    /* Above a pinned surface (30). */
     .${r} .scribe-group-drop { position: absolute; z-index: 32; pointer-events: none; }
     .${r} .scribe-group-drop::before { content: ''; position: absolute; inset: 0; background: var(--scribe-accent-soft); opacity: .3; }
-    .${r} .scribe-group-drop .scribe-drag-frame { inset: 10px; border-radius: 12px; }
-    .${r} .scribe-group-drop .scribe-drag-pill { padding: 7px 14px 7px 11px; font-size: 13px; }
     .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }
     .${r} .scribe-tab-ghost { position: fixed; z-index: 1000; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; height: 28px; max-width: 340px; box-sizing: border-box; background: var(--scribe-surface); color: var(--scribe-ink); font-size: 13px; border: 1px solid var(--scribe-line); border-radius: 6px; box-shadow: 0 2px 10px rgba(20, 30, 60, .22); white-space: nowrap; overflow: hidden; }
     .${r} .scribe-tab-ghost .scribe-tab-icon { color: var(--scribe-ink-2); }

@@ -134,6 +134,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => string} [folderName] Document library only: the open folder's name.
  * @property {() => void} [syncFoldersOpenElsewhere] Document library only: reorder and redraw the Recent list once the folders other windows hold change.
  * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
+ * @property {(files: File[], target?: {group?: 0|1, move?: boolean}) => Promise<File[]>} [openDroppedFromFolder]
+ *   Document library only: open the dropped PDFs that already live in the folder as the folder's documents, and return the files left to place.
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
  * @property {(hash: string, path: ?string, target?: {group?: 0|1, preview?: boolean, program?: boolean, pageN?: number, fitWidth?: boolean, openAddress?: string})
  *   => Promise<?{tab: Object, changed: boolean}>} [openByHash]
@@ -145,6 +147,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => boolean} covering Whether the surface fills the document area, as it does with nothing open.
  * @property {() => number} columnWidth The width the surface takes at the window's left edge as the folder column, 0 while it is not shown as one.
  * @property {(node: Node) => boolean} containsNode
+ * @property {(e: DragEvent) => ?{rect: DOMRect, text: string}} fileDropTarget The area and label to light for a dragged file, when a drop at the event's point goes into the folder.
+ * @property {(e: DragEvent) => Promise<void>} takeFileDrop Take the files of a drop that `fileDropTarget` answered for into the folder being browsed.
  * @property {() => void} phoneUiChanged
  * @property {() => void} docOpened The viewer put a tab's document on screen.
  * @property {() => void} emptied
@@ -7887,92 +7891,65 @@ export function createLibraryInstance(viewer, opts) {
     render();
   });
 
-  // `dataTransfer.files` stays empty until the drop, so `types` is the only way to spot a file drag while it is still moving.
-  /** @param {DragEvent} e */
-  const isFileDrag = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
-
-  const priorDragLabel = viewer._dragOverlayLabelFor;
-  if (!readOnly) {
-    viewer._dragOverlayLabelFor = (e) => {
-      if (!visible || !store) return priorDragLabel ? priorDragLabel(e) : null;
-      // Mid-drag the payload exposes MIME types but never file names, so the count has to go by type.
-      let imageN = 0;
-      let otherN = 0;
-      for (const item of e.dataTransfer?.items ?? []) {
-        if (item.kind !== 'file') continue;
-        if (item.type === 'image/png' || item.type === 'image/jpeg') imageN += 1;
-        else otherN += 1;
-      }
-      if (imageN && !otherN) return `Drop to create a PDF from ${imageN === 1 ? '1 image' : `${imageN} images`}`;
-      return `Copy into ${store.root.name}`;
-    };
-  }
-  /** @type {?number} */
-  let dragClearTimer = null;
-  surface.addEventListener('dragover', () => {
-    if (dragClearTimer === null) return;
-    window.clearTimeout(dragClearTimer);
-    dragClearTimer = null;
-  });
-  surface.addEventListener('dragleave', (e) => {
-    if (readOnly || !store || !isFileDrag(e)) return;
-    // A finished ingest that rebuilds the cards mid-drag loses a dragleave, which would strand the viewer's overlay over the library.
-    const r = surface.getBoundingClientRect();
-    if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) {
-      viewer._hideDragOverlay?.();
-      return;
-    }
-    // A drag can end without ever leaving (Esc, or a drop another handler claims), reporting a last position inside and then going quiet.
-    // The drag model repeats dragover at least every 350ms, so 600ms cannot fire during a live drag.
-    if (dragClearTimer === null) {
-      dragClearTimer = window.setTimeout(() => {
-        dragClearTimer = null;
-        viewer._hideDragOverlay?.();
-      }, 600);
-    }
-  });
-  surface.addEventListener('drop', async (e) => {
-    if (readOnly || !isFileDrag(e)) return;
-    if (!store) {
-      // A dropped folder is refused, since the viewer would open its files as tabs.
-      const items = [...(e.dataTransfer?.items ?? [])];
-      if (!items.some((item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory)) return;
-      e.preventDefault();
-      e.stopPropagation();
-      viewer._showToast('Drop a PDF to open it, or use Open Folder… to browse a whole folder.');
-      return;
-    }
+  // With no folder connected, a dropped folder is refused here, since the viewer would open its files as tabs.
+  surface.addEventListener('drop', (e) => {
+    if (readOnly || store) return;
+    const items = [...(e.dataTransfer?.items ?? [])];
+    if (!items.some((item) => item.kind === 'file' && item.webkitGetAsEntry()?.isDirectory)) return;
     e.preventDefault();
     e.stopPropagation();
+    viewer._showToast('Drop a PDF to open it, or use Open Folder… to browse a whole folder.');
+  });
+
+  /**
+   * Open the dropped PDFs that already live in the folder as the folder's documents.
+   * Only a desktop shell knows where a dropped file lives, so a browser gets every file back.
+   * @param {File[]} files
+   * @param {{group?: 0|1, move?: boolean}} [target] - Where the documents open, as `openEntry` takes it.
+   * @returns {Promise<File[]>} The files left to place: those that live elsewhere, less the OCR and session files dropped beside an opened PDF.
+   */
+  const openDroppedFromFolder = async (files, target = {}) => {
+    if (!store || !manifest || !ingest) return files;
+    const folderPath = String((await shell?.getFolderPath?.(store.root.name).catch(() => null))?.path || '').replace(/\\/g, '/');
+    if (!folderPath) return files;
+    const names = files.map((f) => f.name || '');
+    const opened = new Set();
+    // The folder's document already has its own text and session, so the files named for it have nowhere to go.
+    const besideOpened = new Set();
+    for (const f of files) {
+      if (!(f.name || '').toLowerCase().endsWith('.pdf')) continue;
+      const p = String(shell.pathForFile(f) || '').replace(/\\/g, '/');
+      if (!p.startsWith(`${folderPath}/`)) continue;
+      opened.add(f);
+      const named = filesNamedForPdf(f.name, names);
+      for (const name of [...named.ocrFiles, ...named.scribeFiles]) besideOpened.add(name);
+      const relPath = p.slice(folderPath.length + 1);
+      if (!manifest.docs[relPath]) await ingest.enqueue(relPath, { size: f.size, mtime: f.lastModified });
+      await openEntry(relPath, manifest.docs[relPath], target);
+    }
+    if (opened.size) ingest.start();
+    return files.filter((f) => !opened.has(f) && !besideOpened.has(f.name || ''));
+  };
+
+  /**
+   * Take the files of a drop into the folder being browsed.
+   * @param {DragEvent} e
+   */
+  const takeFileDrop = async (e) => {
     const files = await filesFromDropEvent(e);
     // A drag can name 'Files' and still resolve to nothing, e.g. an empty folder.
     // There is no unsupported file to name, so there is nothing worth saying.
     if (!files.length) return;
     const images = files.filter((f) => isImageName(f.name));
-    const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
-    if (!images.length && !pdfs.length) {
+    if (!images.length && !files.some((f) => (f.name || '').toLowerCase().endsWith('.pdf'))) {
       viewer._showToast('This folder holds PDFs — none of the dropped files were PDFs or images.');
       return;
     }
-    // A PDF that already lives in this folder opens rather than being copied beside itself.
-    const folderPath = String((await shell?.getFolderPath?.(store.root.name).catch(() => null))?.path || '').replace(/\\/g, '/');
-    const inside = new Set();
-    if (folderPath && ingest) {
-      for (const f of pdfs) {
-        const p = String(shell.pathForFile(f) || '').replace(/\\/g, '/');
-        if (!p.startsWith(`${folderPath}/`)) continue;
-        inside.add(f);
-        const relPath = p.slice(folderPath.length + 1);
-        if (!manifest.docs[relPath]) await ingest.enqueue(relPath, { size: f.size, mtime: f.lastModified });
-        await openEntry(relPath, manifest.docs[relPath]);
-      }
-      if (inside.size) ingest.start();
-    }
-    const outside = files.filter((f) => !inside.has(f));
+    const outside = await openDroppedFromFolder(files);
     // The whole drop goes along, so an OCR file dropped beside its PDF is copied in with it.
-    if (pdfs.some((f) => !inside.has(f))) await startIngestFiles(outside);
+    if (outside.some((f) => (f.name || '').toLowerCase().endsWith('.pdf'))) await startIngestFiles(outside);
     if (images.length) await createPdfFromImages(images);
-  });
+  };
 
   // Word-text and comment edits commit through editable elements rather than ScribeDoc methods, so any input event marks the active library tab dirty.
   const onInput = () => {
@@ -8159,6 +8136,24 @@ export function createLibraryInstance(viewer, opts) {
     covering: () => visible && form === 'full',
     columnWidth: () => (visible && form === 'column' && columnOpen ? columnW : 0),
     containsNode: (/** @type {Node} */ node) => surface.contains(node),
+    fileDropTarget: (/** @type {DragEvent} */ e) => {
+      if (readOnly || !store) return null;
+      // A folder that fills the window has the toolbar too, so the whole app is its target.
+      if (!(visible && form === 'full') && !(e.target instanceof Node && surface.contains(e.target))) return null;
+      // Mid-drag the payload exposes MIME types but never file names, so the count has to go by type.
+      let imageN = 0;
+      let otherN = 0;
+      for (const item of e.dataTransfer?.items ?? []) {
+        if (item.kind !== 'file') continue;
+        if (item.type === 'image/png' || item.type === 'image/jpeg') imageN += 1;
+        else otherN += 1;
+      }
+      const rect = surface.getBoundingClientRect();
+      if (imageN && !otherN) return { rect, text: `Create a PDF from ${imageN === 1 ? '1 image' : `${imageN} images`}` };
+      // The files land in the folder being browsed.
+      return { rect, text: `Copy into ${currentDir ? currentDir.slice(currentDir.lastIndexOf('/') + 1) : store.root.name}` };
+    },
+    takeFileDrop,
     focusSearch,
     ...(isLibrary ? {
       connected: () => !!store,
@@ -8171,6 +8166,7 @@ export function createLibraryInstance(viewer, opts) {
       closeFolderLabel,
       folderName: () => store?.root.name ?? '',
       copyTabIntoFolder,
+      openDroppedFromFolder,
       showTab,
       openByHash,
     } : {}),
@@ -8320,7 +8316,6 @@ export function createLibraryInstance(viewer, opts) {
       document.removeEventListener('keydown', onSelectAll, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
       offRecents();
-      if (!readOnly) viewer._dragOverlayLabelFor = priorDragLabel;
       if (manifestTimer !== null) {
         window.clearTimeout(manifestTimer);
         manifestTimer = null;

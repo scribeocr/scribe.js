@@ -1093,10 +1093,6 @@ class ScribePDFViewer {
     this._resumeOwner = true;
     /** @type {string[]} The names of the folders a desktop shell's other windows have open. */
     this._foldersOpenElsewhere = [];
-    /** @type {?((event: DragEvent) => ?string)} */
-    this._dragOverlayLabelFor = null;
-    /** @type {?(() => void)} */
-    this._hideDragOverlay = null;
     this._recents = createRecents();
     /**
      * Fired when a document's assistant history changes, so the embedder can mark that document's session dirty.
@@ -1594,94 +1590,135 @@ class ScribePDFViewer {
     window.addEventListener('storage', onStorage);
     this._teardownCallbacks.push(() => window.removeEventListener('storage', onStorage));
 
-    // A loaded document hides the empty-state drop zone, and a library or portfolio surface stands in front of it, so neither can catch a dropped PDF.
-    // Show a dedicated drag-over overlay during a file drag instead, and open the dropped PDF in a new tab.
     if (showDropZone) {
-      const dragOverlay = document.createElement('div');
-      dragOverlay.className = 'scribe-drag-overlay';
-      dragOverlay.innerHTML = '<div class="scribe-drag-frame"></div><div class="scribe-drag-pill">'
-        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>'
-        + '<span>Drop to open</span></div>';
-      this.pdfViewerElem.appendChild(dragOverlay);
-      const dragPillText = /** @type {HTMLElement} */ (dragOverlay.querySelector('.scribe-drag-pill span'));
-
-      // `dragenter`/`dragleave` bubble per descendant, so a bare `dragleave` fires mid-drag.
-      // The depth counter instead reaches 0 only when the cursor truly leaves the component.
-      this._fileDragDepth = 0;
       // `types` includes 'Files' only for external file drags, so this ignores internal text-selection drags.
       // (`dataTransfer.files` is empty until `drop`, so we must check `types` instead.)
       /** @param {DragEvent} event */
       const isFileDrag = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files'));
-      // The empty-state drop zone highlights and opens on its own, so a drag that lands on it is left to it.
-      // Everywhere else the drop opens a new tab, with or without an attached document, so a surface standing in front of none still takes drops.
-      /** @param {DragEvent} event */
-      const overDropZone = (event) => !!this.dropZone && event.target instanceof Node && this.dropZone.contains(event.target);
-      const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.opacity = '0'; };
-      this._hideDragOverlay = hideDragOverlay;
       // A file dragged over the (visible, editable) thumbnail rail drops into the document at the hovered gap rather than opening a new tab.
       /** @param {number} clientX @param {number} clientY @returns {boolean} */
       const overThumbnailRail = (clientX, clientY) => {
         if (this._activeSidebar !== 'thumbnails' || !this._thumbnailPanel || !this.scribe.opt.enablePageEditing) return false;
+        // A surface in front covers the rail, and a drop on that surface must not reach the document behind it.
+        if (this._frontSurface()) return false;
         const r = this._thumbnailPanel.panelElem.getBoundingClientRect();
         return r.width > 0 && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
       };
+      /**
+       * What a file dropped at the event's point would do, and the target that shows it.
+       * The drop handler acts on the same answer, so a drop always does what its target said.
+       * The empty-state drop zone highlights itself and takes its drop with a listener of its own.
+       * @param {DragEvent} event
+       * @returns {{kind: 'dropZone', target: null} | {kind: 'rail', target: null}
+       *   | {kind: 'library', inst: import('../library/libraryView.js').LibraryInstance, target: {kind: 'body', rect: DOMRect, text: string, icon: string}}
+       *   | {kind: 'open', target: {kind: 'split'|'body', group: 0|1, rect: {left: number, top: number, width: number, height: number}, text?: string}}}
+       */
+      const fileDropAt = (event) => {
+        if (this.dropZone && event.target instanceof Node && this.dropZone.contains(event.target)) return { kind: 'dropZone', target: null };
+        for (const inst of this._libraryInstances) {
+          const copy = inst.fileDropTarget(event);
+          if (copy) {
+            return {
+              kind: 'library',
+              inst,
+              target: {
+                kind: 'body', rect: copy.rect, text: copy.text, icon: barIcon('folder'),
+              },
+            };
+          }
+        }
+        if (overThumbnailRail(event.clientX, event.clientY)) return { kind: 'rail', target: null };
+        const root = this.pdfViewerElem.getBoundingClientRect();
+        const top = this._topBarsHeight();
+        // A surface in front covers the lane and gives way to the opened file, so the whole document area stands for the lane.
+        const shownLane = this._frontSurface() ? null : this._laneBox;
+        const lane = shownLane ?? {
+          left: 0, top, width: root.width, height: root.height - top,
+        };
+        const laneRect = {
+          left: root.left + lane.left, top: root.top + lane.top, width: lane.width, height: lane.height,
+        };
+        const at = this._dropTargetAt(event.clientX, event.clientY, null, 'card');
+        if (!at) {
+          return {
+            kind: 'open',
+            target: {
+              kind: 'body', group: 0, rect: laneRect, text: !shownLane || this._tabs.length === 0 ? 'Drop to open' : undefined,
+            },
+          };
+        }
+        // A dropped file opens after its group's last tab, so over a strip it shows the group and not a place among the tabs.
+        if (at.kind === 'strip') {
+          return { kind: 'open', target: { kind: 'body', group: at.group, rect: at.group === 1 && this._rightGroup ? this._rightGroup.body.getBoundingClientRect() : laneRect } };
+        }
+        return { kind: 'open', target: { kind: at.kind, group: at.group, rect: at.rect } };
+      };
+      /** @type {?EventTarget} */
+      let dragOverElem = null;
+      /** @param {boolean} [fade] */
+      const endFileDrag = (fade = false) => {
+        dragOverElem = null;
+        this._hideDropTarget(fade);
+        if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
+      };
+      /** @param {DragEvent} event */
+      const showFileDrop = (event) => {
+        dragOverElem = event.target;
+        const { kind, target } = fileDropAt(event);
+        if (this._thumbnailPanel) {
+          if (kind === 'rail') this._thumbnailPanel.dropIndicator.show(event.clientX, event.clientY);
+          else this._thumbnailPanel.dropIndicator.hide();
+        }
+        this._showDropTarget(target, '', event.clientX, event.clientY, 'card');
+      };
       /** @param {DragEvent} event */
       const onDragEnter = (event) => {
-        if (overDropZone(event) || !isFileDrag(event)) return;
-        this._fileDragDepth++;
-        if (this._fileDragDepth !== 1) return;
-        dragPillText.textContent = this._dragOverlayLabelFor?.(event)
-          ?? (this._tabs.length ? 'Drop to open in a new tab' : 'Drop to open');
-        dragOverlay.style.top = `${this._topBarsHeight()}px`; // sit below the toolbar and tab strip, leaving them visible
-        // Keep the "open in a new tab" overlay clear of the thumbnail rail: dropping over the rail inserts pages there instead, so covering it would mislabel that region.
-        const railW = (this._activeSidebar === 'thumbnails' && this._thumbnailPanel)
-          ? (parseFloat(this._thumbnailPanel.panelElem.style.width) || 0) : 0;
-        dragOverlay.style.left = `${railW}px`;
-        // Show the new-tab overlay only when not entering directly over the rail, where the rail shows its insertion indicator instead.
-        if (!overThumbnailRail(event.clientX, event.clientY)) dragOverlay.style.opacity = '1';
+        if (isFileDrag(event)) showFileDrop(event);
       };
       /** @param {DragEvent} event */
       const onDragOver = (event) => {
-        if (overDropZone(event) || !isFileDrag(event)) return;
+        if (!isFileDrag(event)) return;
         event.preventDefault(); // allow the drop (otherwise the browser navigates to the dropped file)
-        // dragover fires continuously, so it is the source of truth for which indicator shows as the cursor crosses in/out of the rail.
-        if (overThumbnailRail(event.clientX, event.clientY)) {
-          dragOverlay.style.opacity = '0';
-          this._thumbnailPanel.dropIndicator.show(event.clientX, event.clientY);
-        } else {
-          if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
-          if (this._fileDragDepth > 0) dragOverlay.style.opacity = '1';
-        }
+        // The place a drop would land can change with no element boundary crossed, as between the lane's two halves, so the target is resolved on every dragover.
+        showFileDrop(event);
       };
+      // A drag enters the next element before it leaves the last, so a leave from the element it is still over means it has left the app.
       /** @param {DragEvent} event */
       const onDragLeave = (event) => {
-        if (overDropZone(event) || !isFileDrag(event)) return;
-        this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
-        if (this._fileDragDepth === 0) {
-          dragOverlay.style.opacity = '0';
-          if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
-        }
+        if (isFileDrag(event) && event.target === dragOverElem) endFileDrag();
       };
       // A drop fires no matching `dragleave`, so the visuals clean up on the drop itself, in the capture phase.
-      // A descendant that claims the drop with stopPropagation (the library surface does) would otherwise strand the armed overlay behind it until the surface hides.
+      // A descendant that claims the drop with stopPropagation would otherwise leave its target lit.
       // Running before the bubble handler is safe because gapAt reads grid geometry, not the indicator visuals.
       /** @param {DragEvent} event */
       const onDropCapture = (event) => {
-        if (!isFileDrag(event)) return;
-        hideDragOverlay();
-        if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
+        if (isFileDrag(event)) endFileDrag(true);
       };
-      // The overlay is `pointer-events:none`, so the drop lands on the canvas/rail and bubbles to this root listener.
+      // The targets are `pointer-events:none`, so the drop lands on the element under them and bubbles to this root listener.
       /** @param {DragEvent} event */
       const onDrop = async (event) => {
-        if (overDropZone(event) || !isFileDrag(event)) return;
+        if (!isFileDrag(event)) return;
         event.preventDefault();
-        const overRail = overThumbnailRail(event.clientX, event.clientY);
-        const gap = overRail ? this._thumbnailPanel.dropIndicator.gapAt(event.clientX, event.clientY) : -1;
+        const drop = fileDropAt(event);
+        if (drop.kind === 'dropZone') return;
+        if (drop.kind === 'library') {
+          await drop.inst.takeFileDrop(event);
+          return;
+        }
+        const gap = drop.kind === 'rail' && this._thumbnailPanel ? this._thumbnailPanel.dropIndicator.gapAt(event.clientX, event.clientY) : -1;
         const files = await filesFromDropEvent(event);
         if (files.length === 0) return;
-        if (overRail) await this.insertPagesFromFiles(files, gap);
-        else await this.openFiles(files);
+        if (drop.kind === 'rail') {
+          await this.insertPagesFromFiles(files, gap);
+          return;
+        }
+        const { group } = drop.target;
+        const rest = await this._library?.openDroppedFromFolder?.(files, { group, move: true }) ?? files;
+        if (rest.length) await this.openFiles(rest, { group });
+      };
+      // No press can happen during a drag, so one arriving with a target still lit means the drag ended with no leave or drop reaching the app.
+      const onPressAfterDrag = () => {
+        if (dragOverElem) endFileDrag();
       };
       // Listen on the viewer's own root, never `window`/`document`, so the embedded component adds no global side effects.
       this.pdfViewerElem.addEventListener('dragenter', onDragEnter);
@@ -1689,12 +1726,14 @@ class ScribePDFViewer {
       this.pdfViewerElem.addEventListener('dragleave', onDragLeave);
       this.pdfViewerElem.addEventListener('drop', onDropCapture, true);
       this.pdfViewerElem.addEventListener('drop', onDrop);
+      this.pdfViewerElem.addEventListener('pointerdown', onPressAfterDrag, true);
       this._teardownCallbacks.push(() => {
         this.pdfViewerElem.removeEventListener('dragenter', onDragEnter);
         this.pdfViewerElem.removeEventListener('dragover', onDragOver);
         this.pdfViewerElem.removeEventListener('dragleave', onDragLeave);
         this.pdfViewerElem.removeEventListener('drop', onDropCapture, true);
         this.pdfViewerElem.removeEventListener('drop', onDrop);
+        this.pdfViewerElem.removeEventListener('pointerdown', onPressAfterDrag, true);
       });
     }
 
@@ -2697,9 +2736,11 @@ class ScribePDFViewer {
    * All non-PDF files (images, OCR, `.scribe`) are opened together into a single document/tab, the way the core import combines them.
    * The last opened tab becomes active.
    * @param {File[] | FileList} files
+   * @param {{group?: 0|1}} [options] - `group` is the editor group the tabs open in, which becomes the active group.
+   *   The tabs open in the lane without it, and the active group stays as it is.
    * @returns {Promise<void>}
    */
-  async openFiles(files) {
+  async openFiles(files, { group } = {}) {
     const list = Array.from(files || []);
     if (list.length === 0) return;
 
@@ -2809,8 +2850,11 @@ class ScribePDFViewer {
     }
     if (opened.length === 0) return;
 
-    for (const t of opened) this._tabs.push({ ...this._newTab(t.doc, t.name), notice: t.notice || null });
+    const tabGroup = group === 1 && !this._phoneUi && this._tabStrip ? 1 : 0;
+    if (tabGroup === 1 && !this._rightGroup) this._openGroup({ program: true });
+    for (const t of opened) this._tabs.push({ ...this._newTab(t.doc, t.name), notice: t.notice || null, group: tabGroup });
     await this._activateTab(this._tabs.length - 1);
+    if (group !== undefined) this._setActiveGroup(tabGroup);
     // The active tab has asked for its first screen, so the parse pumps may start behind it.
     for (const t of opened) if (t.startText) t.startText();
     // The active tab already painted. This await keeps the "openFiles resolved means all documents fully loaded" contract for callers.
@@ -4554,11 +4598,12 @@ class ScribePDFViewer {
 
   /**
    * Draw the drop target for a drag.
-   * @param {?ReturnType<ScribePDFViewer['_dropTargetAt']>} target
+   * @param {?{kind: 'split'|'strip'|'body', ix?: number, rect: {left: number, top: number, width: number, height: number}, text?: string, icon?: string}} target
+   *   `text` and `icon`, when given, are the area's label and its glyph's SVG markup.
    * @param {string} label
    * @param {number} x
    * @param {number} y
-   * @param {'tab'|'card'} kind
+   * @param {'tab'|'card'} kind - A dragged file is drawn as a card.
    */
   _showDropTarget(target, label, x, y, kind) {
     if (!target) {
@@ -4599,10 +4644,11 @@ class ScribePDFViewer {
       });
       const split = target.kind === 'split';
       let text;
-      if (split) text = kind === 'tab' ? 'Split right' : 'Open to the right';
+      if (target.text) ({ text } = target);
+      else if (split) text = kind === 'tab' ? 'Split right' : 'Open to the right';
       else text = kind === 'tab' ? 'Move here' : 'Open here';
       /** @type {HTMLElement} */ (ov.querySelector('.scribe-drag-pill span:last-child')).textContent = text;
-      /** @type {HTMLElement} */ (ov.querySelector('.scribe-drag-pill .scribe-tab-icon')).innerHTML = split ? barIcon('split') : barIcon('book');
+      /** @type {HTMLElement} */ (ov.querySelector('.scribe-drag-pill .scribe-tab-icon')).innerHTML = target.icon ?? (split ? barIcon('split') : barIcon('book'));
     }
     if (kind === 'tab') {
       /** @type {HTMLElement} */ (chip.querySelector('.scribe-tab-name')).textContent = label;
