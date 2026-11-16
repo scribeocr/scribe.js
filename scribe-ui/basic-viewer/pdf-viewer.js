@@ -797,7 +797,7 @@ class ScribePDFViewer {
     this._modeTrackChev = null;
     /** @type {?HTMLElement} */
     this._modeTrackViewBtn = null;
-    /** Monotonic counter stamped onto a tab's `lastUse` at creation and on every activation. */
+    /** Monotonic counter for tab `lastUse` order. */
     this._tabUseCounter = 0;
     /**
      * Device memory budget for open documents, in bytes. Opening past it is refused with a toast.
@@ -2820,7 +2820,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * A fresh tab record for `doc`, stamped as most recently used.
+   * Create a tab record for `doc`.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {string} name
    */
@@ -4961,7 +4961,7 @@ class ScribePDFViewer {
     // The prompt stays as it was until then, so it does not drop and return when one scan is opened after another.
     if (show && doc.hydrationState === 'hydrated' && doc._textReadySettle) return;
     if (show) {
-      // A scan can hold words of its own, such as a stamped header, so the test goes by the document's verdict and its recognition record, not by whether it has words.
+      // A scan can carry native header words, so only non-PDF words or an OCR record count as recognized text.
       // A tab that has not loaded answers the source of its text from what it was told at open, so its answer cannot change as its pages arrive.
       const { pdfMode, imageMode, pdfType, ocrApplied } = doc.inputData;
       show = (pdfMode ? pdfType === 'image' : imageMode) && !ocrApplied?.some(Boolean)

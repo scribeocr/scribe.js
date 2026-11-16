@@ -15,9 +15,9 @@ function pageNotes(viewer, n) {
 }
 
 /**
- * Create a note annotation at page-local pixel point (x, y) and stamp its author and creation date.
+ * Create a note annotation at page-local pixel point (x, y).
  * @param {import('../viewer.js').ScribeViewer} viewer @param {number} n @param {number} x @param {number} y
- * @returns {AnnotationText} the new note annotation
+ * @returns {AnnotationText}
  */
 export function createNote(viewer, n, x, y) {
   /** @type {AnnotationText} */
@@ -40,7 +40,8 @@ export function createNote(viewer, n, x, y) {
 }
 
 /**
- * Set a note's comment, stamping author/date on first authoring (author from viewer.opt.commentAuthor).
+ * Set a note annotation's comment.
+ * Records `viewer.opt.commentAuthor` and creation date when first non-empty.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {AnnotationText} annot
  * @param {string} comment

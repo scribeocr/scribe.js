@@ -1637,8 +1637,8 @@ describe('Check native text line deletion and replacement survive .scribe persis
   });
 
   test('Edited pages leave no undeclared fields on OCR words or chars', () => {
-    expect(strays.word, 'edit-time data was stamped onto OcrWord, so it serializes into every .scribe export').toEqual([]);
-    expect(strays.char, 'edit-time data was stamped onto OcrChar, so it serializes into every .scribe export').toEqual([]);
+    expect(strays.word, 'edit-time data was written onto OcrWord, so it serializes into every .scribe export').toEqual([]);
+    expect(strays.char, 'edit-time data was written onto OcrChar, so it serializes into every .scribe export').toEqual([]);
   });
 
   test('Standard .scribe carries no app session data while the session save carries it all', () => {

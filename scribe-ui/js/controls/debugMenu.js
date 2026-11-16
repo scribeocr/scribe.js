@@ -302,7 +302,7 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       }]);
       if (!groups.length) return;
       // Every call restarts its group numbering at zero, so rename this group before the next call reuses the id.
-      // The thread is stamped on all members because consumers read it off whichever one they match first.
+      // The thread is written to all members because consumers read it off whichever one they match first.
       for (const annot of doc.annotations.pages[slot.page]) {
         if (annot.type !== 'highlight' && annot.type !== 'underline' && annot.type !== 'strikeout') continue;
         if (annot.groupId !== groups[0].groupId) continue;

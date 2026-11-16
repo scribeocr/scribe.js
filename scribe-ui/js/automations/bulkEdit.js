@@ -167,7 +167,6 @@ export function buildBulkEditWorkspace(host, container) {
     return { prop: 'style', op: bestN / st.total >= 0.8 ? 'is mostly' : 'contains', value: best };
   };
 
-  // Numbers are blanked so stamps that differ only in a page number or date still group together.
   const lookKey = (m) => [m.p.text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(), m.p.font, m.p.color].join('|');
   const relTop = (m) => ((m.line.bbox.top + m.line.bbox.bottom) / 2) / doc.pageMetrics[m.n].dims.height;
   const sameLook = (g, m) => g.look === lookKey(m) && Math.abs(g.size - m.p.size) <= 0.5 && Math.abs(g.relTop - relTop(m)) <= RELTOP_TOL;
@@ -225,10 +224,6 @@ export function buildBulkEditWorkspace(host, container) {
   const keptCount = () => groups.reduce((sum, g) => sum + (g.excluded ? 0 : g.items.length), 0);
   const excludedCount = () => groups.reduce((sum, g) => sum + (g.excluded ? g.items.length : 0), 0);
 
-  /**
-   * Default rules from a picked line.
-   * The text rule keeps the shortest phrase every look-alike line shares and no rival line contains, so a stamp's docket number wins over its page number.
-   */
   function rulesFromExample(ex) {
     const p = propsOf(ex.line, ex.n);
     const exMatch = { n: ex.n, line: ex.line, p };

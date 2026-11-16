@@ -1,7 +1,6 @@
 /**
- * Field names an import or edit wrote onto pages, lines, words, or chars beyond those OcrPage, OcrLine, OcrWord, and OcrChar declare.
- * The PDF parser and the text-edit verbs once kept their own data there: /Artifact flags, marked-content and structure ids, bookmark anchors, edit-eligibility stamps, glyph pen origins.
- * Nothing removed them again, so every one reached the user's saved .scribe file — including standard-format exports written for non-app consumers.
+ * Own property names on pages, lines, words, or chars beyond those OcrPage, OcrLine, OcrWord, and OcrChar declare.
+ * Undeclared properties on those objects serialize into every `.scribe` export.
  * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} d
  */
 export const strayFields = (d) => {

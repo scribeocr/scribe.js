@@ -30,9 +30,9 @@ describe('one-up native transcript', () => {
     expect(new Set(nums).size, 'the rows count 1 to 25').toBe(25);
     expect(Math.min(...nums), 'the count begins at 1').toBe(1);
     expect(Math.max(...nums), 'the count ends at 25').toBe(25);
-    expect(page.lines.filter((l) => l.lineNum == null).map((l) => l.words.map((w) => w.text).join(' ')), 'only the footer, the folio and the filing stamp are outside the rows')
+    expect(page.lines.filter((l) => l.lineNum == null).map((l) => l.words.map((w) => w.text).join(' ')), 'only the footer, the printed page number and the filing header are outside the rows')
       .toEqual(['UNITED STATES COURT REPORTERS', '36', 'Case 3:24-cr-00329-CRB Document 77-1 Filed 09/06/24 Page 77 of 155']);
-    expect(page.lines.every((l) => l.pageNum === '36'), 'every line of the page carries its printed page number, not the filing stamp\'s').toBe(true);
+    expect(page.lines.every((l) => l.pageNum === '36'), 'every line of the page carries its printed page number, not the filing header\'s').toBe(true);
     expect(pageNums(doc), 'the transcript pages are printed 36 to 43, and the scans and unreadable pages carry nothing')
       .toEqual([['36'], ['37'], ['38'], ['39'], ['40'], ['41'], ['42'], ['43'], [], [], [], [], [], [], [], []]);
   });
@@ -172,7 +172,7 @@ describe('scanned transcript with an imported Textract layer', () => {
   test('the Textract layer resolves citations without a recognition run', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2.pdf`, `${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2-AwsTextractLayoutSync.json`]);
     if (doc._textReadySettle) await doc.textReady;
-    expect(pageNums(doc), 'a direct import numbers only the pages with a line-number column: 62 to 64 from their printed numbers, not the filing stamp\'s "Page 3 of 5", and nothing on the cover and index').toEqual([[], [], ['62'], ['63'], ['64']]);
+    expect(pageNums(doc), 'a direct import numbers only the pages with a line-number column: 62 to 64 from their printed numbers, not the filing header\'s "Page 3 of 5", and nothing on the cover and index').toEqual([[], [], ['62'], ['63'], ['64']]);
     expect(doc.ocr.active.map((pg) => pg.lines.filter((l) => l.lineNum != null).length), 'numbered lines per page').toEqual([0, 0, 50, 50, 50]);
     const first = doc.resolveCitation('62:1');
     expect([first[0].page, texts(first[0])], 'row 1 of page 62').toEqual([2, ['1', 'So, if Mr. Goldstein was playing poker at the end of 2016,']]);

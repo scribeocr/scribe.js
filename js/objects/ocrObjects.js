@@ -40,7 +40,7 @@ export function OcrPage(n, dims) {
  * Semantic role of a paragraph.
  * 'pagenum' is a line holding only the page number, bare or wrapped, e.g. "5", "- 6 -", "Page 6".
  * A lone number in the margin that was not read as the page number is a 'header' or 'footer'.
- * 'header' and 'footer' are running furniture such as a running head, a court/docket stamp, or a Bates stamp, split by which half of the page they sit in.
+ * 'header' and 'footer' are running furniture such as a running head, a court/docket header, or a Bates number, split by which half of the page they sit in.
  * 'blockquote' is a quotation set off by indentation from both margins.
  * 'linenum' is the left-margin column of integers, one per text line, found in legal depositions and pleadings.
  * The layout engine splits a number fused into a body line into its own 'linenum' line.

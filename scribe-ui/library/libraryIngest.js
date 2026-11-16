@@ -4,8 +4,8 @@ import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 /**
  * @typedef {Object} LiveDoc
  * @property {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
- * @property {(recognized: boolean) => Promise<void>} [checkpoint] - Present when a viewer tab owns the copy.
- *    Persists the sidecar the way that tab's own checkpoint does, stamping the recognition when `recognized` is true.
+ * @property {(recognized: boolean) => Promise<void>} [checkpoint] - Sidecar save hook present when a viewer tab owns the document.
+ *   Records completed OCR when `recognized` is true.
  */
 import { openDocumentFromFile, filesNamedForPdf } from '../js/controls/tools.js';
 import { hashBytes } from './libraryStore.js';

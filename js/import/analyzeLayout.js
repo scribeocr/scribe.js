@@ -1050,8 +1050,8 @@ export function analyzeLayout(pages, opts = {}) {
     const pageRules = pages[p].rules || [];
     const pf3 = pageFeats3[p];
     for (const r of pageRules) {
+      // A running header left of the body column can pull bodyLeft past a page's margin, so check pageFlush first.
       if (r.left > (pageFlush.get(p) ?? bodyLeft) + bodySize) continue; // not anchored at the page's left margin
-      // (per-page flush, not doc-wide bodyLeft: a running-header docket stamp left of the body can drag doc-wide bodyLeft past the true margin, so a real separator would fail this left-anchor gate)
       // A full-width horizontal rule is a section or table border, not a note separator, but such borders are often drawn as per-cell segments each individually under the width threshold.
       // Union every rule collinear with this one (same y) before the width test so a segmented border still reads as full-width and is rejected.
       let uLeft = r.left; let uRight = r.right;
@@ -1300,11 +1300,9 @@ export function analyzeLayout(pages, opts = {}) {
       if (cur > keyRun) keyRun = cur;
     }
     const sectionHead = keyRun >= 3 && insts.every((i) => i.nChar <= 60) && !insts.some((i) => i.sup);
-    // Recurrence gate: a true running head/footer/stamp recurs on a substantial fraction of pages, not merely >= 3 absolute (a repeated URL tail or caption recurs on only a handful).
-    // A section running-footer or section head is exempt because its contiguous run is positive evidence in its own right.
     const belowRecurrenceGate = keyPages.size < Math.max(3, contentPageCount * 0.25) && !sectionFooter;
     if (belowRecurrenceGate && !sectionHead) continue;
-    // Majority rather than any single instance, so one spurious superscript inside a genuine Bates run cannot exempt the whole stamp.
+    // Require a majority so one stray superscript in a long Bates run does not disqualify the sequence.
     const supLed = insts.filter((i) => i.sup).length * 2 >= insts.length;
     const pageTracking = !supLed && best >= Math.max(3, keyPages.size * 0.6);
     // Furniture established by a page-tracking number (offset recurrence or a section running-footer), as opposed to the text-only section-head / style paths below.
@@ -1334,8 +1332,7 @@ export function analyzeLayout(pages, opts = {}) {
     // A run-admitted key (section head/footer below the recurrence gate) may be shared by a one-off section-opener heading sitting just inside the margin band.
     // Mark only instances in the tight band where the running-head banner actually sits, so that title stays a heading rather than being dropped as furniture.
     if (runAdmittedKeys.has(f.marginKey) && !(f.topFrac < 0.08 || f.bottomFrac > 0.92)) continue;
-    // Keys are digit-stripped, so a numberless body line can collapse onto the number-key of a footer that carries the page number.
-    // That line is not the stamp, and marking it furniture would delete its content on export.
+    // marginKey strips digits, so a numberless body line can collide with a page-numbered footer's key.
     if (numberKeys.has(f.marginKey) && !/\d/.test(f.text)) continue;
     f.runningFurniture = true;
   }
@@ -1415,7 +1412,7 @@ export function analyzeLayout(pages, opts = {}) {
     const n = pages[f.page].n;
     const width = pages[f.page].dims?.width || 1;
     for (const { value, box, whole } of found) {
-      // Stamps pad their counts with leading zeros ("pg. 01") and printed page numbers rarely do.
+      // Filing headers and Bates numbers pad their counts with leading zeros ("pg. 01") and printed page numbers rarely do.
       if (value.length > 1 && value[0] === '0') continue;
       const across = (box.left + box.right) / 2 / width;
       /** @type {PageNumCandidate} */
@@ -3068,9 +3065,7 @@ function isStrongBreak(reason, model) {
 function geometricBreak(f, prev, model, curParFirst) {
   if (f.top < prev.top - f.height * 0.5) return { newPar: true, reason: 'new column' };
 
-  // Furniture (running header/footer, Bates stamp) is often painted out of visual position in the content stream.
-  // A top-margin line and a bottom-margin line can therefore land adjacent despite sitting at opposite page extremes.
-  // No real paragraph spans half the page height, so a >half-page downward jump between consecutive lines is always a boundary.
+  // Out-of-order stream painting can place a top-margin line right before a bottom-margin line.
   if (f.topFrac - prev.topFrac > 0.5) return { newPar: true, reason: 'page wrap' };
 
   // An OCR layer keeps the recognizer's line order, so consecutive lines can come from unrelated regions of a form or a multi-up sheet.
@@ -3744,7 +3739,7 @@ function classifyRole(f, model, colWidth, prev) {
     }
     // A wrapped prose line resumes lowercase where a stacked heading or label never does, so the share separates a column of body text from a block of same-size headings.
     const proseRun = runLen >= 5 && runLower / runLen >= 0.3;
-    // A line at >= 2.5x body size is display text on size alone: a giant stamp's bbox spans the column and overlaps neighbours, defeating every shape test.
+    // A giant watermark's bbox can span the column and overlap neighbors, failing every shape test.
     displaySingleton = (!proseRun && (short || centered || (f.gapAbove ?? Infinity) > model.leading * 1.2))
       || f.sizeRatio >= 2.5;
   }

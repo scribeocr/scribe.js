@@ -637,9 +637,6 @@ export class ViewerImageCache {
 
     if (viewer.getPageStop(n) === null) return;
 
-    // Each render is stamped. Only the latest render for this page is applied.
-    // A slower earlier render completing out of order (LIFO can run a newer request first) cannot overwrite a newer one.
-    // The superseding call (or a delete) removes the discarded canvas.
     const seq = (this._renderSeq[n] || 0) + 1;
     this._renderSeq[n] = seq;
 

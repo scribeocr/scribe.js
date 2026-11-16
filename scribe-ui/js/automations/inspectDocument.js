@@ -650,10 +650,13 @@ export function buildInspectWorkspace(host, container, nav = null) {
       const stats = doc.inputData.pageStats;
       const type = doc.inputData.pdfType;
       if (stats) {
-        const textPages = stats.filter((p) => p && p.visibleReadableChars >= 100).length;
+        const bodyPages = stats.filter((p) => p && p.bodyReadableChars >= 100).length;
         const scanPages = stats.filter((p) => p && p.largestImageFrac >= 0.95).length;
-        const stampNote = textPages ? ` (${textPages} page${textPages > 1 ? 's' : ''} with stamps only)` : '';
-        const textKind = type === 'text' ? `Native text on ${textPages} of ${pageCount} pages` : type === 'ocr' ? `OCR layer on ${pageCount} pages` : `No usable text${stampNote}`;
+        const sparseNative = !bodyPages && doc.ocr?.active === doc.ocr?.pdf
+          && stats.some((p) => p && p.bodyReadableChars > 0 && p.largestImageFrac < 0.95);
+        const textKind = type === 'ocr' ? `OCR layer on ${pageCount} pages`
+          : bodyPages ? `Native text on ${bodyPages} of ${pageCount} pages`
+            : sparseNative ? 'Sparse native text' : 'No usable text';
         contents.push(['Text', textKind]);
         contents.push(['Scanned pages', scanPages ? `${scanPages} of ${pageCount}` : null]);
       }

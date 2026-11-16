@@ -4883,7 +4883,7 @@ export function createLibraryInstance(viewer, opts) {
       const entry = manifest.docs[p];
       delete manifest.docs[p];
       manifest.docs[np] = entry;
-      // The transfer stamps a fresh file time, and without the matching entry time the next scan would queue a pointless verify.
+      // The transfer writes a fresh file time, and without the matching entry time the next scan would queue a pointless verify.
       entry.mtime = mtimes.get(np) ?? entry.mtime;
     }
     manifest.dirs = (manifest.dirs ?? []).map(rekey).sort();
@@ -4940,7 +4940,7 @@ export function createLibraryInstance(viewer, opts) {
     const failed = [];
     fsOpBusy = true;
     if (ingest) ingest.paused = true;
-    const stamp = Date.now();
+    const arrivedAt = Date.now();
     let partial = false;
     for (const key of keys) {
       if (key.endsWith('/')) {
@@ -4971,12 +4971,11 @@ export function createLibraryInstance(viewer, opts) {
         const moved = await store.moveFile(key, destDir);
         delete manifest.docs[key];
         manifest.docs[moved.relPath] = entry;
-        // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
         entry.mtime = moved.mtime;
         moves.push({
           kind: 'doc', from: key, to: moved.relPath, hash: entry.hash, arrivedBefore: entry.arrived ?? null,
         });
-        entry.arrived = stamp;
+        entry.arrived = arrivedAt;
         selectedPaths.delete(key);
       } catch (err) {
         viewer._showToast(`Couldn't move “${titleOf(key)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
@@ -5673,7 +5672,6 @@ export function createLibraryInstance(viewer, opts) {
           }
         }
         const result = orig.apply(this, args);
-        // A completed recognition is what the next checkpoint stamps as the document's recognition state.
         if (name === 'recognize') Promise.resolve(result).then(() => { if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryRecognized = true; }).catch(() => {});
         return result;
       };

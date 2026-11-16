@@ -101,8 +101,7 @@ export class ScribeViewerOpts {
      */
     this.onDocAddress = null;
     /**
-     * Author name stamped onto comments and notes created in this viewer (PDF /T). Default `''` (unauthored).
-     * Never auto-derived from OS/browser identity; the embedder sets it if wanted.
+     * Author name recorded on comments and notes created in this viewer (PDF `/T`).
      */
     this.commentAuthor = '';
     /**

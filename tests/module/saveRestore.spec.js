@@ -69,7 +69,6 @@ describe('Check .scribe export function.', () => {
       expect(doc.ocr.active[0].pars.length, 'fixture page 0 carries 14 analyzed paragraphs').toBe(14);
       expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'every fixture line belongs to a paragraph').toBe(39);
 
-      // Stamping the live page would corrupt the export comparison below, so the guard runs on a detached copy.
       const orig = structuredClone(doc.ocr.active[0]);
 
       // The sentinel pass below cannot fill empty arrays or fields that need a valid value, so populate those by hand first.
@@ -82,7 +81,7 @@ describe('Check .scribe export function.', () => {
       line0.orientation = 3;
       const word0 = line0.words[0];
       word0.readings = [{
-        source: 'stamp', text: 'alt', conf: 1, rank: 2, span: 1, msg: 'stamp',
+        source: 'sentinel', text: 'alt', conf: 1, rank: 2, span: 1, msg: 'sentinel',
       }];
       word0.styleRuns = [{ i: 1, style: { bold: true } }];
       orig.pars[0].type = 'footnote';
@@ -91,23 +90,23 @@ describe('Check .scribe export function.', () => {
       orig.pars[0].footnoteRefId = word0.id;
       word0.footnoteParId = orig.pars[0].id;
 
-      // Stamp every defaulted field, so a field the clone forgets cannot pass the comparison by matching the constructor default on both sides.
-      const skipStamp = new Set(['readings', 'chars', 'styleRuns', 'par', 'page', 'line']);
-      const stamped = new Set();
+      // Populate every defaulted field with a sentinel, so a field the clone forgets cannot pass the comparison by matching the constructor default on both sides.
+      const skipSentinel = new Set(['readings', 'chars', 'styleRuns', 'par', 'page', 'line']);
+      const populated = new Set();
       /** @param {any} obj */
-      const stamp = (obj) => {
-        if (!obj || typeof obj !== 'object' || stamped.has(obj)) return;
-        stamped.add(obj);
+      const fillSentinels = (obj) => {
+        if (!obj || typeof obj !== 'object' || populated.has(obj)) return;
+        populated.add(obj);
         for (const k of Object.keys(obj)) {
-          if (skipStamp.has(k)) continue;
+          if (skipSentinel.has(k)) continue;
           const v = obj[k];
           if (v === null || v === undefined || v === '') obj[k] = `sentinel-${k}`;
           else if (v === false) obj[k] = true;
           else if (v === 0) obj[k] = 7;
-          else if (typeof v === 'object') stamp(v);
+          else if (typeof v === 'object') fillSentinels(v);
         }
       };
-      stamp(orig);
+      fillSentinels(orig);
 
       const clone = scribe.utils.ocr.clonePage(orig);
 

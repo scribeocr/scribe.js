@@ -89,11 +89,11 @@ export function assignPageLineNums(pages) {
           });
         }
       }
-      const stamped = line.words.length > 1 && /^\d{1,2}:\d{2}(:\d{2})?$/.test(t.trim());
-      const lead = leadingLineNumber(stamped ? { words: line.words.slice(1) } : line);
+      const hasTimestamp = line.words.length > 1 && /^\d{1,2}:\d{2}(:\d{2})?$/.test(t.trim());
+      const lead = leadingLineNumber(hasTimestamp ? { words: line.words.slice(1) } : line);
       if (!lead || lead.value < 1 || lead.value > MAX_VALUE) continue;
       // The row's center is the number token's, since extraction can join two stacked numbers into one line.
-      const numBox = line.words[lead.wordIndex + (stamped ? 1 : 0)].bbox;
+      const numBox = line.words[lead.wordIndex + (hasTimestamp ? 1 : 0)].bbox;
       const cy = (numBox.top + numBox.bottom) / 2;
       const cx = (line.bbox.left + line.bbox.right) / 2;
       const inTable = !!pg.tableBoxes && pg.tableBoxes.some((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
@@ -103,7 +103,6 @@ export function assignPageLineNums(pages) {
     }
     for (const c of trailing) cands.push(c);
     if (cands.length < MIN_RUN) continue;
-    // A page reads in the frame most of its lines are stored in, so a line stored in another frame (a stamp along the edge, a sideways margin note) is neither a row nor a label.
     const oc = [0, 0, 0, 0];
     for (const l of pg.lines) oc[l.orientation || 0]++;
     const orientation = oc.indexOf(Math.max(...oc));
@@ -282,9 +281,9 @@ export function assignPageLineNums(pages) {
         if (toks.some(({ t }) => /^\(?pages\b/i.test(t))) continue; // the sheet footer "2 (Pages 2 - 5)"
         if (/\(\s*\d+\s*[-–]\s*\d+\s*\)/.test(toks.map(({ t }) => t).join(' '))) continue; // the sheet footer "Page: 17 (65 - 68)"
         const bareChain = toks.every(({ t }) => /^\d{1,4}$/.test(t) || /^[-–—[\]()]+$/.test(t));
-        // A court's filing stamp ("Document 12-3 filed 01/02/23 ... pg 4 of 17") counts the filing's sheets, and its "of 17" can wrap to the next line.
-        // An exhibit or appendix reference ("Exhibit B, Page 18") paginates the binder.
-        const stamp = toks.some(({ t }) => /^(filed|document|ex\.?|exh\.?|exhibit|app\.?|appendix|appx\.?|attachment|att\.?|tab)$/i.test(t.replace(/,$/, '')));
+        // A filing header's "of N" can wrap to the next line and miss the "of" check below.
+        // An exhibit or appendix header ("Exhibit B, Page 18") paginates the binder.
+        const filingHeader = toks.some(({ t }) => /^(filed|document|ex\.?|exh\.?|exhibit|app\.?|appendix|appx\.?|attachment|att\.?|tab)$/i.test(t.replace(/,$/, '')));
         for (let i = 0; i < toks.length; i++) {
           const t = toks[i].t.replace(/^[-–—[\]()]+|[-–—[\]()]+$/g, '');
           // A leading zero marks a Bates or exhibit number, except the four-digit padding of a transcript printed from its ASCII file ("0004").
@@ -293,7 +292,7 @@ export function assignPageLineNums(pages) {
           if (v < 1) continue;
           const prev = i > 0 ? toks[i - 1].t : ''; const nextTok = i + 1 < toks.length ? toks[i + 1].t : '';
           if (/^of$/i.test(nextTok) || /^of$/i.test(prev)) continue; // "Page 3 of 120" counts sheets
-          const pageForm = /^(page|pg\.?|p\.)[:.]?$/i.test(prev) && !stamp;
+          const pageForm = /^(page|pg\.?|p\.)[:.]?$/i.test(prev) && !filingHeader;
           if (!pageForm && !bareChain) continue;
           if (!pageForm && t.length === 4 && v >= 1900 && v <= 2100) continue;
           // A bare integer in the number column's own x-range is a row number above the run, unless it is too large or too long to be one.
@@ -325,7 +324,6 @@ export function assignPageLineNums(pages) {
       });
     }
   }
-  // The other band is read only when the document's band offers nothing, since an exhibit or filing stamp there ("Page 962") paginates the filing.
   for (const info of infos) {
     for (const r of info.regions) {
       const pref = r.labelCands.filter((c) => c.foot === docFoot);

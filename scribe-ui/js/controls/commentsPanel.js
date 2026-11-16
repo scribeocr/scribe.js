@@ -27,7 +27,7 @@ const QUOTE_SCROLL_MAX_PX = 160;
 const QUOTE_SCROLL_SLACK_PX = 64;
 
 /**
- * Annotation types listed as drawn marks: shapes, free text, ink, and stamps.
+ * Annotation types listed as drawn marks in the comments panel.
  * Links and form fields are excluded because each has its own editing surface elsewhere.
  */
 const MARK_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline', 'freetext', 'ink', 'stamp']);
@@ -55,7 +55,7 @@ function annotAnchor(annot) {
 }
 
 /**
- * One panel row: a highlight group (quoting the text it covers), a freestanding note, a redaction mark group, or a drawn mark (shape, free text, ink, stamp).
+ * One row in the comments panel.
  * `top`/`left` are the anchor's page-space position, ordering rows within a page group.
  * `readOnly` rows are listed so they can be found and read, but carry no editable comment thread.
  * @typedef {{pageIndex: number, kind: 'highlight'|'note'|'redact'|'mark', comment: string, author: string, createdAt: string,
@@ -335,8 +335,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   }
 
   /**
-   * Write a comment onto a highlight group located by id rather than by UiOcrWord, so it works for a page not on screen.
-   * Author and date are stamped on the first non-empty comment; clearing the comment removes them and any reply thread.
+   * Set the comment on a highlight group, including on unrendered pages.
+   * Records author and date on the first non-empty comment.
+   * Clearing the comment removes author, date, and any replies.
    * @param {CommentRow} row
    * @param {string} comment
    */
@@ -565,7 +566,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (!next) return;
     if (!row.comment) {
       if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
-      // The setters stamp author + date on the annotation; copy them back into the row's cached fields.
       const annot = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot);
       row.comment = annot.comment || '';
       row.author = annot.author || '';
@@ -1438,7 +1438,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (save && !reverts) {
       if (target === 'root') {
         if (next !== row.comment) {
-          // Setters stamp/clear author + date on the annotation; re-read the row's cached fields to match.
           if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
           row.comment = row.annot.comment || '';
           row.author = row.annot.author || '';

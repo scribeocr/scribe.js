@@ -659,7 +659,7 @@ const brokenToUnicodeFont = (f) => {
   const cached = brokenFontCache.get(f);
   if (cached !== undefined) return cached;
   const fillerHashes = new Set();
-  // Subset producers pad Type3 fonts by stamping one filler outline across many charCodes, so glyphs sharing an outline are skipped rather than counted as mappings.
+  // Subset producers pad Type3 fonts by repeating one filler outline across unused charCodes.
   if (f.type3) {
     const enc = f.type3.encoding || {};
     const glyphs = f.type3.glyphs || {};
@@ -1699,16 +1699,12 @@ export function promoteContinuationTables(results) {
 }
 
 /**
- * Apply the document-level paragraph/layout pass (struct-element and outline stamping, then cross-page layout analysis) to a set of already-parsed pages, in place.
- * This is the single paragraph detector for native-text PDFs: the direct extraction path and the production worker path both call it, so both yield identical paragraphs.
- * Best-effort: structural inputs are opportunistic, and pages with no lines are skipped.
- *
+ * Run document-level layout and paragraph detection on parsed pages in place.
  * @param {ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
- * @param {Array<{objNum: number, objText: string}>} pages - page objects (index = page index).
- * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage}|null>} results - parsed pages (index = page index).
- * @param {"image"|"text"|"ocr"} [pdfType] - document text-quality class, used to disable the footnote subsystem on scanned line-numbered transcripts.
- *   Computed by the caller because some callers' results lack the char scores needed to derive it here.
+ * @param {Array<{objNum: number, objText: string}>} pages
+ * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage}|null>} results
+ * @param {"image"|"text"|"ocr"} [pdfType]
  */
 export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType = 'text') {
   try {
@@ -1739,8 +1735,7 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
   // Microsoft Word emits one struct element per paragraph, so on Word-authored docs analyzeLayout can treat element boundaries as paragraph boundaries outright.
   let elementFaithful = false;
   try { elementFaithful = docAuthoredByWord(objCache, pdfBytes); } catch { /* best-effort */ }
-  // Stamp each page with its detected data-table regions so analyzeLayout can suppress the lone-number and line-number-column furniture rules inside a table.
-  // A table's lone-integer cells are otherwise indistinguishable from page numbers and pleading line numbers, and would be dropped on export.
+  // Lone-integer cells inside a data table match the margin page-number and line-number rules unless analyzeLayout knows the table bounds.
   for (const r of results) {
     if (!r || !r.pageObj || !r.dataTablePage) continue;
     r.pageObj.tableBoxes = r.dataTablePage.tables.map((tbl) => {
@@ -1973,7 +1968,7 @@ export function detectPdfType(pdfBytes) {
  * @param {string} text - The content-stream text that replaces the operator.
  * @param {Map<string, PageFont>} extraFonts - Faces the rewrite names that the stream's resources do not list.
  * @param {number} scale - Page pixels per point, as the map was parsed at.
- * @returns {{ chars: Array<PositionedChar>, ops: Array<ShowOp> }} The chars, each stamped with its place in one of `ops`, which carry the original's visible region.
+ * @returns {{ chars: Array<PositionedChar>, ops: Array<ShowOp> }} The chars, each tagged with its place in one of `ops`, which carry the original's visible region.
  */
 export function executeRewrittenOperator(glyphOpMap, op, text, extraFonts, scale) {
   const stream = glyphOpMap.streams[op.streamIdx];
@@ -2011,7 +2006,7 @@ export function executeRewrittenOperator(glyphOpMap, op, text, extraFonts, scale
  * @param {Map<string, { fillAlpha: ?number }>} [extGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
  * @param {Map<string, {nInputs: number, tint: object}>} [colorSpaces] - Separation/DeviceN color spaces from /Resources
- * @param {?GlyphOpMap} [glyphOpMap] - When given, every show operator is recorded with the text state it ran in, and every emitted character is stamped with its place in that operator.
+ * @param {?GlyphOpMap} [glyphOpMap] - When given, every show operator is recorded with the text state it ran in, and every emitted character records its place in that operator.
  * @param {?number[]} [initialVisible] - With a glyph-op map, the region visible when the stream starts, in the page frame.
  * @returns {Array<PositionedChar>}
  */

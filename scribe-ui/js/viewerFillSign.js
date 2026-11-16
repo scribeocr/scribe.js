@@ -259,7 +259,7 @@ function setFdOverlay(viewer, spec) {
 }
 
 /**
- * The placed fill & sign item (ink, stamp, or typed text) whose rendered element contains `target`, or null.
+ * Placed fill-and-sign item whose rendered element contains `target`, or null.
  * @param {?EventTarget} target
  * @returns {?{n: number, row: FillItemRow}}
  */

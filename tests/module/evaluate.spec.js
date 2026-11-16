@@ -50,7 +50,7 @@ describe('Check evaluate function.', () => {
     }, {
       source: 'abbyy', text: 'PageId', conf: 40, rank: 2, msg: 'c1',
     }];
-    // Three words' flags are stamped wrong on a clone to prove the consensus sets its own.
+    // Three words' flags are set wrong on a clone to prove the consensus sets its own.
     const base = doc.ocr.active.map((p) => scribe.utils.ocr.clonePage(p));
     for (const w of scribe.utils.ocr.getPageWords(base[0])) {
       if (['word_1_41', 'word_1_11', 'word_1_325'].includes(w.id)) { w.compTruth = w.id === 'word_1_41'; w.matchTruth = w.id !== 'word_1_41'; }

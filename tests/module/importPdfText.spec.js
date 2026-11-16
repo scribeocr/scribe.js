@@ -65,7 +65,7 @@ describe('Trailing punctuation across italic/roman style boundaries (070823vanli
     expect(words[8].styleRuns, 'uniform-style word should carry no style runs').toBeUndefined();
 
     // This PDF has bookmarks, so its heading anchors are what once landed on the pages in a previous, bugged version.
-    expect(strayFields(doc).page, 'parse-time data was stamped onto OcrPage, so it serializes into every .scribe export').toEqual([]);
+    expect(strayFields(doc).page, 'parse-time data was written onto OcrPage, so it serializes into every .scribe export').toEqual([]);
   });
 
   test('A one-page export of the sparse cover re-imports with its text active', async () => {
@@ -834,8 +834,8 @@ describe('Check that PDF imports split lines correctly.', () => {
     expect(doc.ocr.active[3].lines[105].words[0].text).toBe('Anyfin');
 
     // This PDF is tagged, so its /Artifact flags and marked-content ids are what once landed on the words in a previous, bugged version.
-    expect(strayFields(doc).word, 'parse-time data was stamped onto OcrWord, so it serializes into every .scribe export').toEqual([]);
-    expect(strayFields(doc).char, 'parse-time data was stamped onto OcrChar, so it serializes into every .scribe export').toEqual([]);
+    expect(strayFields(doc).word, 'parse-time data was written onto OcrWord, so it serializes into every .scribe export').toEqual([]);
+    expect(strayFields(doc).char, 'parse-time data was written onto OcrChar, so it serializes into every .scribe export').toEqual([]);
   });
 
   test('Should correctly parse PDF lines (3rd doc)', async () => {
