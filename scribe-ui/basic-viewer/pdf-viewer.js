@@ -4484,16 +4484,17 @@ class ScribePDFViewer {
   }
 
   /**
-   * Where a drop at a client point would land, from a drag out of group `fromGroup`.
+   * Where a drop at a client point would land.
    * A tab lands on the other group's strip or its body; a card lands on either group.
    * With one group, the right half of the lane splits the window, unless the lane is too narrow to hold two groups.
+   * The lane's only document has no place on the right.
    * @param {number} x
    * @param {number} y
-   * @param {0|1} fromGroup
+   * @param {?Object} tab - The dragged tab, or the tab a dragged card's document is open in, if any.
    * @param {'tab'|'card'} what - A card over a library that fills the window is the library's to place.
    * @returns {?{kind: 'split'|'strip'|'body', group: 0|1, index: number, ix?: number, rect: {left: number, top: number, width: number, height: number, right: number, bottom: number}}}
    */
-  _dropTargetAt(x, y, fromGroup, what) {
+  _dropTargetAt(x, y, tab, what) {
     const g = this._rightGroup;
     if (what === 'card' && this._frontSurface()) return null;
     const root = this.pdfViewerElem.getBoundingClientRect();
@@ -4504,9 +4505,10 @@ class ScribePDFViewer {
     /** @param {{left: number, top: number, right: number, bottom: number}} r */
     const inRect = (r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
     const lane = this._laneBox ? box(this._laneBox) : null;
+    const stuck = !!tab && tab.group !== 1 && this._groupTabs(0).length === 1;
     if (!g) {
       if (!lane || this._phoneUi || !inRect(lane)) return null;
-      if (lane.width >= 2 * GROUP_MIN_WIDTH && x > lane.left + lane.width / 2) {
+      if (!stuck && lane.width >= 2 * GROUP_MIN_WIDTH && x > lane.left + lane.width / 2) {
         const half = {
           left: this._laneBox.left + this._laneBox.width / 2, top: this._laneBox.top, width: this._laneBox.width / 2, height: this._laneBox.height,
         };
@@ -4519,8 +4521,9 @@ class ScribePDFViewer {
       } : null;
     }
     /** @type {Array<0|1>} */
-    const targets = what === 'card' ? [1, 0] : [fromGroup === 1 ? 0 : 1];
+    const targets = what === 'card' ? [1, 0] : [tab?.group === 1 ? 0 : 1];
     for (const target of targets) {
+      if (target === 1 && stuck) continue;
       const stripEl = target === 1 ? g.strip.tabStripElem : this._tabStripElem;
       if (stripEl) {
         const sr = stripEl.getBoundingClientRect();
@@ -4566,7 +4569,7 @@ class ScribePDFViewer {
       return false;
     }
     const tab = this._groupTabs(fromGroup)[i];
-    const target = tab ? this._dropTargetAt(x, y, fromGroup, 'tab') : null;
+    const target = tab ? this._dropTargetAt(x, y, tab, 'tab') : null;
     if (phase === 'move') {
       this._showDropTarget(target, tab ? tab.name : '', x, y, 'tab');
       return !!target;
@@ -4583,14 +4586,15 @@ class ScribePDFViewer {
    * @param {number} x
    * @param {number} y
    * @param {string} label
+   * @param {?Object} tab - The tab the card's document is open in, if any.
    * @returns {?{group: 0|1, rect: {left: number, top: number, width: number, height: number}}} The target on a move or a drop, for the document library to act on.
    */
-  _cardDragTarget(phase, x, y, label) {
+  _cardDragTarget(phase, x, y, label, tab) {
     if (phase === 'cancel') {
       this._hideDropTarget();
       return null;
     }
-    const target = this._dropTargetAt(x, y, 0, 'card');
+    const target = this._dropTargetAt(x, y, tab, 'card');
     if (phase === 'move') this._showDropTarget(target, label, x, y, 'card');
     else this._hideDropTarget(!!target);
     return target ? { group: target.group, rect: target.rect } : null;

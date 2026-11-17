@@ -6718,12 +6718,13 @@ export function createLibraryInstance(viewer, opts) {
     barApproach: (reached, afterCrumbDrop) => (reached ? unfoldForDrag() : refoldAfterDrag(afterCrumbDrop)),
     foreignDrop: (phase, x, y, carried, ghost) => {
       if (carried.length !== 1 || carried[0].endsWith('/') || !viewer._cardDragTarget) return false;
-      const t = viewer._cardDragTarget(phase, x, y, titleOf(carried[0]));
       const relPath = carried[0];
       const entry = manifest?.docs[relPath];
+      // Matched as `openEntry` matches, so the target is offered for the tab the drop would act on.
       /** @param {Object} tb */
-      const isTab = (tb) => ownsTab(tb) && (entry?.hash ? tb.libraryHash === entry.hash : tb.libraryRelPath === relPath);
+      const isTab = (tb) => ownsTab(tb) && (tb.libraryRelPath === relPath || (!!entry?.hash && tb.libraryHash === entry.hash));
       const open = viewer._tabs.find(isTab);
+      const t = viewer._cardDragTarget(phase, x, y, titleOf(relPath), open ?? null);
       if (t && open && viewer._viewerShowing(open.doc) === (t.group === 1 ? viewer._rightGroup?.viewer : viewer.scribe)) {
         viewer._hideDropTarget();
         return false;
