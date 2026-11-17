@@ -3,6 +3,7 @@ import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { calcWordCharMetrics } from '../utils/fontUtils.js';
 import { FontCont } from '../containers/fontContainer.js';
 import { unescapeXml } from '../utils/miscUtils.js';
+import { symbolToUnicode, wingdingsToUnicode } from '../pdf/fonts/standardEncodings.js';
 
 const FONT_FAMILY = 'Times New Roman';
 const FONT_SIZE = 14;
@@ -348,9 +349,18 @@ export function parseStyles(stylesXml) {
  */
 
 /**
- * Parse XML text content docx run element (<w:r>)
+ * One piece of a run's inline content.
+ * @typedef {Object} RunItem
+ * @property {string} [text]
+ * @property {string} [footnoteId] - The footnote a `<w:footnoteReference>` points to.
+ * @property {boolean} [customMark] - Whether that reference prints a mark of its own in place of a number.
+ * @property {boolean} [footnoteRef] - Set for `<w:footnoteRef/>`, where a note prints its number.
+ */
+
+/**
+ * Parse a docx run element (<w:r>) into its styles and its inline content in document order.
  * @param {string} runXml
- * @returns {{text: string, styles: RunStyles}}
+ * @returns {{styles: RunStyles, items: Array<RunItem>}}
  */
 function parseRunElement(runXml) {
   /** @type {RunStyles} */
@@ -379,19 +389,58 @@ function parseRunElement(runXml) {
     styles.fontSize = parseInt(szMatch[1], 10) / 2;
   }
 
-  const textMatches = runXml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
-  let text = '';
-  for (const match of textMatches) {
-    text += unescapeXml(match[1]);
+  /** @type {Array<RunItem>} */
+  const items = [];
+  for (const match of runXml.matchAll(/<w:(t|sym|tab|br|cr|noBreakHyphen|footnoteReference|footnoteRef)(?=[\s/>])([^>]*?)(?:\/>|>([^<]*)<\/w:t>)/g)) {
+    const attrs = match[2];
+    let text = '';
+    if (match[1] === 't') {
+      text = unescapeXml(match[3] ?? '');
+    } else if (match[1] === 'sym') {
+      const symFont = (/w:font="([^"]*)"/.exec(attrs)?.[1] ?? '').toLowerCase();
+      const code = parseInt(/w:char="([0-9A-Fa-f]{1,4})"/.exec(attrs)?.[1] ?? '', 16);
+      // Word stores a symbol font's character at its own code or shifted by 0xF000 into the private use area.
+      const fontCode = code >= 0xF000 && code <= 0xF0FF ? code - 0xF000 : code;
+      /** @type {Record<number, number>|undefined} */
+      const symTable = symFont === 'symbol' ? symbolToUnicode : symFont === 'wingdings' ? wingdingsToUnicode : undefined;
+      const mapped = symTable?.[fontCode];
+      if (mapped !== undefined) {
+        text = String.fromCodePoint(mapped);
+      } else if (code >= 0x20 && (code < 0xD800 || code > 0xF8FF)) {
+        text = String.fromCodePoint(code);
+      }
+    } else if (match[1] === 'tab') {
+      text = '\t';
+    } else if (match[1] === 'br' || match[1] === 'cr') {
+      text = ' ';
+    } else if (match[1] === 'noBreakHyphen') {
+      text = '-';
+    } else if (match[1] === 'footnoteReference') {
+      const idMatch = /w:id="([^"]+)"/.exec(attrs);
+      if (idMatch) items.push({ footnoteId: idMatch[1], customMark: /w:customMarkFollows="(?:1|true|on)"/.test(attrs) });
+    } else {
+      items.push({ footnoteRef: true });
+    }
+
+    if (!text) continue;
+    const lastItem = items[items.length - 1];
+    if (lastItem && lastItem.text !== undefined) {
+      lastItem.text += text;
+    } else {
+      items.push({ text });
+    }
   }
 
-  return { text, styles };
+  return { styles, items };
 }
 
 /**
  * @typedef {Object} ParsedFootnote
  * @property {Array<{text: string, styles: RunStyles}>} runs
  * @property {string} [paraId] - The paragraph ID from Word (w14:paraId attribute)
+ * @property {string} [openingToken] - The first word of the note's text, where a custom-marked note prints its mark.
+ *    A Symbol-font asterisk (U+2217) in it is stored as a typed one.
+ *    Empty for a note that holds `<w:footnoteRef/>`, which prints its number there.
  */
 
 /**
@@ -418,22 +467,20 @@ export function parseFootnotes(footnotesXml) {
     const paraId = paraIdMatch ? paraIdMatch[1] : undefined;
 
     const runs = [];
+    let hasFootnoteRef = false;
     const runMatches = footnoteContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs);
 
     for (const runMatch of runMatches) {
-      const runContent = runMatch[1];
-
-      // Skip footnote reference markers (<w:footnoteRef/>)
-      if (/<w:footnoteRef\s*\/>/.test(runContent)) continue;
-
-      const parsed = parseRunElement(runContent);
-      if (parsed.text) {
-        runs.push(parsed);
+      const parsed = parseRunElement(runMatch[1]);
+      for (const item of parsed.items) {
+        if (item.footnoteRef) hasFootnoteRef = true;
+        if (item.text) runs.push({ text: item.text, styles: parsed.styles });
       }
     }
 
     if (runs.length > 0) {
-      footnotes.set(footnoteId, { runs, paraId });
+      const openingToken = hasFootnoteRef ? '' : (/^\s*(\S+)/.exec(runs[0].text) || ['', ''])[1].replace(/\u2217/g, '*');
+      footnotes.set(footnoteId, { runs, paraId, openingToken });
     }
   }
 
@@ -456,7 +503,10 @@ export function parseFootnotes(footnotesXml) {
  * @property {Array<ParsedRun>} runs
  * @property {ParType} type
  * @property {string} [footnoteId] - If type is 'footnote', this is the footnote ID
- * @property {number} [footnoteIndex] - If type is 'footnote', this is the 1-based footnote number
+ * @property {number} [footnoteIndex] - If type is 'footnote', its 1-based number among the auto-numbered footnotes.
+ *    A custom-marked footnote has none.
+ * @property {string} [footnoteMark] - If type is 'footnote', the mark Word shows for it, its number or its custom mark.
+ *    A note whose custom mark could not be read has none.
  * @property {string} [paraId] - The paragraph ID from Word (w14:paraId attribute)
  * @property {string} [marker] - The list marker as Word renders it, if numbered
  * @property {string | null} [styleId] - The Word style ID (e.g., "Heading1", "Normal")
@@ -476,6 +526,9 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
   const paragraphs = [];
   /** @type {Array<string>} */
   const footnoteOrder = [];
+  /** @type {Map<string, {label: string, index?: number}>} */
+  const footnoteMarks = new Map();
+  let autoNumbered = 0;
 
   /** @type {Map<string, number[]>} */
   const numberingCounters = new Map();
@@ -516,49 +569,59 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
       }
     }
 
-    const runMatches = parContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs);
-
-    for (const runMatch of runMatches) {
-      const runContent = runMatch[1];
-
-      const footnoteRefMatch = runContent.match(/<w:footnoteReference\s+[^>]*w:id="([^"]+)"/);
-      if (footnoteRefMatch) {
-        const footnoteId = footnoteRefMatch[1];
-        if (!footnotesMap.has(footnoteId)) continue;
-        if (!footnoteOrder.includes(footnoteId)) {
-          footnoteOrder.push(footnoteId);
+    /** @type {Array<{styles: RunStyles, items: Array<RunItem>}>} */
+    const parRuns = [];
+    for (const runMatch of parContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs)) {
+      const parsed = parseRunElement(runMatch[1]);
+      if (parsed.items.length === 0) continue;
+      if (parsed.styles.fontSize === null) {
+        if (parStyle?.fontSize) {
+          parsed.styles.fontSize = parStyle.fontSize;
+        } else if (defaultFontSize !== null) {
+          parsed.styles.fontSize = defaultFontSize;
         }
-        const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
-        runs.push({
-          text: String(footnoteIndex),
-          styles: {
-            bold: false,
-            italic: false,
-            smallCaps: false,
-            underline: false,
-            sup: true,
-            font: null,
-            fontSize: null,
-          },
-          footnoteId,
-        });
-        continue;
       }
+      if (parsed.styles.font === null && parStyle?.font) {
+        parsed.styles.font = parStyle.font;
+      }
+      parRuns.push(parsed);
+    }
 
-      const parsed = parseRunElement(runContent);
+    for (let r = 0; r < parRuns.length; r++) {
+      const { styles, items } = parRuns[r];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item.text) runs.push({ text: item.text, styles });
+        const footnoteData = item.footnoteId === undefined ? undefined : footnotesMap.get(item.footnoteId);
+        if (item.footnoteId === undefined || !footnoteData) continue;
 
-      if (parsed.text) {
-        if (parsed.styles.fontSize === null) {
-          if (parStyle?.fontSize) {
-            parsed.styles.fontSize = parStyle.fontSize;
-          } else if (defaultFontSize !== null) {
-            parsed.styles.fontSize = defaultFontSize;
+        let label = '';
+        if (item.customMark) {
+          // The mark follows its reference in the same run.
+          // Text in the next run is the mark only when the note opens with it, so that body text is never taken for a mark.
+          const nextInRun = items[i + 1];
+          const markItem = nextInRun || parRuns[r + 1]?.items[0];
+          const token = (/^\S+/.exec(markItem?.text ?? '') || [''])[0];
+          // A Symbol-font asterisk (U+2217) and a typed one mark the same note.
+          const tokenTyped = token.replace(/\u2217/g, '*');
+          const bareLength = tokenTyped.replace(/[.,;:!?)\]]+$/, '').length;
+          if (token && tokenTyped === footnoteData.openingToken) {
+            label = token;
+          } else if (bareLength > 0 && tokenTyped.slice(0, bareLength) === footnoteData.openingToken) {
+            label = token.slice(0, bareLength);
+          } else if (nextInRun) {
+            label = token;
           }
+          if (markItem && label) markItem.text = /** @type {string} */ (markItem.text).slice(label.length);
         }
-        if (parsed.styles.font === null && parStyle?.font) {
-          parsed.styles.font = parStyle.font;
+
+        if (!footnoteMarks.has(item.footnoteId)) {
+          footnoteOrder.push(item.footnoteId);
+          // A custom mark takes no number, since Word leaves custom-marked notes out of the count.
+          footnoteMarks.set(item.footnoteId, item.customMark ? { label } : { label: String(++autoNumbered), index: autoNumbered });
         }
-        runs.push(parsed);
+        if (!item.customMark) label = /** @type {{label: string}} */ (footnoteMarks.get(item.footnoteId)).label;
+        if (label) runs.push({ text: label, styles: { ...styles, sup: true }, footnoteId: item.footnoteId });
       }
     }
 
@@ -576,11 +639,17 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
     for (const footnoteId of footnoteOrder) {
       const footnoteData = footnotesMap.get(footnoteId);
       if (footnoteData) {
-        const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
+        const mark = /** @type {{label: string, index?: number}} */ (footnoteMarks.get(footnoteId));
         /** @type {Array<ParsedRun>} */
         const footnoteParagraphRuns = [];
 
-        for (const run of footnoteData.runs) {
+        let noteRuns = footnoteData.runs;
+        // A custom-marked note opens with its mark as text, which the paragraph's marker carries instead.
+        if (mark.index === undefined && mark.label && mark.label.replace(/\u2217/g, '*') === footnoteData.openingToken) {
+          noteRuns = [{ text: noteRuns[0].text.trimStart().slice(mark.label.length), styles: noteRuns[0].styles }, ...noteRuns.slice(1)];
+        }
+
+        for (const run of noteRuns) {
           const runWithSize = {
             text: run.text,
             styles: {
@@ -592,7 +661,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
         }
 
         paragraphs.push({
-          runs: footnoteParagraphRuns, type: 'footnote', footnoteId, footnoteIndex, paraId: footnoteData.paraId, styleId: 'FootnoteText',
+          runs: footnoteParagraphRuns, type: 'footnote', footnoteId, footnoteIndex: mark.index, footnoteMark: mark.label || undefined, paraId: footnoteData.paraId, styleId: 'FootnoteText',
         });
       }
     }
@@ -704,7 +773,7 @@ const convertDocumentXML = async ({
   let currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
 
   // Track footnote reference words by their footnote ID for linking
-  /** @type {Map<string, import('../objects/ocrObjects.js').OcrWord>} */
+  /** @type {Map<string, Array<import('../objects/ocrObjects.js').OcrWord>>} */
   const footnoteRefWords = new Map();
 
   for (const paragraph of paragraphs) {
@@ -727,7 +796,7 @@ const convertDocumentXML = async ({
     const parRuns = paragraph.runs;
     const parType = paragraph.type;
     const parFootnoteId = paragraph.footnoteId;
-    const parFootnoteIndex = paragraph.footnoteIndex;
+    const parFootnoteMark = paragraph.footnoteMark;
     const parParaId = paragraph.paraId;
     const parMarker = paragraph.marker;
     const parStyleId = paragraph.styleId;
@@ -754,6 +823,7 @@ const convertDocumentXML = async ({
       let currentX = MARGIN_HORIZONTAL;
       let lineComplete = false;
       let lastItemWasWhitespace = false;
+      let lastWordIsRef = false;
       let pendingSentenceEnd = false;
 
       while (runIndex < parRuns.length && !lineComplete) {
@@ -783,9 +853,11 @@ const convertDocumentXML = async ({
 
             // Check if we should append to the previous word (word continues across runs)
             // Only append if: we're at the start of a new run AND the last item was NOT whitespace
+            // A footnote reference stays a word of its own, since its link is a property of the whole word.
             const lastWord = lineObj.words[lineObj.words.length - 1];
             const stylesMatch = lastWord && lastWord.style.sup === run.styles.sup && lastWord.style.size === run.styles.fontSize;
-            const shouldAppend = lastWord && wordIdx === 0 && charIndexInRun === 0 && !lastItemWasWhitespace && stylesMatch;
+            const shouldAppend = lastWord && wordIdx === 0 && charIndexInRun === 0 && !lastItemWasWhitespace && stylesMatch
+              && !run.footnoteId && !lastWordIsRef;
 
             if (shouldAppend) {
               const combinedText = lastWord.text + word;
@@ -862,8 +934,14 @@ const convertDocumentXML = async ({
               wordObj.visualCoords = false;
 
               if (run.footnoteId) {
-                footnoteRefWords.set(run.footnoteId, wordObj);
+                const refWords = footnoteRefWords.get(run.footnoteId);
+                if (refWords) {
+                  refWords.push(wordObj);
+                } else {
+                  footnoteRefWords.set(run.footnoteId, [wordObj]);
+                }
               }
+              lastWordIsRef = !!run.footnoteId;
 
               lineObj.words.push(wordObj);
               currentX += wordWidth;
@@ -914,18 +992,18 @@ const convertDocumentXML = async ({
       parObj.type = parType;
       if (parMarker) {
         parObj.marker = parMarker;
-      } else if (parFootnoteIndex !== undefined) {
-        parObj.marker = String(parFootnoteIndex);
+      } else if (parFootnoteMark !== undefined) {
+        parObj.marker = parFootnoteMark;
       }
       if (parStyleId) parObj.debug.sourceStyle = parStyleId;
       for (const ln of parLines) ln.par = parObj;
 
       // Link footnote paragraphs to their reference words (bidirectional)
       if (parFootnoteId) {
-        const refWord = footnoteRefWords.get(parFootnoteId);
-        if (refWord) {
-          parObj.footnoteRefId = refWord.id;
-          refWord.footnoteParId = parObj.id;
+        const refWords = footnoteRefWords.get(parFootnoteId);
+        if (refWords) {
+          parObj.footnoteRefId = refWords[0].id;
+          for (const refWord of refWords) refWord.footnoteParId = parObj.id;
         }
       }
 

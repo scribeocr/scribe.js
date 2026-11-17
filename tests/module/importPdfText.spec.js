@@ -151,6 +151,25 @@ describe('Check small caps are detected in PDF imports.', () => {
     const footnotesXml = await entries.find((e) => e.filename === 'word/footnotes.xml').getData(new zipModule.TextWriter());
     expect(footnotesXml, 'the Word footnote carries the asterisk as its mark and the note text without the page\'s own asterisk')
       .toMatch(/<w:t>\*<\/w:t><\/w:r><w:r>(?:(?!<\/w:r>).)*<w:t xml:space="preserve"> Correspondence:<\/w:t>/);
+
+    const reDoc = await scribe.openDocument([new File([docxData], 'small_caps_examples.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })]);
+    const reWords = reDoc.ocr.active.flatMap((rePage) => rePage.lines.flatMap((line) => line.words));
+    const rePars = reDoc.ocr.active.flatMap((rePage) => rePage.pars);
+    const reRefs = reWords.filter((word) => word.footnoteParId);
+    expect(reRefs.map((word) => word.text), 'the Word export opens again with its asterisk reference and its numbered reference, the number counted without the asterisk')
+      .toEqual(['*', '1']);
+    expect(reWords[reWords.indexOf(reRefs[0]) - 1].text, 'the asterisk reference follows its title word when the Word export is opened again').toBe('EVIDENCE');
+    expect(reRefs[0].style.sup, 'the asterisk reference is superscript when the Word export is opened again').toBe(true);
+    expect(reRefs[0].style.font, 'the asterisk reference keeps the font of its title word when the Word export is opened again').toBe('AGaramond');
+    const reStarNote = rePars.find((par) => par.id === reRefs[0].footnoteParId);
+    expect(reStarNote?.marker, 'the asterisk note carries the asterisk as its label when the Word export is opened again').toBe('*');
+    expect(reStarNote && scribe.utils.ocr.getParText(reStarNote).slice(0, 35), 'the asterisk note opens with its text, not its mark, when the Word export is opened again')
+      .toBe('Correspondence: alexancr@usdoj.gov.');
+    const reNumberedNote = rePars.find((par) => par.id === reRefs[1].footnoteParId);
+    expect(reNumberedNote?.marker, 'the numbered note is numbered 1 when the Word export is opened again').toBe('1');
+    expect(reNumberedNote && scribe.utils.ocr.getParText(reNumberedNote).slice(0, 36), 'the numbered reference links to its note when the Word export is opened again')
+      .toBe('Gary S. Becker, Crime and Punishment');
+    await reDoc.close();
   });
 
   test('Should correctly import small caps printed using font size adjustments', async () => {
