@@ -130,9 +130,8 @@ export function unregisterFontFacesMatching(predicate) {
 }
 
 /**
- * Unregister every `FontFace` scoped to the given owning document id. Matches the two
- * docId-namespaced naming schemes the project uses: optimized fonts named
- * `<family> Opt d${docId}` and embedded PDF fonts prefixed `_pdf_d${docId}_`.
+ * Unregister the optimized `FontFace`s of the given owning document.
+ * Embedded PDF fonts (`_pdf_d*`) are named after the object cache that loaded them, not the document, and `PdfCore.unload` releases them.
  * Process-global `_scribe_*` substitute aliases and other docs' fonts are left untouched.
  * Browser counterpart to `ca.unregisterFontsForDoc`. No-op in Node.
  *
@@ -140,8 +139,7 @@ export function unregisterFontFacesMatching(predicate) {
  */
 export function unregisterFontFacesForDoc(docId) {
   const optSuffix = ` Opt d${docId}`;
-  const pdfPrefix = `_pdf_d${docId}_`;
-  return unregisterFontFacesMatching((family) => family.endsWith(optSuffix) || family.startsWith(pdfPrefix));
+  return unregisterFontFacesMatching((family) => family.endsWith(optSuffix));
 }
 
 /**

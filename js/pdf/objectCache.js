@@ -9,36 +9,17 @@ import {
   extractStream, findRootObjNum,
 } from './parsePdfUtils.js';
 
-/**
- * Maximum total bytes (sum of cached string `.length`) we hold in `textCache`
- * before evicting LRU entries. JS strings are UTF-16, so two bytes per char;
- * the cap below corresponds to ~64 MB of string memory.
- */
 const TEXT_CACHE_BUDGET_CHARS = 32 * 1024 * 1024;
-
-/**
- * Maximum total bytes of decoded ObjStm content held across all cached
- * object streams. Re-decompressing an evicted ObjStm is expensive (full
- * inflate), so this is set higher than the textCache budget.
- */
 const OBJ_STM_CACHE_BUDGET_CHARS = 32 * 1024 * 1024;
-
-/**
- * Maximum total bytes of decoded stream data held in `streamBytesCache`.
- * Page content streams and form XObject streams are typically fetched
- * multiple times (once by text extraction, once by path extraction,
- * and again per page that references a shared form). Caching the
- * decompressed bytes avoids re-running the full filter chain on every
- * repeat fetch. Bounded so that image-heavy multi-hundred-MB PDFs don't
- * blow up memory.
- */
 const STREAM_BYTES_CACHE_BUDGET = 128 * 1024 * 1024;
 
+// Node workers share a process-wide font registry keyed by docId, whereas each browser worker has its own.
+// Loaded synchronously because top-level `await` deadlocks scribe-ui's import cycles in the bundled app.
+const THREAD_ID = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
+  ? process.getBuiltinModule('node:worker_threads').threadId
+  : 0;
 let _objectCacheDocIdCounter = 0;
 
-/**
- * Cache for reading PDF objects, handling both direct objects and ObjStm-contained objects.
- */
 export class ObjectCache {
   /**
    * @param {Uint8Array} pdfBytes
@@ -47,138 +28,61 @@ export class ObjectCache {
   constructor(pdfBytes, xrefEntries) {
     this.pdfBytes = pdfBytes;
     this.xrefEntries = xrefEntries;
-    /**
-     * Process-unique identifier for this document.
-     * @type {number}
-     */
-    this.docId = ++_objectCacheDocIdCounter;
-    /**
-     * LRU cache of object-text strings keyed by objNum. `Map` insertion order
-     * is the LRU order; on hit we delete + re-set to refresh recency.
-     * @type {Map<number, string>}
-     */
+    this.docId = `${THREAD_ID}_${++_objectCacheDocIdCounter}`;
+    /** @type {Map<number, string>} */
     this.textCache = new Map();
-    /** @type {number} Total characters across all entries in `textCache` */
     this.textCacheChars = 0;
-    /**
-     * Synthetic objects injected at runtime (e.g. appearance streams generated for form fields that have a value but no /AP).
-     * Keyed by a synthetic objNum, each holds the object's dict text and its uncompressed stream bytes.
-     * Checked before the real xref in `getObjectText`/`getStreamBytes` and never evicted.
-     * @type {Map<number, { text: string, bytes: Uint8Array }>}
-     */
+    /** @type {Map<number, { text: string, bytes: Uint8Array }>} */
     this.syntheticObjects = new Map();
-    /**
-     * LRU cache of decompressed object streams. Each value is a map from
-     * contained-objNum to its raw text.
-     * @type {Map<number, Map<number, string>>}
-     */
+    /** @type {Map<number, Map<number, string>>} */
     this.objStmCache = new Map();
-    /** @type {number} Total characters across all per-object entries in `objStmCache` */
     this.objStmCacheChars = 0;
-    /**
-     * Cache of parsed FontInfo objects keyed by the font's indirect-object
-     * number. Populated by `parsePageFonts` so that documents which reference
-     * the same font from many containers (typical of Form-XObject-heavy PDFs)
-     * pay the per-font parse cost only once. Inline font dicts (no objNum)
-     * bypass this cache.
-     * @type {Map<number, *>}
-     */
+    /** @type {Map<number, *>} */
     this.fontCache = new Map();
-    /**
-     * Font-conversion outcomes keyed by fontObjNum.
-     * @type {Map<number, { familyName: string, usesPUA: boolean, cmapType: string|null, cidCollisions: Set<number>|null, fontMatrix: number[]|null, allGlyphsEmpty?: boolean }>}
-     */
+    /** @type {Map<number, { familyName: string, usesPUA: boolean, cmapType: string|null, cidCollisions: Set<number>|null, fontMatrix: number[]|null, allGlyphsEmpty?: boolean }>} */
     this.fontConversionCache = new Map();
-    /**
-     * Parsed ToUnicode CMaps keyed by CMap text.
-     * @type {Map<string, import('./fonts/parsePdfFonts.js').ToUnicodeMap>}
-     */
+    /** @type {Map<string, import('./fonts/parsePdfFonts.js').ToUnicodeMap>} */
     this.toUnicodeCMapCache = new Map();
-    /**
-     * The font program bytes the renderer actually draws with, keyed by fontObjNum.
-     * Native-text editing reads these so edited glyphs come from the same outlines as the raster.
-     * Never evicted.
-     * A `type3` entry is built from the font's CharProcs on request and carries its glyph table.
-     * @type {Map<number, { bytes: ArrayBuffer, kind: 'original'|'rebuilt'|'type3',
-     *   glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }> }>}
-     */
+    /** @type {Map<number, { bytes: ArrayBuffer, kind: 'original'|'rebuilt'|'type3', glyphs?: Array<{ name: string, codes: number[], text: ?string, pathHash: ?string, hasOutline: boolean }> }>} */
     this.fontBytesCache = new Map();
-    /**
-     * Cache of decompressed stream bytes keyed by stream object number.
-     * Populated by `getStreamBytes`. Eliminates repeat decompression when
-     * (a) text and path extraction both walk the same page content stream,
-     * and (b) a Form XObject is referenced from multiple pages.
-     * FIFO-evicted when total cached bytes exceed the budget.
-     * @type {Map<number, Uint8Array>}
-     */
+    /** @type {Map<number, Uint8Array>} */
     this.streamBytesCache = new Map();
-    /** @type {number} Total bytes across all entries in `streamBytesCache`. */
     this.streamBytesCacheBytes = 0;
-    /**
-     * Doc-wide cache of decoded image bitmaps, keyed by the string from `decodedImageKey`
-     * (`objNum` for plain images, `objNum|fillColor` for masks that bake in the fill colour).
-     * Stores the JPX/CMYK-JPEG/CCITT/... -> ImageBitmap decode result,
-     * so an image drawn on many pages (logos, letterheads, repeated figures) is decoded once instead of once per page render.
-     * The bitmap lifecycle and value/byte-aware eviction are owned by renderPdfPage.js.
-     * @type {Map<string, { bitmap: *, maxW: number, maxH: number, bytes: number, decodeMs: number }>}
-     */
+    /** @type {Map<string, { bitmap: *, maxW: number, maxH: number, bytes: number, decodeMs: number }>} */
     this.decodedImageCache = new Map();
-    /** @type {number} Total bytes across all entries in `decodedImageCache`. */
     this.decodedImageCacheBytes = 0;
-    /** @type {?number} Byte budget of `decodedImageCache` set by the host, or null for the renderer's default. */
+    /** @type {?number} */
     this.decodedImageCacheBudget = null;
-    /**
-     * Doc-wide cache of Type 3 bitmap glyphs, keyed `${charProcObjNum}|${fillColor}`.
-     * renderPdfPage.js fills it and evicts the oldest entries past its byte budget, and PdfCore.unload closes the rest.
-     * @type {Map<string, *>}
-     */
+    /** @type {Map<string, *>} */
     this.type3GlyphBitmapCache = new Map();
-    /** @type {number} Total bytes across all entries in `type3GlyphBitmapCache`. */
     this.type3GlyphBitmapCacheBytes = 0;
-    /**
-     * Parsed ICC profile transforms keyed by the profile stream's objNum.
-     * @type {Map<number, {gamma: number[], matrix: number[]}|null>}
-     */
+    /** @type {Map<number, {gamma: number[], matrix: number[]}|null>} */
     this.iccProfileCache = new Map();
-    /** @type {Uint8Array|null} Base encryption key (null if not encrypted) */
+    /** @type {Uint8Array|null} */
     this.encryptionKey = null;
-    /** @type {number} Object number of the /Encrypt dict (excluded from decryption) */
     this.encryptObjNum = 0;
-    /** @type {string} Cipher mode: 'RC4' or 'AESV2' */
     this.cipherMode = 'RC4';
-    /** @type {Set<string>} All stream filter names encountered during parsing */
+    /** @type {Set<string>} */
     this.filtersUsed = new Set();
-    /** @type {Set<string>} Filter names that were not decoded (passed through raw) */
+    /** @type {Set<string>} */
     this.unsupportedFilters = new Set();
-    /** @type {Set<number>} Object numbers whose stream only decoded via partial-recovery inflate (known-corrupt) */
+    /** @type {Set<number>} */
     this.recoveredStreamObjs = new Set();
-    /** @type {boolean[]} Per-stream recovery flags from the most recent `getPageContentStreams` call, index-aligned with its return. */
+    /** @type {boolean[]} */
     this.lastContentStreamsRecovered = [];
-    /** @type {boolean} True if xref had entries with offsets beyond file size (severe corruption) */
     this.xrefSeverelyCorrupt = false;
-    /** @type {Set<number>|null} Lazily-computed set of OCGs hidden in View mode */
+    /** @type {Set<number>|null} */
     this._offOCGs = null;
-    /**
-     * Whether the lazy full-file xref repair scan has run.
-     * @type {boolean}
-     */
     this._xrefRepaired = false;
-    // Eagerly flag offsets past EOF (severe corruption). Cheap O(objects), kept eager
-    // because the one reader of the flag (encrypted-doc rendering) can run before any lookup misses.
+    // Checked eagerly because encrypted-page rendering reads `xrefSeverelyCorrupt` before any lookup miss triggers `_repairXref`.
     const fileLen = this.pdfBytes.length;
     for (const entry of Object.values(this.xrefEntries)) {
       if (entry.type === 1 && entry.offset >= fileLen) { this.xrefSeverelyCorrupt = true; break; }
     }
-    // Detect and set up encryption (synchronous — reads from raw bytes)
     setupEncryption(this);
   }
 
   /**
-   * Insert an entry into `textCache`, evicting FIFO entries while the total
-   * cached character count exceeds the budget. FIFO (insertion-order) eviction
-   * was chosen over LRU because PDF parsing is mostly read-once per object;
-   * the LRU "touch on hit" cost (delete+set on every cache lookup) was a
-   * significant overhead with no meaningful hit-rate benefit in practice.
    * @param {number} objNum
    * @param {string} content
    */
@@ -197,17 +101,12 @@ export class ObjectCache {
     const bytes = this.pdfBytes;
     const len = bytes.length;
 
-    // Byte-state-machine port of `/(?:^|[^\d])(\d+)\s+(\d+)\s+obj\b/g`.
-    // Keeps the latest digit-position seen for each objNum.
     const scanIndex = {};
     let pos = 0;
     while (pos < len) {
-      // Skip non-digit bytes
       while (pos < len && !isAsciiDigit(bytes[pos])) pos++;
       if (pos >= len) break;
-      // Require previous byte to be non-digit (regex's `(?:^|[^\d])`).
       if (pos > 0 && isAsciiDigit(bytes[pos - 1])) {
-        // Walk to end of this digit run, then continue.
         while (pos < len && isAsciiDigit(bytes[pos])) pos++;
         continue;
       }
@@ -217,17 +116,13 @@ export class ObjectCache {
         objNum = objNum * 10 + (bytes[pos] - 0x30);
         pos++;
       }
-      // On failure, rewind to numStart+1 (not pos) so a real `N M obj` header
-      // overlapping what we just consumed still gets matched — e.g. on input
-      // `%PDF-1.7\n\n4 0 obj`, the `7 4 ...` attempt fails at `obj`, and we
-      // need to retry from `\n\n4 0 obj` rather than skipping past the `4`.
+      // Rewind to numStart + 1 on failure because a failed match like "7\n4 " in "%PDF-1.7\n4 0 obj" has already consumed the next header's object number.
       if (pos >= len || !isPdfWhitespace(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isPdfWhitespace(bytes[pos])) pos++;
       if (pos >= len || !isAsciiDigit(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isAsciiDigit(bytes[pos])) pos++;
       if (pos >= len || !isPdfWhitespace(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isPdfWhitespace(bytes[pos])) pos++;
-      // Required: 'obj' followed by a non-word character (regex's `\b`).
       if (!bytesEqualAt(bytes, pos, 'obj')) { pos = numStart + 1; continue; }
       const after = pos + 3;
       if (after < len) {
@@ -237,7 +132,6 @@ export class ObjectCache {
           continue;
         }
       }
-      // Match — keep the last occurrence per object number.
       scanIndex[objNum] = numStart;
       pos = after;
     }
@@ -247,19 +141,13 @@ export class ObjectCache {
       const scannedOffset = scanIndex[objNum];
       const entry = this.xrefEntries[objNum];
       if (!entry || entry.type === 0) {
-        // Either no entry at all, or xref marks the slot free even though the
-        // file contains a live "objNum 0 obj" header. Trust the file, since
-        // pages frequently reference such "free" objects.
+        // Broken xrefs sometimes mark live, referenced objects free (type 0).
         this.xrefEntries[objNum] = { type: 1, offset: scannedOffset };
       } else if (entry.type === 1) {
-        // Validate the xref offset: the bytes at the offset must be "N <gen> obj"
         if (!matchesObjMarker(bytes, entry.offset, objNum)) entry.offset = scannedOffset;
       }
     }
 
-    // Validate all remaining type 1 xref entries: if the offset doesn't point to "N <gen> obj",
-    // the entry is corrupt and must be removed. This catches entries for object numbers
-    // that don't actually exist in the file (no scan match to override them).
     for (const objNumStr of Object.keys(this.xrefEntries)) {
       const objNum = Number(objNumStr);
       const entry = this.xrefEntries[objNum];
@@ -268,8 +156,6 @@ export class ObjectCache {
       }
     }
 
-    // Encrypted-PDF callers return blank when this flag is set.
-    // Clear it if repair has left every entry pointing at a real object header.
     if (this.xrefSeverelyCorrupt) {
       let anyStillBad = false;
       for (const objNumStr of Object.keys(this.xrefEntries)) {
@@ -286,7 +172,7 @@ export class ObjectCache {
   }
 
   /**
-   * Get the text content of an object (the dictionary/value part, not including "N 0 obj").
+   * Get an object's dictionary or value text, without the `N G obj` / `endobj` wrapper or stream.
    * @param {number} objNum
    * @returns {string|null}
    */
@@ -298,10 +184,6 @@ export class ObjectCache {
 
     let content = this._readObjectTextDirect(objNum);
     if (content === null && !this._xrefRepaired) {
-      // The xref as parsed had no usable entry for this object.
-      // Repair it once by scanning the whole file, then retry.
-      // A broken xref pays that scan a single time instead of once per missing object,
-      // and a valid xref never reaches here.
       this.ensureXrefRepaired();
       content = this._readObjectTextDirect(objNum);
     }
@@ -309,9 +191,6 @@ export class ObjectCache {
     return content;
   }
 
-  /**
-   * Ensure the full-file xref repair scan has run.
-   */
   ensureXrefRepaired() {
     if (this._xrefRepaired) return;
     this._xrefRepaired = true;
@@ -319,10 +198,6 @@ export class ObjectCache {
   }
 
   /**
-   * Reads an object's dictionary text directly from its xref entry.
-   * Unlike `getObjectText`, it does not cache the result and does not trigger a lazy xref repair.
-   * Returns null when the entry is missing or free, when a type-1 offset does not point at the object's
-   * "N G obj" header, or when a compressed object is absent from its object stream.
    * @param {number} objNum
    * @returns {string|null}
    */
@@ -332,9 +207,6 @@ export class ObjectCache {
     if (!entry) return null;
     if (entry.type === 1) {
       const offset = entry.offset;
-      // Validate the offset points at this object's header.
-      // A stale offset (e.g. an xref not updated after an incremental save)
-      // would otherwise read a different object verbatim.
       if (!matchesObjMarker(bytes, offset, objNum)) return null;
       const endObj = byteIndexOf(bytes, 'endobj', offset);
       if (endObj === -1) return null;
@@ -348,19 +220,12 @@ export class ObjectCache {
       const stmText = cachedStm ? cachedStm.get(objNum) : undefined;
       if (stmText !== undefined) return stmText;
     }
-    // type 0 (free) or unrecognized: a miss, so the caller can fall back to a lazy repair.
     return null;
   }
 
   /**
-   * Returns the set of OCG object numbers that should be hidden when rendering
-   * for on-screen viewing. Computed lazily on first call from:
-   *   1. /OCProperties/D/OFF[...] — explicitly hidden OCGs
-   *   2. /OCProperties/D/AS[...] — auto-state entries with /Event/View; for
-   *      each listed OCG, /Usage/View/ViewState=/OFF marks it hidden in View
-   *      mode (used to author print-only watermarks).
-   * Cached for the lifetime of the ObjectCache. Always returns the same Set
-   * instance so callers may compare or short-circuit on identity.
+   * Get the OCG object numbers hidden for on-screen viewing.
+   * @returns {Set<number>}
    */
   getOffOCGs() {
     if (this._offOCGs !== null) return this._offOCGs;
@@ -372,19 +237,13 @@ export class ObjectCache {
       if (catText) {
         const ocpText = resolveDictValue(catText, 'OCProperties', this);
         if (ocpText) {
-          // The /D default-config dict holds /OFF and /AS; it may be inline or a ref.
           const dText = resolveDictValue(ocpText, 'D', this) || ocpText;
           const offContent = resolveArrayValue(dText, 'OFF', this);
           if (offContent != null) {
             for (const m of offContent.matchAll(/(\d+)\s+\d+\s+R/g)) off.add(Number(m[1]));
           }
-          // AS (AutoState) — find entries with Event=/View and consult each
-          // OCG's Usage.View.ViewState. We render for on-screen viewing, so any
-          // OCG marked ViewState=/OFF must be hidden.
           const asBody = resolveArrayValue(dText, 'AS', this);
           if (asBody != null) {
-            // Each AS entry is a dict <</Event/View/OCGs[...]/Category[...]>>.
-            // Find top-level entries by scanning for matched << ... >> pairs.
             let j = 0;
             while (j < asBody.length) {
               const dictOpen = asBody.indexOf('<<', j);
@@ -414,7 +273,6 @@ export class ObjectCache {
                 const ocgNum = Number(m[1]);
                 const ocgText = this.getObjectText(ocgNum);
                 if (!ocgText) continue;
-                // /Usage and its /View sub-dict may each be inline or refs.
                 const usageText = resolveDictValue(ocgText, 'Usage', this);
                 const viewText = usageText && resolveDictValue(usageText, 'View', this);
                 if (viewText && /\/ViewState\s*\/OFF\b/.test(viewText)) off.add(ocgNum);
@@ -429,7 +287,7 @@ export class ObjectCache {
   }
 
   /**
-   * Get the raw stream bytes for a stream object.
+   * Get the decoded stream bytes for a stream object.
    * @param {number} objNum
    * @returns {Uint8Array|null}
    */
@@ -441,8 +299,6 @@ export class ObjectCache {
 
     const bytes = this.pdfBytes;
     let entry = this.xrefEntries[objNum];
-    // The entry is tested as `_readObjectTextDirect` tests it, so an object's dictionary and its stream are read from the same place.
-    // A stale offset read as it stands would return the stream of whatever object it lands in.
     if (!this._xrefRepaired && (!entry || entry.type === 0 || (entry.type === 1 && !matchesObjMarker(bytes, entry.offset, objNum)))) {
       this.ensureXrefRepaired();
       entry = this.xrefEntries[objNum];
@@ -457,18 +313,16 @@ export class ObjectCache {
   }
 
   /**
-   * Add object lacking an /AP in the input (certain form fields).
+   * Register an in-memory object served ahead of `xrefEntries`.
    * @param {number} objNum
-   * @param {string} text - The object's dict text (e.g. a Form XObject dictionary).
-   * @param {Uint8Array} bytes - The object's uncompressed content stream.
+   * @param {string} text - Dictionary or value text.
+   * @param {Uint8Array} bytes - Decoded stream bytes.
    */
   addSyntheticObject(objNum, text, bytes) {
     this.syntheticObjects.set(objNum, { text, bytes });
   }
 
   /**
-   * Insert a decompressed stream into the cache, evicting FIFO-oldest
-   * entries while the total byte count exceeds the budget.
    * @param {number} objNum
    * @param {Uint8Array} data
    */
@@ -485,7 +339,6 @@ export class ObjectCache {
   }
 
   /**
-   * Decompress an ObjStm and cache its contained objects.
    * @param {number} objStmNum
    */
   decompressObjStm(objStmNum) {
@@ -493,7 +346,7 @@ export class ObjectCache {
 
     /** @type {Map<number, string>} */
     const stmEntries = new Map();
-    // Insert immediately so concurrent callers don't double-decompress; populate below.
+    // Seeded up front so failed decompressions stay cached as empty and re-entrant lookups from extractStream cannot recurse.
     this.objStmCache.set(objStmNum, stmEntries);
 
     const bytes = this.pdfBytes;
@@ -503,7 +356,6 @@ export class ObjectCache {
     const offset = entry.offset;
     let endObj = byteIndexOf(bytes, 'endobj', offset);
     if (endObj === -1) endObj = Math.min(offset + 100000, bytes.length);
-    // Only /N and /First are read here, so the conversion is bounded to the dictionary.
     const objText = bytesToLatin1(bytes, offset, objTextEnd(bytes, offset, endObj));
 
     const objStmInt = (key) => {
@@ -524,7 +376,6 @@ export class ObjectCache {
 
     const streamText = bytesToLatin1(streamData);
 
-    // Parse the header: pairs of (objNum, offset) repeated N times
     const headerPart = streamText.substring(0, first).trim();
     const headerNums = headerPart.split(/\s+/).map(Number);
 
@@ -533,14 +384,12 @@ export class ObjectCache {
       const objNum = headerNums[i * 2];
       const objOffset = headerNums[i * 2 + 1];
       const startPos = first + objOffset;
-      // End is either the next object's start or end of stream
       const nextObjOffset = (i + 1 < n) ? first + headerNums[(i + 1) * 2 + 1] : streamText.length;
       const content = streamText.substring(startPos, nextObjOffset).trim();
       stmEntries.set(objNum, content);
       addedChars += content.length;
     }
     this.objStmCacheChars += addedChars;
-    // Evict LRU object streams while over budget. Always keep the just-loaded entry.
     while (this.objStmCacheChars > OBJ_STM_CACHE_BUDGET_CHARS && this.objStmCache.size > 1) {
       const firstKey = this.objStmCache.keys().next().value;
       if (firstKey === objStmNum) break;
@@ -553,11 +402,11 @@ export class ObjectCache {
   }
 
   /**
-   * Decrypt a PDF string's raw bytes for the given object.
-   * PDF encryption applies per-object keys to string values (Algorithm 3.1 from spec).
-   * @param {Uint8Array} encryptedBytes - Raw encrypted string bytes
-   * @param {number} objNum - Object number
-   * @param {number} [genNum] - Generation number; when omitted, looked up from xref entries.
+   * Decrypt a direct object's string bytes.
+   * @param {Uint8Array} encryptedBytes
+   * @param {number} objNum
+   * @param {number} [genNum]
+   * @returns {Uint8Array}
    */
   decryptStringBytes(encryptedBytes, objNum, genNum) {
     if (!this.encryptionKey || objNum === this.encryptObjNum) return encryptedBytes;
@@ -574,26 +423,24 @@ export class ObjectCache {
   }
 
   /**
-   * Decrypt the bytes of a string value read from an object's body.
-   * @param {Uint8Array|null} bytes - Raw string bytes extracted from the object body
-   * @param {number|null} objNum - Object number the string was read from
-   * @returns {Uint8Array|null} the decrypted bytes, or `bytes` unchanged when decryption does not apply
+   * Decrypt string bytes read from an object's body.
+   * @param {Uint8Array|null} bytes
+   * @param {number|null} objNum
+   * @returns {Uint8Array|null}
    */
   decryptObjectStringBytes(bytes, objNum) {
     if (!bytes || !this.encryptionKey || objNum == null) return bytes;
     const entry = this.xrefEntries[objNum];
-    // Only a directly-stored (type-1) object's strings carry a per-object key (spec Algorithm 3.1).
-    // A type-2 object-stream string is already plaintext from the stream decrypt, so re-decrypting corrupts it.
+    // Type-2 (ObjStm) strings are already decrypted with their enclosing stream, so decrypting again corrupts them.
     if (entry && entry.type === 1) return this.decryptStringBytes(bytes, objNum);
     return bytes;
   }
 
   /**
-   * Find a PDF string value for a given dict key in an object's raw bytes,
-   * decrypt it, and return the result. Works directly with raw bytes to avoid
-   * TextDecoder('latin1') Windows-1252 corruption of encrypted byte values.
-   * @param {number} objNum - Object number containing the dict
-   * @param {string} keyName - Dict key without leading slash (e.g., 'Registry')
+   * Find and decrypt a string entry in a direct object's dictionary.
+   * @param {number} objNum
+   * @param {string} keyName - Key without leading slash.
+   * @returns {string|null}
    */
   decryptDictString(objNum, keyName) {
     if (!this.encryptionKey) return null;
@@ -635,7 +482,6 @@ export class ObjectCache {
     } else if (bytes[pos] === 0x3C && pos + 1 < endIdx && bytes[pos + 1] !== 0x3C) {
       rawBytes = parsePdfHexString(bytes, pos).value;
     } else if (isAsciiDigit(bytes[pos])) {
-      // Indirect string: parse at the target object, keyed by the target's own number.
       const refM = /^(\d+)\s+\d+\s+R/.exec(bytesToLatin1(bytes, pos, Math.min(pos + 32, endIdx)));
       const target = refM && this.xrefEntries[Number(refM[1])];
       if (!target || target.type !== 1) return null;

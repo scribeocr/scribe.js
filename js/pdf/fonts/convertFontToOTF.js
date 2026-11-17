@@ -54,6 +54,19 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     };
     opentype.parseCFFTable(dv, 0, fontShell);
 
+    let hasOutline = false;
+    for (let gid = 1; gid < fontShell.nGlyphs; gid++) {
+      const outline = fontShell.glyphs.get(gid).path;
+      if (outline && outline.commands && outline.commands.length > 0) {
+        hasOutline = true;
+        break;
+      }
+    }
+    if (!hasOutline) {
+      fontObj.allGlyphsEmpty = true;
+      return null;
+    }
+
     // For CIDFontType0C the Top DICT FontMatrix is the CFF default [0.001 0 0 0.001 ...]
     // even when the per-FD FontMatrix carries the real scale (e.g. 1/2048). Using
     // the Top default for an FD-scaled font would render glyphs at 2x size.
@@ -290,7 +303,10 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
       }));
     }
 
-    if (glyphs.length <= 1) return null;
+    if (glyphs.length <= 1) {
+      console.warn(`[buildFontFromCFF] No glyph of "${fontObj.baseName}" could be mapped to a character code (${fontShell.nGlyphs} glyphs)`);
+      return null;
+    }
 
     const familyName = (fontObj.baseName || 'CFFFont').replace(/[^A-Za-z0-9\-]/g, '') || 'CFFFont';
     const font = new opentype.Font({
@@ -303,8 +319,8 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     });
 
     return { otfData: font.toArrayBuffer(), usesPUA, cidCollisions };
-  } catch (_e) {
-    // Font building failed — caller logs a warning
+  } catch (e) {
+    console.warn(`[buildFontFromCFF] Could not build "${fontObj.baseName}": ${e?.message || e}`);
     return null;
   }
 }
@@ -1105,7 +1121,6 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
     }
     if (!hasOutline) {
       fontObj.allGlyphsEmpty = true;
-      console.warn(`[rebuildFontFromGlyphs] Metrics-only subset for "${fontObj.baseName}" — all ${glyphs.length - 1} glyphs have empty outlines, skipping rebuild`);
       return null;
     }
 

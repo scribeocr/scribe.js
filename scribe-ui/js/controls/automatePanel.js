@@ -2540,7 +2540,6 @@ export function createAutomatePanel(app, rootClass, hooks) {
 
   backBtn.addEventListener('click', () => {
     // Panel navigation only, because the canvas mode keeps running whatever the panel shows.
-    // The toolbar button and the banner's Done are that mode's only exits.
     if (view === 'inspect' && inspectHandle?.back()) return;
     if (activeRun && activeRun.status === 'form') activeRun = null;
     setView('rest');
@@ -2643,8 +2642,13 @@ export function createAutomatePanel(app, rootClass, hooks) {
     // The Compare Versions banner's list toggle reflects the panel, so a close from the panel's own button is reported.
     if (view === 'compare') app._syncCompareRow?.();
   };
-  toggleElem.addEventListener('click', () => (openState ? close() : open()));
-  closeBtn.addEventListener('click', close);
+  const dismiss = () => {
+    if (view === 'inspect' && app._inspectTool?.isActive()) app._inspectTool.toolbarElem.click();
+    else if (view === 'tables' && app._extractTablesTool?.isActive()) app._extractTablesTool.toolbarElem.click();
+    close();
+  };
+  toggleElem.addEventListener('click', () => (openState ? dismiss() : open()));
+  closeBtn.addEventListener('click', dismiss);
 
   // The catalog's enabled/disabled reasons and the conversation both belong to the active document.
   const onDocChange = () => {

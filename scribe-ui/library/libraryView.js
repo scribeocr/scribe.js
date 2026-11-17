@@ -2007,6 +2007,9 @@ export function createLibraryInstance(viewer, opts) {
     const up = from !== '' && (dirPath === '' || from.startsWith(`${dirPath}/`));
     const came = up ? `${dirPath ? `${dirPath}/` : ''}${from.slice(dirPath ? dirPath.length + 1 : 0).split('/')[0]}/` : '';
     currentDir = dirPath;
+    selectedPaths.clear();
+    selAnchor = came || null;
+    if (came) selectedPaths.add(came);
     fullTextResults = null;
     filterText = '';
     searchInput.value = '';
@@ -5832,7 +5835,8 @@ export function createLibraryInstance(viewer, opts) {
         handle.hydrated.catch(() => {});
         // The index gives no words for a document it does not hold, as while it is rebuilt, so such a document loads now for its text.
         engine.hasDoc(entry.hash).then((indexed) => { if (!indexed) tab.doc.ensureHydrated(); }).catch(() => { });
-        if (!target.background) {
+        // Priming also waits for neighboring-page annotations in the background lane, so awaiting it on a plain open would hold the dropped thumbnail still.
+        if (!target.background && target.query) {
           await handle.primed;
           await markHits(viewer._viewerShowing(tab.doc));
         }

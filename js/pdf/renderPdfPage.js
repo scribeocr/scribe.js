@@ -106,11 +106,11 @@ function cmykPaletteToRgb(palette) {
 }
 
 /**
- * Stable family-name alias for an embedded PDF font, keyed on
- * `(docId, fontObjNum)`. Reused across every page of the document so
- * `GlobalFonts.register` dedups to one registration per typeface.
+ * Stable family-name alias for an embedded PDF font, keyed on `(docId, fontObjNum)`.
+ * Reused across every page of the document so a thread registers each typeface once.
+ * Unique across a Node process, since every thread there shares one font registry and a name registered twice draws with the font registered first.
  *
- * @param {{ docId: number }} objCache
+ * @param {{ docId: string }} objCache
  * @param {number|null|undefined} fontObjNum
  * @param {string} fallbackTag — used when fontObjNum is missing (inline
  *   Type 3 / fonts declared in the Resources dict).
@@ -319,7 +319,6 @@ async function convertAndRegisterFont(
   // Raw CFF
   if (!registered && isCFF) {
     const result = buildFontFromCFF(fontBytes, fontObj, fontObj.differences);
-    if (!result) console.warn(`[renderPdfPage] buildFontFromCFF returned null for "${fontObj.baseName}"`);
     if (result) {
       try {
         const face = loadFontFace(familyName, 'normal', 'normal', result.otfData);
