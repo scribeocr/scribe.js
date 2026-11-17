@@ -3206,36 +3206,53 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-cmt-card {
       position: absolute;
-      width: 210px;
+      pointer-events: auto;
+      width: 228px;
       box-sizing: border-box;
       background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow);
-      padding: 9px 11px;
-      font-size: 12.5px;
-      line-height: 1.45;
-      color: var(--scribe-ink);
-      z-index: 21;
-    }
-    .${r} .scribe-cmt-card.pinned {
-      border-color: var(--scribe-accent);
+      border: 1px solid var(--scribe-accent);
+      border-radius: 7px;
       box-shadow: 0 0 0 2px var(--scribe-accent-ring), var(--scribe-menu-shadow);
+      padding: 5px 8px 6px 17px;
+      font-size: 12.5px;
+      line-height: 18px;
+      color: var(--scribe-ink);
+      outline: none;
+      z-index: 21;
+      transition: border-color .14s ease, box-shadow .14s ease;
     }
-    .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
-    /* position: relative anchors the swatch shelf under the header.
-       The min-height is the verb button's, reserved even unpinned so the verbs appearing cannot push the thread down. */
-    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; min-height: 20px; margin-bottom: 5px; cursor: grab; position: relative; }
-    .${r} .scribe-cmt-quote {
-      min-width: 0;
-      font-size: 11px;
-      font-style: italic;
-      color: var(--scribe-ink-3);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+    .${r} .scribe-cmt-card.scribe-cmt-note-clean {
+      padding-left: 11px;
     }
-    /* The comment is edited in place: a seamless textarea that reads as the card's text. */
+    .${r} .scribe-cmt-card.is-editing-msg {
+      border-color: color-mix(in srgb, var(--scribe-accent) 62%, var(--scribe-line-strong));
+      box-shadow: 0 0 0 1.5px var(--scribe-accent-ring), var(--scribe-menu-shadow);
+    }
+    .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
+    .${r} .scribe-cmt-bar-row {
+      position: absolute;
+      left: 7px;
+      right: 7px;
+      top: 6px;
+      display: flex;
+      align-items: flex-start;
+      pointer-events: none;
+      z-index: 2;
+    }
+    .${r} .scribe-cmt-bar-row > * { pointer-events: auto; }
+    .${r} .scribe-cmt-bar-row .scribe-cm-bar {
+      width: 3px;
+      flex: 0 0 3px;
+      height: 16px;
+      margin: 0;
+      border-radius: 1.5px;
+      cursor: pointer;
+    }
+    .${r} .scribe-cmt-bar-row .scribe-cm-bar:hover,
+    .${r} .scribe-cmt-bar-row .scribe-cm-bar:focus-visible {
+      box-shadow: 0 0 0 2px var(--scribe-accent-ring);
+      outline: none;
+    }
     .${r} .scribe-cmt-text {
       display: block;
       box-sizing: border-box;
@@ -3248,25 +3265,45 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       overflow: hidden;
       background: transparent;
       font: inherit;
-      line-height: inherit;
+      font-size: 12.5px;
+      line-height: 18px;
+      min-height: 18px;
       color: inherit;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
     .${r} .scribe-cmt-text::placeholder { color: var(--scribe-ink-3); }
-    .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 7px; max-height: 320px; overflow-y: auto; }
+    .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: hidden; }
+    .${r} .scribe-cmt-thread.is-scrollable { overflow-y: auto; }
     .${r} .scribe-cmt-msg .scribe-cmt-meta { margin-bottom: 2px; }
-    .${r} .scribe-cmt-mtext { white-space: pre-wrap; overflow-wrap: anywhere; }
-    .${r} .scribe-cmt-card.pinned .scribe-cmt-mtext { cursor: text; }
-    .${r} .scribe-cmt-mtext.editing { outline: none; border-radius: 3px; box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
-    .${r} .scribe-cmt-more { font-size: 11px; color: var(--scribe-ink-3); }
-    .${r} .scribe-cmt-card.pinned .scribe-cmt-more { display: none; }
-    .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-msg.scribe-cmt-old { display: none; }
+    .${r} .scribe-cmt-mtext {
+      font-size: 12.5px;
+      line-height: 18px;
+      min-height: 18px;
+      margin: 0;
+      padding: 0;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      outline: none;
+      cursor: text;
+    }
     .${r} .scribe-cmt-reply { display: flex; align-items: flex-start; gap: 7px; }
     .${r} .scribe-cmt-reply .scribe-cm-ava { margin-top: 1px; }
     .${r} .scribe-cmt-reply .scribe-cmt-text { flex: 1 1 auto; width: auto; min-width: 0; }
-    .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-reply { display: none; }
-    .${r} .scribe-cmt-foot { display: flex; align-items: baseline; gap: 10px; margin-top: 1px; }
+    .${r} .scribe-cmt-foot {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin-top: 4px;
+      height: 18px;
+      min-height: 18px;
+      overflow: hidden;
+    }
+    .${r} .scribe-cmt-foot .scribe-cm-when {
+      font-size: 11px;
+      color: var(--scribe-ink-3);
+      white-space: nowrap;
+    }
     .${r} .scribe-cmt-reply-btn {
       margin: 0;
       padding: 0;
@@ -3277,18 +3314,101 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-weight: 500;
       color: var(--scribe-accent);
       cursor: pointer;
+      transition: opacity .13s ease;
     }
     .${r} .scribe-cmt-reply-btn:hover { text-decoration: underline; }
-    .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-reply-btn { display: none; }
-    /* Header verbs: shown pinned only, since the preview shows content, never controls. */
-    .${r} .scribe-cmt-hd-verbs { display: none; align-items: center; align-self: center; gap: 2px; flex: 0 0 auto; }
-    .${r} .scribe-cmt-card.pinned .scribe-cmt-hd-verbs { display: flex; }
+    .${r} .scribe-cmt-card.is-editing-msg .scribe-cmt-reply-btn {
+      opacity: .42;
+      pointer-events: none;
+    }
+    .${r} .scribe-cmt-right-slot {
+      position: relative;
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      min-width: 78px;
+      height: 18px;
+      overflow: hidden;
+    }
+    .${r} .scribe-cmt-hd-verbs { display: inline-flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+    .${r} .scribe-cmt-right-slot .scribe-cmt-hd-verbs {
+      position: absolute;
+      right: 0;
+      top: 0;
+      height: 18px;
+      opacity: 1;
+      transition: opacity .12s ease;
+    }
+    .${r} .scribe-cmt-msg.is-editing-this .scribe-cmt-right-slot .scribe-cmt-hd-verbs {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .${r} .scribe-cmt-edit-btns {
+      position: absolute;
+      right: 0;
+      top: 0;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .12s ease;
+    }
+    .${r} .scribe-cmt-msg.is-editing-this .scribe-cmt-edit-btns {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .${r} .scribe-cmt-mini-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: 4px;
+      padding: 0 5.5px;
+      height: 17px;
+      line-height: 1;
+      overflow: hidden;
+      font: inherit;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .${r} .scribe-cmt-mini-esc {
+      background: transparent;
+      color: var(--scribe-ink-3);
+    }
+    .${r} .scribe-cmt-mini-esc:hover {
+      background: var(--scribe-hover);
+      color: var(--scribe-ink);
+    }
+    .${r} .scribe-cmt-mini-save {
+      background: var(--scribe-accent-soft);
+      color: var(--scribe-accent);
+    }
+    .${r} .scribe-cmt-mini-save:hover {
+      background: var(--scribe-active);
+    }
+    .${r} .scribe-cmt-empty-foot {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      height: 18px;
+      min-height: 18px;
+      margin-top: 2px;
+      overflow: hidden;
+    }
+    .${r} .scribe-cmt-empty-foot .scribe-cmt-post-btn {
+      margin-left: auto;
+    }
     .${r} .scribe-cmt-vb {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 20px;
-      height: 20px;
+      width: 18px;
+      height: 18px;
       padding: 0;
       border: 0;
       border-radius: 5px;
@@ -3299,17 +3419,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-cmt-vb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-cmt-vb.scribe-cmt-vb-del:hover { color: var(--scribe-danger); }
-    .${r} .scribe-cmt-vb svg { width: 16px; height: 16px; display: block; }
+    .${r} .scribe-cmt-vb svg { width: 15px; height: 15px; display: block; }
     /* The panel verb is only a reveal shortcut, and on phones it would sit one small glyph from Delete, so it hides there (the sheet stays a dock tap away). */
     .${r}.scribe-phone .scribe-cmt-vb-panel { display: none; }
 
-    /* The quote bar doubles as the recolor control on highlight/markup cards (cmtFill arms it). */
-    .${r} .scribe-cmt-bar-ctl { cursor: pointer; }
-    .${r} .scribe-cmt-bar-ctl:hover, .${r} .scribe-cmt-bar-ctl:focus-visible { box-shadow: 0 0 0 2px var(--scribe-accent-ring); outline: none; }
     .${r} .scribe-cmt-shelf {
       position: absolute;
-      left: 8px;
-      top: calc(100% + 4px);
+      left: 0;
+      top: 20px;
       display: none;
       align-items: center;
       gap: 6px;
@@ -3318,26 +3435,93 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 99px;
       padding: 5px 9px;
       box-shadow: var(--scribe-menu-shadow);
-      z-index: 3;
+      z-index: 5;
     }
     .${r} .scribe-cmt-shelf.open { display: inline-flex; }
 
-
-    /* The notes layer is scaled by the zoom, so dividing it back out holds a constant on-screen size. */
-    .${r} .scribe-note-icon {
-      position: absolute;
-      width: calc(14px / var(--scribe-zoom, 1));
-      height: calc(14px / var(--scribe-zoom, 1));
-      color: var(--scribe-note);
-      pointer-events: auto;
-      cursor: grab;
-      user-select: none;
-      z-index: 3;
-      filter: drop-shadow(0 1px 2px rgba(30, 26, 16, .3));
+    @keyframes scribe-hl-seed-in {
+      from { opacity: 0; transform: translateY(2px) scale(.97); }
+      to { opacity: 1; transform: none; }
     }
-    .${r} .scribe-note-icon svg { width: 100%; height: 100%; display: block; }
-    .${r} .scribe-note-icon:active { cursor: grabbing; }
-    .${r} .scribe-note-icon:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; border-radius: 3px; }
+    @keyframes scribe-hl-caret-blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    .${r} .scribe-hl-seed {
+      position: absolute;
+      pointer-events: auto;
+      z-index: 22;
+      height: 22px;
+      box-sizing: border-box;
+      padding: 0 8px 0 7px;
+      border-radius: 6px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line-strong);
+      box-shadow: var(--scribe-page-shadow);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--scribe-ink-3);
+      font-size: 12px;
+      line-height: 1;
+      white-space: nowrap;
+      user-select: none;
+      cursor: text;
+      animation: scribe-hl-seed-in .14s cubic-bezier(.22, 1, .36, 1) backwards;
+      transition: border-color .12s ease, color .12s ease;
+    }
+    .${r} .scribe-hl-seed.scribe-hl-seed-min {
+      padding: 0 6px;
+      gap: 4.5px;
+    }
+    .${r} .scribe-hl-seed:hover {
+      border-color: var(--scribe-accent);
+      color: var(--scribe-ink-2);
+    }
+    .${r} .scribe-hl-seed:focus-visible {
+      border-color: var(--scribe-accent);
+      box-shadow: 0 0 0 2px var(--scribe-accent-ring), var(--scribe-page-shadow);
+      outline: none;
+    }
+    .${r} .scribe-hl-seed .scribe-cm-bar {
+      width: 3px;
+      flex: 0 0 3px;
+      height: 12px;
+      border-radius: 1.5px;
+    }
+    .${r} .scribe-hl-ibeam {
+      flex: 0 0 1.5px;
+      width: 1.5px;
+      height: 12px;
+      border-radius: 1px;
+      background: var(--scribe-ink-2);
+      animation: scribe-hl-caret-blink 1.06s steps(1, end) infinite;
+    }
+    .${r} .scribe-hl-seed-label { pointer-events: none; }
+    .${r} .scribe-shell-morph {
+      --z: 1;
+      --scribe-bub-bg: var(--scribe-surface);
+      --scribe-bub-border: var(--scribe-line-strong);
+      --scribe-box-radius: 5.5px;
+      position: absolute;
+      box-sizing: border-box;
+      z-index: 29;
+      pointer-events: none;
+    }
+    .${r} .scribe-card-ell-fade {
+      position: absolute;
+      font-size: 12.5px;
+      line-height: 18px;
+      color: var(--scribe-ink);
+      pointer-events: none;
+      z-index: 4;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-hl-seed,
+      .${r} .scribe-hl-ibeam,
+      .${r} .scribe-cmt-right-slot .scribe-cmt-hd-verbs,
+      .${r} .scribe-cmt-edit-btns { animation: none; transition: none; }
+    }
 
     .${r} .vertical-separator {
       background: var(--scribe-line-strong);

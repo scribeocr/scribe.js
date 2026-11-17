@@ -1824,12 +1824,18 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       // A group-less imported highlight has no group id, so its band is found through a covered word instead.
       /** @type {Array<HTMLElement>} */
       let litBands = [];
+      /** @type {Array<HTMLElement>} */
+      let litMarks = [];
       el.addEventListener('mouseenter', () => {
         litBands = [];
+        litMarks = [];
         if (row.groupId) {
           for (const map of scribe._highlightRectsByGroup || []) {
             const arr = map && map.get(row.groupId);
             if (arr) litBands.push(...arr);
+          }
+          if (scribe.elem) {
+            litMarks = /** @type {Array<HTMLElement>} */ ([...scribe.elem.querySelectorAll(`.scribe-hl-cmark[data-group-id="${row.groupId}"]`)]);
           }
         } else {
           const covered = scribe.getUiWords().find((kw) => kw.word.line.page.n === row.pageIndex
@@ -1837,10 +1843,13 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
           if (covered && covered.highlightRectElem) litBands.push(covered.highlightRectElem);
         }
         for (const band of litBands) band.classList.add('scribe-hl-hover');
+        for (const mark of litMarks) mark.classList.add('is-active');
       });
       el.addEventListener('mouseleave', () => {
         for (const band of litBands) band.classList.remove('scribe-hl-hover');
+        for (const mark of litMarks) mark.classList.remove('is-active');
         litBands = [];
+        litMarks = [];
       });
     }
 
@@ -2100,7 +2109,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     rebuild();
     let i = -1;
     if ('word' in target) {
-      // Try the fill before the line markup, matching the card's click-to-pin priority.
+      // Try the fill before the line markup, matching the card's click priority.
       // Each lookup also filters on kind, since a fill and a line markup can share a groupId.
       const rowKindOf = (row) => ((row.annot && row.annot.type) || 'highlight');
       if (target.highlightGroupId) {

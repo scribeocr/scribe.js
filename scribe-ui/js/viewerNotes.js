@@ -1,8 +1,7 @@
 // Freestanding note comments (PDF /Text): create, render, drag, and edit note marks in a dedicated per-page overlay layer.
 // A note is a comment not anchored to text.
-// Its model shape is `{ type:'text', bbox, comment, ... }` in viewer.doc.annotations.pages[n] (the same store highlights use).
 import { TEXT_ANNOT_ICON_PX } from '../../js/pdf/parsePdfAnnots.js';
-import { COMMENT_MARK_SVG } from './viewerLayerStyles.js';
+import { populateBubbleMark, computePageBubbleZoom } from './viewerCommentMarks.js';
 
 /**
  * Return the freestanding text notes on page n.
@@ -10,7 +9,7 @@ import { COMMENT_MARK_SVG } from './viewerLayerStyles.js';
  * @param {number} n
  * @returns {AnnotationText[]}
  */
-function pageNotes(viewer, n) {
+export function pageNotes(viewer, n) {
   return (viewer.doc.annotations.pages[n] || []).filter((a) => a.type === 'text');
 }
 
@@ -71,6 +70,94 @@ export function removeNote(viewer, annot, n) {
 }
 
 /**
+ * Place one note mark so the tip of its pointer lands on the note's anchor `(annot.bbox.left, annot.bbox.top)`, and set which way it unrolls on hover.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n
+ * @param {HTMLElement} icon
+ * @param {AnnotationText} annot
+ */
+function placeSingleNoteIcon(viewer, n, icon, annot) {
+  const { dims } = viewer.doc.pageMetrics[n];
+  const { z, effZ } = computePageBubbleZoom(viewer, n);
+  const sizePage = 22 / effZ;
+  const halfSpan = 11 / effZ;
+  const x = annot.bbox.left;
+  const y = annot.bbox.top;
+
+  // The left edge of the page's upright text, taken as where the left margin ends.
+  let colLeft = dims.width * 0.22;
+  const ocrPage = viewer.doc.ocr.active?.[n];
+  if (ocrPage) {
+    let minL = Infinity;
+    for (const ln of ocrPage.lines) {
+      if (ln.words.length > 0 && ln.orientation === 0 && ln.bbox.left < minL) minL = ln.bbox.left;
+    }
+    if (minL < Infinity) colLeft = minL;
+  }
+
+  let leftScreenRoom = (x + halfSpan) * z - 8;
+  let rightScreenRoom = (dims.width - x + halfSpan) * z - 8;
+  const pc = viewer.pageContainerArr[n];
+  const sc = viewer.scrollContainer;
+  if (pc && sc && pc.isConnected && sc.isConnected) {
+    const pcRect = pc.getBoundingClientRect();
+    const scRect = sc.getBoundingClientRect();
+    if (pcRect.width > 0 && scRect.width > 0) {
+      leftScreenRoom = (pcRect.left + (x + halfSpan) * z) - (scRect.left + 8);
+      rightScreenRoom = (scRect.right - 8) - (pcRect.left + (x - halfSpan) * z);
+    }
+  }
+
+  const unrollLeft = (x < colLeft + 6 / effZ && leftScreenRoom >= 96)
+    || (rightScreenRoom < 196 && leftScreenRoom > rightScreenRoom);
+  const bTopPage = Math.max(4 / effZ, Math.min(dims.height - sizePage - 6 / effZ, y - 25 / effZ));
+  let bLeftPage;
+  if (unrollLeft) {
+    const bRightPage = Math.max(halfSpan, Math.min(dims.width - 2 / effZ, x + halfSpan));
+    bLeftPage = bRightPage - sizePage;
+    icon.style.left = 'auto';
+    icon.style.right = `${dims.width - bRightPage}px`;
+  } else {
+    bLeftPage = Math.max(2 / effZ, Math.min(dims.width - halfSpan, x - halfSpan));
+    icon.style.right = 'auto';
+    icon.style.left = `${bLeftPage}px`;
+  }
+  icon.style.top = `${bTopPage}px`;
+  const tailClass = unrollLeft ? 'is-down-right' : 'is-down-left';
+  // The comment card opens from these, so it lands exactly on the mark.
+  icon.dataset.tail = tailClass;
+  icon.dataset.lockRight = unrollLeft ? '1' : '0';
+  icon.dataset.restLeftPage = String(bLeftPage);
+  icon.dataset.restTopPage = String(bTopPage);
+  icon.dataset.restW = String(sizePage * z);
+  icon.dataset.restH = String(sizePage * z);
+  populateBubbleMark(icon, {
+    isNote: true,
+    tailClass,
+    comment: annot.comment || '',
+    maxCardW: Math.floor(Math.max(unrollLeft ? leftScreenRoom : rightScreenRoom, 168)),
+  });
+}
+
+/**
+ * Place page n's rendered note marks for the current zoom and scroll position.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n
+ */
+export function placePageNotes(viewer, n) {
+  const group = viewer._notesGroups[n];
+  if (!group) return;
+  const { z, effZ } = computePageBubbleZoom(viewer, n);
+  group.style.setProperty('--scribe-live-zoom', String(z));
+  group.style.setProperty('--scribe-bub-z', String(effZ));
+  const notes = pageNotes(viewer, n);
+  for (const el of group.querySelectorAll('.scribe-note-icon')) {
+    const annot = notes[Number(/** @type {HTMLElement} */ (el).dataset.noteIdx)];
+    if (annot) placeSingleNoteIcon(viewer, n, /** @type {HTMLElement} */ (el), annot);
+  }
+}
+
+/**
  * Drag a note icon to reposition it.
  * Converts the pointer's screen delta to page-local pixels via the zoom level, and marks the icon as dragged so the trailing click does not open the editor.
  * @param {import('../viewer.js').ScribeViewer} viewer
@@ -80,6 +167,7 @@ export function removeNote(viewer, annot, n) {
  * @param {number} n
  */
 function startNoteDrag(viewer, annot, icon, event, n) {
+  if (event.button !== 0) return;
   event.preventDefault();
   const z = viewer.zoomLevel || 1;
   const startX = event.clientX;
@@ -93,13 +181,15 @@ function startNoteDrag(viewer, annot, icon, event, n) {
   const onMove = (ev) => {
     const dx = (ev.clientX - startX) / z;
     const dy = (ev.clientY - startY) / z;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) moved = true;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      moved = true;
+      icon.classList.remove('is-unrolled');
+    }
     annot.bbox.left = Math.min(maxLeft, Math.max(0, origLeft + dx));
     annot.bbox.top = Math.min(maxTop, Math.max(0, origTop + dy));
     annot.bbox.right = annot.bbox.left + TEXT_ANNOT_ICON_PX;
     annot.bbox.bottom = annot.bbox.top + TEXT_ANNOT_ICON_PX;
-    icon.style.left = `${annot.bbox.left}px`;
-    icon.style.top = `${annot.bbox.top}px`;
+    placeSingleNoteIcon(viewer, n, icon, annot);
   };
   const onUp = () => {
     window.removeEventListener('pointermove', onMove);
@@ -142,17 +232,14 @@ export function renderPageNotes(viewer, n) {
     icon.tabIndex = 0;
     icon.setAttribute('role', 'button');
     icon.setAttribute('aria-label', 'Note');
-    icon.innerHTML = COMMENT_MARK_SVG;
-    icon.style.left = `${annot.bbox.left}px`;
-    icon.style.top = `${annot.bbox.top}px`;
-    if (annot.color) icon.style.color = annot.color;
     icon.addEventListener('pointerdown', (e) => startNoteDrag(viewer, annot, icon, e, n));
     group.appendChild(icon);
   });
+  placePageNotes(viewer, n);
 }
 
 /**
- * Open a note's editor: its comment card, pinned with the text focused.
+ * Open a note's comment card, with the text focused.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
  * @param {AnnotationText} annot
@@ -161,5 +248,5 @@ export function focusNoteEditor(viewer, n, annot) {
   if (pageNotes(viewer, n).indexOf(annot) < 0) return;
   // Re-render first so the card has a live mark to anchor on.
   viewer.renderNotes(n);
-  if (viewer._pinNoteCard) viewer._pinNoteCard(annot, n);
+  if (viewer._openNoteCard) viewer._openNoteCard(annot, n);
 }

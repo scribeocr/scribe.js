@@ -690,8 +690,10 @@ const highlightSelectionClick = () => {
   const color = viewer._highlightColor;
   const words = viewer.getWordsUnderTextSelection();
   if (!color || words.length === 0) return;
+  const fresh = words.filter((w) => !w.highlightColor);
   applyHighlight(viewer, words, color, 0.5);
   viewer.clearTextSelection();
+  if (fresh.length > 0 && viewer._armLiveHighlight) viewer._armLiveHighlight(fresh);
 };
 
 // Underline and strikethrough have no toolbar color tool like highlight's, so they need these hardcoded defaults.
@@ -1115,6 +1117,8 @@ let calloutRow2 = null;
 const calloutBtns = {};
 let calloutDismissActive = false;
 
+export const isContextMenuOpen = () => dismissListenersActive || calloutDismissActive;
+
 const CALLOUT_CHEVRON_SVG = menuIcon('<path d="M6 9.4 12 15l6-5.6"/>');
 
 const CALLOUT_EDIT_SVG = menuIcon('<path d="M5 19h4L18.2 9.8a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L5 15v4Z"/><path d="M12.8 7.2l4 4"/>');
@@ -1342,6 +1346,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   ensureTouchCallout();
   hideContextMenu();
   clearInkEdge();
+  viewer._dismissTransientPopovers?.();
   _menuViewer = viewer;
 
   /** @type {?{left: number, top: number, right: number, bottom: number}} */
@@ -1646,7 +1651,7 @@ export const contextMenuFunc = (viewer, event) => {
       if (targetObj.highlightColor || targetObj.markupType) {
         enableDeleteHighlight = true;
         enableCopyHighlight = true;
-        // Fill first when the word carries both, matching the comment card's click-to-pin priority.
+        // Fill first when the word carries both, matching the comment card's click priority.
         contextMenuMarkupSlot = targetObj.highlightColor ? 'highlight' : 'line';
       }
     }

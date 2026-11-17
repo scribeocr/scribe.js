@@ -22,11 +22,12 @@ import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './js/
 import {
   annotMatchesWord, applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
 } from './js/viewerHighlights.js';
-import { renderPageNotes } from './js/viewerNotes.js';
+import { renderPageNotes, placePageNotes } from './js/viewerNotes.js';
 import { renderPageRedactions, updateRedactTab, hideRedactTabSoon } from './js/viewerRedactions.js';
 import { renderPageFormFields } from './js/viewerFormFields.js';
 import { renderPageFillItems, selectedFillItem, deselectFillItem } from './js/viewerFillSign.js';
-import { ensureLayerStyleSheet, COMMENT_MARK_SVG } from './js/viewerLayerStyles.js';
+import { ensureLayerStyleSheet } from './js/viewerLayerStyles.js';
+import { populateBubbleMark, computePageHighlightHomes, computePageBubbleZoom } from './js/viewerCommentMarks.js';
 import {
   ScribeViewerState, ScribeViewerOpts, CanvasSelection,
   registerViewer, unregisterViewer, getActiveViewer, setActiveViewer,
@@ -356,11 +357,13 @@ export class ScribeViewer {
      */
     this._highlightRectsByGroup = [];
     /**
-     * Per-page comment marks, rebuilt with the fill layer.
-     * The geometry is cached so a zoom change can re-place the marks without a rebuild.
-     * @type {Array<Array<{el: HTMLSpanElement, right: number, top: number, bottom: number, nextLeft: ?number}>>}
+     * Per-page highlight comment bubbles, rebuilt with the fill layer.
+     * Run geometry is cached in displayed-page space so zoom/viewport changes re-place bubbles without rebuilding words.
+     * @type {Array<Array<{el: HTMLSpanElement, groupId: string, slot: ('highlight'|'line'), runs: Array<{left: number, right: number, top: number, bottom: number}>, color: string, comment: string}>>}
      */
     this._commentMarks = [];
+    /** Per-page layer of highlight comment bubbles. @type {Array<?HTMLDivElement>} */
+    this._commentMarkGroups = [];
     /**
      * Called with the page index after that page's highlight or redaction layer is rebuilt.
      * The thumbnail panel registers here to keep its overlays current.
@@ -785,6 +788,7 @@ export class ScribeViewer {
     this._highlightGroups.length = 0;
     this._highlightRectsByGroup.length = 0;
     this._commentMarks.length = 0;
+    this._commentMarkGroups.length = 0;
     this.textGroupsRenderIndices.length = 0;
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
@@ -1135,9 +1139,26 @@ export class ScribeViewer {
     this.zoomLayer.style.transform = `scale(${z})`;
     if (this._zoomGestureActive) return;
     this.zoomLayer.style.setProperty('--scribe-zoom', String(z));
-    for (let n = 0; n < this._commentMarks.length; n++) {
-      if (this._commentMarks[n]) this._placeCommentMarks(n);
+    this._placeAllMarks();
+  }
+
+  /**
+   * Re-place every rendered highlight comment bubble and note mark for the current zoom and scroll position.
+   * Where a mark rests depends on the room its margin has on screen, so this runs on every zoom step, horizontal scroll and re-centering, not only when a zoom settles.
+   */
+  _placeAllMarks() {
+    if (!this.zoomLayer) return;
+    // The pass ends in a forced layout, which a document without marks must not pay for on every zoom frame.
+    if (!this._commentMarks.some((marks) => marks && marks.length > 0)
+      && !this._notesGroups.some((group) => group && group.childElementCount > 0)) return;
+    // The marks' transitions are held off for the pass, so no mark animates to its new size or place.
+    this.zoomLayer.classList.add('scribe-marks-placing');
+    for (let n = 0; n < this._commentMarks.length; n++) this._placeCommentMarks(n);
+    for (let n = 0; n < this._notesGroups.length; n++) {
+      if (this._notesGroups[n] && this._notesGroups[n].childElementCount > 0) placePageNotes(this, n);
     }
+    this.zoomLayer.getBoundingClientRect();
+    this.zoomLayer.classList.remove('scribe-marks-placing');
   }
 
   /**
@@ -1164,7 +1185,10 @@ export class ScribeViewer {
     // Center only when the viewport is wider than the content. Otherwise the content overflows and scrolls from the left edge.
     const raw = Math.max(0, (viewportWidth - contentPx) / 2);
     const offset = `${Math.round(raw * dpr) / dpr}px`;
-    if (this.contentSizer.style.marginLeft !== offset) this.contentSizer.style.marginLeft = offset;
+    if (this.contentSizer.style.marginLeft !== offset) {
+      this.contentSizer.style.marginLeft = offset;
+      this._placeAllMarks();
+    }
   }
 
   /**
@@ -1612,6 +1636,7 @@ export class ScribeViewer {
 
     this.scrollContainer.scrollLeft = nx - (center.x - scRect.left);
     this.scrollContainer.scrollTop = ny - (center.y - scRect.top);
+    this._placeAllMarks();
   }
 
   /**
@@ -1661,8 +1686,8 @@ export class ScribeViewer {
       if (this._zoomGestureActive) {
         this._zoomGestureActive = false;
         this.zoomLayer.style.willChange = '';
-        this._applyZoomTransform(this.zoomLevel);
         this._updateContentSize();
+        this._applyZoomTransform(this.zoomLevel);
       }
       if (this.doc.inputData.pdfMode || this.doc.inputData.imageMode) {
         this.imageCache.renderAheadBehindBrowser(this.state.cp.n);
@@ -2244,6 +2269,7 @@ export class ScribeViewer {
     this._scrollMetrics();
     sc.scrollLeft = contentX * newZoom - (g.lastCenter.x - scRect.left) + panLeft;
     sc.scrollTop = contentY * newZoom - (g.lastCenter.y - scRect.top) + panTop;
+    this._placeAllMarks();
     if (this.onZoomChange) this.onZoomChange(this.zoomLevel);
   }
 
@@ -2338,7 +2364,7 @@ export class ScribeViewer {
       if (event.shiftKey || event.altKey) return;
       if (this.state.layoutMode || this.enableCanvasSelection) return;
       if (event.target instanceof Element
-        && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-redact-tab, [contenteditable]')) return;
+        && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-hl-seed, .scribe-redact-tab, [contenteditable]')) return;
       if (this.useCustomSelection) {
         if (this._lastPrimaryPointerType !== 'touch') return;
         if (this.textSel && !this.textSel.isEmpty()) return;
@@ -2380,13 +2406,19 @@ export class ScribeViewer {
     // passing the per-frame scroll distance as the speed `updateCurrentPage` uses to decide whether to defer the word build.
     let scrollRaf = /** @type {?number} */ (null);
     let lastScrollTopForSpeed = scrollContainer.scrollTop;
+    let lastScrollLeftForMarks = scrollContainer.scrollLeft;
     scrollContainer.addEventListener('scroll', () => {
       if (scrollRaf !== null) return;
       scrollRaf = requestAnimationFrame(() => {
         scrollRaf = null;
         const st = scrollContainer.scrollTop;
+        const sl = scrollContainer.scrollLeft;
         const speed = Math.abs(st - lastScrollTopForSpeed);
         lastScrollTopForSpeed = st;
+        if (Math.abs(sl - lastScrollLeftForMarks) >= 0.5) {
+          lastScrollLeftForMarks = sl;
+          this._placeAllMarks();
+        }
         this.updateCurrentPage(speed);
         this._updateScrollTextHide(speed);
       });
@@ -2497,7 +2529,7 @@ export class ScribeViewer {
       // While a field editor is open every tap counts as owned, because at phone zoom a field is a few pixels tall and the second tap of a double tap often lands just outside it.
       // The editor is read at press, because the focus change this press causes tears it down before the lift.
       dblTap.downOwned = (event.target instanceof Element
-        && !!event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, .scribe-redact-tab, [contenteditable]'))
+        && !!event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-hl-seed, .scribe-field, .scribe-item, .scribe-redact-tab, [contenteditable]'))
         || !!this.elem?.querySelector('.scribe-field-input');
     });
     scrollContainer.addEventListener('pointerup', (event) => {
@@ -2656,6 +2688,8 @@ export class ScribeViewer {
         group.replaceChildren();
       }
     }
+    if (this._commentMarkGroups[n]) this._commentMarkGroups[n].replaceChildren();
+    this._commentMarks[n] = [];
     if (this._selectGroups[n]) {
       for (const group of Object.values(this._selectGroups[n])) {
         group.replaceChildren();
@@ -3373,6 +3407,35 @@ export class ScribeViewer {
   }
 
   /**
+   * The per-page layer of highlight comment bubbles, lazily created above the highlight bands and the text.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getCommentMarksGroup(n) {
+    if (!this._commentMarkGroups[n]) {
+      const disp = this.getDisplayDims(n);
+      const pc = this._ensurePageContainer(n);
+      if (!disp || !pc) return null;
+      // The layer is kept apart from the highlight layer, whose `mix-blend-mode: multiply` would blend the bubbles into the page.
+      // It is never rotated, so bubbles stay upright on a rotated page.
+      const group = document.createElement('div');
+      group.className = 'scribe-group scribe-layer-cmarks';
+      Object.assign(group.style, {
+        position: 'absolute',
+        left: '0px',
+        top: '0px',
+        width: `${disp.width}px`,
+        height: `${disp.height}px`,
+        pointerEvents: 'none',
+        zIndex: '3',
+      });
+      this._commentMarkGroups[n] = group;
+      pc.appendChild(group);
+    }
+    return this._commentMarkGroups[n];
+  }
+
+  /**
    * The per-page sticky-note layer.
    * Kept out of the overlay layer so notes survive the layout-mode toggle that tears the overlay down.
    * @param {number} n
@@ -3807,6 +3870,8 @@ export class ScribeViewer {
             group.replaceChildren();
           }
         }
+        if (this._commentMarkGroups[n]) this._commentMarkGroups[n].replaceChildren();
+        this._commentMarks[n] = [];
         if (this._selectGroups[n]) {
           for (const group of Object.values(this._selectGroups[n])) {
             group.replaceChildren();
@@ -4209,6 +4274,8 @@ export class ScribeViewer {
     if (this._highlightGroups[n]) {
       for (const group of Object.values(this._highlightGroups[n])) group.replaceChildren();
     }
+    if (this._commentMarkGroups[n]) this._commentMarkGroups[n].replaceChildren();
+    this._commentMarks[n] = [];
     this._highlightRectsByGroup[n] = new Map();
     if (this.onAnnotationsRendered) this.onAnnotationsRendered(n);
     const words = this._wordObjs[n];
@@ -4225,17 +4292,39 @@ export class ScribeViewer {
       lineArr.push(kw);
     }
 
-    // The last flushed run of each commented group, in reading order, marks where the group's comment mark goes.
-    /** @type {Map<string, {right: number, top: number, bottom: number, nextLeft: ?number, orientation: number, color: string}>} */
-    const markRuns = new Map();
+    const pLeft0 = this._pageLeft(n);
+    const pTop0 = this.getPageStop(n);
+    const toDispBox = (orient, l, t, r, b) => {
+      const a = this.localToContent(n, orient, l, t);
+      const c = this.localToContent(n, orient, r, b);
+      return {
+        left: Math.min(a.x, c.x) - pLeft0,
+        right: Math.max(a.x, c.x) - pLeft0,
+        top: Math.min(a.y, c.y) - pTop0,
+        bottom: Math.max(a.y, c.y) - pTop0,
+      };
+    };
+
+    /** @type {Map<string, {groupId: string, slot: ('highlight'|'line'), runs: Array<{left: number, right: number, top: number, bottom: number}>, color: string, comment: string}>} */
+    const markGroups = new Map();
+    const recordCommentRun = (slot, groupId, orient, l, t, r, b, color, comment) => {
+      const key = `${slot}:${groupId}`;
+      const box = toDispBox(orient, l, t, r, b);
+      const existing = markGroups.get(key);
+      if (existing) existing.runs.push(box);
+      else {
+        markGroups.set(key, {
+          groupId, slot, runs: [box], color, comment,
+        });
+      }
+    };
 
     for (const lineWords of lineMap.values()) {
       lineWords.sort((a, b) => a.x() - b.x());
 
       /** @type {?{key: string, color: string, opacity: number, groupId: ?string, words: Array<UiOcrWord>, left: number, right: number, top: number, bottom: number, orientation: number}} */
       let run = null;
-      /** @param {?number} [nextLeft] Left edge of the word that ends the run on its line (null at line end). */
-      const flush = (nextLeft = null) => {
+      const flush = () => {
         if (!run) return;
         const group = this.getHighlightGroup(n, run.orientation);
         const rect = document.createElement('div');
@@ -4260,9 +4349,7 @@ export class ScribeViewer {
           const arr = this._highlightRectsByGroup[n].get(run.groupId);
           if (arr) arr.push(rect); else this._highlightRectsByGroup[n].set(run.groupId, [rect]);
           if (run.words[0].highlightComment) {
-            markRuns.set(run.groupId, {
-              right: run.right, top: run.top, bottom: run.bottom, nextLeft, orientation: run.orientation, color: run.color,
-            });
+            recordCommentRun('highlight', run.groupId, run.orientation, run.left, run.top, run.right, run.bottom, run.color, run.words[0].highlightComment);
           }
         }
         run = null;
@@ -4273,8 +4360,7 @@ export class ScribeViewer {
        *   words: Array<UiOcrWord>, left: number, right: number, top: number, bottom: number, baseline: number, maxFs: number, orientation: number}}
        */
       let lineRun = null;
-      /** @param {?number} [nextLeft] Left edge of the word that ends the run on its line (null at line end). */
-      const flushLine = (nextLeft = null) => {
+      const flushLine = () => {
         if (!lineRun) return;
         const group = this.getHighlightGroup(n, lineRun.orientation);
         const rect = document.createElement('div');
@@ -4303,10 +4389,7 @@ export class ScribeViewer {
           const arr = this._highlightRectsByGroup[n].get(lineRun.groupId);
           if (arr) arr.push(rect); else this._highlightRectsByGroup[n].set(lineRun.groupId, [rect]);
           if (lineRun.words[0].markupComment) {
-            // The word-box extent (not the thin bar's) centers the comment mark on the text like a highlight's.
-            markRuns.set(lineRun.groupId, {
-              right: lineRun.right, top: lineRun.top, bottom: lineRun.bottom, nextLeft, orientation: lineRun.orientation, color: lineRun.color,
-            });
+            recordCommentRun('line', lineRun.groupId, lineRun.orientation, lineRun.left, lineRun.top, lineRun.right, lineRun.bottom, lineRun.color, lineRun.words[0].markupComment);
           }
         }
         lineRun = null;
@@ -4323,7 +4406,7 @@ export class ScribeViewer {
         };
 
         if (!kw.highlightColor) {
-          flush(left);
+          flush();
         } else {
           const key = `${kw.highlightColor}_${kw.highlightOpacity}_${kw.highlightGroupId || ''}`;
           if (run && run.key === key) {
@@ -4333,7 +4416,7 @@ export class ScribeViewer {
             run.bottom = Math.max(run.bottom, wordBox.bottom);
             run.words.push(kw);
           } else {
-            flush(left);
+            flush();
             run = {
               key, color: kw.highlightColor, opacity: kw.highlightOpacity, groupId: kw.highlightGroupId, words: [kw], orientation: kw.word.line.orientation, ...wordBox,
             };
@@ -4341,7 +4424,7 @@ export class ScribeViewer {
         }
 
         if (!kw.markupType || !kw.markupColor) {
-          flushLine(left);
+          flushLine();
         } else {
           const lineKey = `${kw.markupType}_${kw.markupColor}_${kw.markupOpacity}_${kw.markupGroupId || ''}`;
           if (lineRun && lineRun.key === lineKey) {
@@ -4353,7 +4436,7 @@ export class ScribeViewer {
             lineRun.maxFs = Math.max(lineRun.maxFs, fs);
             lineRun.words.push(kw);
           } else {
-            flushLine(left);
+            flushLine();
             lineRun = {
               key: lineKey,
               type: kw.markupType,
@@ -4373,46 +4456,68 @@ export class ScribeViewer {
       flushLine();
     }
 
-    this._commentMarks[n] = [];
-    for (const [groupId, m] of markRuns) {
-      const mark = document.createElement('span');
-      mark.className = 'scribe-hl-cmark';
-      mark.dataset.groupId = groupId;
-      mark.tabIndex = 0;
-      mark.setAttribute('role', 'button');
-      mark.setAttribute('aria-label', 'Comment');
-      // The band renders this hue at reduced opacity, so the solid mark reads as its saturated form.
-      mark.style.color = m.color;
-      mark.innerHTML = COMMENT_MARK_SVG;
-      // Parented to the band's orientation group, so page rotation and zoom transforms apply to both alike.
-      this.getHighlightGroup(n, m.orientation).appendChild(mark);
-      this._commentMarks[n].push({
-        el: mark, right: m.right, top: m.top, bottom: m.bottom, nextLeft: m.nextLeft,
-      });
+    if (markGroups.size > 0) {
+      const cmarkGroup = this.getCommentMarksGroup(n);
+      if (cmarkGroup) {
+        const ordered = [...markGroups.values()].sort((a, b) => a.runs[0].top - b.runs[0].top || a.runs[0].left - b.runs[0].left);
+        for (const m of ordered) {
+          const mark = document.createElement('span');
+          mark.className = 'scribe-hl-cmark';
+          mark.dataset.groupId = m.groupId;
+          mark.dataset.slot = m.slot;
+          mark.tabIndex = 0;
+          mark.setAttribute('role', 'button');
+          mark.setAttribute('aria-label', 'Comment');
+          cmarkGroup.appendChild(mark);
+          this._commentMarks[n].push({
+            el: mark, groupId: m.groupId, slot: m.slot, runs: m.runs, color: m.color, comment: m.comment,
+          });
+        }
+        this._placeCommentMarks(n);
+      }
     }
-    this._placeCommentMarks(n);
   }
 
   /**
-   * Position page `n`'s comment marks for the current zoom.
-   * Call again on every zoom change: the mark keeps a constant on-screen size, so whether it fits inline depends on the zoom.
+   * Place page `n`'s highlight comment bubbles for the current zoom and scroll position.
    * @param {number} n
    */
   _placeCommentMarks(n) {
     const marks = this._commentMarks[n];
     if (!marks || marks.length === 0) return;
-    const z = this.zoomLevel || 1;
-    const px = 14 / z;
+    const disp = this.getDisplayDims(n);
+    if (!disp) return;
+    const { z, effZ } = computePageBubbleZoom(this, n);
+    const cmarkGroup = this._commentMarkGroups[n];
+    if (cmarkGroup) {
+      cmarkGroup.style.setProperty('--scribe-live-zoom', String(z));
+      cmarkGroup.style.setProperty('--scribe-bub-z', String(effZ));
+    }
+    const homesByKey = computePageHighlightHomes(this, n);
     for (const m of marks) {
-      // 3px screen gap after the band, and the mark must clear the next word by 2px screen.
-      const fits = m.nextLeft === null || m.nextLeft - m.right >= (3 + 14 + 2) / z;
-      if (fits) {
-        m.el.style.left = `${m.right + 3 / z}px`;
-        m.el.style.top = `${(m.top + m.bottom) / 2 - px / 2}px`;
+      const home = homesByKey.get(`${m.slot}:${m.groupId}`);
+      if (!home) continue;
+      if (home.lockRight) {
+        m.el.style.left = 'auto';
+        m.el.style.right = `${disp.width - home.restRightPage}px`;
       } else {
-        m.el.style.left = `${m.right - px * 0.75}px`;
-        m.el.style.top = `${m.top - px * 0.85}px`;
+        m.el.style.right = 'auto';
+        m.el.style.left = `${home.restLeftPage}px`;
       }
+      m.el.style.top = `${home.restTopPage}px`;
+      m.el.dataset.tail = home.tailClass;
+      m.el.dataset.lockRight = home.lockRight ? '1' : '0';
+      m.el.dataset.restLeftPage = String(home.restLeftPage);
+      m.el.dataset.restTopPage = String(home.restTopPage);
+      m.el.dataset.restW = String(home.restW);
+      m.el.dataset.restH = String(home.restH);
+      populateBubbleMark(m.el, {
+        isNote: false,
+        color: m.color,
+        tailClass: home.tailClass,
+        comment: m.comment,
+        maxCardW: home.maxCardW,
+      });
     }
   }
 
