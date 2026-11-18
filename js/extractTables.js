@@ -73,6 +73,7 @@ export function tableRowTextGaps(words) {
  * @param {Array<import('./objects/layoutObjects.js').LayoutBoxBase>} boxes
  * @param {?Array<number>} [rowBounds=null] - Bottom y-coordinate of each row. When provided, used for row assignment instead of spatial derivation.
  * @param {{maxRows?: number}} [opts] - `maxRows` limits the result to that many leading rows of a full extraction.
+ * @returns {{rowWordArr: Array<Array<Array<OcrWord>>>, rowBottomArr: Array<number>}} The words by row and column, and each row's bottom, which can be passed back as `rowBounds`.
  */
 export function extractSingleTableContent(pageObj, boxes, rowBounds = null, opts = {}) {
   const maxRows = opts.maxRows ?? Infinity;
@@ -222,29 +223,47 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null, opts
     // Next, the first unassigned line in each column is checked for whether it belongs in the new row.
     // This is necessary as a "line" in HOCR does not necessarily correspond to a visual line--
     // multiple HOCR "lines" may have the same visual baseline so belong in the same cell.
+    let centerMaxAbove = -Infinity;
     while (rowWordArr.length < maxRows && !indexArr.every((x, index) => x === lengthArr[index])) {
       // The opening word skips the center test, which a zero-height box fails, so every pass advances.
       let openCol = -1;
       for (let i = 0; i < colArr.length; i++) {
         if (indexArr[i] < lengthArr[i] && (openCol < 0 || colArr[i][indexArr[i]].box.bottom < colArr[openCol][indexArr[openCol]].box.bottom)) openCol = i;
       }
-      const openBottom = colArr[openCol][indexArr[openCol]].box.bottom;
+      const openBox = colArr[openCol][indexArr[openCol]].box;
+      const openBottom = openBox.bottom;
 
       /** @type {Array<Array<OcrWord>>} */
       const colWordArr = colArr.map(() => []);
       colWordArr[openCol].push(colArr[openCol][indexArr[openCol]].word);
       indexArr[openCol]++;
       let rowBottom = openBottom;
+      let centerMin = (openBox.top + openBox.bottom) / 2;
+      let centerMax = centerMin;
 
       for (let i = 0; i < indexArr.length; i++) {
         for (let j = indexArr[i]; j < colArr[i].length; j++) {
           const { box } = colArr[i][j];
-          if ((box.top + box.bottom) / 2 >= openBottom) break;
+          const yC = (box.top + box.bottom) / 2;
+          if (yC >= openBottom) break;
           colWordArr[i].push(colArr[i][j].word);
           if (box.bottom > rowBottom) rowBottom = box.bottom;
+          if (yC < centerMin) centerMin = yC;
+          if (yC > centerMax) centerMax = yC;
           indexArr[i]++;
         }
       }
+
+      // Passing `rowBottomArr` back as `rowBounds` assigns words by vertical center.
+      // Pull the previous row's bottom above `centerMin` when staggered text extends past this row's centers so row membership stays unchanged.
+      const above = rowBottomArr.length - 1;
+      if (above >= 0 && centerMin <= rowBottomArr[above] && centerMaxAbove < centerMin) {
+        const mid = (centerMaxAbove + centerMin) / 2;
+        const rounded = Math.round(mid);
+        rowBottomArr[above] = rounded >= centerMaxAbove && rounded < centerMin ? rounded : mid;
+      }
+      centerMaxAbove = centerMax;
+
       rowWordArr.push(colWordArr);
       rowBottomArr.push(rowBottom);
     }

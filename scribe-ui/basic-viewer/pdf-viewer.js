@@ -2085,7 +2085,9 @@ class ScribePDFViewer {
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
       if (this._proofreadTool) this._proofreadTool.toolbarElem.dataset.modeHint = `Click a word to select it · double-click to edit · Tab: next word to check · ${IS_MAC ? '⌥Space' : 'Ctrl+Space'}: show the scan`;
-      if (this._extractTablesTool) this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag column lines to fix a table · click a page-break tab to link or unlink · right-click for table actions';
+      if (this._extractTablesTool) {
+        this._extractTablesTool.toolbarElem.dataset.modeHint = 'Drag lines to fix a table · right-click to split or merge rows and columns · click a page-break tab to link or unlink';
+      }
       if (this._inspectTool) this._inspectTool.toolbarElem.dataset.modeHint = 'Metadata, fonts, images and size · right-click a word to identify its font';
       if (this._compareTool) this._compareTool.toolbarElem.dataset.modeHint = 'Click a change on the page or in the list · Enter: next change';
       if (this._exportTool) this._exportTool.toolbarElem.dataset.modeHint = 'Pick a format to preview it \u00b7 scroll either side to move the other \u00b7 click a block\u2019s chip to set its role';

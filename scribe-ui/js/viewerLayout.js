@@ -13,7 +13,7 @@ import {
   checkDataTablesAdjacent, mergeDataColumns, splitDataColumn, splitDataTable,
   setActiveTable, pulseTable, getTablePreviewMergeColumns, mergeTablePreviewColumns,
   linkTables, linkTableSet, unlinkTable, unlinkTableSet, unlinkChain, resolveLinkCandidate, resolveUnlinkCandidate, renderChainChrome,
-  setChainsExcluded,
+  setChainsExcluded, splitTableRow, mergeTableRows, setTableHeaderRows, UiDataRowSep,
 } from './viewerLayoutTable.js';
 import { applyTablePreview, copyTablePreviewSelection } from './viewerTablePreview.js';
 
@@ -26,7 +26,7 @@ export {
   setActiveTable, pulseTable, applyTablePreview, copyTablePreviewSelection,
   getTablePreviewMergeColumns, mergeTablePreviewColumns,
   linkTables, linkTableSet, unlinkTable, unlinkTableSet, unlinkChain, resolveLinkCandidate, resolveUnlinkCandidate, renderChainChrome,
-  setChainsExcluded,
+  setChainsExcluded, splitTableRow, mergeTableRows, setTableHeaderRows, UiDataRowSep,
 };
 
 class UiRegionControlHorizontal extends UiControlLine {

@@ -115,8 +115,10 @@ export function applyTablePreview(viewer, n) {
     }
     dedupRow0 = fragIdx > 0 && !!headRow0 && headRow0.length >= 6 && content.rowWordArr.length > 0 && normRow(content.rowWordArr[0]) === headRow0;
   }
+  // The context menu names rows by these numbers too.
+  sheet.previewRowNums = content.rowBottomArr.map((_, r) => (dedupRow0 && r === 0 ? null : rowOffset + r + 1 - (dedupRow0 ? 1 : 0)));
   /** Spreadsheet row number for local row `r` as a string, or a dot for the dropped repeated header. */
-  const rowNum = (r) => (dedupRow0 && r === 0 ? '\u00b7' : String(rowOffset + r + 1 - (dedupRow0 ? 1 : 0)));
+  const rowNum = (r) => (sheet.previewRowNums[r] === null ? '\u00b7' : String(sheet.previewRowNums[r]));
   const stripH = fragIdx > 0 ? 15 : 0;
 
   const mk = (styles, parent = group) => {
@@ -534,6 +536,13 @@ export function applyTablePreview(viewer, n) {
     el.addEventListener('pointerenter', () => {
       if (dragSel.anchor?.header === 'col') setSel(0, dragSel.anchor.c, rowN - 1, c);
     });
+    // Runs during bubble before the viewer's `contextmenu` listener builds the menu from `viewer._tpSel`.
+    el.addEventListener('contextmenu', () => {
+      const sel = viewer._tpSel;
+      const inside = sel && sel.id === sheet.layoutDataTable.id && Math.min(sel.r, sel.r2) === 0 && Math.max(sel.r, sel.r2) === rowN - 1
+        && c >= Math.min(sel.c, sel.c2) && c <= Math.max(sel.c, sel.c2);
+      if (!inside) setSel(0, c, rowN - 1, c);
+    });
   });
   rowRail.querySelectorAll('[data-scribe-tp-row]').forEach((el) => {
     const r = Number(el.dataset.scribeTpRow);
@@ -547,6 +556,12 @@ export function applyTablePreview(viewer, n) {
     });
     el.addEventListener('pointerenter', () => {
       if (dragSel.anchor?.header === 'row') setSel(dragSel.anchor.r, 0, r, columns.length - 1);
+    });
+    el.addEventListener('contextmenu', () => {
+      const sel = viewer._tpSel;
+      const inside = sel && sel.id === sheet.layoutDataTable.id && Math.min(sel.c, sel.c2) === 0 && Math.max(sel.c, sel.c2) === columns.length - 1
+        && r >= Math.min(sel.r, sel.r2) && r <= Math.max(sel.r, sel.r2);
+      if (!inside) setSel(r, 0, r, columns.length - 1);
     });
   });
 

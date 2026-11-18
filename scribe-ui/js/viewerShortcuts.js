@@ -422,6 +422,18 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
+  if (((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') && _viewer.state.layoutMode && !_viewer.state.tablePreview) {
+    const column = _viewer.CanvasSelection.getUiDataColumns()[0];
+    if (column?.el) {
+      const r = column.el.getBoundingClientRect();
+      column.el.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: r.left + 8, clientY: r.top + 8, button: 2,
+      }));
+      event.preventDefault();
+      return;
+    }
+  }
+
   // With no words selected, arrows pan the view; with a selection they drive the word move/resize verbs below.
   // In the table preview the arrows belong to the cell selection instead, handled by the tool itself.
   if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey

@@ -8,6 +8,7 @@ import {
   addLayoutBox,
   addLayoutDataTable,
   checkDataColumnsAdjacent, checkDataTablesAdjacent, UiDataColumn, UiLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
+  splitTableRow, mergeTableRows, setTableHeaderRows, UiDataRowSep,
   renderLayoutDataTable, setActiveTable, copyTablePreviewSelection, getTablePreviewMergeColumns, mergeTablePreviewColumns,
   linkTables, unlinkTable, resolveLinkCandidate, resolveUnlinkCandidate,
 } from './viewerLayout.js';
@@ -225,6 +226,9 @@ export const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"
 const CM_PICK_SVG = menuIcon('<path d="M5 12.5l4.5 4.5L19 7"/>');
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
+const CM_SPLIT_ROW_SVG = menuIcon('<path d="M4.5 12h3.4M10.3 12h3.4M16.1 12h3.4"/><path d="M12 8.6V4M9.9 6.1 12 4l2.1 2.1"/><path d="M12 15.4V20M9.9 17.9 12 20l2.1-2.1"/>');
+const CM_MERGE_ROW_SVG = menuIcon('<path d="M5 12h14"/><path d="M12 4v4.6M9.9 6.5 12 8.6l2.1-2.1"/><path d="M12 20v-4.6M9.9 17.5 12 15.4l2.1 2.1"/>');
+const CM_HEADER_ROW_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16" stroke-width="2.6"/><path d="M4 14.5h16"/>');
 const CM_LINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/><path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/>');
 const CM_UNLINK_SVG = menuIcon('<path d="M10 14a4.2 4.2 0 0 0 6 0l3-3a4.24 4.24 0 0 0-6-6l-1.7 1.7"/>'
   + '<path d="M14 10a4.2 4.2 0 0 0-6 0l-3 3a4.24 4.24 0 0 0 6 6l1.7-1.7"/><path d="M4 4l16 16" stroke-width="1.9"/>');
@@ -333,6 +337,11 @@ const createContextMenuHTML = () => {
     [
       item('contextMenuAddLayoutTableButton', 'Add Table', CM_TABLE_SVG, addLayoutTableClick),
       item('contextMenuSplitColumnButton', 'Split Column', CM_SPLIT_SVG, splitDataColumnClick),
+      item('contextMenuSplitRowButton', 'Split Row', CM_SPLIT_ROW_SVG, splitRowClick),
+      item('contextMenuMergeRowsButton', 'Merge Rows', CM_MERGE_ROW_SVG, mergeRowsClick),
+      item('contextMenuMergeRowAboveButton', 'Merge with Row Above', CM_MERGE_ROW_SVG, mergeRowAboveClick),
+      item('contextMenuMergeRowBelowButton', 'Merge with Row Below', CM_MERGE_ROW_SVG, mergeRowBelowClick),
+      item('contextMenuHeaderRowButton', 'Header row', CM_HEADER_ROW_SVG, headerRowClick),
       item('contextMenuCaptureLinesButton', 'Capture whole lines', CM_TABLE_SVG, captureLinesClick),
       item('contextMenuMergeColumnsButton', 'Merge Columns', CM_MERGE_SVG, mergeDataColumnsClick),
       item('contextMenuMergeTablesButton', 'Merge Tables', CM_MERGE_SVG, mergeDataTablesClick),
@@ -504,12 +513,91 @@ const unlinkTablesClick = () => {
   if (!viewer.state.tablePreview) viewer.destroyControls();
 };
 
+/**
+ * Target table, cell range, and click coordinates captured when opening the table context menu.
+ * @type {?{uiTable: import('./viewerLayoutTable.js').UiDataTable, r: number, r2: number, c: number, x: ?number, y: ?number, gapX?: number}}
+ */
+let tableMenuTarget = null;
+
 const splitDataColumnClick = () => {
   const viewer = mv();
   hideContextMenu();
-  const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
-  splitDataColumn(selectedColumns[0], viewer.contextMenuPointer.x);
-  viewer.destroyControls();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  const column = t ? t.uiTable.columns[t.c] : viewer.CanvasSelection.getUiDataColumns()[0];
+  if (!column) return;
+  let x = t?.gapX ?? t?.x ?? viewer.contextMenuPointer.x;
+  if (t && t.gapX == null && t.x != null && t.uiTable.tableContent) {
+    const words = (t.uiTable.tableContent.rowWordArr[t.r]?.[t.c] || []).slice().sort((a, b) => a.bbox.left - b.bbox.left);
+    const lineH = words.length ? words.reduce((sum, w) => sum + (w.bbox.bottom - w.bbox.top), 0) / words.length : 0;
+    let best = null;
+    for (let i = 1; i < words.length; i++) {
+      if (words[i].bbox.left <= words[i - 1].bbox.right) continue;
+      const mid = (words[i - 1].bbox.right + words[i].bbox.left) / 2;
+      if (best == null || Math.abs(mid - x) < Math.abs(best - x)) best = mid;
+    }
+    if (best != null && Math.abs(best - x) <= lineH / 2) x = best;
+  }
+  splitDataColumn(column, x);
+  if (!viewer.state.tablePreview) viewer.destroyControls();
+};
+
+const splitRowClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  if (!t || !t.uiTable.tableContent) return;
+  const gaps = scribe.utils.tableRowTextGaps(t.uiTable.tableContent.rowWordArr[t.r].flat());
+  if (gaps.length === 0) return;
+  let gap = gaps[0];
+  if (t.y != null) for (const g of gaps) if (Math.abs(g.y - t.y) < Math.abs(gap.y - t.y)) gap = g;
+  splitTableRow(viewer, t.uiTable, t.r, gap.y);
+  if (!viewer.state.tablePreview) viewer.destroyControls();
+};
+
+const mergeRowsClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  if (!t) return;
+  mergeTableRows(viewer, t.uiTable, Math.min(t.r, t.r2), Math.max(t.r, t.r2));
+  if (!viewer.state.tablePreview) viewer.destroyControls();
+};
+
+const mergeRowAboveClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  if (!t) return;
+  mergeTableRows(viewer, t.uiTable, t.r - 1, t.r);
+  if (!viewer.state.tablePreview) viewer.destroyControls();
+};
+
+const mergeRowBelowClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  if (!t) return;
+  mergeTableRows(viewer, t.uiTable, t.r, t.r + 1);
+  if (!viewer.state.tablePreview) viewer.destroyControls();
+};
+
+const headerRowClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const t = tableMenuTarget;
+  tableMenuTarget = null;
+  if (!t) return;
+  const table = t.uiTable.layoutDataTable;
+  const lo = Math.min(t.r, t.r2);
+  const hi = Math.max(t.r, t.r2);
+  // `headerRows` is a prefix count, so toggling on includes rows through `hi` and toggling off truncates at `lo`.
+  setTableHeaderRows(viewer, table, hi < (table.headerRows ?? 1) ? lo : hi + 1);
+  if (!viewer.state.tablePreview) viewer.destroyControls();
 };
 
 const splitDataTableClick = () => {
@@ -793,6 +881,11 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuMergeWordsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuMergeColumnsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitColumnButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuSplitRowButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeRowsButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeRowAboveButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeRowBelowButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuHeaderRowButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCaptureLinesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyCellsButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutRegionButtonElem;
@@ -867,6 +960,11 @@ function ensureContextMenu() {
   contextMenuMergeWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeWordsButton'));
   contextMenuMergeColumnsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeColumnsButton'));
   contextMenuSplitColumnButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitColumnButton'));
+  contextMenuSplitRowButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitRowButton'));
+  contextMenuMergeRowsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeRowsButton'));
+  contextMenuMergeRowAboveButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeRowAboveButton'));
+  contextMenuMergeRowBelowButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeRowBelowButton'));
+  contextMenuHeaderRowButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHeaderRowButton'));
   contextMenuCaptureLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCaptureLinesButton'));
   contextMenuCopyCellsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyCellsButton'));
   contextMenuDeleteLayoutRegionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutRegionButton'));
@@ -1055,6 +1153,12 @@ export const hideContextMenu = () => {
   for (const btn of contextMenuReadingButtonElems) btn.style.display = 'none';
   contextMenuMergeColumnsButtonElem.style.display = 'none';
   contextMenuSplitColumnButtonElem.style.display = 'none';
+  contextMenuSplitColumnButtonElem.disabled = false;
+  contextMenuSplitRowButtonElem.style.display = 'none';
+  contextMenuMergeRowsButtonElem.style.display = 'none';
+  contextMenuMergeRowAboveButtonElem.style.display = 'none';
+  contextMenuMergeRowBelowButtonElem.style.display = 'none';
+  contextMenuHeaderRowButtonElem.style.display = 'none';
   contextMenuCaptureLinesButtonElem.style.display = 'none';
   contextMenuCopyCellsButtonElem.style.display = 'none';
   contextMenuDeleteLayoutRegionButtonElem.style.display = 'none';
@@ -1604,9 +1708,16 @@ export const contextMenuFunc = (viewer, event) => {
     const selectedRegions = viewer.CanvasSelection.getUiRegions();
 
     // A right-click makes the column under it the selection, so the table items enable without a prior left-click.
-    if (!viewer.state.tablePreview && targetObj instanceof UiDataColumn && !selectedColumns.some((c) => c.layoutBox.id === targetObj.layoutBox.id)) {
+    /** @type {?UiDataColumn} */
+    let rightClickColumn = targetObj instanceof UiDataColumn ? targetObj : null;
+    if (targetObj instanceof UiDataRowSep && targetObj.draggable) {
+      const pageX = viewer.clientToPage(event.clientX, event.clientY).x;
+      const columns = /** @type {UiDataRowSep} */ (targetObj).uiTable.columns;
+      rightClickColumn = columns.find((col) => pageX >= col.layoutBox.coords.left && pageX <= col.layoutBox.coords.right) || columns[0];
+    }
+    if (!viewer.state.tablePreview && rightClickColumn && !selectedColumns.some((c) => c.layoutBox.id === rightClickColumn.layoutBox.id)) {
       viewer.CanvasSelection.deselectAll();
-      viewer.CanvasSelection.selectLayoutBoxes([targetObj]);
+      viewer.CanvasSelection.selectLayoutBoxes([rightClickColumn]);
       selectedColumns = viewer.CanvasSelection.getUiDataColumns();
     }
 
@@ -1740,11 +1851,54 @@ export const contextMenuFunc = (viewer, event) => {
     let enableDeleteTable = false;
     let enableCopyTableContents = false;
     let enableSplitTable = false;
+    let enableSplitRow = false;
+    let enableMergeRows = false;
+    let enableMergeRowAbove = false;
+    let enableMergeRowBelow = false;
+    let enableHeaderRow = false;
+    let headerRowOn = false;
+    let splitRowLabel = 'Split Row';
+    let mergeRowsLabel = 'Merge Rows';
+    let splitColumnLabel = 'Split Column';
+    let splitColumnDisabled = false;
+    tableMenuTarget = null;
+    const letter = (/** @type {number} */ i) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i] || String(i + 1);
+    const sheetRows = (/** @type {import('./viewerLayoutTable.js').UiDataTable} */ uiTable, /** @type {number} */ lo, /** @type {number} */ hi) => {
+      const first = uiTable.previewRowNums[lo];
+      const last = uiTable.previewRowNums[hi];
+      if (first == null || last == null) return '';
+      return lo === hi ? ` ${first}` : ` ${first}–${last}`;
+    };
+    const rowAt = (/** @type {{rowBottomArr: Array<number>}} */ content, /** @type {number} */ y) => {
+      for (let i = 0; i < content.rowBottomArr.length; i++) if (y < content.rowBottomArr[i]) return i;
+      return content.rowBottomArr.length - 1;
+    };
 
     // A column selection left over from the page view must not surface the layout verbs over the spreadsheet.
     if (viewer.state.tablePreview) {
-      // No layout verbs in the preview.
+      // Sheet-view verbs are populated below after resolving the preview selection.
     } else if (selectedTables.length === 1) {
+      const clickPoint = viewer.clientToPage(event.clientX, event.clientY);
+      if (targetObj instanceof UiDataColumn && targetObj.uiTable.tableContent && targetObj.uiTable.tableContent.rowBottomArr.length > 0) {
+        const uiTable = targetObj.uiTable;
+        const content = uiTable.tableContent;
+        const r = rowAt(content, clickPoint.y);
+        tableMenuTarget = {
+          uiTable, r, r2: r, c: uiTable.columns.indexOf(targetObj), x: clickPoint.x, y: clickPoint.y,
+        };
+        if (scribe.utils.tableRowTextGaps(content.rowWordArr[r].flat()).length > 0) { enableSplitRow = true; splitRowLabel = 'Split Row here'; }
+        enableMergeRowAbove = r > 0;
+        enableMergeRowBelow = r < content.rowBottomArr.length - 1;
+        if (!uiTable.layoutDataTable.continuesPrev) { enableHeaderRow = true; headerRowOn = r < (uiTable.layoutDataTable.headerRows ?? 1); }
+      } else if (targetObj instanceof UiDataRowSep && targetObj.draggable && targetObj.uiTable.tableContent) {
+        const uiTable = targetObj.uiTable;
+        const i = targetObj.index;
+        tableMenuTarget = {
+          uiTable, r: i, r2: i + 1, c: Math.max(0, uiTable.columns.indexOf(selectedColumns[0])), x: clickPoint.x, y: clickPoint.y,
+        };
+        enableMergeRows = true;
+        mergeRowsLabel = `Merge Rows ${i + 1}–${i + 2}`;
+      }
       const adjacentColumns = checkDataColumnsAdjacent(selectedColumns);
       if (selectedColumns.length > 1 && adjacentColumns) enableMergeColumns = true;
       if (selectedColumns.length === 1) enableSplit = true;
@@ -1762,48 +1916,101 @@ export const contextMenuFunc = (viewer, event) => {
     linkTargetTable = viewer.state.tablePreview || selectedTables.length === 0 ? null : resolveLinkCandidate(viewer, selectedTables);
     unlinkTargetTable = viewer.state.tablePreview || selectedTables.length === 0 ? null : resolveUnlinkCandidate(viewer, selectedTables);
 
+    const sheetEl = viewer.state.tablePreview && event.target instanceof HTMLElement ? event.target : null;
+    const cellEl = sheetEl ? sheetEl.closest('[data-scribe-tp-cell]') : null;
+    const onCol = !!sheetEl && !!sheetEl.closest('[data-scribe-tp-col]');
+    const onRow = !!sheetEl && !!sheetEl.closest('[data-scribe-tp-row]');
+
     // A right-click outside the current cell range moves the selection to that cell first, the spreadsheet convention.
     let enableCopyCells = false;
-    if (viewer.state.tablePreview && event.target instanceof HTMLElement) {
-      const cellEl = event.target.closest('[data-scribe-tp-cell]');
+    if (sheetEl) {
+      let fragTable = null;
+      if (targetObj instanceof UiDataColumn) {
+        fragTable = targetObj.layoutBox.table;
+      } else if (cellEl || onCol || onRow) {
+        const gi = (viewer._overlayGroups || []).findIndex((g) => g && g.contains(sheetEl));
+        const chain = scribe.tableChains(viewer.doc.layoutDataTables.pages)
+          .find((c) => c.some((f) => f.table.id === viewer.state.activeTableId));
+        fragTable = (gi >= 0 && chain ? chain.find((f) => f.n === gi) : null)?.table || null;
+      }
+      unlinkTargetTable = fragTable?.continuesPrev ? fragTable : null;
+
       if (cellEl instanceof HTMLElement) {
         const [r, c] = (cellEl.dataset.scribeTpCell || '').split(',').map(Number);
         const sel = viewer._tpSel;
-        const inRange = sel && r >= Math.min(sel.r, sel.r2) && r <= Math.max(sel.r, sel.r2)
+        const inRange = sel && sel.id === fragTable?.id && r >= Math.min(sel.r, sel.r2) && r <= Math.max(sel.r, sel.r2)
           && c >= Math.min(sel.c, sel.c2) && c <= Math.max(sel.c, sel.c2);
         if (!inRange) cellEl.click();
         enableCopyCells = true;
-      } else if (event.target.closest('[data-scribe-tp-col]')) {
-        // A rail press has already put whole columns in the selection, so nothing needs relocating here.
+      } else if (onCol || onRow) {
+        // The rail's own listener has already moved the selection to the letter or number under the pointer.
         enableCopyCells = true;
       } else if (targetObj instanceof UiDataColumn) {
         // Off the active sheet's cell grid, so the press is forwarded to the column's own handler, which makes that table the active sheet and selects the cell under the pointer.
         targetObj.el.dispatchEvent(new MouseEvent('click', { button: 0, clientX: event.clientX, clientY: event.clientY }));
         enableCopyCells = viewer._tpSel?.id === targetObj.layoutBox.table.id;
       }
-
-      let fragTable = null;
-      if (targetObj instanceof UiDataColumn) {
-        fragTable = targetObj.layoutBox.table;
-      } else if (event.target.closest('[data-scribe-tp-cell], [data-scribe-tp-col]')) {
-        const gi = (viewer._overlayGroups || []).findIndex((g) => g && g.contains(/** @type {Node} */ (event.target)));
-        const chain = scribe.tableChains(viewer.doc.layoutDataTables.pages)
-          .find((c) => c.some((f) => f.table.id === viewer.state.activeTableId));
-        fragTable = (gi >= 0 && chain ? chain.find((f) => f.n === gi) : null)?.table || null;
-      }
-      unlinkTargetTable = fragTable?.continuesPrev ? fragTable : null;
     }
 
     // The copy-cells flag doubles as the test that this right-click landed on the sheet's own surfaces rather than blank page.
     let previewMergeLabel = '';
-    if (enableCopyCells && getTablePreviewMergeColumns(viewer)) {
+    if (enableCopyCells && !onRow && getTablePreviewMergeColumns(viewer)) {
       enableMergeColumns = true;
       const sel = viewer._tpSel;
-      const letter = (i) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i] || String(i + 1);
       previewMergeLabel = `Merge Columns ${letter(Math.min(sel.c, sel.c2))}–${letter(Math.max(sel.c, sel.c2))}`;
+    }
+    if (viewer.state.tablePreview && targetObj instanceof UiDataRowSep && targetObj.draggable && targetObj.uiTable.tableContent) {
+      const i = targetObj.index;
+      tableMenuTarget = {
+        uiTable: targetObj.uiTable, r: i, r2: i + 1, c: 0, x: null, y: null,
+      };
+      enableMergeRows = true;
+      mergeRowsLabel = `Merge Rows${sheetRows(targetObj.uiTable, i, i + 1)}`;
+    }
+    if (enableCopyCells && viewer._tpSel) {
+      const sel = viewer._tpSel;
+      const uiTable = viewer.getUiDataTables().find((t) => t.layoutDataTable.id === sel.id);
+      const content = uiTable?.tableContent;
+      if (uiTable && content && content.rowBottomArr.length > 0) {
+        const rLo = Math.min(sel.r, sel.r2);
+        const rHi = Math.max(sel.r, sel.r2);
+        const cLo = Math.min(sel.c, sel.c2);
+        const clickPoint = viewer.clientToPage(event.clientX, event.clientY);
+        tableMenuTarget = {
+          uiTable, r: rLo, r2: rHi, c: cLo, x: cellEl ? clickPoint.x : null, y: cellEl ? clickPoint.y : null,
+        };
+        if (!onCol) {
+          if (rLo === rHi && scribe.utils.tableRowTextGaps(content.rowWordArr[rLo].flat()).length > 0) { enableSplitRow = true; splitRowLabel = `Split Row${sheetRows(uiTable, rLo, rLo)}`; }
+          if (rHi > rLo) { enableMergeRows = true; mergeRowsLabel = `Merge Rows${sheetRows(uiTable, rLo, rHi)}`; }
+          if (!uiTable.layoutDataTable.continuesPrev) { enableHeaderRow = true; headerRowOn = rHi < (uiTable.layoutDataTable.headerRows ?? 1); }
+        }
+        if (sel.c === sel.c2 && cellEl) {
+          enableSplit = true;
+          splitColumnLabel = `Split Column ${letter(cLo)} here`;
+        } else if (sel.c === sel.c2 && onCol) {
+          const spans = content.rowWordArr.flatMap((row) => row[cLo] || []).map((w) => [w.bbox.left, w.bbox.right]).sort((a, b) => a[0] - b[0]);
+          /** @type {Array<[number, number]>} */
+          const merged = [];
+          for (const [s, e] of spans) {
+            const last = merged[merged.length - 1];
+            if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+            else merged.push([s, e]);
+          }
+          let best = null;
+          for (let i = 1; i < merged.length; i++) {
+            const w = merged[i][0] - merged[i - 1][1];
+            if (w > 0 && (!best || w > best.w)) best = { w, x: (merged[i - 1][1] + merged[i][0]) / 2 };
+          }
+          enableSplit = true;
+          splitColumnLabel = `Split Column ${letter(cLo)}`;
+          splitColumnDisabled = !best;
+          if (best) tableMenuTarget.gapX = best.x;
+        }
+      }
     }
 
     if (!(enableAddTable || enableCopyCells || enableMergeColumns || enableSplit || enableCaptureLines
+      || enableSplitRow || enableMergeRows || enableMergeRowAbove || enableMergeRowBelow || enableHeaderRow
       || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
       || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere || enableIdentifyFont)) return;
@@ -1856,7 +2063,25 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuMergeColumnsButtonElem.style.display = 'initial';
     }
     if (enableAddTable) contextMenuAddLayoutTableButtonElem.style.display = 'initial';
-    if (enableSplit) contextMenuSplitColumnButtonElem.style.display = 'initial';
+    if (enableSplit) {
+      setMenuLabel(contextMenuSplitColumnButtonElem, splitColumnLabel);
+      contextMenuSplitColumnButtonElem.disabled = splitColumnDisabled;
+      contextMenuSplitColumnButtonElem.style.display = 'initial';
+    }
+    if (enableSplitRow) {
+      setMenuLabel(contextMenuSplitRowButtonElem, splitRowLabel);
+      contextMenuSplitRowButtonElem.style.display = 'initial';
+    }
+    if (enableMergeRows) {
+      setMenuLabel(contextMenuMergeRowsButtonElem, mergeRowsLabel);
+      contextMenuMergeRowsButtonElem.style.display = 'initial';
+    }
+    if (enableMergeRowAbove) contextMenuMergeRowAboveButtonElem.style.display = 'initial';
+    if (enableMergeRowBelow) contextMenuMergeRowBelowButtonElem.style.display = 'initial';
+    if (enableHeaderRow) {
+      setMenuToggled(contextMenuHeaderRowButtonElem, headerRowOn);
+      contextMenuHeaderRowButtonElem.style.display = 'initial';
+    }
     if (enableCaptureLines) {
       const allLine = viewer.CanvasSelection.getUiDataColumns().every((x) => x.layoutBox.inclusionLevel === 'line');
       setMenuToggled(contextMenuCaptureLinesButtonElem, allLine);

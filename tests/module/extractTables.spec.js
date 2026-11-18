@@ -161,6 +161,30 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(sheet1.includes('<smallCaps/>'), 'the WordprocessingML smallCaps element never reaches xlsx output').toBe(false);
   });
 
+  // Runs before the createTablesFromText test below, which overwrites page 0's detected tables.
+  // Regression: a row's reported bottom was its lowest text bottom, which can sit below the centers of the next row's words, so storing the bottoms moved those words up a row.
+  test('a table that derives its rows from the text keeps them once the reported row bottoms are stored as its row bounds', () => {
+    const page = doc.ocr.active[0];
+    const layoutPage = doc.layoutDataTables.pages[0];
+    const table = layoutPage.tables[0];
+    const detectedBounds = table.rowBounds;
+    table.rowBounds = null;
+    const derived = scribe.extractTextFromTables(page, layoutPage)[0].rows;
+    table.rowBounds = scribe.utils.extractSingleTableContent(page, table.boxes, null).rowBottomArr;
+    const stored = scribe.extractTextFromTables(page, layoutPage)[0].rows;
+    table.rowBounds = detectedBounds;
+
+    const headerLines = [
+      ['', 'Agent', '', 'Other Than Mexican', 'Marijuana', 'Cocaine', 'Accepted', '', '', 'Border'],
+      ['SECTOR', '', 'Apprehensions', '', '', '', '', 'Assaults', 'Rescues', ''],
+      ['', 'Staffing*', '', 'Apprehensions', '(pounds)', '(pounds)', 'Prosecutions', '', '', 'Deaths'],
+    ];
+    expect(derived.length, 'without row bounds the table derives 27 rows from its text').toBe(27);
+    expect(derived.slice(0, 3), 'without row bounds the three staggered header lines derive as three rows').toEqual(headerLines);
+    expect(stored.length, 'storing the reported row bottoms keeps the row count').toBe(27);
+    expect(stored.slice(0, 3), 'storing the reported row bottoms keeps every header word in the row it derived in').toEqual(headerLines);
+  });
+
   test('createTablesFromText creates table with column boxes and rowBounds', async () => {
     const tablesPage = scribe.createTablesFromText(0, [{
       rows: [['SECTOR', 'Apprehensions'], ['Miami', '1,891']],

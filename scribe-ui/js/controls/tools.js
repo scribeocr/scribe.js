@@ -5341,6 +5341,19 @@ export function createExtractTablesTool(app) {
     if (t && (t.isContentEditable || t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
     const nativeSel = window.getSelection && window.getSelection();
     if (nativeSel && !nativeSel.isCollapsed) return;
+    if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
+      const pv = previewViewer();
+      const sel = pv._tpSel;
+      const sheet = sel ? pv.getUiDataTables().find((u) => u.layoutDataTable.id === sel.id) : null;
+      const cell = sheet ? pv._overlayGroups?.[sheet.layoutDataTable.page.n]?.querySelector(`[data-scribe-tp-cell="${Math.min(sel.r, sel.r2)},${Math.min(sel.c, sel.c2)}"]`) : null;
+      if (!cell) return;
+      e.preventDefault();
+      const r = cell.getBoundingClientRect();
+      cell.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: r.left + 8, clientY: r.top + 8, button: 2,
+      }));
+      return;
+    }
     const arrow = {
       ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1],
     }[e.key];

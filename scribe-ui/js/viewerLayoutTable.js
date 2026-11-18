@@ -83,10 +83,12 @@ export class UiDataTableControl extends UiControlLine {
     this.boundBottom = 10000;
 
     let dragSnap = null;
+    let topBefore = tc.top;
     makeDraggable(this.el, this.viewer, n, {
       onStart: () => {
         this.viewer.drag.isResizingColumns = true;
         dragSnap = this.viewer.doc.docHistory.snapshotLayout(this.viewer.doc, [n]);
+        topBefore = tc.top;
         if (top) {
           this.boundTop = 0;
           this.boundBottom = this.uiTable.bottomControl.y() - 20;
@@ -122,6 +124,36 @@ export class UiDataTableControl extends UiControlLine {
       },
       onEnd: () => {
         this.viewer.drag.isResizingColumns = false;
+        const table = this.uiTable.layoutDataTable;
+        const pageObj = this.uiTable.pageObj;
+        const boxes = this.uiTable.layoutBoxesArr;
+        if (table.rowBounds) {
+          let rows;
+          if (top) {
+            rows = table.rowBounds.filter((b) => b > tc.top + 2);
+            // Keep `topBefore` when raising the top edge captures text above it so that text forms its own row.
+            if (tc.top < topBefore - 2) {
+              rows.unshift(topBefore);
+              if (pageObj && scribe.utils.extractSingleTableContent(pageObj, boxes, rows).rowWordArr[0].every((cell) => cell.length === 0)) rows.shift();
+            }
+          } else {
+            rows = table.rowBounds.filter((b) => b < tc.bottom - 2);
+            // Append `tc.bottom` to close any non-empty band below the last surviving bound as its own row.
+            rows.push(tc.bottom);
+            if (rows.length > 1 && pageObj) {
+              const lastRow = scribe.utils.extractSingleTableContent(pageObj, boxes, rows).rowWordArr[rows.length - 1];
+              if (lastRow.every((cell) => cell.length === 0)) rows.pop();
+            }
+          }
+          table.rowBounds = rows.length > 0 ? rows : [tc.bottom];
+        }
+        if (table.headerRows != null && pageObj && this.uiTable.tableContent) {
+          const rowN = table.rowBounds ? table.rowBounds.length : scribe.utils.extractSingleTableContent(pageObj, boxes, null).rowBottomArr.length;
+          const joined = top ? rowN - this.uiTable.tableContent.rowBottomArr.length : 0;
+          // Keep an explicit `headerRows === 0` at zero when prepending rows at the top.
+          if (joined < 0 || table.headerRows > 0) table.headerRows = Math.max(0, table.headerRows + joined);
+          table.headerRows = Math.min(table.headerRows, rowN);
+        }
         if (dragSnap) this.viewer.doc.docHistory.recordLayout(dragSnap, 'Resized table');
         dragSnap = null;
         renderLayoutDataTable(this.viewer, this.uiTable.layoutDataTable);
@@ -195,6 +227,66 @@ export class UiDataColSep extends UiControlLine {
         dragSnap = null;
         renderLayoutDataTable(this.viewer, this.uiTable.layoutDataTable);
         this.viewer.layoutTablesEdited(n);
+      },
+    });
+  }
+}
+
+/**
+ * Return `table.rowBounds`, initializing it from the derived row bottoms when unset.
+ * @param {UiDataTable} uiTable
+ * @returns {Array<number>}
+ */
+const ensureRowBounds = (uiTable) => {
+  const table = uiTable.layoutDataTable;
+  if (!table.rowBounds) table.rowBounds = uiTable.tableContent ? uiTable.tableContent.rowBottomArr.slice() : [];
+  return table.rowBounds;
+};
+
+/** Horizontal control line for a table row boundary. */
+export class UiDataRowSep extends UiControlLine {
+  /**
+   * @param {UiDataTable} uiTable
+   * @param {number} i - Index into the table content's row bottoms.
+   */
+  constructor(uiTable, i) {
+    const tc = uiTable.coords;
+    const n = uiTable.layoutDataTable.page.n;
+    const bottoms = uiTable.tableContent.rowBottomArr;
+    super(uiTable.viewer, n, 'h', tc.left, bottoms[i], tc.right - tc.left);
+    this.uiTable = uiTable;
+    this.index = i;
+    const preview = this.viewer.state.tablePreview;
+    if (preview) this.setChrome({ color: '#c9ced6', weight: 1, casing: false });
+    else this.setChrome({ color: 'rgba(31,37,48,0.3)', weight: 3, casing: true });
+    const core = /** @type {HTMLElement} */ (this.el.firstElementChild);
+    if (!preview) core.style.opacity = '0.65';
+    this.draggable = i < bottoms.length - 1;
+    if (!this.draggable) {
+      this.el.style.pointerEvents = 'none';
+      this.el.style.cursor = 'default';
+      return;
+    }
+    let bounds = { top: 0, bottom: 0 };
+    makeDraggable(this.el, this.viewer, n, {
+      onStart: () => {
+        this.viewer.drag.isResizingColumns = true;
+        const above = i === 0 ? tc.top : bottoms[i - 1];
+        const below = i + 1 < bottoms.length ? bottoms[i + 1] : tc.bottom;
+        const gap = Math.min((below - above) / 3, 10);
+        bounds = { top: above + gap, bottom: below - gap };
+      },
+      onMove: (p) => {
+        this.y(Math.round(Math.max(bounds.top, Math.min(bounds.bottom, p.y))));
+      },
+      onEnd: () => {
+        this.viewer.drag.isResizingColumns = false;
+        if (this.y() === bottoms[i]) return;
+        const dragSnap = this.viewer.doc.docHistory.snapshotLayout(this.viewer.doc, [n]);
+        ensureRowBounds(uiTable)[i] = this.y();
+        this.viewer.doc.docHistory.recordLayout(dragSnap, 'Resized table row');
+        renderLayoutDataTable(this.viewer, uiTable.layoutDataTable, true);
+        refreshChainSurfaces(this.viewer, n, n);
       },
     });
   }
@@ -593,7 +685,7 @@ export class UiDataTable {
     this.destroy = () => {
       this.columns.forEach((column) => column.destroy());
       this.colLines.forEach((colLine) => colLine.destroy());
-      this.rowLines.forEach((rowLine) => rowLine.remove());
+      this.rowLines.forEach((rowLine) => rowLine.destroy());
       this.titleEls.forEach((el) => el.remove());
 
       this.topControl.destroy();
@@ -629,7 +721,7 @@ export class UiDataTable {
     group.appendChild(this.topControl.el);
     group.appendChild(this.bottomControl.el);
 
-    /** @type {Array<HTMLDivElement>} */
+    /** @type {Array<UiDataRowSep>} */
     this.rowLines = [];
 
     /** @type {Array<HTMLElement>} */
@@ -638,38 +730,15 @@ export class UiDataTable {
     /** @type {?ReturnType<typeof scribe.utils.extractSingleTableContent>} */
     this.tableContent = null;
 
+    /** @type {Array<?number>} Displayed 1-based spreadsheet row number per local row, or `null` for an unnumbered repeated header row. */
+    this.previewRowNums = [];
+
     const preview = this.viewer.state.tablePreview;
 
     if (pageObj) {
       this.tableContent = scribe.utils.extractSingleTableContent(pageObj, this.layoutBoxesArr, layoutDataTable.rowBounds);
-
-      this.rowLines = this.tableContent.rowBottomArr.map((rowBottom) => {
-        const line = document.createElement('div');
-        Object.assign(line.style, {
-          position: 'absolute',
-          left: `${tableLeft}px`,
-          top: `${rowBottom}px`,
-          width: `${tableRight - tableLeft}px`,
-          pointerEvents: 'none',
-          boxSizing: 'border-box',
-        });
-        if (preview) {
-          Object.assign(line.style, { height: `calc(1px / ${CHROME_Z})`, background: '#c9ced6' });
-        } else {
-          Object.assign(line.style, {
-            height: `calc(3px / ${CHROME_Z})`,
-            background: 'rgba(31,37,48,0.3)',
-            borderTop: `calc(1px / ${CHROME_Z}) solid rgba(255,255,255,0.7)`,
-            borderBottom: `calc(1px / ${CHROME_Z}) solid rgba(255,255,255,0.7)`,
-            opacity: '0.65',
-          });
-        }
-        return line;
-      });
-
-      this.rowLines.forEach((rowLine) => {
-        group.appendChild(rowLine);
-      });
+      this.rowLines = this.tableContent.rowBottomArr.map((rowBottom, i) => new UiDataRowSep(this, i));
+      this.rowLines.forEach((rowLine) => group.appendChild(rowLine.el));
     }
 
     // In the Preview Export a cell's text that runs past a column line is shown as a spreadsheet shows it.
@@ -1092,6 +1161,79 @@ export const mergeTablePreviewColumns = (viewer) => {
   };
   mergeDataColumns(columns);
 };
+
+/**
+ * Split row `r` of a table at page y `y`.
+ * The header count is kept, so a split inside the last header row leaves its bottom half as data.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {UiDataTable} uiTable
+ * @param {number} r
+ * @param {number} y
+ * @returns {boolean} Whether `y` fell inside row `r` and split it.
+ */
+export function splitTableRow(viewer, uiTable, r, y) {
+  const content = uiTable.tableContent;
+  if (!content || r < 0 || r >= content.rowBottomArr.length) return false;
+  const top = r === 0 ? uiTable.coords.top : content.rowBottomArr[r - 1];
+  // The last row holds every word under the bound above it, so a cut below its own stored bound is still inside the row.
+  const bottom = r === content.rowBottomArr.length - 1 ? Math.max(content.rowBottomArr[r], uiTable.coords.bottom) : content.rowBottomArr[r];
+  if (y <= top + 2 || y >= bottom - 2) return false;
+  const table = uiTable.layoutDataTable;
+  const n = table.page.n;
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
+  const rows = ensureRowBounds(uiTable);
+  rows.splice(r, 0, Math.round(y));
+  if (rows[r + 1] < rows[r]) rows[r + 1] = uiTable.coords.bottom;
+  viewer.doc.docHistory.recordLayout(snap, 'Split row');
+  renderLayoutDataTable(viewer, table, true);
+  refreshChainSurfaces(viewer, n, n);
+  return true;
+}
+
+/**
+ * Merge rows `lo` through `hi` of a table into one row.
+ * The merged row is a header row when `lo` was one, and the header rows below `hi` keep their count.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {UiDataTable} uiTable
+ * @param {number} lo
+ * @param {number} hi
+ * @returns {boolean} Whether the merge happened.
+ */
+export function mergeTableRows(viewer, uiTable, lo, hi) {
+  const content = uiTable.tableContent;
+  if (!content || lo < 0 || hi <= lo || hi >= content.rowBottomArr.length) return false;
+  const table = uiTable.layoutDataTable;
+  const n = table.page.n;
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
+  ensureRowBounds(uiTable).splice(lo, hi - lo);
+  const hr = table.headerRows;
+  if (hr != null && hr > lo) table.headerRows = lo + 1 + Math.max(0, hr - hi - 1);
+  viewer.doc.docHistory.recordLayout(snap, 'Merged rows');
+  if (viewer._tpSel && viewer._tpSel.id === table.id) {
+    viewer._tpSel = {
+      id: table.id, r: lo, c: 0, r2: lo, c2: uiTable.columns.length - 1,
+    };
+  }
+  renderLayoutDataTable(viewer, table, true);
+  refreshChainSurfaces(viewer, n, n);
+  return true;
+}
+
+/**
+ * Set how many leading rows of a table are its header.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {LayoutDataTable} table
+ * @param {number} count
+ */
+export function setTableHeaderRows(viewer, table, count) {
+  if (table.headerRows === count) return;
+  const n = table.page.n;
+  const snap = viewer.doc.docHistory.snapshotLayout(viewer.doc, [n]);
+  table.headerRows = count;
+  viewer.doc.docHistory.recordLayout(snap, 'Header rows');
+  renderLayoutDataTable(viewer, table, true);
+  refreshChainSurfaces(viewer, n, n);
+}
 
 /**
  *

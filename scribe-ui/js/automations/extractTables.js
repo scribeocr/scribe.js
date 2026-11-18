@@ -211,7 +211,7 @@ export function buildTablesWorkspace(host, container) {
     } else if (spanning.length > 1) {
       spanPart = ` (${spanning.length} span multiple pages)`;
     }
-    return `${count}${spanPart} \u2014 click a table to review it on the page; drag its lines to fix it.`;
+    return `${count}${spanPart} \u2014 click a table to review it on the page; drag its lines to fix it, or right-click a row to split or merge.`;
   };
   const noteWrap = document.createElement('div');
   noteWrap.className = 'scribe-am-xtnote';
