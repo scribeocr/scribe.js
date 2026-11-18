@@ -1908,6 +1908,10 @@ export function analyzeLayout(pages, opts = {}) {
   model.nativeText = opts.pdfType === 'text';
   model.ocrText = ocrText;
 
+  // A quantity opening a line ("1.6 MM tons") reads as a section number, and only a neighbor in sequence tells the two apart.
+  const sectionNumbers = new Set(feats.map((f) => sectionNumber(f.line)).filter(Number.isFinite));
+  model.decimalSeq = new Set([...sectionNumbers].filter((v) => sectionNumbers.has(v - 1) || sectionNumbers.has(v + 1)));
+
   // Classify in reading order so each line sees the already-classified line above it on the same page.
   for (let i = 0; i < feats.length; i++) {
     const prev = i > 0 && feats[i - 1].page === feats[i].page ? feats[i - 1] : null;
@@ -3279,6 +3283,8 @@ function geometricBreak(f, prev, model, curParFirst) {
         && ((f.bold > 0.6) !== (prev.bold > 0.6) || (f.italic > 0.6) !== (prev.italic > 0.6))) {
       return { newPar: true, reason: 'heading ladder step' };
     }
+    // A two-level section number in sequence opens a subordinate level by form alone, where the enumerator rule above also needs a deeper indent and a style change.
+    if (model.decimalSeq.has(sectionNumber(f.line))) return { newPar: true, reason: 'heading ladder step' };
     const headCols = model.pageColumns && model.pageColumns.get(f.page);
     // A title line is symmetric (li~=ri) whether visibly centered (large equal margins) or a wrapped line filling nearly the full column (tiny equal margins).
     // A flush-left body line is asymmetric (li~=0, ri large).
@@ -3306,7 +3312,7 @@ function geometricBreak(f, prev, model, curParFirst) {
     // A hanging-indent heading (a marker-led first line outdented left of its continuation) trips clearlyCentered on its full first line while defeating sameCenter and sameLeft.
     // Without this predicate it splits on a spurious alignment change.
     // Requiring the section marker keeps a same-geometry appendix table cell (no marker) from being fused.
-    const sectionMarker = /^\s*(?:[A-Z]|[0-9]{1,2}|[IVXLC]{1,4})[.)]\s/.test(prev.text);
+    const sectionMarker = /^\s*(?:[A-Z]|[0-9]{1,2}|[IVXLC]{1,4})[.)]\s/.test(prev.text) || Number.isFinite(sectionNumber(prev.line));
     const hangingHeading = sectionMarker
       && prev.left < f.left - model.bodySize * 0.5
       && Math.abs(f.top - prev.top) < Math.max(prev.height, f.height) * 1.8;
@@ -3766,15 +3772,22 @@ function classifyRole(f, model, colWidth, prev) {
       || f.sizeRatio >= 2.5;
   }
   // Form-based sub-heading path for a heading face the signature model cannot qualify because the document sets prose in it too.
-  // The deep-indent gate separates a real sub-heading from a flush citation connector ("v.", "e. g.") that shows the same alpha-dot enumerator form at the body margin.
+  // This path refuses a flat marker at the body margin, because a citation connector ("v.", "e. g.") or a list item shows the same form there.
   let enumSetOffHeading = false;
-  if (!sigMember && en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref') {
+  const subsection = !en && model.decimalSeq.has(sectionNumber(f.line));
+  // Both tests measure from the heading's opening line, because the third line of a hanging wrap sits flush under the second.
+  // The hanging test needs a real indent, because body text can share the heading's face and start flush under it.
+  const head = !en && !/^\d+\.\d/.test(f.text) && prev && prev.role === 'heading' && prev.page === f.page
+    && Math.abs(f.top - prev.top) <= model.leading * 1.3 ? prev.setOffHead : undefined;
+  const wrap = !!head
+    && (Math.abs(f.left + f.right - head.left - head.right) < model.bodySize * 3 || f.left > head.left + model.bodySize * 0.4);
+  if (!sigMember && ((en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref') || subsection || wrap)) {
     // Italic or underline on the words after the marker also sets a heading face off, judged against the page's own prevalence like bold and caps.
     // The marker word is skipped because producers set the enumerator roman and un-underlined, which drags a short heading's whole-line fraction below any threshold.
     // Bracketed lines are excluded: enumerated template lines set placeholder instructions in italic ("[insert other relevant factor]"), and those are not headings.
     let styleSetOff = f.familyDistinct;
     if (!styleSetOff && !model.ocrText && !f.text.includes('[')) {
-      const rest = f.line.words.slice(1);
+      const rest = wrap ? f.line.words : f.line.words.slice(1);
       const stHere = model.pageStyleChars && model.pageStyleChars.get(f.page);
       if (rest.length && stHere && stHere.tot) {
         const italFrac = rest.filter((w) => w.style && w.style.italic).length / rest.length;
@@ -3785,8 +3798,15 @@ function classifyRole(f, model, colWidth, prev) {
     }
     if (styleSetOff) {
       const flushL = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
-      enumSetOffHeading = f.left > flushL + Math.max(model.indentDelta, 0) + model.bodySize
-        && letters >= 2 && letters >= digits;
+      const rightM = col ? col.right : model.bodyRight;
+      const li = f.left - flushL;
+      const ri = rightM - f.right;
+      const centered = Math.min(li, ri) > model.bodySize * 0.3
+        && Math.abs(li - ri) < Math.max(model.bodySize * 0.5, Math.min(li, ri) * 0.5);
+      // The assigned column can be the neighbor left of the line's real one, so an indent past the column's middle is not read as one.
+      const deepIndent = f.left > flushL + Math.max(model.indentDelta, 0) + model.bodySize && f.left < (flushL + rightM) / 2;
+      enumSetOffHeading = (wrap || subsection || deepIndent || centered) && f.sizeRatio >= 0.95 && letters >= 2 && letters >= digits;
+      if (enumSetOffHeading) f.setOffHead = head || f;
     }
   }
   if (sigMember || fullBoldHeading || displaySingleton || enumSetOffHeading) {
@@ -4003,6 +4023,16 @@ function romanToInt(s) {
 }
 
 /**
+ * The two-level section number opening `line` ("3.1" as 301), or NaN.
+ * @param {OcrLine} line
+ */
+function sectionNumber(line) {
+  // Two-level numbers stay out of lineEnumerator's schemes because an enumerator lets an indented line below read as its hanging continuation, which fuses a heading with its body.
+  const m = /^(\d{1,2})\.(\d{1,2})[.)]?$/.exec(line.words[0]?.text || '');
+  return m ? Number(m[1]) * 100 + Number(m[2]) : NaN;
+}
+
+/**
  * Classify the leading enumerator of a line, if any.
  * @param {OcrLine} line
  * @returns {?{scheme: string, value: (number|null), raw: string}}
@@ -4149,6 +4179,7 @@ function enumeratedListItemStart(f, model) {
  * @property {Map<number, Array<number>>} pageIndentDeltas - first-line-indent depths of pages with their own indent regime.
  * @property {Map<number, number>} pageLeaderCount - per-page count of lines ending in a dot-leader + page number.
  * @property {Object<string, {active: boolean, maxRun: number, sequenceValues: Set<number>}>} schemes
+ * @property {Set<number>} decimalSeq - two-level section numbers ("3.1" as 301) that have a sequence neighbor.
  * @property {number} nLines
  * @property {number} nBodyLines
  * @property {boolean} elementFaithful
@@ -4223,6 +4254,7 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} firstWordSup
  * @property {boolean} dropCap - the line opens on an oversized 1-2 char capital (a drop cap).
  * @property {?{scheme: string, value: (number|null), raw: string}} enumerator
+ * @property {LineFeat} [setOffHead] - opening line of the set-off heading this line was promoted into.
  * @property {number} orientation
  * @property {number} topFrac
  * @property {number} bottomFrac
