@@ -314,6 +314,7 @@ export function writeMarkdown({
             lineEscape = false;
           } else if (par && par.type === 'title') {
             linePrefix = `${'#'.repeat(Math.min(Math.max(par.headingLevel || 1, 1), 6))} `;
+            if (par.marker && !parMarkerInText(par)) linePrefix += `${par.marker} `;
           } else if (par && par.type === 'blockquote') {
             linePrefix = '> ';
             if (par.marker && !parMarkerInText(par)) linePrefix += `${LIST_MARKERS[par.marker] || par.marker} `;

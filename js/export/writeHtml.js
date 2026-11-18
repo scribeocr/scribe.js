@@ -45,6 +45,10 @@ export const ARTICLE_RULES = `  .scribe-article {
     font-size:1.05em;
     margin:1.3em 0 .3em;
   }
+  .scribe-article li.scribe-own-marker[data-marker]::before, .scribe-article h1[data-marker]::before, .scribe-article h2[data-marker]::before, .scribe-article h3[data-marker]::before,
+  .scribe-article h4[data-marker]::before, .scribe-article h5[data-marker]::before, .scribe-article h6[data-marker]::before {
+    content:attr(data-marker) " ";
+  }
   .scribe-article p {
     margin:0 0 1.25em;
   }
@@ -54,6 +58,9 @@ export const ARTICLE_RULES = `  .scribe-article {
   }
   .scribe-article li {
     margin:0 0 .4em;
+  }
+  .scribe-article li.scribe-own-marker {
+    list-style-type:none;
   }
   .scribe-article li > ul, .scribe-article li > ol {
     margin:.4em 0 0;
@@ -441,7 +448,8 @@ export function writeHtmlFragment({
         closeLists(0);
         const level = Math.min(Math.max(par.headingLevel || 1, 1), 6);
         if (!title) title = lines.flatMap((line) => line.words.map((w) => w.text)).join(' ');
-        body += `<h${level}${attrs(par)}>${inline(lines, { plainBold: true })}</h${level}>\n`;
+        const marker = par.marker && !parMarkerInText(par) ? ` data-marker="${esc(par.marker)}"` : '';
+        body += `<h${level}${marker}${attrs(par)}>${inline(lines, { plainBold: true })}</h${level}>\n`;
         lastBodyEnd = body.length;
         return;
       }
@@ -468,8 +476,10 @@ export function writeHtmlFragment({
       }
       if (par && par.marker && !parMarkerInText(par)) {
         const { marker } = par;
+        // A bare number, as a Word import records it, is not left to the browser, whose "1." would not match the "1.1" beside it.
         const numbered = /^\d+[.)]$/.test(marker);
-        const tag = numbered ? 'ol' : 'ul';
+        const ownMarker = !numbered && marker !== '•';
+        const tag = /[\p{L}\p{N}]/u.test(marker) ? 'ol' : 'ul';
         let depth = 0;
         for (let d = 1; d < depthLefts.length && depthLefts[d] <= par.bbox.left + 5; d++) depth = d;
         depth = Math.min(depth, 3);
@@ -492,7 +502,7 @@ export function writeHtmlFragment({
         const value = numbered ? ` value="${parseInt(marker, 10)}"` : '';
         const glyph = marker === '☐' || marker === '☑' ? `${marker} ` : '';
         const markerAttr = glyph ? '' : ` data-marker="${esc(marker)}"`;
-        body += `<li${value}${markerAttr}${attrs(par)}>${glyph}${inline(lines)}`;
+        body += `<li${value}${ownMarker ? ' class="scribe-own-marker"' : ''}${markerAttr}${attrs(par)}>${glyph}${inline(lines)}`;
         lastBodyEnd = body.length;
         top.item = true;
         return;

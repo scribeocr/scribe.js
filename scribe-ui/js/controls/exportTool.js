@@ -130,6 +130,10 @@ const DOC_STYLES = {
     + '  .scribe-article h2 {\n    font-size:1.3em;\n    margin:1em 0 .4em;\n    padding-bottom:.3em;\n    border-bottom:1px solid #e4e8ef;\n  }\n'
     + '  .scribe-article h3, .scribe-article h4, .scribe-article h5, .scribe-article h6 {\n    font-size:1.1em;\n    margin:1em 0 .3em;\n  }\n'
     + '  .scribe-article p {\n    margin:0 0 .9em;\n  }\n  .scribe-article ul, .scribe-article ol {\n    margin:0 0 .9em;\n    padding-left:1.6em;\n  }\n'
+    + '  .scribe-article li.scribe-own-marker {\n    list-style-type:none;\n  }\n'
+    + '  .scribe-article li.scribe-own-marker[data-marker]::before, .scribe-article h1[data-marker]::before, .scribe-article h2[data-marker]::before,\n'
+    + '  .scribe-article h3[data-marker]::before, .scribe-article h4[data-marker]::before, .scribe-article h5[data-marker]::before, .scribe-article h6[data-marker]::before {\n'
+      + '    content:attr(data-marker) " ";\n  }\n'
     + '  .scribe-article blockquote {\n    margin:0 0 .9em;\n    padding-left:1em;\n    border-left:3px solid #d7dce4;\n    color:#586170;\n  }\n'
     + '  .scribe-article pre {\n    margin:.7em 0;\n    padding:.6em .8em;\n    background:#f6f8fa;\n    border-radius:4px;\n'
       + '    font:.85em/1.45 ui-monospace,Menlo,Consolas,monospace;\n    overflow-x:auto;\n  }\n'
@@ -146,7 +150,8 @@ const DOC_STYLES = {
       + '    font-weight:400;\n    margin:0 0 1.5em;\n  }\n'
     + '  .scribe-article p {\n    margin:0 0 1.5em;\n  }\n  .scribe-article ul, .scribe-article ol {\n    margin:0 0 1.5em;\n    padding-left:0;\n  }\n'
     + '  .scribe-article ul, .scribe-article ol {\n    list-style:none;\n  }\n  .scribe-article li {\n    margin:0 0 1.5em;\n  }\n'
-    + '  .scribe-article li[data-marker]::before {\n    content:attr(data-marker) " ";\n  }\n'
+    + '  .scribe-article li[data-marker]::before, .scribe-article h1[data-marker]::before, .scribe-article h2[data-marker]::before, .scribe-article h3[data-marker]::before,\n'
+    + '  .scribe-article h4[data-marker]::before, .scribe-article h5[data-marker]::before, .scribe-article h6[data-marker]::before {\n    content:attr(data-marker) " ";\n  }\n'
     + '  .scribe-article blockquote {\n    margin:0 0 1.5em;\n  }\n  .scribe-article pre {\n    margin:0 0 1.5em;\n    font:inherit;\n    white-space:pre-wrap;\n  }\n'
     + '  .scribe-article table {\n    border-collapse:collapse;\n    margin:0 0 1.5em;\n  }\n  .scribe-article th, .scribe-article td {\n'
       + '    padding:0 2ch 0 0;\n    text-align:left;\n    vertical-align:top;\n    font-weight:400;\n  }\n'
@@ -200,7 +205,9 @@ const wordStyles = () => {
       + `    margin:${num(hSpacing, 'before') / 20 || 0}pt 0 ${num(hSpacing, 'after') / 20 || afterPt}pt;\n  }\n`
     + `  .scribe-article p {\n    margin:0 0 ${afterPt}pt;\n  }\n`
     + `  .scribe-article ul, .scribe-article ol {\n    list-style:none;\n    margin:0;\n    padding:0;\n  }\n  .scribe-article li {\n    margin:0 0 ${afterPt}pt;\n  }\n`
-    + '  .scribe-article li[data-marker]::before {\n    content:attr(data-marker) " ";\n  }\n'
+    + '  .scribe-article li[data-marker]::before, .scribe-article h1[data-marker]::before, .scribe-article h2[data-marker]::before, .scribe-article h3[data-marker]::before,\n'
+    + '  .scribe-article h4[data-marker]::before, .scribe-article h5[data-marker]::before, .scribe-article h6[data-marker]::before {\n    content:attr(data-marker) " ";\n'
+      + '    font-family:var(--scribe-marker-font);\n  }\n'
     + `  .scribe-article blockquote {\n    margin:0 ${num(qInd, 'right') / 1440 || 0}in ${afterPt}pt ${num(qInd, 'left') / 1440 || 0}in;\n  }\n  .scribe-article blockquote p {\n    margin:0;\n  }\n`
     // A code block is written as one paragraph per line.
     + `  .scribe-article pre {\n    margin:0 0 ${afterPt}pt;\n    font:inherit;\n    line-height:calc(${line}em + ${afterPt}pt);\n    white-space:pre-wrap;\n  }\n`
@@ -918,6 +925,11 @@ export function createExportTool(app) {
           const font = /** @type {string} */ (span.getAttribute('data-font'));
           const { altName, family } = docxFontEntry(font, doc.fonts);
           /** @type {HTMLElement} */ (span).style.fontFamily = `"${font}", ${altName ? `"${altName}", ` : ''}${WORD_FAMILY_GENERIC[family]}`;
+        }
+        // The Word export writes a marker in the font of the text it leads.
+        for (const el of /** @type {NodeListOf<HTMLElement>} */ (paneBody.querySelectorAll('[data-marker]'))) {
+          const run = /** @type {?HTMLElement} */ (el.querySelector('[data-font]'));
+          if (run && el.textContent.startsWith(run.textContent)) el.style.setProperty('--scribe-marker-font', run.style.fontFamily);
         }
       }
       if (surface === 'document' && dropActive()) {

@@ -111,6 +111,8 @@ describe('Check markdown import.', () => {
         + '<li data-marker="•">Waterproof boots and gloves</li>');
     expect(articleHtml, 'a numbered list becomes <ol> with each item keeping its number')
       .toContain('<ol>\n<li value="1" data-marker="1.">Photograph the quadrat from directly above.</li>\n<li value="2" data-marker="2.">Count every organism inside the frame.</li>');
+    expect(articleHtml, 'a task item keeps its checkbox as text and is flagged to draw no bullet beside it')
+      .toContain('<ul>\n<li class="scribe-own-marker">☐ Confirm your tide-table subscription</li>\n<li class="scribe-own-marker">☑ Complete the safety refresher</li>\n</ul>');
   });
 
   test('Markdown is laid out onto real pages tagged with the markdown source', () => {

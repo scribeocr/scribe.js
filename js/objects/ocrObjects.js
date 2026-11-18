@@ -64,8 +64,9 @@ export function parIsFurniture(par) {
  * @returns {boolean}
  */
 export function parMarkerInText(par) {
-  const word = par.lines[0] && par.lines[0].words[0];
-  return !!word && word.text.startsWith(/** @type {string} */ (par.marker));
+  const line = par.lines[0];
+  // A marker can span words, as "Section 3800." does, so the line's leading text is compared rather than its first word.
+  return !!line && line.words.length > 0 && line.words.map((w) => w.text).join(' ').startsWith(/** @type {string} */ (par.marker));
 }
 
 /**

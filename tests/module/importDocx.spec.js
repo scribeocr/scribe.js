@@ -300,6 +300,28 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
     expect(titleText).toBe('Iris (plant)');
   });
 
+  test('Should write the style number of a heading in every reflow export of iris.docx', async () => {
+    const lines = /** @type {string} */ (await doc.exportData('text')).split('\n');
+    expect(lines[1], 'a heading numbered by its Word style keeps its number in the text export').toBe('1 Overview');
+    expect(lines[2].slice(0, 42), 'a body paragraph numbered by its Word style keeps its number in the text export').toBe('1.1 Iris is a flowering plant genus of 310');
+    const md = /** @type {string} */ (await doc.exportData('md')).split('\n');
+    expect(md[2], 'a heading numbered by its Word style keeps its number in the Markdown export').toBe('# 1 Overview');
+    const html = /** @type {string} */ (await doc.exportData('html', { reflow: true, includeImages: false }));
+    expect(html, 'a heading numbered by its Word style carries its number as a marker attribute in the HTML article')
+      .toContain('<h1 data-marker="1">Overview</h1>\n');
+    expect(html, 'a paragraph numbered by its Word style is an ordered-list item that draws its own number in the HTML article')
+      .toContain('<ol>\n<li class="scribe-own-marker" data-marker="1.1">Iris is a flowering plant genus of 310 accepted species');
+    const docxData = /** @type {ArrayBuffer} */ (await doc.exportData('docx'));
+    const zipModule = await import('../../lib/zip.js/index.js');
+    const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(new Blob([docxData])));
+    const entry = (await zipReader.getEntries()).find((e) => e.filename === 'word/document.xml');
+    const documentXml = await entry?.getData?.(new zipModule.TextWriter());
+    expect(documentXml, 'a heading numbered by its Word style keeps its number, in the font of its text, in the Word export')
+      .toContain('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+        + '<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr><w:t xml:space="preserve">1 </w:t></w:r>'
+        + '<w:r><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial"/></w:rPr><w:t xml:space="preserve">Overview</w:t></w:r></w:p>');
+  });
+
   test('Should parse title text as 28pt in iris.docx', async () => {
     const firstPar = doc.ocr.active[0].pars[0];
     const firstWord = firstPar.lines[0].words[0];

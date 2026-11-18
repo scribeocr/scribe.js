@@ -110,6 +110,15 @@ describe('Check paragraph detection with numbered list.', () => {
     expect(page.pars[8].lines[0].words[0].text).toBe('8.');
   });
 
+  test('A heading led by a two-word section marker exports its text once', async () => {
+    const lines = /** @type {string} */ (await doc.exportData('text', { pageArr: [19] })).split('\n');
+    expect(lines[2], 'a heading whose "Section 3800." marker is already its text is written without the marker repeated').toBe('Section 3800. Agency Defined.');
+    const md = /** @type {string} */ (await doc.exportData('md', { pageArr: [19] })).split('\n');
+    expect(md[2], 'the Markdown heading is written without the marker repeated').toBe('# **Section 3800. Agency Defined.**');
+    const html = /** @type {string} */ (await doc.exportData('html', { pageArr: [19], reflow: true, includeImages: false }));
+    expect(html, 'the HTML heading is written without a marker attribute, since its marker is already its text').toContain('\n<h1>Section 3800. Agency Defined.</h1>\n');
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

@@ -100,8 +100,8 @@ export function writeText({
         const parStart = h === 0 || par !== parCurrent;
         // A paragraph's lines join into one, except a code block's, and a table splits the paragraph it interrupts.
         if (parStart || afterTable || (par && par.debug.sourceStyle === 'HTMLPreformatted')) newLine = true;
-        // A marker the page does not print, as a Markdown or Word import records it, is written back before its item.
-        if (parStart && par && par.marker && par.type !== 'title' && par.debug.sourceStyle !== 'HTMLPreformatted' && !parMarkerInText(par)) prefix = `${par.marker} `;
+        // A marker the page does not print, as a Markdown or Word import records it, is written back before its paragraph.
+        if (parStart && par && par.marker && par.debug.sourceStyle !== 'HTMLPreformatted' && !parMarkerInText(par)) prefix = `${par.marker} `;
         parCurrent = par;
         afterTable = false;
       } else {

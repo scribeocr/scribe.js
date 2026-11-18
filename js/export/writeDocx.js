@@ -129,7 +129,11 @@ export function writeDocxContent({
     let first = true;
     let prevJoin = false;
     let strippingLeader = stripLeader;
-    if (prefix) runs += `<w:r><w:t xml:space="preserve">${ocr.escapeXml(prefix)}</w:t></w:r>`;
+    if (prefix) {
+      const firstWord = lines.flatMap((line) => line.words).find(included);
+      const sx = firstWord ? styleXml({ font: firstWord.style.font }) : '';
+      runs += `<w:r>${sx ? `<w:rPr>${sx}</w:rPr>` : ''}<w:t xml:space="preserve">${ocr.escapeXml(prefix)}</w:t></w:r>`;
+    }
     for (let li = 0; li < lines.length; li++) {
       const lineObj = lines[li];
       const last = lineObj.words.length - 1;
@@ -210,8 +214,8 @@ export function writeDocxContent({
     const pPr = par && par.type === 'title' ? '<w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
       : par && par.type === 'blockquote' ? '<w:pPr><w:pStyle w:val="Quote"/></w:pPr>'
         : '';
-    // A marker the page does not print, as a Markdown or Word import records it, is written back before its item.
-    const prefix = reflowText && par && par.marker && par.type !== 'title' && par.debug.sourceStyle !== 'HTMLPreformatted' && !parMarkerInText(par) ? `${par.marker} ` : '';
+    // A marker the page does not print, as a Markdown or Word import records it, is written back before its paragraph.
+    const prefix = reflowText && par && par.marker && par.debug.sourceStyle !== 'HTMLPreformatted' && !parMarkerInText(par) ? `${par.marker} ` : '';
     const runs = runsOf(parLines, { prefix });
     if (runs) body += `<w:p>${pPr}${runs}</w:p>`;
     parLines = [];
