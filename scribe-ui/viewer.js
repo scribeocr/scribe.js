@@ -4511,13 +4511,28 @@ export class ScribeViewer {
       m.el.dataset.restTopPage = String(home.restTopPage);
       m.el.dataset.restW = String(home.restW);
       m.el.dataset.restH = String(home.restH);
+      m.el.dataset.room = String(home.roomPx);
+      m.el.dataset.clear = String(home.clearPx);
+      m.el.dataset.textGap = String(home.textGapPx);
+      const narrowPx = 30 - home.restW * effZ / z;
+      if (narrowPx > 0.05) m.el.style.setProperty('--scribe-bub-narrow', `${narrowPx.toFixed(2)}px`);
+      else m.el.style.removeProperty('--scribe-bub-narrow');
+      // A shrunken bubble rests closer than 10px to the text, and its full-size preview shifts out to 10px, reducing the clear width it can use.
       populateBubbleMark(m.el, {
         isNote: false,
         color: m.color,
         tailClass: home.tailClass,
         comment: m.comment,
-        maxCardW: home.maxCardW,
+        maxCardW: home.clearPx - Math.max(0, 10 - home.textGapPx),
       });
+    }
+    // Keep DOM order top-to-bottom so overlapping bubbles on adjacent lines stack consistently regardless of creation order.
+    if (cmarkGroup) {
+      const ordered = marks.filter((m) => homesByKey.has(`${m.slot}:${m.groupId}`))
+        .sort((a, b) => homesByKey.get(`${a.slot}:${a.groupId}`).restTopPage - homesByKey.get(`${b.slot}:${b.groupId}`).restTopPage)
+        .map((m) => m.el);
+      const drawn = [...cmarkGroup.children].filter((c) => ordered.includes(c));
+      if (drawn.some((c, i) => c !== ordered[i])) for (const markEl of ordered) cmarkGroup.appendChild(markEl);
     }
   }
 

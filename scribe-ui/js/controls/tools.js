@@ -11,7 +11,7 @@ import {
   focusNoteEditor, pageNotes, removeNote, setNoteComment,
 } from '../viewerNotes.js';
 import {
-  BUBBLE_TIP_SVG, computeHighlightMarginHome, computePageHighlightHomes, computePageBubbleZoom,
+  BUBBLE_TIP_SVG, computeHighlightMarginHome, computePageHighlightHomes, computePageBubbleZoom, dropPreviewStrip,
 } from '../viewerCommentMarks.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
@@ -68,8 +68,6 @@ function nameForSelection(el, label, viewer) {
 }
 
 const HL_COMMENT_COUNT_KEY = 'scribe-hl-comment-count';
-const LIVE_SETTLE_MS = 4000;
-const LIVE_DISSOLVE_FRAC = 0.375;
 
 /**
  * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment marks.
@@ -269,6 +267,7 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     const reducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     // The card's CSS width.
     const CARD_W = 228;
+    const CARD_MIN_W = 176;
 
     // ---- Comment card ----
     const editorHost = scribe.outerElem || scribe.elem;
@@ -398,7 +397,24 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     }
     cmtBarRow.appendChild(cmtShelf);
     cmtCard.append(cmtBarRow, cmtThread);
-    surfaceLayer.appendChild(cmtCard);
+    // Nested rounded clip boxes and border overlays clip all four corners during open/close using compositor-only translations.
+    const cmtBox = document.createElement('div');
+    cmtBox.className = 'scribe-cmt-box';
+    const cmtBoxClips = ['is-x', 'is-y', 'is-b'].map((kind) => {
+      const node = document.createElement('div');
+      node.className = `scribe-cmt-clip ${kind}`;
+      return node;
+    });
+    const cmtBoxEdges = ['is-x', 'is-y', 'is-b'].map((kind) => {
+      const node = document.createElement('div');
+      node.className = `scribe-cmt-edge ${kind}`;
+      return node;
+    });
+    cmtBoxClips[2].append(cmtCard, ...cmtBoxEdges);
+    cmtBoxClips[1].appendChild(cmtBoxClips[2]);
+    cmtBoxClips[0].appendChild(cmtBoxClips[1]);
+    cmtBox.appendChild(cmtBoxClips[0]);
+    surfaceLayer.appendChild(cmtBox);
 
     /**
      * What a comment surface is attached to.
@@ -427,13 +443,63 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
      * @type {?{left: number, top: number, right: number, bottom: number, w: number, h: number}}
      */
     let cmtRestRect = null;
+    let cmtPlaceScrolled = 0;
+    /** Suppresses scroll-to-dismiss for the async scroll event fired when `cmtPlace` scrolls the viewport. */
+    let cmtSelfScroll = false;
     /** @type {?number} */
     let cardMorphRaf = null;
     /**
      * Close animations in flight, by `targetKey`, so opening the same target again can start from the animation's current frame.
-     * @type {Map<string, {rafId: number, ghost: HTMLElement, target: CommentTarget}>}
+     * @type {Map<string, {ghost: HTMLElement, target: CommentTarget, anims: Animation[],
+     *   rect: () => {left: number, top: number, right: number, bottom: number, w: number, h: number}}>}
      */
     const shellMorphs = new Map();
+    /** @type {Animation[]} */
+    let cardAnims = [];
+    /** @type {HTMLElement[]} */
+    let cardMorphExtras = [];
+    /** @type {?[string, string]} */
+    let cardMorphPos = null;
+    const EASE_OUT = 'cubic-bezier(.215,.61,.355,1)';
+    /**
+     * @param {Element} boxEl
+     * @param {Element} innerClip
+     */
+    const shownRect = (boxEl, innerClip) => {
+      const b = boxEl.getBoundingClientRect();
+      const inner = innerClip.getBoundingClientRect();
+      const right = Math.min(b.right, inner.right);
+      const bottom = Math.min(b.bottom, inner.bottom);
+      return {
+        left: b.left, top: b.top, right, bottom, w: right - b.left, h: bottom - b.top,
+      };
+    };
+    const slideTo = (x, y) => `translate(${x.toFixed(2)}px,${y.toFixed(2)}px)`;
+    /**
+     * Counter-translate the nested clip boxes and border overlays so the visible card rect animates from `from` to `to`.
+     * @param {{box: Element, clips: Element[], edges: Element[], inner: Element}} win
+     * @param {number} fw
+     * @param {number} fh
+     * @param {{x: number, y: number, w: number, h: number}} from
+     * @param {{x: number, y: number, w: number, h: number}} to
+     * @param {KeyframeAnimationOptions} timing
+     * @returns {Animation[]}
+     */
+    const windowAnims = (win, fw, fh, from, to, timing) => {
+      const a0x = fw - from.w;
+      const a0y = fh - from.h;
+      const a1x = fw - to.w;
+      const a1y = fh - to.h;
+      return [
+        win.box.animate([{ transform: slideTo(from.x, from.y) }, { transform: slideTo(to.x, to.y) }], timing),
+        win.clips[0].animate([{ transform: slideTo(-a0x, 0) }, { transform: slideTo(-a1x, 0) }], timing),
+        win.clips[1].animate([{ transform: slideTo(a0x, -a0y) }, { transform: slideTo(a1x, -a1y) }], timing),
+        win.clips[2].animate([{ transform: slideTo(-a0x, 0) }, { transform: slideTo(-a1x, 0) }], timing),
+        win.inner.animate([{ transform: slideTo(a0x, a0y) }, { transform: slideTo(a1x, a1y) }], timing),
+        win.edges[0].animate([{ transform: slideTo(0, a0y) }, { transform: slideTo(0, a1y) }], timing),
+        win.edges[1].animate([{ transform: slideTo(a0x, 0) }, { transform: slideTo(a1x, 0) }], timing),
+      ];
+    };
     /** @type {Set<HTMLElement>} */
     const hiddenOpenMarks = new Set();
 
@@ -524,6 +590,9 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
           h: Number(markEl.dataset.restH),
           lockRight: markEl.dataset.lockRight === '1',
           tailClass: markEl.dataset.tail,
+          room: Number(markEl.dataset.room) || 0,
+          clear: Number(markEl.dataset.clear) || 0,
+          textGap: Number(markEl.dataset.textGap) || 0,
         };
       } else if (target.kind === 'highlight') {
         const bandRects = targetBands(target).map((b) => b.getBoundingClientRect()).filter((r) => r.width > 0 && r.height > 0);
@@ -539,7 +608,15 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         const home = (target.groupId && computePageHighlightHomes(scribe, target.n, { groupId: target.groupId, slot, runs }).get(`${slot}:${target.groupId}`))
           || computeHighlightMarginHome(scribe, target.n, runs);
         rest = {
-          left: home.restLeftPage, top: home.restTopPage, w: home.restW, h: home.restH, lockRight: home.lockRight, tailClass: home.tailClass,
+          left: home.restLeftPage,
+          top: home.restTopPage,
+          w: home.restW,
+          h: home.restH,
+          lockRight: home.lockRight,
+          tailClass: home.tailClass,
+          room: home.roomPx,
+          clear: home.clearPx,
+          textGap: home.textGapPx,
         };
       } else {
         // A note's mark is not rendered while comments are off in the viewer, so its card opens from where the mark would sit.
@@ -549,21 +626,27 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         const leftRoom = (pcRect.left + (left + 22 / effZ) * z) - (view.left + 8);
         const lockRight = rightRoom < 196 && leftRoom > rightRoom;
         rest = {
-          left, top: target.annot.bbox.top - 25 / effZ, w: (22 / effZ) * z, h: (22 / effZ) * z, lockRight, tailClass: lockRight ? 'is-down-right' : 'is-down-left',
+          left, top: target.annot.bbox.top - 25 / effZ, w: (22 / effZ) * z, h: (22 / effZ) * z, lockRight, tailClass: lockRight ? 'is-down-right' : 'is-down-left', room: 0, clear: 0, textGap: 0,
         };
       }
       const bLeft = pcRect.left + rest.left * z;
       const bTop = pcRect.top + rest.top * z;
+      const bRight = bLeft + rest.w;
       return {
         bLeft,
         bTop,
-        bRight: bLeft + rest.w,
+        bRight,
         bBottom: bTop + rest.h,
         restW: rest.w,
         restH: rest.h,
+        textGap: rest.textGap,
         lockRight: rest.lockRight,
         lockBottom: target.kind === 'note',
         tailClass: rest.tailClass,
+        // Re-clamp to `view` because `dataset.room` and `dataset.clear` go stale across scrolls and container resizes that do not re-place marks.
+        wall: rest.lockRight ? Math.max(view.left + 4, bRight - rest.room) : Math.min(view.right - 4, bLeft + rest.room),
+        clearWall: rest.lockRight ? Math.max(view.left + 4, bRight - rest.clear) : Math.min(view.right - 4, bLeft + rest.clear),
+        offscreen: (rest.tailClass === 'is-left' && bRight <= view.left) || (rest.tailClass === 'is-right' && bLeft >= view.right),
         view,
       };
     };
@@ -579,46 +662,35 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     };
 
     // ---- Animations between a mark and the card ----
-    // Each runs on animation frames and can be cut short.
     // A surface opened, closed or re-placed mid-animation starts from the frame it is on.
 
     const clearCardMorphStyles = () => {
       if (cardMorphRaf !== null) { cancelAnimationFrame(cardMorphRaf); cardMorphRaf = null; }
-      cmtCard.style.width = '';
+      for (const anim of cardAnims) anim.cancel();
+      cardAnims = [];
+      for (const node of cardMorphExtras) node.remove();
+      cardMorphExtras = [];
+      cmtBox.classList.remove('is-on');
+      cmtBox.style.cssText = '';
+      for (const node of [...cmtBoxClips, ...cmtBoxEdges]) node.style.cssText = '';
+      cmtBar.style.transformOrigin = '';
+      if (cardMorphPos) {
+        [cmtCard.style.left, cmtCard.style.top] = cardMorphPos;
+        cardMorphPos = null;
+      }
       cmtCard.style.height = '';
       cmtCard.style.overflow = '';
-      cmtCard.style.borderRadius = '';
-      cmtCard.style.borderColor = '';
-      cmtCard.style.boxShadow = '';
-      cmtCard.style.transition = '';
-      cmtCard.style.opacity = '';
-      cmtCard.style.transform = '';
-      cmtThread.style.width = '';
-      cmtThread.style.opacity = '';
-      cmtThread.style.transform = '';
-      cmtBar.style.height = '';
-      cmtBar.style.transform = '';
-      cmtBar.style.opacity = '';
-      for (const fNode of cmtThread.querySelectorAll('.scribe-cmt-foot, .scribe-cmt-empty-foot')) {
-        /** @type {HTMLElement} */ (fNode).style.opacity = '';
-      }
-      for (const eg of cmtCard.querySelectorAll('.scribe-card-ell-fade, .scribe-card-lines-fade')) eg.remove();
+      for (const ell of cmtCard.querySelectorAll('.scribe-card-ell-fade')) ell.remove();
       cmtThread.classList.toggle('is-scrollable', cmtThread.scrollHeight > 322);
     };
 
     const cancelShellMorph = (key) => {
       const rec = shellMorphs.get(key);
       if (!rec) return;
-      if (rec.rafId) cancelAnimationFrame(rec.rafId);
+      for (const anim of rec.anims) anim.cancel();
       shellMorphs.delete(key);
       const liveMark = cmtMarkEl(rec.target);
-      if (liveMark) {
-        // Shown with its transitions off for one layout, so the mark does not animate out of its hidden state.
-        liveMark.style.transition = 'none';
-        liveMark.classList.remove('is-morph-hidden');
-        liveMark.getBoundingClientRect();
-        liveMark.style.transition = '';
-      }
+      if (liveMark) liveMark.classList.remove('is-morph-target');
       if (rec.ghost.isConnected) rec.ghost.remove();
     };
 
@@ -674,137 +746,98 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
 
     /**
      * Fold a closing card into its target's mark.
-     * @param {{left: number, top: number, right: number, bottom: number, w: number, h: number}} fromRect - The closing surface's rect, in client coordinates.
+     * @param {{left: number, top: number, right: number, bottom: number, w: number, h: number}} fromRect - The part of the card that showed, in client coordinates.
      * @param {CommentTarget} target
-     * @param {string} noteText - The comment the surface showed.
-     * @param {number} snapW - The width the comment text was laid out in, so its wrapping holds while it fades.
+     * @param {HTMLElement} face - A copy of the card as it looked when it closed, carrying the card's full size as `data-w` and `data-h`.
      */
-    const animateShellToBubble = (fromRect, target, noteText, snapW) => {
+    const animateShellToBubble = (fromRect, target, face) => {
       if (reducedMotion()) return;
       const key = targetKey(target);
       cancelShellMorph(key);
       const markEl = cmtMarkEl(target);
       const home = targetScreenHome(target);
-      if (!markEl || !home) {
+      if (!markEl || !home || home.offscreen) {
         fadeCardOut(fromRect, target);
         return;
       }
       const view = home.view;
       if (home.bBottom < view.top || home.bTop > view.bottom || home.bRight < view.left || home.bLeft > view.right) return;
 
-      // The mark is put in its resting state, transitions off, to measure what the ghost must end as.
       markEl.style.transition = 'none';
       markEl.classList.remove('is-unrolled', 'is-active', 'is-hidden-for-card');
-      const mRect0 = markEl.getBoundingClientRect();
-      const barNode = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-cm-bar'));
-      const bRect0 = barNode ? barNode.getBoundingClientRect() : null;
-      const endBarLeft = bRect0 ? (bRect0.left - mRect0.left) : 6;
-      const endBarTop = bRect0 ? (bRect0.top - mRect0.top) : 5.25;
-      const endBarH = bRect0 ? bRect0.height : 11.5;
-      const endBarOp = barNode ? parseFloat(getComputedStyle(barNode).opacity || '0.5') : 0.5;
-      const linesNode = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-bub-lines'));
-      const lRect0 = linesNode ? linesNode.getBoundingClientRect() : null;
-      const endLinesLeft = lRect0 ? (lRect0.left - mRect0.left) : (target.kind === 'note' ? 6.5 : 14.5);
-      const endLinesTop = lRect0 ? (lRect0.top - mRect0.top) : 6.5;
-      const endLinesW = lRect0 ? lRect0.width : (target.kind === 'note' ? 10 : 12);
-      const endLinesH = lRect0 ? lRect0.height : (target.kind === 'note' ? 9.5 : 9);
-      const endLinesOp = target.kind === 'note' ? 0.70 : 0.58;
-      const endLinesColor = linesNode ? getComputedStyle(linesNode).color : '';
-
-      markEl.classList.add('is-morph-hidden');
+      const m = markEl.getBoundingClientRect();
       markEl.style.transition = '';
+      markEl.classList.add('is-morph-target');
 
-      const ghost = document.createElement('div');
-      ghost.className = `scribe-shell-morph ${home.tailClass}`;
-      ghost.dataset.lockRight = home.lockRight ? '1' : '0';
-      const shell = document.createElement('span');
-      shell.className = 'scribe-bub-shell';
-      shell.innerHTML = `<span class="scribe-bub-box"></span>${BUBBLE_TIP_SVG}`;
-      ghost.appendChild(shell);
-      const tipEl = /** @type {?HTMLElement} */ (shell.querySelector('.scribe-bub-tip'));
-
-      const clip = document.createElement('div');
-      clip.style.cssText = 'position:absolute;inset:0;overflow:hidden;border-radius:var(--scribe-box-radius,5.5px);pointer-events:none;z-index:1;';
-      /** @type {?HTMLElement} */
-      let barEl = null;
-      if (target.kind === 'highlight') {
-        const annot = cmtAnnot(target);
-        const barColor = (annot && annot.color) || (target.slot === 'line' ? target.kw.markupColor : target.kw.highlightColor) || highlightColor;
-        barEl = document.createElement('span');
-        barEl.className = 'scribe-cm-bar';
-        barEl.style.cssText = `position:absolute;left:7px;top:6px;width:3px;height:16px;border-radius:1.5px;background:${barColor};transition:none;`;
-        clip.appendChild(barEl);
+      const base = fitSurfaceLayer();
+      const fw = Number(face.dataset.w) || fromRect.w;
+      const fh = Number(face.dataset.h) || fromRect.h;
+      const mx = m.left - fromRect.left;
+      const my = m.top - fromRect.top;
+      const timing = { duration: 200, easing: EASE_OUT, fill: 'both' };
+      const placed = `position:absolute;left:${(fromRect.left - base.left).toFixed(2)}px;top:${(fromRect.top - base.top).toFixed(2)}px;width:${fw}px;height:${fh}px;`;
+      const leave = document.createElement('div');
+      leave.className = 'scribe-cmt-leave';
+      leave.inert = true;
+      /** @type {Animation[]} */
+      const anims = [];
+      for (const kind of ['', ' is-ring']) {
+        const shade = document.createElement('div');
+        shade.className = `scribe-cmt-shade${kind}`;
+        shade.style.cssText = placed;
+        leave.appendChild(shade);
+        anims.push(
+          shade.animate([
+            { transform: `translate(0px,0px) scale(${(fromRect.w / fw).toFixed(4)},${(fromRect.h / fh).toFixed(4)})` },
+            { transform: `translate(${mx.toFixed(2)}px,${my.toFixed(2)}px) scale(${(m.width / fw).toFixed(4)},${(m.height / fh).toFixed(4)})` },
+          ], timing),
+          shade.animate([{ opacity: 1, offset: 0 }, { opacity: 0, offset: 0.6 }, { opacity: 0, offset: 1 }], timing),
+        );
       }
+      const clips = ['is-x', 'is-y', 'is-b'].map((kind) => {
+        const node = document.createElement('div');
+        node.className = `scribe-cmt-clip ${kind}`;
+        node.style.cssText = `width:${fw}px;height:${fh}px;`;
+        return node;
+      });
+      const edges = ['is-x', 'is-y', 'is-b'].map((kind) => {
+        const node = document.createElement('div');
+        node.className = `scribe-cmt-edge ${kind}`;
+        node.style.cssText = `width:${fw}px;height:${fh}px;`;
+        return node;
+      });
+      face.removeAttribute('tabindex');
+      face.style.cssText = `position:absolute;left:0;top:0;width:${fw}px;margin:0;`;
+      clips[2].append(face, ...edges);
+      clips[1].appendChild(clips[2]);
+      clips[0].appendChild(clips[1]);
+      const body = document.createElement('div');
+      body.className = 'scribe-cmt-box is-on';
+      body.style.cssText = placed;
+      body.appendChild(clips[0]);
+      leave.appendChild(body);
+      anims.push(
+        ...windowAnims({
+          box: body, clips, edges, inner: face,
+        }, fw, fh, {
+          x: 0, y: 0, w: fromRect.w, h: fromRect.h,
+        }, {
+          x: mx, y: my, w: m.width, h: m.height,
+        }, timing),
+        body.animate([{ opacity: 1, offset: 0 }, { opacity: 1, offset: 0.7 }, { opacity: 0, offset: 1 }], timing),
+        markEl.animate([{ opacity: 0, offset: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1, offset: 1 }], timing),
+      );
+      const thread = face.querySelector('.scribe-cmt-thread');
+      if (thread) anims.push(thread.animate([{ opacity: 1, offset: 0 }, { opacity: 0, offset: 0.43 }, { opacity: 0, offset: 1 }], timing));
+      surfaceLayer.appendChild(leave);
 
-      // The text sits where the card draws it, past the color bar on a highlight and at the plain padding on a note.
-      const snapTxt = document.createElement('div');
-      snapTxt.style.cssText = `position:absolute;left:${target.kind === 'highlight' ? 17 : 11}px;top:5px;width:${snapW.toFixed(2)}px;font-size:12.5px;line-height:18px;color:var(--scribe-ink);white-space:pre-wrap;overflow-wrap:break-word;`;
-      snapTxt.textContent = noteText;
-      clip.appendChild(snapTxt);
-
-      /** @type {?HTMLElement} */
-      let linesEl = null;
-      if (linesNode) {
-        linesEl = document.createElement('span');
-        linesEl.className = 'scribe-bub-lines';
-        linesEl.style.cssText = `position:absolute;left:${endLinesLeft.toFixed(2)}px;top:${endLinesTop.toFixed(2)}px;width:${endLinesW.toFixed(2)}px;height:${endLinesH.toFixed(2)}px;transform:none;opacity:0;transition:none;${endLinesColor ? `color:${endLinesColor};` : ''}`;
-        linesEl.innerHTML = linesNode.innerHTML;
-        clip.appendChild(linesEl);
-      }
-      ghost.appendChild(clip);
-      surfaceLayer.appendChild(ghost);
-
-      const rec = { rafId: 0, ghost, target };
+      const rec = {
+        ghost: leave, target, anims, rect: () => shownRect(body, clips[2]),
+      };
       shellMorphs.set(key, rec);
-      const t0 = performance.now();
-
-      const applyAt = (u) => {
-        const base = fitSurfaceLayer();
-        const curMark = cmtMarkEl(target);
-        const mNow = curMark ? curMark.getBoundingClientRect() : null;
-        const toLeft = (mNow && mNow.width > 0) ? mNow.left : home.bLeft;
-        const toTop = (mNow && mNow.height > 0) ? mNow.top : home.bTop;
-        const toW = (mNow && mNow.width > 0) ? mNow.width : home.restW;
-        const toH = (mNow && mNow.height > 0) ? mNow.height : home.restH;
-
-        const e = 1 - ((1 - u) ** 3.2);
-        const w = fromRect.w + (toW - fromRect.w) * e;
-        const h = fromRect.h + (toH - fromRect.h) * e;
-        const curLeft = fromRect.left + (toLeft - fromRect.left) * e;
-        const curTop = fromRect.top + (toTop - fromRect.top) * e;
-        const endScale = Math.max(0.22, Math.min(1.25, toH / 22));
-        const curScale = 1 + (endScale - 1) * e;
-        ghost.style.left = `${(curLeft - base.left).toFixed(2)}px`;
-        ghost.style.top = `${(curTop - base.top).toFixed(2)}px`;
-        ghost.style.width = `${w.toFixed(2)}px`;
-        ghost.style.height = `${h.toFixed(2)}px`;
-        ghost.style.setProperty('--z', (1 / curScale).toFixed(4));
-        ghost.style.setProperty('--scribe-box-radius', `${(7 + (5.5 * endScale - 7) * e).toFixed(2)}px`);
-        if (tipEl) tipEl.style.opacity = Math.max(0, Math.min(1, (e - 0.35) / 0.65)).toFixed(3);
-        if (barEl) {
-          barEl.style.left = `${(7 + (endBarLeft - 7) * e).toFixed(2)}px`;
-          barEl.style.top = `${(6 + (endBarTop - 6) * e).toFixed(2)}px`;
-          barEl.style.height = `${(16 + (endBarH - 16) * e).toFixed(2)}px`;
-          barEl.style.opacity = (1 + (endBarOp - 1) * e).toFixed(3);
-        }
-        snapTxt.style.opacity = Math.max(0, Math.min(1, 1 - e * 2.35)).toFixed(3);
-        if (linesEl) {
-          linesEl.style.opacity = (Math.max(0, Math.min(1, (e - 0.44) / 0.56)) * endLinesOp).toFixed(3);
-        }
-      };
-      applyAt(0);
-
-      const step = (now) => {
-        if (shellMorphs.get(key) !== rec) return;
-        const u = Math.max(0, Math.min(1, (now - t0) / 200));
-        if (u >= 1) {
-          cancelShellMorph(key);
-          return;
-        }
-        applyAt(u);
-        rec.rafId = requestAnimationFrame(step);
-      };
-      rec.rafId = requestAnimationFrame(step);
+      Promise.all(anims.map((anim) => anim.finished)).then(() => {
+        if (shellMorphs.get(key) === rec) cancelShellMorph(key);
+      }, () => {});
     };
 
     /**
@@ -1093,37 +1126,63 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     };
 
     /**
-     * Place the card on its target's resting spot, kept inside the document area.
-     * @returns {boolean} false when the target has neither on screen, leaving the card unplaced.
+     * Place the card for its target, inside the document area.
+     * @returns {boolean} false when the target is not on screen, leaving the card unplaced.
      */
     const cmtPlace = (target) => {
       clearCardMorphStyles();
       const home = targetScreenHome(target);
+      if (!home) return false;
       const rects = cmtAnchorRects(target);
-      if (!home && rects.length === 0) return false;
+      const { view } = home;
+      const beside = home.tailClass === 'is-left' || home.tailClass === 'is-right';
+      // Allow up to 6px of encroachment past the bubble toward the text, keeping at least 4px of text clearance.
+      const nearer = Math.max(0, Math.min(6, home.textGap - 4));
+      let room = CARD_W;
+      if (beside) room = home.lockRight ? home.bRight + nearer - home.wall : home.wall - home.bLeft + nearer;
+      cmtCard.style.setProperty('--scribe-cmt-w', `${Math.max(CARD_MIN_W, Math.min(CARD_W, Math.floor(room)))}px`);
+      cmtCard.classList.remove('scribe-cmt-narrow');
 
       cmtCard.style.display = '';
       cmtCard.style.visibility = 'hidden';
       cmtGrow();
+      if ([...cmtThread.querySelectorAll('.scribe-cmt-foot')].some((foot) => foot.scrollWidth > foot.clientWidth)) cmtCard.classList.add('scribe-cmt-narrow');
       const base = fitSurfaceLayer();
       const cw = cmtCard.offsetWidth || CARD_W;
       const ch = cmtCard.offsetHeight || 52;
-      const view = home ? home.view : (scribe.scrollContainer || editorHost).getBoundingClientRect();
       const minX = view.left + 4;
       const maxX = Math.max(minX, view.right - cw - 4);
       const minY = view.top + 4;
       const maxY = Math.max(minY, view.bottom - ch - 4);
 
-      const anchor = rects[rects.length - 1];
       let left;
       let top;
-      if (home) {
+      cmtPlaceScrolled = 0;
+      if (rects.length > 0 && beside && cw > room) {
+        const last = rects.reduce((a, r) => (r.bottom > a.bottom ? r : a));
+        if (home.offscreen) left = last.left;
+        else left = home.lockRight ? home.wall : home.wall - cw;
+        left = Math.max(minX, Math.min(maxX, left));
+        top = last.bottom + 6;
+        // Sliding the card up into view would put it on the highlight, so the document scrolls to make room.
+        const past = top + ch - (view.bottom - 4);
+        const sc = scribe.scrollContainer;
+        if (sc && past > 0) {
+          const scrollTop0 = sc.scrollTop;
+          sc.scrollTop = scrollTop0 + Math.min(past, Math.max(0, top - minY));
+          cmtPlaceScrolled = sc.scrollTop - scrollTop0;
+          if (cmtPlaceScrolled !== 0) cmtSelfScroll = true;
+          top -= cmtPlaceScrolled;
+        }
+        // At the end of the document scroll can stop short, so place the card above the highlight when more of it fits there.
+        const over = Math.min(...rects.map((r) => r.top)) - cmtPlaceScrolled - 6 - ch;
+        if (top + ch - (view.bottom - 4) > Math.max(0, minY - over)) top = over;
+      } else if (beside) {
+        left = home.lockRight ? Math.max(home.wall, home.bRight - cw) : Math.min(home.wall - cw, home.bLeft);
+        top = Math.max(minY, Math.min(maxY, home.bTop));
+      } else {
         left = Math.max(minX, Math.min(maxX, home.lockRight ? (home.bRight - cw) : home.bLeft));
         top = Math.max(minY, Math.min(maxY, home.lockBottom ? (home.bBottom - ch) : home.bTop));
-      } else {
-        const clearBottom = Math.max(...rects.map((r) => r.bottom));
-        left = Math.max(minX, Math.min(maxX, anchor.left - 10));
-        top = Math.max(minY, Math.min(maxY, clearBottom + 6));
       }
 
       cmtCard.style.left = `${(left - base.left).toFixed(1)}px`;
@@ -1132,7 +1191,8 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       cmtRestRect = {
         left, top, right: left + cw, bottom: top + ch, w: cw, h: ch,
       };
-      cmtAnchorOff = anchor ? { dx: left - anchor.left, dy: top - anchor.top } : null;
+      const anchor = rects[rects.length - 1];
+      cmtAnchorOff = anchor ? { dx: left - anchor.left, dy: top - (anchor.top - cmtPlaceScrolled) } : null;
       return true;
     };
 
@@ -1201,17 +1261,15 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
 
     /**
      * The seed's state while it is up.
-     * `rem` is the ms left before it dissolves, and `spot` is where it was last placed, in client coordinates.
+     * `spot` is where it was last placed, in client coordinates.
      * @type {?{target: HighlightTarget, color: string, isMin: boolean,
-     *   spot: ?{left: number, top: number, right: number, bottom: number, lockRight: boolean}, rem: number, lastTs: number}}
+     *   spot: ?{left: number, top: number, right: number, bottom: number, lockRight: boolean}}}
      */
     let liveState = null;
     /** @type {?number} */
     let liveRaf = null;
     /** @type {Array<HTMLElement>} */
     let liveEdges = [];
-    let seedHovered = false;
-    let liveHlHovered = false;
 
     /**
      * Hide the mark of the target whose card is open, and show again any mark hidden for an earlier one.
@@ -1229,6 +1287,7 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       hiddenOpenMarks.clear();
       const markEl = cmtTarget ? cmtMarkEl(cmtTarget) : null;
       if (markEl) {
+        dropPreviewStrip(markEl);
         markEl.classList.remove('is-unrolled', 'is-active');
         markEl.classList.add('is-hidden-for-card');
         hiddenOpenMarks.add(markEl);
@@ -1243,9 +1302,16 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     const cmtClose = (animate = false) => {
       const closingTarget = cmtTarget;
       // Measured now, before the card hides.
-      const fromRect = animate ? liveClientRect(cmtCard) : null;
-      const threadW = cmtThread.getBoundingClientRect().width;
+      let fromRect = animate ? liveClientRect(cmtCard) : null;
+      if (fromRect && cmtBox.classList.contains('is-on')) fromRect = shownRect(cmtBox, cmtBoxClips[2]);
       const annot = closingTarget ? cmtAnnot(closingTarget) : null;
+      /** @type {?HTMLElement} */
+      let face = null;
+      if (fromRect && annot && annot.comment && !reducedMotion()) {
+        face = /** @type {HTMLElement} */ (cmtCard.cloneNode(true));
+        face.dataset.w = String(cmtCard.offsetWidth);
+        face.dataset.h = String(cmtCard.offsetHeight);
+      }
 
       cancelMsgEdit();
       clearCardMorphStyles();
@@ -1260,7 +1326,7 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       syncOpenMarkVisibility();
 
       if (fromRect && closingTarget) {
-        if (annot && annot.comment) animateShellToBubble(fromRect, closingTarget, annot.comment, Math.max(120, threadW));
+        if (face) animateShellToBubble(fromRect, closingTarget, face);
         else fadeCardOut(fromRect, closingTarget);
       }
     };
@@ -1275,23 +1341,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       cmtClose(animate);
     };
 
-    const paintLiveDissolve = () => {
-      if (!liveState) return;
-      const paused = seedHovered || liveHlHovered;
-      const frac = Math.max(0, Math.min(1, liveState.rem / LIVE_SETTLE_MS));
-      const alpha = (!paused && !reducedMotion() && frac < LIVE_DISSOLVE_FRAC)
-        ? (Math.max(0, Math.min(1, frac / LIVE_DISSOLVE_FRAC)) ** 0.85)
-        : 1;
-      if (alpha < 0.999) {
-        seedElem.style.animation = 'none';
-        seedElem.style.opacity = alpha.toFixed(3);
-        for (const edge of liveEdges) edge.style.opacity = alpha.toFixed(3);
-      } else {
-        seedElem.style.opacity = '';
-        for (const edge of liveEdges) edge.style.opacity = '';
-      }
-    };
-
     /** @param {boolean} [animateExit] */
     const disarmLive = (animateExit = false) => {
       const fromRect = (animateExit && liveState) ? liveClientRect(seedElem) : null;
@@ -1301,11 +1350,7 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       for (const el of liveEdges) el.remove();
       liveEdges = [];
       liveState = null;
-      seedHovered = false;
-      liveHlHovered = false;
       seedElem.style.display = 'none';
-      seedElem.style.opacity = '';
-      seedElem.style.animation = '';
       if (fromRect) spawnExitFadeGhost(fromRect, prevColor, prevLockRight);
     };
 
@@ -1320,26 +1365,41 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         seedElem.style.display = 'none';
         return false;
       }
-      seedElem.classList.toggle('scribe-hl-seed-min', liveState.isMin);
-      seedLabel.style.display = liveState.isMin ? 'none' : '';
-      if (liveState.isMin) seedElem.title = 'Type or click to comment';
-      else seedElem.removeAttribute('title');
-
-      const prevAnim = seedElem.style.animation;
       seedElem.style.animation = 'none';
       seedElem.style.display = 'inline-flex';
       seedElem.style.visibility = 'hidden';
       const base = fitSurfaceLayer();
-      const pw = seedElem.offsetWidth || (liveState.isMin ? 24 : 118);
-      const ph = seedElem.offsetHeight || 22;
       const view = home.view;
-      const left = Math.max(view.left + 6, Math.min(view.right - pw - 6, home.lockRight ? (home.bRight - pw) : home.bLeft));
-      const top = Math.max(view.top + 4, Math.min(view.bottom - ph - 4, home.bTop));
+      const besideW = home.lockRight ? home.bRight - home.clearWall : home.clearWall - home.bLeft;
+      let bare = liveState.isMin;
+      seedElem.classList.toggle('scribe-hl-seed-min', bare);
+      seedLabel.style.display = bare ? 'none' : '';
+      if (!bare && (seedElem.offsetWidth || 118) > besideW) {
+        bare = true;
+        seedElem.classList.add('scribe-hl-seed-min');
+        seedLabel.style.display = 'none';
+      }
+      if (bare) seedElem.title = 'Type or click to comment';
+      else seedElem.removeAttribute('title');
+      const pw = seedElem.offsetWidth || (bare ? 24 : 118);
+      const ph = seedElem.offsetHeight || 22;
+      let left;
+      let top;
+      if (pw <= besideW) {
+        left = home.lockRight ? home.bRight - pw : home.bLeft;
+        top = Math.max(view.top + 4, Math.min(view.bottom - ph - 4, home.bTop));
+      } else {
+        const rects = cmtAnchorRects(liveState.target);
+        const last = rects.reduce((a, r) => (r.bottom > a.bottom ? r : a));
+        left = Math.max(view.left + 6, Math.min(view.right - pw - 6, last.left));
+        top = last.bottom + 6;
+        if (top + ph > view.bottom - 4) top = Math.min(...rects.map((r) => r.top)) - 6 - ph;
+      }
       const visible = home.bBottom > view.top + 4 && home.bTop < view.bottom - 4;
       if (!visible) {
         seedElem.style.display = 'none';
         seedElem.style.visibility = '';
-        seedElem.style.animation = prevAnim;
+        seedElem.style.animation = '';
         return false;
       }
       liveState.spot = {
@@ -1348,7 +1408,7 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       seedElem.style.left = `${(left - base.left).toFixed(1)}px`;
       seedElem.style.top = `${(top - base.top).toFixed(1)}px`;
       seedElem.style.visibility = '';
-      seedElem.style.animation = prevAnim;
+      seedElem.style.animation = '';
       return true;
     };
 
@@ -1403,17 +1463,14 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         color,
         isMin,
         spot: null,
-        rem: LIVE_SETTLE_MS,
-        lastTs: performance.now(),
       };
       if (!placeLiveSeed()) {
         disarmLive(false);
         return;
       }
       liveEdges = createInkEdges(bands);
-      paintLiveDissolve();
 
-      const liveTick = (now) => {
+      const liveTick = () => {
         if (!liveState) { liveRaf = null; return; }
         // The highlight is gone, or has gained a comment by another route.
         const annot = cmtAnnot(liveState.target);
@@ -1427,19 +1484,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
           liveEdges = createInkEdges(targetBands(liveState.target));
           if (!placeLiveSeed()) { disarmLive(false); return; }
         }
-        // The step is capped so a background tab's long frame gap does not spend the countdown in one go.
-        const dt = Math.min(80, Math.max(0, now - liveState.lastTs));
-        liveState.lastTs = now;
-        if (!(seedHovered || liveHlHovered)) {
-          liveState.rem = Math.max(0, liveState.rem - dt);
-          paintLiveDissolve();
-          if (liveState.rem <= 0) {
-            disarmLive(false);
-            return;
-          }
-        } else {
-          paintLiveDissolve();
-        }
         liveRaf = requestAnimationFrame(liveTick);
       };
       liveRaf = requestAnimationFrame(liveTick);
@@ -1450,17 +1494,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       disarmLive(false);
     };
 
-    seedElem.addEventListener('pointerenter', () => {
-      if (!liveState) return;
-      seedHovered = true;
-      paintLiveDissolve();
-    });
-    seedElem.addEventListener('pointerleave', () => {
-      if (!liveState) return;
-      seedHovered = false;
-      if (liveState.rem > 0 && liveState.rem < 1800) liveState.rem = 1800;
-      paintLiveDissolve();
-    });
     seedElem.addEventListener('pointerdown', (e) => e.stopPropagation());
     seedElem.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); });
     seedElem.addEventListener('click', (e) => {
@@ -1542,7 +1575,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
 
     // ---- Hovering marks and highlights, and opening the card ----
     // The pointer over a commented highlight pairs it with its bubble: the bubble leans toward the highlight and the highlight's bands lift.
-    // The pointer over a mark unrolls it into a one-line preview of its comment.
     /** The group whose highlight and bubble are paired. @type {?string} */
     let activeHoverGroupId = null;
     /** The mark under the pointer, shown unrolled. @type {?HTMLElement} */
@@ -1564,18 +1596,134 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         }
         for (const b of pairedLitBands) b.classList.add('scribe-hl-hover');
       }
-      for (const mark of scribe.elem.querySelectorAll('.scribe-hl-cmark')) {
+      for (const mark of scribe.elem.querySelectorAll('.scribe-hl-cmark, .scribe-note-icon')) {
         const hm = /** @type {HTMLElement} */ (mark);
-        const hidden = hm.classList.contains('is-hidden-for-card') || hm.classList.contains('is-morph-hidden');
-        const paired = !hidden && !!activeHoverGroupId && hm.dataset.groupId === activeHoverGroupId;
+        const isNote = hm.classList.contains('scribe-note-icon');
+        const hidden = hm.classList.contains('is-hidden-for-card') || hm.classList.contains('is-morph-target');
+        const paired = !isNote && !hidden && !!activeHoverGroupId && hm.dataset.groupId === activeHoverGroupId;
         const unrolled = !hidden && hm === unrolledMarkEl;
-        hm.classList.toggle('is-active', paired || unrolled);
-        hm.classList.toggle('is-unrolled', unrolled);
-      }
-      for (const noteEl of scribe.elem.querySelectorAll('.scribe-note-icon')) {
-        const hn = /** @type {HTMLElement} */ (noteEl);
-        const hidden = hn.classList.contains('is-hidden-for-card') || hn.classList.contains('is-morph-hidden');
-        hn.classList.toggle('is-unrolled', !hidden && hn === unrolledMarkEl);
+        const wasUnrolled = hm.classList.contains('is-unrolled');
+        if (unrolled === wasUnrolled) {
+          if (!isNote) hm.classList.toggle('is-active', paired || unrolled);
+          continue;
+        }
+
+        // Overlay a full-width preview strip and reveal it by translating its clip container so hover animations run on the compositor.
+        const lockRight = hm.dataset.lockRight === '1';
+        let strip = /** @type {?HTMLElement} */ (hm.querySelector('.scribe-bub-strip'));
+        if (strip && strip.classList.contains('is-lock-right') !== lockRight) {
+          dropPreviewStrip(hm);
+          strip = null;
+        }
+        const building = unrolled && !strip;
+        // Opening reads `restBarOp` and `restLinesOp` before toggling classes so the strip starts from the mark's current opacity.
+        // Closing toggles classes first so those reads capture the target opacity the mark will settle to.
+        if (!building) {
+          if (!isNote) hm.classList.toggle('is-active', paired || unrolled);
+          hm.classList.toggle('is-unrolled', unrolled);
+        }
+        if (!building && !strip) continue;
+        const ownBar = /** @type {?HTMLElement} */ (hm.querySelector(':scope > .scribe-cm-bar'));
+        const ownLines = /** @type {?HTMLElement} */ (hm.querySelector(':scope > .scribe-bub-body > .scribe-bub-lines'));
+        const restBarOp = ownBar ? getComputedStyle(ownBar).opacity : '0.5';
+        const restLinesOp = ownLines ? getComputedStyle(ownLines).opacity : '0.58';
+        if (!strip) {
+          strip = document.createElement('span');
+          strip.className = `scribe-bub-strip ${lockRight ? 'is-lock-right' : 'is-lock-left'}`;
+          // Left-anchored strips counter-translate `.scribe-strip-face` inside `.scribe-strip-slide`, so `.scribe-strip-cap` rides on `slide` to draw the moving right border.
+          // Right-anchored strips translate `slide` and `face` together from the right, so `cap` stays on `.scribe-strip-clip` to close the fixed right edge.
+          const cap = '<span class="scribe-strip-cap"></span>';
+          strip.innerHTML = '<span class="scribe-strip-shade is-rest"></span><span class="scribe-strip-shade is-open"></span>'
+            + '<span class="scribe-strip-clip"><span class="scribe-strip-slide"><span class="scribe-strip-face"><span class="scribe-bub-box"></span>'
+            + `${isNote ? '' : '<span class="scribe-strip-bar"></span>'}<span class="scribe-strip-lines"></span>`
+            + '<span class="scribe-strip-text"><span class="scribe-prev-txt"></span><span class="scribe-prev-ell">…</span></span></span>'
+            + `${lockRight ? '' : cap}</span>${lockRight ? cap : ''}</span>${BUBBLE_TIP_SVG}`;
+          if (ownBar) /** @type {HTMLElement} */ (strip.querySelector('.scribe-strip-bar')).style.background = ownBar.style.background;
+          const stripLines = /** @type {HTMLElement} */ (strip.querySelector('.scribe-strip-lines'));
+          stripLines.innerHTML = ownLines ? ownLines.innerHTML : '';
+          stripLines.style.color = ownLines ? getComputedStyle(ownLines).color : '';
+          /** @type {HTMLElement} */ (strip.querySelector('.scribe-prev-txt')).textContent = hm.dataset.previewText || '';
+          /** @type {HTMLElement} */ (strip.querySelector('.scribe-prev-ell')).hidden = hm.dataset.hasEllipsis !== '1';
+        }
+        const part = (sel) => /** @type {HTMLElement} */ (/** @type {HTMLElement} */ (strip).querySelector(sel));
+
+        const z = scribe.zoomLevel;
+        const unrollW = parseFloat(hm.style.getPropertyValue('--scribe-unroll-w')) || 196;
+        const restW = isNote ? 22 : 30;
+        const shrink = Math.min(1, z / (parseFloat(getComputedStyle(hm).getPropertyValue('--scribe-bub-z')) || z));
+        const travel = (lockRight ? 1 : -1) * (unrollW - restW) / z;
+        const slideX = (v) => `translateX(${v.toFixed(3)}px)`;
+        const curve = 'cubic-bezier(.22,1,.36,1)';
+        // Each row is one part and one property: its value at rest and unrolled, then the duration, easing and delay toward unrolled and toward rest.
+        /** @type {Array<[HTMLElement, 'transform'|'opacity', string, string, number, string, number, number, string, number]>} */
+        const moves = [
+          [part('.scribe-strip-slide'), 'transform', slideX(travel), slideX(0), 200, curve, 0, 200, curve, 0],
+          [part('.scribe-strip-shade.is-open'), 'transform', `scaleX(${(restW / unrollW).toFixed(4)})`, 'scaleX(1)', 200, curve, 0, 200, curve, 0],
+          [part('.scribe-strip-shade.is-open'), 'opacity', '0', '1', 180, 'ease', 0, 180, 'ease', 0],
+          [part('.scribe-strip-shade.is-rest'), 'opacity', '1', '0', 180, 'ease', 0, 180, 'ease', 0],
+          [part('.scribe-strip-lines'), 'opacity', restLinesOp, '0', 75, 'ease', 0, 120, 'ease', 55],
+          [part('.scribe-strip-lines'), 'transform', 'scaleX(1)', 'scaleX(0.72)', 120, curve, 0, 140, curve, 45],
+          [part('.scribe-strip-text'), 'opacity', '0', '1', 130, 'ease', 45, 80, 'ease', 0],
+          [part('.scribe-strip-text'), 'transform', slideX(2 / z), slideX(0), 160, curve, 35, 120, curve, 0],
+        ];
+        if (!isNote) {
+          moves.push(
+            [part('.scribe-strip-bar'), 'transform', `scaleY(${(11.5 / 13.5).toFixed(4)})`, 'scaleY(1)', 160, curve, 0, 160, curve, 0],
+            [part('.scribe-strip-bar'), 'opacity', restBarOp, '0.88', 140, 'ease', 0, 140, 'ease', 0],
+          );
+        }
+        if (!lockRight) moves.push([part('.scribe-strip-face'), 'transform', slideX(-travel), slideX(0), 200, curve, 0, 200, curve, 0]);
+        if (shrink < 0.999) {
+          // Shift the full-size strip out to 10px from the text as it scales up so its pointer tip does not overlap the highlight.
+          const back = isNote ? 0 : (lockRight ? -1 : 1) * Math.max(0, 10 - (Number(hm.dataset.textGap) || 10)) / z;
+          moves.push([strip, 'transform', `translateX(0px) scale(${shrink.toFixed(4)})`, `translateX(${back.toFixed(3)}px) scale(1)`, 200, curve, 0, 200, curve, 0]);
+        }
+        if (building) {
+          for (const [node, prop, atRest] of moves) node.style[prop] = atRest;
+          hm.appendChild(strip);
+          hm.classList.add('has-strip');
+          // Flush initial styles before adding `is-unrolled` so CSS border transitions on the newly mounted strip run.
+          strip.getBoundingClientRect();
+          if (!isNote) hm.classList.toggle('is-active', paired || unrolled);
+          hm.classList.toggle('is-unrolled', unrolled);
+        }
+
+        const starts = moves.map(([node, prop, atRest]) => {
+          const now = getComputedStyle(node);
+          if (prop === 'opacity') return now.opacity;
+          const m = new DOMMatrixReadOnly(now.transform);
+          if (node === strip) return `translateX(${m.e.toFixed(3)}px) scale(${m.a.toFixed(4)})`;
+          const fn = atRest.slice(0, atRest.indexOf('('));
+          return fn === 'translateX' ? slideX(m.e) : `${fn}(${(fn === 'scaleY' ? m.d : m.a).toFixed(4)})`;
+        });
+        // Sample keyframes dividing out `strip`'s concurrent scale change so the visible preview width still interpolates linearly when `shrink < 1`.
+        const fullW = unrollW / z;
+        const scaleNow = shrink < 0.999 ? new DOMMatrixReadOnly(getComputedStyle(strip).transform).a : 1;
+        const scaleEnd = unrolled || shrink >= 0.999 ? 1 : shrink;
+        const shownNow = (fullW - Math.abs(new DOMMatrixReadOnly(getComputedStyle(part('.scribe-strip-slide')).transform).e)) * scaleNow;
+        const shownEnd = (fullW - (unrolled ? 0 : Math.abs(travel))) * scaleEnd;
+        const windowFrames = (sign) => Array.from({ length: 9 }, (_, i) => {
+          const q = i / 8;
+          return { transform: slideX(sign * (fullW - (shownNow + (shownEnd - shownNow) * q) / (scaleNow + (scaleEnd - scaleNow) * q))), offset: q };
+        });
+        for (const anim of strip.getAnimations({ subtree: true })) anim.cancel();
+        const still = reducedMotion();
+        const anims = moves.map(([node, prop, atRest, atOpen, msOpen, easeOpen, waitOpen, msRest, easeRest, waitRest], i) => node.animate(
+          node.classList.contains('scribe-strip-slide') || node.classList.contains('scribe-strip-face')
+            ? windowFrames((node.classList.contains('scribe-strip-slide') ? 1 : -1) * Math.sign(travel))
+            : [{ [prop]: starts[i] }, { [prop]: unrolled ? atOpen : atRest }],
+          {
+            duration: still ? 0 : (unrolled ? msOpen : msRest), easing: unrolled ? easeOpen : easeRest, delay: still ? 0 : (unrolled ? waitOpen : waitRest), fill: 'both',
+          },
+        ));
+        Promise.all(anims.map((anim) => anim.finished)).then(() => {
+          if (!unrolled) {
+            dropPreviewStrip(hm);
+            return;
+          }
+          for (const [node, prop, , atOpen] of moves) node.style[prop] = atOpen;
+          for (const anim of anims) anim.cancel();
+        }, () => {});
       }
     };
 
@@ -1641,12 +1789,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         const yMax = (mRect.bottom + 5) + (Math.max(mRect.bottom + 5, hlB + 4) - (mRect.bottom + 5)) * u;
         return clientY >= yMin && clientY <= yMax;
       }
-      if (tail === 'is-below' && clientY >= hlB - 6 && clientY <= mRect.bottom + 4) {
-        return clientX >= Math.min(hlL, mRect.left) - 5 && clientX <= Math.max(hlR, mRect.right) + 5;
-      }
-      if (tail === 'is-above' && clientY >= mRect.top - 4 && clientY <= hlT + 6) {
-        return clientX >= Math.min(hlL, mRect.left) - 5 && clientX <= Math.max(hlR, mRect.right) + 5;
-      }
       return false;
     };
 
@@ -1678,65 +1820,85 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       /** @type {?{left: number, top: number, right: number, bottom: number, w: number, h: number}} */
       let fromRect = null;
       let wasUnrolled = false;
-      let hasEllipsis = false;
-      let unrollTargetW = 196;
       let startTextOp = 0;
-      let startLinesOp = 0;
-      let linesHtml = '';
-      /** @type {?{left: number, top: number, w: number, h: number, color: string}} */
-      let linesRectInBub = null;
       let startBarH = 11.5;
       let startBarOp = 0.5;
       /** @type {?DOMRect} */
       let prevTxtScreen = null;
-      /** @type {?DOMRect} */
-      let bubScreen = null;
+      /** @type {?HTMLElement} */
+      let markGhost = null;
+      const markHome = targetScreenHome(target);
+      const markInView = !!markHome && !markHome.offscreen;
       if (activeMorph) {
-        fromRect = liveClientRect(activeMorph.ghost);
+        fromRect = activeMorph.rect();
         cancelShellMorph(key);
-      } else if (markEl && !markEl.classList.contains('is-hidden-for-card')) {
-        fromRect = liveClientRect(markEl);
-        bubScreen = markEl.getBoundingClientRect();
-        wasUnrolled = markEl.classList.contains('is-unrolled');
-        hasEllipsis = markEl.dataset.hasEllipsis === '1';
-        unrollTargetW = parseFloat(markEl.style.getPropertyValue('--scribe-unroll-w')) || 196;
-        const prevNode = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-bub-preview'));
-        const linesNode = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-bub-lines'));
-        const barNode = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-cm-bar'));
-        // Opacities are read live, since a click can land while the mark is still unrolling.
-        if (prevNode) startTextOp = Math.max(0, Math.min(1, parseFloat(getComputedStyle(prevNode).opacity) || 0));
-        if (linesNode && bubScreen.width > 0) {
-          startLinesOp = Math.max(0, Math.min(1, parseFloat(getComputedStyle(linesNode).opacity) || 0));
-          if (startLinesOp > 0.03) {
-            const lr = linesNode.getBoundingClientRect();
-            linesHtml = linesNode.innerHTML;
-            linesRectInBub = {
-              left: lr.left - bubScreen.left,
-              top: lr.top - bubScreen.top,
-              w: lr.width,
-              h: lr.height,
-              color: getComputedStyle(linesNode).color,
+      } else if (markEl && markInView && !markEl.classList.contains('is-hidden-for-card')) {
+        const strip = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-bub-strip'));
+        if (strip) {
+          const outer = /** @type {HTMLElement} */ (strip.querySelector('.scribe-strip-clip')).getBoundingClientRect();
+          const inner = /** @type {HTMLElement} */ (strip.querySelector('.scribe-strip-slide')).getBoundingClientRect();
+          const left = Math.max(outer.left, inner.left);
+          const right = Math.min(outer.right, inner.right);
+          if (right > left && outer.height > 0) {
+            fromRect = {
+              left, top: outer.top, right, bottom: outer.bottom, w: right - left, h: outer.height,
             };
           }
         }
+        if (!fromRect) fromRect = liveClientRect(markEl);
+        wasUnrolled = markEl.classList.contains('is-unrolled');
+        const prevNode = /** @type {?HTMLElement} */ (strip ? strip.querySelector('.scribe-strip-text') : null);
+        const barNode = /** @type {?HTMLElement} */ (strip ? strip.querySelector('.scribe-strip-bar') : markEl.querySelector('.scribe-cm-bar'));
+        // Opacities are read live, since a press can land while the preview is still unrolling.
+        if (prevNode) startTextOp = Math.max(0, Math.min(1, parseFloat(getComputedStyle(prevNode).opacity) || 0));
         if (barNode) {
           startBarH = barNode.getBoundingClientRect().height;
           startBarOp = Math.max(0, Math.min(1, parseFloat(getComputedStyle(barNode).opacity) || 0.5));
         }
-        const pTxt = markEl.querySelector('.scribe-prev-txt');
+        const pTxt = strip ? strip.querySelector('.scribe-prev-txt') : null;
         if (pTxt && wasUnrolled) prevTxtScreen = pTxt.getBoundingClientRect();
-      } else {
-        const home = targetScreenHome(target);
-        if (home) {
-          fromRect = seedRect || {
-            left: home.bLeft, top: home.bTop, right: home.bRight, bottom: home.bBottom, w: home.restW, h: home.restH,
-          };
+
+        const r = markEl.getBoundingClientRect();
+        if (!wasUnrolled && !reducedMotion() && r.width > 0 && r.height > 0) {
+          const base = fitSurfaceLayer();
+          const { z, effZ } = computePageBubbleZoom(scribe, target.n);
+          const copy = /** @type {HTMLElement} */ (markEl.cloneNode(true));
+          copy.removeAttribute('tabindex');
+          copy.removeAttribute('data-group-id');
+          copy.removeAttribute('data-note-idx');
+          const live = [markEl, ...markEl.querySelectorAll('*')];
+          const still = [copy, ...copy.querySelectorAll('*')];
+          for (let i = 0; i < live.length; i++) {
+            const now = getComputedStyle(live[i]);
+            const part = /** @type {HTMLElement} */ (still[i]);
+            part.style.transition = 'none';
+            part.style.opacity = now.opacity;
+            part.style.transform = now.transform;
+          }
+          // Subtract `markEl`'s hover transform from `r` because `copy` already carries that transform inline.
+          const lean = new DOMMatrixReadOnly(getComputedStyle(markEl).transform);
+          copy.style.left = '0';
+          copy.style.top = '0';
+          copy.style.right = 'auto';
+          copy.style.margin = '0';
+          const scaled = document.createElement('div');
+          scaled.style.cssText = `position:absolute;left:0;top:0;transform-origin:0 0;transform:scale(${z});--scribe-zoom:${z};--scribe-live-zoom:${z};--scribe-bub-z:${effZ};`;
+          scaled.appendChild(copy);
+          markGhost = document.createElement('div');
+          markGhost.className = 'scribe-mark-copy';
+          markGhost.style.cssText = `left:${(r.left - lean.e * z - base.left).toFixed(2)}px;top:${(r.top - lean.f * z - base.top).toFixed(2)}px;`;
+          markGhost.appendChild(scaled);
         }
-        if (seedRect) {
-          // The seed's bar is 12px tall at full strength.
-          startBarH = 12;
-          startBarOp = 1;
-        }
+        dropPreviewStrip(markEl);
+      } else if (seedRect) {
+        fromRect = seedRect;
+        // The seed's bar is 12px tall at full strength.
+        startBarH = 12;
+        startBarOp = 1;
+      } else if (markHome && markInView) {
+        fromRect = {
+          left: markHome.bLeft, top: markHome.bTop, right: markHome.bRight, bottom: markHome.bBottom, w: markHome.restW, h: markHome.restH,
+        };
       }
 
       clearHover();
@@ -1746,134 +1908,109 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       cmtFill(target);
       if (draft) cmtText.value = draft;
       if (!cmtPlace(target)) { cmtClose(false); return; }
+      if (!fromRect && cmtRestRect) {
+        fromRect = {
+          left: cmtRestRect.left, top: cmtRestRect.top, right: cmtRestRect.left + 30, bottom: cmtRestRect.top + 22, w: 30, h: 22,
+        };
+      }
       setCmtSel(true);
       syncOpenMarkVisibility();
 
       if (fromRect && cmtRestRect && !reducedMotion()) {
         const finalRect = cmtRestRect;
+        const base = fitSurfaceLayer();
         const cw = finalRect.w;
         const ch = finalRect.h;
-        // An unrolled mark already shows the comment's first words, which are also the card's first message.
-        // The thread starts offset so those words sit where the preview drew them, then glides to its own place.
-        let tx0 = 0;
-        let ty0 = -4;
-        let ellLeftInCard = 0;
-        let ellTopInCard = 5;
-        const mtext = prevTxtScreen && bubScreen ? cmtThread.querySelector('.scribe-cmt-mtext') : null;
-        if (mtext && prevTxtScreen && bubScreen) {
+        const dx = fromRect.left - finalRect.left;
+        const dy = fromRect.top - finalRect.top;
+        const timing = { duration: 205, easing: EASE_OUT, fill: 'both' };
+        /** @type {Animation[]} */
+        const anims = [];
+        if (markGhost) {
+          surfaceLayer.appendChild(markGhost);
+          cardMorphExtras.push(markGhost);
+          anims.push(
+            markGhost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 70, easing: 'linear', fill: 'both' }),
+            markGhost.animate([{ transform: slideTo(0, 0) }, { transform: slideTo(-dx, -dy) }], timing),
+          );
+        }
+        const placed = `left:${(finalRect.left - base.left).toFixed(2)}px;top:${(finalRect.top - base.top).toFixed(2)}px;width:${cw}px;height:${ch}px;`;
+        cardMorphPos = [cmtCard.style.left, cmtCard.style.top];
+        cmtBox.style.cssText = placed;
+        for (const node of [...cmtBoxClips, ...cmtBoxEdges]) node.style.cssText = `width:${cw}px;height:${ch}px;`;
+        cmtBox.classList.add('is-on');
+        cmtCard.style.left = '0px';
+        cmtCard.style.top = '0px';
+        for (const kind of ['', ' is-ring']) {
+          const shade = document.createElement('div');
+          shade.className = `scribe-cmt-shade${kind}`;
+          shade.style.cssText = placed;
+          surfaceLayer.insertBefore(shade, cmtBox);
+          cardMorphExtras.push(shade);
+          anims.push(shade.animate([
+            { transform: `translate(${dx.toFixed(2)}px,${dy.toFixed(2)}px) scale(${(fromRect.w / cw).toFixed(4)},${(fromRect.h / ch).toFixed(4)})` },
+            { transform: 'translate(0px,0px) scale(1,1)' },
+          ], timing));
+          if (kind) anims.push(shade.animate([{ opacity: 0, offset: 0 }, { opacity: 1, offset: 0.83 }, { opacity: 1, offset: 1 }], timing));
+        }
+        anims.push(...windowAnims({
+          box: cmtBox, clips: cmtBoxClips, edges: cmtBoxEdges, inner: cmtCard,
+        }, cw, ch, {
+          x: dx, y: dy, w: fromRect.w, h: fromRect.h,
+        }, {
+          x: 0, y: 0, w: cw, h: ch,
+        }, timing));
+        if (!cmtBar.hidden) {
+          cmtBar.style.transformOrigin = '50% 0';
+          anims.push(
+            cmtBar.animate([{ transform: `translate(-1px,-1.5px) scaleY(${(startBarH / 16).toFixed(4)})` }, { transform: 'translate(0px,0px) scaleY(1)' }], timing),
+            cmtBar.animate([{ opacity: startBarOp }, { opacity: 1 }], timing),
+          );
+        }
+        const mtext = prevTxtScreen ? cmtThread.querySelector('.scribe-cmt-mtext') : null;
+        if (wasUnrolled && mtext && prevTxtScreen) {
+          // An unrolled mark already shows the comment's first words, which are also the card's first message.
+          // The thread starts offset so those words sit where the preview drew them, then glides to its own place.
           const cardScreen = cmtCard.getBoundingClientRect();
           const mtScreen = mtext.getBoundingClientRect();
-          const cardTextOffX = mtScreen.left - cardScreen.left;
-          const cardTextOffY = mtScreen.top - cardScreen.top;
-          tx0 = (prevTxtScreen.left - bubScreen.left) - cardTextOffX;
-          ty0 = (prevTxtScreen.top - bubScreen.top) - cardTextOffY;
-          ellLeftInCard = cardTextOffX - 1 + (Number(markEl?.dataset.prefixPx) || prevTxtScreen.width);
-          ellTopInCard = cardTextOffY - 1;
+          const textOffX = mtScreen.left - cardScreen.left;
+          const textOffY = mtScreen.top - cardScreen.top;
+          const tx0 = (prevTxtScreen.left - fromRect.left) - textOffX;
+          const ty0 = (prevTxtScreen.top - fromRect.top) - textOffY;
+          anims.push(
+            cmtThread.animate([{ transform: slideTo(tx0, ty0) }, { transform: slideTo(0, 0) }], timing),
+            cmtThread.animate([{ opacity: startTextOp, offset: 0 }, { opacity: startTextOp, offset: 0.10 }, { opacity: 1, offset: 0.78 }, { opacity: 1, offset: 1 }], timing),
+          );
+          for (const fNode of cmtThread.querySelectorAll('.scribe-cmt-foot, .scribe-cmt-empty-foot')) {
+            anims.push(fNode.animate([{ opacity: 0, offset: 0 }, { opacity: 0, offset: 0.18 }, { opacity: 1, offset: 0.86 }, { opacity: 1, offset: 1 }], timing));
+          }
+          const ellLeft = textOffX - 1 + (Number(markEl?.dataset.prefixPx) || prevTxtScreen.width);
+          if (markEl?.dataset.hasEllipsis === '1' && startTextOp > 0.25 && ellLeft < fromRect.w - 6) {
+            // The preview's ellipsis has no counterpart in the card, so a copy of it rides with the thread and fades out.
+            const ell = document.createElement('span');
+            ell.className = 'scribe-card-ell-fade';
+            ell.style.cssText = `left:${ellLeft.toFixed(2)}px;top:${(textOffY - 1).toFixed(2)}px;`;
+            ell.textContent = '…';
+            cmtCard.appendChild(ell);
+            anims.push(
+              ell.animate([{ transform: slideTo(tx0, ty0) }, { transform: slideTo(0, 0) }], timing),
+              ell.animate([{ opacity: startTextOp, offset: 0 }, { opacity: 0, offset: 0.32 }, { opacity: 0, offset: 1 }], timing),
+            );
+          }
+        } else {
+          const growUp = target.kind === 'note' && Math.abs(fromRect.bottom - finalRect.bottom) <= 12;
+          anims.push(
+            cmtThread.animate([{ transform: slideTo(0, growUp ? 2.5 : -2.5) }, { transform: slideTo(0, 0) }], timing),
+            cmtThread.animate([{ opacity: 0, offset: 0 }, { opacity: 0, offset: 0.14 }, { opacity: 1, offset: 0.86 }, { opacity: 1, offset: 1 }], timing),
+          );
         }
-
-        // The thread keeps its final width while the card grows around it, so its text never reflows mid-animation.
-        const exactThreadW = Math.max(140, cmtThread.getBoundingClientRect().width);
-        const growUp = target.kind === 'note' && Math.abs(fromRect.bottom - finalRect.bottom) <= 12;
-        const footEls = /** @type {HTMLElement[]} */ ([...cmtThread.querySelectorAll('.scribe-cmt-foot, .scribe-cmt-empty-foot')]);
-
-        const isMidFlight = wasUnrolled && fromRect.w > 33 && fromRect.w < unrollTargetW - 3;
-        const remSpanFrac = Math.max(0.35, Math.min(1, (cw - fromRect.w) / Math.max(24, cw - 30)));
-        const durMs = isMidFlight ? Math.round(135 + 65 * remSpanFrac) : 205;
-        const curvePow = isMidFlight ? 2.35 : 3.1;
-
-        // The preview's ellipsis and the resting mark's lines have no counterpart in the card, so a copy of each fades out over it.
-        /** @type {?HTMLElement} */
-        let ellGhost = null;
-        if (wasUnrolled && hasEllipsis && startTextOp > 0.25 && ellLeftInCard < fromRect.w - 6) {
-          ellGhost = document.createElement('span');
-          ellGhost.className = 'scribe-card-ell-fade';
-          ellGhost.style.cssText = `left:${ellLeftInCard.toFixed(2)}px;top:${(ellTopInCard || 5).toFixed(2)}px;`;
-          ellGhost.textContent = '…';
-          cmtCard.appendChild(ellGhost);
+        if (cmtPlaceScrolled !== 0) {
+          anims.push(scribe.contentSizer.animate([{ transform: `translateY(${cmtPlaceScrolled.toFixed(2)}px)` }, { transform: 'translateY(0px)' }], timing));
         }
-        /** @type {?HTMLElement} */
-        let linesGhost = null;
-        if (startLinesOp > 0.03 && linesHtml && linesRectInBub) {
-          const lr = linesRectInBub;
-          linesGhost = document.createElement('span');
-          linesGhost.className = 'scribe-bub-lines scribe-card-lines-fade';
-          linesGhost.style.cssText = `position:absolute;left:${lr.left.toFixed(2)}px;top:${lr.top.toFixed(2)}px;width:${lr.w.toFixed(2)}px;height:${lr.h.toFixed(2)}px;transform:none;transition:none;pointer-events:none;z-index:3;${lr.color ? `color:${lr.color};` : ''}`;
-          linesGhost.innerHTML = linesHtml;
-          cmtCard.appendChild(linesGhost);
-        }
-
-        const startRadius = Math.max(2.5, Math.min(6.5, 5.5 * Math.max(0.4, Math.min(1.15, fromRect.h / 22))));
-        cmtCard.style.overflow = 'hidden';
-        cmtCard.style.transition = 'none';
-        cmtThread.classList.remove('is-scrollable');
-        cmtThread.style.width = `${exactThreadW.toFixed(2)}px`;
-        const t0 = performance.now();
-
-        const applyAt = (u) => {
-          const base = fitSurfaceLayer();
-          const e = 1 - ((1 - u) ** curvePow);
-          const w = fromRect.w + (cw - fromRect.w) * e;
-          const h = fromRect.h + (ch - fromRect.h) * e;
-          const curLeft = fromRect.left + (finalRect.left - fromRect.left) * e;
-          const curTop = fromRect.top + (finalRect.top - fromRect.top) * e;
-          cmtCard.style.left = `${(curLeft - base.left).toFixed(2)}px`;
-          cmtCard.style.top = `${(curTop - base.top).toFixed(2)}px`;
-          cmtCard.style.width = `${w.toFixed(2)}px`;
-          cmtCard.style.height = `${h.toFixed(2)}px`;
-          cmtCard.style.borderRadius = `${(startRadius + (7 - startRadius) * e).toFixed(2)}px`;
-          const accentPct = Math.round(Math.max(0, Math.min(1, e * 1.25)) * 100);
-          cmtCard.style.borderColor = `color-mix(in srgb, var(--scribe-accent) ${accentPct}%, var(--scribe-line-strong))`;
-          cmtCard.style.boxShadow = `0 0 0 ${(2 * Math.max(0, Math.min(1, e * 1.2))).toFixed(2)}px var(--scribe-accent-ring), var(--scribe-menu-shadow)`;
-
-          if (!cmtBar.hidden) {
-            cmtBar.style.height = `${(startBarH + (16 - startBarH) * e).toFixed(2)}px`;
-            cmtBar.style.transform = `translate(${(-1 * (1 - e)).toFixed(2)}px, ${(-1.5 * (1 - e)).toFixed(2)}px)`;
-            cmtBar.style.opacity = (startBarOp + (1 - startBarOp) * e).toFixed(3);
-          }
-
-          if (linesGhost) {
-            const lFade = Math.max(0, Math.min(1, 1 - u / 0.30));
-            linesGhost.style.opacity = (startLinesOp * lFade).toFixed(3);
-            linesGhost.style.transform = `scaleX(${(1 - 0.22 * (1 - lFade)).toFixed(3)})`;
-          }
-
-          if (wasUnrolled) {
-            const tx = tx0 * (1 - e);
-            const ty = ty0 * (1 - e);
-            const threadOp = startTextOp + (1 - startTextOp) * Math.max(0, Math.min(1, (e - 0.10) / 0.68));
-            cmtThread.style.opacity = threadOp.toFixed(3);
-            cmtThread.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px)`;
-            const footOp = Math.max(0, Math.min(1, (e - 0.18) / 0.68)).toFixed(3);
-            for (const fNode of footEls) fNode.style.opacity = footOp;
-            if (ellGhost) {
-              ellGhost.style.opacity = (startTextOp * Math.max(0, Math.min(1, 1 - e * 3.1))).toFixed(3);
-              ellGhost.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px)`;
-            }
-          } else {
-            cmtThread.style.opacity = Math.max(0, Math.min(1, (e - 0.14) / 0.72)).toFixed(3);
-            const yLead = growUp ? 2.5 : -2.5;
-            cmtThread.style.transform = `translateY(${(yLead * (1 - e)).toFixed(2)}px)`;
-          }
-        };
-        applyAt(0);
-
-        const step = (now) => {
-          if (!cmtTarget) {
-            clearCardMorphStyles();
-            return;
-          }
-          const u = Math.max(0, Math.min(1, (now - t0) / durMs));
-          if (u >= 1) {
-            const base = fitSurfaceLayer();
-            clearCardMorphStyles();
-            cmtCard.style.left = `${(finalRect.left - base.left).toFixed(1)}px`;
-            cmtCard.style.top = `${(finalRect.top - base.top).toFixed(1)}px`;
-            return;
-          }
-          applyAt(u);
-          cardMorphRaf = requestAnimationFrame(step);
-        };
-        cardMorphRaf = requestAnimationFrame(step);
+        cardAnims = anims;
+        Promise.all(anims.map((anim) => anim.finished)).then(() => {
+          if (cardAnims === anims) clearCardMorphStyles();
+        }, () => {});
       }
 
       if (cmtReply.isConnected) cmtText.focus({ preventScroll: true });
@@ -1940,14 +2077,6 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
         if ((ev.buttons !== 0 || scribe.textSel?._drag || scribe.selecting) && scribe.hasTextSelection()) cmtDismiss(false);
 
         const kw = highlightWordAt(/** @type {MouseEvent} */ (ev));
-        if (liveState) {
-          const overLive = !!(kw && kw.highlightGroupId === liveState.target.groupId);
-          if (overLive !== liveHlHovered) {
-            liveHlHovered = overLive;
-            if (!overLive && liveState.rem > 0 && liveState.rem < 1800) liveState.rem = 1800;
-            paintLiveDissolve();
-          }
-        }
 
         // A press held on a mark keeps the mark as it is until the click lands.
         const pressingMark = ev.buttons !== 0
@@ -1969,8 +2098,9 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
           const t = markTargetFromEvent(ev);
           if (t) cancelShellMorph(targetKey(t));
           const gid = hitCmark.dataset.groupId || null;
-          if (unrolledMarkEl !== hitCmark || activeHoverGroupId !== gid) {
-            unrolledMarkEl = hitCmark;
+          const unroll = hitCmark.dataset.noPreview === '1' ? null : hitCmark;
+          if (unrolledMarkEl !== unroll || activeHoverGroupId !== gid) {
+            unrolledMarkEl = unroll;
             activeHoverGroupId = gid;
             syncBubbleHoverState();
             if (scribe.onHighlightHover) scribe.onHighlightHover(gid);
@@ -2317,6 +2447,10 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     document.addEventListener('dblclick', cmtDblclick);
 
     const cmtScrollDismiss = (event) => {
+      if (event.type === 'scroll' && cmtSelfScroll) {
+        cmtSelfScroll = false;
+        return;
+      }
       if (liveState) disarmLive(false);
       dismissTransient(event.target instanceof Node ? event.target : null);
     };
@@ -2327,6 +2461,8 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     const cmtFollow = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => {
       if (liveState) placeLiveSeed();
       if (!cmtTarget) return;
+      // Cancel any in-flight open animation first because `cmtCard` is parked at `0px, 0px` inside `cmtBox` while opening.
+      if (cardAnims.length > 0) clearCardMorphStyles();
       const view = fitSurfaceLayer();
       if (!cmtAnchorOff) { cmtPlace(cmtTarget); return; }
       const rects = cmtAnchorRects(cmtTarget);
@@ -2335,12 +2471,8 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
       const r = cmtCard.getBoundingClientRect();
       const left = Math.max(view.left + 4, Math.min(view.right - r.width - 4, anchor.left + cmtAnchorOff.dx));
       const top = Math.max(view.top + 4, Math.min(view.bottom - r.height - 4, anchor.top + cmtAnchorOff.dy));
-      // Only an overlap the clamp caused gets a fresh placement, so a card the user dragged onto its text keeps its spot.
-      if (left !== anchor.left + cmtAnchorOff.dx || top !== anchor.top + cmtAnchorOff.dy) {
-        const covers = left < Math.max(...rects.map((b) => b.right)) && left + r.width > Math.min(...rects.map((b) => b.left))
-          && top < Math.max(...rects.map((b) => b.bottom)) && top + r.height > Math.min(...rects.map((b) => b.top));
-        if (covers) { cmtPlace(cmtTarget); return; }
-      }
+      // Re-run `cmtPlace` when viewport clamping would shift the card, since clamping inward can push a margin card over its highlight.
+      if (left !== anchor.left + cmtAnchorOff.dx || top !== anchor.top + cmtAnchorOff.dy) { cmtPlace(cmtTarget); return; }
       cmtCard.style.left = `${left - view.left}px`;
       cmtCard.style.top = `${top - view.top}px`;
       cmtRestRect = {

@@ -22,17 +22,21 @@ let previewProbeEl = null;
  */
 const previewFitCache = new Map();
 
-const TAIL_CLASSES = ['is-left', 'is-right', 'is-above', 'is-below', 'is-down-left', 'is-down-right'];
+const TAIL_CLASSES = ['is-left', 'is-right', 'is-down-left', 'is-down-right'];
+
+const BUBBLE_MAX_LINES = 1.5;
+
+const BUBBLE_MAX_NARROW = 0.15;
 
 /**
- * Build a mark's inner DOM on first use, then set its pointer side, its color bar and its one-line hover preview.
+ * Build a mark's inner DOM on first use, then set its pointer side, its color bar, and the text and width of its one-line hover preview.
  * @param {HTMLElement} markEl - A `.scribe-hl-cmark` (highlight bubble) or a `.scribe-note-icon` (note mark).
  * @param {object} opts
  * @param {boolean} opts.isNote
  * @param {string} [opts.color] - The highlight's color, shown as the bubble's bar.
  * @param {string} opts.tailClass - The side the pointer leaves from, one of `TAIL_CLASSES`.
  * @param {string} opts.comment
- * @param {number} opts.maxCardW - Screen px the unrolled mark may take.
+ * @param {number} opts.maxCardW - Screen px the preview may take.
  */
 export function populateBubbleMark(markEl, {
   isNote, color = '', tailClass, comment, maxCardW,
@@ -47,15 +51,7 @@ export function populateBubbleMark(markEl, {
     const lines = document.createElement('span');
     lines.className = 'scribe-bub-lines';
     lines.innerHTML = isNote ? BUBBLE_LINES_NOTE_SVG : BUBBLE_LINES_HL_SVG;
-    const prev = document.createElement('span');
-    prev.className = 'scribe-bub-preview';
-    const pTxt = document.createElement('span');
-    pTxt.className = 'scribe-prev-txt';
-    const pEll = document.createElement('span');
-    pEll.className = 'scribe-prev-ell';
-    pEll.textContent = '…';
-    prev.append(pTxt, pEll);
-    body.append(lines, prev);
+    body.appendChild(lines);
     if (isNote) {
       markEl.replaceChildren(shell, body);
     } else {
@@ -85,7 +81,7 @@ export function populateBubbleMark(markEl, {
     } else {
       if (!previewProbeEl || !previewProbeEl.isConnected) {
         previewProbeEl = document.createElement('div');
-        // The font matches `.scribe-bub-preview`, so a fit measured here holds in the mark.
+        // The font matches `.scribe-strip-text`, so a fit measured here holds in the preview.
         previewProbeEl.style.cssText = 'position:fixed;left:-9999px;top:0;visibility:hidden;pointer-events:none;margin:0;padding:0;border:0;box-sizing:border-box;'
           + 'font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12.5px;line-height:18px;white-space:pre-wrap;overflow-wrap:break-word;';
         document.body.appendChild(previewProbeEl);
@@ -127,17 +123,33 @@ export function populateBubbleMark(markEl, {
   markEl.style.setProperty('--scribe-preview-w', `${previewTextW}px`);
   markEl.dataset.hasEllipsis = fit.hasEllipsis ? '1' : '0';
   markEl.dataset.prefixPx = String(fit.prefixPx);
+  markEl.dataset.previewText = fit.prefix;
+  markEl.dataset.noPreview = maxCardW < 88 ? '1' : '0';
+  // Update the live `.scribe-bub-strip` if one is currently mounted on the mark.
   const pTxt = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-prev-txt'));
   const pEll = /** @type {?HTMLElement} */ (markEl.querySelector('.scribe-prev-ell'));
   if (pTxt) pTxt.textContent = fit.prefix;
   if (pEll) pEll.hidden = !fit.hasEllipsis;
 }
 
-/** @type {WeakMap<object, {key: string, linesDisp: Array<{left: number, right: number, top: number, bottom: number}>, medianLineH: number}>} */
+/**
+ * Remove any active hover preview strip from a mark immediately.
+ * @param {HTMLElement} markEl
+ */
+export function dropPreviewStrip(markEl) {
+  const strip = markEl.querySelector('.scribe-bub-strip');
+  if (strip) {
+    for (const anim of strip.getAnimations({ subtree: true })) anim.cancel();
+    strip.remove();
+  }
+  markEl.classList.remove('has-strip');
+}
+
+/** @type {WeakMap<object, {key: string, linesDisp: Array<{left: number, right: number, top: number, bottom: number}>, medianLineH: number, linePitch: number}>} */
 const pageLineMetricsCache = new WeakMap();
 
 /**
- * The boxes of page `n`'s text lines in displayed-page coordinates, and the median line height.
+ * The boxes of page `n`'s text lines in displayed-page coordinates, the median line height, and the median within-column line pitch.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
  * @param {dims} disp - The page's displayed dimensions.
@@ -145,7 +157,8 @@ const pageLineMetricsCache = new WeakMap();
 function getPageLineMetrics(viewer, n, disp) {
   const ocrPage = viewer.doc.ocr.active?.[n];
   if (!ocrPage || ocrPage.lines.length === 0) {
-    return { linesDisp: [], medianLineH: Math.max(12, Math.min(48, disp.height * 0.012)) };
+    const assumedH = Math.max(12, Math.min(48, disp.height * 0.012));
+    return { linesDisp: [], medianLineH: assumedH, linePitch: assumedH * 1.25 };
   }
   const pLeft0 = viewer._pageLeft(n);
   const pTop0 = viewer.getPageStop(n);
@@ -175,23 +188,42 @@ function getPageLineMetrics(viewer, n, disp) {
   heights.sort((x, y) => x - y);
   const rawMed = heights.length > 0 ? heights[heights.length >> 1] : disp.height * 0.012;
   const medianLineH = Math.max(10, Math.min(disp.height * 0.06, rawMed));
-  const entry = { key: cacheKey, linesDisp, medianLineH };
+  const byTop = [...linesDisp].sort((a, b) => a.top - b.top);
+  /** @type {number[]} */
+  const steps = [];
+  for (let i = 0; i < byTop.length; i++) {
+    const a = byTop[i];
+    for (let j = i + 1; j < byTop.length && byTop[j].top - a.top <= rawMed * 3.2; j++) {
+      const b = byTop[j];
+      if (b.top - a.top < rawMed * 0.6) continue;
+      if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > Math.min(a.right - a.left, b.right - b.left) * 0.5) {
+        steps.push(b.top - a.top);
+        break;
+      }
+    }
+  }
+  steps.sort((x, y) => x - y);
+  const linePitch = Math.max(medianLineH, steps.length > 0 ? steps[steps.length >> 1] : medianLineH * 1.25);
+  const entry = {
+    key: cacheKey, linesDisp, medianLineH, linePitch,
+  };
   pageLineMetricsCache.set(ocrPage, entry);
   return entry;
 }
 
 /**
- * The zoom a page's marks are sized by.
- * `effZ` is the live zoom `z` while the page's short edge spans at least 612 screen px, so a mark holds a constant size on screen.
- * On a page shown smaller than that, `effZ` stops falling and the marks shrink with the page.
+ * Compute the zoom factors and height cap for sizing page `n`'s comment marks.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
+ * @returns {{z: number, effZ: number, maxH: number}} Live zoom `z`, effective mark zoom `effZ` that floors mark height in page units at `maxH`, and `maxH` in displayed-page coordinates.
  */
 export function computePageBubbleZoom(viewer, n) {
   const disp = viewer.getDisplayDims(n);
   const z = viewer.zoomLevel;
   const shortSpan = Math.max(200, Math.min(disp.width, disp.height));
-  return { z, effZ: Math.max(z, 612 / shortSpan) };
+  const { linePitch } = getPageLineMetrics(viewer, n, disp);
+  const capH = linePitch * BUBBLE_MAX_LINES;
+  return { z, effZ: Math.max(z, 612 / shortSpan, 22 / capH), maxH: Math.min(22 * shortSpan / 612, capH) };
 }
 
 /**
@@ -199,22 +231,20 @@ export function computePageBubbleZoom(viewer, n) {
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
  * @param {Array<{left: number, right: number, top: number, bottom: number}>} runBoxes - The highlight's bands, one per line, in displayed-page coordinates.
- * @param {?Array<{left: number, top: number, right: number, bottom: number, side?: string}>} [placedHomes] - Bubbles already placed on the page, which this one avoids and is then added to.
- * @param {?string} [prevTail] - The pointer side the bubble has now, if it is already on the page.
+ * @param {?Array<{left: number, top: number, right: number, bottom: number, side: string, rowMid: number}>} [placedHomes] - Bubbles placed so far, which this one avoids and then joins.
  */
-export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = null, prevTail = null) {
+export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = null) {
   const disp = viewer.getDisplayDims(n);
-  const { z, effZ } = computePageBubbleZoom(viewer, n);
-  const wPage = 30 / effZ;
+  const { z, effZ, maxH } = computePageBubbleZoom(viewer, n);
+  let wPage = 30 / effZ;
   const hPage = 22 / effZ;
-  const restW = wPage * z;
-  const restH = hPage * z;
-  const first = runBoxes[0];
+  // Anchor on the last line so a card that falls back below the highlight opens next to its bubble.
+  const lastRun = runBoxes.reduce((a, r) => (r.bottom > a.bottom ? r : a));
   const minRunL = Math.min(...runBoxes.map((r) => r.left));
   const maxRunR = Math.max(...runBoxes.map((r) => r.right));
   const minRunT = Math.min(...runBoxes.map((r) => r.top));
   const maxRunB = Math.max(...runBoxes.map((r) => r.bottom));
-  const midY = (first.top + first.bottom) * 0.5;
+  const midY = (lastRun.top + lastRun.bottom) * 0.5;
 
   const { linesDisp, medianLineH } = getPageLineMetrics(viewer, n, disp);
   let colLeft = minRunL;
@@ -223,11 +253,14 @@ export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = nu
   let rightClearRight = maxRunR;
   let leftObstructionRight = 0;
   let rightObstructionLeft = disp.width;
+  let leftNear = 0;
+  let rightNear = disp.width;
 
   if (linesDisp.length > 0) {
     const bandPad = medianLineH * 0.45;
     const nearYPad = medianLineH * 1.15;
-    const rowYPad = medianLineH * 0.85;
+    // Pad by `maxH` so the row scan covers every line the bubble ever reaches and stays fixed across zoom levels.
+    const rowYPad = Math.max(medianLineH * 0.85, (maxH - (lastRun.bottom - lastRun.top)) * 0.5 + medianLineH * 0.2);
     const minGap = medianLineH * 0.30;
     const directLines = linesDisp.filter((c) => c.bottom >= minRunT - medianLineH * 0.2 && c.top <= maxRunB + medianLineH * 0.2
       && Math.min(c.right, maxRunR + medianLineH * 0.2) > Math.max(c.left, minRunL - medianLineH * 0.2));
@@ -248,80 +281,37 @@ export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = nu
     leftClearLeft = colLeft;
     rightClearRight = colRight;
     for (const c of linesDisp) {
-      if (c.bottom < first.top - rowYPad || c.top > first.bottom + rowYPad) continue;
+      if (c.bottom < lastRun.top - rowYPad || c.top > lastRun.bottom + rowYPad) continue;
+      // Short text well inside the page, such as a list marker, shifts the clear edge out without counting as a margin obstruction.
       if (c.right <= colLeft - minGap) {
-        if ((c.right - c.left) <= medianLineH * 2.4 && c.left >= disp.width * 0.08) {
-          leftClearLeft = Math.min(leftClearLeft, c.left);
-        } else {
-          leftObstructionRight = Math.max(leftObstructionRight, c.right);
-        }
+        leftClearLeft = Math.min(leftClearLeft, c.left);
+        leftNear = Math.max(leftNear, c.right);
+        if ((c.right - c.left) > medianLineH * 2.4 || c.left < disp.width * 0.08) leftObstructionRight = Math.max(leftObstructionRight, c.right);
       }
       if (c.left >= colRight + minGap) {
-        if ((c.right - c.left) <= medianLineH * 2.4 && c.right <= disp.width * 0.92) {
-          rightClearRight = Math.max(rightClearRight, c.right);
-        } else {
-          rightObstructionLeft = Math.min(rightObstructionLeft, c.left);
-        }
+        rightClearRight = Math.max(rightClearRight, c.right);
+        rightNear = Math.min(rightNear, c.left);
+        if ((c.right - c.left) > medianLineH * 2.4 || c.right > disp.width * 0.92) rightObstructionLeft = Math.min(rightObstructionLeft, c.left);
       }
     }
   }
 
   // 1. The side the highlight belongs to, from page geometry alone, so it never flips with zoom or scroll.
-  const pageLeftRoom = leftClearLeft - leftObstructionRight;
-  const pageRightRoom = rightObstructionLeft - rightClearRight;
-  const pageLeftOpen = leftObstructionRight === 0 && pageLeftRoom >= disp.width * 0.04;
-  const pageRightOpen = rightObstructionLeft >= disp.width - 1 && pageRightRoom >= disp.width * 0.04;
-  const distLeft = Math.max(0, minRunL - colLeft);
-  const distRight = Math.max(0, colRight - maxRunR);
-  let intrinsicLeft;
-  if (pageLeftOpen && !pageRightOpen) {
-    intrinsicLeft = true;
-  } else if (!pageLeftOpen && pageRightOpen) {
-    intrinsicLeft = false;
-  } else if (Math.abs(distLeft - distRight) > medianLineH * 0.25) {
-    intrinsicLeft = distLeft < distRight;
-  } else {
-    const avgMidX = runBoxes.reduce((acc, r) => acc + (r.left + r.right) * 0.5, 0) / Math.max(1, runBoxes.length);
-    const colMidX = (colLeft + colRight) * 0.5;
-    intrinsicLeft = Math.abs(avgMidX - colMidX) > medianLineH * 0.25 ? (avgMidX < colMidX) : false;
-  }
+  const pageLeftOpen = leftObstructionRight === 0 && leftClearLeft >= disp.width * 0.04;
+  const pageRightOpen = rightObstructionLeft >= disp.width - 1 && disp.width - rightClearRight >= disp.width * 0.04;
+  const homeLeft = pageLeftOpen || !pageRightOpen;
+  // Test the inter-column gap at `maxH` so side selection stays fixed across zoom, requiring 4px clearance to this column and 2px to the neighbor at full scale.
+  const across = (homeLeft ? minRunL - colLeft : colRight - maxRunR) / Math.max(1, colRight - colLeft);
+  const gapW = homeLeft ? rightNear - colRight : colLeft - leftNear;
+  const otherIsGap = homeLeft ? rightNear < disp.width : leftNear > 0;
+  const intrinsicLeft = across >= 0.5 && (!otherIsGap || gapW >= maxH * (30 * (1 - BUBBLE_MAX_NARROW) + 6) / 22) ? !homeLeft : homeLeft;
 
-  // 2. The room each margin has on screen at the current zoom and scroll position.
-  const railLeftAnchor = Math.min(minRunL, leftClearLeft) - 10 / effZ;
-  const railRightAnchor = Math.max(maxRunR, rightClearRight) + 10 / effZ;
-  let leftRoomPx = (railLeftAnchor - leftObstructionRight) * z - 4;
-  let rightRoomPx = (rightObstructionLeft - railRightAnchor) * z - 4;
-
-  const pc = viewer.pageContainerArr?.[n];
-  const sc = viewer.scrollContainer;
-  if (pc && sc && pc.isConnected && sc.isConnected) {
-    const pcRect = pc.getBoundingClientRect();
-    const scRect = sc.getBoundingClientRect();
-    if (pcRect.width > 0 && scRect.width > 0) {
-      const leftScreenWall = leftObstructionRight > 0 ? (pcRect.left + leftObstructionRight * z + 6) : (scRect.left + 6);
-      const rightScreenWall = rightObstructionLeft < disp.width ? (pcRect.left + rightObstructionLeft * z - 6) : (scRect.right - 6);
-      leftRoomPx = (pcRect.left + railLeftAnchor * z) - leftScreenWall;
-      rightRoomPx = rightScreenWall - (pcRect.left + railRightAnchor * z);
-    }
-  }
-
-  let restLeftPage;
-  let restTopPage = Math.max(4 / effZ, Math.min(disp.height - hPage - 4 / effZ, midY - hPage * 0.5));
-  let tailClass;
-  let lockRight;
-  let maxCardW;
-
-  // A bubble already in a margin needs 4px less room to stay than one entering it, so it does not flip between margin and text at the threshold.
-  const wasMargin = prevTail === 'is-left' || prevTail === 'is-right';
-  const fitThresholdPx = Math.max(16, restW + (wasMargin ? 5 : 9));
-
-  // 3. A highlight in the middle of its column yields to the other margin when its own already holds a bubble on this row.
+  // 2. A highlight in the middle of its column takes the other margin when a bubble already rests in its own, beside the same line or the next.
   let wantLeft = intrinsicLeft;
-  if (placedHomes && placedHomes.length > 0 && pageLeftOpen && pageRightOpen
-    && leftRoomPx >= fitThresholdPx && rightRoomPx >= fitThresholdPx) {
+  if (placedHomes && placedHomes.length > 0 && pageLeftOpen && pageRightOpen) {
     const colSpan = Math.max(1, colRight - colLeft);
-    const leftBusy = placedHomes.some((pr) => pr.side === 'left' && Math.abs(pr.top - restTopPage) < hPage + 3 / effZ);
-    const rightBusy = placedHomes.some((pr) => pr.side === 'right' && Math.abs(pr.top - restTopPage) < hPage + 3 / effZ);
+    const leftBusy = placedHomes.some((pr) => pr.side === 'left' && Math.abs(pr.rowMid - midY) < medianLineH * 1.5);
+    const rightBusy = placedHomes.some((pr) => pr.side === 'right' && Math.abs(pr.rowMid - midY) < medianLineH * 1.5);
     if (wantLeft && leftBusy && !rightBusy && maxRunR > colLeft + colSpan * 0.42) {
       wantLeft = false;
     } else if (!wantLeft && rightBusy && !leftBusy && minRunL < colRight - colSpan * 0.42) {
@@ -329,52 +319,29 @@ export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = nu
     }
   }
 
-  // 4. The margin on the chosen side when the bubble fits there, else below the highlight, or above it at the page's foot, on that same side.
-  let placedSide;
-  if (wantLeft && leftRoomPx >= fitThresholdPx) {
-    const minRightPage = (pc && sc && pc.isConnected && sc.isConnected && pc.getBoundingClientRect().left > sc.getBoundingClientRect().left + restW + 2)
-      ? ((sc.getBoundingClientRect().left + restW + 4 - pc.getBoundingClientRect().left) / z)
-      : (wPage + 2 / effZ);
-    const railRightPage = Math.max(minRightPage, railLeftAnchor);
-    restLeftPage = railRightPage - wPage;
-    tailClass = 'is-left';
-    lockRight = true;
-    placedSide = 'left';
-    maxCardW = Math.floor(Math.max(leftRoomPx, 176));
-  } else if (!wantLeft && rightRoomPx >= fitThresholdPx) {
-    const maxLeftPage = (pc && sc && pc.isConnected && sc.isConnected && pc.getBoundingClientRect().right < sc.getBoundingClientRect().right - restW - 2)
-      ? ((sc.getBoundingClientRect().right - restW - 4 - pc.getBoundingClientRect().left) / z)
-      : (disp.width - wPage - 2 / effZ);
-    restLeftPage = Math.min(maxLeftPage, railRightAnchor);
-    tailClass = 'is-right';
-    lockRight = false;
-    placedSide = 'right';
-    maxCardW = Math.floor(Math.max(rightRoomPx, 176));
-  } else {
-    const belowTop = maxRunB + 6 / effZ;
-    const fitsBelow = belowTop + hPage <= disp.height - 4 / effZ;
-    restTopPage = fitsBelow ? belowTop : Math.max(4 / effZ, minRunT - hPage - 6 / effZ);
-    tailClass = fitsBelow ? 'is-below' : 'is-above';
-    if (wantLeft) {
-      restLeftPage = Math.max(6 / effZ, Math.min(disp.width - wPage - 6 / effZ, minRunL));
-      lockRight = false;
-      placedSide = 'below-left';
-      maxCardW = Math.max(96, Math.floor((disp.width - restLeftPage) * z - 8));
-    } else {
-      const restRightPage = Math.max(wPage + 6 / effZ, Math.min(disp.width - 6 / effZ, maxRunR));
-      restLeftPage = restRightPage - wPage;
-      lockRight = true;
-      placedSide = 'below-right';
-      maxCardW = Math.max(96, Math.floor(restRightPage * z - 8));
-    }
+  // 3. Position the bubble, keeping at least 4px to its own column in an inter-column gap so the protruding pointer tip clears the text.
+  let restTopPage = Math.max(4 / effZ, Math.min(disp.height - hPage - 4 / effZ, midY - hPage * 0.5));
+  let inGap = wantLeft !== homeLeft && otherIsGap;
+  if (inGap) wPage = Math.max(30 * (1 - BUBBLE_MAX_NARROW) / effZ, Math.min(wPage, gapW - 8 / effZ));
+  const gapClear = Math.min(10 / effZ, Math.max(4 / effZ, (gapW - wPage) / 2));
+  const gapLeftPage = wantLeft ? colLeft - gapClear - wPage : colRight + gapClear;
+  if (inGap && placedHomes && placedHomes.some((pr) => (pr.side !== (wantLeft ? 'left' : 'right') || Math.abs(pr.rowMid - midY) < medianLineH * 0.3)
+    && Math.abs(gapLeftPage - pr.left) < 28 / effZ
+    && restTopPage < pr.bottom + 3 / effZ && restTopPage + hPage > pr.top - 3 / effZ)) {
+    inGap = false;
+    wantLeft = homeLeft;
+    wPage = 30 / effZ;
   }
+  let restLeftPage = wantLeft ? leftClearLeft - 10 / effZ - wPage : rightClearRight + 10 / effZ;
+  if (inGap) restLeftPage = gapLeftPage;
 
-  // 5. Step down past any bubble already placed in the same spot.
+  // 4. Step down past same-line collisions only so bubbles on adjacent lines overlap and stay aligned with their own lines.
   if (placedHomes) {
     for (let pass = 0; pass < placedHomes.length; pass++) {
       let bumped = false;
       for (const pr of placedHomes) {
-        if (Math.abs(restLeftPage - pr.left) < 28 / effZ
+        if (Math.abs(pr.rowMid - midY) < medianLineH * 0.3
+          && Math.abs(restLeftPage - pr.left) < 28 / effZ
           && restTopPage < pr.bottom + 3 / effZ
           && restTopPage + hPage > pr.top - 3 / effZ) {
           restTopPage = Math.max(4 / effZ, Math.min(disp.height - hPage - 4 / effZ, pr.bottom + 3 / effZ));
@@ -384,19 +351,39 @@ export function computeHighlightMarginHome(viewer, n, runBoxes, placedHomes = nu
       if (!bumped) break;
     }
     placedHomes.push({
-      left: restLeftPage, top: restTopPage, right: restLeftPage + wPage, bottom: restTopPage + hPage, side: placedSide,
+      left: restLeftPage, top: restTopPage, right: restLeftPage + wPage, bottom: restTopPage + hPage, side: wantLeft ? 'left' : 'right', rowMid: midY,
     });
   }
+
+  // 5. The room that margin has on screen, for a preview or an open card.
+  const inner = wantLeft ? restLeftPage + wPage : restLeftPage;
+  let roomPx = (wantLeft ? inner : disp.width - inner) * z - 4;
+  const pc = viewer.pageContainerArr?.[n];
+  const sc = viewer.scrollContainer;
+  if (pc && sc && pc.isConnected && sc.isConnected) {
+    const pcRect = pc.getBoundingClientRect();
+    const scRect = sc.getBoundingClientRect();
+    if (pcRect.width > 0 && scRect.width > 0) {
+      const row = viewer.rowOfPage(n);
+      const beside = wantLeft ? n - 1 : n + 1;
+      const facing = row !== null && beside >= 0 && beside < viewer.doc.pageMetrics.length && viewer.rowOfPage(beside) === row;
+      if (wantLeft) roomPx = (pcRect.left + inner * z) - (facing ? Math.max(scRect.left, pcRect.left) : scRect.left) - 6;
+      else roomPx = (facing ? Math.min(scRect.right, pcRect.right) : scRect.right) - 6 - (pcRect.left + inner * z);
+    }
+  }
+  const clearPx = inGap ? Math.min(roomPx, (wantLeft ? inner - leftNear : rightNear - inner) * z - 4) : roomPx;
 
   return {
     restLeftPage,
     restTopPage,
     restRightPage: restLeftPage + wPage,
-    restW,
-    restH,
-    tailClass,
-    lockRight,
-    maxCardW,
+    restW: wPage * z,
+    restH: hPage * z,
+    tailClass: wantLeft ? 'is-left' : 'is-right',
+    lockRight: wantLeft,
+    roomPx: Math.floor(roomPx),
+    clearPx: Math.floor(clearPx),
+    textGapPx: (inGap ? gapClear : 10 / effZ) * z,
   };
 }
 
@@ -417,7 +404,7 @@ export function computePageHighlightHomes(viewer, n, extraCandidate = null) {
     return idx >= 0 ? idx : 1e9;
   };
 
-  /** @type {Array<{key: string, runs: Array<{left: number, right: number, top: number, bottom: number}>, prevTail: ?string, annotOrder: number}>} */
+  /** @type {Array<{key: string, runs: Array<{left: number, right: number, top: number, bottom: number}>, annotOrder: number}>} */
   const items = [];
   const seen = new Set();
   for (const m of (viewer._commentMarks[n] || [])) {
@@ -426,7 +413,6 @@ export function computePageHighlightHomes(viewer, n, extraCandidate = null) {
     items.push({
       key,
       runs: m.runs,
-      prevTail: m.el.dataset.tail || null,
       annotOrder: annotOrderOf(m.groupId, m.slot),
     });
   }
@@ -434,25 +420,27 @@ export function computePageHighlightHomes(viewer, n, extraCandidate = null) {
     items.push({
       key: `${extraCandidate.slot}:${extraCandidate.groupId}`,
       runs: extraCandidate.runs,
-      prevTail: null,
       annotOrder: annotOrderOf(extraCandidate.groupId, extraCandidate.slot),
     });
   }
 
+  // Sort by each highlight's last line, where its bubble rests, so collision checks run top-to-bottom.
   items.sort((a, b) => {
-    const midYa = (a.runs[0].top + a.runs[0].bottom) * 0.5;
-    const midYb = (b.runs[0].top + b.runs[0].bottom) * 0.5;
+    const lastA = a.runs.reduce((p, r) => (r.bottom > p.bottom ? r : p));
+    const lastB = b.runs.reduce((p, r) => (r.bottom > p.bottom ? r : p));
+    const midYa = (lastA.top + lastA.bottom) * 0.5;
+    const midYb = (lastB.top + lastB.bottom) * 0.5;
     if (Math.abs(midYa - midYb) > medianLineH * 0.55) return midYa - midYb;
     if (a.annotOrder !== b.annotOrder) return a.annotOrder - b.annotOrder;
-    return a.runs[0].left - b.runs[0].left;
+    return lastA.left - lastB.left;
   });
 
-  /** @type {Array<{left: number, top: number, right: number, bottom: number, side?: string}>} */
+  /** @type {Array<{left: number, top: number, right: number, bottom: number, side: string, rowMid: number}>} */
   const placedHomes = [];
   /** @type {Map<string, ReturnType<typeof computeHighlightMarginHome>>} */
   const byKey = new Map();
   for (const it of items) {
-    byKey.set(it.key, computeHighlightMarginHome(viewer, n, it.runs, placedHomes, it.prevTail));
+    byKey.set(it.key, computeHighlightMarginHome(viewer, n, it.runs, placedHomes));
   }
   return byKey;
 }

@@ -1,7 +1,7 @@
 // Freestanding note comments (PDF /Text): create, render, drag, and edit note marks in a dedicated per-page overlay layer.
 // A note is a comment not anchored to text.
 import { TEXT_ANNOT_ICON_PX } from '../../js/pdf/parsePdfAnnots.js';
-import { populateBubbleMark, computePageBubbleZoom } from './viewerCommentMarks.js';
+import { populateBubbleMark, computePageBubbleZoom, dropPreviewStrip } from './viewerCommentMarks.js';
 
 /**
  * Return the freestanding text notes on page n.
@@ -159,7 +159,6 @@ export function placePageNotes(viewer, n) {
 
 /**
  * Drag a note icon to reposition it.
- * Converts the pointer's screen delta to page-local pixels via the zoom level, and marks the icon as dragged so the trailing click does not open the editor.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {AnnotationText} annot
  * @param {HTMLElement} icon
@@ -177,16 +176,18 @@ function startNoteDrag(viewer, annot, icon, event, n) {
   const pm = viewer.doc.pageMetrics[n];
   const maxLeft = pm ? Math.max(0, pm.dims.width - TEXT_ANNOT_ICON_PX) : Infinity;
   const maxTop = pm ? Math.max(0, pm.dims.height - TEXT_ANNOT_ICON_PX) : Infinity;
-  let moved = false;
+  /** @type {?{x: number, y: number}} */
+  let dragFrom = null;
   const onMove = (ev) => {
-    const dx = (ev.clientX - startX) / z;
-    const dy = (ev.clientY - startY) / z;
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-      moved = true;
+    if (!dragFrom) {
+      const reach = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+      if (reach < 4) return;
+      dragFrom = { x: startX + (ev.clientX - startX) * (4 / reach), y: startY + (ev.clientY - startY) * (4 / reach) };
+      dropPreviewStrip(icon);
       icon.classList.remove('is-unrolled');
     }
-    annot.bbox.left = Math.min(maxLeft, Math.max(0, origLeft + dx));
-    annot.bbox.top = Math.min(maxTop, Math.max(0, origTop + dy));
+    annot.bbox.left = Math.min(maxLeft, Math.max(0, origLeft + (ev.clientX - dragFrom.x) / z));
+    annot.bbox.top = Math.min(maxTop, Math.max(0, origTop + (ev.clientY - dragFrom.y) / z));
     annot.bbox.right = annot.bbox.left + TEXT_ANNOT_ICON_PX;
     annot.bbox.bottom = annot.bbox.top + TEXT_ANNOT_ICON_PX;
     placeSingleNoteIcon(viewer, n, icon, annot);
@@ -194,21 +195,22 @@ function startNoteDrag(viewer, annot, icon, event, n) {
   const onUp = () => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    if (moved) {
-      icon.dataset.dragged = '1';
-      // The drag mutated the bbox in place, so the entry captures value copies rather than the live object.
-      const from = {
-        left: origLeft, top: origTop, right: origLeft + TEXT_ANNOT_ICON_PX, bottom: origTop + TEXT_ANNOT_ICON_PX,
-      };
-      const to = { ...annot.bbox };
-      viewer.doc.docHistory.record({
-        surface: 'annot',
-        label: 'Moved note',
-        undo: () => { Object.assign(annot.bbox, from); return [n]; },
-        redo: () => { Object.assign(annot.bbox, to); return [n]; },
-      });
-      viewer.annotationsEdited(n);
-    }
+    if (!dragFrom) return;
+    // Clear on the next macrotask in case pointerup lands off the icon and no click fires to consume the flag.
+    icon.dataset.dragged = '1';
+    setTimeout(() => { icon.dataset.dragged = ''; }, 0);
+    // The drag mutated the bbox in place, so the entry captures value copies rather than the live object.
+    const from = {
+      left: origLeft, top: origTop, right: origLeft + TEXT_ANNOT_ICON_PX, bottom: origTop + TEXT_ANNOT_ICON_PX,
+    };
+    const to = { ...annot.bbox };
+    viewer.doc.docHistory.record({
+      surface: 'annot',
+      label: 'Moved note',
+      undo: () => { Object.assign(annot.bbox, from); return [n]; },
+      redo: () => { Object.assign(annot.bbox, to); return [n]; },
+    });
+    viewer.annotationsEdited(n);
   };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);

@@ -3207,7 +3207,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmt-card {
       position: absolute;
       pointer-events: auto;
-      width: 228px;
+      width: var(--scribe-cmt-w, 228px);
       box-sizing: border-box;
       background: var(--scribe-surface);
       border: 1px solid var(--scribe-accent);
@@ -3272,7 +3272,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
-    .${r} .scribe-cmt-text::placeholder { color: var(--scribe-ink-3); }
+    .${r} .scribe-cmt-text::placeholder { color: var(--scribe-ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: hidden; }
     .${r} .scribe-cmt-thread.is-scrollable { overflow-y: auto; }
     .${r} .scribe-cmt-msg .scribe-cmt-meta { margin-bottom: 2px; }
@@ -3304,6 +3304,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: var(--scribe-ink-3);
       white-space: nowrap;
     }
+    .${r} .scribe-cmt-card.scribe-cmt-narrow .scribe-cmt-foot .scribe-cm-when { display: none; }
     .${r} .scribe-cmt-reply-btn {
       margin: 0;
       padding: 0;
@@ -3505,9 +3506,38 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-box-radius: 5.5px;
       position: absolute;
       box-sizing: border-box;
-      z-index: 29;
+      z-index: 20;
       pointer-events: none;
     }
+    .${r} .scribe-cmt-box { position: absolute; left: 0; top: 0; z-index: 21; }
+    .${r} .scribe-cmt-clip { position: absolute; left: 0; top: 0; }
+    .${r} .scribe-cmt-box.is-on, .${r} .scribe-cmt-box.is-on .scribe-cmt-clip { overflow: hidden; border-radius: 7px; }
+    .${r} .scribe-cmt-edge {
+      display: none;
+      position: absolute;
+      left: 0;
+      top: 0;
+      box-sizing: border-box;
+      border: 1px solid var(--scribe-accent);
+      border-radius: 7px;
+      pointer-events: none;
+      z-index: 30;
+    }
+    .${r} .scribe-cmt-box.is-on .scribe-cmt-edge { display: block; }
+    .${r} .scribe-cmt-shade {
+      position: absolute;
+      border-radius: 7px;
+      box-shadow: var(--scribe-menu-shadow);
+      pointer-events: none;
+      z-index: 20;
+      transform-origin: 0 0;
+    }
+    .${r} .scribe-cmt-shade.is-ring { box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-cmt-leave { position: absolute; left: 0; top: 0; z-index: 20; pointer-events: none; }
+    .${r} .scribe-cmt-leave * { pointer-events: none !important; }
+    .${r} .scribe-cmt-leave .scribe-cmt-card { display: block; }
+    .${r} .scribe-mark-copy { position: absolute; z-index: 23; pointer-events: none; }
+    .${r} .scribe-mark-copy * { pointer-events: none !important; }
     .${r} .scribe-card-ell-fade {
       position: absolute;
       font-size: 12.5px;
