@@ -481,7 +481,7 @@ export function parseMdBlocks(blockLines, refs, font) {
       continue;
     }
 
-    // A dashed underline is also a thematic break, so it is claimed as a setext heading before the rule check below sees it.
+    // A dashed underline is also a thematic break, so it is claimed as a setext heading before the thematic-break check below sees it.
     const setextMatch = openBlock && openBlock.kind === 'paragraph' && openBlock.listDepth === null ? /^ {0,3}(=+|-+)[ \t]*$/.exec(line) : null;
     if (setextMatch) {
       openBlock.kind = 'heading';

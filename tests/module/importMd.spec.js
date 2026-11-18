@@ -22,7 +22,7 @@ const parStructure = (doc) => doc.ocr.active.flatMap((page, n) => page.pars.map(
 
 /**
  * @typedef {Object} MdReaderBlock
- * @property {string} kind - `heading1`-`heading6`, `para`, `item`, `code`, or `rule`.
+ * @property {string} kind - `heading1`-`heading6`, `para`, `item`, `code`, or `break`.
  * @property {number} depth - List nesting level, 1 for a top-level item and 0 outside a list.
  * @property {boolean} quoted - Whether the block sits inside a block quote.
  * @property {boolean} ordered - Whether an item belongs to a numbered list.
@@ -57,7 +57,7 @@ const readMarkdown = (mdStr) => {
       else if (node.type === 'heading') out.push({ ...base, kind: `heading${node.level}`, text: inlineText(node) });
       else if (node.type === 'paragraph') out.push({ ...base, kind: item ? 'item' : 'para', text: inlineText(node) });
       else if (node.type === 'code_block') out.push({ ...base, kind: 'code', text: (node.literal || '').replace(/\n$/, '') });
-      else if (node.type === 'thematic_break') out.push({ ...base, kind: 'rule', text: '' });
+      else if (node.type === 'thematic_break') out.push({ ...base, kind: 'break', text: '' });
     }
   };
   visit(new Parser().parse(mdStr), 0, false);
@@ -196,7 +196,7 @@ describe('Check markdown import.', () => {
     expect(plainText.includes('- A charged phone'), 'list markers must be consumed by the importer').toBe(false);
     expect(plainText.includes('> Survey data'), 'block quote markers must be consumed by the importer').toBe(false);
     expect(plainText.includes('Quadrat frame placed on cobble'), 'an image must be dropped rather than importing its alt text as body text').toBe(false);
-    expect(doc.ocr.active[0].pars.length, 'the image line and the horizontal rule must each produce no paragraph').toBe(27);
+    expect(doc.ocr.active[0].pars.length, 'the image line and the thematic break must each produce no paragraph').toBe(27);
   });
 
   test('Escaped syntax characters import as literal text', () => {
@@ -210,7 +210,7 @@ describe('Check markdown import.', () => {
     expect(parText(pars[7]), 'an escaped ordered-list marker must import as body text').toBe('12. Removal procedures were renumbered in this revision.');
     expect(pars[7].marker, 'a line beginning with `12\\.` must not become a numbered item').toBe(null);
     expect(parText(pars[8]), 'an escaped `|` must import as body text with the pipes kept').toBe('| Depth readings | come from the staff gauge, not the app estimate.');
-    expect(parText(pars[10]), 'a rule of equals signs after a blank line must import as text, not a setext underline').toBe('=====');
+    expect(parText(pars[10]), 'a line of equals signs after a blank line must import as text, not a setext underline').toBe('=====');
   });
 
   test('Front matter is metadata, not content', () => {
@@ -365,7 +365,7 @@ describe('Check markdown import.', () => {
       'TRANSECT 4 / STOP 3\nsubstrate: cobble',
     ]);
 
-    expect(mdBlocks.filter((block) => block.kind === 'rule').length,
+    expect(mdBlocks.filter((block) => block.kind === 'break').length,
       'the page break between the two exported pages must be the only thematic break').toBe(1);
   });
 

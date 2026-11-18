@@ -73,7 +73,7 @@ describe('Check .scribe export function.', () => {
 
       // The sentinel pass below cannot fill empty arrays or fields that need a valid value, so populate those by hand first.
       orig.angle = 1.5;
-      orig.rules.push({ y: 100, left: 50, right: 500 });
+      orig.graphicLines.push({ y: 100, left: 50, right: 500 });
       orig.tableBoxes.push({
         left: 10, top: 20, right: 300, bottom: 400,
       });

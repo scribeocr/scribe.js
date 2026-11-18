@@ -106,7 +106,7 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   toolbarElem.style.zIndex = '40';
   toolbarElem.style.lineHeight = `${iconSize}px`;
   toolbarElem.style.backgroundColor = 'var(--scribe-surface)';
-  // The bottom rule is an inset shadow because a border would leave the default bar 39px to center its 28px buttons in, putting every icon half a pixel low.
+  // The bottom divider is an inset shadow because a border would leave the default bar 39px to center its 28px buttons in, putting every icon half a pixel low.
   toolbarElem.style.boxShadow = 'inset 0 -1px 0 var(--scribe-line)';
 
   const toolbarElemStart = document.createElement('div');

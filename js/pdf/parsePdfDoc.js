@@ -1521,7 +1521,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   // Criterion 2: filled, non-rectangular, glyph-height vector paths.
-  // Perfect rectangles (layout rules, table borders, fill boxes) are excluded.
+  // Perfect rectangles (layout lines, table borders, fill boxes) are excluded.
   let pathTextCandidates = 0;
   for (let pathI = 0; pathI < paths.length; pathI++) {
     const path = paths[pathI];
@@ -1590,7 +1590,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   /** @type {Array<{left: number, top: number, right: number, bottom: number, stroke: boolean}>} */
   const fillSquares = [];
   // Ink that can sit inside or over a checkbox, so detection can withhold boxes that are already marked.
-  // Thin long lines (rules, table borders) are excluded, since crossing a box is not marking it.
+  // Thin long lines (dividers, table borders) are excluded, since crossing a box is not marking it.
   /** @type {Array<{left: number, top: number, right: number, bottom: number}>} */
   const fillMarks = [];
   // Overflowing the mark cap is itself a signal: a page with hundreds of ink marks is dense vector art, where a drawn square is furniture rather than a form checkbox.
@@ -1667,7 +1667,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       });
       continue;
     }
-    // A drawn separator can pack several thin bars into one filled path (a decorative double rule) whose combined bbox is too tall to pass the test above.
+    // A drawn separator can pack several thin bars into one filled path (a decorative double line) whose combined bbox is too tall to pass the test above.
     // Mine the subpaths for thin, wide bars, but only when the path is curve-free and every subpath is an axis-aligned rectangle.
     // A glyph, chart, or logo has curves or non-orthogonal edges, so this never pulls a thin sliver out of one.
     if (hasCurve) {
@@ -1788,9 +1788,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, provisionalTables, fillGlyphBoxes,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath, glyphOpMap);
 
-  // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
+  // Carry the page's thin horizontal lines (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator line.
   // Rects consumed as text underlines are excluded: on a page where every line carries a hyperlink underline, treating them as separators would shatter each paragraph into single lines.
-  pageObj.rules = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
+  pageObj.graphicLines = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
 
   const annotations = liftPageAnnotations(page, objCache, n, { initialCtm, visualHeightPts, scale }, destInfo, { pageObj, langSet, pageStats });
 
@@ -2986,7 +2986,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
 
 /**
  * Convert one detected table into a LayoutDataTable attached to `dataTablePage`.
- * Row bounds prefer exact drawn-rule bottoms, then disjoint row-band bottoms, then text bottoms.
+ * Row bounds prefer exact drawn-line bottoms, then disjoint row-band bottoms, then text bottoms.
  * @param {import("./detectPdfTables.js").DetectedTable} dt
  * @param {LayoutDataTablePage} dataTablePage
  * @param {OcrPage} pageObj
@@ -4395,19 +4395,19 @@ export function groupCharsIntoPage(
       if (underlineRects.length > 0) {
         const baselineYWord = wordChars[0].y;
         const charColor = wordChars[0].textColor;
-        // A rect extending well past the line's text on either side is a table-row divider or section rule passing under the word, not an underline.
+        // A rect extending well past the line's text on either side is a table-row divider or section line passing under the word, not an underline.
         // The tolerance absorbs the slight overshoot real underlines get from stroke caps and trailing spaces.
-        const ruleOverhangLimit = wordChars[0].fontSize * 0.5;
+        const lineOverhangLimit = wordChars[0].fontSize * 0.5;
         for (let rectI = 0; rectI < underlineRects.length; rectI++) {
           const rect = underlineRects[rectI];
           if (rect.right > wordLeft && rect.left < wordRight
             && rect.y >= baselineYWord - wordChars[0].fontSize * 0.1
             && rect.y <= baselineYWord + wordChars[0].fontSize * 0.35
-            && rect.left >= lineLeft - ruleOverhangLimit
-            && rect.right <= lineRight + ruleOverhangLimit) {
-            // Color match: a saturated rule whose hue differs from the text is a decorative rule, not a text underline.
+            && rect.left >= lineLeft - lineOverhangLimit
+            && rect.right <= lineRight + lineOverhangLimit) {
+            // Color match: a saturated line whose hue differs from the text is a decorative line, not a text underline.
             // Normalize across color spaces first, since the same black may be stored as DeviceGray for the text and DeviceRGB for the path.
-            // A grayscale rule is exempt: producers draw hyperlink underlines in neutral gray under black link text, and the overhang guard above already pins the rect within the line.
+            // A grayscale line is exempt: producers draw hyperlink underlines in neutral gray under black link text, and the overhang guard above already pins the rect within the line.
             if (rect.color && charColor) {
               const rectRgb = colorToRgb(rect.color);
               const charRgb = colorToRgb(charColor);
@@ -4420,7 +4420,7 @@ export function groupCharsIntoPage(
               }
             }
             wordObj.style.underline = true;
-            // Mark the rect as consumed so parseSinglePage does not carry it into pageObj.rules as a paragraph separator.
+            // Mark the rect as consumed so parseSinglePage does not carry it into pageObj.graphicLines as a paragraph separator.
             rect.isUnderline = true;
             break;
           }

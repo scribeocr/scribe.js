@@ -103,7 +103,7 @@ export async function convertDocMd({ mdStr, pageDims = null }) {
       }
       if (/^[A-Za-z0-9_-]+:(?:[ \t]|$)/.test(lines[j])) hasKey = true;
     }
-    // A key-shaped line is required so a document that merely opens with a thematic break does not lose everything up to the next rule.
+    // A key-shaped line is required so a document that merely opens with a thematic break does not lose everything up to the next thematic break.
     if (close !== -1 && hasKey) lines = lines.slice(close + 1);
   }
 

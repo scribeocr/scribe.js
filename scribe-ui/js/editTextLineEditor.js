@@ -1395,7 +1395,7 @@ export function createLineEditor(scribe, {
     group.appendChild(canvas);
     document.body.appendChild(hiddenInput);
 
-    // The median of the four sides ignores a rule or a glyph that one sample lands on.
+    // The median of the four sides ignores a graphic line or a glyph that one sample lands on.
     let fieldColor = '#ffffff';
     if (rasterEl && rasterEl.width > 0) {
       const rctx = rasterEl.getContext('2d');

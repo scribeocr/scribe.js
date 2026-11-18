@@ -1033,13 +1033,13 @@ export function analyzeLayout(pages, opts = {}) {
   /** @type {Array<Array<LineFeat>>} */
   const pageFeats3 = Array.from({ length: pages.length }, () => []);
   for (const f of feats) pageFeats3[f.page].push(f);
-  // The separator rule's y marks the top of the footnote block, letting classifyRole find notes set at body size that the size-gated footnote test cannot see.
+  // The separator line's y marks the top of the footnote block, letting classifyRole find notes set at body size that the size-gated footnote test cannot see.
   /** @type {Map<number, number>} */
-  const footnoteRuleY = new Map();
+  const footnoteLineY = new Map();
   /** @type {Map<number, number>} */
-  const rawSepY = new Map(); // topmost lower-half separator-rule y per page, before corroboration
-  // Topmost separator-shaped rule per page at any height, trusted only by the self-gated continuation path.
-  // A footnote-dominated page (notes filling most of the page) sets its separator above mid-page, so the lower-half guard on the doc-wide footnoteRuleY would miss it.
+  const rawSepY = new Map(); // topmost lower-half separator-line y per page, before corroboration
+  // Topmost separator-shaped line per page at any height, trusted only by the self-gated continuation path.
+  // A footnote-dominated page (notes filling most of the page) sets its separator above mid-page, so the lower-half guard on the doc-wide footnoteLineY would miss it.
   /** @type {Map<number, number>} */
   const rawSepAnyY = new Map();
   for (let p = 0; p < pages.length; p++) {
@@ -1047,25 +1047,25 @@ export function analyzeLayout(pages, opts = {}) {
     if (!pageH) continue;
     let y = null;
     let yAny = null;
-    const pageRules = pages[p].rules || [];
+    const pageGraphicLines = pages[p].graphicLines || [];
     const pf3 = pageFeats3[p];
-    for (const r of pageRules) {
+    for (const r of pageGraphicLines) {
       // A running header left of the body column can pull bodyLeft past a page's margin, so check pageFlush first.
       if (r.left > (pageFlush.get(p) ?? bodyLeft) + bodySize) continue; // not anchored at the page's left margin
-      // A full-width horizontal rule is a section or table border, not a note separator, but such borders are often drawn as per-cell segments each individually under the width threshold.
-      // Union every rule collinear with this one (same y) before the width test so a segmented border still reads as full-width and is rejected.
+      // A full-width horizontal line is a section or table border, not a note separator, but such borders are often drawn as per-cell segments each individually under the width threshold.
+      // Union every line collinear with this one (same y) before the width test so a segmented border still reads as full-width and is rejected.
       let uLeft = r.left; let uRight = r.right;
-      for (const q of pageRules) if (Math.abs(q.y - r.y) <= bodySize * 0.3) { uLeft = Math.min(uLeft, q.left); uRight = Math.max(uRight, q.right); }
+      for (const q of pageGraphicLines) if (Math.abs(q.y - r.y) <= bodySize * 0.3) { uLeft = Math.min(uLeft, q.left); uRight = Math.max(uRight, q.right); }
       if (uRight - uLeft > colWidth * 0.6) continue;
       // A text underline has the exact geometry of a footnote separator, distinguished only by lying inside a text line's bbox (on the baseline) rather than in the gap between lines.
-      // Skip bbox-contained rules so an underlined sub-heading cannot seed a spurious footnote region.
+      // Skip bbox-contained lines so an underlined sub-heading cannot seed a spurious footnote region.
       if (pf3.some((g) => r.y >= g.top && r.y <= g.bottom && r.left < g.right && r.right > g.left)) continue;
       if (yAny == null || r.y < yAny) yAny = r.y;
       if (r.y < pageH * 0.5) continue;
       if (y == null || r.y < y) y = r.y;
     }
     if (yAny != null) rawSepAnyY.set(p, yAny);
-    // A text underline shares the separator's short-low-left geometry, so trust the rule only when a footnote-like line sits below it.
+    // A text underline shares the separator's short-low-left geometry, so trust the separator only when a footnote-like line sits below it.
     // Ungated, the underline drags every line below it into the footnote role.
     if (y != null) {
       rawSepY.set(p, y);
@@ -1078,16 +1078,16 @@ export function analyzeLayout(pages, opts = {}) {
         return !!(f.enumerator && f.enumerator.value != null && sc && sc.active
           && sc.sequenceValues && sc.sequenceValues.has(f.enumerator.value));
       });
-      if (corroborated) footnoteRuleY.set(p, y);
+      if (corroborated) footnoteLineY.set(p, y);
     } else if (yAny != null) {
-      // An active-sequence superscript marker below an above-midline separator is the document's own declaration of a note region, so the rule is trusted on marker evidence alone.
+      // An active-sequence superscript marker below an above-midline separator is the document's own declaration of a note region, so the separator is trusted on marker evidence alone.
       // The small-text corroboration arm is deliberately not honored this high, or a mid-page underline over small print (a caption, a table note) would open a false note region.
       const markerBelow = pf3.some((f) => {
         if (f.top <= yAny || !f.firstWordSup || !f.enumerator || f.enumerator.value == null) return false;
         const sc = schemeRuns[f.enumerator.scheme];
         return !!(sc && sc.active && sc.sequenceValues && sc.sequenceValues.has(f.enumerator.value));
       });
-      if (markerBelow) footnoteRuleY.set(p, yAny);
+      if (markerBelow) footnoteLineY.set(p, yAny);
     }
   }
   model.bodyRefLabels = bodyRefLabels;
@@ -1129,8 +1129,8 @@ export function analyzeLayout(pages, opts = {}) {
     if (sepCur == null) continue;
     const prevH = pages[p - 1].dims?.height || 0;
     if (!prevH) continue;
-    // Top of p-1's note zone: its separator-shaped rule, lowered to the topmost active sup-ref marker pinned to the page's lower half.
-    // The marker arm lets a page with no drawn rule but marked notes still locate the zone.
+    // Top of p-1's note zone: its separator-shaped line, lowered to the topmost active sup-ref marker pinned to the page's lower half.
+    // The marker arm lets a page with no drawn line but marked notes still locate the zone.
     // Infinity means p-1 has no note zone, so its tail is body, not an open footnote, and this is no continuation.
     let prevNoteTop = rawSepAnyY.get(p - 1) ?? Infinity;
     for (const f of pageFeats3[p - 1]) {
@@ -1145,7 +1145,7 @@ export function analyzeLayout(pages, opts = {}) {
     const prevNotes = pageFeats3[p - 1].filter((f) => f.top >= prevNoteTop && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p - 1));
     if (!prevNotes.length) continue;
-    // prevNotes is only prose below a separator-shaped rule, which over-fires on markerless matter like word indexes and deposition Q&A.
+    // prevNotes is only prose below a separator-shaped line, which over-fires on markerless matter like word indexes and deposition Q&A.
     // Requiring a real note here stops those false note zones from spilling onto the next page.
     const prevRefs = bodyRefLabels.get(p - 1);
     // A standalone raised marker is its own letterless fragment beside the note's first text line, so prevNotes never contains it and the prose line beside it is not itself superscript-led.
@@ -1188,13 +1188,13 @@ export function analyzeLayout(pages, opts = {}) {
       || markerOnRow(pageFeats3[p], sepCur, opener);
     if (openerIsMarker) continue;
     footnoteContinues.set(p, lastPrev.size);
-    if (!footnoteRuleY.has(p)) footnoteRuleY.set(p, sepCur); // the continuation corroborates this page's separator
+    if (!footnoteLineY.has(p)) footnoteLineY.set(p, sepCur); // the continuation corroborates this page's separator
   }
   // A line-numbered transcript's small, low testimony corroborates a footnote separator via the size-only path even with sup-ref disabled.
-  // The drawn-rule footnote region must therefore also be dropped under the gate.
-  if (suppressNotes) { footnoteRuleY.clear(); footnoteContinues.clear(); }
+  // The drawn-line footnote region must therefore also be dropped under the gate.
+  if (suppressNotes) { footnoteLineY.clear(); footnoteContinues.clear(); }
   model.footnoteContinues = footnoteContinues;
-  model.footnoteRuleY = footnoteRuleY;
+  model.footnoteLineY = footnoteLineY;
 
   // A word-index page's small, low entries read as notes, so classifyRole uses this set to keep the whole page out of the footnote role.
   /** @type {Set<number>} */
@@ -1685,7 +1685,7 @@ export function analyzeLayout(pages, opts = {}) {
       }
     }
     // A page-bottom run of these same baseline markers with no notes heading is a plain footnote tail, not an endnote section.
-    // Region evidence replaces the missing separator rule.
+    // Region evidence replaces the missing separator line.
     // The whole region is the note block, so a long note's continuation paragraphs stay notes.
     for (const [p, pf] of byPage) {
       const rp = bodyRefLabels.get(p);
@@ -1737,7 +1737,7 @@ export function analyzeLayout(pages, opts = {}) {
     const w0 = f.line.words[0];
     const lead = w0 ? (w0.text || '').trim().replace(/[.)\]/]+$/, '') : '';
     if (!/^\d{1,3}$/.test(lead) || !rp.has(lead)) continue;
-    const fy = footnoteRuleY.get(f.page);
+    const fy = footnoteLineY.get(f.page);
     if (fy == null || f.top <= fy) continue;
     if (f.left <= (pageFlush.get(f.page) ?? bodyLeft) + bodySize * 2) baselineMarkerNotesBelowSep++;
   }
@@ -1758,7 +1758,7 @@ export function analyzeLayout(pages, opts = {}) {
     }
     const rp = bodyRefLabels.get(f.page);
     if (!rp || f.allCaps) continue;
-    const fy = footnoteRuleY.get(f.page);
+    const fy = footnoteLineY.get(f.page);
     if (f.left > (pageFlush.get(f.page) ?? bodyLeft) + bodySize * (fy != null && f.top > fy ? 2 : 1)) continue;
     const w0t = ((f.line.words[0] && f.line.words[0].text) || '').trim();
     const lead = w0t.replace(/[.)\]/]+$/, '');
@@ -1939,7 +1939,7 @@ export function analyzeLayout(pages, opts = {}) {
         // A bare start is only the marker, which hangs left of its note column by up to a 0.5in tab, so its real column is not start.left but is learned from the first absorbed text line.
         let colRight = start.left;
         // Below a corroborated separator everything down to the page bottom is note matter, so the region licenses the flush widening that note size alone cannot.
-        const startFnY = model.footnoteRuleY && model.footnoteRuleY.get(start.page);
+        const startFnY = model.footnoteLineY && model.footnoteLineY.get(start.page);
         const regionNote = startFnY != null && start.top > startFnY;
         // A raised marker can sit a hair lower than its row-mate text, which then sorts before the marker and out of the forward walk's reach, so absorb the row-mate directly.
         // Forward-sorting row-mates are left to the walk itself, which must pass through them to reach the note's wrapped lines.
@@ -2206,11 +2206,11 @@ export function analyzeLayout(pages, opts = {}) {
     for (const f of leadCands) if (Math.abs(f.left - leadPk.center) <= bodySize) f.hangMarker = true;
   }
 
-  // Drawn horizontal separator rules per page (from the PDF parser, in line-bbox coordinate space), so geometricBreak can split a paragraph across a rule lying in the gap between two lines.
+  // Drawn horizontal separator lines per page (from the PDF parser, in line-bbox coordinate space), so geometricBreak can split a paragraph across a line lying in the gap between two lines.
   /** @type {Map<number, Array<{y:number, left:number, right:number}>>} */
-  const pageRules = new Map();
-  for (let p = 0; p < pages.length; p++) pageRules.set(p, pages[p].rules || []);
-  model.pageRules = pageRules;
+  const pageGraphicLines = new Map();
+  for (let p = 0; p < pages.length; p++) pageGraphicLines.set(p, pages[p].graphicLines || []);
+  model.pageGraphicLines = pageGraphicLines;
 
   // Hanging-indent reference lists invert the document's indent convention: the indent column marks a continuation, and the flush margin marks an entry start.
   // Misreading ordinary indented prose as such a run would flip every paragraph boundary inside it, so the shape tests below stay strict.
@@ -3073,7 +3073,7 @@ function decideBreak(f, prev, model, curParFirst, structMode) {
  */
 function isStrongBreak(reason, model) {
   return reason === 'paragraph gap'
-    || reason === 'separator rule'
+    || reason === 'separator line'
     || reason === 'footnote marker'
     || reason === 'bullet'
     || reason === 'drop cap'
@@ -3104,17 +3104,17 @@ function geometricBreak(f, prev, model, curParFirst) {
   // A hanging marker starts a new paragraph even after a full prior line, where the justified ends-early rule cannot fire.
   if (f.hangMarker) return { newPar: true, reason: 'hanging marker' };
 
-  // A drawn rule in the vertical gap between prev and f is a block boundary the geometry alone misses.
-  // The strict rule.y > prev.bottom bound excludes text underlines, which sit inside their line's bbox rather than in the gap.
+  // A drawn line in the vertical gap between prev and f is a block boundary the geometry alone misses.
+  // The strict line.y > prev.bottom bound excludes text underlines, which sit inside their line's bbox rather than in the gap.
   if (prev.page === f.page) {
-    const rules = model.pageRules && model.pageRules.get(f.page);
-    if (rules) {
+    const graphicLines = model.pageGraphicLines && model.pageGraphicLines.get(f.page);
+    if (graphicLines) {
       const spanLeft = Math.min(prev.left, f.left);
       const spanRight = Math.max(prev.right, f.right);
-      for (const rule of rules) {
-        if (rule.y > prev.bottom && rule.y < f.top
-          && rule.right > spanLeft && rule.left < spanRight) {
-          return { newPar: true, reason: 'separator rule' };
+      for (const line of graphicLines) {
+        if (line.y > prev.bottom && line.y < f.top
+          && line.right > spanLeft && line.left < spanRight) {
+          return { newPar: true, reason: 'separator line' };
         }
       }
     }
@@ -3636,7 +3636,7 @@ function classifyRole(f, model, colWidth, prev) {
   // Deliberately no markerless same-page footnote rule keyed on a doc-wide "has footnotes" flag: it would type every small bottom-of-page label, footer, and page counter as a note.
   // Each rule below requires per-instance evidence, so a real footnote whose in-text reference never parsed as a superscript is a deliberate miss.
   // That miss is accepted because mistyping body text as a note is far worse.
-  const fnRuleY = skipNotes ? null : (model.footnoteRuleY && model.footnoteRuleY.get(f.page));
+  const fnLineY = skipNotes ? null : (model.footnoteLineY && model.footnoteLineY.get(f.page));
   // The bodySize and openerSize arms are not redundant with the page-relative sizeRatio.
   // On table-dominated pages sizeRatio reflects the table's small print, so those arms save real notes.
   const np = model.noteProfile;
@@ -3644,13 +3644,13 @@ function classifyRole(f, model, colWidth, prev) {
       || (np.openerSize > 0 && f.size <= np.openerSize * 1.08))
     && (f.bold < 0.9 || np.notesBold);
   // bodyRefLabels excludes a line's own first word, so this isolated marker cannot self-match and vacuously pass the gate.
-  if (fnRuleY != null && noteEnvelope && f.top > fnRuleY && f.bottomFrac > 0.5 && f.sizeRatio <= 0.86 && /^\d{1,3}$/.test(t)
+  if (fnLineY != null && noteEnvelope && f.top > fnLineY && f.bottomFrac > 0.5 && f.sizeRatio <= 0.86 && /^\d{1,3}$/.test(t)
       && f.left <= (model.pageFlush.get(f.page) ?? model.bodyLeft) + model.bodySize
       && model.bodyRefLabels.get(f.page)?.has(t)) return 'footnote';
   // The left bound reaches 4x bodySize to admit the note indent but stays left of page center so a centered page number or footer below the separator is not swept in.
   // The size ceiling is the open note's own size (footnoteContinues stores it), so larger body or display text cannot be swept into a continuation.
-  if (model.footnoteContinues && model.footnoteContinues.has(f.page) && fnRuleY != null && noteEnvelope
-      && f.top > fnRuleY && !f.allCaps && !f.inTable && /[A-Za-z]{2,}/.test(t)
+  if (model.footnoteContinues && model.footnoteContinues.has(f.page) && fnLineY != null && noteEnvelope
+      && f.top > fnLineY && !f.allCaps && !f.inTable && /[A-Za-z]{2,}/.test(t)
       && f.size <= (model.footnoteContinues.get(f.page) || 0) * 1.15
       && f.left < (model.pageFlush.get(f.page) ?? model.bodyLeft) + model.bodySize * 4) return 'footnote';
   // The envelope still gates f.endnote, so a bold display heading inside a note-dominated block stays a heading, not an endnote.
@@ -3664,21 +3664,21 @@ function classifyRole(f, model, colWidth, prev) {
   // A corroborated separator can sit above the midline on a footnote-dominated page, so the region arm admits marker lines the lower-half gate would reject.
   const supRef = model.schemes['sup-ref'];
   if (!skipNotes && noteEnvelope && supRef && supRef.active
-      && (f.bottomFrac > 0.5 || (fnRuleY != null && f.top > fnRuleY))
+      && (f.bottomFrac > 0.5 || (fnLineY != null && f.top > fnLineY))
       && !CJK_RE.test(t)
       && f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
       && f.enumerator.value != null && supRef.sequenceValues.has(f.enumerator.value)) return 'footnote';
   // The Westlaw "FN"+number note opener ("FN2.") is unambiguous by content, so an active, reference-corroborated sup-ref run plus a value in that run types the note directly.
-  // The bare-digit rules' geometric proxies (bottom-of-page, near-flush margin, separator rule, usesBaselineMarker) misfire on full-size notes indented in a two-column layout.
+  // The bare-digit rules' geometric proxies (bottom-of-page, near-flush margin, separator line, usesBaselineMarker) misfire on full-size notes indented in a two-column layout.
   // "FN"+digit cannot collide with a numbered body paragraph, so none of those proxies are needed.
   if (!skipNotes && noteEnvelope && supRef && supRef.active
       && f.enumerator && f.enumerator.scheme === 'sup-ref' && /^FN\d/.test(f.enumerator.raw || '')
       && f.enumerator.value != null && supRef.sequenceValues.has(f.enumerator.value)) return 'footnote';
   // Body-size footnote: the leading label is body size, not a superscript, so the matching in-text reference is the only evidence it is a note.
-  // The left bound widens to 2x bodySize only below the separator (fnRuleY), since allowing it above would let a numbered body paragraph reach the bound and be mistyped.
+  // The left bound widens to 2x bodySize only below the separator (fnLineY), since allowing it above would let a numbered body paragraph reach the bound and be mistyped.
   if (!skipNotes && noteEnvelope && f.bottomFrac > 0.5 && !f.allCaps && model.bodyRefLabels.has(f.page)
       && f.left <= (model.pageFlush.get(f.page) ?? model.bodyLeft)
-        + model.bodySize * (fnRuleY != null && f.top > fnRuleY ? 2 : 1)) {
+        + model.bodySize * (fnLineY != null && f.top > fnLineY ? 2 : 1)) {
     const w0t = ((f.line.words[0] && f.line.words[0].text) || '').trim();
     const lead = w0t.replace(/[.)\]/]+$/, '');
     // A symbol marker glued to the note's first word ("*Non-GAAP...") is the same convention set in one text run.
@@ -4186,7 +4186,7 @@ function enumeratedListItemStart(f, model) {
  * @property {Map<number, Set<string>>} bodyRefLabels - per-page in-text note-reference labels.
  * @property {Set<string>} bodyRefLabelsDoc
  * @property {Map<number, number>} footnoteContinues - pages opening on a cross-page note continuation -> the open note's size.
- * @property {Map<number, number>} footnoteRuleY - per-page y of the corroborated footnote separator rule.
+ * @property {Map<number, number>} footnoteLineY - per-page y of the corroborated footnote separator line.
  * @property {Set<number>} concordancePages - pages detected as word-index (concordance) pages.
  * @property {boolean} artifactUnreliable - the producer tags body content /Artifact, so the tag is useless as a furniture signal.
  * @property {number} pageCount
@@ -4200,7 +4200,7 @@ function enumeratedListItemStart(f, model) {
  * @property {Set<string>} subBodyBoldFaces - size|family-core groups the document reserves for sub-body bold headings.
  * @property {boolean} nativeText - the document parses as born-digital text (pdfType 'text').
  * @property {boolean} ocrText - the text is a scan's OCR layer (pdfType 'ocr' or 'image').
- * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageRules - drawn horizontal separator rules per page.
+ * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageGraphicLines - drawn horizontal separator lines per page.
  */
 
 /**

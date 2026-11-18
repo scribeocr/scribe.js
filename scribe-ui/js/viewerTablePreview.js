@@ -211,10 +211,10 @@ export function applyTablePreview(viewer, n) {
     }
   }
   if (pc && localHeaderRows > 0 && localHeaderRows < bandEdges.length) {
-    const rule = mk({
+    const headerLine = mk({
       left: `${tc.left}px`, top: `${bandEdges[localHeaderRows]}px`, width: `${tc.right - tc.left}px`, height: `calc(${fmtOn && headTable.detectionMethod === 'grid-strong' ? 2 : 1.2}px / ${Z})`, background: '#2f3540', pointerEvents: 'none', zIndex: '0',
     }, pc);
-    rule.dataset.scribeTpHdrule = '1';
+    headerLine.dataset.scribeTpHdline = '1';
   }
 
   // A cell bar pinned to the page top would be scrolled out of view whenever the table sits further down, so this one tracks the table.

@@ -20,11 +20,12 @@ export function OcrPage(n, dims) {
   /** @type {Array<OcrLine>} */
   this.lines = [];
   /**
-   * Horizontal separator rules drawn on the page (thin horizontal vector rectangles), in the same top-left coordinate space as line bboxes.
-   * Populated only at PDF import and consumed during that same import, so OCR pages have none.
+   * Horizontal graphic lines drawn on the page.
+   * Coordinates are in the same top-left space as line bboxes.
+   * Populated only at PDF import, so OCR pages have none.
    * @type {Array<{y: number, left: number, right: number}>}
    */
-  this.rules = [];
+  this.graphicLines = [];
   /**
    * Detected data-table regions, one bounding box per table rather than per column, in the same top-left coordinate space as line bboxes.
    * Populated only at PDF import and consumed during that same import, so OCR pages have none.
@@ -901,7 +902,7 @@ export function clonePage(page) {
   const pageNew = new OcrPage(page.n, { ...page.dims });
   pageNew.angle = page.angle;
   pageNew.textSource = page.textSource;
-  pageNew.rules = (page.rules || []).map((rule) => ({ ...rule }));
+  pageNew.graphicLines = (page.graphicLines || []).map((line) => ({ ...line }));
   pageNew.tableBoxes = (page.tableBoxes || []).map((box) => ({ ...box }));
   const lineMap = new Map();
   for (const line of page.lines) {

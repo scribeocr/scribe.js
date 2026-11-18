@@ -310,15 +310,15 @@ const DETECT = {
   leaderPageNumGapEm: 2,
   // A ")" hugging the run's right end is a pleading-caption divider with the paren split into its own word.
   capParenGapEm: 0.5,
-  standaloneRuleWidthFrac: 0.4,
+  standaloneLineWidthFrac: 0.4,
   stackGapMinEm: 0.45,
   stackGapMaxEm: 4.6,
-  // Two mates make a group of three answer rows; decorative cover rules come in pairs.
+  // Two mates make a group of three answer rows; decorative cover lines come in pairs.
   stackMinMates: 2,
   promptLookbackEm: 2.5,
   segCaptionBandEm: 2.2,
   segClusterGapEm: 1.6,
-  // A caption names its field in a few short words; anything longer reads as a sentence under a rule.
+  // A caption names its field in a few short words; anything longer reads as a sentence under a line.
   segMaxClusterWords: 5,
   segMaxClusterChars: 42,
   segRowToleranceEm: 0.5,
@@ -501,9 +501,9 @@ export function detectFillTargets(doc, n, rejects) {
         if (kill) kill('underscore', 'caption-paren', bbox);
         return;
       }
-      // A wide run alone on its line is usually a decorative rule, as on brief covers and in caption blocks.
+      // A wide run alone on its line is usually a decorative line, as on brief covers and in caption blocks.
       // It stays a blank only in form context: stacked with sibling answer lines at row spacing, or directly under a line that ends like a prompt (":", "?", ")").
-      if (line.words.length === 1 && runW >= pageObj.dims.width * DETECT.standaloneRuleWidthFrac) {
+      if (line.words.length === 1 && runW >= pageObj.dims.width * DETECT.standaloneLineWidthFrac) {
         const stacked = underscoreOnlyLineTops.filter((t) => {
           const g = Math.abs(t - run.top);
           return g >= DETECT.stackGapMinEm * run.h && g <= DETECT.stackGapMaxEm * run.h;
@@ -520,7 +520,7 @@ export function detectFillTargets(doc, n, rejects) {
         }
         if (bestLast && /[:?)]$/.test(bestLast.text)) prompt = true;
         if (!stacked && !prompt) {
-          if (kill) kill('underscore', 'standalone-rule', bbox);
+          if (kill) kill('underscore', 'standalone-line', bbox);
           return;
         }
       }

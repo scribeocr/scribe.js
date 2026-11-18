@@ -6810,7 +6810,7 @@ export function createLibraryInstance(viewer, opts) {
    * @returns {Promise<void>}
    */
   const exitRecentRow = (row) => new Promise((resolve) => {
-    // The last row takes the whole section with it, heading and rule included, in the one motion.
+    // The last row takes the whole section with it, heading and divider included, in the one motion.
     const section = /** @type {?HTMLElement} */ (row.closest('.scribe-library-recent'));
     const target = section && section.querySelectorAll('.r:not(.leaving)').length === 1 ? section : row;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {

@@ -4707,7 +4707,7 @@ export function createGraphicsEditTool(initialViewer) {
   const placementAt = (clientX, clientY) => {
     const pt = scribe.clientToPage(clientX, clientY);
     if (!pt) return null;
-    // Hairline rules have near-zero extents, so thin path targets get a minimum hit band of ~4 css px per side.
+    // Hairline graphic lines have near-zero extents, so thin path targets get a minimum hit band of ~4 css px per side.
     let slop = 4;
     const cont = scribe.pageContainerArr?.[pt.n];
     const dims = scribe.doc?.pageMetrics?.[pt.n]?.dims;

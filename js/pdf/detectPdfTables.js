@@ -65,7 +65,7 @@ function isRightClusteredNumeric(words) {
  * @param {number} visualHeightPts - Page height in points (for coordinate conversion)
  * @param {number} [boxOriginX=0] - X origin of the effective page box (CropBox/MediaBox) in points
  * @param {number} [boxOriginY=0] - Y origin of the effective page box in points
- * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from line segments.
  * @returns {DetectedTable[]}
  */
 export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
@@ -103,7 +103,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     // Provisional (open-top continuation) grids skip the candidate competition; the cross-page promotion pass decides them.
     const provisionalEarly = strictAllEarly.filter((t) => t.provisionalTopOpen);
     const strictEarly = strictAllEarly.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
-    const columnRuleEarly = strictAllEarly.filter((t) => t.detectionMethod === 'column-rule');
+    const columnDividerEarly = strictAllEarly.filter((t) => t.detectionMethod === 'column-divider');
     const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segEarly) {
       let blocked = false;
@@ -112,7 +112,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictEarly.push(st);
     }
-    for (const ct of columnRuleEarly) {
+    for (const ct of columnDividerEarly) {
       let blocked = false;
       for (const v of strictEarly) {
         if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
@@ -120,8 +120,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       if (!blocked) strictEarly.push(ct);
     }
     const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
-    const headerRuleEarly = detectHeaderRuleTables(pathDataEarly.hLines, pageObj);
-    for (const ht of headerRuleEarly) {
+    const headerUnderlineEarly = detectHeaderUnderlineTables(pathDataEarly.hLines, pageObj);
+    for (const ht of headerUnderlineEarly) {
       let blocked = false;
       for (const v of strictEarly) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
@@ -223,7 +223,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       .filter((t) => t.colSeparators.length > 0);
     const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
     const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
-    const columnRuleFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-rule');
+    const columnDividerFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-divider');
     const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
@@ -232,7 +232,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(st);
     }
-    for (const ct of columnRuleFallback) {
+    for (const ct of columnDividerFallback) {
       let blocked = false;
       for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
@@ -240,8 +240,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       if (!blocked) strictFallback.push(ct);
     }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
-    const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
-    for (const ht of headerRuleFallback) {
+    const headerUnderlineFallback = detectHeaderUnderlineTables(pathDataFallback.hLines, pageObj);
+    for (const ht of headerUnderlineFallback) {
       let blocked = false;
       for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
@@ -258,7 +258,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       .filter((t) => t.colSeparators.length > 0);
     const provisionalFallback = strictAllFallback.filter((t) => t.provisionalTopOpen);
     const strictFallback = strictAllFallback.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
-    const columnRuleFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-rule');
+    const columnDividerFallback = strictAllFallback.filter((t) => t.detectionMethod === 'column-divider');
     const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
     for (const st of segFallback) {
       let blocked = false;
@@ -267,7 +267,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       }
       if (!blocked) strictFallback.push(st);
     }
-    for (const ct of columnRuleFallback) {
+    for (const ct of columnDividerFallback) {
       let blocked = false;
       for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ct.bbox) > 0.3) { blocked = true; break; }
@@ -275,8 +275,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       if (!blocked) strictFallback.push(ct);
     }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY, textUnderlines);
-    const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
-    for (const ht of headerRuleFallback) {
+    const headerUnderlineFallback = detectHeaderUnderlineTables(pathDataFallback.hLines, pageObj);
+    for (const ht of headerUnderlineFallback) {
       let blocked = false;
       for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
@@ -304,7 +304,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     .filter((t) => t.colSeparators.length > 0);
   const provisionalGrids = strictAllGrids.filter((t) => t.provisionalTopOpen);
   const strictGrids = strictAllGrids.filter((t) => !t.provisionalTopOpen && t.detectionMethod === 'grid-strong');
-  const columnRuleTables = strictAllGrids.filter((t) => t.detectionMethod === 'column-rule');
+  const columnDividerTables = strictAllGrids.filter((t) => t.detectionMethod === 'column-divider');
   const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines);
   const gridTables = [...strictGrids];
   for (const st of segGrids) {
@@ -400,7 +400,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
     // Path-derived column structures do not model the label column, so the old bbox.left was its boundary with the first data column and has to survive as a separator.
     if (cand.bbox.left < prevLeft - 5
-        && (cand.detectionMethod === 'header-rule'
+        && (cand.detectionMethod === 'header-underline'
             || cand.detectionMethod === 'segmented-hline')) {
       const seps = cand.colSeparators ? [...cand.colSeparators] : [];
       seps.unshift(prevLeft);
@@ -496,7 +496,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // Runs after extractStructure so the text tables compared against here already have their colSeparators.
-  const headerRuleTables = detectHeaderRuleTables(pathData.hLines, pageObj);
+  const headerUnderlineTables = detectHeaderUnderlineTables(pathData.hLines, pageObj);
   // A column too tight to hold a label or a full numeric value is the signature of text clustering splitting a currency glyph into a column of its own.
   const hasNarrowTextColumn = (table) => {
     const seps = [table.bbox.left, ...table.colSeparators, table.bbox.right];
@@ -505,7 +505,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     return false;
   };
-  for (const ht of headerRuleTables) {
+  for (const ht of headerUnderlineTables) {
     let blocked = false;
     /** @type {DetectedTable[]} */
     const overlappingText = [];
@@ -521,7 +521,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       const htCols = ht.colSeparators.length + 1;
       const maxTextCols = Math.max(...overlappingText.map((t) => t.colSeparators.length + 1));
       const anyNarrow = overlappingText.some(hasNarrowTextColumn);
-      // A tie goes to the header-rule table, whose bbox is more often right because it does not truncate the top header rows.
+      // A tie goes to the header-underline table, whose bbox is more often right because it does not truncate the top header rows.
       if (maxTextCols > htCols && !anyNarrow) continue;
     }
     for (let i = validated.length - 1; i >= 0; i--) {
@@ -534,7 +534,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     validated.push(ht);
   }
 
-  for (const ct of columnRuleTables) {
+  for (const ct of columnDividerTables) {
     let blocked = false;
     /** @type {DetectedTable[]} */
     const overlappingText = [];
@@ -582,7 +582,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
       const ctCols = ct.colSeparators.length + 1;
       const maxTextCols = Math.max(...overlappingText.map((t) => t.colSeparators.length + 1));
       const anyNarrow = overlappingText.some(hasNarrowTextColumn);
-      // Text clustering can resolve sub-columns inside drawn columns (a group-ruled table), so a genuinely richer text structure survives.
+      // Text clustering can resolve sub-columns inside drawn columns (a group-lined table), so a genuinely richer text structure survives.
       if (maxTextCols > ctCols && !anyNarrow) continue;
       // Vlines interrupted by section fills cover only part of a claimed region, so a fragment may not replace a claim at the cost of the claim's rows.
       let losesRows = false;
@@ -606,7 +606,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     validated.push(ct);
   }
 
-  // === Phase 5.4: Re-attach row-band regions to header-rule tables ===
+  // === Phase 5.4: Re-attach row-band regions to header-underline tables ===
   for (const cand of validated) {
     if (cand.rowBandRegion) continue;
     /** @type {RowBandRegion[]} */
@@ -620,7 +620,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     if (matches.length !== 1) continue;
     const rbr = matches[0];
-    if (cand.detectionMethod === 'grid-strong' || cand.detectionMethod === 'column-rule') continue;
+    if (cand.detectionMethod === 'grid-strong' || cand.detectionMethod === 'column-divider') continue;
     cand.rowBandRegion = rbr;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
@@ -631,7 +631,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     cand.bbox.left = Math.min(cand.bbox.left, rbr.left);
     cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
     if (cand.bbox.left < prevLeft - 5
-        && (cand.detectionMethod === 'header-rule'
+        && (cand.detectionMethod === 'header-underline'
             || cand.detectionMethod === 'segmented-hline')) {
       const seps = cand.colSeparators ? [...cand.colSeparators] : [];
       seps.unshift(prevLeft);
@@ -644,7 +644,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
 
-  // Sibling sub-tables such as Assets and Liabilities commonly share one header rule and one banded stripe even though they are structurally separate.
+  // Sibling sub-tables such as Assets and Liabilities commonly share one header line and one banded stripe even though they are structurally separate.
   /** @type {Array<{cand: DetectedTable, splits: DetectedTable[]}>} */
   const splitWork = [];
   for (const cand of validated) {
@@ -732,9 +732,9 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     const hasBand = !!table.rowBandRegion;
     if (table.splitTopLocked) continue;
     if (table.detectionMethod === 'grid-strong') continue;
-    if (table.detectionMethod === 'column-rule') continue;
+    if (table.detectionMethod === 'column-divider') continue;
     if (!hasBand && table.detectionMethod === 'segmented-hline') continue;
-    if (!hasBand && table.detectionMethod === 'header-rule') continue;
+    if (!hasBand && table.detectionMethod === 'header-underline') continue;
     // A stacked sibling whose data rows resemble headers would otherwise chain the upward scan through the entire neighbor, stopping only at its intro prose.
     // The floor keys on this table's first data row because groupRowsIntoCandidates inflated bbox.top by three row heights, so sibling bboxes overlap where their data rows do not.
     const myFirstRowY = table.rows.length > 0
@@ -774,29 +774,29 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   for (const table of multiCol) {
     if (table.detectionMethod === 'grid-strong') continue;
     if (table.detectionMethod === 'segmented-hline') continue;
-    if (table.detectionMethod === 'header-rule') continue;
-    if (table.detectionMethod === 'column-rule') continue;
+    if (table.detectionMethod === 'header-underline') continue;
+    if (table.detectionMethod === 'column-divider') continue;
     extendTableToAdjacentContent(table, lines, multiCol);
   }
 
-  // === Phase 5.7: Refine text-table column structure from rule clusters ===
-  const ruleClusters = findDisjointRuleClusters(pathData.hLines, pageObj);
+  // === Phase 5.7: Refine text-table column structure from line clusters ===
+  const lineClusters = findDisjointLineClusters(pathData.hLines, pageObj);
   for (const table of multiCol) {
     if (table.detectionMethod !== 'text') continue;
     /** @type {{y: number, cols: Array<{left: number, right: number}>} | null} */
     let bestCluster = null;
-    for (const cluster of ruleClusters) {
+    for (const cluster of lineClusters) {
       if (cluster.y < table.bbox.top - 30 || cluster.y > table.bbox.bottom + 30) continue;
-      const ruleLeft = cluster.cols[0].left;
-      const ruleRight = cluster.cols[cluster.cols.length - 1].right;
-      if (ruleLeft < table.bbox.left - 30) continue;
-      if (ruleRight > table.bbox.right + 30) continue;
+      const clusterLeft = cluster.cols[0].left;
+      const clusterRight = cluster.cols[cluster.cols.length - 1].right;
+      if (clusterLeft < table.bbox.left - 30) continue;
+      if (clusterRight > table.bbox.right + 30) continue;
       if (!bestCluster || cluster.cols.length > bestCluster.cols.length) {
         bestCluster = cluster;
       }
     }
     if (!bestCluster) continue;
-    // A rule set can underline only the major groupings while text clustering sees the sub-columns, so a higher text column count wins.
+    // A line set can underline only the major groupings while text clustering sees the sub-columns, so a higher text column count wins.
     const wouldSynthesizeLabel = table.bbox.left < bestCluster.cols[0].left - 20;
     const newColCount = bestCluster.cols.length + (wouldSynthesizeLabel ? 1 : 0);
     const currentColCount = table.colSeparators.length + 1;
@@ -817,7 +817,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 6: Stream order validation ===
-  return [...multiCol.filter((t) => t.detectionMethod === 'grid-strong' || t.detectionMethod === 'column-rule' || validateStreamOrder(t, lines)), ...provisionalGrids];
+  return [...multiCol.filter((t) => t.detectionMethod === 'grid-strong' || t.detectionMethod === 'column-divider' || validateStreamOrder(t, lines)), ...provisionalGrids];
 }
 
 /**
@@ -1161,14 +1161,14 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
 
 /**
  * Classify vector paths into horizontal lines, vertical lines, filled rectangles, and header fills.
- * Applies filtering to remove page borders, margin rules, and underlines.
+ * Applies filtering to remove page borders, margin lines, and underlines.
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
  * @param {number} scale
  * @param {number} visualHeightPts
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @param {number} [boxOriginX]
  * @param {number} [boxOriginY]
- * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from line segments.
  */
 function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
   const pageHeight = pageObj.dims.height;
@@ -1401,7 +1401,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     if (h < 2 && w >= minHLineWidthPts && isPathAchromatic(path)) {
       const displayY = (visualHeightPts - ((minY + maxY) / 2 - boxOriginY)) * scale;
 
-      // A rule in the top or bottom 5% of the page is a border, not a table line.
+      // A line in the top or bottom 5% of the page is a border, not a table line.
       if (displayY < pageHeight * 0.05 || displayY > pageHeight * 0.95) continue;
 
       hLines.push({ left: displayLeft, right: displayRight, y: displayY });
@@ -1409,7 +1409,7 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       const displayX = ((minX + maxX) / 2 - boxOriginX) * scale;
       const vLineHeight = displayBottom - displayTop;
 
-      // A rule spanning most of the page height is a margin rule.
+      // A line spanning most of the page height is a margin line.
       if (vLineHeight > pageHeight * 0.8) continue;
 
       vLines.push({ top: displayTop, bottom: displayBottom, x: displayX });
@@ -1437,11 +1437,11 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
 
   reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight);
 
-  // The consumed-underline filter runs before the ruling-row scan below, or several underlines at one header y read as a per-cell ruling row.
+  // The consumed-underline filter runs before the header-underline scan below, or several underlines at one header y read as per-column header underlines.
   const hLinesKept = dropConsumedUnderlines(hLines, vLines, textUnderlines);
 
-  // A column rule's segments individually look like word underlines, so they are exempted from the underline filter below that would otherwise delete the table's column geometry.
-  const rulingRowMembers = new Set();
+  // Per-column header underlines individually look like word underlines, so they are exempted from the underline filter below that would otherwise delete the table's column geometry.
+  const underlineRowMembers = new Set();
   {
     const yGroups = [];
     for (const hl of hLinesKept) {
@@ -1464,13 +1464,13 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
         if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
       }
       if (!disjoint) continue;
-      for (const hl of g.lines) rulingRowMembers.add(hl);
+      for (const hl of g.lines) underlineRowMembers.add(hl);
     }
   }
 
   // An hLine whose x-extent matches a single text line just above it is that line's underline, not a table border.
   const filteredHLines = hLinesKept.filter((hl) => {
-    if (rulingRowMembers.has(hl)) return true;
+    if (underlineRowMembers.has(hl)) return true;
     for (const line of pageObj.lines) {
       const lineBottom = line.bbox.bottom;
       const yDist = Math.abs(hl.y - lineBottom);
@@ -1485,13 +1485,13 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
   });
 
   // Per-cell borders emit a separate segment per cell edge, and unmerged the rightmost column's segments cluster on their own and the column is lost.
-  // Ruling-row members merge only among themselves, since the 5px merge tolerance is looser than the 3px ruling-row grouping and a separate full-width rule just below can land in the same group.
-  // Such a rule overlaps every underline, so merging would fuse the ruling row into one full-width line and erase the column geometry its disjoint segments encode.
-  const rulingHLines = filteredHLines.filter((hl) => rulingRowMembers.has(hl));
-  const nonRulingHLines = filteredHLines.filter((hl) => !rulingRowMembers.has(hl));
+  // Header-underline rows merge only among themselves, since the 5px merge tolerance is looser than the 3px row grouping and a separate full-width line just below can land in the same group.
+  // Such a line overlaps every underline, so merging would fuse the header underlines into one full-width line and erase the column geometry their disjoint segments encode.
+  const underlineRowHLines = filteredHLines.filter((hl) => underlineRowMembers.has(hl));
+  const otherHLines = filteredHLines.filter((hl) => !underlineRowMembers.has(hl));
   const mergedHLines = [
-    ...mergeCollinearSegments(rulingHLines, 'y', 'left', 'right', 5, 10),
-    ...mergeCollinearSegments(nonRulingHLines, 'y', 'left', 'right', 5, 10),
+    ...mergeCollinearSegments(underlineRowHLines, 'y', 'left', 'right', 5, 10),
+    ...mergeCollinearSegments(otherHLines, 'y', 'left', 'right', 5, 10),
   ];
 
   // Per-cell vertical borders arrive as separate segments, and unmerged they are rejected by the downstream overlap filters instead of serving as column separators.
@@ -2120,7 +2120,7 @@ function dropConsumedUnderlines(hLines, vLines, textUnderlines) {
  * @param {number} visualHeightPts
  * @param {number} boxOriginX
  * @param {number} boxOriginY
- * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from line segments.
  * @returns {{hLines: HLine[], vLines: VLine[], bands: Array<{left: number, right: number, top: number, bottom: number}>}}
  */
 function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY, textUnderlines = []) {
@@ -2132,7 +2132,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
   const bandRects = [];
 
   // A piece thin in both directions (a junction or corner stub) goes in both pools, since its ink continues whichever run it abuts.
-  // A path whose subpaths are all thin bars at one shared position is one rule drawn in pieces, the shape left by an applied redaction cutting a rule or by a pre-segmented dashed line.
+  // A path whose subpaths are all thin bars at one shared position is one line drawn in pieces, the shape left by an applied redaction cutting a line or by a pre-segmented dashed line.
   // Batched border paths and shape outlines span many positions, so they never qualify and independent structure is never bridged.
   /**
    * @param {number} p1x
@@ -2164,7 +2164,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     if (!path.fill && !path.stroke) continue;
     const cmds = path.commands;
     const halfStroke = (path.lineWidth || 1) / 2;
-    // Tagged per piece because the column-rule interpretation requires achromatic boundaries.
+    // Tagged per piece because the column-divider interpretation requires achromatic boundaries.
     const pcolor = path.stroke ? path.strokeColor : path.fillColor;
     let pathChroma = false;
     if (Array.isArray(pcolor)) {
@@ -2229,7 +2229,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       continue;
     }
     if (path.fill) {
-      // Producers batch a whole grid's rules as subpaths of one filled path, so a per-path bbox would aggregate them into one non-thin blob and emit nothing.
+      // Producers batch a whole grid's lines as subpaths of one filled path, so a per-path bbox would aggregate them into one non-thin blob and emit nothing.
       let minX = Infinity;
       let maxX = -Infinity;
       let minY = Infinity;
@@ -2313,8 +2313,8 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     }
   }
 
-  // Only genuinely touching ink may fuse across paths, or dashes and dot leaders would merge into phantom rules instead of falling to the length filter.
-  // Filtering per piece instead would discard the sub-length junction stubs that connect a rule's long pieces, leaving holes in a visually unbroken line.
+  // Only genuinely touching ink may fuse across paths, or dashes and dot leaders would merge into phantom lines instead of falling to the length filter.
+  // Filtering per piece instead would discard the sub-length junction stubs that connect a line's long pieces, leaving holes in a visually unbroken line.
   /** @param {Array<{pos: number, start: number, end: number, b0: number, b1: number, barKey: number}>} pieces */
   const mergeAbutting = (pieces) => {
     /** @type {Array<{pos: number, segs: typeof pieces}>} */
@@ -2412,7 +2412,7 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
  * @param {number} visualHeightPts
  * @param {number} [boxOriginX=0]
  * @param {number} [boxOriginY=0]
- * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from line segments.
  * @returns {DetectedTable[]}
  */
 function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
@@ -2446,7 +2446,7 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
     for (let j = 0; j < vLines.length; j++) {
       const v = vLines[j];
       // Crossing is decided by the two ink rectangles touching, not by midline proximity.
-      // A thick border bar's midline sits half its width from the edge the interior rules actually touch, so midline distance misjudges contact.
+      // A thick border bar's midline sits half its width from the edge the interior lines actually touch, so midline distance misjudges contact.
       if ((v.x1 ?? v.x) >= a.left - INK_EPS && (v.x0 ?? v.x) <= a.right + INK_EPS
           && (a.y1 ?? a.y) >= v.top - INK_EPS && (a.y0 ?? a.y) <= v.bottom + INK_EPS) {
         union(i, hLines.length + j);
@@ -2487,7 +2487,7 @@ function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 
       t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj, raw.bands);
     }
     if (!t && comp.hs.length >= 1 && comp.vs.length >= 2) {
-      t = tryDetectColumnRuleTable(comp.hs, comp.vs, pageObj);
+      t = tryDetectColumnDividerTable(comp.hs, comp.vs, pageObj);
     }
     if (t) results.push(t);
   }
@@ -2592,7 +2592,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
   }
 
   // Excel draws a continuation page's repeated header with a top border over only the columns whose header cells carried one.
-  // A partial topmost rule above a full one therefore drops out and marks the grid provisional, emitted only if the previous page ends in a grid with the same separators.
+  // A partial topmost line above a full one therefore drops out and marks the grid provisional, emitted only if the previous page ends in a grid with the same separators.
   let provisionalTopOpen = false;
   if (ys.length >= 4
       && !unionSpansFully(segsByY.get(ys[0]), left, right, 15)
@@ -2636,7 +2636,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
     }
   }
 
-  // Cells merged across an interior row boundary leave its rule broken there, so a gap is allowed only when both ends land on canonical column separators.
+  // Cells merged across an interior row boundary leave its line broken there, so a gap is allowed only when both ends land on canonical column separators.
   for (let i = 0; i < ys.length; i++) {
     const segs = segsByY.get(ys[i]);
     if (i === 0 || i === ys.length - 1) {
@@ -2675,7 +2675,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
       }
     }
     if (idxs.length === 0) continue;
-    // Some producers draw no rule under the header, leaving its bottom fill edge as the only boundary between the header and the first data row.
+    // Some producers draw no line under the header, leaving its bottom fill edge as the only boundary between the header and the first data row.
     if (strip === strips[0]) {
       for (const band of bands) {
         const edge = band.bottom;
@@ -2698,7 +2698,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
   }
   if (rows.length < 2) return null;
 
-  // A page break can clip the rule above the first row or below the last, leaving the column borders running past the outermost drawn rule with a borderless row of grid text between.
+  // A page break can clip the line above the first row or below the last, leaving the column borders running past the outermost drawn line with a borderless row of grid text between.
   const colVs = vs.filter((v) => canonicalXs.some((cx) => Math.abs(cx - v.x) < 10));
   /**
    * @param {number} regionTop
@@ -2717,7 +2717,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
     }
     if (idxs.length === 0) return;
     const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
-    // A top cut row's bottom is the first drawn rule; a bottom cut row's is the border extent the page break clipped.
+    // A top cut row's bottom is the first drawn line; a bottom cut row's is the border extent the page break clipped.
     if (atTop) {
       rows.unshift({ lineIndices: idxs, y: yMean, bottom: regionBottom });
       bbox.top = regionTop - 5;
@@ -2739,7 +2739,7 @@ function tryDetectStrictGrid(hs, vs, pageObj, bands = []) {
     absorbCutRow(maxY, Math.max(...cutBotVs.map((v) => v.bottom)), false);
   }
 
-  // A sparse-ruled grid draws one rule per section, so its rules assert the strip partition rather than the rows inside a strip.
+  // A sparsely lined grid draws one line per section, so its lines assert the strip partition rather than the rows inside a strip.
   const gridColBounds = [bbox.left, ...colSeparators, bbox.right];
   let stripInHeader = true;
   for (let ri = 0; ri < rows.length; ri++) {
@@ -2912,17 +2912,17 @@ function deriveLogicalRows(lineIdxArr, lines, colBounds, mode = 'data') {
 }
 
 /**
- * Interpret one connected rule component as a table whose columns are drawn as vertical rules while its rows are mostly undrawn.
+ * Interpret one connected line component as a table whose columns are drawn as vertical lines while its rows are mostly undrawn.
  *
- * @param {HLine[]} hs - the component's horizontal rules
- * @param {VLine[]} vs - the component's vertical rules
+ * @param {HLine[]} hs - the component's horizontal lines
+ * @param {VLine[]} vs - the component's vertical lines
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @returns {DetectedTable | null}
  */
-function tryDetectColumnRuleTable(hs, vs, pageObj) {
+function tryDetectColumnDividerTable(hs, vs, pageObj) {
   const lines = pageObj.lines;
   if (lines.length === 0) return null;
-  // Saturated rules are chart and diagram decoration, never table rules.
+  // Saturated lines are chart and diagram decoration, never table lines.
   hs = hs.filter((h) => !h.chroma);
   vs = vs.filter((v) => !v.chroma);
   if (hs.length < 1 || vs.length < 2) return null;
@@ -2959,11 +2959,11 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
   }
   const separators = boundaries.filter((b) => b.x > extentLeft + 10 && b.x < extentRight - 10).map((b) => b.x);
   if (separators.length < 2) return null;
-  // Full-bleed figure art draws rules past the page box.
+  // Full-bleed figure art draws lines past the page box.
   if (extentLeft < -20 || extentRight > pageObj.dims.width + 20
       || spanTop < -20 || spanBottom > pageObj.dims.height + 20) return null;
 
-  // A rule truncated by a rowspanned cell still ends on a boundary and covers only the separators past it, so partial coverage is admitted when the uncovered separators are one run at one end.
+  // A line truncated by a rowspanned cell still ends on a boundary and covers only the separators past it, so partial coverage is admitted when the uncovered separators are one run at one end.
   const landsOnBoundary = (x) => x <= extentLeft + 10 || x >= extentRight - 10
     || boundaries.some((b) => Math.abs(b.x - x) <= 10);
   /** @type {number[]} */
@@ -2999,7 +2999,7 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
   if (rotated > regionLineIdxs.length / 2) return null;
 
   // Two multi-column rows set solid but left apart by header-mode merging are parallel value rows unless the upper one is a title.
-  // Lines bind to bands by baseline because a row sitting on a rule laps its bbox across it.
+  // Lines bind to bands by baseline because a row sitting on a line laps its bbox across it.
   const bandEdges = [spanTop, ...interiorBandYs, spanBottom];
   /** @type {Array<{lineIndices: number[], y: number, bottom: number, colsHit: number}>} */
   const rows = [];
@@ -3059,7 +3059,7 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
   const sortedFill = [...colFillCount].sort((a, b) => a - b);
   if (sortedFill[Math.floor(sortedFill.length / 2)] < rows.length * 0.5) return null;
   if (colFillCount.filter((c) => c === 0).length > (colBounds.length - 1) * 0.1) return null;
-  // A rule crossed by text row after row is a diagram connector running through box labels, not a column boundary.
+  // A line crossed by text row after row is a diagram connector running through box labels, not a column boundary.
   // Spanner and title rows legitimately cross one, which is what the tolerance allows for.
   for (const sx of separators) {
     let crossingRows = 0;
@@ -3123,11 +3123,11 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
     }
   }
 
-  // A vline with no bottom rule dangles past the last row.
+  // A vline with no bottom line dangles past the last row.
   const lastRowBottom = Math.max(...rows.map((r) => r.bottom));
   let bboxBottom = Math.min(spanBottom + 2, lastRowBottom + 4);
 
-  // A thick border bar is too heavy to classify as a rule, so a totals row closed by one sits just below the span.
+  // A thick border bar is too heavy to classify as a line, so a totals row closed by one sits just below the span.
   const belowIdxs = [];
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
@@ -3173,14 +3173,14 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
     colSeparators: separators,
     hLines: hs,
     vLines: vs,
-    detectionMethod: 'column-rule',
+    detectionMethod: 'column-divider',
   };
   if (headers) table.headers = headers;
   return table;
 }
 
 /**
- * Detect tables whose column structure is encoded by segments of horizontal rules rather than by vertical rules.
+ * Detect tables whose column structure is encoded by segments of horizontal lines rather than by vertical lines.
  *
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
@@ -3188,7 +3188,7 @@ function tryDetectColumnRuleTable(hs, vs, pageObj) {
  * @param {number} visualHeightPts
  * @param {number} [boxOriginX=0]
  * @param {number} [boxOriginY=0]
- * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from rule segments.
+ * @param {Array<{left: number, right: number, y: number}>} [textUnderlines] - thin bars the word matcher consumed as text underlines; excluded from line segments.
  * @returns {DetectedTable[]}
  */
 function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0, textUnderlines = []) {
@@ -3858,7 +3858,7 @@ function refineTableTop(table, lines, topFloor = 0) {
   const allLineIndicesSet = new Set(rows.flatMap((r) => r.lineIndices));
   const candidateWidth = table.bbox.right - table.bbox.left;
 
-  // The horizontal rule closest above the first row is the header/data boundary, while a higher one is more likely a decorative line or a section divider.
+  // The horizontal line closest above the first row is the header/data boundary, while a higher one is more likely a decorative line or a section divider.
   let scanAnchor = firstRowY;
   if (table.hLines.length > 0) {
     const limit = firstRowY - avgRowHeight * 1.5;
@@ -4009,13 +4009,13 @@ function refineTableTop(table, lines, topFloor = 0) {
 }
 
 /**
- * Detect tables anchored to a "ruling row", a y-band containing three or more horizontal paths whose x-extents are mutually disjoint.
+ * Detect tables anchored to per-column header underlines: a y-band containing three or more horizontal paths whose x-extents are mutually disjoint.
  *
  * @param {HLine[]} hLines - hLines from classifyPaths (post-filter, post-merge)
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  * @returns {DetectedTable[]}
  */
-function detectHeaderRuleTables(hLines, pageObj) {
+function detectHeaderUnderlineTables(hLines, pageObj) {
   const lines = pageObj.lines;
   if (lines.length === 0) return [];
 
@@ -4034,10 +4034,10 @@ function detectHeaderRuleTables(hLines, pageObj) {
   }
 
   /** @type {Array<{y: number, cols: Array<{left: number, right: number}>, hLines: HLine[]}>} */
-  const rulingRows = [];
+  const underlineRows = [];
   const pageWidth = pageObj.dims.width;
   for (const g of yGroups) {
-    // Two disjoint rules at one y are commonly a coincidence of form-field underlines or callout boxes rather than a table's column rules.
+    // Two disjoint lines at one y are commonly a coincidence of form-field underlines or callout boxes rather than per-column header underlines.
     if (g.lines.length < 3) continue;
     const sorted = [...g.lines].sort((a, b) => a.left - b.left);
     let disjoint = true;
@@ -4045,18 +4045,18 @@ function detectHeaderRuleTables(hLines, pageObj) {
       if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
     }
     if (!disjoint) continue;
-    // A rule set spanning little of the page is decorative, clustered in a corner or a footnote area.
+    // A line set spanning little of the page is decorative, clustered in a corner or a footnote area.
     const xSpan = sorted[sorted.length - 1].right - sorted[0].left;
     if (xSpan < pageWidth * 0.3) continue;
-    rulingRows.push({
+    underlineRows.push({
       y: g.y,
       cols: sorted.map((l) => ({ left: l.left, right: l.right })),
       hLines: sorted,
     });
   }
 
-  if (rulingRows.length === 0) return [];
-  rulingRows.sort((a, b) => a.y - b.y);
+  if (underlineRows.length === 0) return [];
+  underlineRows.sort((a, b) => a.y - b.y);
 
   const isSubsetGeometry = (subRow, primaryRow, tol) => {
     for (const c of subRow.cols) {
@@ -4073,45 +4073,45 @@ function detectHeaderRuleTables(hLines, pageObj) {
 
   /** @type {number[]} */
   const primaryIndices = [];
-  for (let ri = 0; ri < rulingRows.length; ri++) {
+  for (let ri = 0; ri < underlineRows.length; ri++) {
     let isSubtotal = false;
     for (const pi of primaryIndices) {
-      if (isSubsetGeometry(rulingRows[ri], rulingRows[pi], 5)) { isSubtotal = true; break; }
+      if (isSubsetGeometry(underlineRows[ri], underlineRows[pi], 5)) { isSubtotal = true; break; }
     }
     if (!isSubtotal) primaryIndices.push(ri);
   }
 
   const primaries = primaryIndices.map((ri) => {
-    const rule = rulingRows[ri];
-    const ruleLeft = rule.cols[0].left;
-    const ruleRight = rule.cols[rule.cols.length - 1].right;
+    const underlineRow = underlineRows[ri];
+    const rowLeft = underlineRow.cols[0].left;
+    const rowRight = underlineRow.cols[underlineRow.cols.length - 1].right;
     return {
       ri,
-      rule,
-      ruleLeft,
-      ruleRight,
-      xSlack: Math.max(20, (ruleRight - ruleLeft) * 0.02),
-      headerTopY: rule.y,
+      underlineRow,
+      rowLeft,
+      rowRight,
+      xSlack: Math.max(20, (rowRight - rowLeft) * 0.02),
+      headerTopY: underlineRow.y,
       headerLineIndices: /** @type {number[]} */ ([]),
     };
   });
 
-  // The upward header scan stops at the previous ruling row so one table's data block is not adopted as the next table's header.
+  // The upward header scan stops at the previous header-underline row so one table's data block is not adopted as the next table's header.
   for (let pii = 0; pii < primaries.length; pii++) {
     const p = primaries[pii];
-    const upperBound = pii > 0 ? primaries[pii - 1].rule.y + 5 : 0;
+    const upperBound = pii > 0 ? primaries[pii - 1].underlineRow.y + 5 : 0;
     const linesAbove = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
-      if (l.bbox.bottom > p.rule.y) continue;
+      if (l.bbox.bottom > p.underlineRow.y) continue;
       if (l.bbox.bottom < upperBound) continue;
-      if (l.bbox.left < p.ruleLeft - p.xSlack) continue;
-      if (l.bbox.right > p.ruleRight + p.xSlack) continue;
+      if (l.bbox.left < p.rowLeft - p.xSlack) continue;
+      if (l.bbox.right > p.rowRight + p.xSlack) continue;
       linesAbove.push({ idx: i, line: l });
     }
     linesAbove.sort((a, b) => b.line.bbox.top - a.line.bbox.top);
 
-    // Header rows sit tighter than body rows, so the spacing is measured from the lines just above the rule.
+    // Header rows sit tighter than body rows, so the spacing is measured from the text lines just above the header underlines.
     const tops = linesAbove.slice(0, 8).map((x) => x.line.bbox.top).sort((a, b) => b - a);
     const headerSpacings = [];
     for (let i = 1; i < tops.length; i++) headerSpacings.push(tops[i - 1] - tops[i]);
@@ -4119,7 +4119,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     const medianHeaderSpacing = headerSpacings[Math.floor(headerSpacings.length / 2)] || 30;
     const gapLimit = Math.max(medianHeaderSpacing * 1.5, 45);
 
-    let prevTopU = p.rule.y;
+    let prevTopU = p.underlineRow.y;
     for (const { idx, line } of linesAbove) {
       const gap = prevTopU - line.bbox.top;
       if (gap > gapLimit) break;
@@ -4129,7 +4129,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     }
   }
 
-  // The downward data scan stops at the next ruling row's header top so adjacent tables on a page do not leak into each other.
+  // The downward data scan stops at the next header-underline table's header top so adjacent tables on a page do not leak into each other.
   const results = [];
   for (let pii = 0; pii < primaries.length; pii++) {
     const p = primaries[pii];
@@ -4140,10 +4140,10 @@ function detectHeaderRuleTables(hLines, pageObj) {
     const linesBelow = [];
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
-      if (l.bbox.top < p.rule.y) continue;
+      if (l.bbox.top < p.underlineRow.y) continue;
       if (l.bbox.top > lowerBound) continue;
-      if (l.bbox.left < p.ruleLeft - p.xSlack) continue;
-      if (l.bbox.right > p.ruleRight + p.xSlack) continue;
+      if (l.bbox.left < p.rowLeft - p.xSlack) continue;
+      if (l.bbox.right > p.rowRight + p.xSlack) continue;
       linesBelow.push({ idx: i, line: l });
     }
     linesBelow.sort((a, b) => a.line.bbox.top - b.line.bbox.top);
@@ -4161,7 +4161,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
     const dataGapLimit = Math.max(medianDataSpacing * 2.5, 80);
 
     const dataIndices = [];
-    let prevDataTop = p.rule.y;
+    let prevDataTop = p.underlineRow.y;
     for (const { idx, line } of linesBelow) {
       const gap = line.bbox.top - prevDataTop;
       if (dataIndices.length > 0 && gap > dataGapLimit) break;
@@ -4172,11 +4172,11 @@ function detectHeaderRuleTables(hLines, pageObj) {
     for (const hIdx of p.headerLineIndices) dataIndices.push(hIdx);
 
     const colSeparators = [];
-    for (let i = 1; i < p.rule.cols.length; i++) {
-      colSeparators.push((p.rule.cols[i - 1].right + p.rule.cols[i].left) / 2);
+    for (let i = 1; i < p.underlineRow.cols.length; i++) {
+      colSeparators.push((p.underlineRow.cols[i - 1].right + p.underlineRow.cols[i].left) / 2);
     }
 
-    let bboxBottom = p.rule.y;
+    let bboxBottom = p.underlineRow.y;
     for (const idx of dataIndices) {
       if (lines[idx].bbox.bottom > bboxBottom) bboxBottom = lines[idx].bbox.bottom;
     }
@@ -4190,8 +4190,8 @@ function detectHeaderRuleTables(hLines, pageObj) {
 
     if (mappedRows.length < 3) continue;
 
-    // Prose paragraphs that happen to sit below a decorative rule lay words out continuously, with at most one number per row.
-    const colBounds = [p.ruleLeft, ...colSeparators, p.ruleRight];
+    // Prose paragraphs that happen to sit below a decorative line lay words out continuously, with at most one number per row.
+    const colBounds = [p.rowLeft, ...colSeparators, p.rowRight];
     const numColsCount = colBounds.length - 1;
     const colNumericRowCount = new Array(numColsCount).fill(0);
     let numericMultiColRows = 0;
@@ -4225,13 +4225,13 @@ function detectHeaderRuleTables(hLines, pageObj) {
 
     results.push({
       bbox: {
-        left: p.ruleLeft, right: p.ruleRight, top: p.headerTopY, bottom: bboxBottom,
+        left: p.rowLeft, right: p.rowRight, top: p.headerTopY, bottom: bboxBottom,
       },
       rows: mappedRows,
       colSeparators,
-      hLines: p.rule.hLines,
+      hLines: p.underlineRow.hLines,
       vLines: [],
-      detectionMethod: 'header-rule',
+      detectionMethod: 'header-underline',
     });
   }
 
@@ -4243,7 +4243,7 @@ function detectHeaderRuleTables(hLines, pageObj) {
  * @param {HLine[]} hLines
  * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
  */
-function findDisjointRuleClusters(hLines, pageObj) {
+function findDisjointLineClusters(hLines, pageObj) {
   const yGroups = [];
   for (const hl of hLines) {
     let group = null;

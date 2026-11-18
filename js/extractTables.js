@@ -197,7 +197,7 @@ export function extractSingleTableContent(pageObj, boxes, rowBounds = null, opts
       for (let i = 0; i < colArr.length; i++) {
         colWordArr[i] = [];
       }
-      // Words are assigned by their vertical center, which holds for both conventions `rowBounds` can carry: true row edges from drawn rules or bands, and text bottoms from vendor imports.
+      // Words are assigned by their vertical center, which holds for both conventions `rowBounds` can carry: true row edges from drawn lines or bands, and text bottoms from vendor imports.
       // Testing a word's bottom against the bound instead breaks on true edges, pushing a top-aligned word in a tall row up into the row above.
       const rowTop = r === 0 ? -Infinity : rowBounds[r - 1];
       const rowBot = r + 1 < rowBounds.length ? rowBounds[r] : Infinity;

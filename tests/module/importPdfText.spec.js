@@ -1317,7 +1317,7 @@ describe('intel-history-1996-annual-report.pdf direct-parser regression', () => 
     });
   });
 
-  describe('page 8 — body text near decorative rules is not falsely underlined', () => {
+  describe('page 8 — body text near decorative lines is not falsely underlined', () => {
     // Page 8 has several words flagged as underlined due to nearby thin
     // horizontal vector paths that are decorative borders, not real underlines.
     test('Line 3 word 0 "worldwide"', () => {

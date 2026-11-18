@@ -1565,12 +1565,12 @@ describe('Check native text line deletion and replacement survive .scribe persis
         left: photoA.left, top: photoA.top, right: photoA.right, bottom: photoA.bottom,
       },
     }]);
-    const topRule = pagePathPlacements(srcDoc, 0)
+    const topLine = pagePathPlacements(srcDoc, 0)
       .find((e) => Math.abs(e.left - 150) <= 1 && Math.abs(e.top - 437.5) <= 1);
     srcDoc.deleteGraphics([{
       n: 0,
       rect: {
-        left: topRule.left, top: topRule.top, right: topRule.right, bottom: topRule.bottom,
+        left: topLine.left, top: topLine.top, right: topLine.right, bottom: topLine.bottom,
       },
       kind: 'path',
     }]);
@@ -1830,13 +1830,13 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
         left: masthead.left, top: masthead.top, right: masthead.right, bottom: masthead.bottom,
       },
     }]);
-    // The page-3 header rule sits flush against fills sharing its edges, so deleting it exercises per-site extent agreement on paths.
-    const headerRule = pagePathPlacements(editDoc, 3)
+    // The page-3 header line sits flush against fills sharing its edges, so deleting it exercises per-site extent agreement on paths.
+    const headerLine = pagePathPlacements(editDoc, 3)
       .find((e) => Math.abs(e.left - 75) <= 1 && Math.abs(e.top - 482.7) <= 1);
     editDoc.deleteGraphics([{
       n: 3,
       rect: {
-        left: headerRule.left, top: headerRule.top, right: headerRule.right, bottom: headerRule.bottom,
+        left: headerLine.left, top: headerLine.top, right: headerLine.right, bottom: headerLine.bottom,
       },
       kind: 'path',
     }]);
@@ -1907,10 +1907,10 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     expect(p3.length, 'the path-delete page has the wrong path placement count in the exported PDF').toBe(100);
     expect(p3.some((e) => Math.abs(e.left - 75) <= 2 && Math.abs(e.top - 482.7) <= 2
       && Math.abs(e.right - 2475) <= 2 && Math.abs(e.bottom - 485.8) <= 2),
-    'the deleted header rule still draws in the exported PDF').toBe(false);
+    'the deleted header line still draws in the exported PDF').toBe(false);
     expect(p3.some((e) => Math.abs(e.left - 75) <= 2 && Math.abs(e.top - 485.8) <= 2
       && Math.abs(e.right - 2475) <= 2 && Math.abs(e.bottom - 611.9) <= 2),
-    'a fill sharing the deleted rule\'s bottom edge was co-deleted, so the strike over-matched on geometry').toBe(true);
+    'a fill sharing the deleted line\'s bottom edge was co-deleted, so the strike over-matched on geometry').toBe(true);
   });
 
   test('Two page fonts drawing with the same substitute face share one embedded copy of its program in the exported PDF', () => {

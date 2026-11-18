@@ -9009,7 +9009,7 @@ class ScribePDFViewer {
     this._notifyMenuState();
   }
 
-  /** Hide the app menu's document-actions separator when neither Combine nor Split applies, so it never leaves a stray rule. */
+  /** Hide the app menu's document-actions separator when neither Combine nor Split applies, so it never leaves a stray divider. */
   _updateDocSeparator() {
     if (!this._appMenuDocSep) return;
     const anyVisible = (this._combineItem && this._combineItem.style.display !== 'none')

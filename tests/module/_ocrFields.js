@@ -4,7 +4,7 @@
  * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} d
  */
 export const strayFields = (d) => {
-  const pageFields = ['angle', 'dims', 'lines', 'n', 'pars', 'rules', 'tableBoxes', 'textSource'];
+  const pageFields = ['angle', 'dims', 'lines', 'n', 'pars', 'graphicLines', 'tableBoxes', 'textSource'];
   const lineFields = ['ascHeight', 'baseline', 'bbox', 'debug', 'id', 'lineNum', 'orientation', 'page', 'pageNum', 'par', 'words', 'xHeight'];
   const wordFields = ['bbox', 'chars', 'compTruth', 'conf', 'debug', 'footnoteParId', 'id', 'lang', 'line',
     'matchTruth', 'readings', 'style', 'styleRuns', 'text', 'visualCoords'];
