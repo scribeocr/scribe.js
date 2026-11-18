@@ -4,6 +4,7 @@ import {
 } from '../utils/miscUtils.js';
 import {
   findXrefOffset, parseXref, getPageObjects, getPageContentStream, getPageContentStreams, findFormXObjects, parseFormBBox, parseFormMatrix, findRootObjNum,
+  parseHiddenOCMCNames,
 } from './parsePdfUtils.js';
 import { resolveItemDest, buildNameDests, setDestYFrac } from './parseOutline.js';
 import {
@@ -11,7 +12,7 @@ import {
 } from './pdfPrimitives.js';
 import { formatPdfNumber, serializeContentToken, tokenizeContentStream } from './contentStream.js';
 import { applyTextPatchRecords, patchPageContents } from './textPatch.js';
-import { isFullPageImage } from './ocrPageSelection.js';
+import { isFullPageImage, FULL_PAGE_IMAGE_MIN } from './ocrPageSelection.js';
 import { layoutFieldValue } from './formFieldLayout.js';
 import { ObjectCache } from './objectCache.js';
 
@@ -152,13 +153,20 @@ export function rgbToHex(rgb) {
 }
 
 /**
+ * @typedef {{ fillAlpha: ?number, softMask?: ?boolean, blendNormal?: ?boolean, overprint?: ?boolean }} ExtGStatePaint
+ *   What one ExtGState dictionary sets of the state that decides whether a paint is opaque.
+ *   A null or absent field leaves that state as it was.
+ */
+
+/**
  * Parse the ExtGState dictionary from a page (or Form XObject) /Resources entry,
  * returning a map of GS name → { fillAlpha }.
  * @param {string} containerObjText
  * @param {ObjectCache} objCache
+ * @param {boolean} [paint] - Also read the soft mask, blend mode and overprint each entry sets.
  */
-function parseFillAlphaExtGStates(containerObjText, objCache) {
-  /** @type {Map<string, { fillAlpha: ?number }>} */
+function parseFillAlphaExtGStates(containerObjText, objCache, paint = false) {
+  /** @type {Map<string, ExtGStatePaint>} */
   const states = new Map();
 
   let resourcesText = containerObjText;
@@ -207,7 +215,17 @@ function parseFillAlphaExtGStates(containerObjText, objCache) {
       }
     }
     const ca = resolveNumValue(gsBody, 'ca', objCache, Number.NaN);
-    states.set(gsName, { fillAlpha: Number.isNaN(ca) ? null : ca });
+    /** @type {ExtGStatePaint} */
+    const state = { fillAlpha: Number.isNaN(ca) ? null : ca };
+    if (paint) {
+      const blend = /\/BM\s*\[?\s*\/(\w+)/.exec(gsBody);
+      // An `OP` entry sets the non-stroking overprint too when the dictionary has no `op`.
+      const overprint = /\/op\s+(true|false)\b/.exec(gsBody) || /\/OP\s+(true|false)\b/.exec(gsBody);
+      state.softMask = /\/SMask\b/.test(gsBody) ? !/\/SMask\s*\/None\b/.test(gsBody) : null;
+      state.blendNormal = blend ? blend[1] === 'Normal' || blend[1] === 'Compatible' : null;
+      state.overprint = overprint ? overprint[1] === 'true' : null;
+    }
+    states.set(gsName, state);
   }
   return states;
 }
@@ -479,7 +497,205 @@ function intersectRects(a, b) {
 }
 
 /**
+ * Whether a matrix maps an upright rectangle to an upright rectangle.
+ * @param {number[]} m
+ */
+function uprightMatrix(m) {
+  const straight = Math.abs(m[0]) + Math.abs(m[3]);
+  const crossed = Math.abs(m[1]) + Math.abs(m[2]);
+  return crossed < 1e-3 * straight || straight < 1e-3 * crossed;
+}
+
+/**
+ * Mark as invisible every glyph of one content stream that lies under an opaque full-page image the same stream paints after it.
+ * Such text is an OCR layer drawn with ordinary attributes, which the producer hid by painting the page scan over it.
+ * An image counts when it alone is certain to paint at least `FULL_PAGE_IMAGE_MIN` of the page.
+ * When the stream's paints are walked, each record of `dos` learns whether its operator paints opaquely.
+ * @param {Array<PositionedChar>} chars - The glyphs the stream itself drew, in stream order.
+ * @param {Array<StreamDo>} dos - The stream's `Do` operators as its executor recorded them.
+ * @param {Array<PDFToken>} tokens - The stream's tokens, with their path and clip operators.
+ * @param {number[]} initialCtm - The matrix the stream starts under.
+ * @param {Map<string, ExtGStatePaint>|undefined} extGStates - The stream's graphics states, read with their paint entries.
+ * @param {string} containerObjText - The page or form whose resources name the stream's XObjects.
+ * @param {ObjectCache} objCache
+ * @param {number[]} pageBox - The page's box in the page frame, `[0, 0, width, height]` in points.
+ * @param {number} scale - Page pixels per point.
+ * @param {Map<string, number>} images - The container's image XObjects, as name -> object number.
+ * @param {?(() => boolean)} paintsOpaquely - Tells whether the stream's own `Do` and every `Do` above it paint opaquely.
+ *   Null when the walk runs only for a form of the stream to learn how its `Do` paints.
+ */
+function hideCharsUnderFullPageImage(chars, dos, tokens, initialCtm, extGStates, containerObjText, objCache, pageBox, scale, images, paintsOpaquely) {
+  const minArea = FULL_PAGE_IMAGE_MIN * pageBox[2] * pageBox[3];
+  // The area a paint is certain to reach under the clips in force, which only a clip made of one upright rectangle narrows exactly.
+  let clip = pageBox;
+  if (paintsOpaquely) {
+    let firstShown = 0;
+    while (firstShown < chars.length && chars[firstShown].invisible) firstShown += 1;
+    const mayCover = dos.some((record) => {
+      if (record.charsBefore <= firstShown || !images.has(record.name)) return false;
+      const placed = /** @type {number[]} */ (intersectRects(pageBox, transformedRectBounds([0, 0, 1, 1], record.ctm)));
+      return placed[0] < placed[2] && placed[1] < placed[3] && (placed[2] - placed[0]) * (placed[3] - placed[1]) >= minArea;
+    });
+    if (!mayCover || !paintsOpaquely()) return;
+    // A form's paints start inside its box, and nowhere for certain when that box lands rotated or skewed.
+    const formBox = parseFormBBox(containerObjText, objCache);
+    if (formBox) clip = /** @type {number[]} */ (intersectRects(pageBox, uprightMatrix(initialCtm) ? transformedRectBounds(formBox, initialCtm) : [0, 0, 0, 0]));
+  }
+  const offOCGs = objCache.getOffOCGs();
+  const hiddenOC = offOCGs.size > 0 ? parseHiddenOCMCNames(containerObjText, objCache, offOCGs) : null;
+
+  let ctm = initialCtm;
+  let fillAlpha = 1;
+  let softMask = false;
+  let blendNormal = true;
+  let overprint = false;
+  let tr = 0;
+  /** @type {Array<{ ctm: number[], clip: number[], fillAlpha: number, softMask: boolean, blendNormal: boolean, overprint: boolean, tr: number }>} */
+  const gsStack = [];
+  /** @type {?number[]} */
+  let rectPath = null;
+  let pathOther = false;
+  let pendingClip = false;
+  let textClip = false;
+  /** @type {Array<boolean>} */
+  const mcHidden = [];
+  let hiddenDepth = 0;
+  /** @type {Array<PDFToken>} */
+  const operandStack = [];
+  let doIdx = 0;
+  /** @type {Array<{ area: number[], charsBefore: number }>} */
+  const fullImages = [];
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    if (tok.type !== 'operator') {
+      operandStack.push(tok);
+      continue;
+    }
+    switch (tok.value) {
+      case 'q':
+        gsStack.push({
+          ctm, clip, fillAlpha, softMask, blendNormal, overprint, tr,
+        });
+        break;
+      case 'Q': {
+        const saved = gsStack.pop();
+        if (saved) {
+          ctm = saved.ctm;
+          clip = saved.clip;
+          fillAlpha = saved.fillAlpha;
+          softMask = saved.softMask;
+          blendNormal = saved.blendNormal;
+          overprint = saved.overprint;
+          tr = saved.tr;
+        }
+        break;
+      }
+      case 'cm':
+        if (operandStack.length >= 6) {
+          const n = operandStack.length;
+          ctm = matMul([operandStack[n - 6].value, operandStack[n - 5].value, operandStack[n - 4].value, operandStack[n - 3].value, operandStack[n - 2].value, operandStack[n - 1].value], ctm);
+        }
+        break;
+      case 'gs': {
+        const nameTok = operandStack[operandStack.length - 1];
+        const entry = extGStates && nameTok && nameTok.type === 'name' ? extGStates.get(nameTok.value) : undefined;
+        if (!entry) {
+          // A state the resources do not list may set any of these, so nothing painted under it is taken as opaque.
+          softMask = true;
+        } else {
+          if (entry.fillAlpha !== null) fillAlpha = entry.fillAlpha;
+          if (entry.softMask !== null && entry.softMask !== undefined) softMask = entry.softMask;
+          if (entry.blendNormal !== null && entry.blendNormal !== undefined) blendNormal = entry.blendNormal;
+          if (entry.overprint !== null && entry.overprint !== undefined) overprint = entry.overprint;
+        }
+        break;
+      }
+      case 'Tr':
+        if (operandStack.length >= 1) tr = operandStack[operandStack.length - 1].value;
+        break;
+      case 'Tj': case 'TJ': case "'": case '"':
+        if (tr >= 4) textClip = true;
+        break;
+      case 'ET':
+        // An image painted through a clip of glyph outlines draws those glyphs, so nothing it paints is certain to hide what lies under it.
+        if (textClip) clip = [0, 0, 0, 0];
+        textClip = false;
+        break;
+      case 'BDC': case 'BMC': {
+        const tagTok = operandStack[0];
+        const propsTok = operandStack[1];
+        // An optional-content span names its layer through the resources' property list, and one that names it any other way counts as switched off.
+        const hidden = !!hiddenOC && !!tagTok && tagTok.type === 'name' && tagTok.value === 'OC'
+          && !(propsTok && propsTok.type === 'name' && !hiddenOC.has(propsTok.value));
+        mcHidden.push(hidden);
+        if (hidden) hiddenDepth += 1;
+        break;
+      }
+      case 'EMC':
+        if (mcHidden.pop()) hiddenDepth -= 1;
+        break;
+      case 'm': case 'l': case 'c': case 'v': case 'y':
+        pathOther = true;
+        break;
+      case 're':
+        if (rectPath || pathOther || operandStack.length < 4 || !uprightMatrix(ctm)) {
+          pathOther = true;
+        } else {
+          const n = operandStack.length;
+          const x = operandStack[n - 4].value; const y = operandStack[n - 3].value; const w = operandStack[n - 2].value; const h = operandStack[n - 1].value;
+          rectPath = transformedRectBounds([x, y, x + w, y + h], ctm);
+        }
+        break;
+      case 'W': case 'W*':
+        pendingClip = true;
+        break;
+      case 'n': case 'f': case 'F': case 'f*': case 'B': case 'B*': case 'b': case 'b*': case 'S': case 's':
+        if (pendingClip) clip = rectPath && !pathOther ? /** @type {number[]} */ (intersectRects(clip, rectPath)) : [0, 0, 0, 0];
+        pendingClip = false;
+        rectPath = null;
+        pathOther = false;
+        break;
+      case 'Do': {
+        const record = dos[doIdx];
+        if (record && record.tokIdx === i) {
+          doIdx += 1;
+          record.opaque = fillAlpha === 1 && !softMask && blendNormal && !overprint && hiddenDepth === 0;
+          const imageObjNum = images.get(record.name);
+          if (paintsOpaquely && record.opaque && imageObjNum !== undefined && record.charsBefore > 0 && uprightMatrix(ctm)) {
+            const area = /** @type {number[]} */ (intersectRects(clip, transformedRectBounds([0, 0, 1, 1], ctm)));
+            if (area[0] < area[2] && area[1] < area[3] && (area[2] - area[0]) * (area[3] - area[1]) >= minArea
+              && !/\/ImageMask\s+true|\/SMask\b|\/Mask\b|\/SMaskInData\s+[12]|\/OC\b/.test(objCache.getObjectText(imageObjNum) || '')) {
+              fullImages.push({ area, charsBefore: record.charsBefore });
+            }
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    clearStack(operandStack);
+  }
+
+  for (const image of fullImages) {
+    for (let ci = 0; ci < image.charsBefore; ci++) {
+      const ch = chars[ci];
+      if (ch.invisible) continue;
+      // The test point is the middle of the glyph's advance, a third of its size above the baseline.
+      const mag = Math.hypot(ch.dirX, ch.dirY) || 1;
+      const ux = ch.dirX / mag;
+      const uy = ch.dirY / mag;
+      const px = (ch.x + ux * ch.width / 2 + uy * ch.fontSize * 0.3) / scale;
+      const py = pageBox[3] - (ch.y + uy * ch.width / 2 - ux * ch.fontSize * 0.3) / scale;
+      if (px >= image.area[0] && px <= image.area[2] && py >= image.area[1] && py <= image.area[3]) ch.invisible = true;
+    }
+  }
+}
+
+/**
  * Recursively extract text from Form XObjects referenced by Do operators.
+ * With `underImage`, the container's own glyphs first take the test for text under a full-page image.
  * @param {string} containerObjText
  * @param {Array<PDFToken>} containerTokens
  * @param {Map} parentFonts
@@ -488,29 +704,38 @@ function intersectRects(a, b) {
  * @param {number[]} containerCtm
  * @param {ObjectCache} objCache
  * @param {Set<number>} visited
- * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates]
+ * @param {Map<string, ExtGStatePaint>} [parentExtGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState]
  * @param {Map<string, {nInputs: number, tint: object}>} [parentColorSpaces]
  * @param {?GlyphOpMap} [glyphOpMap]
  * @param {?Array<ContentEdit>} [records] - The page's edit records.
  * @param {string} [pathPrefix] - The name path of the enclosing form plus a slash, empty at page level.
- * @param {?Array<{ name: string, visible: ?number[] }>} [containerDos] - With a glyph-op map, the container's `Do` operators in stream order with the region visible at each.
+ * @param {?Array<StreamDo>} [containerDos] - The container's `Do` operators as its executor recorded them, given with a glyph-op map or `underImage`.
+ * @param {?{ pageBox: number[], chars: Array<PositionedChar>, paintsOpaquely: () => boolean }} [underImage] - Given when the container's stream takes the test for text under a full-page image.
+ *   It holds the page's box in the page frame, the glyphs the container's own stream drew, and whether the container's `Do` and every `Do` above it paint opaquely.
  */
 function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm,
-  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces, glyphOpMap = null, records = null, pathPrefix = '', containerDos = null) {
+  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces, glyphOpMap = null, records = null, pathPrefix = '', containerDos = null, underImage = null) {
   const chars = [];
-  const formXObjects = findFormXObjects(containerObjText, objCache);
+  /** @type {?Map<string, number>} */
+  const images = underImage && containerDos && containerDos.length > 0 ? new Map() : null;
+  const formXObjects = findFormXObjects(containerObjText, objCache, images || undefined);
+  if (underImage && containerDos && images) {
+    hideCharsUnderFullPageImage(
+      underImage.chars, containerDos, containerTokens, containerCtm, parentExtGStates, containerObjText, objCache, underImage.pageBox, scale, images, underImage.paintsOpaquely,
+    );
+  }
   if (formXObjects.size === 0) return chars;
 
   const doOps = findDoOperators(containerTokens, formXObjects, containerCtm, parentTextState);
-  // Both walks list the container's Do operators in stream order, so each form's visible region is the next record of its name.
+  // Both walks list the container's Do operators in stream order, so each form's record is the next one of its name.
   let doCursor = 0;
   for (const doOp of doOps) {
-    /** @type {?number[]} */
-    let visibleAtDo = null;
+    /** @type {?StreamDo} */
+    let doRecord = null;
     if (containerDos) {
       while (doCursor < containerDos.length && containerDos[doCursor].name !== doOp.name) doCursor += 1;
-      if (doCursor < containerDos.length) visibleAtDo = containerDos[doCursor].visible;
+      if (doCursor < containerDos.length) doRecord = containerDos[doCursor];
       doCursor += 1;
     }
     const form = formXObjects.get(doOp.name);
@@ -527,7 +752,9 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formContentStream = formPatched.text;
     const formFonts = parsePageFonts(formObjText, objCache);
     const mergedFonts = new Map([...parentFonts, ...formFonts]);
-    const formExtGStates = parseFillAlphaExtGStates(formObjText, objCache);
+    // A stream over the size limit is tokenized without the clip operators the test needs.
+    const formMayTakeTest = !!underImage && !!doRecord && formContentStream.length <= GRAPHICS_HEAVY_STREAM_BYTES;
+    const formExtGStates = parseFillAlphaExtGStates(formObjText, objCache, formMayTakeTest);
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
@@ -542,6 +769,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     let formVisible = null;
     if (glyphOpMap) {
       const bbox = parseFormBBox(formObjText, objCache);
+      const visibleAtDo = doRecord ? doRecord.visible : null;
       formVisible = bbox ? intersectRects(visibleAtDo, transformedRectBounds(bbox, formCtm)) : visibleAtDo;
       glyphOpMap.stream = formStream;
       glyphOpMap.streams.push({
@@ -556,15 +784,34 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
       });
     }
     const formEntry = glyphOpMap ? glyphOpMap.streams[glyphOpMap.streams.length - 1] : null;
+    /** @type {?Array<StreamDo>} */
+    const formDos = formEntry ? formEntry.dos : (formMayTakeTest ? [] : null);
     const formChars = executeTextOperators(
-      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces, glyphOpMap, formVisible,
+      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces, glyphOpMap, formVisible, formDos,
     );
+    /** @type {?{ pageBox: number[], chars: Array<PositionedChar>, paintsOpaquely: () => boolean }} */
+    let formUnderImage = null;
+    if (formMayTakeTest && underImage && containerDos && images && doRecord && formDos && formDos.length > 0) {
+      formUnderImage = {
+        pageBox: underImage.pageBox,
+        chars: formChars,
+        paintsOpaquely: () => {
+          // A walk of the container's paints sets `opaque` on every record, so an unset one means none has run.
+          if (doRecord.opaque === undefined) {
+            hideCharsUnderFullPageImage(
+              underImage.chars, containerDos, containerTokens, containerCtm, parentExtGStates, containerObjText, objCache, underImage.pageBox, scale, images, null,
+            );
+          }
+          return doRecord.opaque === true && underImage.paintsOpaquely();
+        },
+      };
+    }
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
     const nestedChars = extractFormXObjectText(
       formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState, mergedColorSpaces,
-      glyphOpMap, records, `${formPath}/`, formEntry ? formEntry.dos : null,
+      glyphOpMap, records, `${formPath}/`, formDos, formUnderImage,
     );
     for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
   }
@@ -960,127 +1207,6 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   const tokens = tokenizeContentStream(contentStreamText, textPassTokenizerOpts(contentStreamText, glyphOpMap));
-  const extGStates = parseFillAlphaExtGStates(objText, objCache);
-  const textColorSpaces = parseTextColorSpaces(objText, objCache);
-  if (glyphOpMap) {
-    glyphOpMap.stream = { kind: 'page' };
-    glyphOpMap.pageHeightPts = visualHeightPts;
-    glyphOpMap.scale = scale;
-    glyphOpMap.streams.push({
-      stream: glyphOpMap.stream,
-      text: contentStreamText,
-      tokens,
-      segments: pagePatched.segments,
-      fonts,
-      extGStates,
-      colorSpaces: textColorSpaces,
-      dos: [],
-    });
-  }
-  let chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces, glyphOpMap,
-    glyphOpMap ? [0, 0, visualWidthPts, visualHeightPts] : null);
-
-  const formChars = extractFormXObjectText(
-    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces, glyphOpMap, records, '',
-    glyphOpMap ? glyphOpMap.streams[0].dos : null,
-  );
-  for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
-
-  // Producers place slug metadata outside the CropBox, which must not reach the extracted text.
-  for (let i = chars.length - 1; i >= 0; i--) {
-    const ch = chars[i];
-    const margin = ch.fontSize || 0;
-    if (ch.x + margin < 0 || ch.x > pageWidth + margin
-        || ch.y + margin < 0 || ch.y > pageHeight + margin) {
-      chars.splice(i, 1);
-    }
-  }
-
-  // The dedup bucket scales with font size because narrow adjacent chars can sit less than 1 unit apart.
-  // A 3x3 neighborhood check catches positions that straddle a bucket boundary.
-  // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
-  const DEDUP_COORD_OFF = 33554432; // 2^25, biases bucket indices non-negative and sits above any index the 0.25 minimum bucket size can produce
-  const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
-  /** @type {Map<number, PositionedChar | PositionedChar[]>} */
-  const seenByBucket = new Map();
-  if (!dedupBucketFilter) dedupBucketFilter = new PresenceFilter();
-  const bucketFilter = dedupBucketFilter;
-  bucketFilter.next();
-  const dedupedChars = [];
-  const classOf = (/** @type {PositionedChar} */ g) => Math.round(g.fontSize * 10) * 4 + (g.fontInfo.bold ? 2 : 0) + (g.fontInfo.italic ? 1 : 0);
-  for (let i = 0; i < chars.length; i++) {
-    const ch = chars[i];
-    const flagsSize = classOf(ch);
-    const bucketSize = Math.max(0.25, ch.fontSize * 0.05);
-    const xb = Math.round(ch.x / bucketSize);
-    const yb = Math.round(ch.y / bucketSize);
-    let occupied = false;
-    for (let dx = -1; dx <= 1 && !occupied; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        if (bucketFilter.has(dedupHash(xb + dx, yb + dy, 0))) { occupied = true; break; }
-      }
-    }
-    /** @type {?PositionedChar} */
-    let dupOf = null;
-    if (occupied) {
-      for (let dx = -1; dx <= 1 && !dupOf; dx++) {
-        for (let dy = -1; dy <= 1 && !dupOf; dy++) {
-          const placed = seenByBucket.get((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF));
-          if (!placed) continue;
-          if (Array.isArray(placed)) {
-            for (let k = 0; k < placed.length; k++) {
-              const g = placed[k];
-              if (g.text === ch.text && g.fontInfo.familyName === ch.fontInfo.familyName && classOf(g) === flagsSize) { dupOf = g; break; }
-            }
-          } else if (placed.text === ch.text && placed.fontInfo.familyName === ch.fontInfo.familyName && classOf(placed) === flagsSize) {
-            dupOf = placed;
-          }
-        }
-      }
-    }
-    if (dupOf) continue;
-    const bucketKey = (xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF);
-    const placed = seenByBucket.get(bucketKey);
-    if (!placed) seenByBucket.set(bucketKey, ch);
-    else if (Array.isArray(placed)) placed.push(ch);
-    else seenByBucket.set(bucketKey, [placed, ch]);
-    bucketFilter.add(dedupHash(xb, yb, 0));
-    dedupedChars.push(ch);
-  }
-  chars = dedupedChars;
-
-  const charStats = scorePageChars(chars);
-
-  // bodyReadableChars excludes the top/bottom 10% header/footer band to avoid counting header/footer text added in processing.
-  let longestBrokenRun = 0;
-  let brokenRun = 0;
-  let printableVisNonBroken = 0;
-  let bodyReadableChars = 0;
-  const bodyTop = pageHeight * 0.1;
-  const bodyBottom = pageHeight * 0.9;
-  let mathFontGlyphs = 0;
-  let mathCharGlyphs = 0;
-  for (let chI = 0; chI < chars.length; chI++) {
-    const ch = chars[chI];
-    if (brokenToUnicodeFont(ch._font)) {
-      brokenRun++;
-      if (brokenRun > longestBrokenRun) longestBrokenRun = brokenRun;
-      continue;
-    }
-    brokenRun = 0;
-    if (ch.invisible) continue;
-    const cp = ch.text.codePointAt(0);
-    if (cp === undefined) continue;
-    if (isMathFontChar(ch)) mathFontGlyphs++;
-    if (MATH_CHAR_RE.test(ch.text)) mathCharGlyphs++;
-    if (!((cp >= 33 && cp <= 127) || (cp >= 161 && !(cp >= 0xE000 && cp <= 0xF8FF)))) continue;
-    printableVisNonBroken++;
-    if (ch.y >= bodyTop && ch.y <= bodyBottom) bodyReadableChars++;
-  }
-
-  // A false positive relaxes line grouping on a prose page, which merges headings, URLs, and table cells into neighboring lines.
-  const pageHasMath = mathFontGlyphs >= 8
-    || (mathCharGlyphs >= 6 && mathCharGlyphs >= printableVisNonBroken * 0.0008);
 
   const graphicsHeavy = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES;
   /** @type {Array<{left: number, bottom: number, right: number, top: number}>} */
@@ -1169,7 +1295,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     }
   }
 
-  // Reassemble band-sliced images before classifying: producers often draw one picture as dozens of contiguous horizontal strips.
+  // Reassemble band-sliced images before classifying: a picture may be drawn as contiguous horizontal strips.
   /** @type {Array<{left: number, bottom: number, right: number, top: number, sites: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>}>} */
   const mergedPlacements = [];
   const placementCols = new Map();
@@ -1212,6 +1338,155 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     if (frac > largestImageFrac) largestImageFrac = frac;
   }
   largestImageFrac = Math.round(largestImageFrac * 10000) / 10000;
+
+  // The test for text under a full-page image is gated here, before the text pass, so that a page without such an image records nothing during it.
+  // A stream over the size limit is tokenized without the clip operators the test needs.
+  const pageBox = !graphicsHeavy && largestImageFrac >= FULL_PAGE_IMAGE_MIN ? [0, 0, visualWidthPts, visualHeightPts] : null;
+
+  const extGStates = parseFillAlphaExtGStates(objText, objCache, !!pageBox);
+  const textColorSpaces = parseTextColorSpaces(objText, objCache);
+  if (glyphOpMap) {
+    glyphOpMap.stream = { kind: 'page' };
+    glyphOpMap.pageHeightPts = visualHeightPts;
+    glyphOpMap.scale = scale;
+    glyphOpMap.streams.push({
+      stream: glyphOpMap.stream,
+      text: contentStreamText,
+      tokens,
+      segments: pagePatched.segments,
+      fonts,
+      extGStates,
+      colorSpaces: textColorSpaces,
+      dos: [],
+    });
+  }
+  /** @type {?Array<StreamDo>} */
+  const pageDos = glyphOpMap ? glyphOpMap.streams[0].dos : (pageBox ? [] : null);
+  let chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces, glyphOpMap,
+    glyphOpMap ? [0, 0, visualWidthPts, visualHeightPts] : null, pageDos);
+
+  const formChars = extractFormXObjectText(
+    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces, glyphOpMap, records, '', pageDos,
+    pageBox ? { pageBox, chars, paintsOpaquely: () => true } : null,
+  );
+  for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
+
+  // Producers place slug metadata outside the CropBox, which must not reach the extracted text.
+  for (let i = chars.length - 1; i >= 0; i--) {
+    const ch = chars[i];
+    const margin = ch.fontSize || 0;
+    if (ch.x + margin < 0 || ch.x > pageWidth + margin
+        || ch.y + margin < 0 || ch.y > pageHeight + margin) {
+      chars.splice(i, 1);
+    }
+  }
+
+  // The dedup bucket scales with font size because narrow adjacent chars can sit less than 1 unit apart.
+  // A 3x3 neighborhood check catches positions that straddle a bucket boundary.
+  // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
+  const DEDUP_COORD_OFF = 33554432; // 2^25, biases bucket indices non-negative and sits above any index the 0.25 minimum bucket size can produce
+  const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
+  /** @type {Map<number, PositionedChar | PositionedChar[]>} */
+  const seenByBucket = new Map();
+  if (!dedupBucketFilter) dedupBucketFilter = new PresenceFilter();
+  const bucketFilter = dedupBucketFilter;
+  bucketFilter.next();
+  /** @type {Array<PositionedChar>} */
+  const dedupedChars = [];
+  /** @type {?Map<PositionedChar, PositionedChar>} */
+  let shownCopies = null;
+  const classOf = (/** @type {PositionedChar} */ g) => Math.round(g.fontSize * 10) * 4 + (g.fontInfo.bold ? 2 : 0) + (g.fontInfo.italic ? 1 : 0);
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const flagsSize = classOf(ch);
+    const bucketSize = Math.max(0.25, ch.fontSize * 0.05);
+    const xb = Math.round(ch.x / bucketSize);
+    const yb = Math.round(ch.y / bucketSize);
+    let occupied = false;
+    for (let dx = -1; dx <= 1 && !occupied; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (bucketFilter.has(dedupHash(xb + dx, yb + dy, 0))) { occupied = true; break; }
+      }
+    }
+    /** @type {?PositionedChar} */
+    let dupOf = null;
+    if (occupied) {
+      for (let dx = -1; dx <= 1 && !dupOf; dx++) {
+        for (let dy = -1; dy <= 1 && !dupOf; dy++) {
+          const placed = seenByBucket.get((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF));
+          if (!placed) continue;
+          if (Array.isArray(placed)) {
+            for (let k = 0; k < placed.length; k++) {
+              const g = placed[k];
+              if (g.text === ch.text && g.fontInfo.familyName === ch.fontInfo.familyName && classOf(g) === flagsSize) { dupOf = g; break; }
+            }
+          } else if (placed.text === ch.text && placed.fontInfo.familyName === ch.fontInfo.familyName && classOf(placed) === flagsSize) {
+            dupOf = placed;
+          }
+        }
+      }
+    }
+    if (dupOf) {
+      if (dupOf.invisible && !ch.invisible) {
+        // The kept copy sits in the bucket of its own position.
+        const dupBucketSize = Math.max(0.25, dupOf.fontSize * 0.05);
+        const dupKey = (Math.round(dupOf.x / dupBucketSize) + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (Math.round(dupOf.y / dupBucketSize) + DEDUP_COORD_OFF);
+        const placed = seenByBucket.get(dupKey);
+        if (Array.isArray(placed)) placed[placed.indexOf(dupOf)] = ch;
+        else seenByBucket.set(dupKey, ch);
+        if (!shownCopies) shownCopies = new Map();
+        shownCopies.set(dupOf, ch);
+      }
+      continue;
+    }
+    const bucketKey = (xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF);
+    const placed = seenByBucket.get(bucketKey);
+    if (!placed) seenByBucket.set(bucketKey, ch);
+    else if (Array.isArray(placed)) placed.push(ch);
+    else seenByBucket.set(bucketKey, [placed, ch]);
+    bucketFilter.add(dedupHash(xb, yb, 0));
+    dedupedChars.push(ch);
+  }
+  if (shownCopies) {
+    for (let i = 0; i < dedupedChars.length; i++) {
+      const shown = shownCopies.get(dedupedChars[i]);
+      if (shown) dedupedChars[i] = shown;
+    }
+  }
+  chars = dedupedChars;
+
+  const charStats = scorePageChars(chars);
+
+  // bodyReadableChars excludes the top/bottom 10% header/footer band to avoid counting header/footer text added in processing.
+  let longestBrokenRun = 0;
+  let brokenRun = 0;
+  let printableVisNonBroken = 0;
+  let bodyReadableChars = 0;
+  const bodyTop = pageHeight * 0.1;
+  const bodyBottom = pageHeight * 0.9;
+  let mathFontGlyphs = 0;
+  let mathCharGlyphs = 0;
+  for (let chI = 0; chI < chars.length; chI++) {
+    const ch = chars[chI];
+    if (brokenToUnicodeFont(ch._font)) {
+      brokenRun++;
+      if (brokenRun > longestBrokenRun) longestBrokenRun = brokenRun;
+      continue;
+    }
+    brokenRun = 0;
+    if (ch.invisible) continue;
+    const cp = ch.text.codePointAt(0);
+    if (cp === undefined) continue;
+    if (isMathFontChar(ch)) mathFontGlyphs++;
+    if (MATH_CHAR_RE.test(ch.text)) mathCharGlyphs++;
+    if (!((cp >= 33 && cp <= 127) || (cp >= 161 && !(cp >= 0xE000 && cp <= 0xF8FF)))) continue;
+    printableVisNonBroken++;
+    if (ch.y >= bodyTop && ch.y <= bodyBottom) bodyReadableChars++;
+  }
+
+  // A false positive relaxes line grouping on a prose page, which merges headings, URLs, and table cells into neighboring lines.
+  const pageHasMath = mathFontGlyphs >= 8
+    || (mathCharGlyphs >= 6 && mathCharGlyphs >= printableVisNonBroken * 0.0008);
 
   // Criterion 1b: line-shaped image placements. These are text rendered as raster images interleaved with content
   // (e.g. full paragraph lines as images, each ~14pt tall and hundreds of points wide).
@@ -1837,21 +2112,28 @@ export function detectPdfType(pdfBytes) {
   const pageStats = [];
 
   for (let n = 0; n < pages.length; n++) {
-    const { objText, mediaBox } = pages[n];
+    const { objText } = pages[n];
     const fonts = parsePageFonts(objText, objCache);
     const contentStreamText = getPageContentStream(objText, objCache);
     if (!contentStreamText) continue;
 
-    const pageHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
-    const tokens = tokenizeContentStream(contentStreamText);
+    // The page frame, the tokenization and the stream-size limit are those of the full parse, so the two agree on which text lies under a full-page image.
+    const {
+      initialCtm, visualWidthPts, visualHeightPts, scale,
+    } = pageGeometry(pages[n], 72);
+    const tokens = tokenizeContentStream(contentStreamText, textPassTokenizerOpts(contentStreamText, null));
+    const pageBox = contentStreamText.length <= GRAPHICS_HEAVY_STREAM_BYTES ? [0, 0, visualWidthPts, visualHeightPts] : null;
     // Without ExtGStates, text hidden by zero fill alpha counts as visible and skews the verdict.
-    const extGStates = parseFillAlphaExtGStates(objText, objCache);
-    const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts, undefined, extGStates);
+    const extGStates = parseFillAlphaExtGStates(objText, objCache, !!pageBox);
+    /** @type {?Array<StreamDo>} */
+    const pageDos = pageBox ? [] : null;
+    const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, undefined, null, null, pageDos);
 
     // Also count text inside Form XObjects: a document whose entire text layer lives there would otherwise misclassify as image-based.
-    // Only character counts feed determinePdfType, not positions, so the geometry args here are trivial (identity CTM, scale 1).
+    // Without the page box, text under the page scan counts as visible and skews the verdict.
     const formChars = extractFormXObjectText(
-      objText, tokens, fonts, 1, pageHeightPts, [1, 0, 0, 1, 0, 0], objCache, new Set(), extGStates,
+      objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, undefined, null, null, '', pageDos,
+      pageBox ? { pageBox, chars, paintsOpaquely: () => true } : null,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
@@ -1943,11 +2225,19 @@ export function detectPdfType(pdfBytes) {
  */
 
 /**
+ * @typedef {{ name: string, tokIdx: number, charsBefore: number, ctm: number[], visible: ?number[], opaque?: boolean }} StreamDo
+ *   One `Do` operator of a stream as its executor met it.
+ *   `charsBefore` counts the glyphs the stream had drawn by then.
+ *   `visible` is the region visible at the operator, kept only for a glyph-op map.
+ *   `opaque` is absent until the stream's paints are walked for the test for text under a full-page image.
+ */
+
+/**
  * @typedef {{
  *   stream: TextPatchStream,
  *   streams: Array<{ stream: TextPatchStream, text: string, tokens: Array<PDFToken>, segments: Array<import('./textPatch.js').PatchSegment>,
- *     fonts: Map<string, PageFont>, extGStates: Map<string, { fillAlpha: ?number }>, colorSpaces: Map<string, {nInputs: number, tint: object}>,
- *     dos: Array<{ name: string, visible: ?number[] }> }>,
+ *     fonts: Map<string, PageFont>, extGStates: Map<string, ExtGStatePaint>, colorSpaces: Map<string, {nInputs: number, tint: object}>,
+ *     dos: Array<StreamDo> }>,
  *   ops: Array<ShowOp>,
  *   words: Map<string, Array<PositionedChar>>,
  *   glyphs: Array<PositionedChar>,
@@ -2003,14 +2293,15 @@ export function executeRewrittenOperator(glyphOpMap, op, text, extraFonts, scale
  * @param {number} scale - DPI scale factor (dpi/72)
  * @param {number} pageHeightPts - visual page height in PDF points (after /Rotate)
  * @param {number[]} [initialCtm] - initial CTM incorporating /Rotate transform
- * @param {Map<string, { fillAlpha: ?number }>} [extGStates]
+ * @param {Map<string, ExtGStatePaint>} [extGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
  * @param {Map<string, {nInputs: number, tint: object}>} [colorSpaces] - Separation/DeviceN color spaces from /Resources
  * @param {?GlyphOpMap} [glyphOpMap] - When given, every show operator is recorded with the text state it ran in, and every emitted character records its place in that operator.
  * @param {?number[]} [initialVisible] - With a glyph-op map, the region visible when the stream starts, in the page frame.
+ * @param {?Array<StreamDo>} [dos] - When given, receives every `Do` operator of the stream, in stream order.
  * @returns {Array<PositionedChar>}
  */
-function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState, colorSpaces, glyphOpMap = null, initialVisible = null) {
+function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState, colorSpaces, glyphOpMap = null, initialVisible = null, dos = null) {
   const chars = /** @type {Array<PositionedChar>} */ ([]);
   const streamIdx = glyphOpMap ? glyphOpMap.streams.length - 1 : -1;
   // The visible region and the path under construction, kept only for a glyph-op map, so an edit can tell a glyph it would push out of view.
@@ -2437,7 +2728,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         break;
       }
 
-      // Path construction, clipping and Do, kept only for a glyph-op map.
+      // Path construction and clipping, kept only for a glyph-op map.
       // The region an operator paints into is the page box cut down by the clips in force.
       case 'm': case 'l':
         if (visible && operandStack.length >= 2) addPathPoint(operandStack[operandStack.length - 2].value, operandStack[operandStack.length - 1].value);
@@ -2471,7 +2762,11 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         clearStack(operandStack);
         break;
       case 'Do':
-        if (glyphOpMap && operandStack.length >= 1) glyphOpMap.streams[streamIdx].dos.push({ name: operandStack[operandStack.length - 1].value, visible: visible ? visible.slice() : null });
+        if (dos && operandStack.length >= 1) {
+          dos.push({
+            name: operandStack[operandStack.length - 1].value, tokIdx: i, charsBefore: chars.length, ctm, visible: visible ? visible.slice() : null,
+          });
+        }
         clearStack(operandStack);
         break;
 
@@ -2672,7 +2967,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         stretch: Math.abs(matrixStretch - 1) > 0.01 ? matrixStretch : 0,
         _font: font,
         _charCode: charCode,
-        invisible: tr === 3, // the per-op tag loop also sets this for zero-fill-alpha text
+        invisible: tr === 3, // the per-op tag loop also sets this for zero-fill-alpha text, and hideCharsUnderFullPageImage for text under an opaque full-page image
         orientation,
         dirX,
         dirY,
