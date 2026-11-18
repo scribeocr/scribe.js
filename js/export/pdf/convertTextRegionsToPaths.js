@@ -396,6 +396,7 @@ function operandHasBytes(operand) {
 function flattenTextOperandTyped(operand, op, codespaceRanges) {
   /** @type {Array<{type: 'code', value: number, numBytes: number} | {type: 'spacer', value: number}>} */
   const out = [];
+  /** @param {string} bytes */
   const consumeBytes = (bytes) => {
     for (const { charCode, numBytes } of decodeTextCodes(bytes, codespaceRanges, 1)) {
       out.push({ type: 'code', value: charCode, numBytes });
@@ -440,6 +441,14 @@ function codeToHex(code, numBytes) {
 }
 
 /**
+ * @typedef {{ name: string, alias: string | null, formObjNum: number, ctm: number[],
+ *   lw: number | null, dashActive: boolean, ml: number | null,
+ *   textState: {tc: number, tw: number, tz: number, tl: number, tr: number, ts: number} }} FormInvocation
+ */
+
+/** @typedef {{ alias: string, name: string, objNum: number, ctm: number[] }} ImageInvocation */
+
+/**
  * Rewrite a page content stream replacing per-glyph text-show operations inside the supplied bboxes with inline outline fills (`q cm cm <ops> f Q`).
  *
  * A text object whose every show converted (or carried no string bytes) is removed wholly: no BT/ET, no text state or positioning ops, no spacer TJs.
@@ -450,7 +459,10 @@ function codeToHex(code, numBytes) {
  * @param {ReadonlyArray<ReadonlyArray<number>>} bboxes - Page-relative user-space bboxes [x0,y0,x1,y1]
  * @param {GlyphResolver} resolver
  * @param {{ initialCtm?: number[], parentXobjects?: Map<string, number> | null,
+ *   parentImages?: Map<string, number> | null,
  *   targetFontObjNums?: Set<number> | null,
+ *   redactBboxes?: Array<[number, number, number, number]> | null,
+ *   formPatchActive?: boolean, markedContentProps?: Map<string, string> | null,
  *   initialLineWidth?: number | null, initialDashActive?: boolean, initialMiterLimit?: number | null,
  *   extGStates?: Map<string, {lw?: number, dash?: boolean, ml?: number}> | null,
  *   initialTextState?: {tc: number, tw: number, tz: number, tl: number, tr: number, ts: number} | null,
@@ -471,9 +483,9 @@ function codeToHex(code, numBytes) {
  *     formMatrix: number[], pathCommands: Array<any>,
  *     paintMode: string, evenOdd: boolean}>,
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
- *   formInvocations: Array<{name: string, formObjNum: number, ctm: number[],
- *     lw: number | null, dashActive: boolean, ml: number | null,
- *     textState: {tc: number, tw: number, tz: number, tl: number, tr: number, ts: number}}> }
+ *   formInvocations: Array<FormInvocation>, imageInvocations: Array<ImageInvocation>,
+ *   verbatimImageNames: Set<string>, imageDeleteDroppedNames: Set<string>,
+ *   imageDeleteKeptNames: Set<string>, imageDeleteDroppedObjNums: Set<number>, finalCtm: number[] }
  *   | { ok: false, reason: string }}
  *
  * @typedef {{ fontObjNum: number, widths: Map<number, number>, defaultWidth: number,
@@ -584,14 +596,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /** @type {Array<{fontObjNum: number, charCode: number, reason: string}>} */
   const skipped = [];
 
-  /**
-   * @type {Array<{name: string, formObjNum: number, ctm: number[], lw: number|null,
-   *   dashActive: boolean, ml: number|null,
-   *   textState: {tc: number, tw: number, tz: number, tl: number, tr: number, ts: number}}>}
-   */
+  /** @type {Array<FormInvocation>} */
   const formInvocations = [];
   let changed = false;
 
+  /** @param {string} opVal */
   function emitVerbatim(opVal) {
     for (let i = 0; i < operandBuf.length; i++) {
       out.push(serializeContentToken(operandBuf[i]));
@@ -627,9 +636,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   function flushPendingConverts() {
     if (pendingConverts.length === 0) return;
     const persistStart = out.length;
-    // Bucket by shape tag, preserving first-seen order, so identical outline bodies land back-to-back for the deflate window to dedup.
-    /** @type {string[]} */
-    const order = [];
+    // Bucket by shape tag so identical outline bodies land back-to-back for the deflate window to dedup.
     /** @type {Map<string, Array<{xobjTag: string, M: number[], strokeW?: number}>>} */
     const buckets = new Map();
     for (const c of pendingConverts) {
@@ -637,11 +644,10 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (!bucket) {
         bucket = [];
         buckets.set(c.xobjTag, bucket);
-        order.push(c.xobjTag);
       }
       bucket.push(c);
     }
-    for (const tag of order) {
+    for (const [tag, bucket] of buckets) {
       const info = usedXobj.get(tag);
       if (!info) continue;
       const fm = (Array.isArray(info.formMatrix) && info.formMatrix.length === 6)
@@ -657,7 +663,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         body = `${pathCommandsToOps(info.pathCommands)}${paintOp}\n`;
         inlineBodyByTag.set(tag, body);
       }
-      for (const c of buckets.get(tag)) {
+      for (const c of bucket) {
         if (commentGlyphs) out.push(`%${tag}\n`);
         out.push('q\n');
         // The pen width is glyph-space and was computed at queue time, so a later source `w` cannot skew it.
@@ -775,7 +781,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /** @type {Map<string, string>} */
   const redactFormAliases = new Map();
   // Image invocations whose placed rect crosses a redact rect, aliased for the pixel scrub.
-  /** @type {Array<{alias: string, name: string, objNum: number, ctm: number[]}>} */
+  /** @type {Array<ImageInvocation>} */
   const imageInvocations = [];
   // A name that also paints outside every rect lands here, so its original /XObject entry survives the scrub.
   /** @type {Set<string>} */
@@ -1436,7 +1442,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           : code;
         const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
         // The redaction hit test never consults the resolver, so glyphs in unembedded or broken fonts still drop.
-        const dropHit = redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes));
+        const dropHit = redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, redactBboxes);
         if (dropHit) {
           didConvert = true;
           outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
@@ -1573,6 +1579,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       out.push('T*\n');
     }
 
+    /** @param {typeof outputElems} elems */
     const emitTJ = (elems) => {
       const parts = [];
       let hex = '';
@@ -1737,6 +1744,8 @@ export function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
  *   Lets pages sharing the same form with identical CTM reuse one clone object.
  * @property {Map<string, number>} type3GlyphIndexByKey
  *   Stable ordinal per Type3 (fontObjNum, glyphName), so the existing `TGP{font}g{gid}` Form-XObject dedup keys the same Type3 glyph the same way across pages.
+ * @property {string[]} redactTraceTexts
+ * @property {Map<string, number>} imageScrubCache
  */
 
 /**
@@ -1749,12 +1758,9 @@ export function createConversionState() {
     inProgress: new Set(),
     formCloneByKey: new Map(),
     type3GlyphIndexByKey: new Map(),
-    // Dict texts the rebuild's reference trace must include for redaction.
-    // The form clones' originals are deliberately untraced, but the clones still reference live fonts and images.
-    /** @type {string[]} */
+    // Dict texts the rebuild's reference walk must include for redaction.
     redactTraceTexts: [],
     // Scrubbed-image copies, keyed by source objNum + the unit-space regions painted.
-    /** @type {Map<string, number>} */
     imageScrubCache: new Map(),
   };
 }
@@ -1910,7 +1916,7 @@ function buildResolver(fontInfoByObjNum, state) {
     try {
       glyph = loaded.glyphs.get(glyphIndex);
     } catch (e) {
-      return { error: `glyph-load-failed:${String(e?.message || e)}` };
+      return { error: `glyph-load-failed:${e instanceof Error ? e.message : String(e)}` };
     }
     if (!glyph || !glyph.path || !glyph.path.commands) {
       return { error: 'no-path-commands' };
@@ -2335,7 +2341,7 @@ async function scrubImageXObject({
  * Shared by the page- and form-level orchestrators.
  *
  * @param {object} params
- * @param {Array<{alias: string, name: string, objNum: number, ctm: number[]}>} params.imageInvocations
+ * @param {Array<ImageInvocation>} params.imageInvocations
  * @param {Set<string>} params.verbatimImageNames
  * @param {ReadonlyArray<ReadonlyArray<number>>} params.redactBboxes
  * @param {ReturnType<typeof createConversionState>} params.state
@@ -2694,7 +2700,7 @@ async function rewriteFormContentForRegions({
  * @param {object} params
  * @param {string} params.streamText - Merged content stream text for the page.
  * @param {string} params.pageObjText
- * @param {ReadonlyArray<ReadonlyArray<number>>} params.bboxes - Page-relative user-space bboxes.
+ * @param {ReadonlyArray<ReadonlyArray<number>> | null} params.bboxes - Page-relative user-space bboxes.
  * @param {ReturnType<typeof createConversionState>} params.state
  * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
  * @param {() => number} params.allocObjNum
@@ -2707,14 +2713,17 @@ async function rewriteFormContentForRegions({
  * @param {?Array<TextPatch>} [params.textPatches] - The page's records, whose page-stream edits the caller has already applied to `streamText`.
  * @param {?Map<string, number>} [params.editFontRefs]
  * @returns {Promise<{
- *   changed: boolean,
- *   text?: string,
- *   xobjEntries?: Map<string, number>,
- *   formClones?: Map<string, number>,
+ *   changed: false,
  *   skipped?: Array<{fontObjNum: number, charCode: number, reason: string}>,
- *   redactedFormNames?: Set<string> | null,
- *   deletedImageObjNums?: Set<number>,
- *   deletedImageNames?: Set<string>,
+ * } | {
+ *   changed: true,
+ *   text: string,
+ *   xobjEntries: Map<string, number>,
+ *   formClones: Map<string, number>,
+ *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
+ *   redactedFormNames: Set<string> | null,
+ *   deletedImageObjNums: Set<number>,
+ *   deletedImageNames: Set<string>,
  * }>}
  */
 export async function convertSinglePageForRegions({

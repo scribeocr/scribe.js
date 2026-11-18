@@ -99,6 +99,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
  *   redactedFormNames?: ?Set<string>,
  *   deletedImageObjNums?: Set<number>,
+ *   deletedImageNames?: Set<string>,
  *   supersededContentObjNums?: number[],
  * }>}
  */
@@ -208,13 +209,13 @@ export async function rewriteContentsStripAndConvert({
       editFontRefs,
     });
     if (result.skipped) skipped = result.skipped;
-    if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;
-    if (result.deletedImageObjNums) deletedImageObjNums = result.deletedImageObjNums;
-    if (result.deletedImageNames) deletedImageNames = result.deletedImageNames;
     if (result.changed) {
-      if (result.text !== undefined) workingText = result.text;
-      if (result.xobjEntries) xobjEntries = result.xobjEntries;
-      if (result.formClones) formClones = result.formClones;
+      workingText = result.text;
+      xobjEntries = result.xobjEntries;
+      formClones = result.formClones;
+      redactedFormNames = result.redactedFormNames;
+      deletedImageObjNums = result.deletedImageObjNums;
+      deletedImageNames = result.deletedImageNames;
       converted = true;
     }
   }
