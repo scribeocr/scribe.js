@@ -2085,7 +2085,7 @@ function parseMarkedContentProps(resourcesText, objCache) {
       if (ds === -1) continue;
       propText = extractDict(resolved, ds);
     }
-    if (propText && propText.trim().startsWith('<<')) out.set(entry.key, propText.trim());
+    if (propText && propText.trim().startsWith('<<')) out.set(entry.name, propText.trim());
   }
   return out;
 }
