@@ -27,7 +27,7 @@ import {
   FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
-  parseExistingContents, rewriteContentsStripAndConvert, resolvePageResources, buildReplacementPageDict, overlayAnnotationBbox, pageHasLiftedSourceAnnots,
+  parseExistingContents, rewriteContentsStripAndConvert, resolvePageResources, buildReplacementPageDict, overlayAnnotationBbox, pageHasSourceAnnotsToDrop,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
@@ -407,10 +407,10 @@ export async function overlayPdfText({
     const hasTextEdits = textPatchesByPage.has(i);
     // Deleting a page's last annotation leaves nothing to re-emit, so no condition above marks the page as changed.
     // Its source /Annots still holds the lifted copies, which a skip here would pass through and resurrect.
-    const hasLiftedAnnotsToDrop = annotationsPages.length > 0 && pageHasLiftedSourceAnnots(pageInfo.objText, objCache, linkDestInfo);
+    const hasSourceAnnotsToDrop = annotationsPages.length > 0 && pageHasSourceAnnotsToDrop(pageInfo.objText, objCache, linkDestInfo);
     const hasImageDeletes = imageDeleteByPage.has(i);
     const hasPathDeletes = pathDeleteByPage.has(i);
-    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasLiftedAnnotsToDrop) continue;
+    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasSourceAnnotsToDrop) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
@@ -448,7 +448,7 @@ export async function overlayPdfText({
         || stripConvertResult.xobjEntries.size > 0;
       // A flatten page (fullPageSet) that came out unchanged is left untouched.
       // An explicitly supplied region is re-emitted rather than skipped.
-      if (!hasText && !hasAnnots && !convertChanged && !hasFill && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
+      if (!hasText && !hasAnnots && !convertChanged && !hasFill && !hasSourceAnnotsToDrop && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
 
       /** @type {string[]} */
       const contentsArray = [];

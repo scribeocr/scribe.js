@@ -39,7 +39,7 @@ import {
   buildReplacementPageDict,
   composePageRotation,
   overlayAnnotationBbox,
-  annotLinkTargetsDroppedPage, writeInheritedPageAttrs,
+  annotLinkTargetsDroppedPage, writeInheritedPageAttrs, pageHasSourceAnnotsToDrop,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { buildNameDests } from '../../pdf/parseOutline.js';
@@ -428,12 +428,8 @@ export async function rebuildPdfSubset({
   /** @param {{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}} obj */
   const pushOutputObj = (obj) => allOutputObjects.push(obj);
 
-  /** @type {Set<number>} */
-  const modifiedPageObjNums = new Set();
-
-  // Redacted pages' trace-text overrides (see the tracing loop below).
   /** @type {Map<number, string>} */
-  const redactTraceTexts = new Map();
+  const replacementPageTexts = new Map();
 
   // Appearance streams the flatten bake references, so synthesized ones still ship when the widgets that owned them do not.
   /** @type {Set<number>} */
@@ -582,7 +578,9 @@ export async function rebuildPdfSubset({
       const hasTextEdits = textPatches.has(i);
       const hasImageDeletes = imageDeletes.has(i);
       const hasPathDeletes = pathDeletes.has(i);
-      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasWidgetBake) continue;
+      const hasSourceAnnotsToDrop = annotationsPages.length > 0 && pageHasSourceAnnotsToDrop(pageInfo.objText, objCache, linkDestInfo);
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasWidgetBake
+        && !hasSourceAnnotsToDrop) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -616,7 +614,7 @@ export async function rebuildPdfSubset({
         // leave it for the copy-through loop rather than rewrite it.
         const convertChanged = stripConvertResult.refs !== existingContentsRefs
           || stripConvertResult.xobjEntries.size > 0;
-        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill && !hasWidgetBake) continue;
+        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill && !hasWidgetBake && !hasSourceAnnotsToDrop) continue;
 
         if (hasText || hasFill) {
           const qSaveStr = 'q\n';
@@ -750,7 +748,7 @@ export async function rebuildPdfSubset({
         const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of ft.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const textAnns = pageAnnotations.filter((a) => a.type === 'text')
-          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale, pageMetricsArr[i].rotation || 0));
         const textAnnots = buildTextAnnotObjects(textAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of textAnnots.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const linkAnns = pageAnnotations.filter((a) => a.type === 'link')
@@ -764,13 +762,9 @@ export async function rebuildPdfSubset({
         extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null, linkDestInfo,
         widgetBake ? widgetBake.dropObjNums : null);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
-      modifiedPageObjNums.add(pageInfo.objNum);
 
       // The rebuilt resources text rides along because the trace resolves refs only against the original file and would otherwise never reach the original fonts/xobjects the page still needs.
-      // Flattened pages trace their replacement dict too, so the dropped widget and field objects orphan instead of being copied.
-      if (hasRedact || hasTextEdits || hasImageDeletes || hasPathDeletes || hasWidgetBake) {
-        redactTraceTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
-      }
+      replacementPageTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
     }
 
     for (const pdfFont of pdfFontsUsed) {
@@ -815,7 +809,7 @@ export async function rebuildPdfSubset({
   for (const i of pageIndices) {
     if (i >= pages.length) continue;
     const pageInfo = pages[i];
-    if (modifiedPageObjNums.has(pageInfo.objNum)) continue;
+    if (replacementPageTexts.has(pageInfo.objNum)) continue;
 
     // Must run before composePageRotation, which takes the base /Rotate from the page itself because the new root carries none.
     let pageText = writeInheritedPageAttrs(pageInfo.objText, pageInfo);
@@ -838,8 +832,8 @@ export async function rebuildPdfSubset({
   for (const i of pageIndices) {
     if (i >= pages.length) continue;
     const rewritten = rewrittenPageTexts.get(pages[i].objNum);
-    // Redacted pages trace their replacement dict, never the original: tracing the original would copy the unredacted content streams and dropped annots into the output as orphans.
-    tracingTexts.push(rewritten || redactTraceTexts.get(pages[i].objNum) || pages[i].objText);
+    // Walking the original page dict for a replaced page would copy dropped content streams and annotations into the output as orphans.
+    tracingTexts.push(rewritten || replacementPageTexts.get(pages[i].objNum) || pages[i].objText);
   }
   // Form clones created for redaction reference fonts/images the original (untraced) form dicts used to reach, so their generated dict texts stand in for those originals here.
   if (conversionState && Array.isArray(conversionState.redactTraceTexts)) {

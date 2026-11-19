@@ -12,6 +12,7 @@ function skipMessage(type, err) {
 
 /**
  * Build the /Text reply objects for one parent annotation's comment thread.
+ * Each reply is followed by its own popup.
  * @param {AnnotationReply[]} replies
  * @param {number} parentObjNum
  * @param {string} rectStr - The parent's /Rect array contents.
@@ -23,23 +24,27 @@ function buildReplyObjects(replies, parentObjNum, rectStr, startObjNum, omitIden
   const objectTexts = [];
   const annotRefs = [];
   let objNum = startObjNum;
+  // A viewer that does not thread replies draws each one as a note of its own, so a reply gets a note's icon box and popup.
+  const [x0, , , y1] = rectStr.split(' ').map(Number);
   for (const reply of replies) {
+    const popupObjNum = objNum + 1;
     let str = `${objNum} 0 obj\n`;
     str += '<</Type /Annot /Subtype /Text';
-    // /IRT makes viewers present the reply inside the parent's thread rather than as its own page icon, so it can reuse the parent's /Rect.
-    str += ` /Rect [${rectStr}]`;
+    str += ` /Rect [${x0} ${y1 - 20} ${x0 + 20} ${y1}]`;
     str += ` /IRT ${parentObjNum} 0 R`;
     str += ` /Contents <${toUtf16BeHex(reply.text || '')}>`;
-    str += ' /Name /Comment /Open false /F 4';
+    str += ` /Name /Comment /Open false /F 4 /Popup ${popupObjNum} 0 R`;
     if (!omitIdentity && reply.author) str += ` /T <${toUtf16BeHex(reply.author)}>`;
     if (!omitIdentity && reply.createdAt) {
       const pdfDate = formatPdfDate(reply.createdAt);
       if (pdfDate) str += ` /CreationDate (${pdfDate})`;
     }
     str += '>>\nendobj\n\n';
-    annotRefs.push(`${objNum} 0 R`);
-    objectTexts.push(str);
-    objNum++;
+    const popupStr = `${popupObjNum} 0 obj\n<</Type /Annot /Subtype /Popup /Parent ${objNum} 0 R`
+      + ` /Rect [${x0 + 24} ${y1 - 120} ${x0 + 204} ${y1}] /Open false /F 28>>\nendobj\n\n`;
+    annotRefs.push(`${objNum} 0 R`, `${popupObjNum} 0 R`);
+    objectTexts.push(str, popupStr);
+    objNum += 2;
   }
   return { objectTexts, annotRefs };
 }
@@ -117,6 +122,22 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
 }
 
 /**
+ * Build a 20 pt square bbox for a `/Text` note icon in top-down page points.
+ * @param {number} x - Anchor x in points.
+ * @param {number} y - Anchor y in points from the top.
+ * @param {number} rotation - Displayed clockwise page rotation (0|90|180|270).
+ * @returns {bbox}
+ */
+export function textAnnotIconBox(x, y, rotation) {
+  // Place (x, y) at whichever corner lands top-left after rotation, matching both NoRotate display and pdfTextAnnotToAnnotation.
+  const left = rotation === 180 || rotation === 270 ? x - 20 : x;
+  const top = rotation === 90 || rotation === 180 ? y - 20 : y;
+  return {
+    left, top, right: left + 20, bottom: top + 20,
+  };
+}
+
+/**
  * Build the PDF objects for freestanding /Text annotations.
  * No /AP: viewers draw the /Name icon natively.
  * @param {AnnotationText[]} annotations
@@ -135,13 +156,16 @@ export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warn
     try {
       const pdfRectTop = outputDims.height - annot.bbox.top;
       const pdfRectBottom = outputDims.height - annot.bbox.bottom;
+      const parentObjNum = objNum;
+      const popupObjNum = objNum + 1;
+      const open = annot.open ? 'true' : 'false';
 
-      let str = `${objNum} 0 obj\n`;
+      let str = `${parentObjNum} 0 obj\n`;
       str += '<</Type /Annot /Subtype /Text';
       str += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
       str += ` /Contents <${toUtf16BeHex(annot.comment || '')}>`;
       str += ' /Name /Comment';
-      str += ` /Open ${annot.open ? 'true' : 'false'}`;
+      str += ` /Open ${open}`;
       if (annot.color) {
         const hex = annot.color.replace('#', '');
         const r = parseInt(hex.substring(0, 2), 16) / 255;
@@ -149,7 +173,8 @@ export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warn
         const b = parseInt(hex.substring(4, 6), 16) / 255;
         str += ` /C [${r} ${g} ${b}]`;
       }
-      str += ' /F 4';
+      str += ' /F 28';
+      str += ` /Popup ${popupObjNum} 0 R`;
       if (!omitIdentity && annot.author) str += ` /T <${toUtf16BeHex(annot.author)}>`;
       if (!omitIdentity && annot.createdAt) {
         const pdfDate = formatPdfDate(annot.createdAt);
@@ -157,10 +182,13 @@ export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warn
       }
       str += '>>\nendobj\n\n';
 
-      const parentObjNum = objNum;
-      annotRefs.push(`${objNum} 0 R`);
-      objectTexts.push(str);
-      objNum++;
+      // ISO 32000-2 12.5.6.14 makes /Popup optional, but viewers such as Apple Preview will not open a /Text note without one.
+      const popupStr = `${popupObjNum} 0 obj\n<</Type /Annot /Subtype /Popup /Parent ${parentObjNum} 0 R`
+        + ` /Rect [${annot.bbox.right + 4} ${pdfRectTop - 120} ${annot.bbox.right + 184} ${pdfRectTop}] /Open ${open} /F 28>>\nendobj\n\n`;
+
+      annotRefs.push(`${parentObjNum} 0 R`, `${popupObjNum} 0 R`);
+      objectTexts.push(str, popupStr);
+      objNum += 2;
       if (annot.replies && annot.replies.length > 0) {
         const rectStr = `${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}`;
         const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, omitIdentity);

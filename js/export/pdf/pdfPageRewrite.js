@@ -4,9 +4,12 @@ import {
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
 import { patchPageContents, textPatchesTarget } from '../../pdf/textPatch.js';
-import { annotIsModelManaged, annotIsLiftedReply, linkAnnotIsLifted } from '../../pdf/parsePdfAnnots.js';
+import {
+  annotIsModelManaged, annotIsLiftedReply, linkAnnotIsLifted, popupRefsWithoutParent,
+} from '../../pdf/parsePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
+import { textAnnotIconBox } from './writePdfAnnots.js';
 
 /**
  * Parse /Contents from a page dict, returning an array of indirect references to
@@ -433,21 +436,19 @@ function annotIsLifted(annotText, objCache, linkDestInfo) {
 }
 
 /**
- * True when a page's source /Annots still holds annotations the importer lifted into the editable model.
- * A page whose lifted annotations were all deleted has none left to re-emit, so nothing else marks it as changed.
- * Copying it through verbatim would bring the deleted annotations back from the source array, so it must be rebuilt on this verdict alone.
+ * True when a page's source /Annots holds lifted annotations or parentless popups that export must strip.
  * @param {string} pageObjText
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} linkDestInfo
  * @returns {boolean}
  */
-export function pageHasLiftedSourceAnnots(pageObjText, objCache, linkDestInfo) {
-  return collectSourceAnnotRefs(pageObjText, objCache).some((ref) => {
-    const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
-    if (!m) return false;
-    const annotText = objCache.getObjectText(Number(m[1]));
+export function pageHasSourceAnnotsToDrop(pageObjText, objCache, linkDestInfo) {
+  const annotNums = collectSourceAnnotRefs(pageObjText, objCache).map((ref) => parseInt(ref, 10));
+  const hasLifted = annotNums.some((num) => {
+    const annotText = objCache.getObjectText(num);
     return !!annotText && annotIsLifted(annotText, objCache, linkDestInfo);
   });
+  return hasLifted || popupRefsWithoutParent(annotNums, objCache).size > 0;
 }
 
 /**
@@ -554,6 +555,9 @@ export function buildReplacementPageDict(
       const annotText = objCache.getObjectText(Number(m[1]));
       return !annotText || !annotIsLifted(annotText, objCache, linkDestInfo);
     });
+    // Run after every /Annots filter above so popups whose parent was redacted, flattened, or lifted are dropped too.
+    const orphanPopups = popupRefsWithoutParent(sourceAnnotRefs.map((ref) => parseInt(ref, 10)), objCache);
+    sourceAnnotRefs = sourceAnnotRefs.filter((ref) => !orphanPopups.has(parseInt(ref, 10)));
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {
     if (extraAnnotRefs.length === 0 && annotsIndirectMatch && !objCache) {
@@ -610,9 +614,10 @@ export function buildReplacementPageDict(
  * @param {number} [pageW] - unrotated MediaBox width (points), used for the 180/270 reflections.
  * @param {number} [pageH] - unrotated MediaBox height (points), used for the 90/180 reflections.
  * @param {number} [rotScale] - uniform reading-to-points scale for a quarter turn: the unrotated MediaBox width divided by the pixel frame's height.
+ * @param {number} [userRotation] - user-applied page rotation (0|90|180|270), used to orient fixed-size note icon boxes.
  * @returns {Annotation}
  */
-export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty, rotate = 0, pageW = 0, pageH = 0, rotScale = scaleX) {
+export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty, rotate = 0, pageW = 0, pageH = 0, rotScale = scaleX, userRotation = 0) {
   // Map a reading-frame pixel (px, py) into the overlay page's frame: top-left origin, y-down, in unrotated MediaBox points.
   // The parser's reading frame is the post-rotation display frame, and the page keeps its /Rotate on export.
   // Rotated points are therefore mapped back into unrotated MediaBox space, where the viewer's /Rotate carries them onto the content.
@@ -640,6 +645,11 @@ export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty, rotate = 0,
   const out = { ...annot };
   // Line/Polygon shapes carry geometry instead of a bbox.
   if (annot.bbox) out.bbox = transformBbox(annot.bbox);
+  // Scaling a note's 24 px UI box shrinks the PDF icon (to 5.76 pt at 300 DPI), so build a 20 pt box from its anchor.
+  if (annot.type === 'text') {
+    const [ax, ay] = mapPt(annot.bbox.left, annot.bbox.top);
+    out.bbox = textAnnotIconBox(ax, ay, (rotate + userRotation) % 360);
+  }
   if (annot.quads) out.quads = annot.quads.map(transformBbox);
   if (annot.points) out.points = transformFlat(annot.points);
   if (annot.vertices) out.vertices = transformFlat(annot.vertices);

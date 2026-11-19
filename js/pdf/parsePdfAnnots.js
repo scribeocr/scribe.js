@@ -165,6 +165,38 @@ export function annotIsLiftedReply(annotText, objCache) {
 }
 
 /**
+ * Find `/Subtype /Popup` object numbers in `annotRefs` whose parent annotation is absent from `annotRefs`.
+ * @param {number[]} annotRefs - Annotation object numbers remaining on the page.
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {Set<number>}
+ */
+export function popupRefsWithoutParent(annotRefs, objCache) {
+  /** @type {Map<number, number>} */
+  const parentByPopup = new Map();
+  /** @type {number[]} */
+  const popups = [];
+  for (const ref of annotRefs) {
+    const annotText = objCache.getObjectText(ref);
+    if (!annotText) continue;
+    const annotKeys = scopeDictKeys(annotText);
+    if (/\/Subtype\s*\/Popup\b/.test(annotKeys.keyText('Subtype'))) {
+      popups.push(ref);
+      const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Parent'));
+      if (parentMatch) parentByPopup.set(ref, Number(parentMatch[1]));
+    } else {
+      // Some producers link only from the parent's /Popup entry and omit /Parent on the popup itself.
+      const popupMatch = /\/Popup\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Popup'));
+      if (popupMatch && !parentByPopup.has(Number(popupMatch[1]))) parentByPopup.set(Number(popupMatch[1]), ref);
+    }
+  }
+  const present = new Set(annotRefs);
+  return new Set(popups.filter((ref) => {
+    const parent = parentByPopup.get(ref);
+    return parent === undefined || !present.has(parent);
+  }));
+}
+
+/**
  * True when the annotation is a /Link the importer lifts into the document's annotations.
  * Export drops the source copy of every lifted link, so this verdict must match the parse-side lift.
  * `linkDestInfo` must cover the full source page set, not an export's kept pages, or a lifted link whose target page was deleted resurrects in the output.
@@ -296,6 +328,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
   /** @type {Map<number, Array<{objNum: number, text: string, author: string, createdAt: ?string}>>} */
   const repliesByRoot = new Map();
+  /** @type {Set<number>} */
+  const liftedRefs = new Set();
 
   for (const annotRef of annotRefs) {
     const annotText = objCache.getObjectText(annotRef);
@@ -306,6 +340,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       // Flags are ignored here: a reply is thread content, not a page icon.
       const root = resolveReplyRoot(annotText, objCache);
       if (root && annotIsModelManaged(root.rootText, objCache)) {
+        liftedRefs.add(annotRef);
         const creationDateStr = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
         if (!repliesByRoot.has(root.rootRef)) repliesByRoot.set(root.rootRef, []);
         /** @type {Array<{objNum: number, text: string, author: string, createdAt: ?string}>} */ (repliesByRoot.get(root.rootRef)).push({
@@ -489,6 +524,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       continue;
     }
 
+    liftedRefs.add(annotRef);
     const subtypeText = annotKeys.keyText('Subtype');
     const isFreeText = /\/Subtype\s*\/FreeText\b/.test(subtypeText);
     const isTextAnnot = /\/Subtype\s*\/Text\b/.test(subtypeText);
@@ -619,8 +655,10 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     }
   }
 
+  const orphanPopups = popupRefsWithoutParent(annotRefs.filter((ref) => !liftedRefs.has(ref)), objCache);
+
   return {
-    highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs,
+    highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs: passthroughRefs.filter((ref) => !orphanPopups.has(ref)),
   };
 }
 

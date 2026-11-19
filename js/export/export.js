@@ -3,6 +3,7 @@ import { collectFillTextRefs, isFillTextLine } from '../fillSign.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './pdf/writePdf.js';
+import { textAnnotIconBox } from './pdf/writePdfAnnots.js';
 import { overlayPdfText } from './pdf/writePdfOverlay.js';
 import { subsetPdf } from './pdf/subsetPdf.js';
 import { mergePdfs } from './pdf/mergePdfs.js';
@@ -542,6 +543,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
           }
           if ('fontSize' in scaled) scaled.fontSize *= scale;
           if ('borderWidth' in scaled && scaled.borderWidth) scaled.borderWidth *= scale;
+          // Scaling all four edges turns a note's 24 px UI box into a tiny PDF icon (5.76 pt at 300 DPI), so replace it with a 20 pt box at the scaled anchor.
+          if (scaled.type === 'text') scaled.bbox = textAnnotIconBox(scaled.bbox.left, scaled.bbox.top, doc.pageMetrics[i].rotation || 0);
           return scaled;
         });
       }

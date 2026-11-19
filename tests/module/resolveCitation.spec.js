@@ -186,6 +186,9 @@ describe('scanned transcript with an imported Textract layer', () => {
 
   // A turned page stores its lines sideways in their own frame, so the span's box must be mapped back to the page.
   test('a page turned sideways keeps its rows and resolves to where they are drawn', async () => {
+    doc.addTextAnnots([{
+      page: 3, x: 400, y: 300, comment: 'Placed before the page is turned.',
+    }]);
     doc.rotatePages([3], 90);
     const out = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { displayMode: 'invis', addOverlay: true }));
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
@@ -200,5 +203,9 @@ describe('scanned transcript with an imported Textract layer', () => {
     expect(box(row[0]), 'the box lies where the row is drawn on the turned page').toEqual({
       left: 353, top: 191, right: 424, bottom: 2194,
     });
+    // Regression: note icon placement ignored user page rotation, shifting the note by the icon width on re-import.
+    // A quarter turn clockwise carries (400, 300) on a page 3300 px tall to (3300 - 300, 400).
+    const turnedNote = reDoc.annotations.pages[3].find((a) => a.type === 'text');
+    expect([Math.round(turnedNote.bbox.left), Math.round(turnedNote.bbox.top)], 'a note on the turned page stays on the point it marks').toEqual([3000, 400]);
   });
 });

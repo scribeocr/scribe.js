@@ -26,7 +26,7 @@ export function createNote(viewer, n, x, y) {
       left: x, top: y, right: x + TEXT_ANNOT_ICON_PX, bottom: y + TEXT_ANNOT_ICON_PX,
     },
     comment: '',
-    open: true,
+    open: false,
     createdAt: new Date().toISOString(),
   };
   const author = viewer.opt && viewer.opt.commentAuthor;

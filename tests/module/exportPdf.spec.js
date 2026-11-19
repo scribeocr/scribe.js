@@ -392,6 +392,8 @@ describe('Check export for .pdf files.', () => {
       author: 'J. Rondo',
       createdAt: '2026-07-06T09:00:00.000Z',
       replies: [{ text: 'The exhibits use the 2019 template.', author: 'M. Vahl', createdAt: '2026-07-07T11:00:00.000Z' }],
+    }, {
+      page: 1, x: 600, y: 700, comment: 'Second page note, put under a redaction mark below.',
     }]);
     expect(doc.annotations.pages[0].length, 'the note annotation was added').toBe(47);
 
@@ -448,6 +450,26 @@ describe('Check export for .pdf files.', () => {
     expect(shapeText.split('/IRT ').length - 1, 'each reply exports as a /Text annotation with /IRT').toBe(5);
     expect(shapeText.split('/Subtype /Underline').length - 1, 'the underline exports as a single consolidated /Underline annotation').toBe(1);
     expect(shapeText.split('/Subtype /StrikeOut').length - 1, 'the strikeout exports as a single consolidated /StrikeOut annotation').toBe(1);
+
+    // Regression: a note was written with a 5.76 pt icon box and no popup annotation, and Apple Preview would not open it.
+    const noteObjMatch = /(\d+) 0 obj\s*<<\/Type \/Annot \/Subtype \/Text \/Rect \[120 652 140 672\]/.exec(shapeText);
+    expect(noteObjMatch, 'the note is written with a 20 pt icon box whose top-left corner is the point the note was placed at').toBeTruthy();
+    const noteObjNum = Number(noteObjMatch[1]);
+    const noteObjText = shapeText.slice(noteObjMatch.index, shapeText.indexOf('endobj', noteObjMatch.index));
+    expect(/\/F 28(?!\d)/.test(noteObjText), 'the note is flagged to keep its size and orientation on screen').toBe(true);
+    expect(noteObjText.includes(`/Popup ${noteObjNum + 1} 0 R`), 'the note names its popup, the object written right after it').toBe(true);
+    expect(shapeText, 'the popup names the note as its parent and sits beside the icon')
+      .toContain(`${noteObjNum + 1} 0 obj\n<</Type /Annot /Subtype /Popup /Parent ${noteObjNum} 0 R /Rect [144 552 324 672] /Open false /F 28>>`);
+    expect(new RegExp(`/Annots\\[[^\\]]*\\b${noteObjNum} 0 R ${noteObjNum + 1} 0 R`).test(shapeText), 'the page lists the popup beside its note').toBe(true);
+    expect(shapeText.split('/Subtype /Popup').length - 1, 'each of the two notes and each of the five replies gets exactly one popup').toBe(7);
+    // Regression: a reply had no popup and sat across its parent's whole rect, so a viewer that does not thread replies drew it as a dead icon over the parent.
+    expect(shapeText, 'the note reply follows the note\'s popup and sits in the note\'s icon box')
+      .toContain(`${noteObjNum + 2} 0 obj\n<</Type /Annot /Subtype /Text /Rect [120 652 140 672] /IRT ${noteObjNum} 0 R /Contents <`);
+    expect(shapeText, 'the note reply names the popup written right after it').toContain(`/Name /Comment /Open false /F 4 /Popup ${noteObjNum + 3} 0 R`);
+    expect(shapeText, 'the reply popup names the reply as its parent and sits beside the icon')
+      .toContain(`${noteObjNum + 3} 0 obj\n<</Type /Annot /Subtype /Popup /Parent ${noteObjNum + 2} 0 R /Rect [144 552 324 672] /Open false /F 28>>`);
+    expect(shapeText, 'a highlight reply sits in a 20 pt box at the highlight\'s top-left corner, as Acrobat places one')
+      .toContain('/Subtype /Text /Rect [71.75999999999999 758.32 91.75999999999999 778.32] /IRT ');
 
     await doc.clear();
 
@@ -518,7 +540,8 @@ describe('Check export for .pdf files.', () => {
     expect(all.filter((a) => a.type === 'polygon').length, 'the polygon is lifted into the model on re-import').toBe(1);
 
     const notes = all.filter((a) => a.type === 'text');
-    expect(notes.length, 'the note annotation round-trips').toBe(1);
+    expect(notes.length, 'both notes round-trip, and neither popup is lifted as a note').toBe(2);
+    expect([Math.round(notes[0].bbox.left), Math.round(notes[0].bbox.top)], 'the note returns to the point it was placed at').toEqual([500, 500]);
     expect(highlights[0].comment, 'the highlight comment round-trips').toBe('Check the venue allegations against the exhibits.');
     const hlReplies = highlights[0].replies || [];
     expect(hlReplies.length, 'the highlight comment thread round-trips through /IRT annots').toBe(2);
@@ -539,7 +562,7 @@ describe('Check export for .pdf files.', () => {
     const firstIrt = shapeText.indexOf(irtNeedle);
     const secondIrt = shapeText.indexOf(irtNeedle, firstIrt + 1);
     expect(secondIrt > 0, 'both highlight replies target the root').toBe(true);
-    // Replies are emitted consecutively after their parent, so the first reply is hlObjNum + 1.
+    // Each reply is followed by its popup, so the first reply is hlObjNum + 1 and the second hlObjNum + 3.
     const nestedNeedle = `/IRT ${hlObjNum + 1} 0 R`;
     expect(nestedNeedle.length, 'patched ref keeps byte length (xref offsets unchanged)').toBe(irtNeedle.length);
     const patchedStr = shapeText.slice(0, secondIrt) + nestedNeedle + shapeText.slice(secondIrt + irtNeedle.length);
@@ -557,7 +580,7 @@ describe('Check export for .pdf files.', () => {
     const replyKeys = '/Name /Comment /Open false /F 4';
     const stateKeys = '/StateModel/Marked/State/Marked';
     expect(stateKeys.length, 'patched keys keep byte length (xref offsets unchanged)').toBe(replyKeys.length);
-    const stateObjStart = shapeText.indexOf(`${hlObjNum + 2} 0 obj`);
+    const stateObjStart = shapeText.indexOf(`${hlObjNum + 3} 0 obj`);
     expect(stateObjStart > 0, 'the second highlight reply object was found').toBe(true);
     const keysAt = shapeText.indexOf(replyKeys, stateObjStart);
     expect(keysAt > stateObjStart, 'the reply keys to overwrite were found').toBe(true);
@@ -570,7 +593,7 @@ describe('Check export for .pdf files.', () => {
     expect(hl3.length, 'the highlight still imports from the state-patched file').toBe(1);
     expect((hl3[0].replies || []).length, 'a review-state annotation is not lifted into the thread as a reply').toBe(1);
     expect((hl3[0].replies || [])[0]?.text, 'the sibling state annotation leaves the real reply intact').toBe('Exhibit 4 has the venue facts.');
-    expect(all3.filter((a) => a.type === 'text').length, 'a review-state annotation is not lifted as a standalone note').toBe(1);
+    expect(all3.filter((a) => a.type === 'text').length, 'a review-state annotation is not lifted as a standalone note').toBe(2);
 
     await doc.clear();
     doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(sanitizedBytes).buffer] });
@@ -592,6 +615,28 @@ describe('Check export for .pdf files.', () => {
     expect(sqS[0].createdAt, 'a sanitized export omits the shape comment timestamp').toBe(undefined);
     const sanitizedText = new TextDecoder('latin1').decode(new Uint8Array(sanitizedBytes));
     expect(sanitizedText.split('/T <').length - 1, 'a sanitized export writes no annotation author anywhere').toBe(0);
+
+    // Regression: when all lifted annotations on a page were deleted, a rebuilt PDF export copied the page's source /Annots through verbatim and resurrected them.
+    // Orphaned /Popup annotations also survived when their parent note was deleted or redacted, keeping the parent note object reachable via /Parent.
+    const highlightHex = /\/Subtype \/Highlight[^<>]*\/Contents <([0-9A-Fa-f]+)>/.exec(sanitizedText)[1];
+    const secondNoteHex = [...sanitizedText.matchAll(/\/Subtype \/Text \/Rect \[[^\]]+\] \/Contents <([0-9A-Fa-f]+)>/g)][1][1];
+    doc.annotations.pages[0] = [];
+    const secondNote = doc.annotations.pages[1].find((a) => a.type === 'text');
+    doc.addRedactions([{
+      page: 1,
+      bbox: {
+        left: secondNote.bbox.left - 10, top: secondNote.bbox.top - 10, right: secondNote.bbox.right + 10, bottom: secondNote.bbox.bottom + 10,
+      },
+    }]);
+    const rebuiltBytes = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+    const rebuiltText = new TextDecoder('latin1').decode(new Uint8Array(rebuiltBytes));
+    expect(rebuiltText.split('/Subtype /Popup').length - 1, 'a popup stays in an export that dropped the note it belongs to').toBe(0);
+    expect(rebuiltText.includes(highlightHex), 'a deleted highlight left its comment in an export that rebuilds the PDF').toBe(false);
+    expect(rebuiltText.includes(secondNoteHex), 'a note under a redaction mark left its comment in the redacted export').toBe(false);
+    await doc.clear();
+    doc = await scribe.openDocument({ pdfFiles: [rebuiltBytes] });
+    expect(doc.annotations.pages.map((p) => (p || []).length),
+      'annotations deleted from the first page came back, or the note under the redaction mark on the second survived, in an export that rebuilds the PDF').toEqual([0, 0]);
     await doc.clear();
   });
 
@@ -1471,6 +1516,9 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     };
 
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    doc.addTextAnnots([{
+      page: 1, x: 300, y: 400, comment: 'Note on the second page.',
+    }]);
 
     // The overlay export keeps the source /Info, which the visible-text export below does not carry, so the /Info regression test reads this one.
     overlayExport = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { docInfo: { Subject: 'Hex-tail override' } }));
@@ -1520,6 +1568,15 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     expect(bboxRounded, 'the highlight bbox scales with the page, landing at its 300-DPI position').toEqual({
       left: 852, top: 301, right: 1698, bottom: 357,
     });
+  });
+
+  // Regression: both PDF export paths scaled a note's 24 px UI box down to a 5.76 pt icon.
+  test('A note added before the exports is written with a 20 pt icon box by both builds and returns to its position on re-import', () => {
+    const overlayText = new TextDecoder('latin1').decode(new Uint8Array(overlayExport));
+    expect(overlayText.includes('/Subtype /Text /Rect [72 676 92 696]'), 'the overlay export writes the note with a 20 pt icon box').toBe(true);
+    expect(pdfText.includes('/Subtype /Text /Rect [72 676 92 696]'), 'the visible-text export writes the note with a 20 pt icon box').toBe(true);
+    const note = doc.annotations.pages[1].find((a) => a.type === 'text');
+    expect([Math.round(note.bbox.left), Math.round(note.bbox.top)], 'the note returns to the point it was placed at after the visible-text round-trip').toEqual([300, 400]);
   });
 
   // Regression: the dictionary scanner took this /Title's closing '>' and the next '>' for the dictionary's '>>', so the copied /Title lost its '>' and the override was written inside it.
@@ -2404,6 +2461,9 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
       `${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`,
       `${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`,
     ]);
+    doc.addTextAnnots([{
+      page: 1, x: 900, y: 600, comment: 'Note on the rotated page.',
+    }]);
     const out = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', {
       displayMode: 'invis', addOverlay: true, minPage: 1, maxPage: 1,
     }));
@@ -2445,7 +2505,18 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
     expect(mayor[0].bbox, 'the text layer is scaled with the page, so the word returns to its source position').toEqual({
       left: 1501, top: 332, right: 1639, bottom: 406,
     });
+    const freshNote = noOverlayDoc.annotations.pages[1].find((a) => a.type === 'text');
+    expect([Math.round(freshNote.bbox.left), Math.round(freshNote.bbox.top)], 'a note on the rotated page returns to the point it was placed at through a fresh build')
+      .toEqual([900, 600]);
     await noOverlayDoc.clear();
+  });
+
+  // The icon box is written upright in the page's displayed orientation, so on a /Rotate page it extends from a different corner of the unrotated /Rect.
+  test('A note on a /Rotate page is written with an upright 20 pt icon box and returns to its position on re-import', () => {
+    const txt = new TextDecoder('latin1').decode(new Uint8Array(exportedBytes));
+    expect(txt.includes('/Subtype /Text /Rect [144 216 164 236]'), 'the icon box is 20 pt with the placed point at the corner that displays top-left').toBe(true);
+    const note = reDoc.annotations.pages[0].find((a) => a.type === 'text');
+    expect([Math.round(note.bbox.left), Math.round(note.bbox.top)], 'a note on a /Rotate page returns to the point it was placed at').toEqual([900, 600]);
   });
 
   test('OCR text over a /Rotate source page imports in the display frame', async () => {
