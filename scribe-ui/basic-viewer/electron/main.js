@@ -207,7 +207,9 @@ function createWindow({ fresh = false } = {}) {
       : nativeTheme.shouldUseDarkColors ? '#12151b' : '#f4f6fa',
     // Windows and Linux take the window icon from here.
     // macOS ignores it and uses the icon from the app bundle instead.
-    icon: path.join(__dirname, '../icons/icon-512.png'),
+    // Linux gets the full-bleed square its launcher icons use.
+    // Windows keeps the rounded tile that matches the executable's ICO.
+    icon: path.join(__dirname, process.platform === 'linux' ? '../icons/icon-512-linux.png' : '../icons/icon-512.png'),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

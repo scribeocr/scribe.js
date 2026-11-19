@@ -103,7 +103,6 @@ export default defineConfig(({ mode }) => {
   return {
     root: ROOT,
     base: mode === 'vscode' ? './' : '/',
-    // public/ holds the site's favicons, PWA manifest and Cloudflare headers, none of which a desktop package reads.
     publicDir: desktop ? false : 'public',
     plugins,
     build: {

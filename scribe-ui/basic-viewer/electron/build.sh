@@ -17,10 +17,9 @@ LANG_CACHE="$SCRIPT_DIR/cache/eng.traineddata.gz"
 rm -rf "$STAGING"
 mkdir -p "$STAGING/scribe-ui/basic-viewer/electron" "$STAGING/scribe-ui/basic-viewer/icons" "$STAGING/lang"
 cp -r "$ROOT/dist/." "$STAGING/"
-rm -f "$STAGING/_headers"
 cp "$SCRIPT_DIR/main.js" "$SCRIPT_DIR/preload.js" "$STAGING/scribe-ui/basic-viewer/electron/"
-# No bundled HTML references the window icon main.js points at, so Vite never emits it.
-cp "$ROOT/scribe-ui/basic-viewer/icons/icon-512.png" "$STAGING/scribe-ui/basic-viewer/icons/"
+# No bundled HTML references the window icons main.js points at, so Vite never emits them.
+cp "$ROOT/scribe-ui/basic-viewer/icons/icon-512.png" "$ROOT/scribe-ui/basic-viewer/icons/icon-512-linux.png" "$STAGING/scribe-ui/basic-viewer/icons/"
 
 sha256_matches() {
   node -e "const c=require('crypto'),f=require('fs');process.exit(c.createHash('sha256').update(f.readFileSync(process.argv[1])).digest('hex')===process.argv[2]?0:1)" "$1" "$LANG_SHA256"

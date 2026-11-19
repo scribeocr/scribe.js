@@ -15,8 +15,10 @@
     "productName": "21 Viewer",
     "directories": {
       "app": "staging",
-      "output": "dist"
+      "output": "dist",
+      "buildResources": "build"
     },
+    "afterPack": "./compileMacIcon.js",
     "asar": true,
     "electronLanguages": [
       "en-US"
@@ -37,15 +39,21 @@
     "mac": {
       "identity": null,
       "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "extendInfo": {
+        "CFBundleIconName": "icon"
+      },
       "target": [
         "dmg",
         "zip"
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": "nsis"
     },
     "linux": {
+      "icon": "build/icons",
       "target": "AppImage"
     }
   },

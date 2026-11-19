@@ -60,6 +60,12 @@ jobs:
       - run: npm ci
       - run: npm ci
         working-directory: scribe-ui/basic-viewer/electron
+      # The build compiles build/icon.icon, the Icon Composer app icon, with actool, which needs Xcode 26 or later selected.
+      - name: Select the newest installed Xcode
+        if: matrix.os == 'macos-latest'
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | grep -iv beta | sort -V | tail -n 1)"
+          actool --version
       - name: Build
         working-directory: scribe-ui/basic-viewer/electron
         run: bash build.sh ${{ matrix.args }} --publish never

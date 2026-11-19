@@ -1,0 +1,77 @@
+{
+  "fill-specializations": [
+    {
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.211764706,0.443137255,1.000000000,1.000000000",
+          "extended-srgb:0.074509804,0.286274510,0.839215686,1.000000000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0.03125
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 0.96875
+          }
+        }
+      }
+    },
+    {
+      "appearance": "dark",
+      "value": {
+        "linear-gradient": [
+          "extended-srgb:0.211764706,0.443137255,1.000000000,1.000000000",
+          "extended-srgb:0.074509804,0.286274510,0.839215686,1.000000000"
+        ],
+        "orientation": {
+          "start": {
+            "x": 0.5,
+            "y": 0.03125
+          },
+          "stop": {
+            "x": 0.5,
+            "y": 0.96875
+          }
+        }
+      }
+    }
+  ],
+  "groups": [
+    {
+      "name": "Approved frosted white",
+      "layers": [
+        {
+          "name": "ROM-FB37 frosted foreground",
+          "image-name": "foreground.png",
+          "glass": false,
+          "fill": "none",
+          "opacity": 1,
+          "position": {
+            "scale": 1,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      },
+      "specular": false,
+      "blur-material": 0
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
