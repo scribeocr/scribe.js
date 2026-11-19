@@ -11,6 +11,7 @@ import {
   colorToRgb, executeRewrittenOperator, parseSinglePage, rgbToHex, liftPageAnnotations, pageGeometry,
 } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
+import { resolveNumArray } from './pdfPrimitives.js';
 import {
   charStateKey, codesForText, drawnPen, editsFromPlans, fontCodeTable, glyphCopies, glyphVisible, locateWords, planTextEdit, rewriteShowOperator, segmentAt,
 } from './textPatch.js';
@@ -641,6 +642,25 @@ export class PdfCore {
       dpi = (72 * targetWidth) / visualWidthPts;
     }
     return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality, edits);
+  }
+
+  /**
+   * Render one of a page's annotations alone, on a transparent background, as a PNG blob the size of its /Rect.
+   * The page's /Rotate applies, so the image is the annotation as the page shows it.
+   * @param {{ pageIndex: number, annotRef: number, dpi?: number }} args
+   * @returns {Promise<{ blob?: Blob, dataUrl?: string, colorMode: string, ok: boolean, failReason?: string, failDetail?: string }>}
+   */
+  async renderAnnotation({ pageIndex, annotRef, dpi = 300 }) {
+    if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
+    const { renderPdfPageAsImage } = await import('./renderPdfPage.js');
+    if (typeof process !== 'undefined') await ca.getCanvasNode();
+    const page = this.#pages[pageIndex];
+    const annotText = this.#objCache.getObjectText(annotRef);
+    const rect = annotText ? resolveNumArray(annotText, 'Rect', this.#objCache, null) : null;
+    if (!rect || rect.length < 4) throw new Error(`Annotation ${annotRef} has no /Rect to render.`);
+    const box = [Math.min(rect[0], rect[2]), Math.min(rect[1], rect[3]), Math.max(rect[0], rect[2]), Math.max(rect[1], rect[3])];
+    const pageText = `<</Type/Page/MediaBox[${box.join(' ')}]${page.rotate ? `/Rotate ${page.rotate}` : ''}/Annots[${annotRef} 0 R]>>`;
+    return renderPdfPageAsImage(pageText, this.#objCache, box, pageIndex, 'color', page.rotate, dpi, 'png', 0.6, null, { transparent: true });
   }
 
   /**

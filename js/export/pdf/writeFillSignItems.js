@@ -63,7 +63,7 @@ async function rawImageObject(objNum, pixels, width, height, colorSpace, smaskOb
 export async function buildFillItemOps({
   pageAnnotations, pixelDims, allocObjNum, pushObj, humanReadable, warningHandler,
 }) {
-  const items = /** @type {Array<AnnotationInk | AnnotationStamp>} */ (pageAnnotations.filter((a) => a.type === 'ink' || a.type === 'stamp'));
+  const items = /** @type {Array<AnnotationInk | AnnotationScribeFillSignImage>} */ (pageAnnotations.filter((a) => a.type === 'ink' || a.type === 'scribeFillSignImage'));
   if (items.length === 0 || !pixelDims) return null;
   const pixH = pixelDims.height;
   const fmt = (v) => String(Math.round(v * 100) / 100);

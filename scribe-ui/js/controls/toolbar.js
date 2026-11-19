@@ -4761,6 +4761,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: var(--scribe-ink-3);
     }
     .${r} .scribe-cm-kind svg { width: 12px; height: 12px; color: var(--scribe-note); flex: 0 0 auto; }
+    .${r} .scribe-cm-stack { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+    .${r} .scribe-cm-stack .scribe-cm-kind svg { color: var(--scribe-ink-3); }
+    .${r} .scribe-cm-subj { font-weight: 400; color: var(--scribe-ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-cm-thumb { display: block; height: 44px; max-width: 100%; width: auto; object-fit: contain; object-position: left center; }
     /* The wash (--scribe-cm-wash) is theme-scaled down (dark 22%) because a full-strength yellow reads mustard on dark.
        The text lifts one ink step so the wash never costs contrast.
        box-decoration-break: clone wraps the wash/hatch onto each clamped line like a real mark. */

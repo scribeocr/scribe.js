@@ -79,7 +79,7 @@ const MUTATOR_METHODS = [
   'addBookmark', 'renameBookmark', 'setBookmarkDest', 'moveBookmark', 'removeBookmarks', 'replaceOutline',
   'deletePage', 'deletePages', 'movePage', 'movePages', 'copyPages', 'duplicatePages', 'insertPages', 'rotatePages',
   'deleteTextLines', 'replaceTextLine', 'editWords', 'deleteGraphics', 'deleteImages', 'setFormValue',
-  'addInk', 'addStamp', 'addFillText', 'syncFillText',
+  'addInk', 'addScribeFillSignImage', 'addFillText', 'syncFillText',
   'undo', 'redo', 'recognize',
 ];
 

@@ -436,6 +436,24 @@ export class ImageStore {
   #ephemeralRecords = new Map();
 
   /**
+   * The stamp annotations the viewer's renders of a display slot leave out, by source object number, while the viewer drags one itself.
+   * Renders for OCR and export draw every stamp annotation at its row's box.
+   * @type {Map<number, number[]>}
+   */
+  #hiddenStamps = new Map();
+
+  /**
+   * Leave the given stamp annotations out of display slot `n`'s viewer renders, or null to draw them all again.
+   * The change applies from the page raster's next render.
+   * @param {number} n - Page number
+   * @param {?number[]} srcRefs - Source object numbers of the annotations (`AnnotationStamp.srcRef`).
+   */
+  setHiddenStamps = (n, srcRefs) => {
+    if (srcRefs && srcRefs.length) this.#hiddenStamps.set(n, srcRefs);
+    else this.#hiddenStamps.delete(n);
+  };
+
+  /**
    * Set the records the viewer's renders of display slot `n` apply while a line is open, or clear them with null.
    * The records apply from the page raster's next render.
    * @param {number} n - Page number
@@ -455,8 +473,32 @@ export class ImageStore {
   #editsForPage = (n, forViewer) => {
     const records = (forViewer && this.#ephemeralRecords.get(n)) || this.#doc.contentEdits?.pages?.[n] || [];
     const dims = this.#pageMetrics[n]?.dims;
-    if (records.length === 0 || !dims) return null;
-    return { records, dims: { width: dims.width, height: dims.height } };
+    if (!dims) return null;
+    // When stampSources is absent (such as after a sessionless .scribe restore), pass every row's current box; an untouched row still holds its original box.
+    /** @type {?Array<{srcRef: number, bbox: ?bbox}>} */
+    let stamps = null;
+    const stampRows = (this.#doc.annotations?.pages?.[n] || []).filter((a) => a.type === 'stamp');
+    const sources = this.#doc.stampSources?.pages?.[n] || null;
+    const hidden = forViewer ? this.#hiddenStamps.get(n) : undefined;
+    for (const row of stampRows) {
+      if (hidden && hidden.includes(row.srcRef)) {
+        (stamps ||= []).push({ srcRef: row.srcRef, bbox: null });
+        continue;
+      }
+      const src = sources ? sources.find((s) => s.srcRef === row.srcRef) : undefined;
+      const b = row.bbox;
+      if (src && Math.abs(src.bbox.left - b.left) < 1e-3 && Math.abs(src.bbox.top - b.top) < 1e-3
+        && Math.abs(src.bbox.right - b.right) < 1e-3 && Math.abs(src.bbox.bottom - b.bottom) < 1e-3) continue;
+      (stamps ||= []).push({ srcRef: row.srcRef, bbox: { ...b } });
+    }
+    for (const src of sources || []) {
+      if (!stampRows.some((r) => r.srcRef === src.srcRef)) (stamps ||= []).push({ srcRef: src.srcRef, bbox: null });
+    }
+    if (records.length === 0 && !stamps) return null;
+    /** @type {RenderEdits} */
+    const edits = { records, dims: { width: dims.width, height: dims.height } };
+    if (stamps) edits.stamps = stamps;
+    return edits;
   };
 
   /**
@@ -1344,6 +1386,23 @@ export class ImageStore {
     // Background-lane renders are never superseded, so a drop here means the scheduler is misbehaving.
     if (!result || result === SKIPPED) throw new Error(`renderPageImage: render for page ${n} was dropped.`);
     return result;
+  };
+
+  /**
+   * Render one of page `n`'s source annotations alone, on a transparent background, as a PNG the size of its rect.
+   * @param {number} n - Page number
+   * @param {number} srcRef - The annotation's object number in the page's source PDF (`AnnotationStamp.srcRef`).
+   * @param {number} [dpi=300]
+   * @returns {Promise<Blob>}
+   */
+  renderAnnotationImage = async (n, srcRef, dpi = 300) => {
+    if (!this.pdfDims300[n]) throw new Error(`renderAnnotationImage requires a PDF-backed page; page ${n} is not backed by a PDF.`);
+    const pm = this.#pageMetrics[n];
+    // Display slot `n` may hold a page copied from another document, so render it from its own source, not this doc's.
+    const pdfScheduler = await this.resolveSource(pm).getScheduler();
+    const result = await pdfScheduler.renderPdfAnnotation({ pageIndex: pm?.sourcePageN ?? n, annotRef: srcRef, dpi });
+    if (!result.ok || !result.blob) throw new Error(`renderAnnotationImage: annotation ${srcRef} of page ${n} did not render${result.failReason ? ` (${result.failReason})` : ''}.`);
+    return result.blob;
   };
 
   /**

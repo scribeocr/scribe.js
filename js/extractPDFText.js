@@ -17,6 +17,7 @@ import { ObjectCache } from './pdf/objectCache.js';
  * @param {?import('./import/import.js').SeededLoad} seeded - The on-demand load the parse serves, or null for an import.
  */
 export function installParsedAnnotations(doc, i, parsed, seeded) {
+  doc.stampSources.pages[i] = parsed.filter((a) => a.type === 'stamp').map((a) => ({ srcRef: a.srcRef, bbox: { ...a.bbox } }));
   const existing = doc.annotations.pages[i];
   const baseline = seeded?.annotBaseline.get(i);
   if (baseline !== undefined) {

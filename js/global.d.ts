@@ -428,14 +428,39 @@ declare global {
      * A placed image fill & sign item, such as an uploaded or typed signature.
      * PDF export flattens it into page content.
      */
-    type AnnotationStamp = {
-        type: 'stamp';
+    type AnnotationScribeFillSignImage = {
+        type: 'scribeFillSignImage';
         bbox: bbox;
         /** PNG or JPEG data URL. */
         imageData: string;
     };
 
-    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink | AnnotationField | AnnotationInk | AnnotationStamp;
+    /**
+     * A PDF stamp annotation (`/Subtype /Stamp`) read from the document's PDF, such as an exhibit sticker.
+     * PDF export edits the source annotation in place: a moved or resized row writes a new `/Rect`, and a deleted row drops the object.
+     * The row carries no appearance data of its own and requires the source PDF to render or export.
+     */
+    type AnnotationStamp = {
+        type: 'stamp';
+        /** Annotation rect, page coordinates (top-left origin, same frame as OCR words). */
+        bbox: bbox;
+        /** Object number of the annotation in the source PDF. */
+        srcRef: number;
+        /** `/Name`: a standard icon name such as `Approved`, or the producer's own identifier. */
+        name?: string;
+        /** `/Subj`, the producer's short description. */
+        subject?: string;
+        /** `/Contents`. */
+        comment?: string;
+        /** Author (PDF `/T`). */
+        author?: string;
+        /** Creation time, UTC ISO-8601. */
+        createdAt?: string;
+        /** Reply thread under the comment, oldest first. */
+        replies?: AnnotationReply[];
+    };
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink | AnnotationField | AnnotationInk | AnnotationScribeFillSignImage | AnnotationStamp;
 
     /** One image placement a `deleteImage` record removes. */
     type ImageDeleteSite = {
@@ -531,6 +556,8 @@ declare global {
     type RenderEdits = {
         records: Array<ContentEdit>;
         dims: { width: number, height: number };
+        /** Stamp annotation overrides by source object number: a replacement `bbox`, or `null` to omit from the raster. */
+        stamps?: Array<{ srcRef: number, bbox: ?bbox }>;
     };
 
     /**
@@ -691,6 +718,8 @@ declare global {
         redactions?: { terms: RedactionTermRecord[]; matchCase?: boolean; scannedAt?: string | null };
         /** Characters recorded against Type 3 glyph outlines, as `[pathHash, text]` pairs. */
         type3GlyphMappings?: Array<[string, string]>;
+        /** Per page, the stamp annotations the PDF parse lifted, as `[srcRef, left, top, right, bottom]` with the box as read. */
+        stampSources?: Array<Array<[number, number, number, number, number]> | null>;
         tableExport?: { excluded?: Record<string, true>; names?: Record<string, string> };
         truth?: Array<TruthPageRecord | null>;
         hocrSource?: { head: ?Array<string>; pages: Array<?HocrSourcePage> };

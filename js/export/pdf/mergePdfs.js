@@ -111,9 +111,10 @@ function parseMergeSource(input) {
  * Merge multiple PDFs into a single PDF whose pages are the concatenation of all input pages in input order.
  * Page content is never re-rendered.
  * @param {Array<ArrayBuffer | Uint8Array>} pdfInputs - PDFs in merge order
- * @param {{ outline?: Array<import('../../objects/outlineObjects.js').OutlineNode> }} [options]
+ * @param {{ outline?: Array<import('../../objects/outlineObjects.js').OutlineNode>, objectMaps?: Array<Map<number, number>> }} [options]
  *   `outline`: a bookmark tree written as the output's `/Outlines`.
  *   Its destinations are indices into the merged page sequence (0-based over all input pages in order).
+ *   `objectMaps`: an array the merge fills with one map per input, from the input's object numbers to the output's.
  */
 export async function mergePdfs(pdfInputs, options = {}) {
   if (!Array.isArray(pdfInputs) || pdfInputs.length === 0) {
@@ -148,6 +149,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
     }
     sourceMaps.push(map);
   }
+  if (Array.isArray(options.objectMaps)) options.objectMaps.push(...sourceMaps);
 
   // Metadata comes from the first input, matching how the merge keeps only the first source's optional-content layers.
   // The identifier is fresh because a merge is a new document, not a revision of any input.

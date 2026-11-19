@@ -986,16 +986,19 @@ export function pageGeometry(page, dpi) {
  * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
  * @param {ObjectCache} objCache
  * @param {number} n
- * @param {{initialCtm: Array<number>, visualHeightPts: number, scale: number}} geometry - From `pageGeometry` at the parse's dpi.
+ * @param {{initialCtm: Array<number>, visualWidthPts: number, visualHeightPts: number, scale: number}} geometry - From `pageGeometry` at the parse's dpi.
  * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
  * @param {?{pageObj: OcrPage, langSet: Set<string>, pageStats: {printableVis: number}}} [textLayer]
  * @returns {Annotation[]}
  */
 export function liftPageAnnotations(page, objCache, n, geometry, destInfo, textLayer = null) {
   const { objText } = page;
-  const { initialCtm, visualHeightPts, scale } = geometry;
+  const {
+    initialCtm, visualWidthPts, visualHeightPts, scale,
+  } = geometry;
   const {
     highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, shapes: shapesRaw, redacts: redactsRaw, links: linksRaw, widgets: widgetsRaw,
+    stamps: stampsRaw,
   } = extractPdfAnnotations(objCache, objText);
 
   const mapPoint = (x, y) => {
@@ -1069,6 +1072,26 @@ export function liftPageAnnotations(page, objCache, n, geometry, destInfo, textL
   }
 
   annotations.push(...linkAnnots);
+
+  // The box is kept unrounded so an untouched row compares equal to the annotation's own /Rect at export.
+  // A stamp annotation wholly off the page cannot be reached on screen, so it stays a passthrough annotation.
+  for (const s of stampsRaw) {
+    const p1 = mapPoint(s.rect[0], s.rect[1]);
+    const p2 = mapPoint(s.rect[2], s.rect[3]);
+    const bbox = {
+      left: Math.min(p1.x, p2.x), top: Math.min(p1.y, p2.y), right: Math.max(p1.x, p2.x), bottom: Math.max(p1.y, p2.y),
+    };
+    if (bbox.right <= 0 || bbox.bottom <= 0 || bbox.left >= visualWidthPts * scale || bbox.top >= visualHeightPts * scale) continue;
+    /** @type {AnnotationStamp} */
+    const row = { type: 'stamp', bbox, srcRef: s.objNum };
+    if (s.name) row.name = s.name;
+    if (s.subject) row.subject = s.subject;
+    if (s.comment) row.comment = s.comment;
+    if (s.author) row.author = s.author;
+    if (s.createdAt) row.createdAt = s.createdAt;
+    if (s.replies && s.replies.length > 0) row.replies = s.replies;
+    annotations.push(row);
+  }
 
   let fieldIdx = 0;
   for (const w of widgetsRaw) {
@@ -1792,7 +1815,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   // Rects consumed as text underlines are excluded: on a page where every line carries a hyperlink underline, treating them as separators would shatter each paragraph into single lines.
   pageObj.graphicLines = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
 
-  const annotations = liftPageAnnotations(page, objCache, n, { initialCtm, visualHeightPts, scale }, destInfo, { pageObj, langSet, pageStats });
+  const annotations = liftPageAnnotations(page, objCache, n, {
+    initialCtm, visualWidthPts, visualHeightPts, scale,
+  }, destInfo, { pageObj, langSet, pageStats });
 
   return {
     pageObj,

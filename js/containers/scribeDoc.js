@@ -16,7 +16,7 @@ import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
 import { removeCircularRefsRegions, removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import {
-  addInk as addInkImpl, addStamp as addStampImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
+  addInk as addInkImpl, addScribeFillSignImage as addScribeFillSignImageImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
   detectFillTargets as detectFillTargetsImpl,
 } from '../fillSign.js';
 import {
@@ -63,7 +63,7 @@ function uniqueLayers(layers) {
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
   arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
-  arrs.push(doc.truth.pages, doc.hocrSource.pages);
+  arrs.push(doc.truth.pages, doc.hocrSource.pages, doc.stampSources.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.ocrTiming)) arrs.push(doc.ocrTiming);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
@@ -225,6 +225,7 @@ function snapshotPage(doc, i) {
     contentEdits,
     nativeText,
     fillShapes,
+    stampSources: cloneAt(doc.stampSources.pages) ?? null,
     truth,
     // A copy gets fresh line and paragraph ids, which the source markup's placeholders would no longer name.
     hocrSource: null,
@@ -866,6 +867,13 @@ export class ScribeDoc {
     this.fillShapes = { pages: [] };
 
     /**
+     * Per page, the stamp annotations the PDF parse lifted into `annotations`, each with its box as read.
+     * A render or export compares a page's stamp annotation rows against this to tell an untouched annotation from a moved or deleted one.
+     * @type {{pages: Array<?Array<{srcRef: number, bbox: bbox}>>}}
+     */
+    this.stampSources = { pages: [] };
+
+    /**
      * Cross-page table links the automatic pass found plausible but would not make on its own.
      * In-memory only, recomputed at import and never serialized.
      * @type {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>}
@@ -1173,6 +1181,7 @@ export class ScribeDoc {
       spliceFull(this.nativeText.pages, snapshots.map((b) => b.nativeText ?? {}));
       spliceFull(this.hocrSource.pages, snapshots.map((b) => b.hocrSource ?? null));
       spliceFull(this.fillShapes.pages, snapshots.map((b) => b.fillShapes ?? null));
+      spliceFull(this.stampSources.pages, snapshots.map((b) => b.stampSources ?? null));
       spliceFull(this.truth.pages, snapshots.map((b) => b.truth ?? null));
       spliceFull(this.vis, snapshots.map((b) => b.vis));
       spliceFull(this.ocrTiming, snapshots.map((b) => b.ocrTiming));
@@ -1415,6 +1424,7 @@ export class ScribeDoc {
     this.hocrSource.pages.length = 0;
     this.type3GlyphMappings.clear();
     this.fillShapes.pages.length = 0;
+    this.stampSources.pages.length = 0;
     this.truth.pages.length = 0;
     this.assistantChats.chats.length = 0;
     this.redactions.terms.length = 0;
@@ -1561,12 +1571,12 @@ export class ScribeDoc {
 
   /**
    * Place an image fill & sign item on page n.
-   * @param {Parameters<typeof addStampImpl>[1]} n
-   * @param {Parameters<typeof addStampImpl>[2]} item
-   * @returns {ReturnType<typeof addStampImpl>}
+   * @param {Parameters<typeof addScribeFillSignImageImpl>[1]} n
+   * @param {Parameters<typeof addScribeFillSignImageImpl>[2]} item
+   * @returns {ReturnType<typeof addScribeFillSignImageImpl>}
    */
-  addStamp(n, item) {
-    return addStampImpl(this, n, item);
+  addScribeFillSignImage(n, item) {
+    return addScribeFillSignImageImpl(this, n, item);
   }
 
   /**
@@ -1996,6 +2006,7 @@ export class ScribeDoc {
    * The PDF's own annotations on page `n`, lifted from the file without a text parse.
    * Coordinates are in the page's pixel space at the dpi the text parse uses.
    * A page not backed by a PDF has none.
+   * The page's stamp annotations are also recorded in `stampSources`.
    * @param {number} n
    * @returns {Promise<Array<Annotation>>}
    */
@@ -2004,7 +2015,9 @@ export class ScribeDoc {
     const pm = this.pageMetrics[n];
     if (!dims || !pm) return [];
     const scheduler = await this.images.resolveSource(pm).getScheduler();
-    return scheduler.parsePdfPageAnnotations({ pageIndex: pm.sourcePageN ?? n, dpi: 300 * Math.min(dims.width, 3500) / dims.width });
+    const annotations = await scheduler.parsePdfPageAnnotations({ pageIndex: pm.sourcePageN ?? n, dpi: 300 * Math.min(dims.width, 3500) / dims.width });
+    this.stampSources.pages[n] = annotations.filter((a) => a.type === 'stamp').map((a) => ({ srcRef: a.srcRef, bbox: { ...a.bbox } }));
+    return annotations;
   }
 
   /**

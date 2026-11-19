@@ -68,7 +68,7 @@ function skipPdfValue(s, j) {
  * @param {string} key
  * @returns {string}
  */
-function stripTopLevelKey(dict, key) {
+export function stripTopLevelKey(dict, key) {
   let depth = 0;
   for (let i = 0; i < dict.length; i++) {
     const c = dict[i];

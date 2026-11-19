@@ -79,6 +79,7 @@ export async function initPdfWorker() {
     obj.parsePdfPage = wrap('parsePdfPage');
     obj.parsePdfPageAnnotations = wrap('parsePdfPageAnnotations');
     obj.renderPdfPage = wrap('renderPdfPage');
+    obj.renderPdfAnnotation = wrap('renderPdfAnnotation');
     obj.getPdfFontBytes = wrap('getPdfFontBytes');
     obj.getPdfType3GlyphHashes = wrap('getPdfType3GlyphHashes');
     obj.getPdfLineState = wrap('getPdfLineState');

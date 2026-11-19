@@ -157,9 +157,46 @@ export function deleteSignature(id) {
 // Live items layer and selection.
 
 /**
- * A placed fill & sign item, either drawn ink, a signature stamp, or typed text.
- * @typedef {AnnotationInk | AnnotationStamp | AnnotationFreeText} FillItemRow
+ * A row the page's items layer shows as a placed item.
+ * Either a fill & sign item (drawn ink, a placed image, or typed text) or a stamp annotation read from the PDF.
+ * @typedef {AnnotationInk | AnnotationScribeFillSignImage | AnnotationStamp | AnnotationFreeText} FillItemRow
  */
+
+/** @type {WeakMap<object, string | Promise<string>>} The picture of each stamp annotation row alone, as an object URL, or the render under way. */
+const stampImageUrls = new WeakMap();
+
+/**
+ * The picture of a stamp annotation alone, rendered once per row from the page's source PDF.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n
+ * @param {AnnotationStamp} row
+ * @returns {Promise<string>} An object URL of a transparent PNG the size of the annotation.
+ */
+export function stampImageUrl(viewer, n, row) {
+  const cached = stampImageUrls.get(row);
+  if (cached) return Promise.resolve(cached);
+  const pending = viewer.doc.images.renderAnnotationImage(n, row.srcRef).then((blob) => {
+    const url = URL.createObjectURL(blob);
+    stampImageUrls.set(row, url);
+    return url;
+  });
+  stampImageUrls.set(row, pending);
+  pending.catch(() => stampImageUrls.delete(row));
+  return pending;
+}
+
+/** @type {WeakMap<object, {n: number, row: AnnotationStamp}>} Active stamp-annotation drag per viewer. */
+const stampDragByViewer = new WeakMap();
+
+/** @type {WeakMap<object, Map<number, string>>} Per document, each page's stamp annotation rows as the page raster last painted them. */
+const stampRasterByDoc = new WeakMap();
+
+/**
+ * One string for a set of stamp annotation boxes, to tell whether the page raster still shows the page's rows.
+ * @param {Array<{srcRef: number, bbox: bbox}>} entries
+ */
+const stampSignature = (entries) => entries.slice().sort((a, b) => a.srcRef - b.srcRef)
+  .map((e) => `${e.srcRef}:${e.bbox.left},${e.bbox.top},${e.bbox.right},${e.bbox.bottom}`).join('|');
 
 /** @type {WeakMap<object, {n: number, row: FillItemRow}>} Selected item per viewer. */
 const selectionByViewer = new WeakMap();
@@ -202,7 +239,7 @@ function fdTargets(viewer, n) {
   return cache.byPage.get(n);
 }
 
-const FD_OCCUPYING = new Set(['ink', 'stamp', 'freetext', 'field']);
+const FD_OCCUPYING = new Set(['ink', 'scribeFillSignImage', 'stamp', 'freetext', 'field']);
 
 /**
  * Whether a detected target is covered by a placed fill item or a live form field, whose own interactions must win there.
@@ -290,6 +327,17 @@ function refreshItems(viewer, n) {
   viewer.renderFillItems(n);
   // A placed item can cover an unsigned signature field, whose sign-here affordance then drops.
   viewer.renderFormFields(n);
+  // The page raster paints the stamp annotations, so it is rendered again once their rows differ from what it shows.
+  const { doc } = viewer;
+  let painted = stampRasterByDoc.get(doc);
+  if (!painted) {
+    painted = new Map();
+    stampRasterByDoc.set(doc, painted);
+  }
+  const sig = stampSignature((doc.annotations.pages[n] || []).filter((a) => a.type === 'stamp'));
+  const was = painted.has(n) ? painted.get(n) : stampSignature(doc.stampSources.pages[n] || []);
+  painted.set(n, sig);
+  if (sig !== was) viewer.refreshPageRaster(n);
   viewer.annotationsEdited(n);
   if (viewer.onEditCallback) viewer.onEditCallback();
 }
@@ -473,7 +521,7 @@ export function renderPageFillItems(viewer, n) {
     // A typed-text row whose editor is open is represented by the editor, not the item.
     if (editing && editing.row === row) continue;
     const isFillText = row.type === 'freetext' && isFillTextRow(row);
-    if (row.type === 'ink' || row.type === 'stamp' || isFillText) {
+    if (row.type === 'ink' || row.type === 'scribeFillSignImage' || row.type === 'stamp' || isFillText) {
       const el = document.createElement('div');
       el.className = 'scribe-item';
       el.style.left = `${row.bbox.left}px`;
@@ -506,12 +554,24 @@ export function renderPageFillItems(viewer, n) {
           svg.appendChild(path);
         }
         el.appendChild(svg);
-      } else if (row.type === 'stamp') {
+      } else if (row.type === 'scribeFillSignImage') {
         const img = document.createElement('img');
         img.className = 'scribe-item-img';
         img.src = row.imageData;
         img.draggable = false;
         el.appendChild(img);
+      } else if (row.type === 'stamp') {
+        // At rest the page raster paints the stamp annotation; mount its image only during an active drag while the raster omits it.
+        const url = stampImageUrls.get(row);
+        const dragged = stampDragByViewer.get(viewer)?.row === row;
+        if (typeof url !== 'string') stampImageUrl(viewer, n, row).then(() => { if (stampDragByViewer.get(viewer)?.row === row) renderPageFillItems(viewer, n); }).catch(() => {});
+        else if (dragged) {
+          const img = document.createElement('img');
+          img.className = 'scribe-item-img';
+          img.src = url;
+          img.draggable = false;
+          el.appendChild(img);
+        }
       }
       const pad = document.createElement('div');
       pad.className = 'scribe-item-pad';
@@ -651,24 +711,35 @@ function wireItemPointer(viewer, n, row, el) {
     const startY = down.clientY;
     const startBbox = { ...row.bbox };
     const startFontSize = row.type === 'freetext' ? row.fontSize : 0;
-    const startStrokes = row.type === 'ink' ? row.strokes.map((s) => s.map(([x, y]) => [x, y])) : null;
+    const startStrokes = row.type === 'ink' ? row.strokes.map((s) => s.map(([x, y]) => /** @type {[number, number]} */ ([x, y]))) : null;
     const rect = el.getBoundingClientRect();
     const pxPerClient = (startBbox.right - startBbox.left) / Math.max(1, rect.width);
+    const pageDims = row.type === 'stamp' ? viewer.doc.pageMetrics[n]?.dims : null;
     let moved = false;
 
     const onMove = (mv) => {
-      const dx = (mv.clientX - startX) * pxPerClient;
-      const dy = (mv.clientY - startY) * pxPerClient;
+      let dx = (mv.clientX - startX) * pxPerClient;
+      let dy = (mv.clientY - startY) * pxPerClient;
       if (!moved && Math.abs(mv.clientX - startX) + Math.abs(mv.clientY - startY) < 3) return;
+      if (!moved && row.type === 'stamp') {
+        // Hide the stamp annotation only past the drag threshold so a plain click triggers no page re-render.
+        stampDragByViewer.set(viewer, { n, row });
+        viewer.doc.images.setHiddenStamps(n, [row.srcRef]);
+        viewer.refreshPageRaster(n);
+      }
       moved = true;
       if (selectionByViewer.get(viewer)?.row !== row) {
         selectionByViewer.set(viewer, { n, row });
       }
       if (!corner) {
-        row.bbox.left = startBbox.left + dx;
-        row.bbox.right = startBbox.right + dx;
-        row.bbox.top = startBbox.top + dy;
-        row.bbox.bottom = startBbox.bottom + dy;
+        if (pageDims) {
+          dx = Math.max(-startBbox.left, Math.min(pageDims.width - startBbox.right, dx));
+          dy = Math.max(-startBbox.top, Math.min(pageDims.height - startBbox.bottom, dy));
+        }
+        // A fresh box each move, since the undo entry recorded at the drop holds the row's box by reference.
+        row.bbox = {
+          left: startBbox.left + dx, top: startBbox.top + dy, right: startBbox.right + dx, bottom: startBbox.bottom + dy,
+        };
         if (row.type === 'ink' && startStrokes) row.strokes = startStrokes.map((s) => s.map(([x, y]) => [x + dx, y + dy]));
       } else {
         const minSize = ITEM_MIN_PT * pxPerPt(viewer, n);
@@ -678,7 +749,10 @@ function wireItemPointer(viewer, n, row, el) {
         const anchorY = corner.includes('n') ? startBbox.bottom : startBbox.top;
         const movingX = (corner.includes('w') ? startBbox.left : startBbox.right) + dx;
         const movingY = (corner.includes('n') ? startBbox.top : startBbox.bottom) + dy;
-        const s = Math.max(Math.abs(movingX - anchorX) / startW, Math.abs(movingY - anchorY) / startH);
+        let s = Math.max(Math.abs(movingX - anchorX) / startW, Math.abs(movingY - anchorY) / startH);
+        if (pageDims) {
+          s = Math.min(s, (corner.includes('w') ? anchorX : pageDims.width - anchorX) / startW, (corner.includes('n') ? anchorY : pageDims.height - anchorY) / startH);
+        }
         const newW = startW * s;
         const newH = startH * s;
         if (newW < minSize || newH < minSize) return;
@@ -701,7 +775,30 @@ function wireItemPointer(viewer, n, row, el) {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       if (moved) {
-        if (row.type === 'freetext' && isFillTextRow(row)) viewer.doc.syncFillText(n, row, startBbox);
+        if (row.type === 'freetext' && isFillTextRow(row)) {
+          // A typed-text item's lifted words move through the sync path, which a field-level undo entry would not replay.
+          viewer.doc.syncFillText(n, row, startBbox);
+        } else {
+          // Restore pre-drag geometry first so recordAnnotFields snapshots startBbox before applying the final geometry.
+          const endBbox = row.bbox;
+          const endStrokes = row.type === 'ink' ? row.strokes : null;
+          row.bbox = { ...startBbox };
+          if (row.type === 'ink' && startStrokes) row.strokes = startStrokes;
+          viewer.doc.docHistory.recordAnnotFields([row], ['bbox', 'strokes'], [n], row.type === 'stamp' ? 'Moved stamp annotation' : 'Moved item', () => {
+            row.bbox = { ...endBbox };
+            if (row.type === 'ink' && endStrokes) row.strokes = endStrokes;
+          });
+        }
+        if (row.type === 'stamp') {
+          viewer.doc.images.setHiddenStamps(n, null);
+          /** @type {Map<number, string>} */ (stampRasterByDoc.get(viewer.doc) || stampRasterByDoc.set(viewer.doc, new Map()).get(viewer.doc))
+            .set(n, stampSignature((viewer.doc.annotations.pages[n] || []).filter((a) => a.type === 'stamp')));
+          viewer.refreshPageRaster(n).then(() => {
+            if (stampDragByViewer.get(viewer)?.row !== row) return;
+            stampDragByViewer.delete(viewer);
+            viewer.renderFillItems(n);
+          });
+        }
         refreshItems(viewer, n);
       } else {
         selectFillItem(viewer, n, row);
@@ -733,7 +830,7 @@ function fitInto(w, h, boxW, boxH) {
  * @param {number} n
  * @param {SignatureAsset} asset
  * @param {bbox} rect - Target area in page coordinates.
- * @returns {AnnotationInk|AnnotationStamp} The created annotation row.
+ * @returns {AnnotationInk|AnnotationScribeFillSignImage} The created annotation row.
  */
 export function placeSignatureAsset(viewer, n, asset, rect) {
   const natural = asset.kind === 'draw'
@@ -759,7 +856,7 @@ export function placeSignatureAsset(viewer, n, asset, rect) {
       color: '#101010',
     });
   } else {
-    row = viewer.doc.addStamp(n, {
+    row = viewer.doc.addScribeFillSignImage(n, {
       bbox: {
         left, top, right: left + w, bottom: top + h,
       },
@@ -1504,7 +1601,7 @@ export function openSignatureDialog(app, onSaved) {
       const text = typeInput.value.trim();
       if (!text) return;
       await ensureSignatureFonts();
-      // Rasterize at 4x so the placed stamp stays crisp when scaled up.
+      // Rasterize at 4x so the placed image stays crisp when scaled up.
       const fontPx = 64;
       const scale = 4;
       const meas = document.createElement('canvas').getContext('2d');

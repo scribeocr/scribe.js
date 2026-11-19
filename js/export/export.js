@@ -247,6 +247,7 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
         pageSourceIndices: envelope.session.pageSourceIndices,
         contentEdits: envelope.session.contentEdits,
         fillText: envelope.session.fillText,
+        stampSources: envelope.session.stampSources,
         assistantChats: envelope.session.assistantChats,
         redactions: envelope.session.redactions,
         type3GlyphMappings: envelope.session.type3GlyphMappings,
@@ -564,6 +565,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayContentEditsPages = doc.contentEdits.pages;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
+          let overlayStampSourcesPages = doc.stampSources.pages;
+          /** @type {?(srcRef: number, k: number) => number} */
+          let srcRefRemap = null;
           // The base PDF is subset by source page number while the overlay arrays are indexed by display position.
           // The two are identical until a page is deleted or reordered.
           const sourceArr = pageArr.map((p) => doc.pageMetrics[p]?.sourcePageN ?? p);
@@ -594,13 +598,29 @@ export async function exportData(doc, format = 'txt', options = {}) {
                 if (!bytes) throw new Error(`Cannot export: missing PDF bytes for render source ${run.sourceId}.`);
                 runBuffers.push(await subsetPdf(bytes, run.pages));
               }
-              basePdfData = runBuffers.length === 1 ? runBuffers[0] : await mergePdfs(runBuffers, { outline: outlineForOutput });
+              if (runBuffers.length === 1) {
+                basePdfData = runBuffers[0];
+              } else {
+                /** @type {Array<Map<number, number>>} */
+                const objectMaps = [];
+                basePdfData = await mergePdfs(runBuffers, { outline: outlineForOutput, objectMaps });
+                // The merge renumbers every object, so a row that names an object of its source (a form field, a stamp annotation) is renumbered through the map of the run its page came in.
+                let run = 0;
+                const runOfPage = sourceIdArr.map((id, k) => (k > 0 && id !== sourceIdArr[k - 1] ? ++run : run));
+                srcRefRemap = (srcRef, k) => objectMaps[runOfPage[k]]?.get(srcRef) ?? -1;
+              }
             } else {
               basePdfData = await subsetPdf(basePdfData, sourceArr, { outline: outlineForOutput });
             }
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
-            overlayAnnotationsPages = pageArr.map((i) => annotationsPagesExport[i] || []);
+            const remap = srcRefRemap;
+            overlayAnnotationsPages = pageArr.map((i, k) => (annotationsPagesExport[i] || [])
+              .map((a) => (remap && (a.type === 'field' || a.type === 'stamp') && a.srcRef != null ? { ...a, srcRef: remap(a.srcRef, k) } : a)));
+            overlayStampSourcesPages = pageArr.map((i, k) => {
+              const lifted = doc.stampSources.pages[i] || null;
+              return lifted && remap ? lifted.map((e) => ({ ...e, srcRef: remap(e.srcRef, k) })) : lifted;
+            });
             overlayContentEditsPages = pageArr.map((i) => doc.contentEdits.pages[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
@@ -668,6 +688,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             proofOpacity: overlayOpacity / 100,
             humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
+            stampSourcesPages: overlayStampSourcesPages,
             contentEditsPages: overlayContentEditsPages,
             convertTextToPaths: convertDupSourceTextToPaths,
             convertFullPages,
@@ -923,6 +944,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
         if (shapes.marksOverflow) enc.mo = 1;
         return enc;
       });
+      if (doc.stampSources.pages.some((p) => p && p.length)) {
+        envelope.session.stampSources = doc.stampSources.pages.map((p) => (p && p.length
+          ? p.map((e) => /** @type {[number, number, number, number, number]} */ ([e.srcRef, e.bbox.left, e.bbox.top, e.bbox.right, e.bbox.bottom])) : null));
+      }
       if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
       if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
       if (doc.type3GlyphMappings.size) envelope.session.type3GlyphMappings = [...doc.type3GlyphMappings];

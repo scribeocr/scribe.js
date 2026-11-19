@@ -334,6 +334,12 @@ async function restoreSession(doc, { file: scribeRestoreObj, segmentedNormalized
     doc.layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
   }
   if (docBlocks && scribeRestoreObj.annotations) {
+    // Older `.scribe` files hold a placed image as a row of the stamp annotation type, with an image and no source object.
+    for (const page of scribeRestoreObj.annotations) {
+      for (const a of /** @type {Array<{type: string, srcRef?: number, imageData?: unknown}>} */ (page || [])) {
+        if (a && a.type === 'stamp' && a.srcRef == null && typeof a.imageData === 'string') a.type = 'scribeFillSignImage';
+      }
+    }
     doc.annotations.pages = scribeRestoreObj.annotations;
     doc.annotations.restored = true;
   }
@@ -342,6 +348,14 @@ async function restoreSession(doc, { file: scribeRestoreObj, segmentedNormalized
     if (scribeRestoreObj.session.editedAt != null) doc.sessionMarks.editedAt = scribeRestoreObj.session.editedAt;
     if (scribeRestoreObj.session.recognizedAt != null) doc.sessionMarks.recognizedAt = scribeRestoreObj.session.recognizedAt;
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
+    if (Array.isArray(scribeRestoreObj.session.stampSources)) {
+      doc.stampSources.pages = scribeRestoreObj.session.stampSources.map((p) => (p ? p.map(([srcRef, left, top, right, bottom]) => ({
+        srcRef,
+        bbox: {
+          left, top, right, bottom,
+        },
+      })) : null));
+    }
     if (scribeRestoreObj.session.tableExport) {
       doc.tableExport.excluded = { ...(scribeRestoreObj.session.tableExport.excluded || {}) };
       doc.tableExport.names = { ...(scribeRestoreObj.session.tableExport.names || {}) };

@@ -13,6 +13,7 @@ import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { buildFormFieldUpdates } from './writePdfFormFields.js';
+import { pageStampEdits } from './writePdfStampEdits.js';
 import { buildFillItemOps } from './writeFillSignItems.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -55,6 +56,7 @@ import { substituteFaceOutputObjects, recordFaceTag } from '../../pdf/substitute
  * @param {number} [params.proofOpacity=0.8]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
+ * @param {Array<?Array<{srcRef: number, bbox: bbox}>>} [params.stampSourcesPages=[]] - Per page, the stamp annotations lifted at import with their original boxes, used to detect deletions.
  * @param {Array<Array<ContentEdit>>} [params.contentEditsPages=[]] - Text, image, and path edit records, applied destructively to the page content streams.
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  *   Source-PDF text whose glyph origin falls inside any of these user-space bboxes is converted to paths.
@@ -87,6 +89,7 @@ export async function overlayPdfText({
   proofOpacity = 0.8,
   humanReadable = false,
   annotationsPages = [],
+  stampSourcesPages = [],
   contentEditsPages = [],
   convertRegionsToPaths = null,
   convertTextToPaths = false,
@@ -283,6 +286,7 @@ export async function overlayPdfText({
       startingNextObjNum: nextObjNum,
       humanReadable,
       annotationsPages,
+      stampSourcesPages,
       docFonts,
       convertRegionsToPaths: regionsForPaths,
       convertFullPages,
@@ -364,6 +368,12 @@ export async function overlayPdfText({
       pageAnnotations, pixelDims: pixelDims || null, allocObjNum, pushObj: pushNewObj, humanReadable, warningHandler,
     });
 
+    const stampEdits = pixelDims ? pageStampEdits({
+      objCache, pageInfo, pageAnnotations, liftedStamps: stampSourcesPages[i] ?? null, toRect: (b) => pageRectToContentRect(b, pixelDims, overlayBox, pageRotate), scrub: false, warningHandler,
+    }) : { replacements: [], dropObjNums: new Set() };
+    for (const r of stampEdits.replacements) newObjects.push(r);
+    const hasStampDrops = stampEdits.dropObjNums.size > 0;
+
     const fillTextActive = pageAnnotations.some((a) => a.type === 'freetext' && isFillTextRow(a));
 
     let textContentObjStr = '';
@@ -399,8 +409,8 @@ export async function overlayPdfText({
     }
 
     const hasText = textContentObjStr && textContentObjStr.length > 0;
-    // These types are applied to the page content rather than written as annotations.
-    const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'stamp'
+    // Redact marks and fill & sign items reach the output as page content, and a stamp annotation row edits its source object in place, so none is an annotation to write.
+    const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'scribeFillSignImage' && a.type !== 'stamp'
       && !(a.type === 'freetext' && isFillTextRow(a)));
     const hasFill = !!fillResult || !!fillTextObjStr;
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
@@ -410,7 +420,7 @@ export async function overlayPdfText({
     const hasSourceAnnotsToDrop = annotationsPages.length > 0 && pageHasSourceAnnotsToDrop(pageInfo.objText, objCache, linkDestInfo);
     const hasImageDeletes = imageDeleteByPage.has(i);
     const hasPathDeletes = pathDeleteByPage.has(i);
-    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasSourceAnnotsToDrop) continue;
+    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasSourceAnnotsToDrop && !hasStampDrops) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
@@ -448,7 +458,7 @@ export async function overlayPdfText({
         || stripConvertResult.xobjEntries.size > 0;
       // A flatten page (fullPageSet) that came out unchanged is left untouched.
       // An explicitly supplied region is re-emitted rather than skipped.
-      if (!hasText && !hasAnnots && !convertChanged && !hasFill && !hasSourceAnnotsToDrop && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
+      if (!hasText && !hasAnnots && !convertChanged && !hasFill && !hasSourceAnnotsToDrop && !hasStampDrops && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
 
       /** @type {string[]} */
       const contentsArray = [];
@@ -546,7 +556,7 @@ export async function overlayPdfText({
     }
 
     const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, null, extraAnnotRefs, objCache,
-      null, 0, null, linkDestInfo);
+      null, 0, null, linkDestInfo, hasStampDrops ? stampEdits.dropObjNums : null);
     newObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
   }
 

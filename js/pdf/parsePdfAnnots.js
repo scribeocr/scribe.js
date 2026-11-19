@@ -293,12 +293,41 @@ function resolveLinkUri(annotText, objCache) {
  */
 
 /**
+ * @typedef {Object} PdfStampRaw
+ * @property {number} objNum
+ * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
+ * @property {number} flags - Annotation flags (/F).
+ * @property {?string} name - /Name, a standard icon name or the producer's own identifier, with `#xx` escapes decoded. Null when absent.
+ * @property {string} subject - /Subj text, '' when absent.
+ * @property {string} comment - /Contents text, '' when absent.
+ * @property {string} author - /T text, '' when absent.
+ * @property {?string} createdAt - /CreationDate as UTC ISO-8601, null when absent or unparseable.
+ * @property {?number} popupRef - Object number of the /Popup annotation, null when absent.
+ * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
+ */
+
+/**
+ * True when `annotText` is a visible `/Subtype /Stamp` annotation with a normal appearance (`/AP /N`).
+ * @param {string} annotText
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {boolean}
+ */
+function stampIsLiftable(annotText, objCache) {
+  const annotKeys = scopeDictKeys(annotText);
+  if (!/\/Subtype\s*\/Stamp\b/.test(annotKeys.keyText('Subtype'))) return false;
+  const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
+  if (flags & 1 || flags & 2 || flags & 32) return false;
+  const apText = resolveDictValue(annotKeys.keyText('AP'), 'AP', objCache);
+  return !!apText && scopeDictKeys(apText).has('N');
+}
+
+/**
  * Sorts a page's /Annots into the buckets the importer lifts, plus the refs of the remaining visible annotations.
- * Lifting a Widget into `widgets` does not remove it from `passthroughRefs`, so its source object still renders and survives export.
+ * Lifting a Widget into `widgets` or a stamp annotation into `stamps` does not remove it from `passthroughRefs`, so its source object still renders and survives export.
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} pageObjText
  * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[],
- *   shapes: PdfShapeRaw[], redacts: PdfRedactRaw[], links: PdfLinkRaw[], widgets: PdfWidgetRaw[], passthroughRefs: number[] }}
+ *   shapes: PdfShapeRaw[], redacts: PdfRedactRaw[], links: PdfLinkRaw[], widgets: PdfWidgetRaw[], stamps: PdfStampRaw[], passthroughRefs: number[] }}
  */
 export function extractPdfAnnotations(objCache, pageObjText) {
   /** @type {PdfHighlightRaw[]} */
@@ -315,6 +344,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const links = [];
   /** @type {PdfWidgetRaw[]} */
   const widgets = [];
+  /** @type {PdfStampRaw[]} */
+  const stamps = [];
   /** @type {number[]} */
   const passthroughRefs = [];
 
@@ -322,7 +353,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const annotRefs = annotsContent ? [...annotsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1])) : null;
   if (!annotRefs || annotRefs.length === 0) {
     return {
-      highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs,
+      highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, stamps, passthroughRefs,
     };
   }
 
@@ -339,8 +370,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     if (!annotIsModelManaged(annotText, objCache)) {
       // Flags are ignored here: a reply is thread content, not a page icon.
       const root = resolveReplyRoot(annotText, objCache);
-      if (root && annotIsModelManaged(root.rootText, objCache)) {
-        liftedRefs.add(annotRef);
+      const rootManaged = !!root && annotIsModelManaged(root.rootText, objCache);
+      if (root && (rootManaged || stampIsLiftable(root.rootText, objCache))) {
         const creationDateStr = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
         if (!repliesByRoot.has(root.rootRef)) repliesByRoot.set(root.rootRef, []);
         /** @type {Array<{objNum: number, text: string, author: string, createdAt: ?string}>} */ (repliesByRoot.get(root.rootRef)).push({
@@ -349,9 +380,37 @@ export function extractPdfAnnotations(objCache, pageObjText) {
           author: parseAnnotPdfString(annotKeys, 'T', objCache),
           createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
         });
-        continue;
+        // A reply under a stamp annotation keeps its source object, like the annotation it answers, so it falls through to the passthrough set.
+        if (rootManaged) {
+          liftedRefs.add(annotRef);
+          continue;
+        }
       }
       const flags = resolveIntValue(annotKeys.keyText('F'), 'F', objCache, 0);
+
+      if (stampIsLiftable(annotText, objCache)) {
+        const sRectStr = resolveArrayValue(annotKeys.keyText('Rect'), 'Rect', objCache);
+        const sRectNums = sRectStr ? sRectStr.split(/\s+/).map(Number) : [];
+        if (sRectNums.length >= 4 && !sRectNums.slice(0, 4).some(Number.isNaN)) {
+          // Some producers write /Name as a string.
+          const nameToken = resolveNameValue(annotKeys.keyText('Name'), 'Name', objCache);
+          const name = nameToken != null ? nameToken.replace(/#([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+            : resolveStringValue(annotKeys.keyText('Name'), 'Name', objCache);
+          const popupMatch = /\/Popup\s+(\d+)\s+\d+\s+R/.exec(annotKeys.keyText('Popup'));
+          const sCreatedAt = parseAnnotPdfString(annotKeys, 'CreationDate', objCache);
+          stamps.push({
+            objNum: annotRef,
+            rect: [sRectNums[0], sRectNums[1], sRectNums[2], sRectNums[3]],
+            flags,
+            name: name || null,
+            subject: parseAnnotPdfString(annotKeys, 'Subj', objCache),
+            comment: parseAnnotPdfString(annotKeys, 'Contents', objCache),
+            author: parseAnnotPdfString(annotKeys, 'T', objCache),
+            createdAt: sCreatedAt ? parsePdfDate(sCreatedAt) : null,
+            popupRef: popupMatch ? Number(popupMatch[1]) : null,
+          });
+        }
+      }
 
       if (/\/Subtype\s*\/Widget\b/.test(annotKeys.keyText('Subtype'))) {
         try {
@@ -633,7 +692,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   if (repliesByRoot.size > 0) {
-    for (const raws of [highlights, freeTexts, textAnnots, shapes]) {
+    for (const raws of [highlights, freeTexts, textAnnots, shapes, stamps]) {
       for (const raw of raws) {
         const found = repliesByRoot.get(raw.objNum);
         if (!found) continue;
@@ -658,7 +717,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const orphanPopups = popupRefsWithoutParent(annotRefs.filter((ref) => !liftedRefs.has(ref)), objCache);
 
   return {
-    highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs: passthroughRefs.filter((ref) => !orphanPopups.has(ref)),
+    highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, stamps, passthroughRefs: passthroughRefs.filter((ref) => !orphanPopups.has(ref)),
   };
 }
 

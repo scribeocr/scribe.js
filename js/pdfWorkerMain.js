@@ -39,6 +39,12 @@ export class PdfScheduler {
   renderPdfPage = (args, lane = 'background') => this.scheduler.addJob('renderPdfPage', args, lane);
 
   /**
+   * Render one of a page's annotations alone, on a transparent background, as a PNG blob.
+   * @param {{ pageIndex: number, annotRef: number, dpi?: number }} args
+   */
+  renderPdfAnnotation = (args) => this.scheduler.addJob('renderPdfAnnotation', args);
+
+  /**
    * The font program the renderer draws a given embedded font with.
    * `pageIndex` lets the answering worker resolve a font from a page it never touched itself.
    * @param {{ fontObjNum: number, pageIndex?: number }} args
@@ -188,6 +194,12 @@ export class PdfSchedulerInProcess {
    */
   // eslint-disable-next-line no-unused-vars
   renderPdfPage = (args, lane = 'background') => this.#core.renderPage(args);
+
+  /**
+   * Render one of a page's annotations alone, on a transparent background, as a PNG blob.
+   * @param {{ pageIndex: number, annotRef: number, dpi?: number }} args
+   */
+  renderPdfAnnotation = (args) => this.#core.renderAnnotation(args);
 
   /**
    * The font program the renderer draws a given embedded font with, for native-text editing.

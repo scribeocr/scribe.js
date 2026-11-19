@@ -17,6 +17,8 @@ import {
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { buildFillItemOps } from './writeFillSignItems.js';
+import { pageStampEdits } from './writePdfStampEdits.js';
+import { pageRectToContentRect } from '../../pdf/pageGeometry.js';
 import {
   scrubPageDictText, scrubReferencedObject, catalogKeepEntries, defaultScrubOpts,
 } from '../../pdf/metadata/scrubMetadata.js';
@@ -266,6 +268,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {number} [params.proofOpacity]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
+ * @param {Array<?Array<{srcRef: number, bbox: bbox}>>} [params.stampSourcesPages=[]] - Per page, the stamp annotations lifted at import with their original boxes, used to detect deletions.
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  * @param {?number[]} [params.convertFullPages=null] - Page indices to flatten (whole-page conversion that also runs without overlay text).
  * @param {boolean} [params.convertBrokenType3ToPaths=false] - Convert glyphs drawn by broken-ToUnicode Type3 fonts to paths on every page.
@@ -295,6 +298,7 @@ export async function rebuildPdfSubset({
   confThreshHigh, confThreshMed, proofOpacity,
   humanReadable = false,
   annotationsPages = [],
+  stampSourcesPages = [],
   convertRegionsToPaths = null,
   convertFullPages = null,
   convertBrokenType3ToPaths = false,
@@ -465,6 +469,13 @@ export async function rebuildPdfSubset({
         pageAnnotations, pixelDims: pixelDims || null, allocObjNum, pushObj: pushOutputObj, humanReadable, warningHandler,
       });
 
+      // The replacement bypasses the scrub of referenced objects below, so it strips the reviewer's identity itself.
+      const stampEdits = pixelDims ? pageStampEdits({
+        objCache, pageInfo, pageAnnotations, liftedStamps: stampSourcesPages[i] ?? null, toRect: (b) => pageRectToContentRect(b, pixelDims, overlayBox, pageRotate), scrub: !!scrub, warningHandler,
+      }) : { replacements: [], dropObjNums: new Set() };
+      for (const r of stampEdits.replacements) allOutputObjects.push(r);
+      const hasStampDrops = stampEdits.dropObjNums.size > 0;
+
       const fillTextActive = pageAnnotations.some((a) => a.type === 'freetext' && isFillTextRow(a));
 
       let textContentObjStr = '';
@@ -568,8 +579,8 @@ export async function rebuildPdfSubset({
       const hasWidgetBake = !!widgetBake;
 
       const hasText = textContentObjStr && textContentObjStr.length > 0;
-      // Redact marks, ink/stamp items, and fill-text freetext rows reach the output as page content rather than annotations, so they must not count here.
-      const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'stamp'
+      // Redact marks and fill & sign items reach the output as page content, and a stamp annotation row edits its source object in place, so none is an annotation to write.
+      const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'scribeFillSignImage' && a.type !== 'stamp'
         && !(a.type === 'freetext' && isFillTextRow(a)));
       const hasFill = !!fillResult || !!fillTextObjStr;
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
@@ -580,7 +591,7 @@ export async function rebuildPdfSubset({
       const hasPathDeletes = pathDeletes.has(i);
       const hasSourceAnnotsToDrop = annotationsPages.length > 0 && pageHasSourceAnnotsToDrop(pageInfo.objText, objCache, linkDestInfo);
       if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasWidgetBake
-        && !hasSourceAnnotsToDrop) continue;
+        && !hasSourceAnnotsToDrop && !hasStampDrops) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -614,7 +625,7 @@ export async function rebuildPdfSubset({
         // leave it for the copy-through loop rather than rewrite it.
         const convertChanged = stripConvertResult.refs !== existingContentsRefs
           || stripConvertResult.xobjEntries.size > 0;
-        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill && !hasWidgetBake && !hasSourceAnnotsToDrop) continue;
+        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill && !hasWidgetBake && !hasSourceAnnotsToDrop && !hasStampDrops) continue;
 
         if (hasText || hasFill) {
           const qSaveStr = 'q\n';
@@ -758,9 +769,10 @@ export async function rebuildPdfSubset({
         extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs, ...linkAnnots.annotRefs];
       }
 
+      const dropAnnotObjNums = widgetBake || hasStampDrops ? new Set([...(widgetBake ? widgetBake.dropObjNums : []), ...stampEdits.dropObjNums]) : null;
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
         extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null, linkDestInfo,
-        widgetBake ? widgetBake.dropObjNums : null);
+        dropAnnotObjNums);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
 
       // The rebuilt resources text rides along because the trace resolves refs only against the original file and would otherwise never reach the original fonts/xobjects the page still needs.

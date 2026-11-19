@@ -225,18 +225,18 @@ export function addInk(doc, n, item) {
  * @param {import('./containers/scribeDoc.js').ScribeDoc} doc
  * @param {number} n
  * @param {{ bbox: bbox, imageData: string }} item - `imageData` is a PNG or JPEG data URL.
- * @returns {AnnotationStamp}
+ * @returns {AnnotationScribeFillSignImage}
  */
-export function addStamp(doc, n, item) {
+export function addScribeFillSignImage(doc, n, item) {
   if (!item || !/^data:image\/(png|jpeg);base64,/.test(item.imageData || '')) {
-    throw new Error('addStamp requires a PNG or JPEG data URL.');
+    throw new Error('addScribeFillSignImage requires a PNG or JPEG data URL.');
   }
   if (!item.bbox || !(item.bbox.right > item.bbox.left) || !(item.bbox.bottom > item.bbox.top)) {
-    throw new Error('addStamp requires a bbox with positive width and height.');
+    throw new Error('addScribeFillSignImage requires a bbox with positive width and height.');
   }
-  /** @type {AnnotationStamp} */
+  /** @type {AnnotationScribeFillSignImage} */
   const row = {
-    type: 'stamp',
+    type: 'scribeFillSignImage',
     bbox: {
       left: item.bbox.left, top: item.bbox.top, right: item.bbox.right, bottom: item.bbox.bottom,
     },

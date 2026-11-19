@@ -39,6 +39,14 @@ export async function renderPdfPage(args) {
 }
 
 /**
+ * Render one of a page's annotations alone, on a transparent background, as a PNG blob.
+ * @param {{ pageIndex: number, annotRef: number, dpi?: number }} args
+ */
+export async function renderPdfAnnotation(args) {
+  return core.renderAnnotation(args);
+}
+
+/**
  * The font program the renderer draws a given embedded font with.
  * @param {{ fontObjNum: number, pageIndex?: number }} args
  */
@@ -114,6 +122,7 @@ if (parentPort) {
       parsePdfPage,
       parsePdfPageAnnotations,
       renderPdfPage,
+      renderPdfAnnotation,
       getPdfFontBytes,
       getPdfType3GlyphHashes,
       getPdfLineState,

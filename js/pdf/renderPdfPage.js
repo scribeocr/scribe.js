@@ -14,7 +14,7 @@ import {
 import { parseDrawOps } from './parseDrawOps.js';
 import { applyTextPatchRecords, patchPageContents, textPatchesTarget } from './textPatch.js';
 import {
-  mapImageDelete, imageDrawMatchesDelete, mapPathDelete, pathDrawMatchesDelete,
+  mapImageDelete, imageDrawMatchesDelete, mapPathDelete, pathDrawMatchesDelete, pageRectToContentRect,
 } from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -4946,15 +4946,18 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {number} [quality=0.6] - JPEG/WebP quality 0-1. WebP quality 1.0 encodes losslessly in Chromium.
  * @param {?RenderEdits} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
  *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
+ * @param {{ transparent?: boolean }} [options] - `transparent` leaves the page background unpainted and returns a 'png' render as a `blob` that keeps its alpha channel.
  * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
  *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
- *   The rendered image in `dataUrl` ('png'), `blob` ('jpeg'/'webp'), or `bitmap` ('bitmap').
+ *   The rendered image in `dataUrl` ('png'), `blob` ('jpeg'/'webp', or a transparent 'png'), or `bitmap` ('bitmap').
  *   `colorMode` is the mode actually used, which downgrades to 'gray' on a page with no color.
  *   'bitmap' falls back to a PNG `dataUrl` when the canvas is not a real OffscreenCanvas (Node).
  *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever `outputFormat` requested.
  *   `drawMs - decodeMs` estimates the recurring cost of re-rendering the page.
  */
-export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6, edits = null) {
+export async function renderPdfPageAsImage(
+  pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6, edits = null, options = {},
+) {
   const tRenderStart = performance.now();
   // decodeMs is a subset of drawMs, not a sibling: it counts only the decodes inside the draw loop that were admitted to the doc-wide image cache.
   const perf = {
@@ -5182,6 +5185,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   }
 
   const annotsParsed = extractPdfAnnotations(objCache, pageObjText);
+  /** @type {?Map<number, ?[number, number, number, number]>} */
+  let stampEdits = null;
+  if (edits && edits.stamps?.length && edits.dims) {
+    stampEdits = new Map();
+    for (const s of edits.stamps) stampEdits.set(s.srcRef, s.bbox ? pageRectToContentRect(s.bbox, edits.dims, mediaBox, rotate) : null);
+  }
   let needAppearances = false;
   {
     const rootObjNum = findRootObjNum(objCache.pdfBytes);
@@ -5227,6 +5236,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
       }
       if (rect.length < 4 || rect.some(Number.isNaN)) continue;
+      if (stampEdits && stampEdits.has(annotRef)) {
+        const edited = stampEdits.get(annotRef);
+        if (!edited) continue;
+        rect[0] = edited[0]; rect[1] = edited[1]; rect[2] = edited[2]; rect[3] = edited[3];
+      }
       // /Rect corners may be stored in either order, so normalize to lower-left + size.
       const rectX0 = Math.min(rect[0], rect[2]);
       const rectY0 = Math.min(rect[1], rect[3]);
@@ -8565,6 +8579,17 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     };
     ca.closeDrawable(blankCanvas);
     return blankResult;
+  }
+
+  // The canvas encoder keeps alpha, where buildPngDataUrl strips it.
+  if (options.transparent) {
+    const tFlushStart = performance.now();
+    const blob = await canvas.convertToBlob({ type: 'image/png', mime: 'image/png' });
+    perf.flushMs = performance.now() - tFlushStart;
+    ca.closeDrawable(canvas);
+    return {
+      blob, colorMode: effectiveColorMode, ok: true, perf,
+    };
   }
 
   if (drawOps.length > 0) ctx.globalCompositeOperation = 'destination-over';

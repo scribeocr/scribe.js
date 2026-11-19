@@ -144,8 +144,8 @@ export function renderPageFormFields(viewer, n) {
     .sort((a, b) => (a.bbox.top - b.bbox.top) || (a.bbox.left - b.bbox.left));
   for (const row of rows) {
     if (row.fieldType === 'signature') {
-      // Signing into a field places an ink or stamp annotation and never sets `signed`, so overlap is the only evidence a signature is already there.
-      const covered = pageRows.some((a) => (a.type === 'ink' || a.type === 'stamp')
+      // Signing into a field places an ink or image item and never sets `signed`, so overlap is the only evidence a signature is already there.
+      const covered = pageRows.some((a) => (a.type === 'ink' || a.type === 'scribeFillSignImage')
         && a.bbox.left < row.bbox.right && a.bbox.right > row.bbox.left
         && a.bbox.top < row.bbox.bottom && a.bbox.bottom > row.bbox.top);
       if (covered) continue;

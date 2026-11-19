@@ -5,6 +5,7 @@ import { makeIconButton, setTimestamp } from './toolbar.js';
 import { annotMatchesWord } from '../viewerHighlights.js';
 import { createNote } from '../viewerNotes.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
+import { stampImageUrl } from '../viewerFillSign.js';
 import { bboxToPageSpace } from '../../../js/addHighlights.js';
 
 // Speech-bubble glyph for the toolbar toggle (also the view's tab in the unified sidebar's switch strip).
@@ -13,6 +14,9 @@ export const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fi
 const NEW_NOTE_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 // Small dog-eared note glyph marking a freestanding-note row (matches the on-page note icon).
 const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M4 4h16v10l-6 6H4z"/><path d="M20 14l-6 6v-5a1 1 0 0 1 1-1z" fill="rgba(0,0,0,.22)"/></svg>';
+// Rounded label glyph marking a stamp annotation row.
+const STAMP_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+  + '<rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 12h10"/></svg>';
 // Outline speech bubble for the empty state (the filled COMMENT_SVG stays the toolbar toggle).
 const EMPTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
@@ -30,10 +34,10 @@ const QUOTE_SCROLL_SLACK_PX = 64;
  * Annotation types listed as drawn marks in the comments panel.
  * Links and form fields are excluded because each has its own editing surface elsewhere.
  */
-const MARK_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline', 'freetext', 'ink', 'stamp']);
+const MARK_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline', 'freetext', 'ink', 'scribeFillSignImage', 'stamp']);
 
 const MARK_LABEL = {
-  square: 'Box', circle: 'Ellipse', line: 'Line', polygon: 'Polygon', polyline: 'Polyline', freetext: 'Text box', ink: 'Drawing', stamp: 'Stamp',
+  square: 'Box', circle: 'Ellipse', line: 'Line', polygon: 'Polygon', polyline: 'Polyline', freetext: 'Text box', ink: 'Drawing', scribeFillSignImage: 'Image', stamp: 'Stamp',
 };
 
 /**
@@ -60,7 +64,7 @@ function annotAnchor(annot) {
  * `readOnly` rows are listed so they can be found and read, but carry no editable comment thread.
  * @typedef {{pageIndex: number, kind: 'highlight'|'note'|'redact'|'mark', comment: string, author: string, createdAt: string,
  *   replies: AnnotationReply[], color: string, preview: string, groupId: ?string, readOnly: boolean,
- *   annot: AnnotationHighlight | AnnotationText | AnnotationRedact | AnnotationShape | AnnotationFreeText, top: number, left: number}} CommentRow
+ *   annot: AnnotationHighlight | AnnotationText | AnnotationRedact | AnnotationShape | AnnotationFreeText | AnnotationStamp, top: number, left: number}} CommentRow
  */
 
 /**
@@ -262,7 +266,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
             createdAt: a.createdAt || '',
             replies: a.replies || [],
             color: a.borderColor || a.fillColor || '',
-            preview: a.bbox ? quoteText(i, [a]) : '',
+            preview: a.bbox && a.type !== 'stamp' ? quoteText(i, [a]) : '',
             groupId: null,
             readOnly: true,
             annot: a,
@@ -1670,6 +1674,25 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       kind.className = 'scribe-cm-kind';
       kind.innerHTML = `${NOTE_MARK_SVG}<span>Note</span>`;
       anchor.appendChild(kind);
+    } else if (row.annot.type === 'stamp') {
+      const stack = document.createElement('span');
+      stack.className = 'scribe-cm-stack';
+      const kind = document.createElement('span');
+      kind.className = 'scribe-cm-kind';
+      kind.innerHTML = `${STAMP_MARK_SVG}<span>Stamp</span>`;
+      if (row.annot.subject) {
+        const subj = document.createElement('span');
+        subj.className = 'scribe-cm-subj';
+        subj.textContent = `· ${row.annot.subject}`;
+        kind.appendChild(subj);
+      }
+      const thumb = document.createElement('img');
+      thumb.className = 'scribe-cm-thumb';
+      thumb.alt = '';
+      thumb.draggable = false;
+      stampImageUrl(scribe, row.pageIndex, row.annot).then((url) => { thumb.src = url; }).catch(() => thumb.remove());
+      stack.append(kind, thumb);
+      anchor.appendChild(stack);
     } else {
       const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
       const quote = document.createElement('span');
