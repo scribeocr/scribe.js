@@ -188,16 +188,6 @@ export function stampImageUrl(viewer, n, row) {
 /** @type {WeakMap<object, {n: number, row: AnnotationStamp}>} Active stamp-annotation drag per viewer. */
 const stampDragByViewer = new WeakMap();
 
-/** @type {WeakMap<object, Map<number, string>>} Per document, each page's stamp annotation rows as the page raster last painted them. */
-const stampRasterByDoc = new WeakMap();
-
-/**
- * One string for a set of stamp annotation boxes, to tell whether the page raster still shows the page's rows.
- * @param {Array<{srcRef: number, bbox: bbox}>} entries
- */
-const stampSignature = (entries) => entries.slice().sort((a, b) => a.srcRef - b.srcRef)
-  .map((e) => `${e.srcRef}:${e.bbox.left},${e.bbox.top},${e.bbox.right},${e.bbox.bottom}`).join('|');
-
 /** @type {WeakMap<object, {n: number, row: FillItemRow}>} Selected item per viewer. */
 const selectionByViewer = new WeakMap();
 
@@ -319,7 +309,7 @@ export function selectFillItem(viewer, n, row) {
 }
 
 /**
- * Re-render page `n` after its placed items changed, and report the edit to the viewer.
+ * Re-render page `n`'s placed items after they changed, and report the edit to the viewer.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
  */
@@ -327,17 +317,7 @@ function refreshItems(viewer, n) {
   viewer.renderFillItems(n);
   // A placed item can cover an unsigned signature field, whose sign-here affordance then drops.
   viewer.renderFormFields(n);
-  // The page raster paints the stamp annotations, so it is rendered again once their rows differ from what it shows.
-  const { doc } = viewer;
-  let painted = stampRasterByDoc.get(doc);
-  if (!painted) {
-    painted = new Map();
-    stampRasterByDoc.set(doc, painted);
-  }
-  const sig = stampSignature((doc.annotations.pages[n] || []).filter((a) => a.type === 'stamp'));
-  const was = painted.has(n) ? painted.get(n) : stampSignature(doc.stampSources.pages[n] || []);
-  painted.set(n, sig);
-  if (sig !== was) viewer.refreshPageRaster(n);
+  if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
   viewer.annotationsEdited(n);
   if (viewer.onEditCallback) viewer.onEditCallback();
 }
@@ -412,6 +392,8 @@ export function deleteSelectedFillItem(viewer) {
     });
   }
   selectionByViewer.delete(viewer);
+  // The page raster paints a stamp annotation, so a deleted one leaves the page only through a render.
+  if (sel.row.type === 'stamp') viewer.refreshPageRaster(sel.n);
   refreshItems(viewer, sel.n);
   return true;
 }
@@ -791,8 +773,6 @@ function wireItemPointer(viewer, n, row, el) {
         }
         if (row.type === 'stamp') {
           viewer.doc.images.setHiddenStamps(n, null);
-          /** @type {Map<number, string>} */ (stampRasterByDoc.get(viewer.doc) || stampRasterByDoc.set(viewer.doc, new Map()).get(viewer.doc))
-            .set(n, stampSignature((viewer.doc.annotations.pages[n] || []).filter((a) => a.type === 'stamp')));
           viewer.refreshPageRaster(n).then(() => {
             if (stampDragByViewer.get(viewer)?.row !== row) return;
             stampDragByViewer.delete(viewer);

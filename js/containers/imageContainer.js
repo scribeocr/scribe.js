@@ -502,6 +502,13 @@ export class ImageStore {
   };
 
   /**
+   * The content-edit payload a render of display slot `n` for OCR, export or a thumbnail applies, or null when the page has none.
+   * @param {number} n - Page number
+   * @returns {?RenderEdits}
+   */
+  renderEdits = (n) => this.#editsForPage(n, false);
+
+  /**
    * The raster on its way to a viewer for each display slot.
    * A thumbnail asked for in the meantime is cut from it instead of rendering the page a second time.
    * @type {Map<number, ViewerRaster>}

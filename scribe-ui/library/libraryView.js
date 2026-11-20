@@ -7986,9 +7986,12 @@ export function createLibraryInstance(viewer, opts) {
   // Two single-slot hooks on the viewer: the first instance sets them, and they mark any instance's tab dirty.
   const ownsEditHooks = !viewer.scribe.onAnnotationsEdited;
   if (ownsEditHooks) {
-    // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty.
+    // Pointer-made annotations commit without an input event or a ScribeDoc method, so the edit signal is what marks the tab dirty and the document edited.
     viewer.scribe.onAnnotationsEdited = () => {
-      const target = /** @type {any} */ (viewer.doc)?._libraryDirtyTarget;
+      const d = /** @type {any} */ (viewer.doc);
+      if (!d) return;
+      d._libraryEdited = true;
+      const target = d._libraryDirtyTarget;
       if (!target) return;
       target.libraryDirty = true;
       if (target.preview) {

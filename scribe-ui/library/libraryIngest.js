@@ -56,8 +56,10 @@ export const coverOf = async (doc) => {
   const pm = doc.pageMetrics[0];
   const edits = doc.contentEdits?.pages?.[0];
   const editsHash = edits?.length ? await hashBytes(new TextEncoder().encode(JSON.stringify(edits)).buffer) : '';
+  const stamps = doc.images.renderEdits(0)?.stamps;
+  const stampsHash = stamps ? await hashBytes(new TextEncoder().encode(JSON.stringify(stamps)).buffer) : '';
   const ownPage = (pm?.sourceId ?? doc.images.primarySourceId) === doc.images.primarySourceId;
-  return `${ownPage ? '' : pm.sourceId}:${pm?.sourcePageN ?? 0}:${pm?.rotation || 0}:${editsHash}`;
+  return `${ownPage ? '' : pm.sourceId}:${pm?.sourcePageN ?? 0}:${pm?.rotation || 0}:${editsHash}${stampsHash ? `:${stampsHash}` : ''}`;
 };
 
 /**
