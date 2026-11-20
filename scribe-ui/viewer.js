@@ -394,6 +394,12 @@ export class ScribeViewer {
      */
     this.onHighlightHover = null;
     /**
+     * Called with a freestanding note's annotation when the pointer or keyboard focus reaches its mark, and null when it leaves.
+     * The comments panel registers here to light the note's row.
+     * @type {?(annot: ?AnnotationText) => void}
+     */
+    this.onNoteHover = null;
+    /**
      * Rebuild the comments side panel so an open panel reflects a comment/note edited elsewhere (mini toolbar, note card).
      * The host registers this when the comments panel is installed.
      * @type {?() => void}

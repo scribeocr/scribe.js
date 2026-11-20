@@ -3,7 +3,7 @@
 // A sibling of the bookmarks and thumbnails rails.
 import { makeIconButton, setTimestamp } from './toolbar.js';
 import { annotMatchesWord } from '../viewerHighlights.js';
-import { createNote } from '../viewerNotes.js';
+import { createNote, pageNotes } from '../viewerNotes.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
 import { stampImageUrl } from '../viewerFillSign.js';
 import { bboxToPageSpace } from '../../../js/addHighlights.js';
@@ -12,8 +12,11 @@ import { bboxToPageSpace } from '../../../js/addHighlights.js';
 export const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.5L4 13.5V11H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
 // Plus glyph for the header "new note on this page" button (also the row's ghost "Add a comment" affordance).
 const NEW_NOTE_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
-// Small dog-eared note glyph marking a freestanding-note row (matches the on-page note icon).
-const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M4 4h16v10l-6 6H4z"/><path d="M20 14l-6 6v-5a1 1 0 0 1 1-1z" fill="rgba(0,0,0,.22)"/></svg>';
+// Miniature of the filled blue on-page speech bubble, marking a freestanding-note row.
+const NOTE_BUBBLE_SVG = '<svg viewBox="0 0 16 17" fill="none" aria-hidden="true">'
+  + '<path class="scribe-cm-nb-fill" d="M3.8 1h8.4a2.8 2.8 0 0 1 2.8 2.8v6.9a2.8 2.8 0 0 1-2.8 2.8H9.8'
+  + 'c-.65 0-1.15.65-1.58 1.55-.11.24-.33.24-.44 0C7.35 14.15 6.85 13.5 6.2 13.5H3.8A2.8 2.8 0 0 1 1 10.7V3.8A2.8 2.8 0 0 1 3.8 1Z"/>'
+  + '<g class="scribe-cm-nb-lines"><path d="M4.5 4.8h7M4.5 7.3h7M4.5 9.8h4.6" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round"/></g></svg>';
 // Rounded label glyph marking a stamp annotation row.
 const STAMP_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
   + '<rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 12h10"/></svg>';
@@ -1232,7 +1235,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     }
     const rail = document.createElement('span');
     rail.className = 'scribe-cmc-rail';
-    rail.style.background = row.kind === 'note' ? 'var(--scribe-note)'
+    rail.style.background = row.kind === 'note' ? 'var(--scribe-accent)'
       : (row.kind === 'redact' ? 'var(--scribe-danger)' : (row.color || 'var(--scribe-line-strong)'));
     const inner = document.createElement('div');
     inner.className = 'scribe-cmc-in';
@@ -1586,7 +1589,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       foldInner.appendChild(foot);
       foldElem.appendChild(foldInner);
       foldElem.addEventListener('click', (e) => e.stopPropagation());
-      rowEl.appendChild(foldElem);
+      (rowEl.querySelector('.scribe-cm-note-body') || rowEl).appendChild(foldElem);
     }
     // Clicks inside the editor must not bubble into the row's navigate handler.
     ta.addEventListener('click', (e) => e.stopPropagation());
@@ -1657,84 +1660,91 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     const rightElem = document.createElement('div');
     rightElem.className = 'scribe-cm-right';
 
-    // Markup rows carry no kind label: the quote renders with its own annotation applied (wash, underline, strikethrough, or redaction hatch), so it self-identifies.
-    // The kind word rides in the quote's tooltip.
-    const anchor = document.createElement('div');
-    anchor.className = 'scribe-cm-anchor';
-    const bar = document.createElement('span');
-    bar.className = 'scribe-cm-bar';
-    // Raw mark color, not a tinted shade, matching the coin picker's swatches.
-    if (row.kind === 'note') bar.style.background = 'var(--scribe-note)';
-    else if (row.kind === 'redact') bar.style.background = '#d1493d';
-    else if (row.color) bar.style.background = row.color;
-    else if (row.kind === 'mark') bar.style.background = 'var(--scribe-line-strong)';
-    anchor.appendChild(bar);
+    /** @type {HTMLElement} */
+    let bodyHost = el;
+    /** @type {?HTMLElement} */
+    let noteBub = null;
+    /** @type {?HTMLElement} */
+    let anchor = null;
     if (row.kind === 'note') {
-      const kind = document.createElement('span');
-      kind.className = 'scribe-cm-kind';
-      kind.innerHTML = `${NOTE_MARK_SVG}<span>Note</span>`;
-      anchor.appendChild(kind);
-    } else if (row.annot.type === 'stamp') {
-      const stack = document.createElement('span');
-      stack.className = 'scribe-cm-stack';
-      const kind = document.createElement('span');
-      kind.className = 'scribe-cm-kind';
-      kind.innerHTML = `${STAMP_MARK_SVG}<span>Stamp</span>`;
-      if (row.annot.subject) {
-        const subj = document.createElement('span');
-        subj.className = 'scribe-cm-subj';
-        subj.textContent = `· ${row.annot.subject}`;
-        kind.appendChild(subj);
-      }
-      const thumb = document.createElement('img');
-      thumb.className = 'scribe-cm-thumb';
-      thumb.alt = '';
-      thumb.draggable = false;
-      stampImageUrl(scribe, row.pageIndex, row.annot).then((url) => { thumb.src = url; }).catch(() => thumb.remove());
-      stack.append(kind, thumb);
-      anchor.appendChild(stack);
+      noteBub = document.createElement('span');
+      noteBub.className = 'scribe-cm-note-bub';
+      noteBub.title = 'Note';
+      noteBub.innerHTML = NOTE_BUBBLE_SVG;
     } else {
-      const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
-      const quote = document.createElement('span');
-      quote.className = 'scribe-cm-quote';
-      quote.title = rowKind === 'underline' ? 'Underline'
-        : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : (MARK_LABEL[rowKind] || 'Highlight')));
-      if (row.kind === 'mark') {
-        quote.classList.add('scribe-cm-qmark');
-        if (row.color) quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
-        quote.textContent = row.preview || `${MARK_LABEL[rowKind] || 'Mark'} on this page`;
-      } else if (rowKind === 'redact') {
-        quote.classList.add('scribe-cm-qmark', 'scribe-cm-q-rd');
-        // A region mark (drawn over a figure or scan) covers no words, so its quote falls back to a placeholder.
-        quote.textContent = row.preview || 'Region on this page';
-      } else {
-        quote.textContent = row.preview;
-        if (rowKind === 'underline') {
-          quote.classList.add('scribe-cm-q-ul');
-          if (row.color) quote.style.textDecorationColor = row.color;
-        } else if (rowKind === 'strikeout') {
-          quote.classList.add('scribe-cm-q-st');
-          if (row.color) quote.style.textDecorationColor = row.color;
-        } else if (row.color) {
-          quote.classList.add('scribe-cm-qmark');
-          quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
+      // Markup rows carry no kind label: the quote renders with its own annotation applied (wash, underline, strikethrough, or redaction hatch), so it self-identifies.
+      // The kind word rides in the quote's tooltip.
+      anchor = document.createElement('div');
+      anchor.className = 'scribe-cm-anchor';
+      const bar = document.createElement('span');
+      bar.className = 'scribe-cm-bar';
+      // Raw mark color, not a tinted shade, matching the coin picker's swatches.
+      if (row.kind === 'redact') bar.style.background = '#d1493d';
+      else if (row.color) bar.style.background = row.color;
+      else if (row.kind === 'mark') bar.style.background = 'var(--scribe-line-strong)';
+      anchor.appendChild(bar);
+      if (row.annot.type === 'stamp') {
+        const stack = document.createElement('span');
+        stack.className = 'scribe-cm-stack';
+        const kind = document.createElement('span');
+        kind.className = 'scribe-cm-kind';
+        kind.innerHTML = `${STAMP_MARK_SVG}<span>Stamp</span>`;
+        if (row.annot.subject) {
+          const subj = document.createElement('span');
+          subj.className = 'scribe-cm-subj';
+          subj.textContent = `· ${row.annot.subject}`;
+          kind.appendChild(subj);
         }
-      }
-      if (row.preview) {
-        // stopPropagation so expanding the quote does not also fire the row's edit-on-dblclick shortcut.
-        quote.addEventListener('dblclick', (e) => {
-          e.stopPropagation();
-          const expanding = !quote.classList.contains('expanded');
-          quote.classList.toggle('expanded', expanding);
-          quote.classList.remove('scroll');
-          quote.style.maxHeight = '';
-          if (expanding && quote.scrollHeight > QUOTE_SCROLL_MAX_PX + QUOTE_SCROLL_SLACK_PX) {
-            quote.classList.add('scroll');
-            quote.style.maxHeight = `${QUOTE_SCROLL_MAX_PX}px`;
+        const thumb = document.createElement('img');
+        thumb.className = 'scribe-cm-thumb';
+        thumb.alt = '';
+        thumb.draggable = false;
+        stampImageUrl(scribe, row.pageIndex, row.annot).then((url) => { thumb.src = url; }).catch(() => thumb.remove());
+        stack.append(kind, thumb);
+        anchor.appendChild(stack);
+      } else {
+        const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
+        const quote = document.createElement('span');
+        quote.className = 'scribe-cm-quote';
+        quote.title = rowKind === 'underline' ? 'Underline'
+          : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : (MARK_LABEL[rowKind] || 'Highlight')));
+        if (row.kind === 'mark') {
+          quote.classList.add('scribe-cm-qmark');
+          if (row.color) quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
+          quote.textContent = row.preview || `${MARK_LABEL[rowKind] || 'Mark'} on this page`;
+        } else if (rowKind === 'redact') {
+          quote.classList.add('scribe-cm-qmark', 'scribe-cm-q-rd');
+          // A region mark (drawn over a figure or scan) covers no words, so its quote falls back to a placeholder.
+          quote.textContent = row.preview || 'Region on this page';
+        } else {
+          quote.textContent = row.preview;
+          if (rowKind === 'underline') {
+            quote.classList.add('scribe-cm-q-ul');
+            if (row.color) quote.style.textDecorationColor = row.color;
+          } else if (rowKind === 'strikeout') {
+            quote.classList.add('scribe-cm-q-st');
+            if (row.color) quote.style.textDecorationColor = row.color;
+          } else if (row.color) {
+            quote.classList.add('scribe-cm-qmark');
+            quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
           }
-        });
+        }
+        if (row.preview) {
+          // stopPropagation so expanding the quote does not also fire the row's edit-on-dblclick shortcut.
+          quote.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            const expanding = !quote.classList.contains('expanded');
+            quote.classList.toggle('expanded', expanding);
+            quote.classList.remove('scroll');
+            quote.style.maxHeight = '';
+            if (expanding && quote.scrollHeight > QUOTE_SCROLL_MAX_PX + QUOTE_SCROLL_SLACK_PX) {
+              quote.classList.add('scroll');
+              quote.style.maxHeight = `${QUOTE_SCROLL_MAX_PX}px`;
+            }
+          });
+        }
+        anchor.appendChild(quote);
       }
-      anchor.appendChild(quote);
     }
 
     if (row.author) {
@@ -1749,6 +1759,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       who.className = 'scribe-cm-who';
       who.textContent = row.author;
       meta.append(ava, who);
+      if (noteBub) {
+        noteBub.classList.add('is-inline');
+        meta.appendChild(noteBub);
+      }
       if (row.createdAt) {
         const when = document.createElement('span');
         when.className = 'scribe-cm-when';
@@ -1757,8 +1771,17 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       }
       top.appendChild(meta);
       if (rightElem.childElementCount) top.appendChild(rightElem);
-      el.append(top, anchor);
-    } else {
+      el.appendChild(top);
+      if (anchor) el.appendChild(anchor);
+    } else if (noteBub) {
+      const gutter = document.createElement('div');
+      gutter.className = 'scribe-cm-note-gutter';
+      const noteBody = document.createElement('div');
+      noteBody.className = 'scribe-cm-note-body';
+      gutter.append(noteBub, noteBody);
+      el.appendChild(gutter);
+      bodyHost = noteBody;
+    } else if (anchor) {
       if (rightElem.childElementCount) anchor.appendChild(rightElem);
       el.appendChild(anchor);
     }
@@ -1770,7 +1793,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       text.textContent = row.comment;
       // A single click on the row navigates, so editing takes a double-click.
       if (editing() && !row.readOnly) text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
-      el.appendChild(text);
+      bodyHost.appendChild(text);
     } else if (editing() && !row.readOnly) {
       const ghost = document.createElement('button');
       ghost.type = 'button';
@@ -1778,7 +1801,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       ghost.dataset.ghost = 'root';
       ghost.innerHTML = `${NEW_NOTE_SVG}<span>Add a comment…</span>`;
       ghost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
-      el.appendChild(ghost);
+      bodyHost.appendChild(ghost);
     }
 
     row.replies.forEach((reply, ri) => {
@@ -1810,7 +1833,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       rtext.textContent = reply.text;
       if (editing() && !row.readOnly) rtext.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, ri); });
       msg.appendChild(rtext);
-      el.appendChild(msg);
+      bodyHost.appendChild(msg);
     });
 
     // The way into the conversation: a quiet Reply line that morphs into the composer.
@@ -1821,7 +1844,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       replyGhost.dataset.ghost = 'reply';
       replyGhost.innerHTML = `${NEW_NOTE_SVG}<span>Reply…</span>`;
       replyGhost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el, 'new'); });
-      el.appendChild(replyGhost);
+      bodyHost.appendChild(replyGhost);
     }
 
     el.addEventListener('click', (e) => {
@@ -1890,13 +1913,56 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
         litMarks = [];
       });
     }
+
+    if (row.kind === 'note') {
+      // Row->note half of the two-way hover sync: hovering or focusing the row lifts and illuminates the note mark on the page.
+      /** @type {?HTMLElement} */
+      let litNote = null;
+      const setNoteLift = (on) => {
+        if (litNote) {
+          litNote.classList.remove('is-lifted');
+          litNote = null;
+        }
+        if (!on || !scribe.getNotesGroup) return;
+        const group = scribe.getNotesGroup(row.pageIndex);
+        if (!group) return;
+        const idx = pageNotes(scribe, row.pageIndex).indexOf(row.annot);
+        const mark = idx >= 0 ? /** @type {?HTMLElement} */ (group.querySelector(`.scribe-note-icon[data-note-idx="${idx}"]`)) : null;
+        if (mark) {
+          mark.classList.add('is-lifted');
+          litNote = mark;
+        }
+      };
+      el.addEventListener('mouseenter', () => setNoteLift(true));
+      el.addEventListener('mouseleave', () => setNoteLift(false));
+      el.addEventListener('focusin', () => setNoteLift(true));
+      el.addEventListener('focusout', (e) => {
+        if (!(e.relatedTarget instanceof Node && el.contains(e.relatedTarget))) setNoteLift(false);
+      });
+    }
     return el;
+  }
+
+  /** @type {?string} */
+  let hoveredGroupId = null;
+  /** @type {?AnnotationText} */
+  let hoveredNoteAnnot = null;
+  function syncLitRows() {
+    rowEls.forEach((el, i) => {
+      if (!el || !rows[i]) return;
+      const lit = (hoveredGroupId !== null && rows[i].groupId === hoveredGroupId)
+        || (hoveredNoteAnnot !== null && rows[i].kind === 'note' && rows[i].annot === hoveredNoteAnnot);
+      el.classList.toggle('lit', lit);
+    });
   }
 
   function rebuild() {
     closeMenu();
     detachEditorListener();
     editState = null; // any open editor's nodes go with the list
+    if (scribe.elem) {
+      for (const m of scribe.elem.querySelectorAll('.scribe-note-icon.is-lifted')) m.classList.remove('is-lifted');
+    }
     // Only offer note creation in an editable viewer.
     newBtn.style.display = editing() ? '' : 'none';
     listElem.textContent = '';
@@ -1972,6 +2038,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       }
       rows.forEach(syncCompactAria);
     }
+    syncLitRows();
   }
 
   // Capture phase on the document, so a press anywhere outside dismisses the menu even when the press target's own handler stops propagation.
@@ -2112,15 +2179,20 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   }
 
   /**
-   * Highlight->row half of the two-way hover sync: the viewer reports the hovered group and its row lights up.
+   * Viewer->row half of the two-way hover sync: the viewer reports the hovered highlight group or freestanding note and its row lights up.
    * @param {?string} groupId
    */
   const onHighlightHover = (groupId) => {
-    rowEls.forEach((el, i) => {
-      if (el) el.classList.toggle('lit', !!groupId && !!rows[i] && rows[i].groupId === groupId);
-    });
+    hoveredGroupId = groupId || null;
+    syncLitRows();
+  };
+  /** @param {?AnnotationText} annot */
+  const onNoteHover = (annot) => {
+    hoveredNoteAnnot = annot || null;
+    syncLitRows();
   };
   scribe.onHighlightHover = onHighlightHover;
+  scribe.onNoteHover = onNoteHover;
 
   /**
    * Scroll the panel row for a highlight or a note into view and pulse it lit.
@@ -2166,6 +2238,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     panelElem.remove();
     document.removeEventListener('keydown', onKeyDown);
     if (scribe.onHighlightHover === onHighlightHover) scribe.onHighlightHover = null;
+    if (scribe.onNoteHover === onNoteHover) scribe.onNoteHover = null;
   }
 
   panelElem.style.display = 'none';

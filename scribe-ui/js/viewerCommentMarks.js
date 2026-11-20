@@ -13,6 +13,12 @@ const BUBBLE_LINES_HL_SVG = '<svg viewBox="0 0 12 9" fill="none" aria-hidden="tr
 const BUBBLE_LINES_NOTE_SVG = '<svg viewBox="0 0 10 9.5" fill="none" aria-hidden="true">'
   + '<path d="M1 1.5H9M1 4.75H9M1 8H6.4" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>';
 
+/** The pointer under a note mark's spine, drawn from the box's bottom border (y = 0, with the box above) down to its tip. */
+export const BUBBLE_NOTE_TAIL_SVG = '<svg class="scribe-note-tail" viewBox="-6 -1.5 12 8" aria-hidden="true">'
+  + '<path class="scribe-bub-tip-fill" d="M-4.3 -0.5H4.3V0C2.45 0 1.22 2.85 0.5 4.5Q0 5.3 -0.5 4.5C-1.22 2.85 -2.45 0 -4.3 0Z"/>'
+  + '<path class="scribe-bub-tip-stroke" d="M4.3 0C2.45 0 1.22 2.85 0.5 4.5Q0 5.3 -0.5 4.5C-1.22 2.85 -2.45 0 -4.3 0"/>'
+  + '</svg>';
+
 /** @type {?HTMLDivElement} */
 let previewProbeEl = null;
 /**
@@ -45,7 +51,7 @@ export function populateBubbleMark(markEl, {
     markEl.dataset.bubInit = '1';
     const shell = document.createElement('span');
     shell.className = 'scribe-bub-shell';
-    shell.innerHTML = `<span class="scribe-bub-box"></span>${BUBBLE_TIP_SVG}`;
+    shell.innerHTML = `<span class="scribe-bub-box"></span>${isNote ? BUBBLE_NOTE_TAIL_SVG : BUBBLE_TIP_SVG}`;
     const body = document.createElement('span');
     body.className = 'scribe-bub-body';
     const lines = document.createElement('span');
@@ -68,8 +74,8 @@ export function populateBubbleMark(markEl, {
 
   // The preview is measured here, so the mark unrolls to a width known in advance.
   const cappedCardW = Math.max(88, Math.min(228, maxCardW));
-  const padDeduction = isNote ? 19 : 26;
-  const maxTextPx = Math.max(52, cappedCardW - padDeduction);
+  const padDeduction = isNote ? 40 : 26;
+  const maxTextPx = Math.max(48, cappedCardW - padDeduction);
   const raw = comment.trim();
   const fitKey = `${maxTextPx}::${raw}`;
   let fit = previewFitCache.get(fitKey);
@@ -118,7 +124,7 @@ export function populateBubbleMark(markEl, {
   const unrollW = fit.hasEllipsis
     ? cappedCardW
     : Math.max(88, Math.min(cappedCardW, Math.ceil(fit.prefixPx + padDeduction + 1)));
-  const previewTextW = Math.max(50, unrollW - (isNote ? 18 : 25));
+  const previewTextW = Math.max(48, unrollW - (isNote ? 40 : 25));
   markEl.style.setProperty('--scribe-unroll-w', `${unrollW}px`);
   markEl.style.setProperty('--scribe-preview-w', `${previewTextW}px`);
   markEl.dataset.hasEllipsis = fit.hasEllipsis ? '1' : '0';

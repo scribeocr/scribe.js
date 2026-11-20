@@ -1755,7 +1755,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-match: #e4e6ea;
       --scribe-match-active: #a4c0ee;
       --scribe-cite: rgba(255, 233, 59, .45);
-      --scribe-note: #f4d06a;
       --scribe-warn-soft: #fbf1d3;
       --scribe-danger: #d1493d;
       --scribe-danger-soft: #fbe9e7;
@@ -1794,7 +1793,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-match: #e4e6ea;
       --scribe-match-active: #a4c0ee;
       --scribe-cite: rgba(255, 233, 59, .45);
-      --scribe-note: #f0cd68;
       --scribe-warn-soft: #3a3117;
       --scribe-danger: #ef7a6c;
       --scribe-danger-soft: #33201d;
@@ -3221,13 +3219,39 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 21;
       transition: border-color .14s ease, box-shadow .14s ease;
     }
-    .${r} .scribe-cmt-card.scribe-cmt-note-clean {
-      padding-left: 11px;
+    .${r} .scribe-cmt-card.scribe-cmt-note {
+      background: transparent;
+      border: 0;
+      box-shadow: none;
     }
+    .${r} .scribe-cmt-card.scribe-cmt-note.is-down-left { padding: 6px 9px 7px 14px; }
+    .${r} .scribe-cmt-card.scribe-cmt-note.is-down-right { padding: 6px 14px 7px 9px; }
     .${r} .scribe-cmt-card.is-editing-msg {
       border-color: color-mix(in srgb, var(--scribe-accent) 62%, var(--scribe-line-strong));
       box-shadow: 0 0 0 1.5px var(--scribe-accent-ring), var(--scribe-menu-shadow);
     }
+    .${r} .scribe-cmt-card.scribe-cmt-note.is-editing-msg { box-shadow: none; }
+    /* The literal blues match the mark on the page, which is never themed. */
+    .${r} .scribe-cmt-note-shell, .${r} .scribe-note-tail-ghost, .${r} .scribe-cmt-box.is-note {
+      --z: 1;
+      --scribe-bub-bg: #1c62d4;
+      --scribe-bub-border: #1348a1;
+      --scribe-box-radius: 7px;
+    }
+    .${r} .scribe-cmt-note-shell {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      filter: drop-shadow(0 4px 12px rgba(15, 23, 42, .18)) drop-shadow(0 1px 2.5px rgba(15, 23, 42, .12));
+    }
+    .${r} .scribe-cmt-card:not(.scribe-cmt-note) > .scribe-cmt-note-shell { display: none; }
+    .${r} .scribe-note-surface { position: absolute; top: 1px; bottom: 1px; background: var(--scribe-surface); }
+    .${r} .is-down-left .scribe-note-surface { left: 6px; right: 1px; border-radius: 2.2px 6px 6px 0; }
+    .${r} .is-down-right .scribe-note-surface { left: 1px; right: 6px; border-radius: 6px 2.2px 0 6px; }
+    .${r} .scribe-cmt-box.is-note .scribe-cmt-edge { border-color: var(--scribe-bub-border); }
+    .${r} .scribe-note-tail-ghost { position: absolute; width: 12px; height: 8px; z-index: 22; pointer-events: none; transform-origin: 6px 1.5px; }
+    .${r} .scribe-note-tail-ghost > .scribe-note-tail { left: 0; bottom: 0; }
     .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 3px; }
     .${r} .scribe-cmt-bar-row {
       position: absolute;
@@ -4750,7 +4774,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     @supports not selector(::-webkit-scrollbar) {
       .${r} .scribe-cm-quote.expanded.scroll { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
     }
-    /* Only note rows get a kind label (the note mark); a markup row's quote wears its markup instead. */
     .${r} .scribe-cm-kind {
       flex: 1 1 auto;
       display: inline-flex;
@@ -4760,11 +4783,45 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-weight: 500;
       color: var(--scribe-ink-3);
     }
-    .${r} .scribe-cm-kind svg { width: 12px; height: 12px; color: var(--scribe-note); flex: 0 0 auto; }
+    .${r} .scribe-cm-kind svg { width: 12px; height: 12px; color: var(--scribe-ink-3); flex: 0 0 auto; }
     .${r} .scribe-cm-stack { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
     .${r} .scribe-cm-stack .scribe-cm-kind svg { color: var(--scribe-ink-3); }
     .${r} .scribe-cm-subj { font-weight: 400; color: var(--scribe-ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .${r} .scribe-cm-thumb { display: block; height: 44px; max-width: 100%; width: auto; object-fit: contain; object-position: left center; }
+    /* Freestanding note rows identify with a miniature of the on-page speech bubble: beside line 1 when authorless, or inline in the header when authored. */
+    .${r} .scribe-cm-note-gutter { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+    .${r} .scribe-cm-note-body { flex: 1 1 auto; min-width: 0; }
+    .${r} .scribe-cm-note-body > .scribe-cm-text:first-child { margin-top: 0; }
+    .${r} .scribe-cm-note-body > .scribe-cm-ghost:first-child { margin-top: -2px; }
+    .${r} .scribe-cm-note-body > .scribe-cm-field:first-child { margin-top: -1px; }
+    .${r} .scribe-cm-note-bub {
+      --scribe-nb-fill: var(--scribe-accent);
+      --scribe-nb-stroke: color-mix(in srgb, var(--scribe-accent) 72%, #081226);
+      --scribe-nb-lines: .88;
+      width: 16px;
+      height: 17px;
+      flex: 0 0 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-top: 1px;
+      transition: transform .14s cubic-bezier(.22, 1, .36, 1), filter .14s ease;
+    }
+    .${r} .scribe-cm-note-bub.is-inline { margin-top: 0; }
+    .${r} .scribe-cm-row:hover .scribe-cm-note-bub,
+    .${r} .scribe-cm-row.lit .scribe-cm-note-bub {
+      --scribe-nb-fill: color-mix(in srgb, var(--scribe-accent) 74%, #ffffff);
+      --scribe-nb-stroke: color-mix(in srgb, var(--scribe-accent) 86%, #0b1b38);
+      --scribe-nb-lines: 1;
+      transform: translateY(-1px);
+      filter: drop-shadow(0 2px 1px rgba(15, 23, 42, .24));
+    }
+    .${r} .scribe-cm-note-bub svg { width: 16px; height: 17px; display: block; overflow: visible; }
+    .${r} .scribe-cm-nb-fill { fill: var(--scribe-nb-fill); stroke: var(--scribe-nb-stroke); stroke-width: 1px; transition: fill .14s ease, stroke .14s ease; }
+    .${r} .scribe-cm-nb-lines { opacity: var(--scribe-nb-lines); transition: opacity .12s ease; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-cm-note-bub, .${r} .scribe-cm-nb-fill, .${r} .scribe-cm-nb-lines { transition: none !important; }
+    }
     /* The wash (--scribe-cm-wash) is theme-scaled down (dark 22%) because a full-strength yellow reads mustard on dark.
        The text lifts one ink step so the wash never costs contrast.
        box-decoration-break: clone wraps the wash/hatch onto each clamped line like a real mark. */
@@ -4775,8 +4832,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 2px;
       -webkit-box-decoration-break: clone;
       box-decoration-break: clone;
+      transition: background-color .12s ease;
     }
     .${r}[data-theme="dark"] .scribe-cm-qmark { --scribe-cm-wash: 22%; }
+    .${r} .scribe-cm-row:hover .scribe-cm-qmark, .${r} .scribe-cm-row.lit .scribe-cm-qmark { --scribe-cm-wash: 55%; }
+    .${r}[data-theme="dark"] .scribe-cm-row:hover .scribe-cm-qmark, .${r}[data-theme="dark"] .scribe-cm-row.lit .scribe-cm-qmark { --scribe-cm-wash: 34%; }
     /* line-height 1.55 leaves room for the offset underline; the clamp box's overflow:hidden would otherwise clip it below the last line's baseline. */
     .${r} .scribe-cm-q-ul { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2.5px; line-height: 1.55; }
     .${r} .scribe-cm-q-st { text-decoration: line-through; text-decoration-thickness: 1.5px; line-height: 1.55; }
