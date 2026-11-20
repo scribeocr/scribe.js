@@ -1,7 +1,9 @@
 import {
   findXrefOffset, parseXref, sourceXrefIsWellFormed, xrefSectionIsStream, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
-import { byteIndexOf, mergeResources } from '../../pdf/pdfPrimitives.js';
+import {
+  byteIndexOf, mergeResources, extractDict, findTopLevelKeyIndex, parseTopLevelPairs,
+} from '../../pdf/pdfPrimitives.js';
 import {
   pageRectToContentRect, mapImageDelete, mapPathDelete,
 } from '../../pdf/pageGeometry.js';
@@ -28,10 +30,10 @@ import {
   FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
-  parseExistingContents, rewriteContentsStripAndConvert, resolvePageResources, buildReplacementPageDict, overlayAnnotationBbox, pageHasSourceAnnotsToDrop,
+  parseExistingContents, rewriteContentsStripAndConvert, buildReplacementPageDict, overlayAnnotationBbox, pageHasSourceAnnotsToDrop,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
-import { rebuildPdfSubset } from './subsetPdf.js';
+import { rebuildPdfSubset, prunePageResources, replacePageResources } from './subsetPdf.js';
 import { buildOutlineObjects } from './writeOutline.js';
 import { buildNameDests } from '../../pdf/parseOutline.js';
 import { substituteFaceOutputObjects, recordFaceTag } from '../../pdf/substituteFaces.js';
@@ -264,49 +266,52 @@ export async function overlayPdfText({
   });
   nextObjNum = formFieldUpdates.nextObjNum;
 
+  const rebuild = () => rebuildPdfSubset({
+    pdfBytes,
+    objCache,
+    xrefEntries,
+    pages,
+    pageIndices: effectivePageArr,
+    outline,
+    ocrArr,
+    annotationOcrArr,
+    pageMetricsArr,
+    textMode,
+    rotateText,
+    rotateBackground,
+    confThreshHigh,
+    confThreshMed,
+    proofOpacity,
+    pdfFonts,
+    startingNextObjNum: nextObjNum,
+    humanReadable,
+    annotationsPages,
+    stampSourcesPages,
+    docFonts,
+    convertRegionsToPaths: regionsForPaths,
+    convertFullPages,
+    convertBrokenType3ToPaths,
+    warningHandler,
+    scrub,
+    redactRegionsByPage,
+    textPatchesByPage,
+    imageDeleteByPage,
+    pathDeleteByPage,
+    editFontRefsByPage,
+    editFontObjects,
+    docInfo,
+    formFieldUpdates,
+    flattenFormFields,
+  });
   if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub || redactRegionsByPage.size > 0
     || flattenFormFields) {
-    return rebuildPdfSubset({
-      pdfBytes,
-      objCache,
-      xrefEntries,
-      pages,
-      pageIndices: effectivePageArr,
-      outline,
-      ocrArr,
-      annotationOcrArr,
-      pageMetricsArr,
-      textMode,
-      rotateText,
-      rotateBackground,
-      confThreshHigh,
-      confThreshMed,
-      proofOpacity,
-      pdfFonts,
-      startingNextObjNum: nextObjNum,
-      humanReadable,
-      annotationsPages,
-      stampSourcesPages,
-      docFonts,
-      convertRegionsToPaths: regionsForPaths,
-      convertFullPages,
-      convertBrokenType3ToPaths,
-      warningHandler,
-      scrub,
-      redactRegionsByPage,
-      textPatchesByPage,
-      imageDeleteByPage,
-      pathDeleteByPage,
-      editFontRefsByPage,
-      editFontObjects,
-      docInfo,
-      formFieldUpdates,
-      flattenFormFields,
-    });
+    return rebuild();
   }
 
   /** @type {Set<number>} */
   const scrubObjNums = new Set();
+  /** @type {Set<number>} */
+  const deadImageObjNums = new Set();
 
   const regionsByPage = new Map();
   if (regionsForPaths) {
@@ -450,6 +455,7 @@ export async function overlayPdfText({
         for (const o of stripConvertResult.supersededContentObjNums || []) scrubObjNums.add(o);
       }
       for (const o of stripConvertResult.deletedImageObjNums || []) scrubObjNums.add(o);
+      for (const o of stripConvertResult.deletedImageObjNums || []) deadImageObjNums.add(o);
 
       // When broken-Type3 conversion is the *only* reason this page is here
       // (no overlay text, no annotations, no explicit region) and nothing actually changed,
@@ -490,7 +496,8 @@ export async function overlayPdfText({
       newContentsArray = contentsArray;
 
       // Merge overlay fonts + ExtGState (+ converted-glyph XObjects) into the page's /Resources.
-      const existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
+      // A name the page never draws would keep its object reachable, such as an image deleted on another page.
+      const existingResourcesStr = prunePageResources(pageInfo.objText, objCache);
       let overlayFontsStr = '';
       for (const font of pageFontsUsed) {
         overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
@@ -522,6 +529,10 @@ export async function overlayPdfText({
 
       resourcesObjNum = allocObjNum();
       pushNewObj({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
+    } else {
+      // A page rewritten for its annotations alone gets pruned resources as well, so a name it never draws keeps nothing reachable.
+      resourcesObjNum = allocObjNum();
+      pushNewObj({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${prunePageResources(pageInfo.objText, objCache)}\nendobj\n\n` });
     }
 
     /** @type {string[]} */
@@ -635,6 +646,50 @@ export async function overlayPdfText({
     return basePdfData;
   }
 
+  // A candidate the updated document still reaches is spared from the in-place scrub below, because another page can still draw it.
+  // The walk resolves references against the original file, so leaving the superseded objects in it would keep the dead objects reachable through them.
+  if (scrubObjNums.size > 0) {
+    for (const n of [...scrubObjNums]) {
+      const t = objCache.getObjectText(n);
+      const sm = t && /\/SMask\s+(\d+)\s+\d+\s+R/.exec(t);
+      if (sm) scrubObjNums.add(Number(sm[1]));
+    }
+    const supersededObjNums = new Set(allNewObjects.map((o) => o.objNum));
+    const startingTexts = [`<</Root ${rootRef}/Info ${outInfoRef || ''}>>`];
+    for (const o of allNewObjects) {
+      const c = o.content;
+      if (typeof c === 'string') startingTexts.push(c);
+      else if (c && typeof c.header === 'string') startingTexts.push(c.header + (typeof c.trailer === 'string' ? c.trailer : ''));
+    }
+    const reachable = traceReferencedObjects(startingTexts, objCache, supersededObjNums);
+    // A deleted image that other pages name but none draws would keep its name in their live dictionaries if stubbed, so the export rebuilds instead.
+    const sparedDead = [...deadImageObjNums].filter((n) => reachable.has(n));
+    if (sparedDead.length > 0) {
+      /** @param {string} objText @param {boolean} [fromStart] */
+      const drawnOnly = (objText, fromStart) => {
+        // A starting text is a post-edit object whose references the original file cannot resolve.
+        if (fromStart) return objText;
+        const dictStart = objText.indexOf('<<');
+        if (dictStart < 0) return objText;
+        const body = extractDict(objText, dictStart).slice(2, -2);
+        const typeIdx = findTopLevelKeyIndex(body, '/Type');
+        const typeMatch = typeIdx < 0 ? null : /^\/Type\s*\/(Pages?)\b/.exec(body.slice(typeIdx));
+        if (!typeMatch) return objText;
+        if (typeMatch[1] === 'Page') {
+          return replacePageResources(objText, prunePageResources(objText, objCache));
+        }
+        // A page's pruned resources already hold what it inherits, so a page-tree node's own /Resources would only keep undrawn names reachable.
+        const res = parseTopLevelPairs(objText)?.pairs.find((p) => p.key === 'Resources');
+        return res ? objText.slice(0, res.keyPos) + objText.slice(res.valEnd) : objText;
+      };
+      const drawnReachable = traceReferencedObjects(startingTexts, objCache, supersededObjNums, drawnOnly);
+      if (sparedDead.some((n) => !drawnReachable.has(n))) return rebuild();
+    }
+    for (const n of [...scrubObjNums]) {
+      if (reachable.has(n)) scrubObjNums.delete(n);
+    }
+  }
+
   /** @type {(string | Uint8Array)[]} */
   const appendParts = [];
   let appendByteLen = 0;
@@ -679,24 +734,6 @@ export async function overlayPdfText({
 
   // The source xref stays live in an incremental update, so a dead object is overwritten in place with a same-length stub rather than removed.
   if (scrubObjNums.size > 0) {
-    for (const n of [...scrubObjNums]) {
-      const t = objCache.getObjectText(n);
-      const sm = t && /\/SMask\s+(\d+)\s+\d+\s+R/.exec(t);
-      if (sm) scrubObjNums.add(Number(sm[1]));
-    }
-    // An image dropped from this page can still be drawn on another, so a candidate the updated document still reaches is spared.
-    // The trace resolves references against the original file, so leaving the superseded objects in the walk would keep the dead objects reachable through them.
-    const supersededObjNums = new Set(allNewObjects.map((o) => o.objNum));
-    const startingTexts = [`<</Root ${rootRef}/Info ${outInfoRef || ''}>>`];
-    for (const o of allNewObjects) {
-      const c = o.content;
-      if (typeof c === 'string') startingTexts.push(c);
-      else if (c && typeof c.header === 'string') startingTexts.push(c.header + (typeof c.trailer === 'string' ? c.trailer : ''));
-    }
-    const reachable = traceReferencedObjects(startingTexts, objCache, supersededObjNums);
-    for (const n of [...scrubObjNums]) {
-      if (reachable.has(n)) scrubObjNums.delete(n);
-    }
     for (const n of scrubObjNums) {
       const entry = xrefEntries[n];
       if (!entry || entry.type !== 1) continue;

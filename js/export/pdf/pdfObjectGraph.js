@@ -336,7 +336,8 @@ export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffse
  * @param {string[]} startingTexts - Text contents to start tracing from
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} excludeObjNums - Object numbers to skip (page tree objects)
- * @param {((objText: string) => string) | null} [refTextTransform] - Optional filter applied to each object's text before its references are extracted.
+ * @param {((objText: string, fromStart?: boolean) => string) | null} [refTextTransform] - Optional filter applied to each object's text before its references are extracted.
+ *   It receives true as its second argument for a starting text.
  *   The metadata scrub uses it to drop refs under keys it removes, so objects reachable only through those keys are not copied into the output.
  */
 export function traceReferencedObjects(startingTexts, objCache, excludeObjNums, refTextTransform = null) {
@@ -348,7 +349,7 @@ export function traceReferencedObjects(startingTexts, objCache, excludeObjNums, 
     const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(startText);
     const parentObjNum = parentMatch ? Number(parentMatch[1]) : -1;
 
-    const scanStart = refTextTransform ? refTextTransform(startText) : startText;
+    const scanStart = refTextTransform ? refTextTransform(startText, true) : startText;
     const refs = [...scanStart.matchAll(/(\d+)\s+\d+\s+R/g)];
     for (const ref of refs) {
       const objNum = Number(ref[1]);

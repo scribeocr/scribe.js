@@ -93,7 +93,7 @@ const RESOURCE_KEYS = ['/Font', '/XObject', '/ExtGState'];
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
  */
-function prunePageResources(pageObjText, objCache) {
+export function prunePageResources(pageObjText, objCache) {
   const resourcesDictText = resolvePageResources(pageObjText, objCache);
   if (!resourcesDictText.startsWith('<<') || !resourcesDictText.endsWith('>>')) return resourcesDictText;
 
@@ -221,7 +221,7 @@ function pruneResourcesDict(resourcesDictText, used, objCache, parsed) {
  * @param {string} pageObjText
  * @param {string} newResourcesDictText
  */
-function replacePageResources(pageObjText, newResourcesDictText) {
+export function replacePageResources(pageObjText, newResourcesDictText) {
   const resIdx = pageObjText.indexOf('/Resources');
   if (resIdx < 0) {
     const insertPos = pageObjText.lastIndexOf('>>');
@@ -695,7 +695,8 @@ export async function rebuildPdfSubset({
           newContentsArray.push(`${boxObjNum} 0 R`);
         }
 
-        let existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
+        // A name the page never draws would carry its object into the output, such as the original of an image redacted on another page.
+        let existingResourcesStr = prunePageResources(pageInfo.objText, objCache);
         // The original forms still hold the removed text.
         // Any name left in /XObject keeps them referenced, so they ship in the output.
         if ((hasRedact || hasTextEdits || hasImageDeletes || hasPathDeletes) && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
@@ -736,6 +737,11 @@ export async function rebuildPdfSubset({
         resourcesObjNum = nextObjNum++;
         allOutputObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
         pageResourcesTraceStr = mergedResourcesStr;
+      } else {
+        // A page rewritten for its annotations alone gets pruned resources as well, so a name it never draws carries nothing into the output.
+        pageResourcesTraceStr = prunePageResources(pageInfo.objText, objCache);
+        resourcesObjNum = nextObjNum++;
+        allOutputObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${pageResourcesTraceStr}\nendobj\n\n` });
       }
 
       /** @type {string[]} */
