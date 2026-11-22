@@ -18,6 +18,7 @@ const PDF2_PAGES = 6;
 const PDF2_LINES_PAGE0 = 39;
 
 const docs = new Map();
+const DENIED = Symbol('denied');
 const app = express();
 const crossOrigin = (res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,6 +27,10 @@ const crossOrigin = (res) => {
 app.get('/doc/:name', (req, res) => {
   crossOrigin(res);
   const bytes = docs.get(req.params.name);
+  if (bytes === DENIED) {
+    res.status(401).end();
+    return;
+  }
   if (!bytes) {
     res.status(404).end();
     return;
@@ -204,6 +209,21 @@ const openPage = async (name) => {
 
 const refused = () => browser.execute(() => globalThis.__refused.slice());
 
+/**
+ * @param {string} label
+ * @param {string} text
+ */
+const expectToast = async (label, text) => {
+  const seen = new Set();
+  const shown = await browser.waitUntil(async () => {
+    for (const toast of await browser.execute(() => [...document.querySelectorAll('.scribe-toast')].map((t) => t.textContent))) seen.add(toast);
+    return seen.has(text);
+  }, { timeout: 15000, interval: 100 }).catch(() => false);
+  // The toasts seen are listed after the wait, since a message given to waitUntil is built before it starts.
+  if (!shown) throw new Error(`${label}: expected the toast ${JSON.stringify(text)}, saw ${JSON.stringify([...seen])}`);
+  console.log(`${label}: ${text}`);
+};
+
 let failed = false;
 try {
   if (!crossOriginRun) {
@@ -254,6 +274,18 @@ try {
   });
   console.log('navigate: page index 3');
 
+  docs.set('smoke.pdf', DENIED);
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
+  await expectToast('reload denied', "Couldn't reload “smoke.pdf” — VS Code denied access to the file");
+  docs.set('smoke.pdf', Buffer.from('not a document'));
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
+  await expectToast('reload unreadable', "Couldn't reload “smoke.pdf” — the new version did not open");
+  const kept = await browser.execute(() => ({ pages: globalThis.df.pdfViewer.pageCount, page: globalThis.df.pdfViewer.currentPage }));
+  if (kept.pages !== PDF2_PAGES || kept.page !== 3) {
+    throw new Error(`failed reloads: expected the ${PDF2_PAGES}-page document to stay open at page index 3, got ${kept.pages} pages at page index ${kept.page}`);
+  }
+  console.log('failed reloads: the open document stays');
+
   const session = await runInPage('export session', async () => {
     const out = await globalThis.df.pdfViewer.scribe.doc.exportData('scribe', { compressScribe: true });
     const bytes = typeof out === 'string' ? new TextEncoder().encode(out) : new Uint8Array(out instanceof Uint8Array ? out : new Uint8Array(out));
@@ -267,6 +299,22 @@ try {
   const reopened = await openPage('smoke.scribe');
   if (reopened.pages !== PDF2_PAGES) throw new Error(`.scribe route: expected ${PDF2_PAGES} pages, got ${reopened.pages}`);
   if (reopened.lines !== PDF2_LINES_PAGE0) throw new Error(`.scribe route: expected ${PDF2_LINES_PAGE0} lines on the first page, got ${reopened.lines}`);
+
+  await openPage('absent.pdf');
+  await expectToast('open missing', "Couldn't open “absent.pdf” — the file is missing or unreadable");
+
+  docs.set('late.pdf', DENIED);
+  await openPage('late.pdf');
+  await expectToast('open denied', "Couldn't open “late.pdf” — VS Code denied access to the file");
+  docs.set('late.pdf', fs.readFileSync(PDF));
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
+  await browser.waitUntil(async () => browser.execute((lines) => {
+    const viewer = globalThis.df.pdfViewer;
+    return viewer.pageCount === 1 && viewer.scribe.doc?.ocr.active[0]?.lines.length === lines;
+  }, NATIVE_LINES), {
+    timeout: 30000, interval: 250, timeoutMsg: `reload after a failed open: the viewer did not open the 1-page document with ${NATIVE_LINES} lines within 30 s`,
+  });
+  console.log('reload after a failed open: opened the document');
 
   docs.set('fonts.pdf', fs.readFileSync(PDF2));
   await openPage('fonts.pdf');

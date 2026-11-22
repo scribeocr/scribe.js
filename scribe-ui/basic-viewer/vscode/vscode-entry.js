@@ -28,6 +28,8 @@ new MutationObserver(applyTheme).observe(document.body, { attributes: true, attr
 
 const readDoc = async () => {
   const res = await fetch(`${config.doc}${config.doc.includes('?') ? '&' : '?'}v=${Date.now()}`);
+  if (res.status === 401) throw new Error('VS Code denied access to the file');
+  if (res.status === 404) throw new Error('the file is missing or unreadable');
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return { buffer: await res.arrayBuffer(), name: config.name };
 };
@@ -35,12 +37,16 @@ const readDoc = async () => {
 let eventQueue = Promise.resolve();
 const enqueue = (fn) => { eventQueue = eventQueue.then(fn).catch((err) => { console.error(err); }); };
 
-enqueue(async () => {
+const openDoc = async () => {
   try {
     await handleLoadFile(config.doc, config.page || 0, readDoc);
   } catch (err) {
     pdfViewer._showToast(`Couldn't open “${config.name}” — ${err instanceof Error ? err.message : err}`);
   }
+};
+
+enqueue(async () => {
+  await openDoc();
   post({ type: 'ready' });
 });
 
@@ -51,8 +57,18 @@ window.addEventListener('message', (event) => {
     enqueue(() => ScribeViewer.displayPage(message.page, true, false));
   } else if (message.type === 'reload') {
     enqueue(async () => {
-      const { buffer, name } = await readDoc();
-      await pdfViewer.replaceActiveDoc(new File([buffer], name, { type: /\.pdf$/i.test(name) ? 'application/pdf' : '' }));
+      if (!pdfViewer.doc) {
+        await openDoc();
+        return;
+      }
+      try {
+        const { buffer, name } = await readDoc();
+        const replaced = await pdfViewer.replaceActiveDoc(new File([buffer], name, { type: /\.pdf$/i.test(name) ? 'application/pdf' : '' }));
+        if (!replaced) throw new Error('the new version did not open');
+      } catch (err) {
+        pdfViewer._showToast(`Couldn't reload “${config.name}” — ${err instanceof Error ? err.message : err}`);
+        throw err;
+      }
     });
   } else if (message.type === 'deleted') {
     pdfViewer._showToast(`“${config.name}” is no longer there. This is the last version there was.`);

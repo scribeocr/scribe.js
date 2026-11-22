@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import fs from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 const VIEW_TYPE = 'viewer-21.pdf';
 const ENTRY = 'scribe-ui/basic-viewer/vscode/vscode-entry.js';
@@ -15,11 +16,39 @@ export function activate(context) {
     openCustomDocument(uri) {
       return { uri, dispose() {} };
     },
-    resolveCustomEditor(doc, panel) {
+    async resolveCustomEditor(doc, panel, token) {
       const { webview } = panel;
       const dir = vscode.Uri.joinPath(doc.uri, '..');
       const name = path.posix.basename(doc.uri.path);
-      webview.options = { enableScripts: true, localResourceRoots: [vscode.Uri.file(APP_ROOT), dir] };
+
+      let disposed = false;
+      /** @type {?ReturnType<typeof setTimeout>} */
+      let timer = null;
+      /** @type {vscode.Disposable[]} */
+      const subscriptions = [];
+      panel.onDidDispose(() => {
+        disposed = true;
+        if (timer) clearTimeout(timer);
+        for (const subscription of subscriptions) subscription.dispose();
+      });
+
+      let roots = [vscode.Uri.file(APP_ROOT), dir];
+      // Since 1.146 VS Code serves a file only when the path it resolves to lies in a root, so a document that is a link to a file in another folder needs that folder too.
+      const addTargetRoot = async () => {
+        if (doc.uri.scheme !== 'file') return false;
+        // VS Code resolves with fs.realpath, and fs.promises.realpath can answer differently on Windows.
+        const targetDir = await promisify(fs.realpath)(doc.uri.fsPath).then(path.dirname, () => null);
+        if (!targetDir) return false;
+        const target = vscode.Uri.file(targetDir);
+        // fsPath lowercases a Windows drive letter, which fs.realpath can return in upper case.
+        if (roots.some((root) => root.fsPath === target.fsPath)) return false;
+        // A new array, because VS Code skips options equal to the object it was last given, and a push would change that object's array too.
+        roots = [...roots, target];
+        return true;
+      };
+      await addTargetRoot();
+      if (disposed || token.isCancellationRequested) return;
+      webview.options = { enableScripts: true, localResourceRoots: roots };
 
       const config = {
         doc: webview.asWebviewUri(doc.uri).toString(),
@@ -64,7 +93,7 @@ export function activate(context) {
         if (ready) webview.postMessage(message);
         else pending.push(message);
       };
-      const messages = webview.onDidReceiveMessage(async (message) => {
+      subscriptions.push(webview.onDidReceiveMessage(async (message) => {
         if (!message || typeof message.type !== 'string') return;
         if (message.type === 'ready') {
           ready = true;
@@ -75,11 +104,10 @@ export function activate(context) {
         } else if (message.type === 'openExternal' && /^(https?:|mailto:)/i.test(String(message.url))) {
           vscode.env.openExternal(vscode.Uri.parse(String(message.url)));
         }
-      });
+      }));
 
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, name));
-      /** @type {?ReturnType<typeof setTimeout>} */
-      let timer = null;
+      subscriptions.push(watcher);
       const changed = () => {
         if (timer) clearTimeout(timer);
         timer = setTimeout(async () => {
@@ -88,8 +116,18 @@ export function activate(context) {
             const before = await vscode.workspace.fs.stat(doc.uri);
             await new Promise((resolve) => { setTimeout(resolve, 150); });
             const after = await vscode.workspace.fs.stat(doc.uri);
+            if (disposed) return;
             if (before.size !== after.size || before.mtime !== after.mtime) {
               changed();
+              return;
+            }
+            const added = await addTargetRoot();
+            if (disposed) return;
+            if (added) {
+              // VS Code restarts the page when its options change, and the new page loads the document itself.
+              // A message posted before it reports ready can be lost.
+              ready = false;
+              webview.options = { enableScripts: true, localResourceRoots: roots };
               return;
             }
             post({ type: 'reload' });
@@ -100,12 +138,6 @@ export function activate(context) {
       // An atomic save can arrive as a create.
       watcher.onDidCreate(changed);
       watcher.onDidDelete(() => post({ type: 'deleted' }));
-
-      panel.onDidDispose(() => {
-        if (timer) clearTimeout(timer);
-        watcher.dispose();
-        messages.dispose();
-      });
     },
   }, {
     webviewOptions: { retainContextWhenHidden: true },
