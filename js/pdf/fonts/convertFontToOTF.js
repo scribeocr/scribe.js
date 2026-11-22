@@ -2,6 +2,18 @@ import opentype from '../../font-parser/src/index.js';
 import { parseCFFSummary } from '../../font-parser/src/cff.js';
 import { standardNames, cffStandardEncoding } from '../../font-parser/src/encoding.js';
 import { aglLookup, unicodeToAGL } from './standardEncodings.js';
+import ocr from '../../objects/ocrObjects.js';
+
+/**
+ * The code point a glyph's text is keyed at.
+ * A text of several characters is keyed at its ligature character, and has no key when it has none.
+ * @param {string} text
+ * @returns {number|undefined}
+ */
+function keyOf(text) {
+  const whole = [...text].length === 1 ? text : ocr.ligatureForText(text);
+  return whole ? whole.codePointAt(0) : undefined;
+}
 
 /**
  * @typedef {{
@@ -119,24 +131,23 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
       // Codepoints claimed by a glyph's own name or bare ToUnicode, not by the PDF encoding.
       // The encoding decides which glyph a char code reaches, so the encoding-driven passes below may overwrite these.
       const nameDerived = new Set();
+      // A ligature glyph (f_i) must not be keyed at its first character, because a charset can list it ahead of that character's own glyph, which would then lose the slot.
       if (charset) {
         for (let gi = 1; gi < charset.length; gi++) {
           const name = charset[gi];
           if (!name) continue;
           const uniStr = aglLookup(name);
-          if (uniStr) {
-            const cp = uniStr.codePointAt(0);
-            if (cp && !unicodeToGID.has(cp)) {
-              unicodeToGID.set(cp, gi);
-              nameDerived.add(cp);
-            }
+          const cp = uniStr ? keyOf(uniStr) : undefined;
+          if (cp && !unicodeToGID.has(cp)) {
+            unicodeToGID.set(cp, gi);
+            nameDerived.add(cp);
           }
         }
       }
       if (unicodeToGID.size === 0 && fontObj.toUnicode && fontObj.toUnicode.size > 0) {
         for (const [cid, unicode] of fontObj.toUnicode) {
           if (cid === 0 || cid >= fontShell.nGlyphs) continue;
-          const cp = unicode.codePointAt(0);
+          const cp = keyOf(unicode);
           if (cp && cp > 0 && !unicodeToGID.has(cp)) {
             unicodeToGID.set(cp, cid);
             nameDerived.add(cp);
@@ -534,8 +545,9 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     if (fontObj.toUnicode && fontObj.toUnicode.size > 0) {
       for (const [charCode, unicode] of fontObj.toUnicode) {
         if (glyphEncoding.has(charCode)) continue;
-        const cp = unicode.codePointAt(0);
-        const name = unicodeToAGL(cp);
+        // A value of several letters must not name the glyph of its first letter, which would stand in for a ligature the font lacks.
+        const cp = keyOf(unicode);
+        const name = cp ? unicodeToAGL(cp) : null;
         if (name && parsed.glyphs.has(name)) glyphEncoding.set(charCode, name);
       }
     }

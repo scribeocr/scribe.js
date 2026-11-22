@@ -172,7 +172,12 @@ export class PdfCore {
         }
         program = await pending;
       }
-      const drawable = program && program.font ? (/** @type {string} */ text) => resolveReplacementChar(text, program, {}).kind === 'orig' : null;
+      const drawText = program && program.font ? await this.#rasterFont(fontObj) : null;
+      // The code's own glyph decides, since the glyph its text reaches in the program can be another one.
+      const drawable = program && program.font && drawText ? (/** @type {number} */ code, /** @type {number} */ nBytes) => {
+        const text = drawText(code, nBytes);
+        return !!text && [...text].every((ch) => resolveReplacementChar(ch, program, {}).kind === 'orig');
+      } : null;
       const table = fontCodeTable(fontObj, entry.glyphOpMap, drawable);
       /** @type {?SubstituteFace} */
       let substitute = null;
@@ -299,6 +304,33 @@ export class PdfCore {
       if (stroke) g.strokeColor = rgbToHex(stroke);
     }
     return g;
+  }
+
+  /**
+   * Fonts registered with the raster, by font object number.
+   * @type {Map<number, Promise<?((code: number, nBytes: number) => ?string)>>}
+   */
+  #rasterFonts = new Map();
+
+  /**
+   * Convert and register a font as the raster does, once per font.
+   * @param {import('./parsePdfDoc.js').PageFont} fontObj
+   * @returns {Promise<?(code: number, nBytes: number) => ?string>} The text the raster draws for one character code of the font, which is null for a code it draws nothing for.
+   *   Null when the raster draws the font from no embedded program.
+   */
+  #rasterFont(fontObj) {
+    const objNum = /** @type {number} */ (fontObj.fontObjNum);
+    let pending = this.#rasterFonts.get(objNum);
+    if (!pending) {
+      pending = (async () => {
+        const { registerFontForEditing } = await import('./renderPdfPage.js');
+        if (typeof process !== 'undefined') await ca.getCanvasNode();
+        return registerFontForEditing(fontObj, /** @type {ObjectCache} */ (this.#objCache));
+      })();
+      this.#rasterFonts.set(objNum, pending);
+      pending.catch(() => this.#rasterFonts.delete(objNum));
+    }
+    return pending;
   }
 
   /** @type {Map<number, Promise<?import('./glyphResolve.js').EditFontProgram>>} */
@@ -708,11 +740,7 @@ export class PdfCore {
       fontObj = this.#objCache.fontCache.get(fontObjNum);
     }
     if (!fontObj) return null;
-    if (!this.#objCache.fontBytesCache.has(fontObjNum) && !this.#objCache.fontConversionCache.has(fontObjNum)) {
-      const { registerFontForEditing } = await import('./renderPdfPage.js');
-      if (typeof process !== 'undefined') await ca.getCanvasNode();
-      await registerFontForEditing(fontObj, this.#objCache);
-    }
+    await this.#rasterFont(fontObj);
     // The program's glyphs answer to the text the parser gave each code, so the words it extracted draw in the font's own glyphs.
     // That text is often a private-use placeholder rather than a real character.
     if (fontObj.type3 && !this.#objCache.fontBytesCache.has(fontObjNum)) {
@@ -811,6 +839,7 @@ export class PdfCore {
     this.#pages = null;
     this.#linkDestInfo = null;
     this.#editPrograms.clear();
+    this.#rasterFonts.clear();
     this.#opMappedPages.clear();
   }
 }

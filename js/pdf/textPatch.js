@@ -514,7 +514,7 @@ export const glyphCopies = (glyphOpMap, c) => {
  * Codes the page itself uses take precedence over the inverse of the font's ToUnicode and encoding maps.
  * @param {PageFont} fontObj
  * @param {GlyphOpMap} glyphOpMap - The page's glyph-op map, whose glyphs say which codes the page uses.
- * @param {?(text: string) => boolean} drawable - Whether the font's program draws a text the page has not used; null trusts the maps.
+ * @param {?(code: number, nBytes: number) => boolean} drawable - Whether the font's program draws ink for a code the page has not used; null trusts the maps.
  * @returns {Map<string, FontCode>}
  */
 export function fontCodeTable(fontObj, glyphOpMap, drawable) {
@@ -554,9 +554,10 @@ export function fontCodeTable(fontObj, glyphOpMap, drawable) {
       if (!str || table.has(str)) continue;
       const advEm = advEmOf(code);
       if (!(advEm >= 0) || (advEm === 0 && str.trim() !== '')) continue;
-      if (drawable && !drawable(str)) continue;
+      const nBytes = codeBytes(fontObj, code);
+      if (drawable && str.trim() !== '' && !drawable(code, nBytes)) continue;
       table.set(str, {
-        code, nBytes: codeBytes(fontObj, code), advEm, used: false,
+        code, nBytes, advEm, used: false,
       });
     }
   };

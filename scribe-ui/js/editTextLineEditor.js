@@ -245,14 +245,18 @@ export function createLineEditor(scribe, {
       }
       for (const g of w.glyphs) {
         const letters = ocr.replaceLigatures(g.text);
-        const whole = faceOf(s, g, g.text, hints);
+        const ligature = [...g.text].length > 1 ? ocr.ligatureForText(g.text) : null;
+        const ef = s.fonts.get(g.fontObjNum ?? undefined);
+        // The resolver reads one code point, so a text of several letters is tried as its ligature character first.
+        const glyphText = ligature && ef?.faceName && ef.program && resolveReplacementChar(ligature, ef.program, hints).kind === 'orig' ? ligature : g.text;
+        const whole = faceOf(s, g, glyphText, hints);
         // A substitute face can lack the ligature glyph, so such a ligature draws letter by letter across its width.
         const pieces = letters.length > 1 && (whole.tofu || whole.fitted || !whole.face)
           ? [...letters].map((ch, j) => ({
             ch, x: g.penX + (g.widthPx * j) / letters.length, w: g.widthPx / letters.length, f: faceOf(s, g, ch, hints),
           }))
           : [{
-            ch: g.text, x: g.penX, w: g.widthPx, f: whole,
+            ch: glyphText, x: g.penX, w: g.widthPx, f: whole,
           }];
         for (const p of pieces) {
           let stretch = g.stretch || p.f.stretch;
@@ -1293,15 +1297,17 @@ export function createLineEditor(scribe, {
     const words = state.words.map((sw, wi) => ({ text: line.words[wi].text, oldId: /** @type {{id: string}} */ (sw).id, glyphs: /** @type {{glyphs: Array<LineGlyph>}} */ (sw).glyphs }));
     // A word whose glyph texts do not spell its text has no slot per character to edit, so its line does not open.
     for (const w of words) if (w.glyphs.map((g) => ocr.replaceLigatures(g.text)).join('').toLowerCase() !== w.text.toLowerCase()) return;
+    const glyphs = words.flatMap((w) => w.glyphs);
     /** @type {EditSession['fonts']} */
     const fonts = new Map();
-    for (const w of line.words) {
-      const f = nt[w.id]?.fontObjNum;
-      if (!fonts.has(f)) fonts.set(f, (await scribe.doc.images.getEditFont(n, f)) || { program: null, faceName: null });
+    // A word records one font and can draw glyphs in others, so the fonts loaded are the glyphs' own.
+    for (const g of glyphs) {
+      const f = g.fontObjNum ?? undefined;
+      if (g.face || fonts.has(f)) continue;
+      fonts.set(f, (await scribe.doc.images.getEditFont(n, f)) || { program: null, faceName: null });
     }
     const origText = words.map((w) => w.text).join(' ');
     const baselineY = line.bbox.bottom + (line.baseline?.[1] || 0);
-    const glyphs = words.flatMap((w) => w.glyphs);
     const sfSize = glyphs[0]?.sizePx || line.words[0].style.size || Math.abs(line.bbox.bottom - line.bbox.top) / 0.75;
 
     // Base style state per word, so live toggles know each word's current state and what can toggle off.

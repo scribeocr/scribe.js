@@ -22,6 +22,7 @@ import { createFillSignPalette } from '../viewerFillSign.js';
 import { nativeTextForPage, wordDrawBox } from '../../../js/textEdits.js';
 import { GlobalFonts } from '../../../js/containers/fontContainer.js';
 import { resolveReplacementChar } from '../../../js/pdf/glyphResolve.js';
+import ocr from '../../../js/objects/ocrObjects.js';
 import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
 import { showTouchCallout, hideTouchCallout, isContextMenuOpen } from '../viewerCanvasInteraction.js';
 import {
@@ -3859,10 +3860,16 @@ export function createEditTextTool(initialViewer) {
             } else {
               const ef = editFonts.get(g.fontObjNum ?? undefined);
               if (!ef?.faceName || !ef.program) continue;
-              // Some fonts map their visible hyphen glyph to a soft hyphen (U+00AD), which a canvas draws as nothing.
-              drawn = g.text.replace(/\u00ad/g, '-');
               const program = ef.program;
-              if ([...drawn].some((ch) => resolveReplacementChar(ch, program, {}).kind !== 'orig')) continue;
+              // A subset can hold a ligature and not its letters, so the ligature character is tried before the letters.
+              const ligature = [...g.text].length > 1 ? ocr.ligatureForText(g.text) : null;
+              if (ligature && resolveReplacementChar(ligature, program, {}).kind === 'orig') {
+                drawn = ligature;
+              } else {
+                // Some fonts map their visible hyphen glyph to a soft hyphen (U+00AD), which a canvas draws as nothing.
+                drawn = g.text.replace(/\u00ad/g, '-');
+                if ([...drawn].some((ch) => resolveReplacementChar(ch, program, {}).kind !== 'orig')) continue;
+              }
               cx.font = `${g.sizePx}px "${ef.faceName}"`;
             }
             cx.fillStyle = g.fillColor;

@@ -418,14 +418,45 @@ async function convertAndRegisterFont(
  * Convert and register one font outside a page render.
  * Fills `objCache.fontBytesCache` with the bytes the raster draws with.
  * Serves native-text editing when it needs a font's program before any page using the font has rendered.
- * @param {Object} fontObj - Parsed fontInfo from `objCache.fontCache`.
+ * @param {import('./parsePdfDoc.js').PageFont} fontObj - Parsed fontInfo from `objCache.fontCache`.
  * @param {ObjectCache} objCache
+ * @returns {Promise<?(code: number, nBytes: number) => ?string>} The text the raster draws for one character code of the font, which is null for a code it draws nothing for.
+ *   Null when the raster draws the font from no embedded program.
  */
 export async function registerFontForEditing(fontObj, objCache) {
   const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, 'edit');
+  const tag = 'editProbe';
+  /** @type {Map<string, string>} */
+  const registeredFontNames = new Map();
+  /** @type {Set<string>} */
+  const symbolFontTags = new Set();
+  /** @type {Set<string>} */
+  const cidPUATags = new Set();
+  /** @type {Set<string>} */
+  const rawCharCodeTags = new Set();
+  /** @type {Map<string, Set<number>>} */
+  const cidCollisionMap = new Map();
   await convertAndRegisterFont(
-    'editProbe', fontObj, new Map(), new Set(), new Set(), new Set(), new Map(), objCache, familyName,
+    tag, fontObj, registeredFontNames, symbolFontTags, cidPUATags, rawCharCodeTags, cidCollisionMap, objCache, familyName,
   );
+  if (fontObj.fontObjNum == null || !objCache.fontBytesCache.has(fontObj.fontObjNum)) return null;
+  const fonts = new Map([[tag, fontObj]]);
+  /** @type {Map<number, ?string>} */
+  const answers = new Map();
+  return (code, nBytes) => {
+    let text = answers.get(code);
+    if (text === undefined) {
+      // The raster's own op generator answers from a one-glyph stream, so the answer is what a page render draws for the code.
+      const ops = parseDrawOps(
+        `BT /${tag} 1 Tf <${code.toString(16).padStart(nBytes * 2, '0')}> Tj ET`, fonts, undefined, registeredFontNames, undefined,
+        symbolFontTags, cidPUATags, rawCharCodeTags, undefined, undefined, cidCollisionMap,
+      );
+      const op = ops.find((o) => o.type === 'type0text');
+      text = op ? /** @type {import('./parseDrawOps.js').Type0TextOp} */ (op).text : null;
+      answers.set(code, text);
+    }
+    return text;
+  };
 }
 
 /** @type {Record<string, GlobalCompositeOperation>} */
