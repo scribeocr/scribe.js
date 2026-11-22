@@ -1,5 +1,4 @@
-// Card drag for the library's grid and lists: lift, ghost, insertion line, folder drop, and edge autoscroll.
-// Owns the gesture's whole state, so the surface around it only asks whether a drag is running rather than tracking one.
+// Card drag for the document library's grid and lists: lift, ghost, insertion line, folder drop, and edge autoscroll.
 
 import {
   REORDER_SLIDE_MS, buildGhost, fanOrder, flyCopies,
@@ -8,7 +7,6 @@ import { titleOf } from './libraryStore.js';
 
 /** @typedef {import('./libraryView.js').LibraryMove} LibraryMove */
 
-// Card drag thresholds, matching the Pages-view gesture grammar so the two surfaces feel identical.
 const DRAG_THRESHOLD = 5;
 const LIFT_HOLD_MS = 250;
 const LIFT_MOVE_SLOP = 9;
@@ -31,7 +29,7 @@ const FLICK_PX = 24;
 const FLICK_MS = 60;
 
 /**
- * A press on a card or row in the library grid, from the press through the drag it may become.
+ * State for an active pointer press or drag on a card or row in the document library.
  * @typedef {Object} CardDrag
  * @property {string} relPath - The pressed card's document, or a folder key with its trailing slash.
  * @property {HTMLElement} cardElem - The pressed card or row.
@@ -59,18 +57,18 @@ const FLICK_MS = 60;
  * @property {boolean} isTouch - Whether the press came from touch.
  * @property {number} grabDX - Offset of the grab point within the ghost.
  * @property {number} grabDY
- * @property {boolean} chip - Whether the hand is the list's name chip (a document row's drag).
+ * @property {boolean} chip - Whether the drag ghost is the list's name chip (used when dragging a document row).
  * @property {number} pageW - The chip's page size at rest.
  * @property {number} pageH
  * @property {boolean} overBar - Whether the pointer has reached the bar at any time during the drag.
- * @property {boolean} foreign - Whether the pointer is over a target outside the library.
+ * @property {boolean} foreign - Whether the pointer is over a target outside the document library.
  */
 
 /**
- * Install card drag-to-reorder over the library grid.
+ * Install card drag-to-reorder over the document library grid.
  * @param {Object} deps
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} deps.viewer
- * @param {HTMLElement} deps.surface - Library root, flagged with a class for the length of a drag.
+ * @param {HTMLElement} deps.surface - Document library root, flagged with a class for the length of a drag.
  * @param {HTMLElement} deps.body - The surface the cards and rows live in, which scrolls the grid.
  * @param {Set<string>} deps.selectedPaths
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
@@ -79,16 +77,16 @@ const FLICK_MS = 60;
  * @param {(clientX: number, clientY: number, relPath: string, card: HTMLElement) => void} deps.openCardMenu
  * @param {() => boolean} deps.dragAllowed - Whether the grid is in a state a card drag may start from.
  * @param {() => boolean} deps.reorderAllowed - Whether the current sort and view support manual ordering.
- * @param {(elem: HTMLElement, dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.previewFolder - Show a folder's fold as the hovering drag would leave it.
- * @param {(elem: HTMLElement, dirPath: string) => void} deps.unpreviewFolder - Put a folder back as it is.
+ * @param {(elem: HTMLElement, dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.previewFolder - Preview a folder icon with the hovered documents added.
+ * @param {(elem: HTMLElement, dirPath: string) => void} deps.unpreviewFolder - Restore a folder icon after a hover preview.
  * @param {(dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.startLanding - Begin a drop's landing in a folder.
  * @param {(keys: string[], destDir: string) => Promise<{moves: LibraryMove[], failed: string[]}>} deps.moveItems
  * @param {(dirPath: string, mini: boolean) => HTMLElement} deps.foldFor - A folder's fold at card or list size.
  * @param {(dirPath: string, moves: LibraryMove[], fromDir: string) => void} deps.finishLanding
  * @param {(img: HTMLImageElement, relPath: string) => void} deps.thumbFor - Point an image at a document's thumbnail.
  * @param {(reached: boolean, afterCrumbDrop: boolean) => void} deps.barApproach - Unfold a folded path when the pointer reaches the bar mid-drag, or fold it back when that drag ends.
- * @param {(phase: 'move'|'drop'|'cancel', clientX: number, clientY: number, carried: string[], ghost?: ?HTMLElement) => boolean} [deps.foreignDrop] - A target outside the library.
- *   The drop phase passes the ghost, whose page the target may take for its landing before the ghost is removed.
+ * @param {(phase: 'move'|'drop'|'cancel', clientX: number, clientY: number, carried: string[], ghost?: ?HTMLElement) => boolean} [deps.foreignDrop] - A target outside the document library.
+ *   The drop phase passes the ghost so the target can animate its thumbnail into place before the ghost is removed.
  *   Answers whether the pointer is over such a target, and on a `drop` whether that target took the carried document.
  */
 export function createDragReorder({
@@ -158,7 +156,7 @@ export function createDragReorder({
   };
 
   /**
-   * Build the list's hand for a document row.
+   * Build the chip drag ghost for a document row.
    * @param {CardDrag} d
    */
   const buildChipGhost = (d) => {
@@ -229,7 +227,7 @@ export function createDragReorder({
   };
 
   /**
-   * The chip's place with its page on the row's page, or its name on the row's name when the row shows no page.
+   * Screen position and thumbnail size that align the chip over its source row at the start or end of a lift.
    * @param {CardDrag} d
    */
   const chipHome = (d) => {
@@ -385,7 +383,7 @@ export function createDragReorder({
     d.grabDY = d.startY - home.top;
     // A press usually lands on the title below the fold, so a grab-point origin would pull the fold down toward it on every shrink.
     ghost.style.transformOrigin = `${w / 2}px ${h / 2}px`;
-    // The lift animates a wrapper, because an animation on the hand itself would override its shrink transition while it plays and end with a jump.
+    // The lift animates a wrapper, because an animation on the ghost itself would override its shrink transition while it plays and end with a jump.
     const lift = document.createElement('div');
     lift.className = 'scribe-ghost-lift';
     lift.style.cssText = `position:absolute;left:0;top:0;width:100%;height:100%;transform-origin:${w / 2}px ${h / 2}px`;
@@ -442,7 +440,7 @@ export function createDragReorder({
       d.ghost = buildGhost(cards, tr, d.carried.length);
       d.grabDX = d.startX - tr.left;
       d.grabDY = d.startY - tr.top;
-      // The fan goes in a wrapper of its own because the ghost's transform is the folder shrink.
+      // The fan goes in a wrapper of its own because d.ghost.style.transform scales the ghost over drop targets.
       if (!reducedMotion()) {
         const lift = document.createElement('div');
         lift.className = 'scribe-ghost-lift';
@@ -480,7 +478,7 @@ export function createDragReorder({
   };
 
   /**
-   * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination.
+   * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination, and scale the drag ghost.
    * The item's own folder never targets, so dropping there reads as a no-op.
    * @param {CardDrag} d
    */
@@ -536,7 +534,6 @@ export function createDragReorder({
           previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */(entries));
         }
       }
-      if (d.ghost && !d.chip) d.ghost.style.transform = d.dropElem ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
       if (d.ghost && d.chip) {
         const up = d.dropElem && !d.dropElem.classList.contains('folder');
         const line = /** @type {HTMLElement} */ (d.ghost.querySelector('.dest > span'));
@@ -546,6 +543,27 @@ export function createDragReorder({
       if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
+    if (d.ghost && !d.chip) {
+      let small = !!d.dropElem;
+      if (!small) {
+        // Keep the drag ghost shrunk in the gaps between folder cards so dragging across folders does not expand and re-shrink it at every gap.
+        let left = false; let right = false; let above = false; let below = false;
+        for (const card of body.querySelectorAll('[data-band="folders-grid"] > .scribe-library-card.folder[data-dir-target]:not(.dragging)')) {
+          const r = card.getBoundingClientRect();
+          if (d.lastY >= r.top && d.lastY <= r.bottom) {
+            if (r.right <= d.lastX) left = true;
+            else if (r.left >= d.lastX) right = true;
+          }
+          if (d.lastX >= r.left && d.lastX <= r.right) {
+            if (r.bottom <= d.lastY) above = true;
+            else if (r.top >= d.lastY) below = true;
+          }
+        }
+        small = (left && right) || (above && below);
+      }
+      const transform = small ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
+      if (d.ghost.style.transform !== transform) d.ghost.style.transform = transform;
+    }
   };
 
   /**
@@ -591,7 +609,7 @@ export function createDragReorder({
     if (!d.started) {
       const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
       if (d.isTouch) {
-        // Travel before the hold fires reads as a scroll.
+        // Cancel the pending drag if the user starts scrolling before the hold timer fires.
         if (dist > LIFT_MOVE_SLOP) endDrag(false);
         return;
       }
@@ -626,7 +644,7 @@ export function createDragReorder({
   };
 
   /**
-   * The look a flying copy arrives in to match `thumb` in its card.
+   * Final styles for a flying thumbnail copy so it matches `thumb` in its card on arrival.
    * @param {Element} cardElem
    * @param {Element} thumb
    */
@@ -811,7 +829,7 @@ export function createDragReorder({
   };
 
   /**
-   * Move the carried items into the dropped-on folder or crumb while the hand flies into it.
+   * Move the carried items into the dropped-on folder or crumb while the drag ghost flies into it.
    * @param {CardDrag} d
    */
   const commitMove = async (d) => {
@@ -848,7 +866,7 @@ export function createDragReorder({
     const cut = pressed.lastIndexOf('/');
     const fromDir = cut < 0 ? '' : pressed.slice(0, cut);
     const { moves, failed } = await moveItems(d.carried, destDir);
-    // The render below draws a vacated slot, so a crumb drop records its undo first.
+    // Breadcrumb drops show an inline undo row in the list, so undo state must be recorded before re-rendering.
     if (!isFolder) finishLanding(destDir, moves, fromDir);
     renderWithSlide();
     for (const p of failed) elemOf(p, d)?.classList.remove('dragging');
