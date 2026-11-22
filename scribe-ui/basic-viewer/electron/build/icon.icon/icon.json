@@ -40,10 +40,10 @@
   ],
   "groups": [
     {
-      "name": "Approved frosted white",
+      "name": "Pure flat with hard shadow",
       "layers": [
         {
-          "name": "ROM-FB37 frosted foreground",
+          "name": "XXI flat woven foreground",
           "image-name": "foreground.png",
           "glass": false,
           "fill": "none",
