@@ -2002,12 +2002,12 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Checkpoint-save one library tab's sidecar when it has unsaved edits.
+   * Checkpoint-save one document library tab's sidecar when it has unsaved edits.
    * Resolves once no save of the tab is under way, so a caller that closes the document next never closes it under a save.
    * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: ?Promise<void>, libraryRecognized?: boolean}} tab
    */
   const saveTabIfDirty = async (tab) => {
-    // A tab another instance opened (the library's, or another portfolio's) checkpoints through that instance.
+    // A tab another instance opened (the document library's, or another portfolio's) checkpoints through that instance.
     if (!ownsTab(tab)) return;
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
@@ -2124,7 +2124,7 @@ export function createLibraryInstance(viewer, opts) {
   let fieldLow = false;
   /**
    * The search field's minimum width in px.
-   * The fold counts the field at this width, so no control sheds until the field has shrunk to it.
+   * Toolbar overflow measurement sizes the field to this floor first, so controls only hide once the field reaches it.
    */
   const fieldFloor = () => {
     const active = searchField.classList.contains('has-text') || document.activeElement === searchInput;
@@ -2161,7 +2161,7 @@ export function createLibraryInstance(viewer, opts) {
     const segs = currentDir ? currentDir.split('/') : [];
     const rootLabel = isLibrary && store ? store.root.name : opts.name;
     if (!segs.length) {
-      // An element rather than a text node, so the fold counts the name's width.
+      // Wrap in an element because crumbsNeed() iterates crumbsElem.children and ignores bare text nodes.
       const home = document.createElement('span');
       home.textContent = rootLabel;
       crumbsElem.appendChild(home);
@@ -2335,7 +2335,7 @@ export function createLibraryInstance(viewer, opts) {
     const segs = currentDir ? currentDir.split('/') : [];
     /**
      * Fill the Finder form's path bar from the current folder.
-     * The bar is on the surface, not the toolbar, so it fills whether or not the library has the toolbar.
+     * The bar is on the surface, not the toolbar, so it fills whether or not the document library has the toolbar.
      */
     const fillPathBar = () => {
       if (!finder) return;
@@ -2376,7 +2376,7 @@ export function createLibraryInstance(viewer, opts) {
     const controls = barControls;
     sortBtn.classList.remove('icon-only');
     newBtn.classList.remove('icon-only');
-    // The text buttons carry a pinned width from their last form, which would measure as that form.
+    // Clear inline widths set by roundBarButtons() so full-label widths can be measured.
     sortBtn.style.width = '';
     newBtn.style.width = '';
     for (const el of [searchField, viewSeg, sortWrap, headerSep, newWrap, refreshBtn]) el.hidden = false;
@@ -2672,9 +2672,7 @@ export function createLibraryInstance(viewer, opts) {
   let listColsRefit = null;
 
   /**
-   * Bring the library surface up to date for the current mode and state.
-   * A pass over an unchanged view identity refreshes the existing keyed cards and rows in place.
-   * Anything else tears the surface down and rebuilds it.
+   * Render the document library view for the current mode and state.
    * @param {{revealSelection?: boolean}} [renderOpts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
    */
   const render = (renderOpts) => {
@@ -2757,7 +2755,7 @@ export function createLibraryInstance(viewer, opts) {
     const renderSig = emptyLib ? 'empty-lib'
       : `r${recent.length ? 1 : 0}d${shownDirs.length || vacatedHere() ? 1 : 0}v${vacatedDocHere() ? 1 : 0}m${shown.length ? 1 : 0}o${shownOthers.length ? 1 : 0}e${emptyNote}j${justAdded.map((a) => a.relPath).join('\u0000')}`;
 
-    // Reconciling rather than rebuilding is what lets an open card menu, focus, scroll, and the mounted preview pane survive the renders indexing fires every few hundred ms.
+    // Updating in place preserves an open context menu, focus, and scroll position across frequent indexing renders.
     if (store && manifest && !fullTextResults && !storageOpen && !emptyLib
       && renderKey === lastRenderKey && renderSig === lastRenderSig) {
       for (const shelfCard of /** @type {NodeListOf<HTMLElement>} */ (body.querySelectorAll('.scribe-library-grid.shelf > .scribe-library-card'))) {
@@ -2826,8 +2824,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!fullTextResults) results.dispose();
     syncColumnHead();
     if (!store || !manifest) {
-      // Only the library can be store-less, waiting at its start screen.
-      // Every other instance has its store from birth and waits only for its scan.
+      // Only the document library shows a start screen when no folder is connected.
       if (!isLibrary) return;
       const sheet = document.createElement('div');
       sheet.className = 'scribe-library-sheet';
@@ -3071,7 +3068,6 @@ export function createLibraryInstance(viewer, opts) {
     syncSelectionUI();
   });
 
-  // The thresholds match the Pages room's band, so the two grids sweep the same way.
   const MARQUEE_THRESHOLD = 4;
   const MARQUEE_EDGE = 36;
   const MARQUEE_SPEED = 14;
@@ -3348,7 +3344,6 @@ export function createLibraryInstance(viewer, opts) {
     };
     /**
      * Add the Index item for the stale documents among `docPaths`: queued, changed on disk, or failed.
-     * A healthy document offers nothing here, because rebuilding derived data is a library-level action in the app menu.
      * @param {string[]} docPaths
      */
     const addIndexItem = (docPaths) => {
@@ -3438,7 +3433,6 @@ export function createLibraryInstance(viewer, opts) {
       if (canReveal && all.length === 1) addItem(revealLabel, false, () => { if (store) shell.revealFile(store.root.name, all[0]); });
       const single = paths.length === 1 && !otherPaths.length ? manifest.docs[paths[0]] : null;
       const revertPath = single && single.status === 'indexed' && single.hash && (single.editedAt || single.recognizedAt) ? paths[0] : null;
-      // Removal is the library's own verb, because a portfolio's files are what the portfolio holds.
       const canRemove = isLibrary && paths.length > 0 && !otherPaths.length;
       if (revertPath || canRemove) menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
       if (revertPath) addItem('Revert to original…', true, () => openRevertDialog(revertPath));
@@ -3469,8 +3463,6 @@ export function createLibraryInstance(viewer, opts) {
 
   /**
    * The one status badge a document shows, in cards and rows alike.
-   * Index state comes first, then recognition state, then the only text fact the library can state before recognizing.
-   * An `image` verdict means nothing in the document is selectable or searchable yet.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @returns {?{html: string, title?: string}}
@@ -4121,7 +4113,6 @@ export function createLibraryInstance(viewer, opts) {
    */
   const updateFolderCard = (card, dirPath) => {
     card.classList.toggle('selected', selectedPaths.has(`${dirPath}/`));
-    // A drop landing here keeps the face its hover showed, even on a card rebuilt mid-flight.
     // The files may already have moved, so the tallies leave out the documents in flight.
     const inFlight = landings.get(dirPath);
     const stats = dirStatsOf(dirPath, inFlight);
@@ -4136,10 +4127,9 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Show a folder's fold as the drag over it will leave it.
-   * @param {HTMLElement} elem - The folder's card or row.
+   * @param {HTMLElement} elem
    * @param {string} dirPath
-   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries - The documents in the hand.
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries
    */
   const previewFolder = (elem, dirPath, entries) => {
     const isCard = elem.classList.contains('scribe-library-card');
@@ -4148,15 +4138,12 @@ export function createLibraryInstance(viewer, opts) {
     if (isCard && !elem.style.minHeight) elem.style.minHeight = `${elem.getBoundingClientRect().height}px`;
     const stats = dirStatsOf(dirPath);
     const strip = /** @type {?HTMLElement} */ (isCard ? elem.querySelector(':scope > .fstrip') : elem.querySelector('.nm > .fthumb'));
-    // Once the files move, the carried documents are the folder's own, and must not be drawn twice.
     if (strip) morphFold(strip, buildFold(stats.covers.filter((entry) => !entries.includes(entry)), !isCard, entries));
   };
 
   /**
-   * Begin a drop's landing in a folder.
-   * The folder keeps the face its hover showed until the landing finishes.
    * @param {string} dirPath
-   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries - The documents in flight.
+   * @param {import('./libraryStore.js').LibraryDocEntry[]} entries
    */
   const startLanding = (dirPath, entries) => {
     landings.set(dirPath, entries);
@@ -4164,7 +4151,6 @@ export function createLibraryInstance(viewer, opts) {
 
   /**
    * Record a landed move and show where it can be taken back.
-   * Call it before the render that follows the move, except after a drop on a folder, where it ends the hover face once the flight lands.
    * @param {string} dirPath - The destination.
    * @param {LibraryMove[]} moves - Empty when nothing moved.
    * @param {string} fromDir - The directory the items came from.
@@ -4189,7 +4175,6 @@ export function createLibraryInstance(viewer, opts) {
         }
         paper.classList.remove('reserved');
       }
-      // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
       if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */(a).style.left) - parseFloat(/** @type {HTMLElement} */(b).style.left)).map((paper) => /** @type {HTMLElement} */(paper).dataset.paper ?? ''));
       elem.classList.add('landed');
       elem.classList.remove('drop');
@@ -5401,7 +5386,7 @@ export function createLibraryInstance(viewer, opts) {
     let colLaid = null;
     /** @type {?number[]} Content widths per column. */
     let colFits = null;
-    /** @type {Set<number>} Columns dropped because showing them would have cost the name its width. */
+    /** @type {Set<number>} */
     let colHidden = new Set();
     /** Width the middle row's name needs. */
     let colNameTypical = 0;
@@ -5513,14 +5498,12 @@ export function createLibraryInstance(viewer, opts) {
           }
           need -= spent;
         }
-        // A page count squeezed to a stub is worth less than the name it would cost, so drop it whole instead.
         for (const j of (form === 'column' ? [4, 3, 2, 1] : COL_DROP_ORDER[viewMode])) {
           if (need <= 0) break;
           colHidden.add(j);
           need -= eff[j];
           eff[j] = 0;
         }
-        // A drop usually frees more than was needed, and the name is where the surplus belongs.
         eff[0] = Math.max(cols[0].min, eff[0] - need);
       }
       // A page count is worth less than the name text it displaces even when it fits, so it also goes once half the names are cut off.
@@ -5727,11 +5710,11 @@ export function createLibraryInstance(viewer, opts) {
   /**
    * Route every document mutation through a dirty mark so checkpoint saves know the document's owner has edits.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
-   * @param {{libraryDirty?: boolean, libraryRecognized?: boolean}} target - The tab or preview record that owns the document's dirty state.
+   * @param {{libraryDirty?: boolean, libraryRecognized?: boolean}} target
    */
   const wrapMutators = (doc, target) => {
     const d = /** @type {any} */ (doc);
-    // The owner can change hands, a preview's record giving way to its tab, so the wrappers read it from the document at call time.
+    // Update before the early return because pooled documents reopen in a new tab.
     d._libraryDirtyTarget = target;
     if (d._libraryMutatorsWrapped) return;
     d._libraryMutatorsWrapped = true;
@@ -5746,7 +5729,6 @@ export function createLibraryInstance(viewer, opts) {
         const owner = d._libraryDirtyTarget;
         if (owner) {
           owner.libraryDirty = true;
-          // An edit keeps a preview tab.
           if (owner.preview) {
             owner.preview = false;
             viewer._renderTabs();
@@ -5781,7 +5763,6 @@ export function createLibraryInstance(viewer, opts) {
   const openEntry = async (relPath, entry, target = {}) => {
     if (!store || !manifest) return;
     const openKey = entry.hash || relPath;
-    // A request for a document still opening, such as the double-click's keep behind its click's preview, runs once that open has landed.
     const inFlight = openingDocs.get(openKey);
     if (inFlight) {
       await inFlight;
@@ -5907,9 +5888,7 @@ export function createLibraryInstance(viewer, opts) {
         wrapMutators(tab.doc, tab);
         sessions.lendTab(entry.hash, tab.doc);
         handle.hydrated.catch(() => { });
-        // The index gives no words for a document it does not hold, as while it is rebuilt, so such a document loads now for its text.
         engine.hasDoc(entry.hash).then((indexed) => { if (!indexed) tab.doc.ensureHydrated(); }).catch(() => { });
-        // Priming also waits for neighboring-page annotations in the background lane, so awaiting it on a plain open would hold the dropped thumbnail still.
         if (!target.background && target.query) {
           await handle.primed;
           await markHits(viewer._viewerShowing(tab.doc));
@@ -5943,7 +5922,6 @@ export function createLibraryInstance(viewer, opts) {
         loads.endUserLoad();
       }
       if (doc.attachments.collection) {
-        // An entry indexed before the library recorded portfolios shows its nature only now, so the manifest catches up here.
         entry.portfolio = true;
         entry.lastOpened = Date.now();
         saveManifestSoon();
@@ -5972,7 +5950,7 @@ export function createLibraryInstance(viewer, opts) {
     }
   };
 
-  /** The group a Library click opens into. */
+  /** The editor group a document library click opens into. */
   const targetGroup = () => viewer._openTarget(viewer._rightGroup ? viewer._activeGroup : 0);
   /**
    * The group Alt and the menu's other entry open into.
@@ -5980,7 +5958,6 @@ export function createLibraryInstance(viewer, opts) {
    */
   const sideGroup = () => (viewer._rightGroup ? 1 - targetGroup() : 1);
   /**
-   * Open a document for keeps where a click opens, which becomes the active group.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    */
@@ -6099,7 +6076,6 @@ export function createLibraryInstance(viewer, opts) {
   let confirmClose = null;
 
   /**
-   * A confirmation dialog for deleting the library's own data.
    * @param {{title: string, name: string, meta: string, intro: string, items: string[], note: string, confirmLabel: string, keep?: string}} spec
    *   A `keep` label adds a checkbox under the list.
    * @returns {Promise<?{keep: boolean}>} Null when the dialog was dismissed.
@@ -6213,13 +6189,11 @@ export function createLibraryInstance(viewer, opts) {
   const openStorage = () => {
     if (!store) return;
     const s = store;
-    // Asked for again while it shows, the sheet keeps its sizes on screen until the new ones arrive.
     if (!storageOpen || !visible || surface.style.display === 'none') {
       storageOpen = true;
       storageSizes = null;
       storageWork = null;
       storageInventory = null;
-      // A visit ended by anything but closeStorage leaves its element here.
       storageReturnFocus = null;
       if (columnReady()) columnOpen = true;
       if (!visible) activate({ render: false });
@@ -6595,7 +6569,6 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * The revert confirmation: who the document is, what will be discarded, and that the file itself is untouched.
    * @param {string} relPath
    */
   const openRevertDialog = (relPath) => {
@@ -6731,7 +6704,6 @@ export function createLibraryInstance(viewer, opts) {
 
   // --- Subsystems ---------------------------------------------------------
 
-  // Constructed here rather than beside their first use, because they capture `render`, `openCardMenu`, and `openEntry` by value.
   const loads = createDocLoads({
     sessions,
     engine,
@@ -6807,7 +6779,6 @@ export function createLibraryInstance(viewer, opts) {
         if (!entry) return true;
         const pageImg = ghost && !ghost.classList.contains('chip') ? /** @type {?HTMLElement} */ ([...ghost.querySelectorAll('.scribe-ghost-card :is(canvas, img)')].pop() ?? null) : null;
         const targetViewer = t.group === 1 ? (viewer._rightGroup?.viewer ?? null) : viewer.scribe;
-        // Off its first page the document lands as the real page, so the area of a group this drop creates is veiled before the page can show there.
         const leftOn = open ? (viewer._viewerShowing(open.doc)?.state.cp.n ?? open.lastPage) : 0;
         const landing = ghost ? landCard(pageImg, targetViewer, viewer.pdfViewerElem, !targetViewer && leftOn > 0 ? t.rect : null) : null;
         openEntry(relPath, entry, { group: t.group, move: true }).then(() => {
@@ -7118,7 +7089,6 @@ export function createLibraryInstance(viewer, opts) {
       releaseLiveDoc: (hash, doc) => sessions.adoptLive(hash, doc),
       sessions,
     });
-    // The record is read before the surface is placed, so the column its documents need stands before the first of them opens.
     const prior = resumeRecord;
     resumeRecord = null;
     const record = prior && prior.tabs.length && (!prior.dir || prior.dir === store.root?.name) ? prior : null;
@@ -7214,14 +7184,14 @@ export function createLibraryInstance(viewer, opts) {
       }
       writeResumeRecord();
     }
-    // A restore that brought no document back lets the form follow what is open.
+    // Recompute full vs. column mode once restoringDocs clears, in case every recorded tab failed to reopen.
     if (record && visible && !destroyed) applyForm({ render: false });
     await ingest.scan();
     render();
     ingest.start();
   };
 
-  /** @param {File[]} files */
+  /** @param {string} name */
   const isImageName = (name) => /\.(png|jpe?g)$/i.test(name || '');
 
   let creatingPdf = false;
@@ -7310,8 +7280,7 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /**
-   * Copy a freestanding tab's PDF into the folder's root and make the tab one of the folder's.
-   * A note under the tab offers to undo the copy.
+   * Copy a freestanding tab's PDF into the folder root and bind the tab to the new entry.
    * @param {Object} tab
    * @param {?number} toIndex - Insertion index in the tab list once the tab is taken out of it, or null for after the folder's last open document.
    */
@@ -7432,10 +7401,7 @@ export function createLibraryInstance(viewer, opts) {
     activate({ morph: true });
   });
 
-  /**
-   * Prompt for a library folder.
-   * @returns {Promise<?LibraryStore>} Null when the picker was dismissed, or when the folder could not be connected, which is shown.
-   */
+  /** @returns {Promise<?LibraryStore>} */
   const pickFolder = async () => {
     try {
       const s = await LibraryStore.connectNew();
@@ -7623,7 +7589,6 @@ export function createLibraryInstance(viewer, opts) {
     rows: '.scribe-library-menu-item',
   });
   if (homeTabChev) folderDropdown.attachTrigger(homeTabChev);
-  // The column's own button opens the bar's overflow menu, which lists the folder actions beneath whatever the head has folded.
   moreDropdown.attachTrigger(colMoreBtn);
   /**
    * The folder menu's rows in order, with their icons.
@@ -8002,7 +7967,6 @@ export function createLibraryInstance(viewer, opts) {
     if (!folderPath) return files;
     const names = files.map((f) => f.name || '');
     const opened = new Set();
-    // The folder's document already has its own text and session, so the files named for it have nowhere to go.
     const besideOpened = new Set();
     for (const f of files) {
       if (!(f.name || '').toLowerCase().endsWith('.pdf')) continue;
@@ -8026,7 +7990,6 @@ export function createLibraryInstance(viewer, opts) {
   const takeFileDrop = async (e) => {
     const files = await filesFromDropEvent(e);
     // A drag can name 'Files' and still resolve to nothing, e.g. an empty folder.
-    // There is no unsupported file to name, so there is nothing worth saying.
     if (!files.length) return;
     const images = files.filter((f) => isImageName(f.name));
     if (!images.length && !files.some((f) => (f.name || '').toLowerCase().endsWith('.pdf'))) {
@@ -8119,7 +8082,6 @@ export function createLibraryInstance(viewer, opts) {
     searchInput.select();
   };
   const hasWindow = () => visible && (form === 'full' || surface.contains(document.activeElement));
-  // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
   const onFindShortcut = (e) => {
     if (!hasWindow()) return;
     if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
@@ -8419,7 +8381,6 @@ export function createLibraryInstance(viewer, opts) {
       }
     }
     if (viewer._tabs.length === 0) {
-      // No library opens on this path, so the restore never runs and the drop-zone hold is released here.
       if (viewerRestorePending && viewer.dropZone) viewer.dropZone.style.display = '';
       activate({ render: false });
       render();
@@ -8499,7 +8460,7 @@ export function createLibraryInstance(viewer, opts) {
 }
 
 /**
- * Install the document library: its surface, its folder connection and the app-menu items that go with it.
+ * Install the document library on `viewer`.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
  * @param {{settings?: ?Object, bar?: 'crumbs'|'finder'}} [options] - `settings` adjusts the search engine's defaults, `ENGINE_DEFAULTS` in searchEngine.js.
  *   `bar` is the toolbar's form, breadcrumbs by default.
@@ -8511,12 +8472,12 @@ export function installLibrary(viewer, { settings = null, bar = 'crumbs' } = {})
 }
 
 /**
- * Open a PDF portfolio as a pinned tab listing its embedded files, the surface the library shows over a folder, here over the portfolio's own in-memory store.
- * A portfolio already open from the same library entry comes forward instead of opening twice.
+ * Open a PDF portfolio as a pinned tab listing its embedded files.
+ * If that document library entry is already open, focus the existing tab and close `doc`.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
- * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The portfolio document (its cover sheet and its files); the surface owns it from here on.
- * @param {string} name - Display name: the file name, as everywhere in the library.
- * @param {{libraryHash?: string, libraryRelPath?: string, libraryOwner?: number}} [fields] - Where it came from, when a library entry opened it.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - Closed when the portfolio tab closes (or immediately if already open).
+ * @param {string} name
+ * @param {{libraryHash?: string, libraryRelPath?: string, libraryOwner?: number}} [fields]
  * @returns {Promise<LibraryInstance>}
  */
 export async function openPortfolio(viewer, doc, name, fields = {}) {
