@@ -8,7 +8,7 @@ import {
   applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup, setHighlightReplies,
 } from '../viewerHighlights.js';
 import {
-  focusNoteEditor, pageNotes, removeNote, setNoteComment,
+  focusNoteEditor, pageNotes, placePageNotes, removeNote, setNoteComment,
 } from '../viewerNotes.js';
 import {
   BUBBLE_NOTE_TAIL_SVG, BUBBLE_TIP_SVG, computeHighlightMarginHome, computePageHighlightHomes, computePageBubbleZoom, dropPreviewStrip,
@@ -240,6 +240,8 @@ export function createHighlightTool(initialViewer, rootElem, { colors, defaultCo
     const pages = new Set();
     for (const kw of scribe.getUiWords()) pages.add(kw.word.line.page.n);
     for (const n of pages) scribe.renderHighlights(n);
+    // A note mark holds the preview text it was last placed with, so placing it again picks up the edit.
+    for (let n = 0; n < scribe._notesGroups.length; n++) placePageNotes(scribe, n);
     if (syncOpenMarkHook) syncOpenMarkHook();
   }
 
