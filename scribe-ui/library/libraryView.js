@@ -1579,10 +1579,12 @@ export function createLibraryInstance(viewer, opts) {
   colSearchBtn.addEventListener('click', () => {
     colSearchRow.hidden = !colSearchRow.hidden;
     colSearchBtn.classList.toggle('on', !colSearchRow.hidden);
-    if (!colSearchRow.hidden) {
-      searchInput.focus();
-      searchInput.select();
+    if (colSearchRow.hidden) {
+      leaveResults();
+      return;
     }
+    searchInput.focus();
+    searchInput.select();
   });
   const colSash = document.createElement('div');
   colSash.className = 'scribe-library-colsash';
@@ -1767,6 +1769,7 @@ export function createLibraryInstance(viewer, opts) {
         searchField.classList.remove('popped');
         searchField.style.width = '';
         colSearchRow.appendChild(searchField);
+        colSearchBtn.classList.toggle('on', !!searchInput.value);
         for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colBar.insertBefore(el, colSearchBtn);
       } else {
         colSearchRow.hidden = true;
@@ -7766,7 +7769,7 @@ export function createLibraryInstance(viewer, opts) {
   const runFullTextSearch = (standing = null) => {
     const query = standing ?? searchInput.value.trim();
     if (!query) return;
-    const superseded = () => standing !== null && (!fullTextResults || fullTextQuery !== standing);
+    const superseded = () => (standing === null ? searchInput.value.trim() !== query : !fullTextResults || fullTextQuery !== standing);
     /** @type {?import('./search/searchClient.js').SearchResponse} */
     let answered = null;
     engine.query(query, undefined, (tiers) => {
