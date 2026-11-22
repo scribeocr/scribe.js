@@ -1,4 +1,4 @@
-// Full-screen library surface for the basic viewer: connect a folder, browse and search it, open documents into tabs, and keep edits flowing back into `.scribe` sidecars.
+// Document library view for the viewer app: connect a folder, browse and search it, open documents into tabs, and keep edits flowing back into `.scribe` sidecars.
 // Loaded by dynamic import behind the `library` option, so viewers without it never fetch this module or its styles.
 
 import scribeLib from '../../scribe.js';
@@ -50,7 +50,7 @@ const CHEVRON_SVG = slotIcon('chevron12', 'chev');
 const PLUS_SVG = slotIcon('plus18');
 
 // A PDF portfolio, drawn as two stacked sheets.
-// Stroked at 24 for rows and cards, and filled at 16 for the pinned tab, as the library's own glyph is.
+// Stroked at 24 for rows and cards, and filled at 16 for the pinned tab, as the document library's own glyph is.
 // eslint-disable-next-line max-len
 const PORTFOLIO_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M8 4.5h9a1.5 1.5 0 0 1 1.5 1.5v9.5"/><rect x="4.5" y="8" width="11" height="12" rx="1.5"/><path d="M7.5 12.5h5M7.5 15.5h5"/></svg>';
 // eslint-disable-next-line max-len
@@ -103,15 +103,15 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {'library'|'portfolio'} kind
  * @property {string} name - The pinned tab's and the root crumb's label.
  * @property {string} glyph - The pinned tab's icon.
- * @property {?Object} [store] - A store to open at once; the library connects its own folder instead.
+ * @property {?Object} [store] - A store to open at once; the document library connects its own folder instead.
  * @property {'grid'|'list'|'compact'} [viewDefault]
  * @property {boolean} [showOthersDefault]
  * @property {boolean} [persistPrefs] - Read and write the view, column, folder-column and other-files preferences in localStorage.
  * @property {boolean} [readOnly] - No file drops, folder operations, New menu or Refresh.
  * @property {string} [emptyText]
  * @property {?string} [initialRelPath] - The file to select and preview once the store is open.
- * @property {?string} [libraryHash] - When a library entry opened this instance: that entry's hash, so it is not opened twice.
- * @property {?number} [libraryOwner] - With `libraryHash`, the library instance the entry belongs to.
+ * @property {?string} [libraryHash] - When a document library entry opened this instance: that entry's hash, so it is not opened twice.
+ * @property {?number} [libraryOwner] - With `libraryHash`, the document library instance the entry belongs to.
  * @property {() => void} [onClose] - Mounted as a close control on the pinned tab.
  * @property {?Object} [engineSettings]
  * @property {'crumbs'|'finder'} [bar] - The toolbar's form, breadcrumbs by default.
@@ -127,7 +127,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => void} focusSearch
  * @property {() => void} [close] Closable surfaces only (a portfolio): close it, as its pinned tab's control does.
  * @property {() => boolean} [connected] Document library only: whether a folder is connected.
- * @property {() => Promise<void>} [openFolder] Document library only: pick a folder and open it as the library.
+ * @property {() => Promise<void>} [openFolder] Document library only: pick a folder and open it as the document library.
  * @property {() => Promise<void>} [rebuildIndex] Document library only: re-index every document in the connected folder.
  * @property {() => void} [openStorage] Document library only: show the Library Storage sheet for the connected folder.
  * @property {() => Promise<void>} [closeFolder] Document library only: close the folder and the documents open from it.
@@ -135,7 +135,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => string} [closeFolderLabel] Document library only: the Close Folder command's label, counting the folder's open documents.
  * @property {() => string} [folderName] Document library only: the open folder's name.
  * @property {() => void} [syncFoldersOpenElsewhere] Document library only: reorder and redraw the Recent list once the folders other windows hold change.
- * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the folder and make the tab one of the folder's.
+ * @property {(tab: Object, toIndex: ?number) => Promise<void>} [copyTabIntoFolder] Document library only: copy a freestanding tab's PDF into the connected folder and associate the tab with that folder.
  * @property {(files: File[], target?: {group?: 0|1, move?: boolean}) => Promise<File[]>} [openDroppedFromFolder]
  *   Document library only: open the dropped PDFs that already live in the folder as the folder's documents, and return the files left to place.
  * @property {(tab: Object) => void} [showTab] Document library only: show the folder view with the tab's document selected.
@@ -150,7 +150,7 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {() => number} columnWidth The width the surface takes at the window's left edge as the folder column, 0 while it is not shown as one.
  * @property {(node: Node) => boolean} containsNode
  * @property {(e: DragEvent) => ?{rect: DOMRect, text: string}} fileDropTarget The area and label to light for a dragged file, when a drop at the event's point goes into the folder.
- * @property {(e: DragEvent) => Promise<void>} takeFileDrop Take the files of a drop that `fileDropTarget` answered for into the folder being browsed.
+ * @property {(e: DragEvent) => Promise<void>} takeFileDrop Import dropped files accepted by `fileDropTarget` into the current folder.
  * @property {() => void} phoneUiChanged
  * @property {() => void} docOpened The viewer put a tab's document on screen.
  * @property {() => void} emptied
@@ -158,9 +158,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {ReturnType<typeof createSearchClient>} engine
  * @property {?LibraryIngest} ingest
  * @property {(options?: {resume?: boolean}) => Promise<void>} saveAllDirty
- * @property {() => void} [syncResume] Document library only: rewrite the keys a relaunch reads from, once this window is the one it resumes.
- * @property {() => Promise<Object>} [searchStats] The search engine's own accounting of what it holds and of its index's shape.
- *   A timing harness outside this repository calls it, though nothing in the app does.
+ * @property {() => void} [syncResume] Document library only: write this window's folder and tab state to resume storage when this window becomes the active resume target.
+ * @property {() => Promise<Object>} [searchStats] Return diagnostic counts and index statistics from the search worker.
  * @property {() => void} destroy
  */
 
@@ -221,7 +220,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* The fold sets every width here in px; nothing shrinks on its own. */
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: none; width: 320px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
@@ -369,7 +367,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-body.list-mode { padding: 0; }
 .scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 80px 110px 110px 120px); min-width: min-content; align-items: stretch; height: 30px; padding: 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
 .scribe-pdf-viewer .scribe-library-lhead.cols-cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 80px 130px 130px); }
-/* The 8px edge and the 10px cell inset add up to the 18px gutter the rest of the library uses. */
 .scribe-pdf-viewer .scribe-library-lhead > * { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 10px; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-lhead > [data-sort-key] { cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-lhead > [data-sort-key]:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
@@ -454,7 +451,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-rwrap { outline: none; }
-/* Stacked above the stage, so the find bar that hangs from it paints over the page. */
 .scribe-pdf-viewer .scribe-library-rsummary { padding: 12px 16px 8px; }
 .scribe-pdf-viewer .scribe-library-rsummary .n { font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-rsummary.count { padding: 12px 16px 4px; font-size: 12px; color: var(--scribe-ink-2); }
@@ -462,7 +458,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rsummary.count b { font-weight: 600; color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-rdoc { padding: 9px 12px 3px 16px; font-size: 13px; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-rdoc .m { font-weight: 400; color: var(--scribe-ink-3); font-size: 12px; overflow-wrap: anywhere; }
-/* The name selects as text, so the heading must take no click or menu of its own. */
 .scribe-pdf-viewer .scribe-library-rdoc .t { overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; cursor: text; }
 .scribe-pdf-viewer .scribe-library-hit.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
 .scribe-pdf-viewer .scribe-library-hit { display: flex; gap: 10px; padding: 6px 12px 6px 16px; cursor: pointer; align-items: flex-start; }
@@ -510,7 +505,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-fold .paper { position: absolute; background: #fff; box-shadow: 0 0 0 1px var(--scribe-line-strong); overflow: hidden; isolation: isolate; transition: left 140ms ease, top 140ms ease, opacity 140ms ease, box-shadow 140ms ease; }
 .scribe-pdf-viewer .scribe-library-fold .paper img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; transition: opacity 140ms ease, filter 140ms ease; }
 .scribe-pdf-viewer .scribe-library-fold .paper::after { content: ''; position: absolute; inset: 0; box-sizing: border-box; pointer-events: none; opacity: 0; transition: opacity 140ms ease; }
-/* The flap stays above every paper, the fading copies a strip change leaves behind included. */
+/* Keep the folder flap above stacked and fading-out .paper elements. */
 .scribe-pdf-viewer .scribe-library-fold .front { position: absolute; left: 0; right: 0; bottom: 0; height: 30px; box-sizing: border-box; z-index: 10; background: var(--fold-front); border: 1px solid var(--fold-line); border-radius: 2px 2px 4px 4px; transform-origin: 50% 100%; transition: transform 160ms ease; }
 .scribe-pdf-viewer .scribe-library-fold.mini .front { height: 14px; border-radius: 1.5px 1.5px 2.5px 2.5px; }
 .scribe-pdf-viewer .scribe-library-fold.mini .paper { box-shadow: 0 0 0 .5px var(--scribe-line-strong); }
@@ -591,10 +586,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.portfolio .fthumb .fi { width: 46px; height: 46px; }
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
-/* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
+/* Keep after the .vacated and .other cursor rules so dragging over them still shows the grabbing cursor. */
 .scribe-pdf-viewer .scribe-library-surface.card-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag * { cursor: grabbing; }
 .scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag.chip-drag * { cursor: default; }
-/* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
+/* Keep after all .scribe-library-hbtn padding rules of equal specificity so .icon-only wins. */
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-sort-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-add-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only svg.chev { display: none; }
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only { padding: 0 5px; }
 .scribe-pdf-viewer .scribe-library-bar-controls[hidden], .scribe-pdf-viewer .scribe-library-bar-controls > [hidden] { display: none !important; }
@@ -643,7 +638,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface .undo { font: inherit; font-size: 12px; font-weight: 600; line-height: inherit; color: var(--scribe-accent); background: none; border: none; padding: 0 5px; margin: 0; border-radius: 4px; cursor: pointer; vertical-align: baseline; }
 .scribe-pdf-viewer .scribe-library-surface .undo:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-card .ocrhair { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--scribe-accent); pointer-events: none; }
-/* Revert confirmation: the centered dialog grammar of the Fill & Sign signature dialog. */
 .scribe-pdf-viewer .scribe-library-confirm-scrim { position: absolute; inset: 0; z-index: 70; background: rgba(15, 18, 26, .42); display: flex; align-items: center; justify-content: center; }
 .scribe-pdf-viewer .scribe-library-confirm { width: min(430px, calc(100% - 32px)); box-sizing: border-box; padding: 16px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 12px; box-shadow: var(--scribe-menu-shadow); color: var(--scribe-ink); font-size: 13px; line-height: 1.5; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-confirm .ttl { font-size: 15px; font-weight: 650; margin-bottom: 10px; }
@@ -664,7 +658,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-confirm .id .fth svg { width: 24px; height: 24px; }
 .scribe-pdf-viewer .scribe-library-confirm .chk { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0 2px; cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-confirm .chk input { margin: 3px 0 0; accent-color: var(--scribe-accent); flex: none; }
-/* The Library Storage sheet, on the same plate as the start sheet. */
 .scribe-pdf-viewer .scribe-library-storage { width: 560px; max-width: calc(100% - 44px); margin: 28px auto 0; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 20px 24px 18px; box-sizing: border-box; font-size: 13px; line-height: 1.5; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-storage .back { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--scribe-accent); background: none; border: none; cursor: pointer; padding: 2px 6px 2px 2px; margin: 0 0 10px -2px; border-radius: 5px; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-storage .back:hover { background: var(--scribe-hover); }
@@ -761,12 +754,12 @@ const addLibraryStyles = () => {
 };
 
 /**
- * Land a dropped card or row as the document it opens.
+ * Animate a card or row dropped onto a viewer pane into the newly opened document.
  * A document already open there is kept in view until the new one takes its place.
  * @param {?HTMLElement} pageImg - The drag ghost's page, an image or the canvas copy of one, at the size it had at release; null for a row's chip.
  * @param {?import('../viewer.js').ScribeViewer} target - The viewer the document will open in, when it exists at the drop.
  * @param {HTMLElement} host - The app's root element, which holds the banners the landing stacks under.
- * @param {?{left: number, top: number, width: number, height: number}} [ahead] - Where a viewer the drop is about to create will show the document, veiled when given.
+ * @param {?{left: number, top: number, width: number, height: number}} [ahead] - Viewport bounds for a split viewer pane being created by the drop, covered by a backdrop until the document renders.
  * @returns {{arrive: (viewer: import('../viewer.js').ScribeViewer) => void, cancel: () => void}} `arrive` names the viewer the document opened in, and `cancel` ends the landing at once.
  */
 const landCard = (pageImg, target, host, ahead = null) => {
@@ -919,7 +912,7 @@ const landCard = (pageImg, target, host, ahead = null) => {
         finish();
         return;
       }
-      // A card shows its document's first page, so on any other page the page itself flies in from the card.
+      // Cards show page 1, so when opening to a later page, animate the rendered target page from the release rect instead of flying the page-1 thumbnail.
       if (n > 0 && !reduced()) {
         const cover = copy;
         // A page that already shows a canvas takes off at once, because `paint` may be waiting on the render that replaces its stored raster.
@@ -930,7 +923,7 @@ const landCard = (pageImg, target, host, ahead = null) => {
           const fit = Math.min(from.width / box.width, from.height / box.height);
           const layer = pageEl.parentElement;
           if (outgoing && veil && layer) {
-            // The page that flies in is the viewer's own and lies under the veil, so the open document's pages move into its layer, beneath it.
+            // Because pageEl sits inside the viewer underneath veil, reparent outgoing behind pageEl in the same layer before removing veil.
             const at = veil.getBoundingClientRect();
             const origin = layer.getBoundingClientRect();
             const { scrollLeft, scrollTop } = outgoing;
@@ -972,7 +965,7 @@ const landCard = (pageImg, target, host, ahead = null) => {
       /** @type {?Animation} */
       let settle = null;
       if (flight && outgoing && veil) {
-        // The backing goes now, or the new document's other pages could not fade in under the veil.
+        // Clear the veil's opaque background so the new document's other pages can fade in underneath while outgoing fades out.
         veil.style.background = 'none';
         held = pageEl.animate([{ opacity: 0 }, { opacity: 0 }], { duration: IN_TO, fill: 'forwards' });
         for (const el of pageEl.parentElement?.children ?? []) {
@@ -997,7 +990,7 @@ const landCard = (pageImg, target, host, ahead = null) => {
 
 /**
  * One library-style surface: the document library over its folder store, or that same surface over another store, such as a PDF portfolio's embedded files.
- * The folder connection, the resume record and the app-menu items exist only for the library kind.
+ * The folder connection, the resume record and the app-menu items exist only for the `'library'` kind.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
  * @param {LibraryInstanceOptions} opts
  * @returns {LibraryInstance}
@@ -1075,7 +1068,7 @@ export function createLibraryInstance(viewer, opts) {
   let colSettleTimer = 0;
   let colProjectRaf = 0;
   let filterText = '';
-  /** Directory shown while browsing, relative to the library root; '' is the root itself. */
+  /** Directory shown while browsing, relative to the document library root; '' is the root itself. */
   let currentDir = '';
   /**
    * @param {string} relPath
@@ -1108,10 +1101,10 @@ export function createLibraryInstance(viewer, opts) {
   }
   /** Set while `openLibrary` is reopening recorded tabs, so interim writes cannot clobber the record mid-restore. */
   let restoringTabs = false;
-  /** Set while `openLibrary` is reopening recorded document tabs, so the column stands before the first of them opens. */
+  /** Set while `openLibrary` reopens recorded document tabs so `columnForm()` is true before the first tab opens. */
   let restoringDocs = false;
   /**
-   * Whether the record reopens into a document view rather than the library.
+   * Whether the record reopens into a document view rather than the document library.
    * The drop zone is hidden here rather than in the boot below, so the placeholder never flashes before the restored document paints.
    */
   const viewerRestorePending = !!(resumeRecord && resumeRecord.tabs.length && !resumeRecord.lib);
@@ -1297,7 +1290,6 @@ export function createLibraryInstance(viewer, opts) {
   headerSep.className = 'vertical-separator';
   if (!readOnly) header.appendChild(headerSep);
 
-  // The label and chevron shed at the bar's narrow rung, leaving the plain icon form.
   const newWrap = document.createElement('span');
   newWrap.className = 'scribe-library-sort scribe-library-new';
   const newBtn = document.createElement('button');
@@ -1402,7 +1394,7 @@ export function createLibraryInstance(viewer, opts) {
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
 
-  // With a toolbar present the library takes over that bar, so the header's controls are re-parented into it rather than stacking a second bar.
+  // With a toolbar present the document library takes over that bar, so the header's controls are re-parented into it rather than stacking a second bar.
   /** @type {?HTMLElement} */
   let barTitle = null;
   /** @type {?HTMLElement} */
@@ -1430,7 +1422,7 @@ export function createLibraryInstance(viewer, opts) {
       ? [searchField, findBtn, viewSeg, sortWrap, moreWrap]
       : [searchField, findBtn, viewSeg, sortWrap, headerSep, newWrap, refreshBtn, moreWrap];
     for (const el of barParts) barControls.appendChild(el);
-    // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
+    // A desktop shell's window controls stay the end zone's last element, so the document library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
     surface.appendChild(imageInput);
@@ -1501,7 +1493,7 @@ export function createLibraryInstance(viewer, opts) {
   }
 
   // --- The forms ---------------------------------------------------------
-  // With nothing open the library fills the document area and its controls take the toolbar.
+  // With nothing open the document library fills the document area and its controls take the toolbar.
   // Once a document is open it is a column at the window's left edge beside the groups, under a head of its own.
   // The toolbar then holds the document's controls.
 
@@ -1847,11 +1839,7 @@ export function createLibraryInstance(viewer, opts) {
     viewer._syncFrontSurface();
     viewer._relayout();
   };
-  /**
-   * This instance as the viewer and the other instances see it.
-   * Filled in below, once the pieces it exposes exist.
-   * @type {LibraryInstance}
-   */
+  /** @type {LibraryInstance} */
   const api = /** @type {LibraryInstance} */ ({});
 
   const syncBarForStore = () => {
@@ -1859,7 +1847,7 @@ export function createLibraryInstance(viewer, opts) {
     barTitle.style.display = store ? '' : 'none';
     barControls.style.display = store ? '' : 'none';
   };
-  /** The toolbar's controls that the library's own replace while the library is lit. */
+  /** Toolbar elements hidden while the document library's full-window controls occupy the toolbar. */
   const mainBarParts = () => {
     /** @type {HTMLElement[]} */
     const parts = [];
@@ -1872,7 +1860,6 @@ export function createLibraryInstance(viewer, opts) {
     }
     return parts;
   };
-  /** Replace the toolbar's document controls with the library's own fragments. */
   // Text buttons measure fractional widths, which would put every glyph to their left in the right-aligned zone on fractional pixels.
   const roundBarButtons = () => {
     for (const el of [sortBtn, newBtn]) {
@@ -1881,6 +1868,7 @@ export function createLibraryInstance(viewer, opts) {
       if (wd) el.style.width = `${Math.ceil(wd)}px`;
     }
   };
+  /** Replace the toolbar's document controls with the document library's controls. */
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
     barSwapped = true;
@@ -1890,7 +1878,7 @@ export function createLibraryInstance(viewer, opts) {
     }
     syncBarForStore();
     roundBarButtons();
-    // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the library's controls off the edge.
+    // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the document library's controls off the edge.
     priorEndZoneFlex = viewer.toolbarElemEnd.style.flex;
     viewer.toolbarElemEnd.style.flex = '0 1 auto';
     viewer.toolbarElemEnd.style.minWidth = '0';
@@ -1928,7 +1916,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!libTabs.length) return null;
     return {
       v: 1,
-      // The folder name pins the record to its library, so it cannot replay into a different one.
+      // The folder name ties the record to the open folder so it cannot replay into a different one.
       dir: store?.root?.name ?? '',
       tabs: libTabs.map((t) => ({
         hash: t.libraryHash || '',
@@ -1950,7 +1938,7 @@ export function createLibraryInstance(viewer, opts) {
    * The `pagehide` call is the authoritative one, since web storage is synchronous and so completes as the page unloads.
    */
   const writeResumeRecord = () => {
-    // Only the library's tabs come back after a reload, because a portfolio's members are gone with it.
+    // Only the document library's tabs come back after a reload, because a portfolio's members are gone with it.
     if (!isLibrary || restoringTabs || !viewer._resumeOwner) return;
     try {
       const record = buildResumeRecord();
