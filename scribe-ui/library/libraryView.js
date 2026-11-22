@@ -8,7 +8,9 @@ import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { shortcutLabel } from '../js/platform.js';
 import { MENU_PLATE_CSS, MENU_ROW_CSS, MENU_SEP_CSS } from '../js/controls/menuStyles.js';
 import { createDropdown } from '../js/controls/dropdown.js';
+import { createFinderBar } from './libraryFinderBar.js';
 import { findText, goToMatch } from '../js/viewerSearch.js';
+import { CM_COPY_SVG } from '../js/viewerCanvasInteraction.js';
 import { filesNamedForPdf } from '../js/controls/tools.js';
 import {
   LibraryStore, folderNameProblem, sameEntry, titleOf,
@@ -219,10 +221,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-/* Only the field yields under bar pressure, so syncCrumbs decides what else goes. */
+/* The fold sets every width here in px; nothing shrinks on its own. */
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 auto; width: 320px; min-width: 180px; transition: min-width .12s ease-out; }
-@media (prefers-reduced-motion: reduce) { .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { transition: none; } }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: none; width: 320px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
@@ -597,6 +598,43 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-sort-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only .scribe-library-add-lbl, .scribe-pdf-viewer .scribe-library-hbtn.icon-only svg.chev { display: none; }
 .scribe-pdf-viewer .scribe-library-hbtn.icon-only { padding: 0 5px; }
 .scribe-pdf-viewer .scribe-library-bar-controls[hidden], .scribe-pdf-viewer .scribe-library-bar-controls > [hidden] { display: none !important; }
+.scribe-pdf-viewer .scribe-finder-start { flex: 0 0 auto !important; }
+.scribe-pdf-viewer .scribe-finder-end { flex: 1 1 0% !important; min-width: 0; }
+.scribe-pdf-viewer .scribe-finder-start .scribe-library-title { padding-right: 0; }
+.scribe-pdf-viewer .scribe-finder-name { display: inline-flex; position: relative; min-width: 0; -webkit-app-region: no-drag; }
+.scribe-pdf-viewer .scribe-finder-name:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; border-radius: 3px; }
+.scribe-pdf-viewer .scribe-library-finder-label { position: absolute; inset: 0; overflow: hidden; white-space: pre; }
+.scribe-pdf-viewer .scribe-library-name-piece { display: flex; flex: none; overflow: hidden; white-space: pre; visibility: hidden; }
+.scribe-pdf-viewer .scribe-library-name-piece::before { content: attr(data-ink); flex: none; }
+.scribe-pdf-viewer .scribe-library-name-piece.tail { justify-content: flex-end; }
+.scribe-pdf-viewer .scribe-finder-name.clipping .scribe-library-name-piece { visibility: visible; }
+.scribe-pdf-viewer .scribe-finder-name.clipping .scribe-library-finder-label { visibility: hidden; }
+.scribe-pdf-viewer .scribe-finder-controls { flex: 1; position: relative; height: 28px; margin-left: 8px; }
+.scribe-pdf-viewer .scribe-finder-controls > * { position: absolute; right: var(--finder-right); width: var(--finder-width); min-width: 0; margin: 0; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-finder-controls > [hidden] { display: inline-flex !important; opacity: 0; visibility: hidden; pointer-events: none; }
+@property --scribe-finder-travel { syntax: '<length>'; inherits: false; initial-value: 0px; }
+.scribe-pdf-viewer .scribe-finder-controls .scribe-library-field { right: auto; left: var(--finder-left); width: var(--finder-width); top: var(--scribe-finder-travel); overflow: hidden; cursor: text; }
+.scribe-pdf-viewer .scribe-finder-controls .finder-row-field { clip-path: inset(clamp(0px, calc(var(--finder-lip) - var(--scribe-finder-travel)), 28px) 0 0); }
+.scribe-pdf-viewer .scribe-finder-controls > .scribe-library-find { left: 0; right: auto; width: 28px; }
+.scribe-pdf-viewer .scribe-finder-controls .scribe-library-clear { flex: none; }
+.scribe-pdf-viewer .scribe-finder-controls .scribe-library-hbtn { width: 100%; min-width: 0; overflow: hidden; }
+.scribe-pdf-viewer .scribe-finder-controls .finder-icon-only .scribe-library-hbtn { padding-inline: 5px; }
+.scribe-pdf-viewer .scribe-finder-controls .finder-icon-only .scribe-library-hbtn > :not(:first-child) { opacity: 0; }
+.scribe-pdf-viewer .scribe-library-finder-row { flex: none; height: 0; overflow: hidden; background: var(--scribe-surface); }
+.scribe-pdf-viewer .scribe-library-title-context { z-index: 100; width: max-content; max-width: calc(100% - 8px); max-height: calc(100% - 8px); overflow-y: auto; box-sizing: border-box; }
+.scribe-pdf-viewer .scribe-library-title-context .folder-name { padding: 5px 10px; font-size: 12px; font-weight: 600; overflow-wrap: anywhere; white-space: normal; }
+.scribe-pdf-viewer .scribe-library-title-context .menu-icon { display: inline-flex; flex: none; width: 16px; height: 16px; }
+@media (prefers-reduced-motion: no-preference) {
+  .scribe-pdf-viewer .scribe-finder-motion { --finder-move: 220ms cubic-bezier(.333333, 0, .666667, 1); }
+  .scribe-pdf-viewer .scribe-finder-motion .scribe-finder-controls > * {
+    transition: width var(--finder-move), left var(--finder-move), right var(--finder-move), --scribe-finder-travel var(--finder-move), opacity var(--finder-move), visibility 0s;
+  }
+  .scribe-pdf-viewer .scribe-finder-motion .scribe-finder-controls > [hidden] { transition-delay: 0s, 0s, 0s, 0s, 0s, 220ms; }
+  .scribe-pdf-viewer .scribe-finder-motion .scribe-library-name-piece { transition: width var(--finder-move); }
+  .scribe-pdf-viewer .scribe-finder-motion .scribe-library-hbtn { transition: padding var(--finder-move); }
+  .scribe-pdf-viewer .scribe-finder-motion .scribe-library-hbtn > :not(:first-child) { transition: opacity var(--finder-move); }
+  .scribe-pdf-viewer .scribe-library-finder-row.scribe-finder-motion { transition: height var(--finder-move); }
+}
 .scribe-pdf-viewer .scribe-library-menu-head { padding: 5px 10px 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--scribe-ink-3); user-select: none; }
 .scribe-pdf-viewer .scribe-library-more-menu .scribe-library-menu-item.ic svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.popped { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 260px; min-width: 0; z-index: 5; box-shadow: var(--scribe-menu-shadow); }
@@ -1183,10 +1221,15 @@ export function createLibraryInstance(viewer, opts) {
     const style = getComputedStyle(el);
     return `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
   };
+  /** Fit the placeholder to the field's width. */
+  const syncFieldSize = () => {
+    if (searchField.getAnimations().length) return;
+    const style = getComputedStyle(searchField);
+    const width = searchField.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    if (barControls) searchInput.placeholder = width < 250 ? 'Search' : 'Search or filter by name';
+  };
   // A container query here would zero the field's contribution to the content-sized bar zone and pin it at its minimum width, so the signal comes from a resize observer.
-  const fieldObserver = new ResizeObserver((entries) => {
-    if (barControls) searchInput.placeholder = entries[0].contentRect.width < 250 ? 'Search' : 'Search or filter by name';
-  });
+  const fieldObserver = new ResizeObserver(syncFieldSize);
   fieldObserver.observe(searchField);
 
   const viewSeg = document.createElement('span');
@@ -1300,7 +1343,7 @@ export function createLibraryInstance(viewer, opts) {
   if (!readOnly) header.appendChild(refreshBtn);
 
   const findBtn = document.createElement('button');
-  findBtn.className = 'scribe-library-hicon';
+  findBtn.className = 'scribe-library-hicon scribe-library-find';
   findBtn.innerHTML = slotIcon('search22');
   findBtn.title = 'Search or filter by name';
   findBtn.setAttribute('aria-label', 'Search or filter by name');
@@ -1399,6 +1442,25 @@ export function createLibraryInstance(viewer, opts) {
   surface.appendChild(body);
   if (finder) surface.appendChild(pathBar);
   viewer.pdfViewerElem.appendChild(surface);
+  // `finder` implies the toolbar, which always builds `barControls`, so the Finder form always has this bar.
+  const finderBar = finder && barControls && viewer.toolbarElem ? createFinderBar({
+    bar: viewer.toolbarElem,
+    controls: barControls,
+    surface,
+    title: titleName,
+    field: searchField,
+    input: searchInput,
+    clear: clearBtn,
+    find: findBtn,
+    view: viewSeg,
+    sort: sortWrap,
+    separator: headerSep,
+    add: newWrap,
+    refresh: refreshBtn,
+    more: moreWrap,
+    fontOf,
+    truncate: midTrunc,
+  }) : null;
 
   const homeTab = document.createElement('div');
   homeTab.className = 'scribe-tab pinned';
@@ -1700,8 +1762,10 @@ export function createLibraryInstance(viewer, opts) {
     if (changed) {
       form = next;
       if (form === 'column') {
+        finderBar?.reset();
         searchField.hidden = false;
         searchField.classList.remove('popped');
+        searchField.style.width = '';
         colSearchRow.appendChild(searchField);
         for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colBar.insertBefore(el, colSearchBtn);
       } else {
@@ -1833,6 +1897,8 @@ export function createLibraryInstance(viewer, opts) {
   const swapBarOut = () => {
     if (!barSwapped) return;
     barSwapped = false;
+    finderBar?.reset();
+    titleDropdown.close();
     /** @type {HTMLElement} */ (barTitle).style.display = 'none';
     /** @type {HTMLElement} */ (barControls).style.display = 'none';
     for (const { el, display } of hiddenBarElems) el.style.display = display;
@@ -2075,20 +2141,25 @@ export function createLibraryInstance(viewer, opts) {
     return fieldLow ? 180 : 300;
   };
   const CUR_FLOOR = 127;
-  /** Breadcrumbs folded into the hidden-folders crumb, or, in the Finder form, how far the folder's name has been cut. */
+  /** Breadcrumbs folded into the hidden-folders crumb. */
   let crumbHidden = 0;
   let dragUnfolded = false;
-  const NAME_CAPS = [0, 180, 120, 90];
+  let pathBarRoot = '';
+  let pathBarDir = '';
 
   /** Rebuild the header breadcrumbs for `currentDir` at the current fold. */
   const buildCrumbs = () => {
-    if (finder) {
+    if (finderBar) {
       const segs = currentDir ? currentDir.split('/') : [];
       const rootLabel = isLibrary && store ? store.root.name : opts.name;
       const full = segs.length ? segs[segs.length - 1] : rootLabel;
-      const cap = NAME_CAPS[Math.min(crumbHidden, NAME_CAPS.length - 1)];
-      titleName.textContent = cap ? midTrunc(full, cap, fontOf(titleName)) : full;
-      titleName.title = [rootLabel, ...segs].join(' › ');
+      titleName.setAttribute('aria-label', full);
+      // A portfolio can share a name with a folder of the document library, and only the folder has a place on disk.
+      const parent = isLibrary ? folderDirs.get(rootLabel) : undefined;
+      const separator = shell?.platform === 'win32' ? '\\' : '/';
+      titleName.dataset.tip = parent ? [parent.replace(/[/\\]$/, ''), rootLabel, ...segs].join(separator) : [rootLabel, ...segs].join(' › ');
+      if (barSwapped && store) finderBar.fit(full);
+      else finderBar.reset();
       backBtn.disabled = !(fullTextResults || dirHistAt > 0);
       fwdBtn.disabled = !!fullTextResults || dirHistAt >= dirHistory.length - 1;
       return;
@@ -2241,16 +2312,16 @@ export function createLibraryInstance(viewer, opts) {
     const corner = viewer.toolbarElemEnd?.querySelector('.scribe-shell-corner');
     const cornerW = corner ? corner.getBoundingClientRect().width : 0;
     const barRect = bar.getBoundingClientRect();
-    const start = /** @type {HTMLElement} */ (finder ? barTitle : crumbsElem);
-    return barRect.width - (start.getBoundingClientRect().left - barRect.left) - cornerW - 8;
+    return barRect.width - (crumbsElem.getBoundingClientRect().left - barRect.left) - cornerW - 8;
   };
-  const crumbsNeed = () => {
-    if (finder) return /** @type {HTMLElement} */ (barTitle).getBoundingClientRect().width + 8;
+  /** @param {boolean} [full] - Count the current folder's crumb at its whole width. */
+  const crumbsNeed = (full = false) => {
     let w = 0;
     for (const el of crumbsElem.children) {
       const c = /** @type {HTMLElement} */ (el);
       if (c.classList.contains('scribe-library-crumb-ghost')) continue;
-      w += (c.classList.contains('cur') ? Math.min(CUR_FLOOR, c.scrollWidth) : c.getBoundingClientRect().width) + 1;
+      const cur = c.classList.contains('cur');
+      w += (cur ? (full ? c.scrollWidth : Math.min(CUR_FLOOR, c.scrollWidth)) : c.getBoundingClientRect().width) + 1;
     }
     return w + 1 + 8;
   };
@@ -2258,14 +2329,8 @@ export function createLibraryInstance(viewer, opts) {
     const host = /** @type {HTMLElement} */ (barControls);
     if (host.hidden) return 0;
     // Measured as laid out, so the dividers' margins and the gaps are included.
-    const width = searchField.style.width;
-    const flex = searchField.style.flex;
     searchField.style.width = `${fieldFloor()}px`;
-    searchField.style.flex = 'none';
-    const w = host.scrollWidth;
-    searchField.style.width = width;
-    searchField.style.flex = flex;
-    return w;
+    return host.scrollWidth;
   };
   /** Fit the path and the controls to the room the bar has. */
   const syncCrumbs = () => {
@@ -2283,9 +2348,12 @@ export function createLibraryInstance(viewer, opts) {
      */
     const fillPathBar = () => {
       if (!finder) return;
+      const rootLabel = isLibrary && store ? store.root.name : opts.name;
+      if (finderBar && pathBarRoot === rootLabel && pathBarDir === currentDir && pathBar.hidden === !store) return;
+      pathBarRoot = rootLabel;
+      pathBarDir = currentDir;
       pathBar.replaceChildren();
       pathBar.hidden = !store;
-      const rootLabel = isLibrary && store ? store.root.name : opts.name;
       const parts = [{ label: rootLabel, path: '' }, ...segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') }))];
       parts.forEach((part, i) => {
         if (i) {
@@ -2307,7 +2375,7 @@ export function createLibraryInstance(viewer, opts) {
       });
       fitPathBar();
     };
-    if (!barControls || !barSwapped || !viewer.toolbarElem) {
+    if (finderBar || !barControls || !barSwapped || !viewer.toolbarElem) {
       crumbHidden = finder || segs.length < 3 ? 0 : segs.length - 1;
       buildCrumbs();
       fillPathBar();
@@ -2328,9 +2396,8 @@ export function createLibraryInstance(viewer, opts) {
     crumbHidden = 0;
     buildCrumbs();
     // The root and every ancestor below it can fold, but not the current name.
-    const foldable = finder ? NAME_CAPS.length - 1 : segs.length;
+    const foldable = segs.length;
     fieldLow = false;
-    searchField.style.minWidth = `${fieldFloor()}px`;
     const syncMore = () => { moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || sortWrap.hidden || viewSeg.hidden); };
     // The More button is decided before each measurement, so its width counts once something has folded into it.
     const fits = () => {
@@ -2353,14 +2420,16 @@ export function createLibraryInstance(viewer, opts) {
       () => { sortWrap.hidden = true; },
       foldOne,
       () => { viewSeg.hidden = true; },
-      () => { fieldLow = true; searchField.style.minWidth = `${fieldFloor()}px`; },
+      () => { fieldLow = true; },
       () => { if (!popped) { searchField.hidden = true; findBtn.hidden = false; } },
     ];
     for (const step of steps) {
       if (fits()) break;
       step();
     }
-    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb, or one more cut of the name */ }
+    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb */ }
+    if (popped || searchField.hidden) searchField.style.width = '';
+    else searchField.style.width = `${Math.min(320, fieldFloor() + Math.max(0, barRoom() - crumbsNeed(true) - controlsNeed()))}px`;
     syncMore();
     roundBarButtons();
     fillPathBar();
@@ -2526,8 +2595,15 @@ export function createLibraryInstance(viewer, opts) {
   moreDropdown.attachTrigger(moreBtn);
 
   findBtn.addEventListener('click', () => {
+    if (finderBar && barSwapped) {
+      if (finderBar.rowOpen() && document.activeElement === searchInput && !searchInput.value) {
+        findBtn.focus();
+      } else finderBar.focus();
+      return;
+    }
     searchField.hidden = false;
     searchField.classList.add('popped');
+    searchField.style.width = '';
     findBtn.hidden = true;
     searchInput.focus();
   });
@@ -2536,22 +2612,27 @@ export function createLibraryInstance(viewer, opts) {
     searchField.classList.remove('popped');
     syncCrumbs();
   };
-  searchInput.addEventListener('blur', () => window.setTimeout(() => {
-    unpopField();
-    if (barSwapped && !searchField.classList.contains('has-text')) syncCrumbs();
-  }, 0));
+  searchInput.addEventListener('blur', () => {
+    if (finderBar) return;
+    window.setTimeout(() => {
+      unpopField();
+      if (barSwapped && !searchField.classList.contains('has-text')) syncCrumbs();
+    }, 0);
+  });
+  if (finderBar) {
+    findBtn.addEventListener('mousedown', (e) => { if (document.activeElement === searchInput) e.preventDefault(); });
+    clearBtn.addEventListener('mousedown', (e) => { if (barSwapped) e.preventDefault(); });
+  }
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && searchField.classList.contains('popped') && !searchInput.value) {
       searchInput.blur();
       unpopField();
     }
   });
-  if (viewer.toolbarElem) {
-    const barObserver = new ResizeObserver(() => {
-      if (barSwapped) syncCrumbs();
-    });
-    barObserver.observe(viewer.toolbarElem);
-  }
+  const barObserver = new ResizeObserver(() => {
+    if (barSwapped) syncCrumbs();
+  });
+  if (viewer.toolbarElem) barObserver.observe(viewer.toolbarElem);
 
   const unfoldForDrag = () => {
     // The Finder form's path bar shows every folder at every width, so there is nothing to unfold.
@@ -7062,9 +7143,11 @@ export function createLibraryInstance(viewer, opts) {
     if (viewer._resumeOwner) {
       try { resumeStorage.setItem(OPEN_FOLDER_KEY, store.root.name); } catch { /* Storage unavailable. */ }
     }
-    shell?.getFolderPath?.(store.root.name).then((/** @type {any} */ r) => {
-      if (!r?.dir || !store) return;
-      folderDirs.set(store.root.name, r.dir);
+    const folderName = store.root.name;
+    shell?.getFolderPath?.(folderName).then((/** @type {any} */ r) => {
+      if (!r?.dir || destroyed) return;
+      folderDirs.set(folderName, r.dir);
+      if (finderBar && store?.root.name === folderName) buildCrumbs();
       publishFolders();
     }).catch(() => { });
     syncBarForStore();
@@ -7643,10 +7726,11 @@ export function createLibraryInstance(viewer, opts) {
     searchField.classList.toggle('has-text', !!filterText);
     if (fullTextResults && !filterText) fullTextResults = null;
     if (!fullTextResults) render();
+    else if (finderBar && barSwapped) buildCrumbs();
   });
-  // Focus raises the field's minimum width, so the bar refits.
+  // Focus raises the field's floor, so the bar refits.
   searchInput.addEventListener('focus', () => {
-    if (barSwapped) syncCrumbs();
+    if (!finderBar && barSwapped) syncCrumbs();
   });
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -7657,6 +7741,11 @@ export function createLibraryInstance(viewer, opts) {
         searchField.classList.remove('has-text');
         fullTextResults = null;
         render();
+        return;
+      }
+      if (finderBar?.iconAtRest() && barSwapped) {
+        searchInput.blur();
+        findBtn.focus();
         return;
       }
       const first = /** @type {?HTMLElement} */ (body.querySelector('[data-rel-path]'));
@@ -7716,6 +7805,7 @@ export function createLibraryInstance(viewer, opts) {
     searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
   });
   clearBtn.addEventListener('click', () => {
+    if (finderBar && barSwapped) finderBar.focus();
     searchInput.value = '';
     filterText = '';
     searchField.classList.remove('has-text');
@@ -8033,7 +8123,8 @@ export function createLibraryInstance(viewer, opts) {
       colSearchRow.hidden = false;
       colSearchBtn.classList.add('on');
     }
-    searchInput.focus();
+    if (finderBar && barSwapped) finderBar.focus();
+    else searchInput.focus();
     searchInput.select();
   };
   const hasWindow = () => visible && (form === 'full' || surface.contains(document.activeElement));
@@ -8062,39 +8153,90 @@ export function createLibraryInstance(viewer, opts) {
   };
   backBtn.addEventListener('click', goBack);
   fwdBtn.addEventListener('click', goForward);
+  /** @type {{x: number, y: number} | null} */
+  let titleMenuPoint = null;
   const titleDropdown = createDropdown({
     show: () => {
+      if (!store) return null;
       titleMenu.replaceChildren();
       const segs = currentDir ? currentDir.split('/') : [];
-      const rootLabel = isLibrary && store ? store.root.name : opts.name;
-      const rows = segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') })).reverse();
-      rows.push({ label: rootLabel, path: '' });
-      rows.forEach(({ label, path }) => {
+      const rootLabel = isLibrary ? store.root.name : opts.name;
+      const path = currentDir;
+      const name = segs.at(-1) ?? rootLabel;
+      const heading = document.createElement('div');
+      heading.className = 'folder-name';
+      heading.textContent = name;
+      const divider = document.createElement('div');
+      divider.className = 'scribe-library-menu-sep';
+      titleMenu.append(heading, divider);
+      titleMenu.setAttribute('aria-label', name);
+      /** @param {string} label @param {string} icon @param {() => void} action */
+      const add = (label, icon, action) => {
         const item = document.createElement('div');
         item.className = 'scribe-library-menu-item';
         item.setAttribute('role', 'menuitem');
-        item.appendChild(document.createTextNode(label));
+        const glyph = document.createElement('span');
+        glyph.className = 'menu-icon';
+        glyph.setAttribute('aria-hidden', 'true');
+        glyph.innerHTML = icon;
+        item.append(glyph, document.createTextNode(label));
         item.addEventListener('click', () => {
-          titleDropdown.close();
-          if (path !== currentDir) openDir(path);
+          titleDropdown.close(true);
+          action();
         });
         titleMenu.appendChild(item);
+      };
+      add('Copy name', CM_COPY_SVG, async () => {
+        try { await navigator.clipboard.writeText(name); } catch { viewer._showToast('Couldn’t copy the name.'); }
       });
+      // A portfolio can share a name with a folder of the document library, and Show in Finder must not open that folder.
+      if (isLibrary && folderDirs.has(rootLabel) && (path ? shell?.revealFile : shell?.revealFolder)) {
+        add(revealLabel, MENU_REVEAL_SVG, () => {
+          if (path) shell.revealFile(rootLabel, path);
+          else shell.revealFolder(rootLabel);
+        });
+      }
+      const host = viewer.pdfViewerElem;
+      host.appendChild(titleMenu);
       titleMenu.style.display = '';
+      const bounds = host.getBoundingClientRect();
+      const anchor = titleName.getBoundingClientRect();
+      const point = titleMenuPoint ?? { x: anchor.left, y: anchor.bottom };
+      titleMenu.style.left = `${Math.max(4, Math.min(point.x - bounds.left, bounds.width - titleMenu.offsetWidth - 4))}px`;
+      titleMenu.style.top = `${Math.max(4, Math.min(point.y - bounds.top, bounds.height - titleMenu.offsetHeight - 4))}px`;
+      titleName.setAttribute('aria-expanded', 'true');
       return titleMenu;
     },
     hide: () => {
       titleMenu.style.display = 'none';
+      titleName.setAttribute('aria-expanded', 'false');
+      titleWrap.appendChild(titleMenu);
     },
     rows: '.scribe-library-menu-item',
   });
   titleName.addEventListener('contextmenu', (e) => {
     e.preventDefault();
+    titleMenuPoint = e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : null;
     titleDropdown.open(titleName, 'first');
   });
   titleName.addEventListener('click', (e) => {
-    if (e.metaKey || e.ctrlKey) titleDropdown.open(titleName, 'first');
+    if (e.ctrlKey && !titleDropdown.isOpen()) {
+      titleMenuPoint = { x: e.clientX, y: e.clientY };
+      titleDropdown.open(titleName, 'first');
+    }
   });
+  if (finderBar) {
+    titleMenu.classList.add('scribe-library-title-context', 'scribe-library-new-menu');
+    titleName.tabIndex = 0;
+    titleName.setAttribute('role', 'button');
+    titleName.setAttribute('aria-expanded', 'false');
+    titleName.addEventListener('keydown', (e) => {
+      if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10') || e.key === 'Enter' || e.key === ' ')) return;
+      e.preventDefault();
+      titleMenuPoint = null;
+      titleDropdown.open(titleName, 'first');
+    });
+  }
   /** @param {KeyboardEvent} e */
   const onNavShortcut = (e) => {
     if (!finder || !hasWindow() || docEngaged || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
@@ -8304,6 +8446,7 @@ export function createLibraryInstance(viewer, opts) {
       ingest?.cancel();
       resizeObserver.disconnect();
       fieldObserver.disconnect();
+      barObserver.disconnect();
       colsObserver?.disconnect();
       window.clearTimeout(colSettleTimer);
       cancelAnimationFrame(colProjectRaf);
