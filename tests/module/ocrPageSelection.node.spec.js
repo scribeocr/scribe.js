@@ -21,7 +21,6 @@ scribe.opt.langPath = LANG_PATH;
 // It pins two things.
 // First, the document-level `autoShallow` rule: a text-native deck is left entirely alone, so `autoShallow` selects nothing.
 // Second, the full-page-scan threshold: a ~73% image is below `isFullPageImage`, so `autoDeep` keys on the baked-text signal rather than on scans.
-// Recognition wiring and active-layer assembly are covered in the heavier extra suite.
 // This CI test pins the deterministic decision only.
 
 const IMAGE_SLIDE_START = 12;

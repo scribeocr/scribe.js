@@ -533,7 +533,7 @@ export function createDragReorder({
         if (d.dropElem.classList.contains('folder')) {
           const manifest = getManifest();
           const entries = d.carried.map((p) => manifest?.docs[p]).filter((e) => !!e);
-          previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
+          previewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '', /** @type {import('./libraryStore.js').LibraryDocEntry[]} */(entries));
         }
       }
       if (d.ghost && !d.chip) d.ghost.style.transform = d.dropElem ? `scale(${d.isDir ? FOLDER_OVER_TARGET_SCALE : OVER_TARGET_SCALE})` : '';
@@ -660,7 +660,7 @@ export function createDragReorder({
         from: {
           left: b.left + b.width / 2 - w / 2, top: b.top + b.height / 2 - h / 2, width: w, height: h,
         },
-        rot: Number(/** @type {HTMLElement} */ (card).dataset.rot || 0),
+        rot: Number(/** @type {HTMLElement} */(card).dataset.rot || 0),
         opacity: 0.95,
       });
     });
@@ -739,7 +739,7 @@ export function createDragReorder({
   const renderWithSlide = (still = []) => {
     const SEL = '[data-band="folders-grid"] > .scribe-library-card, [data-band="main-grid"] > .scribe-library-card, [data-band="rows"] > .scribe-library-row';
     const beforeRects = new Map();
-    for (const el of body.querySelectorAll(SEL)) beforeRects.set(/** @type {HTMLElement} */ (el).dataset.relPath, el.getBoundingClientRect());
+    for (const el of body.querySelectorAll(SEL)) beforeRects.set(/** @type {HTMLElement} */(el).dataset.relPath, el.getBoundingClientRect());
     renderPending = false;
     render();
     if (reducedMotion()) return;
@@ -822,7 +822,7 @@ export function createDragReorder({
     const docs = d.carried.filter((p) => !p.endsWith('/'));
     if (isFolder) {
       const entries = docs.map((p) => manifest?.docs[p]).filter((e) => !!e);
-      startLanding(destDir, /** @type {import('./libraryStore.js').LibraryDocEntry[]} */ (entries));
+      startLanding(destDir, /** @type {import('./libraryStore.js').LibraryDocEntry[]} */(entries));
     }
     /** @type {Map<string, string>} */
     const hashByPath = new Map(docs.map((p) => [p, manifest?.docs[p]?.hash ?? '']));

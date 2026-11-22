@@ -85,7 +85,6 @@ export const MARKER_TERM = '\u0000marker';
 const SYMBOL_TOKENS = new Set(['§', '¶', '%', '$']);
 const APOSTROPHES = new Set(["'", '’', '‘', 'ʼ', '′']);
 const MARK_RE = /\p{M}+/gu;
-// A symbol such as the trademark sign is left out, since NFKD would expand it into letters glued to the word.
 const WORD_CHAR_RE = /^[\p{L}\p{N}\p{M}]$/u;
 const HYPHEN_END_RE = /[\p{L}][-‐‑­]$/u;
 const LOWER_START_RE = /^\p{Ll}/u;

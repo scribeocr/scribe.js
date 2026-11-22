@@ -784,7 +784,7 @@ const landCard = (pageImg, target, host, ahead = null) => {
       /** @type {HTMLElement[]} */
       const between = [];
       for (let el = inView[0].parentElement; el && el !== sc; el = el.parentElement) between.unshift(el);
-      for (const el of between) holder = holder.appendChild(/** @type {HTMLElement} */ (el.cloneNode(false)));
+      for (const el of between) holder = holder.appendChild(/** @type {HTMLElement} */(el.cloneNode(false)));
       for (const pc of inView) {
         const twin = /** @type {HTMLElement} */ (pc.cloneNode(true));
         const drawn = pc.querySelectorAll('canvas');
@@ -1797,11 +1797,11 @@ export function createLibraryInstance(viewer, opts) {
     /** @type {HTMLElement[]} */
     const parts = [];
     for (const el of [...viewer.toolbarElemStart.children]) {
-      if (el !== viewer._appMenu?.menuWrap && el !== barTitle) parts.push(/** @type {HTMLElement} */ (el));
+      if (el !== viewer._appMenu?.menuWrap && el !== barTitle) parts.push(/** @type {HTMLElement} */(el));
     }
     if (viewer._toolbarButtonsElem) parts.push(viewer._toolbarButtonsElem);
     for (const el of [...viewer.toolbarElemEnd.children]) {
-      if (el !== barControls && !el.classList.contains('scribe-shell-corner')) parts.push(/** @type {HTMLElement} */ (el));
+      if (el !== barControls && !el.classList.contains('scribe-shell-corner')) parts.push(/** @type {HTMLElement} */(el));
     }
     return parts;
   };
@@ -1849,7 +1849,7 @@ export function createLibraryInstance(viewer, opts) {
     if (manifestTimer !== null) return;
     manifestTimer = window.setTimeout(() => {
       manifestTimer = null;
-      if (store && manifest) store.writeManifest(manifest).catch(() => {});
+      if (store && manifest) store.writeManifest(manifest).catch(() => { });
     }, 1000);
   };
 
@@ -1955,7 +1955,7 @@ export function createLibraryInstance(viewer, opts) {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
-      if (entry && tab.libraryRelPath) loads.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */ (tab).lastPage ?? 0);
+      if (entry && tab.libraryRelPath) loads.persistRasterWindow(tab.libraryRelPath, entry, /** @type {any} */(tab).lastPage ?? 0);
     }
     if (!tab || !tab.libraryHash || !store) return;
     // What is edited during a save is still unsaved after it, and is saved here.
@@ -2452,7 +2452,7 @@ export function createLibraryInstance(viewer, opts) {
     if (inCol ? colFold.view : viewSeg.hidden) {
       section('View');
       for (const [mode, label] of [['grid', 'Grid'], ['list', 'List'], ['compact', 'Compact']]) {
-        item(label, { on: viewMode === mode, role: 'menuitemradio' }, () => setViewMode(/** @type {'grid' | 'list' | 'compact'} */ (mode)));
+        item(label, { on: viewMode === mode, role: 'menuitemradio' }, () => setViewMode(/** @type {'grid' | 'list' | 'compact'} */(mode)));
       }
     }
     if (inCol ? colFold.sort : sortWrap.hidden) {
@@ -2694,7 +2694,7 @@ export function createLibraryInstance(viewer, opts) {
       }
       if (viewMode === 'grid') {
         /** @param {string} name */
-        const band = (name) => /** @type {?HTMLElement} */ (body.querySelector(`[data-band="${name}"]`));
+        const band = (name) => /** @type {?HTMLElement} */(body.querySelector(`[data-band="${name}"]`));
         const recentGrid = band('recent-grid');
         if (recentGrid) {
           syncKeyedChildren(recentGrid, recent, ([p]) => p, ([p, e]) => buildCard(p, e), (node, [p, e]) => updateCard(node, p, e));
@@ -2839,7 +2839,7 @@ export function createLibraryInstance(viewer, opts) {
         if (next) next.focus({ preventScroll: true });
       }
       if (!document.activeElement || document.activeElement === document.body) {
-        openAct.focus(/** @type {FocusOptions} */ ({ preventScroll: true, focusVisible: false }));
+        openAct.focus(/** @type {FocusOptions} */({ preventScroll: true, focusVisible: false }));
       }
       return;
     }
@@ -2985,7 +2985,7 @@ export function createLibraryInstance(viewer, opts) {
   /** Restyle every visible card and list row to the selection set. */
   const syncSelectionUI = () => {
     for (const el of body.querySelectorAll('.scribe-library-card, .scribe-library-row')) {
-      el.classList.toggle('selected', selectedPaths.has(/** @type {HTMLElement} */ (el).dataset.relPath ?? ''));
+      el.classList.toggle('selected', selectedPaths.has(/** @type {HTMLElement} */(el).dataset.relPath ?? ''));
     }
   };
 
@@ -3031,7 +3031,7 @@ export function createLibraryInstance(viewer, opts) {
       const cr = card.getBoundingClientRect();
       const left = cr.left - bodyRect.left;
       const top = cr.top - bodyRect.top + body.scrollTop;
-      if (left < r && left + cr.width > l && top < b && top + cr.height > t) selectedPaths.add(/** @type {HTMLElement} */ (card).dataset.relPath ?? '');
+      if (left < r && left + cr.width > l && top < b && top + cr.height > t) selectedPaths.add(/** @type {HTMLElement} */(card).dataset.relPath ?? '');
     }
     syncSelectionUI();
   };
@@ -3082,7 +3082,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!m.started) return;
     marqueeElem.remove();
     drag.suppressClick();
-    selAnchor = [...body.querySelectorAll('.scribe-library-card[data-rel-path]')].map((card) => /** @type {HTMLElement} */ (card).dataset.relPath ?? '').find((p) => selectedPaths.has(p)) ?? null;
+    selAnchor = [...body.querySelectorAll('.scribe-library-card[data-rel-path]')].map((card) => /** @type {HTMLElement} */(card).dataset.relPath ?? '').find((p) => selectedPaths.has(p)) ?? null;
   };
 
   body.addEventListener('pointerdown', (e) => {
@@ -3218,7 +3218,7 @@ export function createLibraryInstance(viewer, opts) {
   };
   /** @param {PointerEvent} e */
   const onMenuOutside = (e) => {
-    if (!menuElem.contains(/** @type {Node} */ (e.target))) closeCardMenu();
+    if (!menuElem.contains(/** @type {Node} */(e.target))) closeCardMenu();
   };
   /** @param {KeyboardEvent} e */
   const onMenuKey = (e) => {
@@ -3359,7 +3359,7 @@ export function createLibraryInstance(viewer, opts) {
         });
       }
       addItem(all.length === 1 ? 'Save a copy…' : 'Save copies…', false, () => saveCopies(all));
-      addItem(all.length === 1 ? 'Copy name' : 'Copy names', false, () => navigator.clipboard?.writeText(all.map(titleOf).join('\n')).catch(() => {}));
+      addItem(all.length === 1 ? 'Copy name' : 'Copy names', false, () => navigator.clipboard?.writeText(all.map(titleOf).join('\n')).catch(() => { }));
       if (!readOnly && paths.length) addItem('Move to…', false, () => openMovePicker(moveSetFor(relPath), card));
       addIndexItem(paths);
       addRecognizeItem(paths);
@@ -3456,7 +3456,7 @@ export function createLibraryInstance(viewer, opts) {
         card.insertBefore(icon, card.firstChild);
       }
     }
-    if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */ (card.querySelector(':scope > img.thumb')), entry);
+    if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */(card.querySelector(':scope > img.thumb')), entry);
     const meta = /** @type {HTMLElement} */ (card.querySelector(':scope > .body > .meta'));
     meta.textContent = '';
     meta.removeAttribute('title');
@@ -3534,7 +3534,7 @@ export function createLibraryInstance(viewer, opts) {
       // Identical files share a hash and therefore a sidecar, so the data files go only with the last reference to it.
       const shared = Object.values(manifest.docs).some((e2) => e2.hash === entry.hash);
       if (entry.hash && !shared) {
-        await engine.removeDoc(entry.hash).catch(() => {});
+        await engine.removeDoc(entry.hash).catch(() => { });
         await Promise.all([
           store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
         ]).catch(() => { });
@@ -3622,7 +3622,7 @@ export function createLibraryInstance(viewer, opts) {
       const paths = (inBands
         ? [...body.querySelectorAll('.scribe-library-grid.folders > .scribe-library-card, .scribe-library-grid.main > .scribe-library-card')]
         : [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])])
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
       const entryNow = manifest?.docs[relPath];
       if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
@@ -4118,7 +4118,7 @@ export function createLibraryInstance(viewer, opts) {
         paper.classList.remove('reserved');
       }
       // The papers sit in the DOM in arrival order, so the drawn order is read off their slots.
-      if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */ (a).style.left) - parseFloat(/** @type {HTMLElement} */ (b).style.left)).map((paper) => /** @type {HTMLElement} */ (paper).dataset.paper ?? ''));
+      if (elem.querySelector('.scribe-library-fold')) coverOrder.set(dirPath, [...elem.querySelectorAll('.paper:not(.leaving)')].sort((a, b) => parseFloat(/** @type {HTMLElement} */(a).style.left) - parseFloat(/** @type {HTMLElement} */(b).style.left)).map((paper) => /** @type {HTMLElement} */(paper).dataset.paper ?? ''));
       elem.classList.add('landed');
       elem.classList.remove('drop');
     }
@@ -4143,7 +4143,7 @@ export function createLibraryInstance(viewer, opts) {
       } else if (firstDoc && viewMode !== 'grid') {
         // The row stays in place until the render that follows, so its index among the documents is read off the list.
         const rows = [...body.querySelectorAll('[data-band="rows"] > .scribe-library-row:not(.folder):not(.vacated)')];
-        const index = rows.findIndex((r) => /** @type {HTMLElement} */ (r).dataset.relPath === firstDoc.from);
+        const index = rows.findIndex((r) => /** @type {HTMLElement} */(r).dataset.relPath === firstDoc.from);
         slot = {
           kind: 'doc', dir: fromDir, index: Math.max(0, index), name: slotName, text: nowIn, to: firstDoc.to,
         };
@@ -4167,7 +4167,7 @@ export function createLibraryInstance(viewer, opts) {
   };
 
   /** @param {string} dirPath */
-  const folderElemOf = (dirPath) => /** @type {?HTMLElement} */ (body.querySelector(`.scribe-library-card.folder[data-dir-target="${CSS.escape(dirPath)}"], .scribe-library-row.folder[data-dir-target="${CSS.escape(dirPath)}"]`));
+  const folderElemOf = (dirPath) => /** @type {?HTMLElement} */(body.querySelector(`.scribe-library-card.folder[data-dir-target="${CSS.escape(dirPath)}"], .scribe-library-row.folder[data-dir-target="${CSS.escape(dirPath)}"]`));
 
   /** Take back the move the undo line stands for. */
   const undoMoves = async () => {
@@ -4180,7 +4180,7 @@ export function createLibraryInstance(viewer, opts) {
     /** @type {Map<string, DOMRect>} */
     const starts = new Map();
     if (host) {
-      for (const paper of host.querySelectorAll('.paper[data-paper]')) starts.set(/** @type {HTMLElement} */ (paper).dataset.paper ?? '', paper.getBoundingClientRect());
+      for (const paper of host.querySelectorAll('.paper[data-paper]')) starts.set(/** @type {HTMLElement} */(paper).dataset.paper ?? '', paper.getBoundingClientRect());
       const fold = host.querySelector('.scribe-library-fold');
       if (fold) starts.set('', fold.getBoundingClientRect());
     }
@@ -4304,7 +4304,7 @@ export function createLibraryInstance(viewer, opts) {
       }
       if (drag.clickSuppressed()) return;
       const paths = [...body.querySelectorAll('.scribe-library-grid.folders > .scribe-library-card, .scribe-library-grid.main > .scribe-library-card')]
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, `${dirPath}/`, paths);
     });
     card.addEventListener('dblclick', (e) => {
@@ -4363,7 +4363,7 @@ export function createLibraryInstance(viewer, opts) {
     card.addEventListener('click', (e) => {
       if (drag.clickSuppressed()) return;
       const paths = [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])]
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
     });
     card.addEventListener('contextmenu', (e) => {
@@ -4403,7 +4403,7 @@ export function createLibraryInstance(viewer, opts) {
       if (img) img.style.display = entry.portfolio ? 'none' : '';
     }
     if (comfortable) {
-      if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */ (row.querySelector('.nm > img')), entry);
+      if (!entry.portfolio) setThumbSrc(/** @type {HTMLImageElement} */(row.querySelector('.nm > img')), entry);
       const stack = /** @type {HTMLElement} */ (row.querySelector('.nm > .tt'));
       stack.querySelector(':scope > .m2')?.remove();
       if (badge || feedback) {
@@ -4498,7 +4498,7 @@ export function createLibraryInstance(viewer, opts) {
       }
       if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
       const entryNow = manifest?.docs[relPath];
       if (entryNow && form === 'column' && !e.shiftKey && !e.ctrlKey && !e.metaKey) previewEntry(relPath, entryNow, e.altKey ? { group: sideGroup() } : {});
@@ -4540,8 +4540,10 @@ export function createLibraryInstance(viewer, opts) {
     if (inFlight) {
       row.classList.add('drop');
       previewFolder(row, dirPath, inFlight);
-    } else if (comfortable) morphFold(/** @type {HTMLElement} */ (row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
-    fillFolderLine(/** @type {HTMLElement} */ (row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt')), dirPath, stats);
+    } else if (comfortable) {
+      morphFold(/** @type {HTMLElement} */(row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
+    }
+    fillFolderLine(/** @type {HTMLElement} */(row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt')), dirPath, stats);
     /** @param {number} t */
     const fmtDate = (t) => (t > 0
       ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -4609,7 +4611,7 @@ export function createLibraryInstance(viewer, opts) {
       }
       if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, `${dirPath}/`, paths);
     });
     row.addEventListener('dblclick', (e) => {
@@ -4683,7 +4685,7 @@ export function createLibraryInstance(viewer, opts) {
     row.addEventListener('click', (e) => {
       if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
-        .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
+        .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
     });
     row.addEventListener('contextmenu', (e) => {
@@ -4849,7 +4851,7 @@ export function createLibraryInstance(viewer, opts) {
       if (ingest) {
         ingest.paused = false;
         // The failure may have left a partial transfer, and a scan reconciles whatever state the disk is in.
-        await ingest.scan().catch(() => {});
+        await ingest.scan().catch(() => { });
       }
       fsOpBusy = false;
       render();
@@ -4922,7 +4924,7 @@ export function createLibraryInstance(viewer, opts) {
    * The card or row for `key` in the bands a drag carries from.
    * @param {string} key
    */
-  const bandElemOf = (key) => /** @type {?HTMLElement} */ (body.querySelector(['folders-grid', 'main-grid', 'rows'].map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(key)}"]`).join(', ')));
+  const bandElemOf = (key) => /** @type {?HTMLElement} */(body.querySelector(['folders-grid', 'main-grid', 'rows'].map((b) => `[data-band="${b}"] > [data-rel-path="${CSS.escape(key)}"]`).join(', ')));
 
   /**
    * Move the documents and folders behind `keys` into `destDir`.
@@ -5011,7 +5013,7 @@ export function createLibraryInstance(viewer, opts) {
   const moveSetFor = (key) => {
     if (!(selectedPaths.has(key) && selectedPaths.size >= 2)) return [key];
     const chosen = [...body.querySelectorAll('[data-band="folders-grid"] > [data-rel-path], [data-band="main-grid"] > [data-rel-path], [data-band="rows"] > [data-rel-path]')]
-      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '')
+      .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? '')
       .filter((p) => selectedPaths.has(p) && (p.endsWith('/') || !!manifest?.docs[p]));
     return chosen.includes(key) ? chosen : [key];
   };
@@ -5679,7 +5681,7 @@ export function createLibraryInstance(viewer, opts) {
           }
         }
         const result = orig.apply(this, args);
-        if (name === 'recognize') Promise.resolve(result).then(() => { if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryRecognized = true; }).catch(() => {});
+        if (name === 'recognize') Promise.resolve(result).then(() => { if (d._libraryDirtyTarget) d._libraryDirtyTarget.libraryRecognized = true; }).catch(() => { });
         return result;
       };
     }
@@ -5715,7 +5717,7 @@ export function createLibraryInstance(viewer, opts) {
       return;
     }
     /** @type {() => void} */
-    let settle = () => {};
+    let settle = () => { };
     openingDocs.set(openKey, new Promise((resolve) => { settle = () => resolve(); }));
     /**
      * Paint the query's matches on the opened document and land on the first match of the hit's page.
@@ -5832,7 +5834,7 @@ export function createLibraryInstance(viewer, opts) {
         const tab = /** @type {any} */ (handle.tab);
         wrapMutators(tab.doc, tab);
         sessions.lendTab(entry.hash, tab.doc);
-        handle.hydrated.catch(() => {});
+        handle.hydrated.catch(() => { });
         // The index gives no words for a document it does not hold, as while it is rebuilt, so such a document loads now for its text.
         engine.hasDoc(entry.hash).then((indexed) => { if (!indexed) tab.doc.ensureHydrated(); }).catch(() => { });
         // Priming also waits for neighboring-page annotations in the background lane, so awaiting it on a plain open would hold the dropped thumbnail still.
@@ -6118,7 +6120,7 @@ export function createLibraryInstance(viewer, opts) {
       } else if (e.key === 'Tab') {
         e.preventDefault();
         const order = /** @type {HTMLElement[]} */ ([keepBox, cancel, confirm].filter((el) => el));
-        const at = order.indexOf(/** @type {HTMLElement} */ (document.activeElement));
+        const at = order.indexOf(/** @type {HTMLElement} */(document.activeElement));
         order[(at + (e.shiftKey ? -1 : 1) + order.length) % order.length]?.focus();
       }
     };
@@ -6627,7 +6629,7 @@ export function createLibraryInstance(viewer, opts) {
     const hash = entry.hash;
     const openTabDoc = viewer._tabs.find((tab) => tab.libraryHash === hash && ownsTab(tab))?.doc;
     const docPromise = openTabDoc ? Promise.resolve(openTabDoc)
-      : sessions.liveDocOrLoad(hash, () => openLibraryDoc(/** @type {LibraryStore} */ (store), relPath, entry, {
+      : sessions.liveDocOrLoad(hash, () => openLibraryDoc(/** @type {LibraryStore} */(store), relPath, entry, {
         deferText: true, skipFontOpt: true, pdfWorkerN: 1, sessions,
       }));
     docPromise.then((doc) => {
@@ -6677,7 +6679,7 @@ export function createLibraryInstance(viewer, opts) {
     loads,
     getStore: () => store,
     getManifest: () => manifest,
-    getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults),
+    getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */(fullTextResults),
     getQuery: () => fullTextQuery,
     getEngine: () => engine,
     getEngineResponse: () => engineResponse,
@@ -6852,7 +6854,7 @@ export function createLibraryInstance(viewer, opts) {
   document.addEventListener('wheel', noteInteraction, { capture: true, passive: true });
   /** @type {?boolean} */
   let onBattery = null;
-  shell?.getPowerState?.().then((/** @type {any} */ s) => { onBattery = !!s?.onBattery; }).catch(() => {});
+  shell?.getPowerState?.().then((/** @type {any} */ s) => { onBattery = !!s?.onBattery; }).catch(() => { });
   shell?.onPowerChanged?.((/** @type {any} */ s) => {
     onBattery = !!s?.onBattery;
     ingest?.start();
@@ -7064,7 +7066,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!r?.dir || !store) return;
       folderDirs.set(store.root.name, r.dir);
       publishFolders();
-    }).catch(() => {});
+    }).catch(() => { });
     syncBarForStore();
     syncFolderRows();
     viewer._notifyMenuState();
@@ -7280,7 +7282,7 @@ export function createLibraryInstance(viewer, opts) {
     ingest.start();
     viewer._tabStrip?.showTabNote(viewer._stripIndex(tab), 'Copied into the folder', {
       actionLabel: 'Undo',
-      onAction: () => { undoCopyIntoFolder(tab, relPath, fromIndex).catch(() => {}); },
+      onAction: () => { undoCopyIntoFolder(tab, relPath, fromIndex).catch(() => { }); },
     });
   };
 
@@ -7819,7 +7821,7 @@ export function createLibraryInstance(viewer, opts) {
     item.innerHTML = `${MENU_CHECK_SVG}${label}`;
     item.addEventListener('click', () => {
       viewDropdown.close();
-      setViewMode(/** @type {'grid' | 'list' | 'compact'} */ (mode));
+      setViewMode(/** @type {'grid' | 'list' | 'compact'} */(mode));
     });
     viewMenu.appendChild(item);
     viewItems.push(item);
@@ -8123,7 +8125,7 @@ export function createLibraryInstance(viewer, opts) {
     if (!((e.key === 'a' || e.key === 'A') && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey)) return;
     if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     const paths = new Set([...body.querySelectorAll('.scribe-library-card[data-rel-path], .scribe-library-row[data-rel-path]')]
-      .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? ''));
+      .map((el) => /** @type {HTMLElement} */(el).dataset.relPath ?? ''));
     if (!paths.size) return;
     e.preventDefault();
     e.stopPropagation();
@@ -8258,7 +8260,7 @@ export function createLibraryInstance(viewer, opts) {
         if (!r?.dir || destroyed) return;
         folderDirs.set(h.name, r.dir);
         publishFolders();
-      }).catch(() => {});
+      }).catch(() => { });
     });
     // A launch by file opens only that file, and a folder closed before quitting stays closed.
     let openName = null;
@@ -8327,7 +8329,7 @@ export function createLibraryInstance(viewer, opts) {
       if (manifestTimer !== null) {
         window.clearTimeout(manifestTimer);
         manifestTimer = null;
-        if (store && manifest) store.writeManifest(manifest).catch(() => {});
+        if (store && manifest) store.writeManifest(manifest).catch(() => { });
       }
       sessions.reset();
       results.dispose();
@@ -8388,7 +8390,7 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
     ? viewer._libraryInstances.find((i) => i.kind === 'portfolio' && i.libraryHash === fields.libraryHash && i.libraryOwner === (fields.libraryOwner ?? null))
     : null;
   if (twin) {
-    await doc.close().catch(() => {});
+    await doc.close().catch(() => { });
     twin.show();
     return twin;
   }
@@ -8411,7 +8413,7 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
     onClose: () => {
       api.destroy();
       store.dispose();
-      doc.close().catch(() => {});
+      doc.close().catch(() => { });
     },
   });
   return api;
