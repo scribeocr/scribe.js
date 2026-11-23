@@ -1719,11 +1719,11 @@ export function createLibraryInstance(viewer, opts) {
     }
   };
   const fitFolds = () => {
-    // A fold is drawn 150 px wide, and the strip around it has 6 px of padding on each side.
-    for (const card of /** @type {NodeListOf<HTMLElement>} */ (body.querySelectorAll('.scribe-library-card.folder'))) {
-      if (form !== 'column') card.style.removeProperty('--fold-fit');
-      else card.style.setProperty('--fold-fit', Math.min(1, Math.max(0.2, (card.clientWidth - 12) / 150)).toFixed(3));
-    }
+    const grid = /** @type {?HTMLElement} */ (body.querySelector('[data-band="folders-grid"]'));
+    if (!grid) return;
+    const card = /** @type {?HTMLElement} */ (grid.querySelector(':scope > .scribe-library-card'));
+    if (form !== 'column' || !card) grid.style.removeProperty('--fold-fit');
+    else grid.style.setProperty('--fold-fit', Math.min(1, Math.max(0.2, (card.clientWidth - 12) / 150)).toFixed(3));
   };
   const positionSurface = () => {
     const column = visible && form === 'column';
