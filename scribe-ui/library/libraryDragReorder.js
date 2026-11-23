@@ -20,6 +20,7 @@ const OVER_GROUP_SCALE = 1.25;
 const CHIP_FADE_MS = 140;
 export const FOLDER_OVER_TARGET_SCALE = 0.7;
 const OVER_TARGET_MS = 140;
+const OWN_LINGER_MS = 1200;
 const LIFT_MS = 140;
 const LIFT_SCALE = 1.03;
 const CHIP_EDGE = 8;
@@ -47,6 +48,7 @@ const FLICK_MS = 60;
  * @property {boolean} canReorder - Whether the current sort and view allow manual ordering.
  * @property {?string} dropDir - Move destination while over a folder or crumb, null for none.
  * @property {?HTMLElement} dropElem - The folder card, row, or crumb that destination comes from.
+ * @property {?HTMLElement} ownElem - The folder card or row under the pointer that already holds the pressed item, null for none.
  * @property {?HTMLElement} ghost - Floating copy tracking the pointer, a fan of pages for cards or a stack of rows for lists.
  * @property {?HTMLElement} line - Insertion-position line.
  * @property {number} gap - Current insertion gap, -1 before the first.
@@ -79,6 +81,7 @@ const FLICK_MS = 60;
  * @param {() => boolean} deps.reorderAllowed - Whether the current sort and view support manual ordering.
  * @param {(elem: HTMLElement, dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.previewFolder - Preview a folder icon with the hovered documents added.
  * @param {(elem: HTMLElement, dirPath: string) => void} deps.unpreviewFolder - Restore a folder icon after a hover preview.
+ * @param {(elem: HTMLElement) => void} deps.markOwnFolder - Show "Already here" in a folder card or row's summary slot.
  * @param {(dirPath: string, entries: import('./libraryStore.js').LibraryDocEntry[]) => void} deps.startLanding - Begin a drop's landing in a folder.
  * @param {(keys: string[], destDir: string) => Promise<{moves: LibraryMove[], failed: string[]}>} deps.moveItems
  * @param {(dirPath: string, mini: boolean) => HTMLElement} deps.foldFor - A folder's fold at card or list size.
@@ -91,12 +94,17 @@ const FLICK_MS = 60;
  */
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
-  previewFolder, unpreviewFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach, foreignDrop,
+  previewFolder, unpreviewFolder, markOwnFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach, foreignDrop,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
   /** Render requested while a drag held the grid frozen; replayed when the drag ends. */
   let renderPending = false;
+  /**
+   * Folder card or row still showing own-folder feedback after release, and the timer that clears it.
+   * @type {?{elem: HTMLElement, timer: number}}
+   */
+  let ownLinger = null;
   /** Relative paths in the main grid's current display order (the drag's reorder base). */
   let gridPaths = [];
   /** @type {?HTMLElement} */
@@ -130,6 +138,24 @@ export function createDragReorder({
       + 'display:flex;align-items:center;justify-content:center;border-radius:4px;background:rgba(24,27,30,.92);'
       + 'border:1px solid rgba(255,255,255,.25);color:#fff;font:600 11px sans-serif;box-sizing:border-box';
     return badge;
+  };
+
+  /**
+   * Clear the own-folder state from a folder card or row and restore its tallies.
+   * @param {HTMLElement} elem
+   */
+  const unmarkOwn = (elem) => {
+    elem.classList.remove('own');
+    if (elem.isConnected) unpreviewFolder(elem, elem.dataset.dirTarget ?? '');
+  };
+
+  const endOwnLinger = () => {
+    if (!ownLinger) return;
+    window.clearTimeout(ownLinger.timer);
+    const { elem } = ownLinger;
+    ownLinger = null;
+    elem.classList.remove('landed');
+    unmarkOwn(elem);
   };
 
   /**
@@ -479,7 +505,6 @@ export function createDragReorder({
 
   /**
    * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination, and scale the drag ghost.
-   * The item's own folder never targets, so dropping there reads as a no-op.
    * @param {CardDrag} d
    */
   const updateDropTarget = (d) => {
@@ -493,6 +518,10 @@ export function createDragReorder({
         d.dropElem.classList.remove('drop');
         if (d.dropElem.classList.contains('folder')) unpreviewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '');
         d.dropElem = null;
+      }
+      if (d.ownElem) {
+        unmarkOwn(d.ownElem);
+        d.ownElem = null;
       }
       d.dropDir = null;
       if (d.line) d.line.style.display = 'none';
@@ -520,6 +549,17 @@ export function createDragReorder({
       const dir = elem.dataset.dirTarget ?? '';
       if (d.carried.some((p) => p.endsWith('/') && (`${dir}/` === p || dir.startsWith(p)))) elem = null;
     }
+    const ownElem = target && target.dataset.dirTarget === parent && target.classList.contains('folder') ? target : null;
+    if (ownElem !== d.ownElem) {
+      if (d.ownElem) unmarkOwn(d.ownElem);
+      d.ownElem = ownElem;
+      if (ownElem) {
+        endOwnLinger();
+        ownElem.classList.add('own');
+        markOwnFolder(ownElem);
+      }
+      if (d.line) d.line.style.display = ownElem ? 'none' : '';
+    }
     if (elem !== d.dropElem) {
       if (d.dropElem) {
         d.dropElem.classList.remove('drop');
@@ -540,11 +580,11 @@ export function createDragReorder({
         if (up) line.textContent = `Move to ${(d.dropElem?.textContent ?? '').trim()}`;
         d.ghost.classList.toggle('has-dest', !!up);
       }
-      if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
+      if (d.line) d.line.style.display = d.dropElem || d.ownElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
     if (d.ghost && !d.chip) {
-      let small = !!d.dropElem;
+      let small = !!d.dropElem || !!d.ownElem;
       if (!small) {
         // Keep the drag ghost shrunk in the gaps between folder cards so dragging across folders does not expand and re-shrink it at every gap.
         let left = false; let right = false; let above = false; let below = false;
@@ -968,6 +1008,24 @@ export function createDragReorder({
       d.dropElem.classList.remove('drop');
       if (d.dropElem.classList.contains('folder')) unpreviewFolder(d.dropElem, d.dropElem.dataset.dirTarget ?? '');
     }
+    if (d.ownElem) {
+      const elem = d.ownElem;
+      d.ownElem = null;
+      if (!commit) unmarkOwn(elem);
+      else {
+        endOwnLinger();
+        ownLinger = {
+          elem,
+          timer: window.setTimeout(() => {
+            ownLinger = null;
+            // Folder cards and rows have no resting color transition, so `.landed` supplies the 400 ms fade when `.own` comes off.
+            elem.classList.add('landed');
+            unmarkOwn(elem);
+            window.setTimeout(() => elem.classList.remove('landed'), 420);
+          }, OWN_LINGER_MS),
+        };
+      }
+    }
     if (d.isTouch) {
       lastTouchDragT = Date.now();
       // A lift released without ever dragging opens the card menu, the touch home for Remove.
@@ -1027,6 +1085,7 @@ export function createDragReorder({
       canReorder: reorderAllowed() && !relPath.endsWith('/') && card.parentElement?.dataset.band === 'main-grid',
       dropDir: null,
       dropElem: null,
+      ownElem: null,
       ghost: null,
       line: null,
       gap: -1,
@@ -1097,6 +1156,7 @@ export function createDragReorder({
 
     /** Abandon any live drag without replaying the render it deferred. */
     cancel: () => {
+      endOwnLinger();
       renderPending = false;
       if (drag) endDrag(false);
     },

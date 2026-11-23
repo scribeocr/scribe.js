@@ -536,6 +536,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-card.folder.own { background: color-mix(in srgb, var(--scribe-ink) 3%, var(--scribe-surface)); border-color: color-mix(in srgb, var(--scribe-ink) 38%, transparent); }
+.scribe-pdf-viewer .scribe-library-row.folder.own { background: color-mix(in srgb, var(--scribe-ink) 3%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--scribe-ink) 38%, transparent); }
 .scribe-pdf-viewer .scribe-library-card.folder .fstrip { position: relative; }
 .scribe-pdf-viewer .scribe-library-card.folder .fstrip::before { content: ''; position: absolute; left: calc(50% - 75px); top: 11px; width: 150px; height: 68px; box-sizing: border-box; border: 1.5px dashed var(--scribe-accent); border-radius: 4px; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); opacity: 0; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-card.folder.dragging .fstrip::before { opacity: 1; transition: opacity 140ms ease; }
@@ -4120,10 +4122,12 @@ export function createLibraryInstance(viewer, opts) {
       card.classList.add('drop');
       previewFolder(card, dirPath, inFlight);
     } else {
-      if (!(undoInfo && undoInfo.dir === dirPath)) card.style.minHeight = '';
+      if (!(undoInfo && undoInfo.dir === dirPath) && !card.classList.contains('own')) card.style.minHeight = '';
       morphFold(/** @type {HTMLElement} */(card.querySelector(':scope > .fstrip')), buildFold(stats.covers));
     }
     fillFolderLine(/** @type {HTMLElement} */(card.querySelector(':scope > .body > .meta')), dirPath, stats, true);
+    // The `.own` state lingers after the drag ends, so an in-place render during that window must not overwrite "Already here".
+    if (card.classList.contains('own')) markOwnFolder(card);
   };
 
   /**
@@ -4139,6 +4143,24 @@ export function createLibraryInstance(viewer, opts) {
     const stats = dirStatsOf(dirPath);
     const strip = /** @type {?HTMLElement} */ (isCard ? elem.querySelector(':scope > .fstrip') : elem.querySelector('.nm > .fthumb'));
     if (strip) morphFold(strip, buildFold(stats.covers.filter((entry) => !entries.includes(entry)), !isCard, entries));
+  };
+
+  /**
+   * Show "Already here" in a folder card or row's summary slot.
+   * @param {HTMLElement} elem
+   */
+  const markOwnFolder = (elem) => {
+    const isCard = elem.classList.contains('scribe-library-card');
+    // A two-line tally collapsing to the one-line "Already here" would shrink the card and shift the cards below.
+    if (isCard && !elem.style.minHeight) elem.style.minHeight = `${elem.getBoundingClientRect().height}px`;
+    const host = /** @type {HTMLElement} */ (isCard ? elem.querySelector(':scope > .body > .meta') : elem.querySelector(viewMode === 'list' ? '.nm .m2' : '.nm .cnt'));
+    host.textContent = '';
+    host.classList.remove('hasatt');
+    host.classList.add('live');
+    const t = document.createElement('span');
+    t.className = 't';
+    t.textContent = 'Already here';
+    host.appendChild(t);
   };
 
   /**
@@ -4601,6 +4623,7 @@ export function createLibraryInstance(viewer, opts) {
       morphFold(/** @type {HTMLElement} */(row.querySelector('.nm > .fthumb')), buildFold(stats.covers, true));
     }
     fillFolderLine(/** @type {HTMLElement} */(row.querySelector(comfortable ? '.nm .m2' : '.nm .cnt')), dirPath, stats);
+    if (row.classList.contains('own')) markOwnFolder(row);
     /** @param {number} t */
     const fmtDate = (t) => (t > 0
       ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
@@ -6753,6 +6776,7 @@ export function createLibraryInstance(viewer, opts) {
     reorderAllowed: () => sortMode === 'custom' && viewMode === 'grid',
     previewFolder,
     unpreviewFolder: (elem, dirPath) => (elem.classList.contains('scribe-library-card') ? updateFolderCard : updateFolderRow)(elem, dirPath),
+    markOwnFolder,
     startLanding,
     moveItems,
     foldFor: (dirPath, mini) => buildFold(dirStatsOf(dirPath).covers, mini),
