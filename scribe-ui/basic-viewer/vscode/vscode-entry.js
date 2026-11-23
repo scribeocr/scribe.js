@@ -26,24 +26,70 @@ const applyTheme = () => pdfViewer.setTheme(document.body.classList.contains('vs
 applyTheme();
 new MutationObserver(applyTheme).observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
+/** @typedef {Error & {kind?: 'denied'|'missing'|'unreadable'|'other'}} ReadError */
+/**
+ * An Error tagged with the kind of read failure.
+ * @param {'denied'|'missing'|'unreadable'|'other'} kind
+ * @param {string} message
+ * @returns {ReadError}
+ */
+const readError = (kind, message) => Object.assign(new Error(message), { kind });
+
 const readDoc = async () => {
-  const res = await fetch(`${config.doc}${config.doc.includes('?') ? '&' : '?'}v=${Date.now()}`);
-  if (res.status === 401) throw new Error('VS Code denied access to the file');
-  if (res.status === 404) throw new Error('the file is missing or unreadable');
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const res = await fetch(`${config.doc}${config.doc.includes('?') ? '&' : '?'}v=${Date.now()}`).catch((err) => { throw readError('other', err instanceof Error ? err.message : String(err)); });
+  if (res.status === 401) throw readError('denied', 'VS Code denied access to the file');
+  if (res.status === 404) throw readError('missing', 'the file is missing or unreadable');
+  if (!res.ok) throw readError('other', `${res.status} ${res.statusText}`);
   return { buffer: await res.arrayBuffer(), name: config.name };
 };
 
 let eventQueue = Promise.resolve();
 const enqueue = (fn) => { eventQueue = eventQueue.then(fn).catch((err) => { console.error(err); }); };
 
+/**
+ * Show why the file did not open, with Try again.
+ * @param {unknown} err
+ */
+const showOpenFailure = (err) => {
+  const kind = err instanceof Error ? /** @type {ReadError} */ (err).kind : undefined;
+  const message = err instanceof Error ? err.message : String(err);
+  let text;
+  let hint = '';
+  if (kind === 'denied') {
+    text = 'VS Code didn’t let the viewer read the file.';
+    hint = 'Closing this tab and reopening the file asks VS Code again.';
+  } else if (kind === 'missing') {
+    text = 'The file is missing or can’t be read.';
+    hint = 'This tab opens the file as soon as it appears.';
+  } else if (kind === 'unreadable') {
+    text = `The file isn’t a ${/\.pdf$/i.test(config.name) ? 'PDF' : 'document'} the viewer can read.`;
+    hint = 'If it is still being written, this tab opens it when the write finishes. To see it as text, use Reopen Editor With… and choose Text Editor.';
+  } else {
+    text = `The file couldn’t be read: ${message}.`;
+  }
+  pdfViewer._showPaneMessage({
+    title: `Couldn’t open ${config.name}`,
+    text,
+    hint,
+    actionLabel: 'Try again',
+    onAction: () => {
+      // The extension answers with a reload, or restarts the page when the file now resolves to another folder.
+      pdfViewer._showPaneMessage({ busy: true, text: 'Opening…' });
+      post({ type: 'retry' });
+    },
+  });
+};
+
 const openDoc = async () => {
   try {
-    await handleLoadFile(config.doc, config.page || 0, readDoc);
+    await handleLoadFile(config.doc, config.page || 0, readDoc, { onOpenFailed: () => showOpenFailure(readError('unreadable', 'the file could not be opened')) });
   } catch (err) {
-    pdfViewer._showToast(`Couldn't open “${config.name}” — ${err instanceof Error ? err.message : err}`);
+    showOpenFailure(err);
   }
 };
+
+/** Whether the viewer's banner is showing a reload failure or file-deletion notice from this entry. */
+let bannerUp = false;
 
 enqueue(async () => {
   await openDoc();
@@ -64,14 +110,34 @@ window.addEventListener('message', (event) => {
       try {
         const { buffer, name } = await readDoc();
         const replaced = await pdfViewer.replaceActiveDoc(new File([buffer], name, { type: /\.pdf$/i.test(name) ? 'application/pdf' : '' }));
-        if (!replaced) throw new Error('the new version did not open');
+        if (!replaced) throw readError('unreadable', 'the new version did not open');
+        if (bannerUp) {
+          pdfViewer._hideBanner();
+          bannerUp = false;
+        }
       } catch (err) {
-        pdfViewer._showToast(`Couldn't reload “${config.name}” — ${err instanceof Error ? err.message : err}`);
+        const kind = err instanceof Error ? /** @type {ReadError} */ (err).kind : undefined;
+        const detail = err instanceof Error ? err.message : String(err);
+        let reason;
+        if (kind === 'denied') reason = 'VS Code denied access to the file.';
+        else if (kind === 'missing') reason = 'The file is missing or can’t be read.';
+        else if (kind === 'unreadable') reason = `The new version isn’t a ${/\.pdf$/i.test(config.name) ? 'PDF' : 'document'} the viewer can read.`;
+        else reason = `The new version couldn’t be read: ${detail}.`;
+        pdfViewer._showBanner(`${reason} This is the last version that opened.`, { lead: `Couldn’t reload ${config.name}` });
+        bannerUp = true;
         throw err;
       }
     });
   } else if (message.type === 'deleted') {
-    pdfViewer._showToast(`“${config.name}” is no longer there. This is the last version there was.`);
+    // Queued behind any open or reload in flight, which decides whether a document is there to flag.
+    enqueue(() => {
+      if (pdfViewer.doc) {
+        pdfViewer._showBanner('This is the last version there was.', { kind: 'warn', lead: `${config.name} is no longer there` });
+        bannerUp = true;
+      } else {
+        showOpenFailure(readError('missing', 'the file is missing'));
+      }
+    });
   } else if (message.type === 'highlight') {
     enqueue(() => handleHighlights(message.highlights));
   }

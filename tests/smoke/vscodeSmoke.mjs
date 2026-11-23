@@ -111,6 +111,11 @@ app.get('/page/:name', (req, res) => {
   <script nonce="smoke">
     globalThis.__messages = [];
     globalThis.__refused = [];
+    globalThis.__errors = [];
+    window.addEventListener('error', (e) => { globalThis.__errors.push(String(e.message)); });
+    window.addEventListener('unhandledrejection', (e) => { globalThis.__errors.push(String(e.reason && e.reason.stack || e.reason)); });
+    const consoleError = console.error.bind(console);
+    console.error = (...args) => { globalThis.__errors.push(args.map((a) => String(a && a.stack || a)).join(' ')); consoleError(...args); };
     globalThis.__controlled = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'refused') globalThis.__refused.push(e.data.url); });
     globalThis.acquireVsCodeApi = () => ({ postMessage: (m) => globalThis.__messages.push(m), getState: () => undefined, setState: () => {} });
@@ -210,19 +215,57 @@ const openPage = async (name) => {
 const refused = () => browser.execute(() => globalThis.__refused.slice());
 
 /**
+ * Wait for the pane message that stands in for a document the page could not open, with its Try again.
  * @param {string} label
- * @param {string} text
+ * @param {{title: string, text: string, hint: string}} expected
  */
-const expectToast = async (label, text) => {
-  const seen = new Set();
+const expectPaneMessage = async (label, expected) => {
+  const read = () => browser.execute(() => {
+    const el = document.querySelector('.scribe-pane-msg');
+    if (!el || el.style.display === 'none') return null;
+    const line = (cls) => el.querySelector(`.scribe-pane-msg-${cls}`)?.textContent ?? '';
+    return {
+      title: line('title'), text: line('text'), hint: line('hint'), action: el.querySelector('.scribe-pane-msg-action')?.textContent ?? '',
+    };
+  });
+  let seen = null;
   const shown = await browser.waitUntil(async () => {
-    for (const toast of await browser.execute(() => [...document.querySelectorAll('.scribe-toast')].map((t) => t.textContent))) seen.add(toast);
-    return seen.has(text);
+    seen = await read();
+    return !!seen && seen.title === expected.title && seen.text === expected.text && seen.hint === expected.hint && seen.action === 'Try again';
   }, { timeout: 15000, interval: 100 }).catch(() => false);
-  // The toasts seen are listed after the wait, since a message given to waitUntil is built before it starts.
-  if (!shown) throw new Error(`${label}: expected the toast ${JSON.stringify(text)}, saw ${JSON.stringify([...seen])}`);
+  // What was seen is listed after the wait, since a message given to waitUntil is built before it starts.
+  if (!shown) {
+    const state = await browser.execute(() => ({
+      viewerChildren: [...(document.querySelector('.scribe-pdf-viewer')?.children || [])].map((c) => `${c.className}${c.style.display ? `[${c.style.display}]` : ''}`),
+      toasts: [...document.querySelectorAll('.scribe-toast')].map((t) => t.textContent),
+      errors: globalThis.__errors,
+    }));
+    throw new Error(`${label}: expected the pane message ${JSON.stringify({ ...expected, action: 'Try again' })}, saw ${JSON.stringify(seen)}; page state ${JSON.stringify(state)}`);
+  }
+  console.log(`${label}: ${expected.title} / ${expected.text}`);
+};
+
+/**
+ * Wait for the banner over the document.
+ * @param {string} label
+ * @param {string} text - The banner's text, its lead and message joined by the dash.
+ * @param {'danger'|'warn'} kind
+ */
+const expectBanner = async (label, text, kind) => {
+  const read = () => browser.execute(() => {
+    const el = document.querySelector('.scribe-banner');
+    if (!el || el.style.display === 'none') return null;
+    return { text: el.textContent, kind: el.classList.contains('warn') ? 'warn' : 'danger' };
+  });
+  let seen = null;
+  const shown = await browser.waitUntil(async () => {
+    seen = await read();
+    return !!seen && seen.text === text && seen.kind === kind;
+  }, { timeout: 15000, interval: 100 }).catch(() => false);
+  if (!shown) throw new Error(`${label}: expected the ${kind} banner ${JSON.stringify(text)}, saw ${JSON.stringify(seen)}`);
   console.log(`${label}: ${text}`);
 };
+const bannerDown = () => browser.execute(() => { const el = document.querySelector('.scribe-banner'); return !el || el.style.display === 'none'; });
 
 let failed = false;
 try {
@@ -276,15 +319,35 @@ try {
 
   docs.set('smoke.pdf', DENIED);
   await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
-  await expectToast('reload denied', "Couldn't reload “smoke.pdf” — VS Code denied access to the file");
+  await expectBanner('reload denied', 'Couldn’t reload smoke.pdf — VS Code denied access to the file. This is the last version that opened.', 'danger');
   docs.set('smoke.pdf', Buffer.from('not a document'));
   await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
-  await expectToast('reload unreadable', "Couldn't reload “smoke.pdf” — the new version did not open");
+  await expectBanner('reload unreadable', 'Couldn’t reload smoke.pdf — The new version isn’t a PDF the viewer can read. This is the last version that opened.', 'danger');
   const kept = await browser.execute(() => ({ pages: globalThis.df.pdfViewer.pageCount, page: globalThis.df.pdfViewer.currentPage }));
   if (kept.pages !== PDF2_PAGES || kept.page !== 3) {
     throw new Error(`failed reloads: expected the ${PDF2_PAGES}-page document to stay open at page index 3, got ${kept.pages} pages at page index ${kept.page}`);
   }
   console.log('failed reloads: the open document stays');
+  await browser.execute(() => { window.postMessage({ type: 'deleted' }, '*'); });
+  await expectBanner('deleted', 'smoke.pdf is no longer there — This is the last version there was.', 'warn');
+  docs.set('smoke.pdf', fs.readFileSync(PDF2));
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
+  await browser.waitUntil(bannerDown, { timeout: 60000, interval: 250, timeoutMsg: 'reload after a deletion: the banner did not come down within 60 s' });
+  console.log('reload after a deletion: the banner came down');
+  // A deletion that arrives while a reload is still parsing must outlive that reload's success.
+  docs.set('smoke.pdf', fs.readFileSync(PDF));
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); window.postMessage({ type: 'deleted' }, '*'); });
+  await browser.waitUntil(async () => browser.execute(() => globalThis.df.pdfViewer.pageCount === 1), {
+    timeout: 60000, interval: 250, timeoutMsg: 'deleted during a reload: the reload did not land within 60 s',
+  });
+  await expectBanner('deleted during a reload', 'smoke.pdf is no longer there — This is the last version there was.', 'warn');
+  docs.set('smoke.pdf', fs.readFileSync(PDF2));
+  await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
+  await browser.waitUntil(async () => browser.execute((pages) => globalThis.df.pdfViewer.pageCount === pages, PDF2_PAGES), {
+    timeout: 60000, interval: 250, timeoutMsg: `reload after the race: the ${PDF2_PAGES}-page document did not come back within 60 s`,
+  });
+  await browser.waitUntil(bannerDown, { timeout: 15000, interval: 100, timeoutMsg: 'reload after the race: the banner did not come down' });
+  console.log('deleted during a reload: the banner outlived the reload');
 
   const session = await runInPage('export session', async () => {
     const out = await globalThis.df.pdfViewer.scribe.doc.exportData('scribe', { compressScribe: true });
@@ -301,20 +364,42 @@ try {
   if (reopened.lines !== PDF2_LINES_PAGE0) throw new Error(`.scribe route: expected ${PDF2_LINES_PAGE0} lines on the first page, got ${reopened.lines}`);
 
   await openPage('absent.pdf');
-  await expectToast('open missing', "Couldn't open “absent.pdf” — the file is missing or unreadable");
+  await expectPaneMessage('open missing', {
+    title: 'Couldn’t open absent.pdf', text: 'The file is missing or can’t be read.', hint: 'This tab opens the file as soon as it appears.',
+  });
+
+  docs.set('corrupt.pdf', Buffer.from('not a document'));
+  await openPage('corrupt.pdf');
+  await expectPaneMessage('open unreadable', {
+    title: 'Couldn’t open corrupt.pdf',
+    text: 'The file isn’t a PDF the viewer can read.',
+    hint: 'If it is still being written, this tab opens it when the write finishes. To see it as text, use Reopen Editor With… and choose Text Editor.',
+  });
+  const toasts = await browser.execute(() => [...document.querySelectorAll('.scribe-toast')].map((t) => t.textContent));
+  if (toasts.length) throw new Error(`open unreadable: the viewer's own toast showed beside the pane message: ${JSON.stringify(toasts)}`);
 
   docs.set('late.pdf', DENIED);
   await openPage('late.pdf');
-  await expectToast('open denied', "Couldn't open “late.pdf” — VS Code denied access to the file");
+  await expectPaneMessage('open denied', {
+    title: 'Couldn’t open late.pdf', text: 'VS Code didn’t let the viewer read the file.', hint: 'Closing this tab and reopening the file asks VS Code again.',
+  });
   docs.set('late.pdf', fs.readFileSync(PDF));
+  // Try again asks the extension to refresh.
+  // The harness answers as the extension would, with a reload.
+  await browser.execute(() => { globalThis.__messages.length = 0; document.querySelector('.scribe-pane-msg-action').click(); });
+  await browser.waitUntil(async () => browser.execute(() => (globalThis.__messages || []).some((m) => m.type === 'retry') && !!document.querySelector('.scribe-pane-msg-busy')), {
+    timeout: 5000, interval: 50, timeoutMsg: 'try again: the page did not post a retry and show its Opening state',
+  });
   await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
   await browser.waitUntil(async () => browser.execute((lines) => {
     const viewer = globalThis.df.pdfViewer;
     return viewer.pageCount === 1 && viewer.scribe.doc?.ocr.active[0]?.lines.length === lines;
   }, NATIVE_LINES), {
-    timeout: 30000, interval: 250, timeoutMsg: `reload after a failed open: the viewer did not open the 1-page document with ${NATIVE_LINES} lines within 30 s`,
+    timeout: 30000, interval: 250, timeoutMsg: `try again after a failed open: the viewer did not open the 1-page document with ${NATIVE_LINES} lines within 30 s`,
   });
-  console.log('reload after a failed open: opened the document');
+  const messageGone = await browser.execute(() => { const el = document.querySelector('.scribe-pane-msg'); return !el || el.style.display === 'none'; });
+  if (!messageGone) throw new Error('try again after a failed open: the pane message stayed up after the document opened');
+  console.log('try again after a failed open: opened the document');
 
   docs.set('fonts.pdf', fs.readFileSync(PDF2));
   await openPage('fonts.pdf');

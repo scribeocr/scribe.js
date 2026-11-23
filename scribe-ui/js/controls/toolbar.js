@@ -2941,7 +2941,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-group.drop::after { border-left: none; }
     .${r} .scribe-tab-note { position: absolute; z-index: 70; display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; color: var(--scribe-ink); white-space: nowrap; }
     .${r} .scribe-tab-note::before { content: ''; position: absolute; top: -5px; left: 18px; width: 8px; height: 8px; background: var(--scribe-surface); border-left: 1px solid var(--scribe-line); border-top: 1px solid var(--scribe-line); transform: rotate(45deg); }
-    .${r} .scribe-tab-note-action { background: none; border: none; border-radius: 7px; padding: 5px 9px; color: var(--scribe-accent); font: 600 13px/1 inherit; font-family: inherit; cursor: pointer; }
+    .${r} .scribe-tab-note-action { background: none; border: none; border-radius: 7px; padding: 5px 9px; color: var(--scribe-accent); font-weight: 600; font-size: 13px; line-height: 1; font-family: inherit; cursor: pointer; }
     .${r} .scribe-tab-note-action:hover { background: var(--scribe-hover); }
 
     .${r} .scribe-tab-spin {
@@ -5219,7 +5219,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: none;
       border-radius: 7px;
       color: var(--scribe-accent);
-      font: 600 13px/1 inherit;
+      font-weight: 600; font-size: 13px; line-height: 1;
       font-family: inherit;
       cursor: pointer;
       white-space: nowrap;
@@ -5243,6 +5243,24 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-banner-close:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-banner-close svg { width: 16px; height: 16px; display: block; }
+
+    /* Pane message */
+    .${r} .scribe-pane-msg { position: absolute; left: 0; right: 0; z-index: 8; }
+    .${r} .scribe-pane-msg-body {
+      position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%);
+      width: 440px; max-width: calc(100% - 40px); text-align: center;
+    }
+    .${r} .scribe-pane-msg-title { font-size: 15px; font-weight: 600; line-height: 1.35; color: var(--scribe-ink); }
+    .${r} .scribe-pane-msg-text { margin-top: 6px; font-size: 13px; line-height: 1.45; color: var(--scribe-ink-2); }
+    .${r} .scribe-pane-msg-hint { margin-top: 4px; font-size: 13px; line-height: 1.45; color: var(--scribe-ink-2); }
+    .${r} .scribe-pane-msg-actions { margin-top: 14px; display: flex; justify-content: center; gap: 8px; }
+    .${r} .scribe-pane-msg-action {
+      background: none; border: none; border-radius: 7px; padding: 6px 10px;
+      color: var(--scribe-accent); font-weight: 600; font-size: 13px; line-height: 1; font-family: inherit; cursor: pointer; white-space: nowrap;
+    }
+    .${r} .scribe-pane-msg-action:hover { background: var(--scribe-hover); }
+    .${r}.scribe-coarse .scribe-pane-msg-action { min-height: 40px; padding: 6px 12px; }
+    .${r} .scribe-pane-msg-busy { display: flex; flex-direction: column; align-items: center; }
 
     .${r} .scribe-mode-banner, .${r} .scribe-hl-prompt {
       position: absolute; left: 0; right: 0; height: 40px; z-index: 35; box-sizing: border-box;

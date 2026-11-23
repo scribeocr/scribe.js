@@ -2670,6 +2670,7 @@ class ScribePDFViewer {
     }
 
     if (this.dropZone) this.dropZone.style.display = 'none';
+    this._hidePaneMessage();
 
     if (this._editEnabled) this._updateSplitButton();
 
@@ -2738,11 +2739,12 @@ class ScribePDFViewer {
    * All non-PDF files (images, OCR, `.scribe`) are opened together into a single document/tab, the way the core import combines them.
    * The last opened tab becomes active.
    * @param {File[] | FileList} files
-   * @param {{group?: 0|1}} [options] - `group` is the editor group the tabs open in, which becomes the active group.
+   * @param {{group?: 0|1, onOpenFailed?: (name: string) => void}} [options] - `group` is the editor group the tabs open in, which becomes the active group.
    *   The tabs open in the lane without it, and the active group stays as it is.
+   *   `onOpenFailed` is called in place of the viewer's toast, with the name of a file whose bytes could not be opened.
    * @returns {Promise<void>}
    */
-  async openFiles(files, { group } = {}) {
+  async openFiles(files, { group, onOpenFailed } = {}) {
     const list = Array.from(files || []);
     if (list.length === 0) return;
 
@@ -2827,7 +2829,8 @@ class ScribePDFViewer {
         // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
         console.error(`Failed to open ${pdf.name}:`, err);
         if (doc) await doc.close().catch(() => {});
-        this._showToast(`Couldn't open “${pdf.name}” — the file couldn't be loaded.`);
+        if (onOpenFailed) onOpenFailed(pdf.name || '');
+        else this._showToast(`Couldn't open “${pdf.name}” — the file couldn't be loaded.`);
       }
     }
     // Images/OCR/.scribe are opened together into one document, the way the core import combines them.
@@ -2847,7 +2850,8 @@ class ScribePDFViewer {
         if (doc) await doc.close().catch(() => {});
         const single = others.length === 1;
         const label = single ? `“${others[0].name}”` : 'the selected files';
-        this._showToast(`Couldn't open ${label} — ${single ? 'the file' : 'they'} couldn't be loaded.`);
+        if (onOpenFailed) onOpenFailed(single ? others[0].name || '' : label);
+        else this._showToast(`Couldn't open ${label} — ${single ? 'the file' : 'they'} couldn't be loaded.`);
       }
     }
     if (opened.length === 0) return;
@@ -4985,6 +4989,70 @@ class ScribePDFViewer {
   }
 
   /**
+   * Show a message in the document area in place of a document, or replace the one showing.
+   * Use when nothing is open and the explanation is the only content the area can hold, as for a host bound to one file that could not be opened.
+   * It stays until a document opens or `_hidePaneMessage` runs.
+   * @param {object} [options]
+   * @param {string} [options.title] - Bold first line.
+   * @param {string} [options.text] - The reason, under the title.
+   * @param {string} [options.hint] - What happens next, under the reason.
+   * @param {string} [options.actionLabel] - Label for an inline action button.
+   * @param {() => void} [options.onAction] - Runs when the action button is pressed.
+   * @param {boolean} [options.busy] - Show the Opening spinner with `text` as its label instead of a message.
+   */
+  _showPaneMessage({
+    title = '', text = '', hint = '', actionLabel, onAction, busy = false,
+  } = {}) {
+    if (!this._paneMsg) {
+      const el = document.createElement('div');
+      el.className = 'scribe-pane-msg';
+      el.setAttribute('role', 'status');
+      this.pdfViewerElem.appendChild(el);
+      this._paneMsg = el;
+    }
+    const el = this._paneMsg;
+    el.textContent = '';
+    const body = document.createElement('div');
+    body.className = busy ? 'scribe-pane-msg-body scribe-pane-msg-busy' : 'scribe-pane-msg-body';
+    if (busy) {
+      const spinner = document.createElement('div');
+      spinner.className = 'scribe-drop-spinner';
+      const label = document.createElement('div');
+      label.className = 'scribe-drop-loading-text';
+      label.textContent = text;
+      body.append(spinner, label);
+    } else {
+      for (const [cls, value] of [['title', title], ['text', text], ['hint', hint]]) {
+        if (!value) continue;
+        const line = document.createElement('div');
+        line.className = `scribe-pane-msg-${cls}`;
+        line.textContent = value;
+        body.appendChild(line);
+      }
+      if (actionLabel && onAction) {
+        const actions = document.createElement('div');
+        actions.className = 'scribe-pane-msg-actions';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'scribe-pane-msg-action';
+        btn.textContent = actionLabel;
+        btn.addEventListener('click', onAction);
+        actions.appendChild(btn);
+        body.appendChild(actions);
+      }
+    }
+    el.appendChild(body);
+    el.style.display = '';
+    if (this.dropZone) this.dropZone.style.display = 'none';
+    this._relayout();
+  }
+
+  /** Take down the pane message. */
+  _hidePaneMessage() {
+    if (this._paneMsg) this._paneMsg.style.display = 'none';
+  }
+
+  /**
    * Show the active tab's notice in the banner, or take down the banner if it was showing another tab's notice.
    * A viewer-wide banner (one with no owning tab) stays up unless the active tab has a notice to show.
    */
@@ -6614,6 +6682,10 @@ class ScribePDFViewer {
       this.dropZone.style.top = `${top}px`;
       this.dropZone.style.width = `${this._width - 6}px`;
       this.dropZone.style.height = `${this._height - top - this._bottomBarsHeight()}px`;
+    }
+    if (this._paneMsg) {
+      this._paneMsg.style.top = `${top}px`;
+      this._paneMsg.style.height = `${this._height - top - this._bottomBarsHeight()}px`;
     }
     if (!this.scribe.scrollContainer) return;
     // The phone app menu opens upward from the dock, and this cap keeps long menus scrolling in place instead of running off the top edge.

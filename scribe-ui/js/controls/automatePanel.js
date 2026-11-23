@@ -190,7 +190,7 @@ function addAutomateStyles(rootClass) {
     .${r} .scribe-am-xtglyph.chev.open { transform: rotate(90deg); }
     .${r} .scribe-am-xtsugdiv { display: flex; align-items: center; gap: 8px; padding: 10px 7px 3px; font-size: 10.5px; font-weight: 650; letter-spacing: .05em; text-transform: uppercase; color: var(--scribe-ink-3); }
     .${r} .scribe-am-xtsugdiv::after { content: ''; flex: 1; border-top: 1px solid var(--scribe-line); order: 1; }
-    .${r} .scribe-am-xtsugall { order: 2; border: 0; background: none; color: var(--scribe-accent); font: 600 11.5px inherit; font-family: inherit; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
+    .${r} .scribe-am-xtsugall { order: 2; border: 0; background: none; color: var(--scribe-accent); font-weight: 600; font-size: 11.5px; font-family: inherit; cursor: pointer; padding: 0; text-transform: none; letter-spacing: 0; }
     .${r} .scribe-am-xtwhy { color: var(--scribe-ink-3); font-size: 11px; }
     .${r} .scribe-am-xtsugacts { margin-left: auto; display: inline-flex; gap: 2px; flex: none; }
     /* Revealed by visibility, not display, and capped to the text height, so hovering a row shifts nothing. */

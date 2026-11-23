@@ -59,7 +59,14 @@ window.addEventListener('vite:preloadError', () => {
 });
 
 const tabsByPath = new Map();
-async function handleLoadFile(file, page, readFileFn) {
+/**
+ * Open `file` in a tab at `page`, or switch to its tab if it is already open.
+ * @param {string} file
+ * @param {number} page
+ * @param {(file: string) => Promise<{buffer: ArrayBuffer | Uint8Array, name: string}>} readFileFn
+ * @param {{onOpenFailed?: (name: string) => void}} [options] - `onOpenFailed` is called in place of the viewer's toast when the file's bytes could not be opened.
+ */
+async function handleLoadFile(file, page, readFileFn, { onOpenFailed } = {}) {
   if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + openFiles directly when embedding.');
   if (pdfViewer.dropZone) pdfViewer.dropZone.style.display = 'none';
 
@@ -74,7 +81,7 @@ async function handleLoadFile(file, page, readFileFn) {
   // The type decides how the viewer opens the file, so a .scribe session file must not be labeled a PDF.
   const fileObj = new File([buffer], name, { type: /\.pdf$/i.test(name) ? 'application/pdf' : '' });
   const before = pdfViewer._tabs.length;
-  await pdfViewer.openFiles([fileObj]);
+  await pdfViewer.openFiles([fileObj], { onOpenFailed });
   if (pdfViewer._tabs.length > before) {
     tabsByPath.set(file, pdfViewer._tabs[pdfViewer._tabs.length - 1]);
     if (page) await pdfViewer.scribe.displayPage(page, true, false);

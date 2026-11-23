@@ -93,6 +93,18 @@ export function activate(context) {
         if (ready) webview.postMessage(message);
         else pending.push(message);
       };
+      const refresh = async () => {
+        const added = await addTargetRoot();
+        if (disposed) return;
+        if (added) {
+          // VS Code restarts the page when its options change, and the new page loads the document itself.
+          // A message posted before it reports ready can be lost.
+          ready = false;
+          webview.options = { enableScripts: true, localResourceRoots: roots };
+          return;
+        }
+        post({ type: 'reload' });
+      };
       subscriptions.push(webview.onDidReceiveMessage(async (message) => {
         if (!message || typeof message.type !== 'string') return;
         if (message.type === 'ready') {
@@ -103,6 +115,9 @@ export function activate(context) {
           if (target) await vscode.workspace.fs.writeFile(target, new Uint8Array(message.bytes));
         } else if (message.type === 'openExternal' && /^(https?:|mailto:)/i.test(String(message.url))) {
           vscode.env.openExternal(vscode.Uri.parse(String(message.url)));
+        } else if (message.type === 'retry') {
+          // Try again covers what the watcher cannot see: a file on a network mount written by another machine, a link target or volume that appeared, a connection that came back.
+          await refresh();
         }
       }));
 
@@ -121,16 +136,7 @@ export function activate(context) {
               changed();
               return;
             }
-            const added = await addTargetRoot();
-            if (disposed) return;
-            if (added) {
-              // VS Code restarts the page when its options change, and the new page loads the document itself.
-              // A message posted before it reports ready can be lost.
-              ready = false;
-              webview.options = { enableScripts: true, localResourceRoots: roots };
-              return;
-            }
-            post({ type: 'reload' });
+            await refresh();
           } catch { /* The delete event reports a file gone mid-write. */ }
         }, 300);
       };
