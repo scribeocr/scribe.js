@@ -36,7 +36,7 @@ export const renderPageRaster = async (doc, n) => {
   const stats = doc.inputData.pageStats?.[n];
   // Image-coverage geometry rather than readable-text detection, because what makes lossless win is a synthetic render.
   // A Type3 or outline-text page has no readable characters yet encodes like a text page.
-  // Without the geometry, as from the pixel source, a page encodes lossless and the byte cap below catches the photographs.
+  // Without the geometry, as for a document with no records file yet, a page encodes lossless and the byte cap below catches the photographs.
   const lossy = !!stats && stats.largestImageFrac >= RASTER_LOSSY_IMAGE_FRAC;
   const blob = await doc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, lossy ? RASTER_LOSSY_QUALITY : 1.0, true, 'webp');
   if (blob && !lossy && blob.size > RASTER_LOSSLESS_CAP) {

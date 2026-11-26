@@ -24,8 +24,8 @@ const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
 const RESULT_PAGES_PER_CLICK = 10;
 const PARTIAL_SUMMARY = 'Partial results — narrow your search';
-/** How long a result set must stand with no query in flight before its background opens start. */
-const THUMB_QUIET_MS = 1000;
+/** Longest the warm lane waits for an idle moment once the rows have painted. */
+const IDLE_CALLBACK_TIMEOUT_MS = 100;
 
 /**
  * Own the search-results view: one retained build at a time, plus the thumbnail pump and warm lane behind it.
@@ -231,12 +231,14 @@ export function createResultsView({
      * `warmed` records that the background warmer already spent its one render attempt on this page.
      * @typedef {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement, marks?: string, warmed?: boolean}} ThumbItem
      */
-    /** @returns {Promise<boolean>} */
+    /**
+     * Resolve once no query is in flight and an idle callback has run.
+     * @returns {Promise<boolean>} Whether this build is still the one showing.
+     */
     const quiet = async () => {
       do {
         await engine.queriesSettled();
-        await new Promise((resolve) => { window.setTimeout(resolve, THUMB_QUIET_MS); });
-        await new Promise((resolve) => { requestIdleCallback(() => resolve(undefined)); });
+        await new Promise((resolve) => { requestIdleCallback(() => resolve(undefined), { timeout: IDLE_CALLBACK_TIMEOUT_MS }); });
       } while (engine.querying() && myGen === resultsGen);
       return myGen === resultsGen;
     };
@@ -246,6 +248,10 @@ export function createResultsView({
     /** @type {Array<ThumbItem>} */
     const rasterless = [];
     let warmRunning = false;
+    /** Whether a quiet wait is already on its way to starting the warm lane. */
+    let quietPending = false;
+    /** Whether the warm lane starts as soon as the pump drains. */
+    let warmOnDrain = false;
     const pumpThumbs = async () => {
       if (thumbsRunning) return;
       thumbsRunning = true;
@@ -260,13 +266,22 @@ export function createResultsView({
         } catch { /* A failed read leaves the placeholder page blank. */ }
       }
       thumbsRunning = false;
-      if (myGen === resultsGen && rasterless.some((r) => !r.warmed)) {
+      if (myGen !== resultsGen) return;
+      const now = warmOnDrain;
+      warmOnDrain = false;
+      if (!rasterless.some((r) => !r.warmed)) return;
+      if (now) warmHits();
+      else if (!quietPending && !warmRunning) {
+        quietPending = true;
         quiet().then((current) => {
+          quietPending = false;
           if (current) warmHits();
         });
       }
     };
-    const pump = () => {
+    /** @param {boolean} [now] - Start the warm lane as soon as the pump drains. */
+    const pump = (now = false) => {
+      if (now) warmOnDrain = true;
       requestAnimationFrame(() => { window.setTimeout(pumpThumbs, 0); });
     };
     const onRaster = (hash, n) => {
@@ -277,7 +292,6 @@ export function createResultsView({
     };
     sessions.rasterListeners.add(onRaster);
 
-    // A render runs in the worker, but a pixel source's open touches the main thread, so warming waits for queries to settle and for the reader's loads.
     const resumeWarm = () => {
       if (myGen === resultsGen) warmHits();
     };
@@ -309,11 +323,14 @@ export function createResultsView({
         if (engine.querying() && !(await quiet())) break;
         if (myGen !== resultsGen) break;
         t.warmed = true;
+        let url = null;
         try {
-          await sessions.raster({ hash: t.hash, relPath: t.relPath, entry: t.entry }, t.pageN, false);
+          url = await sessions.raster({ hash: t.hash, relPath: t.relPath, entry: t.entry }, t.pageN, false);
         } catch { /* A page that fails to render leaves its row blank. */ }
-        thumbQueue.push(t);
-        pumpThumbs();
+        if (myGen !== resultsGen) break;
+        if (url) t.img.innerHTML = `<img alt="" src="${url}">${t.marks || ''}`;
+        // A raster that lands later, from a tab that shows the page, still fills the row.
+        else rasterless.push(t);
       }
       warmRunning = false;
     };
@@ -544,7 +561,7 @@ export function createResultsView({
         more.type = 'button';
         more.addEventListener('click', () => {
           showPages(g, g.shown + RESULT_PAGES_PER_CLICK);
-          pump();
+          pump(true);
         });
         /** @type {HTMLElement} */ (g.lastRow ?? g.head).after(more);
         g.more = more;
@@ -603,7 +620,7 @@ export function createResultsView({
         button.addEventListener('click', () => {
           for (const info of restDocs.splice(0)) appendGroup(info, button);
           syncMoreDocs();
-          pump();
+          pump(true);
         });
         wrap.appendChild(button);
         moreDocs = button;
