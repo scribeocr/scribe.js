@@ -285,9 +285,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-colhead[hidden] { display: none; }
 .scribe-pdf-viewer .scribe-library-coltitle, .scribe-pdf-viewer .scribe-library-colbar { display: flex; align-items: center; gap: 4px; box-sizing: border-box; border-bottom: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-coltitle { height: 31px; padding: 0 8px; }
-.scribe-pdf-viewer .scribe-library-colbar { height: 36px; padding: 0 4px 0 8px; }
+.scribe-pdf-viewer .scribe-library-colbar { height: 36px; padding: 0 4px 0 8px; position: relative; }
 .scribe-pdf-viewer .scribe-library-coltitle > [hidden], .scribe-pdf-viewer .scribe-library-colbar > [hidden], .scribe-pdf-viewer .scribe-library-colbar[hidden] { display: none; }
-.scribe-pdf-viewer .scribe-library-colup:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 0; }
+.scribe-pdf-viewer .scribe-library-colhead .scribe-library-hicon:focus-visible { outline: 2px solid var(--scribe-accent-ring); outline-offset: 0; }
 .scribe-pdf-viewer .scribe-library-colbar > * { flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-colbar > :not(.scribe-library-hicon) + .scribe-library-hicon, .scribe-pdf-viewer .scribe-library-colbar > .scribe-library-hicon[hidden] + .scribe-library-hicon { margin-left: auto; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-seg button { width: 28px; }
@@ -309,9 +309,28 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-colname { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; }
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-hicon { width: 24px; height: 24px; padding: 2px; border-radius: 6px; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-colup { margin-left: -4px; }
-.scribe-pdf-viewer .scribe-library-colsearch { flex: none; padding: 6px 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-canvas); }
-.scribe-pdf-viewer .scribe-library-colsearch .scribe-library-field { width: 100%; margin: 0; box-sizing: border-box; }
-.scribe-pdf-viewer .scribe-library-colsearch .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
+.scribe-pdf-viewer .scribe-library-colbar .scribe-library-field { position: absolute; right: 32px; top: 6px; width: 24px; height: 24px; margin: 0; padding: 0 4px; border-radius: 6px; border-color: transparent; background: none; opacity: 0; visibility: hidden; overflow: hidden; cursor: text; }
+.scribe-pdf-viewer .scribe-library-colbar .scribe-library-search { width: 100%; min-width: 0; flex: 1; opacity: 0; }
+.scribe-pdf-viewer .scribe-library-colbar .scribe-library-clear { display: block; opacity: 0; }
+.scribe-pdf-viewer .scribe-library-colbar.searching .scribe-library-field { width: calc(100% - 40px); height: 28px; top: 4px; padding: 0 8px; border-radius: 5px; border-color: var(--scribe-line-strong); background: var(--scribe-sunken); opacity: 1; visibility: visible; }
+.scribe-pdf-viewer .scribe-library-colbar.searching .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-colbar.searching .scribe-library-search, .scribe-pdf-viewer .scribe-library-colbar.searching .scribe-library-clear { opacity: 1; }
+.scribe-pdf-viewer .scribe-library-colbar.searching > :not(.scribe-library-field):not(.scribe-library-colmore) { opacity: 0; visibility: hidden; pointer-events: none; }
+@media (prefers-reduced-motion: no-preference) {
+  .scribe-pdf-viewer .scribe-library-colbar { --col-move: 220ms cubic-bezier(.333333, 0, .666667, 1); --col-fade: cubic-bezier(.333333, 0, .666667, 1); }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still) .scribe-library-field { transition: width var(--col-move), height var(--col-move), top var(--col-move), padding var(--col-move), background-color var(--col-move), border-color var(--col-move), border-radius var(--col-move), opacity 160ms var(--col-fade), visibility 0s 220ms; }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still).searching .scribe-library-field { transition: width var(--col-move), height var(--col-move), top var(--col-move), padding var(--col-move), background-color var(--col-move), border-color var(--col-move), border-radius var(--col-move), opacity 160ms var(--col-fade), visibility 0s; }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still) .scribe-library-search, .scribe-pdf-viewer .scribe-library-colbar:not(.still) .scribe-library-clear { transition: opacity 120ms var(--col-fade); }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still).searching .scribe-library-search, .scribe-pdf-viewer .scribe-library-colbar:not(.still).searching .scribe-library-clear { transition: opacity 160ms var(--col-fade) 80ms; }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still) > :not(.scribe-library-field):not(.scribe-library-colmore) { transition: opacity 160ms var(--col-fade) 80ms, visibility 0s; }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still).searching > :not(.scribe-library-field):not(.scribe-library-colmore) { transition: opacity 120ms var(--col-fade), visibility 0s 120ms; }
+  .scribe-pdf-viewer .scribe-library-colbar:not(.still).searching > .scribe-library-colsearch-btn { transition: opacity 160ms var(--col-fade), visibility 0s 160ms; }
+}
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-search-inside { height: 22px; padding: 0 18px 0 39px; gap: 6px; border-bottom: none; background: none; color: var(--scribe-ink-2); font-size: 12px; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-search-inside:hover { background: none; color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-search-inside > svg { display: none !important; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-search-inside span { flex: 0 1 auto; }
+.scribe-pdf-viewer .scribe-library-surface.column .scribe-library-search-inside kbd { font-size: 9.5px; line-height: 11px; padding: 0 3px; }
 .scribe-pdf-viewer .scribe-library-colsash { position: absolute; top: 0; bottom: 0; right: 0; width: 3px; cursor: col-resize; z-index: 4; touch-action: none; }
 .scribe-pdf-viewer .scribe-library-colsash::before { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
 .scribe-pdf-viewer .scribe-library-colsash:hover::before { opacity: 1; transition-delay: 0.25s; }
@@ -406,6 +425,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-lhead > :nth-child(2), .scribe-pdf-viewer .scribe-library-lhead > :nth-child(3) { justify-content: flex-end; }
 .scribe-pdf-viewer .scribe-library-row > :nth-child(2), .scribe-pdf-viewer .scribe-library-row > :nth-child(3) { text-align: right; }
 .scribe-pdf-viewer .scribe-library-empty { text-align: center; opacity: 0.7; padding: 60px 20px; }
+.scribe-pdf-viewer .scribe-library-empty.miss { opacity: 1; padding: 48px 8px 0; display: grid; justify-items: center; gap: 12px; }
+.scribe-pdf-viewer .scribe-library-empty.miss > .t { opacity: 0.7; }
+.scribe-pdf-viewer .scribe-library-empty.miss > .hint { font-size: 13px; line-height: 20px; color: var(--scribe-ink-2); max-width: 210px; }
+.scribe-pdf-viewer .scribe-library-empty kbd { font-family: inherit; display: inline-block; border: 1px solid var(--scribe-line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; margin: 0 1px; font-size: 10.5px; line-height: 12px; vertical-align: 1px; color: var(--scribe-ink-2); background: var(--scribe-surface); }
 .scribe-pdf-viewer .scribe-library-card-wall { max-width: 520px; margin: 60px auto; text-align: center; border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 10px; background: var(--scribe-surface); padding: 36px 32px; -webkit-user-select: text; user-select: text; }
 .scribe-pdf-viewer .scribe-library-card-wall h3 { margin: 0 0 10px; font-size: 17px; }
 .scribe-pdf-viewer .scribe-library-card-wall p { margin: 0 0 20px; opacity: 0.75; line-height: 1.5; }
@@ -1390,7 +1413,7 @@ export function createLibraryInstance(viewer, opts) {
   const searchInsideBtn = document.createElement('button');
   searchInsideBtn.type = 'button';
   searchInsideBtn.className = 'scribe-library-search-inside';
-  searchInsideBtn.innerHTML = `${FIELD_SEARCH_SVG}<span>Search inside documents</span><kbd>↵</kbd>`;
+  searchInsideBtn.innerHTML = `${FIELD_SEARCH_SVG}<span>Search document contents</span><kbd>↵</kbd>`;
   searchInsideBtn.hidden = true;
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
@@ -1547,12 +1570,13 @@ export function createLibraryInstance(viewer, opts) {
   const colName = document.createElement('span');
   colName.className = 'scribe-library-colname';
   const colSearchBtn = document.createElement('button');
-  colSearchBtn.className = 'scribe-library-hicon';
+  colSearchBtn.className = 'scribe-library-hicon scribe-library-colsearch-btn';
+  colSearchBtn.setAttribute('aria-expanded', 'false');
   colSearchBtn.innerHTML = slotIcon('search22');
   colSearchBtn.title = 'Search or filter by name';
   colSearchBtn.setAttribute('aria-label', 'Search or filter by name');
   const colMoreBtn = document.createElement('button');
-  colMoreBtn.className = 'scribe-library-hicon';
+  colMoreBtn.className = 'scribe-library-hicon scribe-library-colmore';
   colMoreBtn.innerHTML = slotIcon('more22');
   colMoreBtn.title = 'Folder actions';
   colMoreBtn.setAttribute('aria-label', 'Folder actions');
@@ -1566,19 +1590,6 @@ export function createLibraryInstance(viewer, opts) {
   colViewBtn.hidden = true;
   colTitle.append(colUpBtn, colGlyph, colName);
   colBar.append(colSearchBtn, colMoreBtn);
-  const colSearchRow = document.createElement('div');
-  colSearchRow.className = 'scribe-library-colsearch';
-  colSearchRow.hidden = true;
-  colSearchBtn.addEventListener('click', () => {
-    colSearchRow.hidden = !colSearchRow.hidden;
-    colSearchBtn.classList.toggle('on', !colSearchRow.hidden);
-    if (colSearchRow.hidden) {
-      leaveResults();
-      return;
-    }
-    searchInput.focus();
-    searchInput.select();
-  });
   const colSash = document.createElement('div');
   colSash.className = 'scribe-library-colsash';
   colSash.hidden = true;
@@ -1625,7 +1636,6 @@ export function createLibraryInstance(viewer, opts) {
     layoutColumn();
   });
   surface.insertBefore(colHead, progressElem);
-  surface.insertBefore(colSearchRow, progressElem);
   surface.appendChild(colSash);
 
   /** @type {?HTMLSpanElement} */
@@ -1658,7 +1668,7 @@ export function createLibraryInstance(viewer, opts) {
     const barWasHidden = colBar.hidden;
     colGlyph.hidden = storageOpen;
     colBar.hidden = storageOpen;
-    colSearchRow.hidden = storageOpen || !colSearchBtn.classList.contains('on');
+    if (storageOpen && colSearchOpen) closeColSearch({ focus: false });
     if (storageOpen) {
       colName.textContent = 'Library storage';
       colName.title = '';
@@ -1681,6 +1691,14 @@ export function createLibraryInstance(viewer, opts) {
   };
   const fitColBar = () => {
     if (form !== 'column' || colHead.hidden || colBar.hidden || viewSeg.parentElement !== colBar) return;
+    // CSS fades the bar controls out while searching, so fold them into the menu without setting `hidden`, which snaps them to `display: none`.
+    if (colSearchOpen) {
+      colFold.view = true;
+      colFold.sort = true;
+      colFold.new = !readOnly;
+      colFold.refresh = !readOnly;
+      return;
+    }
     viewSeg.hidden = false;
     colViewBtn.hidden = true;
     sortBtn.classList.remove('icon-only');
@@ -1698,7 +1716,8 @@ export function createLibraryInstance(viewer, opts) {
     const need = () => {
       let w = 12 - 4;
       for (const el of colBar.children) {
-        if (/** @type {HTMLElement} */ (el).hidden) continue;
+        // The search field floats over the bar and takes no room in it.
+        if (/** @type {HTMLElement} */ (el).hidden || el === searchField) continue;
         w += el.getBoundingClientRect().width + 4;
       }
       return w;
@@ -1717,6 +1736,54 @@ export function createLibraryInstance(viewer, opts) {
       step();
     }
   };
+  let colSearchOpen = false;
+  /** Title the clear button "Close" while the open column field has no text, and "Clear" otherwise. */
+  const syncClearTitle = () => {
+    const title = colSearchOpen && !searchInput.value ? 'Close' : 'Clear';
+    clearBtn.title = title;
+    clearBtn.setAttribute('aria-label', title);
+  };
+  /**
+   * Show or hide the column's search field in its bar.
+   * @param {boolean} open
+   * @param {{still?: boolean}} [options] - `still` makes the change without its motion.
+   */
+  const setColSearch = (open, { still = false } = {}) => {
+    colSearchOpen = open;
+    if (still) {
+      colBar.classList.add('still');
+      requestAnimationFrame(() => { requestAnimationFrame(() => colBar.classList.remove('still')); });
+    }
+    colBar.classList.toggle('searching', open);
+    colSearchBtn.setAttribute('aria-expanded', String(open));
+    colSearchBtn.tabIndex = open ? -1 : 0;
+    syncClearTitle();
+    fitColBar();
+  };
+  const openColSearch = ({ focus = true, still = false } = {}) => {
+    if (storageOpen) closeStorage();
+    if (!colSearchOpen) setColSearch(true, { still });
+    if (!focus) return;
+    searchInput.focus();
+    searchInput.select();
+  };
+  /**
+   * Close the column's search field and end its search.
+   * @param {{focus?: boolean}} [options] - `focus` returns focus to the magnifier button.
+   */
+  const closeColSearch = ({ focus = true } = {}) => {
+    if (!colSearchOpen) return;
+    setColSearch(false);
+    leaveResults();
+    if (focus) colSearchBtn.focus({ preventScroll: true });
+  };
+  colSearchBtn.addEventListener('click', () => openColSearch());
+  // The finder bar's handler for presses on the field is inert in the column, where its measurements are cleared.
+  searchField.addEventListener('pointerdown', (e) => {
+    if (!colSearchOpen || e.button !== 0 || e.target === searchInput || clearBtn.contains(/** @type {Node} */ (e.target))) return;
+    e.preventDefault();
+    searchInput.focus({ preventScroll: true });
+  });
   const fitFolds = () => {
     const grid = /** @type {?HTMLElement} */ (body.querySelector('[data-band="folders-grid"]'));
     if (!grid) return;
@@ -1761,12 +1828,11 @@ export function createLibraryInstance(viewer, opts) {
         searchField.hidden = false;
         searchField.classList.remove('popped');
         searchField.style.width = '';
-        colSearchRow.appendChild(searchField);
-        colSearchBtn.classList.toggle('on', !!searchInput.value);
+        colBar.appendChild(searchField);
         for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colBar.insertBefore(el, colSearchBtn);
+        setColSearch(!!searchInput.value, { still: true });
       } else {
-        colSearchRow.hidden = true;
-        colSearchBtn.classList.remove('on');
+        setColSearch(false, { still: true });
         const ctl = barControls ?? header;
         ctl.insertBefore(searchField, ctl.firstChild);
         const before = moreWrap.parentElement === ctl ? moreWrap : null;
@@ -2092,6 +2158,33 @@ export function createLibraryInstance(viewer, opts) {
     }
   };
 
+  /**
+   * Build the empty-state note for a list with nothing to show.
+   * @param {'filter' | 'dir'} note
+   * @returns {HTMLDivElement}
+   */
+  const buildEmptyNote = (note) => {
+    const empty = document.createElement('div');
+    empty.className = 'scribe-library-empty';
+    if (note !== 'filter') {
+      empty.textContent = 'This folder is empty.';
+      return empty;
+    }
+    empty.classList.add('miss');
+    const line = document.createElement('div');
+    line.className = 't';
+    line.textContent = `No names match “${filterText.trim()}”.`;
+    empty.appendChild(line);
+    if (store && manifest && !storageOpen) {
+      const hint = document.createElement('div');
+      hint.className = 'hint';
+      const key = document.createElement('kbd');
+      key.textContent = '↵';
+      hint.append('Press ', key, ' to search document contents.');
+      empty.appendChild(hint);
+    }
+    return empty;
+  };
   /** @type {?ReturnType<typeof createDropdown>} */
   let midDropdown = null;
   let crumbFadeDue = false;
@@ -2687,6 +2780,7 @@ export function createLibraryInstance(viewer, opts) {
    * @param {{revealSelection?: boolean}} [renderOpts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
    */
   const render = (renderOpts) => {
+    syncClearTitle();
     // A rebuild mid-drag would pull the dragged card out from under the pointer.
     if (drag.deferRender()) return;
     // A rebuild also replaces the header a column divider is sizing.
@@ -2984,12 +3078,7 @@ export function createLibraryInstance(viewer, opts) {
     if (viewMode === 'list' || viewMode === 'compact') {
       drag.setMainGrid(null, []);
       const host = renderList(shownDirs, shown, shownOthers);
-      if (emptyNote) {
-        const empty = document.createElement('div');
-        empty.className = 'scribe-library-empty';
-        empty.textContent = emptyNote === 'filter' ? 'No names match.' : 'This folder is empty.';
-        host.appendChild(empty);
-      }
+      if (emptyNote) host.appendChild(buildEmptyNote(emptyNote));
       reveal();
       return;
     }
@@ -3040,12 +3129,7 @@ export function createLibraryInstance(viewer, opts) {
     for (const [relPath, entry] of shown) grid.appendChild(buildCard(relPath, entry, !filter));
     body.appendChild(grid);
     drag.setMainGrid(grid, shown.map(([p]) => p));
-    if (emptyNote) {
-      const empty = document.createElement('div');
-      empty.className = 'scribe-library-empty';
-      empty.textContent = emptyNote === 'filter' ? 'No names match.' : 'This folder is empty.';
-      body.appendChild(empty);
-    }
+    if (emptyNote) body.appendChild(buildEmptyNote(emptyNote));
     if (shownOthers.length) {
       // The main grid's drag-reorder math indexes its children against gridPaths, so these cards need a grid of their own.
       const otherLabel = document.createElement('div');
@@ -7470,6 +7554,7 @@ export function createLibraryInstance(viewer, opts) {
     filterText = '';
     searchInput.value = '';
     searchField.classList.remove('has-text');
+    if (colSearchOpen) setColSearch(false, { still: true });
     fullTextResults = null;
     engineResponse = null;
     engineTiers = null;
@@ -7704,6 +7789,7 @@ export function createLibraryInstance(viewer, opts) {
   searchInput.addEventListener('input', () => {
     filterText = searchInput.value;
     searchField.classList.toggle('has-text', !!filterText);
+    syncClearTitle();
     if (fullTextResults && !filterText) fullTextResults = null;
     if (!fullTextResults) render();
     else if (finderBar && barSwapped) buildCrumbs();
@@ -7726,6 +7812,10 @@ export function createLibraryInstance(viewer, opts) {
       if (finderBar?.iconAtRest() && barSwapped) {
         searchInput.blur();
         findBtn.focus();
+        return;
+      }
+      if (colSearchOpen) {
+        closeColSearch();
         return;
       }
       const first = /** @type {?HTMLElement} */ (body.querySelector('[data-rel-path]'));
@@ -7785,6 +7875,10 @@ export function createLibraryInstance(viewer, opts) {
     searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
   });
   clearBtn.addEventListener('click', () => {
+    if (colSearchOpen && !searchInput.value) {
+      closeColSearch();
+      return;
+    }
     if (finderBar && barSwapped) finderBar.focus();
     searchInput.value = '';
     filterText = '';
@@ -8097,9 +8191,8 @@ export function createLibraryInstance(viewer, opts) {
 
   const focusSearch = () => {
     if (form === 'column') {
-      if (storageOpen) closeStorage();
-      colSearchRow.hidden = false;
-      colSearchBtn.classList.add('on');
+      openColSearch();
+      return;
     }
     if (finderBar && barSwapped) finderBar.focus();
     else searchInput.focus();
