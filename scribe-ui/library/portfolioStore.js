@@ -258,6 +258,11 @@ export class PortfolioStore {
     return this.rasters.get(hash)?.get(n) ?? null;
   }
 
+  /** @param {string} hash @returns {Promise<Set<number>>} The pages of `hash` that have a stored raster. */
+  async listPageRasters(hash) {
+    return new Set(this.rasters.get(hash)?.keys());
+  }
+
   /** @param {string} hash @param {number} sourcePageN @param {Blob} blob */
   async writePageThumb(hash, sourcePageN, blob) {
     this.#writePageBlob(this.pageThumbs, hash, sourcePageN, blob);
