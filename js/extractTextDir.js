@@ -1,5 +1,3 @@
-// Node-only, reached only via the Node-guarded `extractTextDir`/`extractTextDirIter` in scribe.js.
-// The main thread only enumerates paths and writes output; the CPU-bound extraction runs in the worker pool (see extractTextDirWorker.js).
 
 const supportedExtensions = new Set(['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif']);
 
@@ -39,27 +37,26 @@ async function* walkFiles(fs, path, inputDir, recursive) {
 }
 
 /**
- * Extract each document's existing text (no OCR) from a directory, yielding one result per file as it completes. Node.js only.
- * Documents are farmed across `options.workers` worker threads, so results arrive in completion order, not directory order.
- *
- * @param {string} inputDir - Directory to read input files from.
+ * Extract existing text without OCR from each supported file in a directory, yielding one result per file.
+ * Node.js only.
+ * Results arrive in completion order.
+ * A failing file sets `error` without aborting the batch.
+ * @param {string} inputDir
  * @param {Object} [options]
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'md'|'scribe'|'scribe.json'} [options.format='txt'] - Export format.
- * @param {boolean} [options.recursive=false] - Recurse into subdirectories.
- * @param {number} [options.workers=4] - Number of documents to process in parallel.
- * @param {boolean} [options.reflow] - Combine lines into paragraphs (defaults on).
- * @param {boolean} [options.lineNumbers] - Prefix each line with `page:line` (txt only).
- * @param {boolean} [options.charBoxes] - Include per-character bounding boxes in scribe/scribe.json output (excluded by default).
- * @param {string} [options.outputDir] - When set, an input whose output already exists (unless `overwrite`) or would overwrite the input is skipped without being parsed.
- * @param {boolean} [options.overwrite] - Overwrite existing output files.
- * @param {boolean} [options.skipImageBased] - Skip image-based PDFs without text in input directory instead of writing an empty output file.
+ * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'md'|'scribe'|'scribe.json'} [options.format='txt']
+ * @param {boolean} [options.recursive=false]
+ * @param {number} [options.workers=4]
+ * @param {boolean} [options.reflow=true] - Combine lines into paragraphs.
+ * @param {boolean} [options.lineNumbers=false] - Prefix each line with `page:line` (txt only).
+ * @param {boolean} [options.charBoxes=false] - Include per-character bounding boxes in scribe/scribe.json output.
+ * @param {string} [options.outputDir] - Output directory used to populate `outputPath` and skip inputs whose output matches `inputPath` or already exists when `!overwrite`.
+ * @param {boolean} [options.overwrite=false]
+ * @param {boolean} [options.skipImageBased=false] - Skip PDFs with no usable text or OCR layer (`pdfType === 'image'`).
+ * @param {boolean} [writeOutput=false] - Write each export directly to `outputPath` and omit `text` from yielded results.
+ *    Requires `options.outputDir`.
  * @yields {{ inputPath: string, text?: (string|Uint8Array), error?: { name?: string, message: string, code?: string }, skipReason?: ('exists'|'sameAsInput'|'imageBased'), outputPath?: string }}
- *    On success, `text` holds the exported content (empty for a document with no text).
- *    On failure, `error` describes why the file was skipped.
- *    `skipReason` marks a file skipped without extraction; `outputPath` is the resolved destination (present only when `outputDir` is given).
- *    A failing file is never fatal to the batch.
  */
-export async function* extractTextDirIter(inputDir, options = {}) {
+export async function* extractTextDirIter(inputDir, options = {}, writeOutput = false) {
   const fs = (await import('node:fs')).default;
   const path = (await import('node:path')).default;
   // Not `Worker`: a bundler treats any `new Worker(new URL(...))` as a browser worker to bundle, and this one is Node-only.
@@ -100,10 +97,10 @@ export async function* extractTextDirIter(inputDir, options = {}) {
       state.dead = true;
       settle({ ok: false, error: { name: 'WorkerExit', message: 'Worker exited unexpectedly' } });
     });
-    state.run = (inputPath) => new Promise((res) => {
+    state.run = (inputPath, outPath) => new Promise((res) => {
       if (state.dead) { res({ ok: false, error: { name: 'WorkerDead', message: 'Worker no longer available' } }); return; }
       state.inflight = res;
-      worker.postMessage({ inputPath });
+      worker.postMessage({ inputPath, outPath });
     });
     state.terminate = () => worker.terminate();
   });
@@ -128,6 +125,7 @@ export async function* extractTextDirIter(inputDir, options = {}) {
 
   let done = false;
   let walkError = null;
+  const createdDirs = new Set();
   const runner = async (state) => {
     let next = await nextPath();
     while (!next.done && !state.dead) {
@@ -149,7 +147,14 @@ export async function* extractTextDirIter(inputDir, options = {}) {
           continue;
         }
       }
-      const res = await state.run(inputPath);
+      if (writeOutput) {
+        const outParent = path.dirname(outPath);
+        if (!createdDirs.has(outParent)) {
+          fs.mkdirSync(outParent, { recursive: true });
+          createdDirs.add(outParent);
+        }
+      }
+      const res = await state.run(inputPath, writeOutput ? outPath : undefined);
       push({ inputPath, outPath, ...res });
       if (state.dead) break;
       next = await nextPath();
@@ -197,18 +202,14 @@ export async function* extractTextDirIter(inputDir, options = {}) {
  *    `skipped` counts only parse failures, separate from the other skip counters.
  */
 export async function extractTextDir(inputDir, outputDir, options = {}) {
-  const fs = (await import('node:fs')).default;
-  const path = (await import('node:path')).default;
-
   const onProgress = options.onProgress;
 
   const summary = {
     extracted: 0, skipped: 0, skippedExisting: 0, skippedImageBased: 0, sameAsInput: 0, failures: [],
   };
-  const createdDirs = new Set();
 
   // The iterator resolves each output path and skips existing/colliding inputs before any worker parses them, so `outputDir` must be passed through.
-  for await (const result of extractTextDirIter(inputDir, { ...options, outputDir })) {
+  for await (const result of extractTextDirIter(inputDir, { ...options, outputDir }, true)) {
     if (result.error) {
       summary.skipped += 1;
       summary.failures.push({ inputPath: result.inputPath, error: result.error });
@@ -220,13 +221,6 @@ export async function extractTextDir(inputDir, outputDir, options = {}) {
     } else if (result.skipReason === 'imageBased') {
       summary.skippedImageBased += 1;
     } else {
-      const outParent = path.dirname(result.outputPath);
-      if (!createdDirs.has(outParent)) {
-        fs.mkdirSync(outParent, { recursive: true });
-        createdDirs.add(outParent);
-      }
-      // writeFileSync rejects a bare ArrayBuffer.
-      fs.writeFileSync(result.outputPath, result.text instanceof ArrayBuffer ? new Uint8Array(result.text) : (result.text ?? ''));
       summary.extracted += 1;
     }
     if (onProgress) {

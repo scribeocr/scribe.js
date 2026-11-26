@@ -10,13 +10,14 @@ import ocr from './objects/ocrObjects.js';
 export function applyType3GlyphMappings(doc, outlines) {
   const pages = new Set();
   // Every layer holding parsed pages is rewritten, since a recognition run clones the native pages it does not replace and a `.scribe` restore installs them under its own name.
-  for (const [name, layer] of Object.entries(doc.ocr)) {
-    if (name === 'active' || !Array.isArray(layer)) continue;
-    for (let n = 0; n < layer.length; n++) {
-      const page = layer[n];
-      const nt = doc.nativeText.pages[n];
+  for (const name of doc.pageStore.names) {
+    for (let n = 0; n < doc.pageMetrics.length; n++) {
       const hashes = doc.images.getType3GlyphHashesSync(n);
-      if (!page || page.textSource !== 'pdf' || !nt || !hashes) continue;
+      if (!hashes) continue;
+      const nt = doc.nativeText.pages[n];
+      if (!nt) continue;
+      const page = doc.pageStore.getPage(n, name, true);
+      if (!page || page.textSource !== 'pdf') continue;
       for (const line of page.lines) {
         for (const word of line.words) {
           const entry = nt[word.id];
@@ -56,18 +57,23 @@ export function applyType3GlyphMappings(doc, outlines) {
  * @param {?Array<number>} [pages] - The pages to check; every page when null.
  */
 export async function ensureType3GlyphCodes(doc, pages = null) {
-  const layers = Object.entries(doc.ocr).filter(([name, layer]) => name !== 'active' && Array.isArray(layer)).map(([, layer]) => layer);
   for (let n = 0; n < doc.pageMetrics.length; n++) {
     if (pages && !pages.includes(n)) continue;
-    const nt = doc.nativeText.pages[n];
     const pm = doc.pageMetrics[n];
     const dims = doc.images.pdfDims300[n];
-    if (!nt || !pm || !dims) continue;
-    const stale = layers.some((layer) => layer[n]?.textSource === 'pdf'
-      && layer[n].lines.some((line) => line.words.some((w) => nt[w.id] && !nt[w.id].codes && /[\uE000-\uE0FF]/.test(w.text))));
+    if (!pm || !dims) continue;
+    // Read via extras(n, false) and readOnlyPage so checking for unmapped PUA glyphs does not mark pages modified.
+    const held = doc.pageStore.extras(n, false);
+    const checked = held ? held.nativeText : doc.nativeText.pages[n];
+    if (!checked) continue;
+    const stale = doc.pageStore.names.some((name) => {
+      const page = doc.pageStore.readOnlyPage(n, name);
+      return page?.textSource === 'pdf' && page.lines.some((line) => line.words.some((w) => checked[w.id] && !checked[w.id].codes && /[\uE000-\uE0FF]/.test(w.text)));
+    });
     if (!stale) continue;
     const scheduler = await doc.images.resolveSource(pm).getScheduler();
     const fresh = (await scheduler.parsePdfPage({ pageIndex: pm.sourcePageN ?? n, dpi: 300 * Math.min(dims.width, 3500) / dims.width })).nativeText || {};
+    const nt = doc.nativeText.pages[n];
     for (const [id, entry] of Object.entries(nt)) {
       const codes = fresh[id]?.codes;
       // The arrays of a record are index-aligned, so a fresh parse that segmented the word differently is not trusted.

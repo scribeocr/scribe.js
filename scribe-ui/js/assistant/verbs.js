@@ -65,7 +65,7 @@ function requirePage(doc, page) {
   if (!Number.isInteger(page) || page < 0 || page >= doc.pageMetrics.length) {
     return { error: `Page ${page} is out of range; the document has ${doc.pageMetrics.length} pages (0-based).` };
   }
-  const pageObj = doc.ocr.active[page];
+  const pageObj = doc.getPage(page);
   if (!pageObj || pageObj.lines.length === 0) return { error: `Page ${page} has no text layer to work with.` };
   return { pageObj };
 }
@@ -176,7 +176,7 @@ async function showWords(viewer, page, words, flash) {
  */
 export async function navigateToReceipt(viewer, receipt) {
   if (receipt.page == null) return;
-  const pageObj = viewer.doc?.ocr.active[receipt.page];
+  const pageObj = viewer.doc?.pageStore.readOnlyPage(receipt.page);
   if (pageObj && receipt.wordIds?.length) {
     const ids = new Set(receipt.wordIds);
     const words = scribe.utils.ocr.getPageWords(pageObj).filter((w) => ids.has(w.id));
@@ -201,7 +201,7 @@ export const VERBS = [
       const doc = host.viewer.doc;
       const pageCount = doc.pageMetrics.length;
       const lineCounts = [];
-      for (let n = 0; n < pageCount; n++) lineCounts.push(doc.ocr.active[n]?.lines.length || 0);
+      for (let n = 0; n < pageCount; n++) lineCounts.push(doc.pageStore.readOnlyPage(n)?.lines.length || 0);
       const stats = doc.inputData.pageStats;
       const scanPages = [];
       if (stats) {
@@ -283,14 +283,14 @@ export const VERBS = [
       const doc = host.viewer.doc;
       const query = String(params.query ?? '').trim();
       if (!query) return { isError: true, result: { error: 'query is empty.' } };
-      const matches = scribe.utils.ocr.getDocMatches(query, doc.ocr.active);
+      const matches = scribe.utils.ocr.getDocMatches(query, doc.pageStore.pageList());
       const capped = matches.slice(0, 50);
       /** @type {Map<number, Map<string, OcrWord>>} */
       const wordsById = new Map();
       /** @type {Array<{page: number, line: number, lineText: string}>} */
       const rows = [];
       for (const m of capped) {
-        const pageObj = doc.ocr.active[m.pageN];
+        const pageObj = doc.pageStore.readOnlyPage(m.pageN);
         if (!wordsById.has(m.pageN)) {
           const byId = new Map();
           for (const w of scribe.utils.ocr.getPageWords(pageObj)) byId.set(w.id, w);
@@ -621,7 +621,8 @@ export async function runVerb(host, name, params) {
   const doc = host.viewer.doc;
   if (!doc || doc.pageMetrics.length === 0) return { isError: true, result: { error: 'No document is open.' } };
   // A freshly-opened PDF may still be extracting text, so reading or matching before it settles reports false misses.
-  if (doc._textReadySettle && !(await doc.ensureHydrated())) return { isError: true, result: { error: 'The document could not be loaded.' } };
+  await doc.textReady;
+  if (doc._loadFailed) return { isError: true, result: { error: 'The document could not be loaded.' } };
   if (host.viewer.doc !== doc) return { isError: true, result: { error: 'The document changed before the tool ran.' } };
   try {
     return await entry.run(host, params || {});

@@ -47,14 +47,14 @@ describe('Check stext import function.', () => {
   });
 
   test('Should correctly import text content from stext', async () => {
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
-    const text4 = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
-    const text5 = doc.ocr.active[0].lines[4].words.map((x) => x.text).join(' ');
-    const text6 = doc.ocr.active[0].lines[5].words.map((x) => x.text).join(' ');
-    const text7 = doc.ocr.active[0].lines[6].words.map((x) => x.text).join(' ');
-    const text8 = doc.ocr.active[0].lines[7].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.getPage(0).lines[2].words.map((x) => x.text).join(' ');
+    const text4 = doc.getPage(0).lines[3].words.map((x) => x.text).join(' ');
+    const text5 = doc.getPage(0).lines[4].words.map((x) => x.text).join(' ');
+    const text6 = doc.getPage(0).lines[5].words.map((x) => x.text).join(' ');
+    const text7 = doc.getPage(0).lines[6].words.map((x) => x.text).join(' ');
+    const text8 = doc.getPage(0).lines[7].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('This is a lot of 12 point text to test the');
     expect(text2).toBe('ocr code and see if it works on all types');
@@ -67,14 +67,14 @@ describe('Check stext import function.', () => {
   });
 
   test('Should have correct number of words per line (not import lines as single words)', async () => {
-    const wordCount1 = doc.ocr.active[0].lines[0].words.length;
-    const wordCount2 = doc.ocr.active[0].lines[1].words.length;
-    const wordCount3 = doc.ocr.active[0].lines[2].words.length;
-    const wordCount4 = doc.ocr.active[0].lines[3].words.length;
-    const wordCount5 = doc.ocr.active[0].lines[4].words.length;
-    const wordCount6 = doc.ocr.active[0].lines[5].words.length;
-    const wordCount7 = doc.ocr.active[0].lines[6].words.length;
-    const wordCount8 = doc.ocr.active[0].lines[7].words.length;
+    const wordCount1 = doc.getPage(0).lines[0].words.length;
+    const wordCount2 = doc.getPage(0).lines[1].words.length;
+    const wordCount3 = doc.getPage(0).lines[2].words.length;
+    const wordCount4 = doc.getPage(0).lines[3].words.length;
+    const wordCount5 = doc.getPage(0).lines[4].words.length;
+    const wordCount6 = doc.getPage(0).lines[5].words.length;
+    const wordCount7 = doc.getPage(0).lines[6].words.length;
+    const wordCount8 = doc.getPage(0).lines[7].words.length;
 
     expect(wordCount1).toBe(11);
     expect(wordCount2).toBe(10);
@@ -85,12 +85,12 @@ describe('Check stext import function.', () => {
     expect(wordCount7).toBe(7);
     expect(wordCount8).toBe(7);
 
-    const totalWords = doc.ocr.active[0].lines.reduce((sum, line) => sum + line.words.length, 0);
+    const totalWords = doc.getPage(0).lines.reduce((sum, line) => sum + line.words.length, 0);
     expect(totalWords).toBe(60);
   });
 
   test('Should have correct number of lines', async () => {
-    expect(doc.ocr.active[0].lines.length).toBe(8);
+    expect(doc.getPage(0).lines.length).toBe(8);
   });
 
   afterAll(async () => {
@@ -107,14 +107,14 @@ describe('Check stext import function with multiline XML formatting (spacing var
   });
 
   test('Should correctly import text content from stext with multiline formatting', async () => {
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
-    const text4 = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
-    const text5 = doc.ocr.active[0].lines[4].words.map((x) => x.text).join(' ');
-    const text6 = doc.ocr.active[0].lines[5].words.map((x) => x.text).join(' ');
-    const text7 = doc.ocr.active[0].lines[6].words.map((x) => x.text).join(' ');
-    const text8 = doc.ocr.active[0].lines[7].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.getPage(0).lines[2].words.map((x) => x.text).join(' ');
+    const text4 = doc.getPage(0).lines[3].words.map((x) => x.text).join(' ');
+    const text5 = doc.getPage(0).lines[4].words.map((x) => x.text).join(' ');
+    const text6 = doc.getPage(0).lines[5].words.map((x) => x.text).join(' ');
+    const text7 = doc.getPage(0).lines[6].words.map((x) => x.text).join(' ');
+    const text8 = doc.getPage(0).lines[7].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('This is a lot of 12 point text to test the');
     expect(text2).toBe('ocr code and see if it works on all types');
@@ -127,14 +127,14 @@ describe('Check stext import function with multiline XML formatting (spacing var
   });
 
   test('Should have correct number of words per line with multiline formatting (not import lines as single words)', async () => {
-    const wordCount1 = doc.ocr.active[0].lines[0].words.length;
-    const wordCount2 = doc.ocr.active[0].lines[1].words.length;
-    const wordCount3 = doc.ocr.active[0].lines[2].words.length;
-    const wordCount4 = doc.ocr.active[0].lines[3].words.length;
-    const wordCount5 = doc.ocr.active[0].lines[4].words.length;
-    const wordCount6 = doc.ocr.active[0].lines[5].words.length;
-    const wordCount7 = doc.ocr.active[0].lines[6].words.length;
-    const wordCount8 = doc.ocr.active[0].lines[7].words.length;
+    const wordCount1 = doc.getPage(0).lines[0].words.length;
+    const wordCount2 = doc.getPage(0).lines[1].words.length;
+    const wordCount3 = doc.getPage(0).lines[2].words.length;
+    const wordCount4 = doc.getPage(0).lines[3].words.length;
+    const wordCount5 = doc.getPage(0).lines[4].words.length;
+    const wordCount6 = doc.getPage(0).lines[5].words.length;
+    const wordCount7 = doc.getPage(0).lines[6].words.length;
+    const wordCount8 = doc.getPage(0).lines[7].words.length;
 
     expect(wordCount1).toBe(11);
     expect(wordCount2).toBe(10);
@@ -145,12 +145,12 @@ describe('Check stext import function with multiline XML formatting (spacing var
     expect(wordCount7).toBe(7);
     expect(wordCount8).toBe(7);
 
-    const totalWords = doc.ocr.active[0].lines.reduce((sum, line) => sum + line.words.length, 0);
+    const totalWords = doc.getPage(0).lines.reduce((sum, line) => sum + line.words.length, 0);
     expect(totalWords).toBe(60);
   });
 
   test('Should have correct number of lines with multiline formatting', async () => {
-    expect(doc.ocr.active[0].lines.length).toBe(8);
+    expect(doc.getPage(0).lines.length).toBe(8);
   });
 
   afterAll(async () => {
@@ -162,8 +162,8 @@ describe('Check stext detection from content alone.', () => {
   test('Should import stext without a file name', async () => {
     const text = await readFileContent(`${ASSETS_PATH}/testocr.stext`);
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(text).buffer] });
-    expect(doc.ocr.active[0].lines.length, 'the page keeps its 8 lines when the format is read from the content').toBe(8);
-    expect(doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' '), 'the first line reads as stext, not as hOCR').toBe('This is a lot of 12 point text to test the');
+    expect(doc.getPage(0).lines.length, 'the page keeps its 8 lines when the format is read from the content').toBe(8);
+    expect(doc.getPage(0).lines[0].words.map((x) => x.text).join(' '), 'the first line reads as stext, not as hOCR').toBe('This is a lot of 12 point text to test the');
   });
 
   afterAll(async () => {

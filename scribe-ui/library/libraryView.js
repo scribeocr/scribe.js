@@ -1,5 +1,3 @@
-// Document library view for the viewer app: connect a folder, browse and search it, open documents into tabs, and keep edits flowing back into `.scribe` sidecars.
-// Loaded by dynamic import behind the `library` option, so viewers without it never fetch this module or its styles.
 
 import scribeLib from '../../scribe.js';
 import { saveAs } from '../../js/utils/miscUtils.js';
@@ -25,6 +23,7 @@ import { DocSessions } from './docSession.js';
 import { makeIconButton } from '../js/controls/toolbar.js';
 import { barIcon, slotIcon } from '../js/controls/icons.js';
 import { createDocLoads, openLibraryDoc } from './libraryDocLoads.js';
+import { writeSavedDoc } from '../../js/export/writeSavedDoc.js';
 import { createResultsView } from './libraryResultsView.js';
 import { FOLDER_FLY_MS, createDragReorder } from './libraryDragReorder.js';
 import { flyCopies } from '../js/controls/pageReorder.js';
@@ -1965,7 +1964,7 @@ export function createLibraryInstance(viewer, opts) {
   let revertUndo = null;
 
   /**
-   * Bring the manifest and the search index up to date after a sidecar checkpoint.
+   * Bring the manifest and the cover up to date after a sidecar checkpoint.
    * @param {string} hash
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {boolean} recognized - Whether a recognition run completed since the previous checkpoint.
@@ -1985,9 +1984,6 @@ export function createLibraryInstance(viewer, opts) {
       Math.round(pm.dims.width * 100) / 100, Math.round(pm.dims.height * 100) / 100, pm.rotation || 0,
     ]);
     saveManifestSoon();
-    try {
-      await engine.addDoc(hash, doc.ocr.active, doc.nativeText?.pages || []);
-    } catch { /* The sidecar is saved; a stale index entry is repaired by the next rebuild. */ }
     try {
       const pictured = await coverOf(doc);
       if (pictured !== (entry.coverOf ?? PRISTINE_COVER)) {
@@ -2022,23 +2018,36 @@ export function createLibraryInstance(viewer, opts) {
     if (!tab.libraryDirty) return;
     tab.libraryDirty = false;
     tab.librarySaving = (async () => {
+      const importing = ingest;
+      importing?.savesInFlight.add(tab.libraryHash);
       try {
         // The marks travel in the sidecar's session block, so a later ingest reads them back from the file.
         const recognized = !!tab.libraryRecognized;
         const now = Date.now();
         const doc = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (tab.doc);
+        await doc.textReady;
+        if (doc._textMissing) {
+          tab.libraryDirty = true;
+          return;
+        }
         doc.sessionMarks.editedAt = now;
         if (recognized) doc.sessionMarks.recognizedAt = now;
-        // The sidecar takes the segmented form at any size, since the provisional open reads only its first line.
-        const data = await doc.exportData('scribe', {
-          scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0, includeCharBoxesScribe: false,
-        });
-        await store.writeSidecar(tab.libraryHash, data);
-        sessions.dropHeader(tab.libraryHash);
+        const records = await store.recordsBlob(tab.libraryHash);
+        const saved = await writeSavedDoc(doc);
+        const sidecar = new Blob(saved.parts);
+        // Enqueue addDoc before awaiting writeSidecar so any search started during writeSidecar runs after the index updates.
+        const indexed = saved.textChanged && records
+          ? engine.addDoc(tab.libraryHash, records, sidecar).catch(() => { })
+          : null;
+        await store.writeSidecar(tab.libraryHash, sidecar);
+        sessions.dropPixels(tab.libraryHash);
         tab.libraryRecognized = false;
+        await indexed;
         await afterSidecarSaved(tab.libraryHash, tab.doc, recognized);
       } catch {
         tab.libraryDirty = true;
+      } finally {
+        importing?.savesInFlight.delete(tab.libraryHash);
       }
     })();
     try {
@@ -3603,6 +3612,7 @@ export function createLibraryInstance(viewer, opts) {
         await engine.removeDoc(entry.hash).catch(() => { });
         await Promise.all([
           store.deleteSidecar(entry.hash), store.deleteSidecarBackup(entry.hash), store.deleteThumb(entry.hash), store.deletePageRasters(entry.hash),
+          store.deleteRecords(entry.hash),
         ]).catch(() => { });
         sessions.invalidate(entry.hash);
       }
@@ -5747,8 +5757,6 @@ export function createLibraryInstance(viewer, opts) {
       d[name] = function markDirtyWrap(...args) {
         // Never cleared, because from its first edit on the document's pages no longer match the stored page rasters.
         d._libraryEdited = true;
-        // An edit that succeeds on a seeded document, such as a bookmark, would otherwise leave the whole load to the save at the tab's close.
-        if (d.hydrationState !== 'hydrated') d.ensureHydrated();
         const owner = d._libraryDirtyTarget;
         if (owner) {
           owner.libraryDirty = true;
@@ -5802,9 +5810,7 @@ export function createLibraryInstance(viewer, opts) {
     const markHits = async (shownViewer) => {
       if (!target.query || !shownViewer || !shownViewer.doc || !shownViewer.doc.pageMetrics.length) return;
       const { doc } = shownViewer;
-      // Deferred-import text may still be extracting, and a find before it lands would mark nothing.
-      // A document not yet hydrated finds through the index instead, which needs none of its text.
-      if (doc._textReadySettle && !(doc.hydrationState !== 'hydrated' && doc.findMatches) && !(await doc.ensureHydrated())) return;
+      await doc.textReady;
       if (shownViewer.doc !== doc) return;
       if (!(await findText(shownViewer, target.query))) return;
       const { matchList } = shownViewer._searchState;
@@ -5885,7 +5891,7 @@ export function createLibraryInstance(viewer, opts) {
         if (!target.background) await markHits(viewer._viewerShowing(pooled));
         return;
       }
-      if (entry.hash && entry.pageDims) {
+      if (entry.hash && entry.pageDims && await store.recordsBlob(entry.hash)) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await loads.makeSeed(relPath, entry, target.pageN ?? 0);
@@ -5896,7 +5902,7 @@ export function createLibraryInstance(viewer, opts) {
           await viewer._openPortfolio(seed.doc, titleOf(relPath), { libraryHash: entry.hash, libraryRelPath: relPath, libraryOwner: instanceId });
           return;
         }
-        const handle = await viewer.openProvisional(seed, {
+        const tab = await viewer.openProvisional(seed, {
           activate: !target.background,
           group: target.group ?? 0,
           preview: !!target.preview,
@@ -5907,15 +5913,9 @@ export function createLibraryInstance(viewer, opts) {
           libraryHash: entry.hash,
           libraryRelPath: relPath,
         });
-        const tab = /** @type {any} */ (handle.tab);
         wrapMutators(tab.doc, tab);
         sessions.lendTab(entry.hash, tab.doc);
-        handle.hydrated.catch(() => { });
-        engine.hasDoc(entry.hash).then((indexed) => { if (!indexed) tab.doc.ensureHydrated(); }).catch(() => { });
-        if (!target.background && target.query) {
-          await handle.primed;
-          await markHits(viewer._viewerShowing(tab.doc));
-        }
+        if (!target.background && target.query) await markHits(viewer._viewerShowing(tab.doc));
         return;
       }
       /** @type {File} */
@@ -7059,8 +7059,7 @@ export function createLibraryInstance(viewer, opts) {
         const doneEntry = manifest?.docs[relPath];
         // A tab adopted by a copy into the folder learns its hash once the ingest has computed it.
         if (doneEntry?.hash) for (const t of viewer._tabs) if (ownsTab(t) && t.libraryRelPath === relPath && !t.libraryHash) t.libraryHash = doneEntry.hash;
-        // Recognition writes the sidecar and a revert deletes it, so the parsed header must not outlive it.
-        if (doneEntry?.hash) sessions.dropHeader(doneEntry.hash);
+        if (doneEntry?.hash) sessions.dropPixels(doneEntry.hash);
         if (recognizingPath === relPath && doneEntry?.ocrError) runRecognizeFailures++;
         if (revertUndo && revertUndo.relPath === relPath) {
           if (revertUndo.phase === 'reverting') {
@@ -7091,7 +7090,8 @@ export function createLibraryInstance(viewer, opts) {
       liveDoc: async (hash) => {
         const tab = viewer._tabs.find((t) => t.libraryHash === hash && ownsTab(t));
         if (tab) {
-          if (viewer._tabs.includes(tab) && await tab.doc.ensureHydrated() && viewer._tabs.includes(tab)) {
+          await tab.doc.textReady;
+          if (viewer._tabs.includes(tab) && !tab.doc._textMissing) {
             return {
               doc: tab.doc,
               checkpoint: async (recognized) => {

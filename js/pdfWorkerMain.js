@@ -24,6 +24,20 @@ export class PdfScheduler {
   parsePdfPage = (args) => this.scheduler.addJob('parsePdfPage', args);
 
   /**
+   * Extract text on a worker and return the page's deflated records and per-page metadata.
+   * @param {{ pageIndex: number, dpi: number }} args
+   * @returns {Promise<import('./worker/pdfWorker.js').ParsedPageRecords>}
+   */
+  parsePdfPageRecords = (args) => this.scheduler.addJob('parsePdfPageRecords', args);
+
+  /**
+   * Lay out a consecutive run of pages on a worker from their deflated page records and return updated records.
+   * @param {Parameters<typeof import('./worker/pdfWorker.js').layoutPdfChunkRecords>[0]} args
+   * @returns {ReturnType<typeof import('./worker/pdfWorker.js').layoutPdfChunkRecords>}
+   */
+  layoutPdfChunkRecords = (args) => this.scheduler.addJob('layoutPdfChunkRecords', args);
+
+  /**
    * Dispatch a single page for its own annotations, lifted without a text parse.
    * @param {{ pageIndex: number, dpi: number }} args
    */
@@ -184,6 +198,12 @@ export class PdfSchedulerInProcess {
    * @param {{ pageIndex: number, dpi: number }} args
    */
   parsePdfPageAnnotations = (args) => this.#core.parsePageAnnotations(args);
+
+  /**
+   * Lay out a consecutive run of parsed pages in place, given the carry from the preceding run.
+   * @param {Parameters<PdfCore['layoutChunk']>[0]} args
+   */
+  layoutPdfChunk = (args) => this.#core.layoutChunk(args);
 
   /**
    * Render a single page to image data URL.

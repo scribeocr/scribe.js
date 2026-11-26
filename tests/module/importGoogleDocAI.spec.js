@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -42,9 +43,9 @@ describe('Check Google Document AI JSON import function (ascenders_descenders_te
   });
 
   test('Should correctly import text content', async () => {
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.getPage(0).lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Ascenders On');
     expect(text2).toBe('query png');
@@ -52,43 +53,43 @@ describe('Check Google Document AI JSON import function (ascenders_descenders_te
   });
 
   test('Should import correct number of lines', async () => {
-    expect(doc.ocr.active[0].lines.length).toBe(3);
+    expect(doc.getPage(0).lines.length).toBe(3);
   });
 
   test('Should import correct number of words per line', async () => {
-    expect(doc.ocr.active[0].lines[0].words.length).toBe(2);
-    expect(doc.ocr.active[0].lines[1].words.length).toBe(2);
-    expect(doc.ocr.active[0].lines[2].words.length).toBe(2);
+    expect(doc.getPage(0).lines[0].words.length).toBe(2);
+    expect(doc.getPage(0).lines[1].words.length).toBe(2);
+    expect(doc.getPage(0).lines[2].words.length).toBe(2);
   });
 
   test('Should have high confidence values for clear text', async () => {
     // The "Ascenders" word should have >90% confidence (it reads 99 from the JSON)
-    const conf = doc.ocr.active[0].lines[0].words[0].conf;
+    const conf = doc.getPage(0).lines[0].words[0].conf;
     expect(conf).toBeGreaterThan(90);
     expect(conf).toBeLessThanOrEqual(100);
   });
 
   test('Should create 3 paragraphs (one per line)', async () => {
-    expect(doc.ocr.active[0].pars.length).toBe(3);
+    expect(doc.getPage(0).pars.length).toBe(3);
   });
 
   test('All lines should have paragraph back-references', async () => {
-    for (const line of doc.ocr.active[0].lines) {
+    for (const line of doc.getPage(0).lines) {
       expect(line.par).not.toBeNull();
     }
   });
 
   test('Paragraph text should match line text', async () => {
-    const par0Text = doc.ocr.active[0].pars[0].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
-    const par1Text = doc.ocr.active[0].pars[1].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
-    const par2Text = doc.ocr.active[0].pars[2].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par0Text = doc.getPage(0).pars[0].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par1Text = doc.getPage(0).pars[1].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par2Text = doc.getPage(0).pars[2].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
     expect(par0Text).toBe('Ascenders On');
     expect(par1Text).toBe('query png');
     expect(par2Text).toBe('we can');
   });
 
   test('Word "Ascenders" bbox should have correct approximate position', async () => {
-    const word = doc.ocr.active[0].lines[0].words[0]; // "Ascenders"
+    const word = doc.getPage(0).lines[0].words[0];
     expect(word.text).toBe('Ascenders');
     // From the JSON: vertices x=[61,376], y=[70,123]
     expect(Math.abs((word.bbox.left) - (61))).toBeLessThanOrEqual(5);
@@ -109,7 +110,7 @@ describe('Check Google Document AI import for 070823vanliere (superscript handli
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`,
       `${ASSETS_PATH}/070823vanliere-GoogleDocAI.json`]);
-    gdaiPages = doc.ocr.active;
+    gdaiPages = docPages(doc);
   });
 
   test('Should import 41 pages', async () => {

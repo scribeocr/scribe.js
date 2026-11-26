@@ -86,7 +86,7 @@ function placeSingleNoteIcon(viewer, n, icon, annot) {
 
   // The left edge of the page's upright text, taken as where the left margin ends.
   let colLeft = dims.width * 0.22;
-  const ocrPage = viewer.doc.ocr.active?.[n];
+  const ocrPage = viewer.doc.pageStore.readOnlyPage(n);
   if (ocrPage) {
     let minL = Infinity;
     for (const ln of ocrPage.lines) {

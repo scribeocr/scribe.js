@@ -91,10 +91,10 @@ async function handleLoadFile(file, page, readFileFn, { onOpenFailed } = {}) {
 async function handleHighlights(highlights) {
   if (!pdfViewer) throw new Error('handleHighlights requires the auto-instantiated viewer.');
   const sv = pdfViewer.scribe;
-  if (sv.doc && !(await sv.doc.ensureHydrated())) return;
+  if (sv.doc) await sv.doc.textReady;
   for (const highlight of highlights) {
     const pageNum = highlight.page;
-    const page = sv.doc.ocr.active[pageNum];
+    const page = sv.doc.getPage(pageNum);
     if (!page) continue;
 
     const lines = highlight.lines;

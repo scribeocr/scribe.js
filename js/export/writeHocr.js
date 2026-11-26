@@ -3,17 +3,24 @@ import { hocrLineFingerprint } from '../import/convertPageHocr.js';
 
 /**
  * Write pages as hOCR.
- * A page imported from hOCR is written from its source markup, so every unchanged line and container comes out as uploaded.
+ * @param {Parameters<typeof writeHocrChunks>[0]} params
+ */
+export function writeHocr(params) {
+  return [...writeHocrChunks(params)].join('');
+}
+
+/**
+ * Write pages as hOCR, yielding the markup of one page at a time after the head.
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrData
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minValue/maxValue when provided.
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to include, overriding minValue and maxValue.
  * @param {number} [params.minValue]
  * @param {number} [params.maxValue]
  * @param {Array<PageMetrics>} params.pageMetrics
- * @param {?{head: ?Array<string>, pages: Array<?HocrSourcePage>}} [params.hocrSource=null] - The hOCR source markup of the layer being written, when it was imported from hOCR.
+ * @param {?{head: ?Array<string>, pages: Array<?HocrSourcePage>}} [params.hocrSource=null] - Source markup from an hOCR import, used to preserve unchanged lines and containers.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
-export function writeHocr({
+export function* writeHocrChunks({
   ocrData, pageArr = null, minValue, maxValue, pageMetrics, hocrSource = null, doc = null,
 }) {
   if (!pageArr) {
@@ -33,7 +40,6 @@ export function writeHocr({
   const langRe = /\s(?:xml:)?lang\s*=\s*["']([^"']*)["']/;
   const idRe = /\sid\s*=\s*["']([^"']*)["']/;
   let usesFont = false;
-  let usedSource = false;
 
   /**
    * @param {OcrLine} line
@@ -93,21 +99,28 @@ export function writeHocr({
     return best;
   };
 
-  let body = '';
-  for (const i of pageArr) {
+  /**
+   * Return the hOCR source markup for page `i`, or null if none applies.
+   * Returns null when a non-empty page shares no surviving lines with `hocrSource`, since importing another OCR format into the same layer does not clear `hocrSource`.
+   * @param {number} i
+   * @param {OcrPage} pageObj
+   */
+  const sourceOf = (i, pageObj) => {
+    const src = hocrSource?.pages?.[i] ?? null;
+    return src && (pageObj.lines.length === 0 || pageObj.lines.some((l) => src.lines[l.id] && !src.lines[l.id].dropped)) ? src : null;
+  };
+
+  /**
+   * Build the `ocr_page` markup for page `i`.
+   * @param {number} i
+   */
+  const pageBody = (i) => {
     const pageObj = ocrData[i];
 
-    // Handle case where ocrPage object does not exist.
-    if (!pageObj) {
-      body += `\n  <div class='ocr_page' id='page_${i + 1}' title='bbox 0 0 ${pageMetrics[i].dims.width} ${pageMetrics[i].dims.height}'>\n  </div>`;
-      continue;
-    }
+    if (!pageObj) return `\n  <div class='ocr_page' id='page_${i + 1}' title='bbox 0 0 ${pageMetrics[i].dims.width} ${pageMetrics[i].dims.height}'>\n  </div>`;
 
-    const src = hocrSource?.pages?.[i] ?? null;
-    // Importing another format under the same layer name replaces the page but keeps its source markup.
-    const srcApplies = !!src && (pageObj.lines.length === 0 || pageObj.lines.some((l) => src.lines[l.id] && !src.lines[l.id].dropped));
+    const src = sourceOf(i, pageObj);
 
-    // Every id already on the page or in the kept markup, pictures and separators included, so generated ids never collide with kept ones.
     /** @type {Set<string>} */
     const usedIds = new Set();
     for (const par of pageObj.pars) usedIds.add(par.id);
@@ -115,7 +128,7 @@ export function writeHocr({
       usedIds.add(line.id);
       for (const w of line.words) usedIds.add(w.id);
     }
-    if (src && srcApplies) {
+    if (src) {
       for (const m of `${src.open}${src.template}`.matchAll(/\sid\s*=\s*["']([^"']*)["']/g)) usedIds.add(m[1]);
       for (const id of Object.keys(src.pars)) usedIds.add(id);
       for (const id of Object.keys(src.lines)) usedIds.add(id);
@@ -161,14 +174,7 @@ export function writeHocr({
       return out;
     };
 
-    if (!src || !srcApplies) {
-      body += `\n  <div class='ocr_page' id='page_${i + 1}' title='bbox 0 0 ${pageObj.dims.width} ${pageObj.dims.height}'>`;
-      body += writeGroups(pageObj.lines, '   ');
-      body += '\n  </div>';
-      doc?.progressHandler({ n: i, type: 'export', info: { } });
-      continue;
-    }
-    usedSource = true;
+    if (!src) return `\n  <div class='ocr_page' id='page_${i + 1}' title='bbox 0 0 ${pageObj.dims.width} ${pageObj.dims.height}'>${writeGroups(pageObj.lines, '   ')}\n  </div>`;
 
     /** @type {Map<string, OcrLine>} */
     const linesById = new Map(pageObj.lines.map((l) => [l.id, l]));
@@ -211,11 +217,9 @@ export function writeHocr({
 
     const pageBbox = src.open.match(/bbox\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/);
     const pageId = src.open.match(idRe)?.[1];
-    if (pageBbox && Number(pageBbox[3]) === pageObj.dims.width && Number(pageBbox[4]) === pageObj.dims.height) {
-      body += `\n${src.open}`;
-    } else {
-      body += `\n  <div class='ocr_page' id='${escAttr(pageId || `page_${i + 1}`)}' title='bbox 0 0 ${pageObj.dims.width} ${pageObj.dims.height}'>`;
-    }
+    const pageOpen = pageBbox && Number(pageBbox[3]) === pageObj.dims.width && Number(pageBbox[4]) === pageObj.dims.height
+      ? `\n${src.open}`
+      : `\n  <div class='ocr_page' id='${escAttr(pageId || `page_${i + 1}`)}' title='bbox 0 0 ${pageObj.dims.width} ${pageObj.dims.height}'>`;
 
     // eslint-disable-next-line no-control-regex
     const parts = src.template.split(/\u0000([^\u0000]*)\u0000/);
@@ -349,9 +353,19 @@ export function writeHocr({
     let out = render(0, null, null).out;
     const leftover = pageObj.lines.filter((l) => !emitted.has(l.id));
     if (leftover.length > 0) out += writeGroups(leftover, '   ');
-    body += `${out}${src.close}`;
+    return `${pageOpen}${out}${src.close}`;
+  };
 
-    doc?.progressHandler({ n: i, type: 'export', info: { } });
+  let usedSource = false;
+  for (const i of pageArr) {
+    const pageObj = ocrData[i];
+    if (!pageObj) continue;
+    if (sourceOf(i, pageObj)) {
+      usedSource = true;
+      if (!usesFont) pageBody(i);
+    } else if (!usesFont) {
+      usesFont = pageObj.lines.some((line) => line.words.some((w) => w.style.font && w.style.font !== 'Default'));
+    }
   }
 
   let metas = '';
@@ -364,7 +378,7 @@ export function writeHocr({
   if (!hasMeta('ocr-capabilities')) metas += `\n  <meta name='ocr-capabilities' content='ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf ocrp_lang${usesFont ? ' ocrp_font' : ''}'/>`;
   metas += `\n  <meta name='ocr-number-of-pages' content='${pageArr.length}'/>`;
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
+  yield `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
     "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
@@ -372,7 +386,13 @@ export function writeHocr({
   <title></title>
   <meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>${metas}
  </head>
- <body>${body}
+ <body>`;
+  for (const i of pageArr) {
+    const markup = pageBody(i);
+    if (ocrData[i]) doc?.progressHandler({ n: i, type: 'export', info: { } });
+    yield markup;
+  }
+  yield `
  </body>
 </html>
 `;

@@ -1840,27 +1840,32 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
 }
 
 /**
- * Promote provisional open-top continuation grids, in place, then link tables that continue across page breaks.
- * A provisional grid becomes a real table when the previous page holds a grid-strong table with the same column separators.
- * Pages promote in order, so a promoted table anchors the next page's continuation.
- * A boundary either links silently, becomes a returned suggestion for the user to confirm, or is left alone.
- * @param {Array<{pageObj: OcrPage, dataTablePage?: LayoutDataTablePage, provisionalTables?: Array<import('./detectPdfTables.js').DetectedTable>}|null>} results - parsed pages (index = page index).
- * @returns {Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>} suggested links (the continuation fragment is `tableId` on page `n`).
+ * Table-continuation state carried from the last page of a chunk to the next.
+ * @typedef {object} TableCarry
+ * @property {Array<Array<number>>} grids - Column edges of each grid-strong table on the last page.
+ * @property {?{n: number, id: string, xs: Array<number>, top: number, bottom: number, pageHeight: number, title: ?string, row0: ?string,
+ *   tailBlock: boolean, contWordingTail: boolean, echo: Array<string>, chain: ?{headerRow: ?string, title: ?string}}} bottom - Lowest table on the last page, or null if none.
  */
-export function promoteContinuationTables(results) {
-  for (let i = 1; i < results.length; i++) {
+
+/**
+ * Promote provisional open-top tables and link continuing tables across page breaks in place.
+ * Confident continuations set `continuesPrev` on the table, and ambiguous candidates are returned in `suggestions`.
+ * @param {Array<{pageObj: OcrPage, dataTablePage?: LayoutDataTablePage, provisionalTables?: Array<import('./detectPdfTables.js').DetectedTable>}|null>} results
+ *   Consecutive pages in page order, with null for unparsed pages.
+ * @param {?TableCarry} [carry]
+ * @returns {{suggestions: Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>, carry: TableCarry}}
+ */
+export function promoteContinuationTables(results, carry = null) {
+  /** @param {typeof results[number]|undefined} r */
+  const gridXs = (r) => (r?.dataTablePage?.tables || []).filter((pt) => pt.detectionMethod === 'grid-strong' && pt.boxes.length)
+    .map((pt) => [...pt.boxes.map((b) => b.coords.left), pt.boxes[pt.boxes.length - 1].coords.right]);
+  for (let i = 0; i < results.length; i++) {
     const r = results[i];
     if (!r || !r.pageObj || !r.dataTablePage || !r.provisionalTables?.length) continue;
-    const prev = results[i - 1];
-    if (!prev || !prev.dataTablePage) continue;
+    const prevGrids = i > 0 ? gridXs(results[i - 1]) : (carry ? carry.grids : []);
     for (const dt of r.provisionalTables) {
       const xs = [dt.bbox.left, ...dt.colSeparators, dt.bbox.right];
-      const anchored = prev.dataTablePage.tables.some((pt) => {
-        if (pt.detectionMethod !== 'grid-strong' || pt.boxes.length !== xs.length - 1) return false;
-        const prevXs = [...pt.boxes.map((b) => b.coords.left), pt.boxes[pt.boxes.length - 1].coords.right];
-        return prevXs.every((x, xi) => Math.abs(x - xs[xi]) < 10);
-      });
-      if (!anchored) continue;
+      if (!prevGrids.some((g) => g.length === xs.length && g.every((x, xi) => Math.abs(x - xs[xi]) < 10))) continue;
       // The promoted grid replaces text-derived tables covering its region; an overlapping real grid means the region is claimed and the provisional stays out.
       const overlapsEnough = (pt) => {
         let l = Infinity; let t = Infinity; let rt = -Infinity; let b = -Infinity;
@@ -1908,25 +1913,64 @@ export function promoteContinuationTables(results) {
     row0Cache.set(t, text);
     return text;
   };
+  /**
+   * Scan lines around a page's lowest table for blocking text, continuation wording, and repeatable headings above it.
+   * @param {OcrPage} pageObj
+   * @param {{top: number, bottom: number}} bb
+   * @returns {{tailBlock: boolean, contWordingTail: boolean, echo: Array<string>}}
+   */
+  const tailScan = (pageObj, bb) => {
+    const h = pageObj.dims.height;
+    let tailBlock = false;
+    let contWordingTail = false;
+    for (const ln of pageObj.lines) {
+      if (ln.bbox.top <= bb.bottom + 4) continue;
+      if (parIsFurniture(ln.par) || ln.bbox.top > h * 0.915) continue;
+      const raw = lineText(ln);
+      if (CONT_RE.test(raw)) {
+        contWordingTail = true;
+        if (!stripCont(raw)) continue;
+      }
+      tailBlock = true;
+      break;
+    }
+    /** @type {Array<string>} */
+    const echo = [];
+    for (const ln of pageObj.lines) {
+      if (ln.bbox.bottom > bb.top || ln.bbox.bottom < bb.top - h * 0.12) continue;
+      const nt = stripCont(lineText(ln));
+      if (nt) echo.push(nt);
+    }
+    return { tailBlock, contWordingTail, echo };
+  };
   /** @type {?{headerRow: ?string, title: ?string}} */
   let chain = null;
   /** @type {?LayoutDataTable} */
   let prevLinked = null;
-  for (let i = 1; i < results.length; i++) {
-    const A = results[i - 1]; const B = results[i];
-    const tablesA = A?.dataTablePage?.tables; const tablesB = B?.dataTablePage?.tables;
-    if (!A?.pageObj || !B?.pageObj || !tablesA?.length || !tablesB?.length) { chain = null; prevLinked = null; continue; }
-    const TA = tablesA.reduce((m, t) => (calcTableBbox(t).bottom > calcTableBbox(m).bottom ? t : m));
+  for (let i = 0; i < results.length; i++) {
+    const A = i > 0 ? results[i - 1] : null;
+    const B = results[i];
+    const tablesA = A?.pageObj ? A.dataTablePage?.tables : null;
+    const tablesB = B?.dataTablePage?.tables;
+    const carried = i === 0 && carry ? carry.bottom : null;
+    if (!(tablesA?.length || carried) || !B?.pageObj || !tablesB?.length) {
+      chain = null;
+      prevLinked = null;
+      continue;
+    }
+    const TA = tablesA?.length ? tablesA.reduce((m, t) => (calcTableBbox(t).bottom > calcTableBbox(m).bottom ? t : m)) : null;
     const TB = tablesB.reduce((m, t) => (calcTableBbox(t).top < calcTableBbox(m).top ? t : m));
-    // Chain state carries only while the same table keeps continuing.
-    // A later table on the previous page taking over as the bottom fragment means the chain ended.
-    if (chain && TA !== prevLinked) chain = null;
+    if (carried) chain = carried.chain;
+    else if (chain && TA !== prevLinked) chain = null;
     prevLinked = null;
-    const bbA = calcTableBbox(TA); const bbB = calcTableBbox(TB);
-    const hA = A.pageObj.dims.height; const hB = B.pageObj.dims.height;
+    const bbA = TA ? calcTableBbox(TA) : carried;
+    const bbB = calcTableBbox(TB);
+    const hA = TA ? A.pageObj.dims.height : carried.pageHeight;
+    const hB = B.pageObj.dims.height;
 
-    // Books mirror recto and verso margins, so columns are compared after removing the median offset rather than at absolute positions.
-    const xsA = tableXs(TA); const xsB = tableXs(TB);
+    // Books mirror recto and verso margins, so columns are compared after removing the median offset.
+    const xsA = TA ? tableXs(TA) : carried.xs;
+    const xsB = tableXs(TB);
     let residual = Infinity;
     if (xsA.length === xsB.length && xsA.length >= 2) {
       const deltas = xsA.map((x, k) => xsB[k] - x).sort((a, b) => a - b);
@@ -1936,26 +1980,11 @@ export function promoteContinuationTables(results) {
     // Text-detected columns jitter across pages, so bare geometry is held tighter than a boundary backed by a repeated header row.
     if (residual > 30) { chain = null; continue; }
 
-    // Real content between the fragments breaks the chain.
-    // Page furniture, the extreme margin bands, and "continued" wording do not, the last being evidence for the link rather than content.
-    let tailBlock = false;
-    let contWordingTail = false;
-    for (const ln of A.pageObj.lines) {
-      if (ln.bbox.top <= bbA.bottom + 4) continue;
-      if (parIsFurniture(ln.par) || ln.bbox.top > hA * 0.915) continue;
-      const raw = lineText(ln);
-      if (CONT_RE.test(raw)) { contWordingTail = true; if (!stripCont(raw)) continue; }
-      tailBlock = true; break;
-    }
-    const chainTitle = chain ? chain.title : (TA.title ? stripCont(TA.title.text) : null);
-    // Continuation pages repeat the heading block above the table, so a line above the candidate blocks only when the previous fragment's page lacks the same text above its own.
-    const echoSet = new Set();
+    const { tailBlock, contWordingTail, echo } = TA ? tailScan(A.pageObj, bbA) : carried;
+    const titleA = TA ? (TA.title ? TA.title.text : null) : carried.title;
+    const chainTitle = chain ? chain.title : (titleA ? stripCont(titleA) : null);
+    const echoSet = new Set(echo);
     if (chainTitle) echoSet.add(chainTitle);
-    for (const ln of A.pageObj.lines) {
-      if (ln.bbox.bottom > bbA.top || ln.bbox.bottom < bbA.top - hA * 0.12) continue;
-      const nt = stripCont(lineText(ln));
-      if (nt) echoSet.add(nt);
-    }
     let contWording = contWordingTail || !!(TB.title && CONT_RE.test(TB.title.text));
     let headBlock = false;
     for (const ln of B.pageObj.lines) {
@@ -1976,7 +2005,7 @@ export function promoteContinuationTables(results) {
       : !CONT_RE.test(TB.title.text));
     if (titleDiff) { chain = null; continue; }
 
-    const headerRow = chain ? chain.headerRow : row0Text(A.pageObj, TA);
+    const headerRow = chain ? chain.headerRow : (TA ? row0Text(A.pageObj, TA) : carried.row0);
     const rowB0 = row0Text(B.pageObj, TB);
     const repeatedHeader = !!headerRow && headerRow.length >= 6 && headerRow === rowB0;
     // Silent linking takes explicit "continued" wording plus tight geometry and a first fragment that actually ran out of page.
@@ -1988,28 +2017,119 @@ export function promoteContinuationTables(results) {
       prevLinked = TB;
     } else if (repeatedHeader || residual <= 15) {
       suggestions.push({
-        n: i, prevN: i - 1, tableId: TB.id, prevTableId: TA.id, reason: repeatedHeader ? 'repeated header' : 'columns align',
+        n: B.pageObj.n, prevN: TA ? A.pageObj.n : carried.n, tableId: TB.id, prevTableId: TA ? TA.id : carried.id, reason: repeatedHeader ? 'repeated header' : 'columns align',
       });
       chain = null;
     } else {
       chain = null;
     }
   }
-  return suggestions;
+
+  const last = results[results.length - 1];
+  const lastTables = last?.pageObj ? last.dataTablePage?.tables : null;
+  /** @type {TableCarry['bottom']} */
+  let bottom = null;
+  if (lastTables?.length) {
+    const T = lastTables.reduce((m, t) => (calcTableBbox(t).bottom > calcTableBbox(m).bottom ? t : m));
+    const bb = calcTableBbox(T);
+    bottom = {
+      n: last.pageObj.n,
+      id: T.id,
+      xs: tableXs(T),
+      top: bb.top,
+      bottom: bb.bottom,
+      pageHeight: last.pageObj.dims.height,
+      title: T.title ? T.title.text : null,
+      row0: row0Text(last.pageObj, T),
+      ...tailScan(last.pageObj, bb),
+      chain: chain && T === prevLinked ? chain : null,
+    };
+  }
+  return { suggestions, carry: { grids: gridXs(last), bottom } };
 }
 
 /**
- * Run document-level layout and paragraph detection on parsed pages in place.
+ * Return a parsed page's fill shapes, or `null` when the page has none.
+ * @param {ReturnType<typeof parseSinglePage>} result
+ * @returns {?PageFillShapes}
+ */
+export function pageFillShapes(result) {
+  /** @type {PageFillShapes} */
+  const shapes = {
+    squares: result.fillSquares,
+    marks: result.fillMarks,
+    marksOverflow: result.fillMarksOverflow,
+    images: result.fillImages,
+    paths: result.fillPaths,
+    pathsIneligible: result.fillPathsIneligible,
+    glyphBoxes: result.fillGlyphBoxes,
+  };
+  return (shapes.squares?.length || shapes.marks?.length || shapes.images?.length
+    || shapes.paths?.length || shapes.pathsIneligible || shapes.glyphBoxes?.length) ? shapes : null;
+}
+
+/**
+ * Build the `PdfWordSignal` map for `page` from serialized signal rows.
+ * @param {OcrPage} page
+ * @param {Array<[string, boolean, ?number, boolean]>} rows - Tuples of `[wordId, artifact, mcid, brokenFont]`.
+ * @returns {Map<OcrWord, PdfWordSignal>}
+ */
+export function wordSignalsOf(page, rows) {
+  /** @type {Map<OcrWord, PdfWordSignal>} */
+  const signals = new Map();
+  if (rows.length === 0) return signals;
+  const byId = new Map(rows.map((row) => [row[0], row]));
+  for (const line of page.lines) {
+    for (const word of line.words) {
+      const row = byId.get(word.id);
+      if (row) {
+        signals.set(word, {
+          artifact: row[1], mcid: row[2], structElemId: null, structElemTag: null, brokenFont: row[3],
+        });
+      }
+    }
+  }
+  return signals;
+}
+
+/**
+ * Document-level PDF inputs for the layout pass.
+ * @typedef {object} LayoutDocInputs
+ * @property {?Map<string, {elemNum: number, tag: string}>} elemMap - Owning structure element of each marked-content id, keyed by `${pageIndex}:${mcid}`.
+ * @property {?Map<number, Set<string>>} headingIndex - Outline heading titles by 0-based page index.
+ * @property {boolean} elementFaithful - Whether the producer tags one structure element per paragraph.
+ */
+
+/**
+ * Read document-level inputs for the layout pass.
  * @param {ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
  * @param {Array<{objNum: number, objText: string}>} pages
- * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage}|null>} results
- * @param {"image"|"text"|"ocr"} [pdfType]
+ * @returns {LayoutDocInputs}
  */
-export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType = 'text') {
+export function readLayoutDocInputs(objCache, pdfBytes, pages) {
+  let elemMap = null;
+  try { elemMap = buildStructElemMap(objCache, pdfBytes, pages); } catch { /* */ }
+  let headingIndex = null;
+  try { headingIndex = buildOutlineHeadingIndex(objCache, pdfBytes, pages); } catch { /* */ }
+  let elementFaithful = false;
+  try { elementFaithful = docAuthoredByWord(objCache, pdfBytes); } catch { /* */ }
+  return { elemMap, headingIndex, elementFaithful };
+}
+
+/**
+ * Run layout and paragraph detection on parsed pages in place.
+ * @param {LayoutDocInputs} docInputs
+ * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage}|null>} results - Parsed pages in page order.
+ * @param {Object} [opts]
+ * @param {"image"|"text"|"ocr"} [opts.pdfType]
+ * @param {?import('../import/analyzeLayout.js').LayoutCarry} [opts.carry]
+ * @param {number} [opts.docPageCount] - Number of pages with text in the full document when laying out a chunk.
+ * @returns {{carry: ?import('../import/analyzeLayout.js').LayoutCarry, notePatches: Array<{n: number, wordId: string, parId: string}>}} Carry state and `footnoteParId` patches for earlier pages.
+ */
+export function applyDocParagraphLayout(docInputs, results, opts = {}) {
   try {
-    const elemMap = buildStructElemMap(objCache, pdfBytes, pages);
-    if (elemMap) resolveStructElems(results, elemMap);
+    if (docInputs.elemMap) resolveStructElems(results, docInputs.elemMap);
   } catch { /* */ }
 
   // The per-page signal maps merge into one doc-level map because analyzeLayout sees a filtered page array that no longer aligns with `results` by index.
@@ -2022,19 +2142,12 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
 
   /** @type {Map<OcrPage, Set<string>>} */
   const outlineHeadings = new Map();
-  try {
-    const headingIndex = buildOutlineHeadingIndex(objCache, pdfBytes, pages);
-    if (headingIndex) {
-      for (const [idx, set] of headingIndex) {
-        const r = results[idx];
-        if (r && r.pageObj) outlineHeadings.set(r.pageObj, set);
-      }
+  if (docInputs.headingIndex) {
+    for (const r of results) {
+      const set = r && r.pageObj ? docInputs.headingIndex.get(r.pageObj.n) : undefined;
+      if (set) outlineHeadings.set(r.pageObj, set);
     }
-  } catch { /* outlines are opportunistic; never let them break text extraction */ }
-
-  // Microsoft Word emits one struct element per paragraph, so on Word-authored docs analyzeLayout can treat element boundaries as paragraph boundaries outright.
-  let elementFaithful = false;
-  try { elementFaithful = docAuthoredByWord(objCache, pdfBytes); } catch { /* best-effort */ }
+  }
   // Lone-integer cells inside a data table match the margin page-number and line-number rules unless analyzeLayout knows the table bounds.
   for (const r of results) {
     if (!r || !r.pageObj || !r.dataTablePage) continue;
@@ -2069,12 +2182,54 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
   // analyzeLayout assigns paragraphs and roles across all pages at once, overwriting the per-page assignParagraphs result.
   const kept = results.filter((r) => r && r.pageObj && r.pageObj.lines.length > 0);
   const docPages = kept.map((r) => r.pageObj);
-  if (docPages.length > 0) {
-    analyzeLayout(docPages, {
-      elementFaithful, pdfType, wordSignals: wordSignals.size ? wordSignals : null, outlineHeadings,
-      fullPageImagePages: kept.map((r) => (r.pageStats ? isFullPageImage(r.pageStats) : false)),
-    });
-  }
+  // A run with no text hands on the carry it was given, since the pages after it follow the last page that held text.
+  if (docPages.length === 0) return { carry: opts.carry || null, notePatches: [] };
+  const model = analyzeLayout(docPages, {
+    elementFaithful: docInputs.elementFaithful,
+    pdfType: opts.pdfType || 'text',
+    wordSignals: wordSignals.size ? wordSignals : null,
+    outlineHeadings,
+    fullPageImagePages: kept.map((r) => (r.pageStats ? isFullPageImage(r.pageStats) : false)),
+    carry: opts.carry,
+    docPageCount: opts.docPageCount,
+  });
+  return { carry: model.carry, notePatches: model.notePatches };
+}
+
+/**
+ * State carried from one page chunk to the next.
+ * @typedef {object} ChunkCarry
+ * @property {?import('../import/analyzeLayout.js').LayoutCarry} layout
+ * @property {{label: ?number}} lineNums
+ * @property {TableCarry} tables
+ */
+
+/**
+ * Run paragraph, line-number, and table-continuation passes on consecutive parsed pages in place.
+ * @param {?LayoutDocInputs} docInputs - Null skips the paragraph pass.
+ * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage,
+ *   provisionalTables?: Array<import('./detectPdfTables.js').DetectedTable>}>} results
+ * @param {Object} opts
+ * @param {"image"|"text"|"ocr"} opts.pdfType
+ * @param {?ChunkCarry} [opts.carry]
+ * @param {number} [opts.docPageCount] - Number of pages with text in the full document.
+ * @returns {{tableLinkSuggestions: Array<{n: number, prevN: number, tableId: string, prevTableId: string, reason: string}>, carry: ChunkCarry,
+ *   notePatches: Array<{n: number, wordId: string, parId: string}>}}
+ */
+export function layoutPdfChunk(docInputs, results, opts) {
+  const carry = opts.carry || null;
+  /** @type {ReturnType<typeof applyDocParagraphLayout>} */
+  let layout = { carry: carry ? carry.layout : null, notePatches: [] };
+  try {
+    if (docInputs) {
+      layout = applyDocParagraphLayout(docInputs, results.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), {
+        pdfType: opts.pdfType, carry: carry ? carry.layout : null, docPageCount: opts.docPageCount,
+      });
+    }
+  } catch { /* */ }
+  const lineNums = assignPageLineNums(results.map((r) => r.pageObj), carry ? carry.lineNums : null);
+  const tables = promoteContinuationTables(results, carry ? carry.tables : null);
+  return { tableLinkSuggestions: tables.suggestions, carry: { layout: layout.carry, lineNums, tables: tables.carry }, notePatches: layout.notePatches };
 }
 
 /**
@@ -2114,11 +2269,11 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
     }
   }
 
-  results.tableLinkSuggestions = promoteContinuationTables(results);
+  results.tableLinkSuggestions = promoteContinuationTables(results).suggestions;
 
   let pdfType = 'text';
   try { pdfType = determinePdfType(results.map((r) => r && r.pageStats).filter(Boolean), results.length).type; } catch { /*  */ }
-  applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType);
+  applyDocParagraphLayout(readLayoutDocInputs(objCache, pdfBytes, pages), results, { pdfType });
   assignPageLineNums(results.map((r) => (r ? r.pageObj : null)));
 
   return results;
@@ -2968,10 +3123,8 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const isWordSpace = numBytes === 1 && charCode === 0x20;
     const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
 
-    if (!dropFallbackControl && !dropNoTextMapping) {
-      // Edit previews lean their glyphs by this ratio.
-      // The italic flag alone cannot reproduce the lean.
-      // Projecting the y axis onto the x axis keeps the ratio the same when the line is rotated.
+    // A damaged stream can run a transform out to infinity, and a glyph that gets no position from it is not placed.
+    if (!dropFallbackControl && !dropNoTextMapping && Number.isFinite(pageX) && Number.isFinite(pageY) && Number.isFinite(hScale) && Number.isFinite(vScale)) {
       const shearDen = tm[0] * tm[0] + tm[1] * tm[1];
       const shearRaw = shearDen > 0 ? (tm[0] * tm[2] + tm[1] * tm[3]) / shearDen : 0;
       const matrixShear = Math.abs(shearRaw) > 0.05 ? Math.round(shearRaw * 1e4) / 1e4 : 0;

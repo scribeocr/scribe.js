@@ -152,15 +152,6 @@ const handleOCR = async (req, res) => {
     doc = await scribe.openDocument({ pdfFiles: [pdfArrayBuffer] });
     log(`imported: ${doc.inputData.pageCount} page(s)`);
 
-    // scribe.js's recognize loop fires per-page events:
-    //   - `recognize` with status: 'sending' when dispatched to Textract
-    //   - `recognize` with status: 'received' when raw JSON returns
-    //   - `convert` once scribe.js has parsed the raw JSON into its OcrPage model
-    // We log 'sending'/'received' for request-level visibility,
-    // and on `convert` we emit one NDJSON line per page.
-    // At that point doc.ocr[ENGINE_NAME][n] holds the parsed OcrPage,
-    // doc.layoutDataTables.pages[n] holds the per-page tables,
-    // and doc.convertPageWarn[n] holds the per-page conversion warning.
     doc.progressHandler = (msg) => {
       try {
         if (msg && msg.type === 'recognize' && msg.info && msg.info.engineName === ENGINE_NAME) {
@@ -169,7 +160,7 @@ const handleOCR = async (req, res) => {
         } else if (msg && msg.type === 'convert' && msg.info && msg.info.engineName === ENGINE_NAME) {
           const n = msg.n;
           if (typeof n === 'number' && !emitted.has(n)) {
-            const page = doc?.ocr[ENGINE_NAME]?.[n];
+            const page = doc?.getPage(n, { layer: ENGINE_NAME });
             if (page) {
               emitted.add(n);
               const strippedPage = scribe.utils.ocr.removeCircularRefsOcr([page])[0];
@@ -231,8 +222,8 @@ const handleOCR = async (req, res) => {
     // Safety net for a page that fires neither a `convert` event nor a warning.
     // With doc.warningHandler wired up this should be empty in practice,
     // but the client must not silently drop a page.
-    const pageAll = doc.ocr[ENGINE_NAME] || [];
-    for (let n = 0; n < pageAll.length; n++) {
+    const pageN = doc.layers.includes(ENGINE_NAME) ? doc.pageCount : 0;
+    for (let n = 0; n < pageN; n++) {
       if (!emitted.has(n)) {
         log(`page ${n} produced no OCR data and no warning, emitting fallback error marker`);
         writeNDJSON({ pageNum: n, error: { message: 'No OCR data produced for page' } });

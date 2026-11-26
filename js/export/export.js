@@ -1,7 +1,10 @@
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { collectFillTextRefs, isFillTextLine } from '../fillSign.js';
 import { reorderOcrPage } from '../modifyOCR.js';
-import { saveAs } from '../utils/miscUtils.js';
+import { concatBytes, saveAs } from '../utils/miscUtils.js';
+import { compressChunks } from '../utils/byteStream.js';
+import { opt } from '../containers/app.js';
+import { heldJson } from '../containers/pageStore.js';
 import { writePdf } from './pdf/writePdf.js';
 import { textAnnotIconBox } from './pdf/writePdfAnnots.js';
 import { overlayPdfText } from './pdf/writePdfOverlay.js';
@@ -10,11 +13,11 @@ import { mergePdfs } from './pdf/mergePdfs.js';
 import { replaceType3FontsWithCorrected } from './pdf/replaceType3Fonts.js';
 import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
 import { remapOutline, pageArrIndexMap } from '../objects/outlineObjects.js';
-import { writeHocr } from './writeHocr.js';
-import { writeText } from './writeText.js';
-import { writeHtml } from './writeHtml.js';
-import { writeAlto } from './writeAlto.js';
-import { writeMarkdown } from './writeMarkdown.js';
+import { writeHocrChunks } from './writeHocr.js';
+import { writeTextChunks } from './writeText.js';
+import { writeHtmlChunks } from './writeHtml.js';
+import { writeAltoChunks } from './writeAlto.js';
+import { writeMarkdownChunks } from './writeMarkdown.js';
 import ocr, { OcrPage, clonePage } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables, removeCircularRefsRegions } from '../objects/layoutObjects.js';
 import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
@@ -26,11 +29,12 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /**
+ * Options for `exportData` and `download`.
  * @typedef {Object} ExportOptions
- * @property {number} [minPage=0] - First page to export.
- * @property {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
+ * @property {number} [minPage=0] - First 0-based page index to export.
+ * @property {number} [maxPage=-1] - Last 0-based page index to export (inclusive), or `-1` for the last page.
  * @property {?Array<number>} [pageArr=null] - Array of 0-based page indices to include.
- *    Overrides minPage/maxPage when provided.
+ *   Overrides `minPage` and `maxPage` when provided.
  * @property {('invis'|'ebook'|'eval'|'proof'|'annot')} [displayMode]
  * @property {('color'|'gray'|'binary')} [colorMode]
  * @property {number} [overlayOpacity]
@@ -44,44 +48,38 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  * @property {boolean} [lineNumbers]
  * @property {boolean} [removeMargins]
  * @property {boolean} [includeImages]
- * @property {boolean} [convertDupSourceTextToPaths] - When overlaying onto a PDF input, convert the input PDF's vector text to glyph outlines before adding the invisible OCR text layer.
- *    Ignored unless the export uses the overlay path (PDF input, addOverlay, displayMode !== 'ebook').
- * @property {boolean} [routePageCategories] - Apply the per-page flatten/passthrough routing regardless of display mode.
- *    Defaults to true for 'invis' and false otherwise.
- *    Review tooling sets it with displayMode 'proof' to render the searchable flow's routing with a visible confidence-coloured overlay.
+ * @property {boolean} [convertDupSourceTextToPaths] - When overlaying onto a PDF input, convert the input PDF's vector text to glyph outlines before adding the OCR text layer.
+ *   Ignored unless the export uses the overlay path (PDF input, `addOverlay`, `displayMode !== 'ebook'`).
+ * @property {boolean} [routePageCategories] - Whether PDF overlay exports flatten source text and add OCR only on recognized pages with unextractable text, leaving other pages untouched.
+ *   Defaults to `true` when `displayMode` is `'invis'` and `false` otherwise.
  * @property {boolean} [embedFonts]
  * @property {boolean} [enableLayout]
  * @property {boolean} [xlsxFilenameColumn]
  * @property {boolean} [xlsxPageNumberColumn]
  * @property {boolean} [compressScribe]
  * @property {boolean} [includeExtraTextScribe]
- * @property {boolean} [includeCharBoxesScribe] - Include per-character bounding boxes (`word.chars`) in `.scribe` exports; default true.
- *    When false they are dropped (word text is unaffected) and readers of char geometry fall back to word-level boxes.
- * @property {boolean} [scribeSession] - Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
- *    Default false, since the standard interchange format carries no app-only data.
- * @property {boolean} [includeOcrScribe] - Include the pages' OCR data in the `ocr` block of `.scribe` exports; default true.
- * @property {boolean} [scribeSegments] - Allow compressed `.scribe` exports above `scribeSegmentThreshold` to use the segmented layout instead of a single JSON document; default false.
- *    Off, an export is a single JSON document whatever its size.
- *    A file past the JavaScript string limit then has no JavaScript reader, this library included, and is meant for consumers in other languages.
- * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented form; default 400,000,000.
- *    Zero selects the segmented form at any size.
- *    The default keeps every single-JSON file under the JavaScript string limit that a reader must fit it into.
- *    Ignored without `scribeSegments`.
- * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
+ * @property {boolean} [includeCharBoxesScribe=true] - Include per-character bounding boxes (`word.chars`) in `.scribe` exports.
+ * @property {boolean} [scribeSession=false] - Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
+ * @property {boolean} [includeOcrScribe=true] - Include per-page OCR data in the `ocr` block of `.scribe` exports.
+ * @property {boolean} [scribeSegments=false] - Switch compressed `.scribe` exports above `scribeSegmentThreshold` from a single JSON document to a segmented format.
+ *   Single-JSON exports exceeding JavaScript's string-length limit cannot be read back in JavaScript, including by the scribe.js library.
+ * @property {number} [scribeSegmentThreshold=400000000] - Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented format.
+ *   `0` selects the segmented format at any size.
+ * @property {string} [layer] - Export this named text layer from `doc.layers` instead of the active one.
+ * @property {string} [ocrName] - Alias of `layer`.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
- * @property {boolean} [htmlFitWindow] - Scale the HTML export's pages down to the window's width; default false.
- *    Ignored when `reflow` is set.
- * @property {boolean} [dropPageHeadersFooters] - Leave page headers and footers, with page numbers and margin line numbers, out when a text, Markdown, Word or HTML export reflows; default false.
- * @property {boolean} [sanitize] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
- *    Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
- *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
- * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
- * @property {boolean} [flattenFormFields] - Bake each form field's current appearance (including values set via `setFormValue`) into the page content
- *    and remove the interactive fields, so the export is no longer fillable.
- *    Only applies to the PDF-overlay export path (PDF input with addOverlay); other PDF paths already write no interactive fields.
- * @property {?Object<string, ?string>} [docInfo] - Document information entries (`Title`, `Author`, `Creator`, ...) written into the exported PDF.
- *    Entries the input already carries are preserved; these override same-named ones, and a null value removes a key.
- *    Ignored when `sanitize` is set, which removes document metadata outright.
+ * @property {boolean} [htmlFitWindow=false] - Scale HTML export pages down to the window width.
+ *   Ignored when `reflow` is set.
+ * @property {boolean} [dropPageHeadersFooters=false] - Omit page headers, footers, page numbers, and margin line numbers from reflowed text, Markdown, Word, and HTML exports.
+ * @property {boolean} [sanitize=false] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
+ *   Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
+ *   Only applies to the PDF-overlay export path (PDF input, `addOverlay`, `displayMode !== 'ebook'`).
+ * @property {object} [scrubOpts] - Additional PDF structures to strip when `sanitize` is set (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`, all `false` by default).
+ * @property {boolean} [flattenFormFields=false] - Bake each form field's current appearance into the page content and remove the interactive fields.
+ *   Only applies to the PDF-overlay export path (PDF input, `addOverlay`, `displayMode !== 'ebook'`).
+ * @property {?Object<string, ?string>} [docInfo=null] - Document information entries (such as `Title`, `Author`, `Creator`) written into the exported PDF.
+ *   Preserves other existing entries on the input PDF, overrides matching keys, and removes any key set to `null`.
+ *   Ignored on PDF overlay exports when `sanitize` is set.
  */
 
 /**
@@ -206,7 +204,6 @@ function pageForScribe(page, { includeText, includeCharBoxes }) {
 
 /**
  * Yield the `.scribe` single-JSON layout as string chunks.
- * Pages are serialized one at a time, so no string is ever document-sized.
  * Concatenated output is byte-identical to `JSON.stringify({ ocr, ...envelope })`.
  * @param {Array<OcrPage>} ocrPages
  * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
@@ -219,21 +216,39 @@ function* scribeJsonChunks(ocrPages, serializeOpts, envelope) {
     yield ocrPages[i] ? JSON.stringify(pageForScribe(ocrPages[i], serializeOpts)) : 'null';
   }
   yield ']';
-  const rest = JSON.stringify(envelope);
-  yield rest === '{}' ? '}' : `,${rest.slice(1)}`;
+  for (const [key, value] of Object.entries(envelope)) {
+    if (key !== 'session' || !value) {
+      const json = JSON.stringify(value);
+      if (json !== undefined) yield `,${JSON.stringify(key)}:${json}`;
+      continue;
+    }
+    let sep = ',"session":{';
+    for (const [sessionKey, sessionValue] of Object.entries(value)) {
+      if (sessionKey === 'nativeText' || sessionKey === 'fillShapes') {
+        yield `${sep}${JSON.stringify(sessionKey)}:[`;
+        for (let i = 0; i < sessionValue.length; i++) yield `${i > 0 ? ',' : ''}${JSON.stringify(sessionValue[i]) ?? 'null'}`;
+        yield ']';
+      } else {
+        const json = JSON.stringify(sessionValue);
+        if (json === undefined) continue;
+        yield `${sep}${JSON.stringify(sessionKey)}:${json}`;
+      }
+      sep = ',';
+    }
+    yield sep === ',' ? '}' : `${sep}}`;
+  }
+  yield '}';
 }
 
 /**
- * Yield the `.scribe` segmented form as string chunks.
- * Every line parses on its own, so a reader never needs the whole document as one string.
- * @param {Array<OcrPage>} ocrPages
- * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
+ * Build the document-level header object for a segmented `.scribe` file.
  * @param {Record<string, any>} envelope
+ * @param {number} pageCount
  */
-function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
-  const header = {
+export function scribeSegmentHeader(envelope, pageCount) {
+  return {
     scribeSegments: 1,
-    pageCount: ocrPages.length,
+    pageCount,
     fontState: envelope.fontState,
     layoutRegions: envelope.layoutRegions,
     layoutDataTables: envelope.layoutDataTables,
@@ -258,14 +273,23 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
       }
       : undefined,
   };
-  yield JSON.stringify(header);
+}
+
+/**
+ * Yield the `.scribe` segmented form as string chunks.
+ * @param {Array<OcrPage>} ocrPages
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
+ * @param {ReturnType<typeof scribeEnvelope>} envelope
+ */
+function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
+  yield JSON.stringify(scribeSegmentHeader(envelope, ocrPages.length));
   const nativeText = envelope.session?.nativeText || [];
   const fillShapes = envelope.session?.fillShapes || [];
   const truth = envelope.session?.truth || [];
   const hocrSourcePages = envelope.session?.hocrSource?.pages || [];
   for (let i = 0; i < ocrPages.length; i++) {
     const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
-    /** @type {Record<string, any>} */
+    /** @type {Record<string, unknown>} */
     const rec = { i, ocr: page };
     if (envelope.session) {
       rec.nativeText = nativeText[i] ?? null;
@@ -279,52 +303,144 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
 }
 
 /**
- * Stream string chunks through a gzip CompressionStream.
- * With `charLimit` set, aborts the stream and returns null once the chunks exceed it.
+ * Stream string chunks through gzip, yielding the compressed bytes as they come out.
  * @param {Iterable<string>} chunks
- * @param {number} [charLimit]
- * @returns {Promise<?ArrayBuffer>}
+ * @returns {AsyncGenerator<Uint8Array>}
  */
-async function compressStringChunks(chunks, charLimit) {
-  const cs = new CompressionStream('gzip');
-  const outPromise = new Response(cs.readable).arrayBuffer();
-  const writer = cs.writable.getWriter();
+function gzipChunks(chunks) {
   const encoder = new TextEncoder();
-  let pending = '';
-  let total = 0;
-  for (const chunk of chunks) {
-    total += chunk.length;
-    if (charLimit && total > charLimit) {
-      writer.abort().catch(() => {});
-      outPromise.catch(() => {});
-      return null;
+  return compressChunks((function* encodedBatches() {
+    let pending = '';
+    for (const chunk of chunks) {
+      pending += chunk;
+      if (pending.length >= SCRIBE_ENCODE_BATCH) {
+        yield encoder.encode(pending);
+        pending = '';
+      }
     }
-    pending += chunk;
-    if (pending.length >= SCRIBE_ENCODE_BATCH) {
-      await writer.write(encoder.encode(pending));
-      pending = '';
-    }
-  }
-  if (pending) await writer.write(encoder.encode(pending));
-  await writer.close();
-  return outPromise;
+    if (pending) yield encoder.encode(pending);
+  }()), 'gzip');
 }
 
 /**
- * Export this document's OCR data to the specified format.
- *
- * Every setting resolves as `options.X ?? scribeDocDefaults.X`.
- *
- * @param {ScribeDoc} doc
- * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'md'|'scribe'} [format='txt']
- * @param {ExportOptions} [options]
- * @returns {Promise<string|ArrayBuffer>}
+ * Return a read-only array proxy that computes elements on demand.
+ * @template T
+ * @param {number} length
+ * @param {(n: number) => boolean} has - True if index `n` is populated, or false for a sparse hole.
+ * @param {(n: number) => T} read
+ * @returns {Array<T>}
  */
-export async function exportData(doc, format = 'txt', options = {}) {
-  if (format === 'text') format = 'txt';
+function lazyArray(length, has, read) {
+  let lastN = -1;
+  /** @type {T|undefined} */
+  let last;
+  return new Proxy(/** @type {Array<T>} */ ([]), {
+    get(target, prop, receiver) {
+      if (prop === 'length') return length;
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        const n = Number(prop);
+        if (n >= length || !has(n)) return undefined;
+        if (n !== lastN) {
+          last = read(n);
+          lastN = n;
+        }
+        return last;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) return Number(prop) < length && has(Number(prop));
+      return Reflect.has(target, prop);
+    },
+  });
+}
 
-  // Awaiting `textReady` alone would also resolve when a load is abandoned, exporting only the pages on hand as if they were the whole document.
-  if (!(await doc.ensureHydrated())) throw new Error('The document could not be loaded, so it was not exported.');
+/**
+ * Build every top-level field of a `.scribe` file except `ocr`.
+ * @param {ScribeDoc} doc
+ * @param {boolean} session - Include the app-only `session` block.
+ * @param {?string} layerName - Text layer whose hOCR source records are included in `session`.
+ */
+export function scribeEnvelope(doc, session, layerName) {
+  /** @param {Array<import('../objects/outlineObjects.js').OutlineNode>} nodes @returns {Array<Object>} */
+  const outlineWithoutIds = (nodes) => nodes.map((n) => ({
+    title: n.title, dest: n.dest, action: n.action, open: n.open, children: outlineWithoutIds(n.children),
+  }));
+  const envelope = {
+    fontState: doc.fonts.state,
+    layoutRegions: removeCircularRefsRegions(doc.layoutRegions.pages),
+    layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
+    annotations: doc.annotations.pages,
+    pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
+    outline: outlineWithoutIds(doc.outline || []),
+    inputData: {
+      pdfType: doc.inputData.pdfType,
+      pageStats: doc.inputData.pageStats,
+      requiresOCR: doc.inputData.requiresOCR,
+      ocrApplied: doc.inputData.ocrApplied,
+    },
+    /** @type {ScribeSessionData|undefined} */
+    session: undefined,
+  };
+  if (session) {
+    const hocrHead = layerName ? doc.hocrSource.head[layerName] ?? null : null;
+    const hocrPages = lazyArray(doc.hocrSource.pages.length, (n) => !!(layerName && doc.hocrSource.pages[n]?.[layerName]),
+      (n) => heldJson(doc.hocrSource.pages[n][/** @type {string} */ (layerName)]));
+    envelope.session = {
+      v: 1,
+      contentEdits: doc.contentEdits.pages,
+      // Indexing `doc.nativeText.pages[n]` marks a `'pdf'`-layer page modified and drops its cached records.
+      nativeText: lazyArray(doc.nativeText.pages.length, (n) => n in doc.nativeText.pages, (n) => {
+        const extras = doc.pageStore.extras(n, false);
+        return extras ? extras.nativeText ?? {} : doc.nativeText.pages[n];
+      }),
+      hocrSource: hocrHead || (layerName && doc.hocrSource.pages.some((recs) => recs?.[layerName])) ? { head: hocrHead, pages: hocrPages } : undefined,
+      fillText: collectFillTextRefs(doc),
+      pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
+    };
+    if (doc.sessionMarks.editedAt != null) envelope.session.editedAt = doc.sessionMarks.editedAt;
+    if (doc.sessionMarks.recognizedAt != null) envelope.session.recognizedAt = doc.sessionMarks.recognizedAt;
+    if (doc.truth.pages.some((p) => p)) envelope.session.truth = doc.truth.pages.map((p) => p ?? null);
+    const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
+    const box = (/** @type {{left: number, top: number, right: number, bottom: number}} */ b) => [r1(b.left), r1(b.top), r1(b.right), r1(b.bottom)];
+    envelope.session.fillShapes = lazyArray(doc.fillShapes.pages.length, (n) => n in doc.fillShapes.pages, (n) => {
+      const extras = doc.pageStore.extras(n, false);
+      const shapes = extras ? extras.fillShapes : doc.fillShapes.pages[n];
+      if (!shapes) return null;
+      /** @type {EncodedFillShapes} */
+      const enc = {};
+      if (shapes.images?.length) enc.i = shapes.images.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.objNum ?? -1])]);
+      if (shapes.paths?.length) enc.p = shapes.paths.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.paint, st.commands])]);
+      if (shapes.squares?.length) enc.q = shapes.squares.map((e) => [...box(e), e.stroke ? 1 : 0]);
+      if (shapes.marks?.length) enc.m = shapes.marks.map((e) => box(e));
+      if (shapes.glyphBoxes?.length) enc.g = shapes.glyphBoxes.map((e) => [e.id, ...box(e.bbox)]);
+      if (shapes.pathsIneligible) enc.pi = 1;
+      if (shapes.marksOverflow) enc.mo = 1;
+      return enc;
+    });
+    if (doc.stampSources.pages.some((p) => p && p.length)) {
+      envelope.session.stampSources = doc.stampSources.pages.map((p) => (p && p.length
+        ? p.map((e) => /** @type {[number, number, number, number, number]} */ ([e.srcRef, e.bbox.left, e.bbox.top, e.bbox.right, e.bbox.bottom])) : null));
+    }
+    if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
+    if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
+    if (doc.type3GlyphMappings.size) envelope.session.type3GlyphMappings = [...doc.type3GlyphMappings];
+    if (Object.keys(doc.tableExport.excluded).length || Object.keys(doc.tableExport.names).length) envelope.session.tableExport = doc.tableExport;
+  }
+  return envelope;
+}
+
+/**
+ * Export `doc` to `format` as sequential output chunks.
+ * Yields `string` chunks for text formats and uncompressed `.scribe`, `Uint8Array` chunks for `docx`, `xlsx`, and compressed `.scribe`, and one `ArrayBuffer` for `pdf`.
+ * @param {ScribeDoc} doc
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'md'|'scribe'} format
+ * @param {ExportOptions} options
+ * @returns {AsyncGenerator<string|ArrayBuffer|Uint8Array>}
+ */
+async function* exportChunks(doc, format, options) {
+  await doc.textReady;
+  if (doc._textMissing) throw new Error('The document could not be loaded, so it was not exported.');
 
   const minPage = options.minPage ?? 0;
   let maxPage = options.maxPage ?? -1;
@@ -362,24 +478,12 @@ export async function exportData(doc, format = 'txt', options = {}) {
     for (let i = minPage; i <= maxPage; i++) pageArr.push(i);
   }
 
-  /** @type {Array<OcrPage>} */
-  let ocrDownload = [];
-
   // Export a specific named OCR layer when requested (e.g. a single engine's output), else the active one.
-  if (options.ocrName && !doc.ocr[options.ocrName]) {
-    throw new Error(`No OCR layer named "${options.ocrName}" on this document.`);
+  const layerOption = options.layer ?? options.ocrName;
+  if (layerOption && layerOption !== 'active' && !doc.pageStore.has(layerOption)) {
+    throw new Error(`No OCR layer named "${layerOption}" on this document.`);
   }
-  const ocrSource = options.ocrName ? doc.ocr[options.ocrName] : doc.ocr.active;
-  const ocrLayerName = options.ocrName ?? Object.keys(doc.ocr).find((k) => k !== 'active' && doc.ocr[k] === ocrSource) ?? null;
-
-  if (format !== 'hocr' && enableLayout) {
-    // Reorder HOCR elements according to layout boxes
-    for (let i = 0; i < ocrSource.length; i++) {
-      ocrDownload.push(reorderOcrPage(ocrSource[i], doc.layoutRegions.pages[i]));
-    }
-  } else {
-    ocrDownload = ocrSource;
-  }
+  const ocrLayerName = layerOption && layerOption !== 'active' ? layerOption : doc.pageStore.active;
 
   // Every export except `.scribe` (which persists the marks unapplied) is built from redaction-filtered pages.
   // Each marked page is cloned so the live document stays unmutated (marks stay editable), and words whose page-space bbox overlaps a mark are dropped.
@@ -393,26 +497,31 @@ export async function exportData(doc, format = 'txt', options = {}) {
       if (rects.length > 0) redactRectsByPage.set(i, rects);
     }
   }
-  if (redactRectsByPage.size > 0) {
-    if (ocrDownload === ocrSource) ocrDownload = [...ocrSource];
-    for (const [i, rects] of redactRectsByPage) {
-      const page = ocrDownload[i];
-      if (!page) continue;
-      const clone = clonePage(page);
-      const dropIds = [];
-      for (const line of clone.lines) {
-        for (const word of line.words) {
-          const b = bboxToPageSpace(word.bbox, line.orientation, clone.dims);
-          // All-or-nothing per word: any strict overlap drops the whole word (over-redaction beats a leak).
-          if (rects.some((r) => b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) {
-            dropIds.push(word.id);
-          }
+
+  const plainPages = doc.pageStore.pageList(ocrLayerName ?? 'active', false);
+  const detailedPages = doc.pageStore.pageList(ocrLayerName ?? 'active', true);
+  const ocrDownload = lazyArray(plainPages.length, (n) => n in plainPages, (n) => {
+    // Beyond `.scribe`, PDF and HTML exports need `word.chars` outside the `'pdf'` layer (where words may lack `style.size`) to size short or non-Latin lines.
+    // Skewed pages also need `chars[0].bbox` to place PDF text lines when deskewing.
+    const detail = format === 'scribe' ? includeCharBoxesScribe
+      : (format === 'pdf' || format === 'html') && (ocrLayerName !== 'pdf' || Math.abs(doc.pageMetrics[n]?.angle || 0) > 0.05);
+    let page = (detail ? detailedPages : plainPages)[n];
+    if (page && format !== 'hocr' && enableLayout) page = reorderOcrPage(page, doc.layoutRegions.pages[n]);
+    const rects = redactRectsByPage.get(n);
+    if (!page || !rects) return page;
+    const clone = clonePage(page);
+    const dropIds = [];
+    for (const line of clone.lines) {
+      for (const word of line.words) {
+        const b = bboxToPageSpace(word.bbox, line.orientation, clone.dims);
+        if (rects.some((r) => b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) {
+          dropIds.push(word.id);
         }
       }
-      if (dropIds.length > 0) ocr.deletePageWords(clone, dropIds);
-      ocrDownload[i] = clone;
     }
-  }
+    if (dropIds.length > 0) ocr.deletePageWords(clone, dropIds);
+    return clone;
+  });
 
   // Annotations overlapping a mark are dropped too: a highlight or note over redacted text leaks its location, and often its content via the comment.
   // Redact marks themselves stay in the array; the PDF writers consume them for content removal and never emit them as annotations.
@@ -445,9 +554,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
       });
     });
   }
-
-  /** @type {string|ArrayBuffer} */
-  let content;
 
   if (format === 'pdf') {
     const insertInputPDF = displayMode !== 'ebook' && doc.inputData.pdfMode && addOverlay;
@@ -495,24 +601,22 @@ export async function exportData(doc, format = 'txt', options = {}) {
     let pageMetricsExport = doc.pageMetrics;
     let annotationsExport = annotationsPagesExport;
     if (pointScales.size > 0) {
-      ocrExport = [...ocrDownload];
+      ocrExport = lazyArray(ocrDownload.length, (n) => n in ocrDownload, (n) => {
+        const page = ocrDownload[n];
+        const scale = pointScales.get(n);
+        if (!page || !scale) return page;
+        const clone = clonePage(page);
+        ocr.scalePage(clone, scale);
+        for (const line of clone.lines) {
+          for (const word of line.words) {
+            if (word.style.size) word.style.size *= scale;
+          }
+        }
+        return clone;
+      });
       pageMetricsExport = [...doc.pageMetrics];
       annotationsExport = [...annotationsPagesExport];
       for (const [i, scale] of pointScales) {
-        const page = ocrExport[i];
-        if (page) {
-          // scalePage leaves paragraph bboxes in the pixel frame, so the clone's page.pars disagree with everything else on it.
-          // No PDF writer reads them today.
-          const clone = clonePage(page);
-          ocr.scalePage(clone, scale);
-          // scalePage does not scale word.style.size, so a word carrying an explicit size would keep its pixel-frame font size.
-          for (const line of clone.lines) {
-            for (const word of line.words) {
-              if (word.style.size) word.style.size *= scale;
-            }
-          }
-          ocrExport[i] = clone;
-        }
         pageMetricsExport[i] = {
           ...pageMetricsExport[i],
           dims: {
@@ -557,6 +661,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
       const rotateText = !rotateBackground;
 
       if (insertInputPDF) {
+        /** @type {ArrayBuffer} */
+        let overlaid;
         try {
           let basePdfData = doc.images.pdfData;
           let overlayOcrArr = ocrDownload;
@@ -612,7 +718,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             } else {
               basePdfData = await subsetPdf(basePdfData, sourceArr, { outline: outlineForOutput });
             }
-            overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
+            overlayOcrArr = lazyArray(pageArr.length, () => true, (k) => ocrDownload[pageArr[k]]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             const remap = srcRefRemap;
             overlayAnnotationsPages = pageArr.map((i, k) => (annotationsPagesExport[i] || [])
@@ -642,9 +748,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
           // so it skips the category routing below entirely.
           const routeCategories = options.routePageCategories ?? (displayMode === 'invis');
-          // Routing empties a clean page's overlay on the assumption that its text is already on the page, which holds only for text from the PDF's own parse.
-          // A `.scribe` restore also stores its layer under this name but runs no parse, so `ocr.pdf` is what tells the two apart.
-          const suppliedOcrLayer = !!doc.ocr.pdf && ocrSource === doc.ocr['User Upload'];
+          // Category routing drops overlays on clean pages assuming their text is already embedded in the PDF, which is false when 'User Upload' came from an external OCR file.
+          // Require the 'pdf' layer alongside 'User Upload' so a .scribe restore (which also uses 'User Upload' without parsing the PDF) still routes normally.
+          const suppliedOcrLayer = doc.pageStore.has('pdf') && ocrLayerName === 'User Upload';
           if (routeCategories && !convertDupSourceTextToPaths && !suppliedOcrLayer && pageStats && pageStats.length > 0
             && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageStats.length)) {
             // Flattening turns the page's own text into paths, leaving the overlay as its only extractable text.
@@ -657,13 +763,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
             // so its native text stays the only text layer.
             const ocrIn = overlayOcrArr;
             convertFullPages = [];
-            overlayOcrArr = pageStats.map((c, i) => {
+            for (let i = 0; i < pageStats.length; i++) {
+              if (i in pageStats && flagged[i] && ocrIn[i]?.lines?.length > 0) convertFullPages.push(i);
+            }
+            overlayOcrArr = lazyArray(pageStats.length, (i) => i in pageStats, (i) => {
               const p = ocrIn[i];
               const hasWords = !!(p && p.lines && p.lines.length > 0);
-              if (flagged[i] && hasWords) {
-                convertFullPages.push(i);
-                return p;
-              }
+              if (flagged[i] && hasWords) return p;
               // The overlay draws typed fill text from lifted fill-text lines, so dropping them would silently lose it from the export.
               const np = new OcrPage(i, p?.dims || overlayPageMetricsArr[i].dims);
               if (hasWords) {
@@ -675,7 +781,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             convertBrokenType3 = false;
           }
 
-          content = await overlayPdfText({
+          overlaid = await overlayPdfText({
             basePdfData,
             ocrArr: overlayOcrArr,
             annotationOcrArr,
@@ -705,6 +811,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // Rendering image *inputs* to raster + an invisible-text layer below is a separate, legitimate path.
           throw new Error(`Failed to overlay text onto the input PDF: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
         }
+        yield overlaid;
       }
 
       // Build a fresh PDF from rendered images: reached for image inputs, or a PDF exported with the overlay disabled.
@@ -741,7 +848,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           }
         }
 
-        content = await writePdf({
+        yield await writePdf({
           ocrArr: ocrExport,
           pageMetricsArr: pageMetricsExport,
           pageArr,
@@ -763,7 +870,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         });
       }
     } else {
-      content = await writePdf({
+      yield await writePdf({
         ocrArr: ocrExport,
         pageMetricsArr: pageMetricsExport,
         pageArr,
@@ -786,13 +893,14 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // A page under a redaction mark is written without its source markup, which would return the lines the importer dropped unredacted.
     const hocrSource = ocrLayerName ? {
       head: doc.hocrSource.head[ocrLayerName] ?? null,
-      pages: doc.hocrSource.pages.map((recs, i) => (redactRectsByPage.has(i) ? null : recs?.[ocrLayerName] ?? null)),
+      pages: lazyArray(doc.hocrSource.pages.length, (i) => !redactRectsByPage.has(i) && !!doc.hocrSource.pages[i]?.[ocrLayerName],
+        (i) => heldJson(doc.hocrSource.pages[i][ocrLayerName])),
     } : null;
-    content = writeHocr({
+    yield* writeHocrChunks({
       ocrData: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, hocrSource, doc,
     });
   } else if (format === 'alto') {
-    content = writeAlto({
+    yield* writeAltoChunks({
       ocrData: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, doc,
     });
   } else if (format === 'html') {
@@ -827,7 +935,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       }
     }
 
-    content = writeHtml({
+    yield* writeHtmlChunks({
       ocrPages: ocrDownload,
       images,
       layoutPageArr: doc.layoutDataTables.pages,
@@ -849,7 +957,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       doc,
     });
   } else if (format === 'txt') {
-    content = writeText({
+    yield* writeTextChunks({
       ocrCurrent: ocrDownload,
       layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
@@ -860,7 +968,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       doc,
     });
   } else if (format === 'md') {
-    content = writeMarkdown({
+    yield* writeMarkdownChunks({
       ocrCurrent: ocrDownload,
       layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
@@ -873,15 +981,15 @@ export async function exportData(doc, format = 'txt', options = {}) {
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
-    const writeDocx = (await import('./writeDocx.js')).writeDocx;
-    content = await writeDocx({
+    const writeDocxChunks = (await import('./writeDocx.js')).writeDocxChunks;
+    yield* writeDocxChunks({
       hocrCurrent: ocrDownload, layoutPageArr: doc.layoutDataTables.pages, pageArr, pageMetrics: doc.pageMetrics, reflowText: reflow, dropPageHeadersFooters, doc,
     });
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
-    const writeXlsx = (await import('./writeTabular.js')).writeXlsx;
-    content = await writeXlsx({
+    const writeXlsxChunks = (await import('./writeTabular.js')).writeXlsxChunks;
+    yield* writeXlsxChunks({
       ocrPageArr: ocrDownload,
       layoutPageArr: doc.layoutDataTables.pages,
       inputData: doc.inputData,
@@ -891,99 +999,75 @@ export async function exportData(doc, format = 'txt', options = {}) {
       doc,
     });
   } else if (format === 'scribe') {
-    // The restore assigns every node a fresh id, so a saved id could never be read back.
-    /** @param {Array<import('../objects/outlineObjects.js').OutlineNode>} nodes @returns {Array<Object>} */
-    const outlineWithoutIds = (nodes) => nodes.map((n) => ({
-      title: n.title, dest: n.dest, action: n.action, open: n.open, children: outlineWithoutIds(n.children),
-    }));
-    /** @type {Record<string, any>} */
-    const envelope = {
-      fontState: doc.fonts.state,
-      layoutRegions: removeCircularRefsRegions(doc.layoutRegions.pages),
-      layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
-      annotations: doc.annotations.pages,
-      pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
-      outline: outlineWithoutIds(doc.outline || []),
-      inputData: {
-        pdfType: doc.inputData.pdfType,
-        pageStats: doc.inputData.pageStats,
-        requiresOCR: doc.inputData.requiresOCR,
-        ocrApplied: doc.inputData.ocrApplied,
-      },
-      /** @type {ScribeSessionData|undefined} */
-      session: undefined,
-    };
-    // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
-    if (scribeSession) {
-      const hocrHead = ocrLayerName ? doc.hocrSource.head[ocrLayerName] ?? null : null;
-      const hocrPages = doc.hocrSource.pages.map((recs) => (ocrLayerName ? recs?.[ocrLayerName] ?? null : null));
-      envelope.session = {
-        v: 1,
-        contentEdits: doc.contentEdits.pages,
-        nativeText: doc.nativeText.pages,
-        hocrSource: hocrHead || hocrPages.some((p) => p) ? { head: hocrHead, pages: hocrPages } : undefined,
-        fillText: collectFillTextRefs(doc),
-        pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
-      };
-      if (doc.sessionMarks.editedAt != null) envelope.session.editedAt = doc.sessionMarks.editedAt;
-      if (doc.sessionMarks.recognizedAt != null) envelope.session.recognizedAt = doc.sessionMarks.recognizedAt;
-      if (doc.truth.pages.some((p) => p)) envelope.session.truth = doc.truth.pages.map((p) => p ?? null);
-      // Site matching pads by 2px, so rounding coordinates to 0.1px is lossless.
-      const r1 = (/** @type {number} */ v) => Math.round(v * 10) / 10;
-      const box = (/** @type {{left: number, top: number, right: number, bottom: number}} */ b) => [r1(b.left), r1(b.top), r1(b.right), r1(b.bottom)];
-      envelope.session.fillShapes = doc.fillShapes.pages.map((shapes) => {
-        if (!shapes) return null;
-        /** @type {EncodedFillShapes} */
-        const enc = {};
-        if (shapes.images?.length) enc.i = shapes.images.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.objNum ?? -1])]);
-        if (shapes.paths?.length) enc.p = shapes.paths.map((e) => [...box(e), e.sites.map((st) => [...box(st), st.paint, st.commands])]);
-        if (shapes.squares?.length) enc.q = shapes.squares.map((e) => [...box(e), e.stroke ? 1 : 0]);
-        if (shapes.marks?.length) enc.m = shapes.marks.map((e) => box(e));
-        if (shapes.glyphBoxes?.length) enc.g = shapes.glyphBoxes.map((e) => [e.id, ...box(e.bbox)]);
-        if (shapes.pathsIneligible) enc.pi = 1;
-        if (shapes.marksOverflow) enc.mo = 1;
-        return enc;
-      });
-      if (doc.stampSources.pages.some((p) => p && p.length)) {
-        envelope.session.stampSources = doc.stampSources.pages.map((p) => (p && p.length
-          ? p.map((e) => /** @type {[number, number, number, number, number]} */ ([e.srcRef, e.bbox.left, e.bbox.top, e.bbox.right, e.bbox.bottom])) : null));
-      }
-      if (doc.assistantChats.chats.length) envelope.session.assistantChats = doc.assistantChats.chats;
-      if (doc.redactions.terms.length) envelope.session.redactions = doc.redactions;
-      if (doc.type3GlyphMappings.size) envelope.session.type3GlyphMappings = [...doc.type3GlyphMappings];
-      if (Object.keys(doc.tableExport.excluded).length || Object.keys(doc.tableExport.names).length) envelope.session.tableExport = doc.tableExport;
-    }
+    const envelope = scribeEnvelope(doc, scribeSession, ocrLayerName);
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     const ocrOut = includeOcrScribe ? ocrDownload : [];
-    if (compressScribe) {
-      // Streaming page chunks lets this branch emit a single JSON document of any size, including past what a JavaScript reader can re-import.
-      // Capping it here would put the interchange format back behind a layout only this library reads.
+    if (!compressScribe) {
+      yield* scribeJsonChunks(ocrOut, serializeOpts, envelope);
+    } else if (scribeSegments && includeOcrScribe) {
       // The segmented layout carries the session's per-page records inside the page records, so a file without pages stays one JSON document.
-      // A zero threshold skips the single-JSON attempt because `compressStringChunks` treats a zero limit as no limit.
-      content = scribeSegments && includeOcrScribe
-        ? ((scribeSegmentThreshold > 0 ? await compressStringChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope), scribeSegmentThreshold) : null)
-          ?? await compressStringChunks(scribeSegmentChunks(ocrOut, serializeOpts, envelope)))
-        : await compressStringChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope));
-    } else {
-      // A document whose JSON cannot exist as one string (V8 caps strings at 2^29 - 24) has no uncompressed form.
-      const parts = [];
-      let total = 0;
-      for (const chunk of scribeJsonChunks(ocrOut, serializeOpts, envelope)) {
-        total += chunk.length;
-        if (total > 536_870_888) {
-          throw new Error('This document\'s JSON exceeds the JavaScript string limit, so it cannot be exported as uncompressed .scribe.json; export compressed .scribe instead.');
-        }
-        parts.push(chunk);
+      let fits = scribeSegmentThreshold > 0;
+      /** @type {Array<Uint8Array>} */
+      const held = [];
+      if (fits) {
+        let total = 0;
+        const underThreshold = (function* untilThreshold() {
+          for (const chunk of scribeJsonChunks(ocrOut, serializeOpts, envelope)) {
+            total += chunk.length;
+            if (total > scribeSegmentThreshold) {
+              fits = false;
+              return;
+            }
+            yield chunk;
+          }
+        }());
+        for await (const bytes of gzipChunks(underThreshold)) if (fits) held.push(bytes);
       }
-      content = parts.join('');
+      if (fits) yield* held;
+      else yield* gzipChunks(scribeSegmentChunks(ocrOut, serializeOpts, envelope));
+    } else {
+      yield* gzipChunks(scribeJsonChunks(ocrOut, serializeOpts, envelope));
     }
   }
-
-  return content;
 }
 
 /**
- * Run `exportData` for this document and save the result as a download (browser) or local file (Node.js).
+ * Export this document's OCR data to the specified format.
+ * @param {ScribeDoc} doc
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'md'|'scribe'} [format='txt']
+ * @param {ExportOptions} [options]
+ * @returns {Promise<string|ArrayBuffer>}
+ */
+export async function exportData(doc, format = 'txt', options = {}) {
+  if (format === 'text') format = 'txt';
+  const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
+  /** @type {Array<string|ArrayBuffer|Uint8Array>} */
+  const parts = [];
+  let total = 0;
+  for await (const chunk of exportChunks(doc, format, options)) {
+    if (typeof chunk === 'string') {
+      total += chunk.length;
+      if (total > 536_870_888) {
+        throw new Error(format === 'scribe'
+          ? 'This document\'s JSON exceeds the JavaScript string limit, so it cannot be exported as uncompressed .scribe.json; export compressed .scribe, or save it with download().'
+          : `This document's ${format} export exceeds the JavaScript string limit, so it cannot be returned as one string; save it with download() instead.`);
+      }
+    }
+    parts.push(chunk);
+  }
+  if (format === 'scribe' ? !compressScribe : ['txt', 'hocr', 'alto', 'html', 'md'].includes(format)) return parts.join('');
+  if (format === 'pdf') return /** @type {ArrayBuffer} */ (parts[0]);
+  const bytes = concatBytes(/** @type {Array<Uint8Array>} */ (parts));
+  return format === 'scribe' ? bytes.buffer : bytes;
+}
+
+// A top-level `await` here would make every importing module initialize asynchronously, which deadlocks scribe-ui's import cycles.
+const nodeFs = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
+  ? process.getBuiltinModule('node:fs')
+  : null;
+
+/**
+ * Export this document and save it as a download (browser) or local file (Node.js).
  * @param {ScribeDoc} doc
  * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'} format
  * @param {string} fileName
@@ -1000,9 +1084,39 @@ export async function download(doc, format, fileName, options = {}) {
   } else {
     ext = format;
   }
-  // Replace an existing extension, or append one when the name has none.
-  // Otherwise the file saves extensionless and won't open.
-  fileName = /\.\w{1,6}$/.test(fileName) ? fileName.replace(/\.\w{1,6}$/, `.${ext}`) : `${fileName}.${ext}`;
-  const content = await exportData(doc, format, options);
-  await saveAs(content, fileName);
+  if (!fileName.endsWith(`.${ext}`)) fileName = /\.\w{1,6}$/.test(fileName) ? fileName.replace(/\.\w{1,6}$/, `.${ext}`) : `${fileName}.${ext}`;
+  const chunks = exportChunks(doc, format, options);
+
+  if (nodeFs && !opt.saveAs) {
+    const stat = nodeFs.statSync(fileName, { throwIfNoEntry: false });
+    const target = stat ? nodeFs.realpathSync(fileName) : fileName;
+    const savePath = !stat || stat.isFile() ? `${target}.partial` : target;
+    const fd = nodeFs.openSync(savePath, 'w');
+    let complete = false;
+    try {
+      for await (const chunk of chunks) nodeFs.writeFileSync(fd, chunk instanceof ArrayBuffer ? new Uint8Array(chunk) : chunk);
+      complete = true;
+    } finally {
+      nodeFs.closeSync(fd);
+      if (savePath !== target) {
+        if (complete) nodeFs.renameSync(savePath, target);
+        else nodeFs.rmSync(savePath, { force: true });
+      }
+    }
+    return;
+  }
+
+  /** @type {Array<BlobPart>} */
+  let parts = [];
+  let pending = 0;
+  for await (const chunk of chunks) {
+    parts.push(chunk);
+    pending += typeof chunk === 'string' ? chunk.length : chunk.byteLength;
+    // Wrap accumulated chunks in a Blob to move them out of the JS heap so earlier chunks can be garbage-collected.
+    if (pending > 16_777_216) {
+      parts = [new Blob(parts)];
+      pending = 0;
+    }
+  }
+  await saveAs(new Blob(parts, { type: 'application/octet-stream' }), fileName);
 }

@@ -1,13 +1,14 @@
 import scribe from '../../scribe.js';
-import { nativeTextForPage } from '../../js/textEdits.js';
-import { pageImagePlacements, pagePathPlacements, pagePathsIneligible } from '../../js/fillSign.js';
+import { fillShapeFlags } from '../../js/containers/pageStore.js';
 import { ScribeViewer } from '../viewer.js';
 // Both engines are imported so `ScribeViewer.customSelection` can toggle between them at runtime.
 // Import only one for a slimmer build.
 import '../js/selection/customSelectionEngine.js';
 import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
-import { goToCitation as goToCitationImpl, showCitedWords, clearCitation } from '../js/viewerSearch.js';
+import {
+  goToCitation as goToCitationImpl, showCitedWords, clearCitation, syncDocRuns,
+} from '../js/viewerSearch.js';
 import { resolveDocAddress } from '../../js/docAddress.js';
 import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
 import {
@@ -38,16 +39,13 @@ import {
   createGraphicsEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool, createExtractTablesTool, createInspectDocumentTool,
   createProofreadTextTool, createCompareVersionsTool,
 } from '../js/controls/tools.js';
-import { createExportTool } from '../js/controls/exportTool.js';
+import { createExportTool, docHasWords } from '../js/controls/exportTool.js';
 import { longestChain } from '../../js/textDiff.js';
 import {
   diffMarksFor, applyDiffMarks, setDiffCurrent, goToChange, diffRunsFor,
 } from '../js/viewerDiff.js';
 import { wordsToCheck, selectNextToCheck } from '../js/viewerShortcuts.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
-import {
-  OcrPage, OcrPar, OcrLine, OcrWord,
-} from '../../js/objects/ocrObjects.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { IS_MAC, shortcutLabel } from '../js/platform.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
@@ -258,56 +256,29 @@ const AUTO_FIT_MAX_RASTER_PX = 3500;
 
 /** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
 const MODE_BANNER_HEIGHT = 40;
-/** How long the reader rests on a provisional document under a mode before it loads. */
-const MODE_LOAD_REST_MS = 350;
-/** How many pages of a document that has not loaded keep their words at once. */
-const SEEDED_RESIDENT_PAGES = 64;
 /**
- * The native-text entry of a word shown before its document loads.
- * Its presence alone marks the word native.
- * It carries none of the parse-derived metadata a loaded word's entry holds.
- * @type {NativeTextWord}
- */
-const SEEDED_NATIVE_ENTRY = Object.freeze({ baselineY: Number.NaN });
-
-/**
- * What `openProvisional` hangs on the document it is handed, for the viewers and the modes to read. None of it belongs to the scribe.js library.
- * @typedef {Object} SeededDocHooks
- * @property {boolean} [_seededWired] - Set once `openProvisional` has taken the document, which rebuilds its own text when it loads.
- * @property {boolean} [_loadFailed] - Whether the document's last load failed.
- * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [findMatches] - The seed's `find`.
- * @property {(n: number) => Promise<void>} [pageText] - Have page `n`'s words and own annotations in the document. Gone once the document has loaded.
- * @property {(n: number) => Promise<?ImageBitmap>} [storedRaster] - Page `n`'s stored raster, when one is stored.
- * @property {(n: number, bitmap: ImageBitmap) => void} [rasterRendered] - The seed's `rendered`.
- * @property {boolean} [textFromOcrFile] - The seed's `textFromOcrFile`.
- *   Gone once the document has loaded.
- * @property {number} [deepOcrPages] - The seed's `deepOcrPages`.
- *   Gone once the document has loaded.
+ * Viewer-only hooks attached to a `ScribeDoc` by `openProvisional`.
+ * @typedef {Object} ProvisionalDocHooks
+ * @property {boolean} [_textArriving] - Whether saved text is still loading.
+ * @property {boolean} [_loadFailed] - Whether saved text failed to load.
+ * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [findMatches]
+ * @property {(n: number) => Promise<?ImageBitmap>} [storedRaster] - Cached raster for 0-based page `n`, or `null` when unavailable.
+ * @property {(n: number, bitmap: ImageBitmap) => void} [rasterRendered]
  */
 
 /**
- * A document opened for on-demand loading, with what a tab shows of it before it loads.
+ * Document and optional preview and search hooks for opening a tab while saved text loads in the background.
  * @typedef {Object} ProvisionalSeed
- * @property {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The document, opened with `openDocument`'s `seeded` option.
+ * @property {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - Document opened with the `saved` option of `openDocument`.
  * @property {number} [initialPage=0]
- * @property {{from: number, to: number}} window - Pages whose words are fetched at open, inclusive on both ends.
- *   Every other page gets them as the view reaches it.
- * @property {(n: number) => ?Promise<?Blob|ImageBitmap|string>} [raster] - The page's stored raster, when one is stored.
- *   A string is a URL the browser can fetch.
- *   A page with one paints it first, and the render at the view's own width replaces it.
- * @property {(n: number, bitmap: ImageBitmap) => void} [rendered] - Called with each page render made for the view, for a host that stores them.
- *   The bitmap may be closed once this returns.
- * @property {(n: number) => Promise<?Object>} [ocr] - A page's words with their geometry, at minimum `{dims, lines: [{words: [{text, bbox}]}]}`.
- *   Providing it makes that page's text selectable, copyable, and findable before the document loads.
- *   A line of rotated text must also carry its `orientation` (0-3) and give its word bboxes in that orientation's frame.
- * @property {(n: number) => Promise<?Array<Object>>} [annots] - The page's own annotations, for a document opened without a saved file, whose annotations are otherwise read only when it loads.
- * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - The document's matches of a query, in page order.
- *   Its word ids must be those `ocr` gives.
- * @property {'eager'|'on-demand'} [hydration='eager'] - `'eager'` loads the document as soon as it is shown, and `'on-demand'` when something first needs it.
- * @property {boolean} [textFromOcrFile] - Whether the document's text will come from an OCR file when it loads.
- *   Until it loads, the highlighter's prompt to recognize and the Recognize Text page count go by this.
- * @property {number} [deepOcrPages] - How many pages a Recognize Text run would recognize, for a document with no saved file.
- *   Without it, Recognize Text offers every page until the document loads.
+ * @property {(n: number) => ?Promise<?Blob|ImageBitmap|string>} [raster] - Cached raster for 0-based page `n`, or `null` when unavailable.
+ *   A string is fetched as a URL.
+ *   Any returned `ImageBitmap` is closed by the viewer.
+ * @property {(n: number, bitmap: ImageBitmap) => void} [rendered] - Called after rendering 0-based page `n`.
+ *   The bitmap may be closed once this callback returns.
+ * @property {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>} [find] - Return search matches for `query` in page order.
+ * @property {Promise<unknown>} [failed] - Resolves with the error if saved text fails to load.
+ *   Stays pending when loading succeeds.
  * @property {string} [name] - Display name for the tab.
  */
 
@@ -901,8 +872,6 @@ class ScribePDFViewer {
     this._modeSessionBtn = null;
     /** @type {?Object} Document the baseline was captured on. */
     this._modeSessionDoc = null;
-    /** @type {Map<Object, ReturnType<typeof setTimeout>>} Per viewer, the pending load of a provisional document under a mode. */
-    this._modeLoadTimers = new Map();
     /** @type {?MutationObserver} */
     this._modeBtnObserver = null;
     /** @type {number} Unified-history depth at mode entry, or -1 outside an editing-mode session. */
@@ -1482,10 +1451,6 @@ class ScribePDFViewer {
     // Document-level listeners, retained so `destroy()` can remove them.
     /** @type {Array<() => void>} */
     this._teardownCallbacks = [];
-    this._teardownCallbacks.push(() => {
-      for (const timer of this._modeLoadTimers.values()) clearTimeout(timer);
-      this._modeLoadTimers.clear();
-    });
     /** @type {Array<{tool: {installBehaviors: (viewer?: ScribeViewer) => (() => void)}, teardown: () => void}>} */
     this._toolBindings = [];
     this._teardownCallbacks.push(() => { for (const b of this._toolBindings) b.teardown(); });
@@ -2294,31 +2259,26 @@ class ScribePDFViewer {
   }
 
   /**
-   * Open the seed's document as a tab, showing what the seed provides until the document loads.
-   * The document loads in place, keeping its tab, scroll and zoom.
-   * Resolves at first paint, or once the tab exists when it opens in the background.
+   * Open a provisional document from `seed` as a tab.
+   * Resolves once the initial page displays, or once the tab is created when `activate` is `false`.
    * @param {ProvisionalSeed} seed
-   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string, [field: string]: any}} [opts]
-   *   Any option not named here is a field of the tab record, in place before the strip first draws the tab.
-   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, tab: Object}>} `tab` is the record the document opened as.
-   *   `primed` settles once the window pages' words are in, so their text is selectable and searchable.
-   *   `hydrated` settles once the document has loaded, and rejects when it is closed first.
+   * @param {{activate?: boolean, group?: 0|1, preview?: boolean, program?: boolean, fitWidth?: boolean, openAddress?: string, [field: string]: any}} [opts] - Extra fields are copied onto the tab.
+   * @returns {Promise<Object>} The created tab.
    */
   async openProvisional(seed, {
     activate = true, group = 0, preview = false, program = false, fitWidth = false, openAddress = null, ...fields
   } = {}) {
     const { doc } = seed;
-    const seeded = doc._seeded;
     // Fonts back the word-object layer (search marks, carets).
     // The call is memoized process-wide, so it is not awaited here.
     scribe.init({ font: true }).catch(() => {});
 
-    const hooks = /** @type {typeof doc & SeededDocHooks} */ (doc);
-    hooks._seededWired = true;
+    const hooks = /** @type {typeof doc & ProvisionalDocHooks} */ (doc);
     if (seed.find) hooks.findMatches = seed.find;
     if (seed.rendered) hooks.rasterRendered = seed.rendered;
-    if (seed.textFromOcrFile) hooks.textFromOcrFile = true;
-    if (seed.deepOcrPages != null) hooks.deepOcrPages = seed.deepOcrPages;
+    hooks._textArriving = !!doc._textReadySettle;
+    // Attach before `_openDocAsTab` so `_textArriving` clears before the viewer's `textReady` listeners run.
+    doc.textReady.then(() => { hooks._textArriving = false; });
     // The image cache closes the bitmaps it is served, so stored rasters are kept as blobs.
     /** @type {Map<number, Promise<?Blob>>} */
     const blobs = new Map();
@@ -2350,185 +2310,19 @@ class ScribePDFViewer {
         return blob ? createImageBitmap(blob).catch(() => null) : null;
       };
     }
-    /** @type {Promise<void>} */
-    let primed = Promise.resolve();
-    /** @type {Promise<void>} */
-    let hydrated = Promise.resolve();
-    if (seeded) {
-      const viewers = () => [this.scribe, this._rightGroup?.viewer].filter((v) => !!v && v.doc === doc);
-
-      /** Draws page `n`'s newly arrived words and annotations in the viewers showing it. */
-      const landed = (/** @type {number} */ n) => {
-        for (const v of viewers()) {
-          if (v === this._activeViewer()) this._syncDocGatedControls();
-          const cp = v.state.cp.n;
-          if (n !== cp && !v.windowPages(cp).includes(n)) continue;
-          // Highlights hang on the page's word objects, so they wait for the words.
-          // The other marks are redrawn because the page's annotations may have arrived after `displayPage` ran.
-          v.renderWords(n).then(() => {
-            if (v.doc !== doc) return;
-            v.renderHighlights?.(n);
-            v.renderNotes(n);
-            v.renderRedactions(n);
-            v.renderModeMarks(n);
-            v.renderFormFields(n);
-            v.renderFillItems(n);
-          }).catch(() => {});
-        }
-      };
-
-      /** @type {Map<number, Promise<void>>} */
-      const pages = new Map();
-      /** @type {Array<number>} */
-      const resident = [];
-      /**
-       * Have page `n`'s words in `ocr.active`, and its own annotations in place.
-       * Resolves when they are there or when the page has none.
-       * Pages far from `n` give up their words past the resident cap.
-       * @param {number} n
-       * @returns {Promise<void>}
-       */
-      const pageText = (n) => {
-        if (n < 0 || n >= doc.pageMetrics.length || (!seed.ocr && !seed.annots)) return Promise.resolve();
-        let p = pages.get(n);
-        if (p) return p;
-        // A document opened from a saved file holds every page's annotations already.
-        const annotsP = seed.annots && !doc.annotations.restored && !seeded.annotBaseline.has(n) ? Promise.resolve(seed.annots(n)).catch(() => null) : Promise.resolve(null);
-        p = Promise.all([seed.ocr ? seed.ocr(n) : null, annotsP]).then(([pageLike, annots]) => {
-          // The document may have loaded, or closed, while these were read.
-          if (doc._seeded !== seeded || seeded.closed) return;
-          if (Array.isArray(annots) && !seeded.annotBaseline.has(n)) {
-            const own = doc.annotations.pages[n] || [];
-            // Rows the user added before the page's own annotations arrived are kept, after them.
-            doc.annotations.pages[n] = own.length ? [...annots, ...own] : annots;
-            if (own.length) doc.docHistory.prependAnnotRows(doc.annotations, n, annots);
-            seeded.annotBaseline.set(n, JSON.stringify(annots));
-          }
-          if (!pageLike || !Array.isArray(pageLike.lines)) {
-            if (Array.isArray(annots)) landed(n);
-            return;
-          }
-          const dims = pageLike.dims || doc.pageMetrics[n].dims;
-          const page = new OcrPage(n, { width: dims.width, height: dims.height });
-          page.angle = pageLike.angle || 0;
-          if (pageLike.textSource) page.textSource = pageLike.textSource;
-          const pars = (pageLike.pars || []).map((/** @type {any} */ parLike) => {
-            const par = new OcrPar(page, parLike.bbox);
-            if (parLike.type) par.type = parLike.type;
-            par.headingLevel = parLike.headingLevel ?? null;
-            par.parNum = parLike.parNum ?? null;
-            par.marker = parLike.marker ?? null;
-            return par;
-          });
-          page.pars = pars;
-          /** @type {Record<string, NativeTextWord>} */
-          const entries = {};
-          for (const lineLike of pageLike.lines) {
-            const words = Array.isArray(lineLike.words) ? lineLike.words.filter((/** @type {any} */ w) => w && w.text && w.bbox) : [];
-            if (!words.length) continue;
-            const lineBbox = lineLike.bbox || {
-              left: Math.min(...words.map((/** @type {any} */ w) => w.bbox.left)),
-              top: Math.min(...words.map((/** @type {any} */ w) => w.bbox.top)),
-              right: Math.max(...words.map((/** @type {any} */ w) => w.bbox.right)),
-              bottom: Math.max(...words.map((/** @type {any} */ w) => w.bbox.bottom)),
-            };
-            const line = new OcrLine(page, lineBbox, lineLike.baseline || [0, 0], lineLike.ascHeight ?? null, lineLike.xHeight ?? null);
-            line.orientation = lineLike.orientation || 0;
-            line.lineNum = lineLike.lineNum ?? null;
-            line.pageNum = lineLike.pageNum ?? null;
-            const par = typeof lineLike.par === 'number' ? pars[lineLike.par] : null;
-            if (par) {
-              line.par = par;
-              par.lines.push(line);
-            }
-            for (const w of words) {
-              const word = new OcrWord(line, w.id || `seed-${n}-${page.lines.length}-${line.words.length}`, w.text, w.bbox);
-              if (w.style) Object.assign(word.style, w.style);
-              if (w.lang) word.lang = w.lang;
-              word.conf = w.conf ?? 100;
-              if (w.visualCoords === false) word.visualCoords = false;
-              if (w.footnoteParId) word.footnoteParId = w.footnoteParId;
-              if (Array.isArray(w.chars)) word.chars = w.chars;
-              if (w.native) entries[word.id] = SEEDED_NATIVE_ENTRY;
-              line.words.push(word);
-            }
-            page.lines.push(line);
-          }
-          // The mode gates read the entries the host recorded, so a tab answers before its document loads.
-          doc.nativeText.pages[n] = entries;
-          doc.ocr.active[n] = page;
-          doc.inputData.xmlMode[n] = true;
-          resident.push(n);
-          for (let over = resident.length - SEEDED_RESIDENT_PAGES; over > 0; over--) {
-            let far = 0;
-            for (let i = 1; i < resident.length; i++) if (Math.abs(resident[i] - n) > Math.abs(resident[far] - n)) far = i;
-            const [gone] = resident.splice(far, 1);
-            delete doc.ocr.active[gone];
-            pages.delete(gone);
-            blobs.delete(gone);
-          }
-          landed(n);
-        }).catch(() => { /* Without its words the page still renders, just without selectable text. */ });
-        pages.set(n, p);
-        return p;
-      };
-      hooks.pageText = pageText;
-
-      /** @type {Array<Promise<void>>} */
-      const windowTexts = [];
-      for (let n = seed.window.from; n <= seed.window.to; n++) windowTexts.push(pageText(n));
-      primed = Promise.all(windowTexts).then(() => {
-        if (doc._seeded === seeded) for (const v of viewers()) v.displayPage(v.state.cp.n, false, true);
-      });
-
-      seeded.onError = (err) => {
-        console.error('The document could not be loaded:', err);
-        hooks._loadFailed = true;
-        this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
-        // A mode waiting on the document shows the load failure in place of its loading note.
-        if (this._modeViewer().doc === doc) {
-          this._extractTablesTool?.docChanged?.();
-          this._inspectTool?.docChanged?.();
-          this._exportTool?.docChanged?.();
-        }
-      };
-
-      /** @type {Map<ScribeViewer, {start: Object, end: Object, text: string}>} */
-      const selections = new Map();
-      seeded.beforeCommit = () => {
-        for (const v of viewers()) {
-          const ts = v.textSel;
-          if (ts && ts.range?.kind === 'linear') selections.set(v, { start: { ...ts.range.start }, end: { ...ts.range.end }, text: ts.getText() });
-        }
-      };
-
-      hydrated = doc.textReady.then(async () => {
-        if (doc.hydrationState !== 'hydrated') throw new Error('The document was closed before it loaded.');
-        delete hooks.pageText;
-        delete hooks.textFromOcrFile;
-        delete hooks.deepOcrPages;
-        hooks._loadFailed = false;
-        // Every page with built text still holds words from the seeded pages the load replaced, so all of it is cleared, not just the current page.
-        for (const v of viewers()) {
-          v.destroyText(false);
-          await v.displayPage(v.state.cp.n, false, true);
-          const sel = selections.get(v);
-          const ts = v.textSel;
-          if (sel && ts && v.doc === doc) {
-            ts.range = { kind: 'linear', start: sel.start, end: sel.end };
-            ts._renderAll();
-            if (ts.getText() !== sel.text) ts.clear();
-          }
-        }
-      });
-      hydrated.catch(() => {});
-    }
-
-    const tab = await this._openDocAsTab(doc, seed.name || 'Document', {
+    seed.failed?.then((err) => {
+      console.error('The document could not be loaded:', err);
+      hooks._loadFailed = true;
+      this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
+      if (this._modeViewer().doc === doc) {
+        this._extractTablesTool?.docChanged?.();
+        this._inspectTool?.docChanged?.();
+        this._exportTool?.docChanged?.();
+      }
+    });
+    return this._openDocAsTab(doc, seed.name || 'Document', {
       ...fields, lastPage: seed.initialPage ?? 0, activate, group, preview, program, fitWidth, openAddress,
     });
-    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => doc.ensureHydrated(), 0);
-    return { primed, hydrated, tab };
   }
 
   /**
@@ -2551,7 +2345,6 @@ class ScribePDFViewer {
     this.scribe.doc = doc;
     this.resetSearch();
     for (const inst of this._libraryInstances) inst.docOpened({ keepSurface });
-    this._loadUnderMode(this.scribe, doc);
     this._editTextTool?.docChanged?.(this.scribe);
     this._graphicsEditTool?.docChanged?.(this.scribe);
     if (this._modeGroup !== 1) this._exportTool?.docChanging?.();
@@ -2649,9 +2442,9 @@ class ScribePDFViewer {
     if (doc._textReadySettle && !this._textLandingWatched.has(doc.textReady)) {
       this._textLandingWatched.add(doc.textReady);
       doc.textReady.then(() => {
+        if (!(/** @type {typeof doc & ProvisionalDocHooks} */ (doc)).findMatches) syncDocRuns(doc).catch(() => {});
         if (this.doc !== doc) return;
-        // A document loaded on demand rebuilds its own text, in every viewer showing it.
-        if (!(/** @type {typeof doc & SeededDocHooks} */ (doc))._seededWired) this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+        this.scribe.displayPage(this.scribe.state.cp.n, false, true);
         // Deferred extraction is what detects layout tables, so the Extract Tables surfaces re-derive now.
         this._extractTablesTool?.docChanged?.();
         this._inspectTool?.docChanged?.();
@@ -2971,7 +2764,7 @@ class ScribePDFViewer {
     let changed = false;
     for (const tab of this._tabs) {
       // Pool teardown would kill an in-flight text extraction, so still-extracting documents stay warm.
-      if (tab.view || warm.has(tab) || tab.waking || tab.doc._extracting) continue;
+      if (tab.view || warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
       let suspendedAny = false;
       for (const src of tab.doc.images.sources.values()) {
         if (warmSources.has(src) || !src.scheduler) continue;
@@ -3368,7 +3161,7 @@ class ScribePDFViewer {
     const label = scribe.utils.docAddressLabel(address);
     const citing = from ? this.heldDoc(from) : null;
     if (from && citing && citing.hash === address.hash) {
-      const target = from.doc.resolveDocAddress(uri);
+      const target = resolveDocAddress(from.doc.pageStore.pageList(), address);
       await showCitedWords(from, Math.min(target.pageIndex, from.doc.inputData.pageCount - 1), target.words, { wholePage: target.state !== 'ok' });
       return;
     }
@@ -3414,9 +3207,9 @@ class ScribePDFViewer {
       await this._activateTab(this._tabs.indexOf(tab));
     }
     const { doc } = tab;
-    if (!(await doc.ensureHydrated())) return;
+    await doc.textReady;
     if (this._rightGroup !== g || toViewer.doc !== doc) return;
-    const target = doc.resolveDocAddress(uri);
+    const target = resolveDocAddress(doc.pageStore.pageList(), address);
     const pageIndex = Math.min(target.pageIndex, doc.inputData.pageCount - 1);
     // A view the activation placed at the passage stays put while the document loads, so the loaded words are marked where they are.
     const placed = tab.placedByAddress === true;
@@ -4002,32 +3795,6 @@ class ScribePDFViewer {
     return this._modeGroup === 1 && this._rightGroup ? this._rightGroup.viewer : this.scribe;
   }
 
-  /** Whether the active mode reads the document's stores. */
-  _modeNeedsLoadedDoc() {
-    const active = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
-    if (!active) return false;
-    return [this._editTextTool, this._graphicsEditTool, this._fillSignTool, this._proofreadTool, this._extractTablesTool, this._inspectTool, this._compareTool, this._exportTool]
-      .some((tool) => tool && tool.toolbarElem === active);
-  }
-
-  /**
-   * Load the provisional document `viewer` shows, once the reader has rested on it under a mode that reads the document.
-   * @param {ScribeViewer} viewer
-   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
-   */
-  _loadUnderMode(viewer, doc) {
-    const pending = this._modeLoadTimers.get(viewer);
-    if (pending) clearTimeout(pending);
-    this._modeLoadTimers.delete(viewer);
-    if (!(doc.hydrationState !== 'hydrated' && this._modeNeedsLoadedDoc())) return;
-    // Each load leases PDF workers, which the pool keeps as idle spares afterwards, so a run of clicks loads only the document the reader stops on.
-    this._modeLoadTimers.set(viewer, setTimeout(() => {
-      this._modeLoadTimers.delete(viewer);
-      if (viewer.doc !== doc || !this._modeNeedsLoadedDoc()) return;
-      doc.ensureHydrated();
-    }, MODE_LOAD_REST_MS));
-  }
-
   /**
    * @param {{installBehaviors: (viewer?: ScribeViewer) => (() => void)}} tool
    */
@@ -4187,10 +3954,7 @@ class ScribePDFViewer {
     await this._wakeTab(tab);
     if (this._rightGroup !== g || g.active !== tab) return;
     g.viewer.doc = tab.doc;
-    if (!tab.view && this._modeGroup === 1) {
-      this._loadUnderMode(g.viewer, tab.doc);
-      this._exportTool?.docChanging?.();
-    }
+    if (!tab.view && this._modeGroup === 1) this._exportTool?.docChanging?.();
     const pageIndex = Math.min(tab.lastPage || 0, Math.max(0, tab.doc.inputData.pageCount - 1));
     if (tab.fitWidth) {
       delete tab.fitWidth;
@@ -4205,8 +3969,7 @@ class ScribePDFViewer {
     delete tab.openAddress;
     let placed = false;
     if (address) {
-      if (tab.doc.pageText) await tab.doc.pageText(pageIndex).catch(() => {});
-      const target = resolveDocAddress(tab.doc.ocr.active || [], address);
+      const target = resolveDocAddress(tab.doc.pageStore.pageList(), address);
       if (target.state === 'ok' && target.words.length && this._rightGroup === g && g.viewer.doc === tab.doc) {
         // The address chose this page, so later moves are measured from it.
         this._tierFront(tab.doc, target.pageIndex);
@@ -4254,6 +4017,7 @@ class ScribePDFViewer {
     if (doc._textReadySettle && !this._groupTextLandingWatched.has(doc.textReady)) {
       this._groupTextLandingWatched.add(doc.textReady);
       doc.textReady.then(() => {
+        if (!(/** @type {typeof doc & ProvisionalDocHooks} */ (doc)).findMatches) syncDocRuns(doc).catch(() => {});
         const shown = this._rightGroup;
         if (!shown || shown.viewer.doc !== doc) return;
         this._syncGroupSidebarDoc(shown, shown.viewer.state.cp.n);
@@ -5079,15 +4843,15 @@ class ScribePDFViewer {
       && !(this._recognizeRun && this._recognizeRun.doc === doc);
     // A file's verdict arrives with its text, a moment after it opens.
     // The prompt stays as it was until then, so it does not drop and return when one scan is opened after another.
-    if (show && doc.hydrationState === 'hydrated' && doc._textReadySettle) return;
+    if (show && doc._textReadySettle) return;
     if (show) {
       // A scan can carry native header words, so only non-PDF words or an OCR record count as recognized text.
-      // A tab that has not loaded answers the source of its text from what it was told at open, so its answer cannot change as its pages arrive.
       const { pdfMode, imageMode, pdfType, ocrApplied } = doc.inputData;
       show = (pdfMode ? pdfType === 'image' : imageMode) && !ocrApplied?.some(Boolean)
-        && !(doc.hydrationState === 'hydrated'
-          ? doc.ocr.active?.some((page) => page && page.lines.length > 0 && page.textSource !== 'pdf')
-          : /** @type {typeof doc & SeededDocHooks} */ (doc).textFromOcrFile);
+        && !doc.pageMetrics.some((pm, n) => {
+          const counts = doc.pageStore.pageCounts(n);
+          return !!counts && counts.words > 0 && counts.textSource !== 'pdf';
+        });
     }
     if (show && !this._highlightPrompt) {
       const prompt = document.createElement('div');
@@ -5372,7 +5136,10 @@ class ScribePDFViewer {
     this.scribe.diffRuns = diffRunsFor(docA, diff, 'a', colors);
     g.viewer.diffRuns = diffRunsFor(docB, diff, 'b', colors);
     this._compareRailsRestyle();
-    const recognized = (doc) => (doc.ocr?.active || []).some((p) => p && p.textSource && p.textSource !== 'pdf' && !DOCUMENT_IMPORT_SOURCES.has(p.textSource));
+    const recognized = (doc) => doc.pageMetrics.some((pm, n) => {
+      const source = doc.pageStore.pageCounts(n)?.textSource;
+      return !!source && source !== 'pdf' && !DOCUMENT_IMPORT_SOURCES.has(source);
+    });
     if (recognized(docA) || recognized(docB)) this._setGroupNotice('A draft’s text comes from recognition, so some differences may be reading errors.');
     this._setCompareList(this._compareListOpen ?? true);
     if (diff.changes.length) await this._compareGoTo(1);
@@ -5412,7 +5179,7 @@ class ScribePDFViewer {
     const panes = viewers.map((v) => v.scrollContainer);
     const docs = [state.docA, state.docB];
     const linked = [NaN, NaN];
-    /** @type {?Array<Map<string, import('../../js/objects/ocrObjects.js').OcrLine>>} */
+    /** @type {?Array<Map<string, {orientation: number, left: number, top: number}>>} Per draft, map from diff-referenced word ID to its line's orientation and top-left position. */
     let lineOf = null;
     /** @type {?{key: string, pairs: Array<[number, number]>}} */
     let anchors = null;
@@ -5424,10 +5191,27 @@ class ScribePDFViewer {
       const pairs = [];
       if (state.diff) {
         if (!lineOf) {
-          lineOf = docs.map((doc) => {
-            /** @type {Map<string, import('../../js/objects/ocrObjects.js').OcrLine>} */
+          const diffLines = state.diff.lines;
+          lineOf = docs.map((doc, i) => {
+            /** @type {Map<number, Set<string>>} */
+            const wanted = new Map();
+            for (const l of diffLines) {
+              const ref = i === 0 ? l.a : l.b;
+              const ids = wanted.get(ref.pageN);
+              if (ids) ids.add(ref.wordId);
+              else wanted.set(ref.pageN, new Set([ref.wordId]));
+            }
+            /** @type {Map<string, {orientation: number, left: number, top: number}>} */
             const m = new Map();
-            for (const p of doc.ocr.active || []) { if (p) for (const l of p.lines) for (const w of l.words) m.set(w.id, l); }
+            for (const [pageN, ids] of wanted) {
+              const p = doc.pageStore.readOnlyPage(pageN);
+              if (!p) continue;
+              for (const l of p.lines) {
+                for (const w of l.words) {
+                  if (ids.has(w.id)) m.set(w.id, { orientation: l.orientation, left: l.bbox.left, top: l.bbox.top });
+                }
+              }
+            }
             return m;
           });
         }
@@ -5436,7 +5220,7 @@ class ScribePDFViewer {
         /** @param {number} i @param {{pageN: number, wordId: string}} ref */
         const top = (i, ref) => {
           const line = lines[i].get(ref.wordId);
-          return line ? viewers[i].localToContent(ref.pageN, line.orientation, line.bbox.left, line.bbox.top).y * zooms[i] : null;
+          return line ? viewers[i].localToContent(ref.pageN, line.orientation, line.left, line.top).y * zooms[i] : null;
         };
         /** @type {Array<[number, number, number, number]>} */
         const lineTops = [];
@@ -5721,14 +5505,21 @@ class ScribePDFViewer {
   /** Draw the Proofread Text count from the words still to check and the selected word's place among them. */
   _syncProofreadRow() {
     if (!this._proofreadExtras || !this._proofreadExtras.isConnected || !this.doc) return;
-    const queue = wordsToCheck(this.doc);
+    const lists = wordsToCheck(this.doc);
+    const total = lists.reduce((sum, list) => sum + list.length, 0);
     const selected = this.scribe.CanvasSelection.getUiWords();
-    const pos = selected.length === 1 ? queue.indexOf(selected[0].word) + 1 : 0;
+    let pos = 0;
+    if (selected.length === 1) {
+      const { word } = selected[0];
+      const { page } = word.line;
+      const at = (lists[page.n] || []).indexOf(page.lines.indexOf(word.line) * 65536 + word.line.words.indexOf(word));
+      if (at >= 0) pos = lists.slice(0, page.n).reduce((sum, list) => sum + list.length, at + 1);
+    }
     const count = this._proofreadCountElem;
     if (!count) return;
     // The widest reading for this many digits, pinned as the box's width, so the chevrons and the switch hold still as the text changes.
     // The pin only grows: a count falling below a power of ten would otherwise shift the row once.
-    const widest = `${queue.length} of ${queue.length} to check`;
+    const widest = `${total} of ${total} to check`;
     if (widest !== this._proofreadCountWidest) {
       this._proofreadCountWidest = widest;
       count.textContent = widest;
@@ -5736,7 +5527,7 @@ class ScribePDFViewer {
       const pinned = parseFloat(count.style.minWidth) || 0;
       if (w > pinned) count.style.minWidth = `${w}px`;
     }
-    count.textContent = pos > 0 ? `${pos} of ${queue.length} to check` : `${queue.length} to check`;
+    count.textContent = pos > 0 ? `${pos} of ${total} to check` : `${total} to check`;
   }
 
   /**
@@ -8600,14 +8391,13 @@ class ScribePDFViewer {
       fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
-    // A provisional document passes the Edit Text and Edit Graphics gates, since opening either tool loads it.
-    const provisional = !!doc && doc.hydrationState !== 'hydrated';
+    const arriving = !!doc && !!(/** @type {typeof doc & ProvisionalDocHooks} */ (doc))._textArriving;
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
     const editBtn = this._editTextTool?.toolbarElem;
     if (editBtn) {
-      const editable = !disabled && (provisional || !!doc.ocr?.active?.some((page) => {
-        const nt = doc ? nativeTextForPage(doc, page) : {};
-        return page?.lines?.some((line) => line.words.some((w) => nt[w.id]));
+      const editable = !disabled && (arriving || doc.pageMetrics.some((pm, n) => {
+        const counts = doc.pageStore.pageCounts(n);
+        return !!counts && counts.textSource === 'pdf' && counts.nativeWords > 0;
       }));
       if (!editable && editBtn.classList.contains('active')) editBtn.click();
       editBtn.classList.toggle('disabled', !editable);
@@ -8616,13 +8406,9 @@ class ScribePDFViewer {
     }
     const proofBtn = this._proofreadTool?.toolbarElem;
     if (proofBtn) {
-      // A provisional tab's pages carry their text source and the entry presence the document library recorded, so the row takes the same test as on a hydrated document.
-      // Until any page's words arrive the document is pending, so a mode on it stays on.
-      const pending = provisional && !doc.ocr?.active?.some((page) => page);
-      const proofreadable = !disabled && (pending || !!doc.ocr?.active?.some((page) => {
-        if (!page || DOCUMENT_IMPORT_SOURCES.has(page.textSource)) return false;
-        const nt = nativeTextForPage(doc, page);
-        return page.lines.some((line) => line.words.some((w) => !nt[w.id]));
+      const proofreadable = !disabled && (arriving || doc.pageMetrics.some((pm, n) => {
+        const counts = doc.pageStore.pageCounts(n);
+        return !!counts && !DOCUMENT_IMPORT_SOURCES.has(counts.textSource) && counts.words > counts.nativeWords;
       }));
       // The exit goes through the tool, not the button's click, so a row the gate has already disabled still leaves the mode.
       if (!proofreadable && this._proofreadTool.isActive()) this._proofreadTool.close();
@@ -8633,10 +8419,8 @@ class ScribePDFViewer {
     const cmpBtn = this._compareTool?.toolbarElem;
     if (cmpBtn) {
       const [docA, docB] = this._compareDocs();
-      // A provisional document passes, since entering the mode hydrates it and runs this gate again.
-      const hasWords = (d) => !!d && (d.hydrationState !== 'hydrated' || !!d.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
       const sideShown = !!(this._sideView && this._rightGroup && this._rightGroup.active === this._sideView.tab);
-      const comparable = !this._frontSurface() && !this._phoneUi && !!this._rightGroup && !sideShown && hasWords(docA) && hasWords(docB);
+      const comparable = !this._frontSurface() && !this._phoneUi && !!this._rightGroup && !sideShown && docHasWords(docA) && docHasWords(docB);
       if (this._compare && (this._compare.docA !== docA || this._compare.docB !== docB)) this._compareTool.close();
       else if (!comparable && this._compareTool.isActive()) this._compareTool.close();
       cmpBtn.dataset.tip = comparable ? 'Compare Versions' : !this._rightGroup || !docB || sideShown ? 'Open the other draft on the right to compare' : 'Both drafts need text to compare';
@@ -8661,13 +8445,10 @@ class ScribePDFViewer {
     if (graphicsBtn) {
       // The area cap matches the tool's picker, so near-full-page graphics, which it never selects, do not enable the button.
       let pathsIneligibleSomewhere = false;
-      const hasGraphics = !disabled && (provisional || !!doc?.fillShapes?.pages.some((shapes, n) => {
-        const dims = doc?.pageMetrics?.[n]?.dims;
-        if (!shapes || !dims) return false;
-        if (pagePathsIneligible(doc, n)) pathsIneligibleSomewhere = true;
-        const areaCap = dims.width * dims.height * 0.95;
-        return pageImagePlacements(doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap)
-          || pagePathPlacements(doc, n).some((e) => (e.right - e.left) * (e.bottom - e.top) < areaCap);
+      const hasGraphics = !disabled && (arriving || doc.pageMetrics.some((pm, n) => {
+        const flags = doc.pageStore.shapeFlags(n) ?? fillShapeFlags({ dims: pm.dims }, doc.fillShapes.pages[n] ?? null);
+        if (flags & 2) pathsIneligibleSomewhere = true;
+        return (flags & 1) !== 0;
       }));
       if (!disabled && pathsIneligibleSomewhere) {
         graphicsBtn.dataset.modeHint = 'Click or drag to select images and shapes · Some pages have too many shapes to edit';
@@ -9015,23 +8796,17 @@ class ScribePDFViewer {
    */
   _deepOcrPageCount(doc = this._activeViewer().doc) {
     if (!doc || doc.pageMetrics.length === 0) return 0;
-    const loaded = doc.hydrationState === 'hydrated';
-    // While a deferred import's stats are still extracting, return 0 so the recognition surfaces start quiet instead of flashing on then vanishing.
-    // `_setDoc` re-runs this once `textReady` lands.
-    // A tab that has not loaded keeps its text pending until something loads it, so the guard leaves it out.
-    if (loaded && doc._textReadySettle) return 0;
-    const { pageStats, pageCount, pdfType, ocrApplied } = doc.inputData;
+    if (doc._textReadySettle) return 0;
+    const { pageStats, pageCount, pdfType } = doc.inputData;
     if (this.scribe.opt.ignorePdfText) return pageCount;
     // A run recognizes every page of a document that holds text from an OCR file or a saved recognition, by the test `recognize` applies to the restored layer.
-    // That layer arrives with the load, so before it a tab goes by the OCR file it was told of and the recognition its saved file records.
-    const upload = doc.ocr['User Upload'];
-    const hooks = /** @type {typeof doc & SeededDocHooks} */ (doc);
-    const otherText = loaded
-      ? !!upload && (!!doc.ocr.pdf || upload.some((page) => page && page.lines.length > 0 && page.textSource !== 'pdf'))
-      : !!hooks.textFromOcrFile || !!ocrApplied?.some(Boolean);
+    const otherText = doc.layers.includes('User Upload') && (doc.layers.includes('pdf') || doc.pageMetrics.some((pm, n) => {
+      const counts = doc.pageStore.pageCounts(n, 'User Upload');
+      return !!counts && counts.words > 0 && counts.textSource !== 'pdf';
+    }));
     if (otherText) return pageCount;
     if (pageStats && pageStats.length === pageCount) return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
-    return loaded ? pageCount : hooks.deepOcrPages ?? pageCount;
+    return pageCount;
   }
 
   /**
@@ -9169,10 +8944,8 @@ class ScribePDFViewer {
         recognizeOptions.ocrPages = 'all';
         recognizeOptions.usePDFText = { native: { supp: false, main: false }, ocr: { supp: false, main: false } };
       }
-      // The count a tab gave before it loaded is every page when it was handed none.
-      // `recognize` would load the document itself, so it is loaded here only to count its pages again before the run reports progress against them.
-      if (doc.hydrationState !== 'hydrated') {
-        await doc.ensureHydrated();
+      if (doc._textReadySettle) {
+        await doc.textReady;
         run.total = this._deepOcrPageCount(doc);
         run.statusWidth = 0;
       }

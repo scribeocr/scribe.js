@@ -67,12 +67,20 @@ export function checkMonoWidthRatio(serifMetrics) {
 /**
  * Check for monospace using font names in OCR data.
  *
- * @param {Array<OcrPage>} ocrArr
+ * @param {import('./containers/pageStore.js').PageStore} store
+ * @param {string} layer - Name of a text layer, or `'active'`.
  */
-export function checkMonoCourierPct(ocrArr) {
+export async function checkMonoCourierPct(store, layer) {
   let courierWords = 0;
   let totalWords = 0;
-  for (const page of ocrArr) {
+  const pageCount = store.slotCount(layer);
+  let sliceStart = Date.now();
+  for (let n = 0; n < pageCount; n++) {
+    if (Date.now() - sliceStart > 40) {
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      sliceStart = Date.now();
+    }
+    const page = store.readOnlyPage(n, layer);
     if (!page) continue;
     for (const line of page.lines) {
       for (const word of line.words) {
@@ -89,9 +97,10 @@ export function checkMonoCourierPct(ocrArr) {
  * Use character metrics to select candidate serif fonts for evaluation.
  *
  * @param {Object.<string, CharMetricsFamily>} charMetricsObj
- * @param {Array<OcrPage>} ocrArr
+ * @param {import('./containers/pageStore.js').PageStore} store
+ * @param {string} layer - Name of a text layer, or `'active'`.
  */
-function getSerifCandidateFonts(charMetricsObj, ocrArr) {
+async function getSerifCandidateFonts(charMetricsObj, store, layer) {
   const allSerifFonts = ['Century', 'Palatino', 'Garamond', 'NimbusRoman', 'NimbusMono'];
 
   const serifMetrics = charMetricsObj?.SerifDefault?.normal;
@@ -100,7 +109,7 @@ function getSerifCandidateFonts(charMetricsObj, ocrArr) {
   }
 
   const monoByWidth = checkMonoWidthRatio(serifMetrics);
-  const monoByCourier = checkMonoCourierPct(ocrArr);
+  const monoByCourier = await checkMonoCourierPct(store, layer);
 
   if (monoByWidth && monoByCourier) {
     return new Set(['NimbusMono']);
@@ -259,16 +268,14 @@ const calcBestFonts = (fontMetrics) => {
 };
 
 /**
- * Run font optimization and validation for this document.
- * Sets the default sans and serif fonts to the best-matching fonts.
- * Returns `true` if optimization improved sans or serif.
- * Run it even without character-level OCR data, since it still picks the default fonts from the page images.
+ * Optimize fonts and select the best-matching default sans and serif fonts for `doc`.
+ * Still selects default fonts from page images when `doc` has no character metrics.
  * @param {ScribeDoc} doc
- * @param {Array<OcrPage>} ocrArr - Array of OCR pages to use for font optimization.
- * @param {boolean} [evaluate=true] - Score the fonts against the page images.
- *   When false, the default fonts and optimization choice already in the font state are kept.
+ * @param {string} layer - Name of the text layer to evaluate, or `'active'`.
+ * @param {boolean} [evaluate=true] - Whether to score fonts against page images and update the default fonts and `enableOpt`.
+ * @returns {Promise<boolean>} Whether optimized fonts are enabled.
  */
-export async function runOptimization(doc, ocrArr, evaluate = true) {
+export async function runOptimization(doc, layer, evaluate = true) {
   const docFonts = doc.fonts;
   const { images, pageMetrics } = doc;
   await loadBuiltInFontsRaw();
@@ -297,16 +304,17 @@ export async function runOptimization(doc, ocrArr, evaluate = true) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(images.pageCount, 5);
 
-    const serifCandidates = getSerifCandidateFonts(docFonts.state.charMetrics, ocrArr);
+    const serifCandidates = await getSerifCandidateFonts(docFonts.state.charMetrics, doc.pageStore, layer);
 
-    docFonts.rawMetrics = await evaluateFonts(docFonts, images, pageMetrics, ocrArr.slice(0, pageNum), false, serifCandidates);
+    const evalPages = Array.from({ length: pageNum }, (_, n) => doc.pageStore.readOnlyPage(n, layer, true));
+    docFonts.rawMetrics = await evaluateFonts(docFonts, images, pageMetrics, evalPages, false, serifCandidates);
     const bestMetricsRaw = calcBestFonts(docFonts.rawMetrics);
 
     await optimizeFontContainerAllPromise;
     if (docFonts.opt && Object.keys(docFonts.opt).length > 0) {
       await syncToWorkers(docFonts);
 
-      docFonts.optMetrics = await evaluateFonts(docFonts, images, pageMetrics, ocrArr.slice(0, pageNum), true, serifCandidates);
+      docFonts.optMetrics = await evaluateFonts(docFonts, images, pageMetrics, evalPages, true, serifCandidates);
 
       const bestMetricsOpt = calcBestFonts(docFonts.optMetrics);
 

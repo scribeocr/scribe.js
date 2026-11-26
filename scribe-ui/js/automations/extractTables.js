@@ -194,7 +194,7 @@ export function buildTablesWorkspace(host, container) {
   // `viewer.doc` changes on a tab switch, so everything except the settle wiring below reads it live.
   const doc = viewer.doc;
 
-  const docHasText = () => (viewer.doc.ocr.active || []).some((p) => p?.lines?.length > 0);
+  const docHasText = () => viewer.doc.pageMetrics.some((pm, n) => (viewer.doc.pageStore.pageCounts(n)?.words || 0) > 0);
   const noteText = () => {
     const chains = scribe.tableChains(viewer.doc.layoutDataTables.pages);
     if (chains.length === 0) {
@@ -217,9 +217,7 @@ export function buildTablesWorkspace(host, container) {
   noteWrap.className = 'scribe-am-xtnote';
   const renderNote = () => {
     noteWrap.textContent = '';
-    if (viewer.doc.hydrationState !== 'hydrated') {
-      // `host.app._loadUnderMode` starts this load.
-      // A load that fails opens this workspace again.
+    if (viewer.doc._textArriving || viewer.doc._loadFailed) {
       if (viewer.doc._loadFailed) {
         noteWrap.appendChild(noteBlock(INFO_SVG, 'Couldn’t load the document.'));
         return;
@@ -1022,7 +1020,7 @@ export async function buildTablesWorkbook(doc, params) {
   /** @type {Array<{name: string, rows: Array<Array<string|TableCellRich>>, range: XlsxTableRange, columnWidths?: Array<number>}>} */
   const harvested = [];
   const scopeSet = new Set(scope);
-  const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: params?.formatting });
+  const chains = scribe.extractDocTableChains(doc.pageStore.pageList(), doc.layoutDataTables.pages, { cellFormats: params?.formatting });
   for (const chain of chains) {
     if (doc.tableExport.excluded[chain.fragments[0].table.id]) continue;
     const frags = chain.fragments.filter((f) => scopeSet.has(f.n));
@@ -1094,7 +1092,8 @@ export async function run(host, params, progress) {
   // A freshly-opened native PDF installs its detected tables only once text extraction settles.
   if (doc._textReadySettle) {
     progress(0, 'Waiting for text extraction…');
-    if (!(await doc.ensureHydrated())) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
+    await doc.textReady;
+    if (doc._loadFailed) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
     if (host.viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
 

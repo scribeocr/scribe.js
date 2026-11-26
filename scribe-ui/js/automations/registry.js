@@ -131,7 +131,7 @@ export const AUTOMATIONS = [
       const doc = viewer.doc;
       if (!doc || !doc.pageMetrics.length) return 'Open a document first';
       // While deferred extraction is still running that is unknowable, so the row stays enabled until it settles.
-      if (!doc._textReadySettle && !doc.nativeText.pages.some((p) => p && Object.keys(p).length > 0)) return 'Needs a PDF with original digital text';
+      if (!doc._textReadySettle && !doc.pageMetrics.some((pm, n) => (doc.pageStore.pageCounts(n, 'pdf')?.nativeWords || 0) > 0)) return 'Needs a PDF with original digital text';
       return null;
     },
     openInstead: (host) => host.app._automatePanel?.openBulkEditWorkspace(),

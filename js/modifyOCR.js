@@ -262,23 +262,20 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
  */
 
 /**
- * Build a consensus OCR layer from `base`, in which each word carries every layer's reading of it and a confidence set by how many comparators read it the same way.
- *
- * Words are matched by position, so all layers must share one coordinate space, as `doc.ocr[*]` layers do.
- *
- * @param {Array<OcrPage>} base - The authoritative OCR layer (one page per document page).
- * @param {Array<Array<OcrPage>>} comparators - One or more comparator OCR layers, same page order.
+ * Build a consensus OCR layer from `base` with per-word readings and confidence scored against one or more `comparators`.
+ * All layers must share page order and coordinate space.
+ * @param {Array<OcrPage>} base
+ * @param {Array<Array<OcrPage>>} comparators
  * @param {Object} [options]
- * @param {string} [options.baseName] - The base layer's source name in `readings`.
- *  Defaults to each page's reading source, its `textSource` with the built-in engine's labels folded to 'scribe'.
- * @param {Array<string>} [options.names] - The comparators' source names in `readings`, in order.
- *  Each defaults to its page's reading source.
- * @param {number} [options.confHigh=100] - Confidence for full corroboration.
- * @param {number} [options.confMed=80] - Confidence for partial corroboration.
- * @param {number} [options.confLow=50] - Confidence for none, and for an added word.
- * @param {number} [options.replaceMinAgree=2] - Min comparators agreeing on one reading to override the text of a base word that no comparator matches.
- *  0 never overrides.
- * @param {boolean} [options.addMissing=true] - Add comparator words at no base word to the output.
+ * @param {string} [options.baseName] - Source label for `base` in `readings`.
+ *  Defaults to each page's `textSource`, mapping `'scribe.js'` and `'tesseract'` to `'scribe'`.
+ * @param {Array<string>} [options.names] - Source labels for `comparators` in `readings`, in order.
+ * @param {number} [options.confHigh=100] - Confidence when all comparators match.
+ * @param {number} [options.confMed=80] - Confidence when only some comparators match.
+ * @param {number} [options.confLow=50] - Confidence when no comparator matches, or for added words.
+ * @param {number} [options.replaceMinAgree=2] - Minimum agreeing comparators needed to replace a base word that no comparator matches.
+ *  `0` disables replacement.
+ * @param {boolean} [options.addMissing=true] - Add comparator words that do not overlap any base word.
  * @returns {{ ocr: Array<OcrPage>, stats: ConsensusStats }}
  */
 export function buildConsensusLayer(base, comparators, options = {}) {
@@ -312,7 +309,6 @@ export function buildConsensusLayer(base, comparators, options = {}) {
 
   for (let i = 0; i < base.length; i++) {
     const basePage = base[i];
-    // A missing base page leaves a hole, matching the sparse layers `doc.ocr[*]` already use.
     if (!basePage) continue;
 
     // Clone so the source base layer is never mutated. Voting runs on the clone's own words/ids.

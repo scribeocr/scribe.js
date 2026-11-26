@@ -1,7 +1,20 @@
 import { createSearchEngine, memoryStorage } from './searchEngine.js';
+import { pageInputOf } from './searchTokenizer.js';
+import { decodePageRecord } from '../../../js/containers/pageRecord.js';
+import { openSavedDoc } from '../../../js/containers/savedDoc.js';
+import { deflateRecord, inflateRecord } from '../../../js/containers/pageStore.js';
+import ocr from '../../../js/objects/ocrObjects.js';
 
 /** @type {?ReturnType<typeof createSearchEngine>} */
 let engine = null;
+
+/**
+ * Deflated per-page word lists for unindexed search, keyed by run hash.
+ * @type {Map<string, Array<?{words: Uint8Array, spaced: boolean}>>}
+ */
+const runWords = new Map();
+const utf8Encoder = new TextEncoder();
+const utf8Decoder = new TextDecoder();
 
 const WATCHDOG_MS = 5000;
 const HANDLE_WAIT_MS = 2000;
@@ -150,10 +163,45 @@ globalThis.addEventListener('message', (e) => {
         }
         engine = opened;
         result = engine.stats();
+      } else if (op === 'addRecords') {
+        const pages = [];
+        for (const record of /** @type {Array<?{bytes: Uint8Array, deflated: boolean}>} */ (args.records)) {
+          const page = record ? decodePageRecord(record.deflated ? inflateRecord(record.bytes) : record.bytes) : null;
+          const words = page ? page.lines.flatMap((line) => line.words.map((word) => word.text.toLowerCase().replaceAll('\n', '\u0000'))) : [];
+          pages.push(words.length
+            ? { words: await deflateRecord(utf8Encoder.encode(words.join('\n'))), spaced: words.some((word) => word.includes(' ')) }
+            : null);
+        }
+        runWords.set(args.hash, pages);
+      } else if (op === 'removeRecords') {
+        runWords.delete(args.hash);
+      } else if (op === 'findRuns') {
+        const matches = [];
+        const typedLines = args.query.trim().toLowerCase().replaceAll(' ', '\n');
+        for (const run of args.runs) {
+          const pages = runWords.get(run.hash);
+          if (!pages) throw new Error(`The run ${run.hash} is not held.`);
+          for (let k = 0; k < pages.length; k++) {
+            const held = pages[k];
+            if (!held) continue;
+            const text = utf8Decoder.decode(inflateRecord(held.words));
+            if (!held.spaced && !text.includes(typedLines)) continue;
+            const words = text.split('\n').map((t, place) => ({ id: place, text: t }));
+            matches.push(...ocr.getDocMatches(args.query, [{ n: run.first + k, lines: [{ words }] }]));
+          }
+        }
+        result = matches;
       } else if (!engine) {
         throw new Error('The search engine is not open.');
       } else if (op === 'addDoc') {
-        result = await engine.addDoc(args.hash, args.pages);
+        const saved = await openSavedDoc(args.records, args.work);
+        result = await engine.addDoc(args.hash, (async function* savedPages() {
+          for (let from = 0; from < saved.slots.length; from += 32) {
+            for (const held of await saved.read(from, Math.min(saved.slots.length, from + 32), false)) {
+              yield held ? pageInputOf(decodePageRecord(inflateRecord(held.record))) : null;
+            }
+          }
+        }()));
       } else if (op === 'removeDoc') {
         await engine.removeDoc(args.hash);
       } else if (op === 'hasDoc') {
@@ -187,8 +235,6 @@ globalThis.addEventListener('message', (e) => {
         }
       } else if (op === 'snippets') {
         result = await engine.snippets(args.hash, args.pages);
-      } else if (op === 'pages') {
-        result = await engine.pages(args.hash, args.pageNs);
       } else if (op === 'find') {
         result = await engine.find(args.hash, args.query, args.near || []);
       } else if (op === 'stats') {

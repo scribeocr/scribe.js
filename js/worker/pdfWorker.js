@@ -1,4 +1,11 @@
 import { PdfCore } from '../pdf/pdfCore.js';
+import { pageFillShapes, wordSignalsOf } from '../pdf/parsePdfDoc.js';
+import {
+  encodePageRecord, encodeDetailRecord, decodePageRecord, readPageRecordExtras,
+} from '../containers/pageRecord.js';
+import {
+  deflateRecord, inflateRecord, fillShapeFlags, detailOrderAfter,
+} from '../containers/pageStore.js';
 
 const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 
@@ -19,6 +26,119 @@ export async function loadPdfForParsing({ pdfBytes }) {
  */
 export async function parsePdfPage(args) {
   return core.parsePage(args);
+}
+
+/**
+ * Deflated page and detail records plus per-page metadata from a worker page parse.
+ * @typedef {Object} ParsedPageRecords
+ * @property {Uint8Array} record
+ * @property {Uint8Array} detail
+ * @property {number} flags - Fill-shape flags stored in the page record header.
+ * @property {number} words
+ * @property {number} nativeWords - Number of words with a native-text entry.
+ * @property {number} angle
+ * @property {Array<[string, boolean, ?number, boolean]>} signals - `[wordId, artifact, mcid, brokenFont]` tuples for words with parse signals.
+ * @property {ReturnType<PdfCore['parsePage']>['pageStats']} pageStats
+ * @property {ReturnType<PdfCore['parsePage']>['annotations']} annotations
+ * @property {ReturnType<PdfCore['parsePage']>['dataTablePage']} dataTablePage
+ * @property {ReturnType<PdfCore['parsePage']>['provisionalTables']} provisionalTables
+ * @property {ReturnType<PdfCore['parsePage']>['langSet']} langSet
+ */
+
+/**
+ * Parse a single page for text extraction and return its deflated records and per-page metadata.
+ * @param {{ pageIndex: number, dpi: number }} args
+ * @returns {Promise<ParsedPageRecords>}
+ */
+export async function parsePdfPageRecords(args) {
+  const parsed = core.parsePage(args);
+  const { pageObj } = parsed;
+  const nativeText = parsed.nativeText || {};
+  const fillShapes = pageFillShapes(parsed);
+  const flags = fillShapeFlags(pageObj, fillShapes);
+  let words = 0;
+  let nativeWords = 0;
+  for (const line of pageObj.lines) {
+    for (const word of line.words) {
+      words++;
+      if (nativeText[word.id]) nativeWords++;
+    }
+  }
+  return {
+    record: await deflateRecord(encodePageRecord(pageObj, nativeText, flags)),
+    detail: await deflateRecord(encodeDetailRecord(pageObj, nativeText, fillShapes)),
+    flags,
+    words,
+    nativeWords,
+    angle: pageObj.angle,
+    signals: [...(parsed.wordSignals || [])].map(([word, sig]) => [word.id, sig.artifact, sig.mcid, sig.brokenFont]),
+    pageStats: parsed.pageStats,
+    annotations: parsed.annotations,
+    dataTablePage: parsed.dataTablePage,
+    provisionalTables: parsed.provisionalTables,
+    langSet: parsed.langSet,
+  };
+}
+
+/**
+ * Lay out a run of consecutive pages from their deflated page records.
+ * @param {{ pages: Array<{record: Uint8Array, flags: number, signals: ParsedPageRecords['signals'], dataTablePage: ParsedPageRecords['dataTablePage'],
+ *   provisionalTables: ParsedPageRecords['provisionalTables']}>, pdfType: "image"|"text"|"ocr", carry: ?import('../pdf/parsePdfDoc.js').ChunkCarry,
+ *   docPageCount: number }} args
+ * @returns {Promise<{pages: Array<{record: Uint8Array, order: ?Int32Array, words: number, nativeWords: number, dataTablePage: ParsedPageRecords['dataTablePage']}>,
+ *   tableLinkSuggestions: ReturnType<PdfCore['layoutChunk']>['tableLinkSuggestions'], carry: import('../pdf/parsePdfDoc.js').ChunkCarry,
+ *   notePatches: ReturnType<PdfCore['layoutChunk']>['notePatches']}>}
+ *   Updated deflated page records and any detail-record word-order permutations.
+ */
+export async function layoutPdfChunkRecords({
+  pages, pdfType, carry, docPageCount,
+}) {
+  const idsBefore = [];
+  const nativeBits = [];
+  const results = pages.map((given) => {
+    const raw = inflateRecord(given.record);
+    const pageObj = decodePageRecord(raw);
+    const { wordBits } = readPageRecordExtras(raw);
+    /** @type {?Record<string, {uneditable: boolean}>} */
+    const bits = wordBits ? {} : null;
+    const ids = [];
+    for (const line of pageObj.lines) {
+      for (const word of line.words) {
+        if (bits && wordBits && wordBits[ids.length] & 1) bits[word.id] = { uneditable: (wordBits[ids.length] & 2) !== 0 };
+        ids.push(word.id);
+      }
+    }
+    idsBefore.push(ids);
+    nativeBits.push(bits);
+    return {
+      pageObj, wordSignals: wordSignalsOf(pageObj, given.signals), dataTablePage: given.dataTablePage, provisionalTables: given.provisionalTables,
+    };
+  });
+  const out = core.layoutChunk({
+    results, pdfType, carry, docPageCount,
+  });
+  const done = [];
+  for (let k = 0; k < results.length; k++) {
+    const bits = nativeBits[k];
+    let words = 0;
+    let nativeWords = 0;
+    for (const line of results[k].pageObj.lines) {
+      for (const word of line.words) {
+        words++;
+        if (bits && bits[word.id]) nativeWords++;
+      }
+    }
+    done.push({
+      record: await deflateRecord(encodePageRecord(results[k].pageObj, bits, pages[k].flags)),
+      order: detailOrderAfter(idsBefore[k], results[k].pageObj),
+      words,
+      nativeWords,
+      dataTablePage: results[k].dataTablePage,
+    });
+  }
+  return {
+    pages: done, tableLinkSuggestions: out.tableLinkSuggestions, carry: out.carry, notePatches: out.notePatches,
+  };
 }
 
 /**
@@ -120,6 +240,8 @@ if (parentPort) {
     ({
       loadPdfForParsing,
       parsePdfPage,
+      parsePdfPageRecords,
+      layoutPdfChunkRecords,
       parsePdfPageAnnotations,
       renderPdfPage,
       renderPdfAnnotation,
@@ -136,6 +258,8 @@ if (parentPort) {
         // Font and embedded-file bytes are per-call copies, so transferring them detaches nothing shared.
         const transfer = (typeof ImageBitmap !== 'undefined' && x && x.bitmap instanceof ImageBitmap) ? [x.bitmap]
           : (x && x.bytes instanceof ArrayBuffer ? [x.bytes] : []);
+        if (func === 'parsePdfPageRecords') transfer.push(x.record.buffer, x.detail.buffer);
+        if (func === 'layoutPdfChunkRecords') for (const page of x.pages) transfer.push(page.record.buffer);
         port.postMessage({ data: x, id, status: 'resolve' }, transfer);
       })
       .catch((/** @type {any} */ err) => port.postMessage({ data: err, id, status: 'reject' }));

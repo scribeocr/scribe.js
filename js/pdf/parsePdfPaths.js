@@ -249,6 +249,7 @@ function executePathOperators(tokens, collect) {
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
+    if (!(Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY))) return;
     const placement = {
       left: minX, bottom: minY, right: maxX, top: maxY,
     };
@@ -335,14 +336,16 @@ function executePathOperators(tokens, collect) {
             if (p.y > maxY) maxY = p.y;
           }
         }
-        collect.pathPlacements.push({
-          left: minX,
-          bottom: minY,
-          right: maxX,
-          top: maxY,
-          paint: fill && stroke ? 'fs' : (fill ? 'f' : 's'),
-          commands: cmds.length,
-        });
+        if (Number.isFinite(minX) && Number.isFinite(maxX) && Number.isFinite(minY) && Number.isFinite(maxY)) {
+          collect.pathPlacements.push({
+            left: minX,
+            bottom: minY,
+            right: maxX,
+            top: maxY,
+            paint: fill && stroke ? 'fs' : (fill ? 'f' : 's'),
+            commands: cmds.length,
+          });
+        }
       }
     }
 

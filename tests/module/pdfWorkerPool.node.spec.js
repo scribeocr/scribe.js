@@ -90,7 +90,16 @@ describe('Shared PDF worker pool crash containment', () => {
     expect(after.leased + after.spare + after.retiring, 'the growing document took over the retiring workers instead of spawning beside them').toBe(grown.leased + grown.spare);
     const txt = await b.exportData('text');
     expect(txt.length, 'the grown document still reads its text through the pool').toBe(3375);
-    await a.close();
     await b.close();
+    await b.images.setWorkerTarget(1);
+    expect(poolStats().leased, 'a worker-count request on a closed document leases no worker').toBe(1);
+    const running = schedA.renderPdfPage({
+      pageIndex: 1, colorMode: 'color', targetWidth: 1500, outputFormat: 'png',
+    }, 'background').catch(() => null);
+    const growing = a.images.setWorkerTarget(3);
+    await a.close();
+    await growing;
+    await running;
+    expect(poolStats().leased, 'a document closed while its lease grows returns every worker').toBe(0);
   }, 60000);
 });

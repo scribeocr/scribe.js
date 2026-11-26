@@ -33,6 +33,8 @@ export class PortfolioStore {
     /** @type {Map<string, ArrayBuffer>} */
     this.sidecarBackups = new Map();
     /** @type {Map<string, Blob>} */
+    this.recordFiles = new Map();
+    /** @type {Map<string, Blob>} */
     this.thumbs = new Map();
     /** @type {Map<string, Map<number, Blob>>} */
     this.rasters = new Map();
@@ -76,11 +78,12 @@ export class PortfolioStore {
     return null;
   }
 
-  /** Drop everything held for the portfolio once its surface closes. */
+  /** Clear the in-memory caches held for the portfolio. */
   dispose() {
     this.bytes.clear();
     this.sidecars.clear();
     this.sidecarBackups.clear();
+    this.recordFiles.clear();
     this.thumbs.clear();
     this.rasters.clear();
     this.pageThumbs.clear();
@@ -199,6 +202,21 @@ export class PortfolioStore {
   }
 
   /** @param {string} hash @param {Blob} blob */
+  async writeRecords(hash, blob) {
+    this.recordFiles.set(hash, blob);
+  }
+
+  /** @param {string} hash @returns {Promise<?Blob>} */
+  async recordsBlob(hash) {
+    return this.recordFiles.get(hash) ?? null;
+  }
+
+  /** @param {string} hash */
+  async deleteRecords(hash) {
+    this.recordFiles.delete(hash);
+  }
+
+  /** @param {string} hash @param {Blob} blob */
   async writeThumb(hash, blob) {
     this.thumbs.set(hash, blob);
   }
@@ -268,7 +286,11 @@ export class PortfolioStore {
     const entries = Object.values(manifest.docs);
     const referenced = (/** @type {string} */ hash) => entries.some((e) => e.hash === hash);
     if (!entries.some((e) => e.status === 'pending')) {
-      for (const map of [this.thumbs, this.rasters, this.pageThumbs]) for (const hash of [...map.keys()]) if (!referenced(hash)) map.delete(hash);
+      for (const map of [this.thumbs, this.rasters, this.pageThumbs, this.recordFiles]) {
+        for (const hash of [...map.keys()]) {
+          if (!referenced(hash)) map.delete(hash);
+        }
+      }
     }
     /** @type {Map<string, number>} */
     const lastUse = new Map();

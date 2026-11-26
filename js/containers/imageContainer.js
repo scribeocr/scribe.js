@@ -256,11 +256,11 @@ export class RenderSource {
   terminate = async () => {
     if (!this.scheduler && this.#schedulerReady) await this.#schedulerReady.catch(() => {});
     liveSources.delete(this);
-    if (this.scheduler) {
-      await this.scheduler.terminate();
-      this.scheduler = null;
-      this.#schedulerReady = null;
-    }
+    const s = this.scheduler;
+    if (!s) return;
+    this.scheduler = null;
+    this.#schedulerReady = null;
+    await s.terminate();
   };
 
   /**
@@ -872,7 +872,7 @@ export class ImageStore {
     if (!src) {
       src = new RenderSource(++renderSourceIdCounter);
       src.refCount = 1;
-      src.isExtracting = () => this.#doc._extracting;
+      src.isExtracting = () => !!this.#doc._textReadySettle;
       this.sources.set(src.id, src);
       this.primarySourceId = src.id;
     }
@@ -940,17 +940,19 @@ export class ImageStore {
   };
 
   /**
-   * Grow or shrink this document's own lease to `n` workers in place.
+   * Grow or shrink this document's primary PDF worker pool to `n` workers in place.
    * @param {number} n
    */
-  setWorkerTarget = (n) => this.#ensurePrimarySource().setWorkerTarget(n);
+  setWorkerTarget = (n) => this.#primarySource?.setWorkerTarget(n);
 
   /**
-   * Mark this document's own source as the one on screen, which the pool's room-making leaves alone.
+   * Pin or unpin this document's primary PDF source.
+   * Pinned sources are not shrunk or suspended when the PDF worker pool reclaims idle workers.
    * @param {boolean} pinned
    */
   setPinned = (pinned) => {
-    this.#ensurePrimarySource().pinned = pinned;
+    const src = this.#primarySource;
+    if (src) src.pinned = pinned;
   };
 
   loadCount = 0;

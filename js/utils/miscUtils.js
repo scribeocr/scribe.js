@@ -678,3 +678,15 @@ export function concatBytes(chunks) {
   for (const c of chunks) { res.set(c, off); off += c.length; }
   return res;
 }
+
+/**
+ * Gather the byte chunks an async source yields into one contiguous `Uint8Array`.
+ * @param {AsyncIterable<Uint8Array>} chunks
+ * @returns {Promise<Uint8Array>}
+ */
+export async function collectBytes(chunks) {
+  /** @type {Uint8Array[]} */
+  const parts = [];
+  for await (const part of chunks) parts.push(part);
+  return concatBytes(parts);
+}

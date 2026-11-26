@@ -179,7 +179,8 @@ export async function importOCRFiles(ocrFilesAll) {
   /** @type {?Array<string>} */
   let hocrHead = null;
   if (format === 'hocr' && hocrStrStart) {
-    hocrHead = [...hocrStrStart.matchAll(/<meta\b[^>]*\bname\s*=\s*["']ocr-[^"']*["'][^>]*>/gi)].map((x) => x[0]);
+    // The tags are copied, since a substring keeps the whole file's text in memory for as long as it lives.
+    hocrHead = JSON.parse(JSON.stringify([...hocrStrStart.matchAll(/<meta\b[^>]*\bname\s*=\s*["']ocr-[^"']*["'][^>]*>/gi)].map((x) => x[0])));
   }
 
   return {

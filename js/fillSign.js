@@ -41,14 +41,13 @@ export const isFillTextLine = (line) => line.words.length > 0 && line.words.ever
  * @param {bbox} [prevBbox] - The row's extent before a move/resize, so stale words are swept from the old location too.
  */
 export function syncFillText(doc, n, row, prevBbox) {
-  // A document that has not loaded replaces every page when it does, so the row is noted there and its words are lifted again then.
-  if (doc._seeded) {
-    const noted = doc._seeded.fillText.get(row) ?? { n, swept: [] };
+  if (doc._textMissing) {
+    const noted = doc._liftsOwed.fillText.get(row) ?? { n, swept: [] };
     noted.swept.push({ ...row.bbox });
     if (prevBbox) noted.swept.push({ ...prevBbox });
-    doc._seeded.fillText.set(row, noted);
+    doc._liftsOwed.fillText.set(row, noted);
   }
-  const pageObj = doc.ocr.active?.[n];
+  const pageObj = doc.getPage(n);
   if (!pageObj) return;
 
   const pad = 2;
@@ -355,7 +354,7 @@ const CHECKBOX_CODES = new Set([
  *   Targets in reading order, in page coordinates (the OCR frame).
  */
 export function detectFillTargets(doc, n, rejects) {
-  const pageObj = doc.ocr.active?.[n];
+  const pageObj = doc.pageStore.readOnlyPage(n, 'active', true);
   if (!pageObj) return [];
   const pageSizePt = doc.inputData?.pageStats?.[n]?.pageSize?.[0];
   const pxPerPt = pageSizePt > 0 ? pageObj.dims.width / pageSizePt : 300 / 72;

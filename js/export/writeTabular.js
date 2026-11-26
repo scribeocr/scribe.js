@@ -3,7 +3,8 @@ import ocr from '../objects/ocrObjects.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { extractTableContent } from '../extractTables.js';
 import { standardFontToCSS } from '../pdf/fonts/standardFontMetrics.js';
-import { determineSansSerif } from '../utils/miscUtils.js';
+import { collectBytes, determineSansSerif } from '../utils/miscUtils.js';
+import { writeZipChunks } from './writeZip.js';
 
 /** @typedef {import('../extractTables.js').TableCellRich} TableCellRich */
 
@@ -158,39 +159,42 @@ function createCellsSingle({
 }
 
 /**
- * Build an XLSX ZIP archive from complete per-sheet XML and boilerplate files.
- * @param {Array<string>} sheetXmls - Complete XML for xl/worksheets/sheetN.xml, one entry per sheet in workbook order.
- * @param {Array<{path: string, content: string}>} xlsxStrings - Boilerplate files (must reference the same sheet count).
- * @returns {Promise<Uint8Array>}
+ * Stream an XLSX archive from per-sheet XML and boilerplate files.
+ * @param {Array<string|Iterable<string>>} sheetXmls - XML for xl/worksheets/sheetN.xml, one entry per sheet in workbook order.
+ * @param {Array<{path: string, content: string}>} xlsxStrings - Boilerplate files referencing the same sheet count.
+ * @returns {AsyncGenerator<Uint8Array>}
  */
-async function buildXlsxZip(sheetXmls, xlsxStrings) {
-  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
-  const zipFileWriter = new Uint8ArrayWriter();
-  const zipWriter = new ZipWriter(zipFileWriter);
-  for (let i = 0; i < sheetXmls.length; i++) {
-    await zipWriter.add(`xl/worksheets/sheet${i + 1}.xml`, new TextReader(sheetXmls[i]));
-  }
-  for (let i = 0; i < xlsxStrings.length; i++) {
-    await zipWriter.add(xlsxStrings[i].path, new TextReader(xlsxStrings[i].content));
-  }
-  await zipWriter.close();
-  return zipFileWriter.getData();
+function xlsxZipChunks(sheetXmls, xlsxStrings) {
+  return writeZipChunks([
+    ...sheetXmls.map((text, i) => ({ path: `xl/worksheets/sheet${i + 1}.xml`, text })),
+    ...xlsxStrings.map((file) => ({ path: file.path, text: file.content })),
+  ]);
 }
 
 /**
- *
+ * Write the tables of a document's pages as an XLSX workbook.
+ * @param {Parameters<typeof writeXlsxChunks>[0]} params
+ * @returns {Promise<Uint8Array>}
+ */
+export function writeXlsx(params) {
+  return collectBytes(writeXlsxChunks(params));
+}
+
+/**
+ * Stream the tables of a document's pages as an XLSX workbook.
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrPageArr
  * @param {Array<LayoutDataTablePage>} params.layoutPageArr
- * @param {import('../containers/app.js').InputData} params.inputData - The document's input metadata, used for the optional filename column.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
+ * @param {import('../containers/app.js').InputData} params.inputData - Used for the optional filename column.
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to include, overriding `minpage` and `maxpage`.
  * @param {number} [params.minpage=0]
  * @param {number} [params.maxpage=-1]
  * @param {boolean} [params.xlsxFilenameColumn] - Defaults to `scribeDocDefaults.xlsxFilenameColumn`.
  * @param {boolean} [params.xlsxPageNumberColumn] - Defaults to `scribeDocDefaults.xlsxPageNumberColumn`.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @returns {AsyncGenerator<Uint8Array>}
  */
-export async function writeXlsx({
+export async function* writeXlsxChunks({
   ocrPageArr, layoutPageArr, inputData, pageArr = null, minpage = 0, maxpage = -1,
   xlsxFilenameColumn = scribeDocDefaults.xlsxFilenameColumn,
   xlsxPageNumberColumn = scribeDocDefaults.xlsxPageNumberColumn,
@@ -204,29 +208,31 @@ export async function writeXlsx({
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
 
-  let cellContent = '';
-  let rowCount = 0;
-  for (const i of pageArr) {
-    /** @type {Array<string>} */
-    const extraCols = [];
-    if (xlsxFilenameColumn) {
-      if (inputData.pdfMode) {
-        extraCols.push(inputData.inputFileNames[0]);
-      } else {
-        extraCols.push(inputData.inputFileNames[i]);
+  const sheetXml = (function* sheetXmlChunks() {
+    yield `${sheetPreamble}<sheetData>`;
+    let rowCount = 0;
+    for (const i of pageArr) {
+      /** @type {Array<string>} */
+      const extraCols = [];
+      if (xlsxFilenameColumn) {
+        if (inputData.pdfMode) {
+          extraCols.push(inputData.inputFileNames[0]);
+        } else {
+          extraCols.push(inputData.inputFileNames[i]);
+        }
       }
+      if (xlsxPageNumberColumn) extraCols.push(String(i + 1));
+
+      const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
+      const cellsObj = createCells({ tableWordObj, extraCols, startRow: rowCount });
+      rowCount += cellsObj.rows;
+      yield cellsObj.content;
+      doc?.progressHandler({ n: i, type: 'export', info: { } });
     }
-    if (xlsxPageNumberColumn) extraCols.push(String(i + 1));
+    yield `</sheetData>${sheetClose}`;
+  }());
 
-    const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
-    const cellsObj = createCells({ tableWordObj, extraCols, startRow: rowCount });
-    rowCount += cellsObj.rows;
-    cellContent += cellsObj.content;
-    doc?.progressHandler({ n: i, type: 'export', info: { } });
-  }
-
-  const sheetXml = `${sheetPreamble}<sheetData>${cellContent}</sheetData>${sheetClose}`;
-  return buildXlsxZip([sheetXml], xlsxStrings);
+  yield* xlsxZipChunks([sheetXml], xlsxStrings);
 }
 
 /**
@@ -307,7 +313,7 @@ export async function writeXlsxFromRows(rows, options = {}) {
   const strings = stylesGrew(styleState)
     ? xlsxStrings.map((f) => (f.path === 'xl/styles.xml' ? { path: f.path, content: buildStylesXml(f.content, styleState) } : f))
     : xlsxStrings;
-  return buildXlsxZip([sheetXml], strings);
+  return collectBytes(xlsxZipChunks([sheetXml], strings));
 }
 
 /**
@@ -559,5 +565,5 @@ export async function writeXlsxFromSheets(sheets, options = {}) {
     columnWidths: sheet.columnWidths ?? options.columnWidths,
   }, i, { sheetPreamble, sheetClose }, styleState));
   if (stylesGrew(styleState)) byPath.set('xl/styles.xml', buildStylesXml(byPath.get('xl/styles.xml'), styleState));
-  return buildXlsxZip(sheetXmls, xlsxStrings.map((f) => ({ path: f.path, content: byPath.get(f.path) })));
+  return collectBytes(xlsxZipChunks(sheetXmls, xlsxStrings.map((f) => ({ path: f.path, content: byPath.get(f.path) }))));
 }

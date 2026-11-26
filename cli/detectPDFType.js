@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 
 import { detectPdfType } from '../js/pdf/parsePdfDoc.js';
+import { writeTextChunks } from '../js/export/writeText.js';
 
 const typeMap = {
   text: 'Text native',
@@ -26,13 +27,17 @@ export const detectPDFType = async (pdfFile, outputPath) => {
   const doc = await scribe.openDocument([pdfFile]);
   const type = typeMap[doc.inputData.pdfType] || 'Image native';
 
-  const text = scribe.utils.writeText({
-    ocrCurrent: doc.ocr.active,
-    reflowText: false,
-    lineNumbers: false,
-    pageMetrics: doc.pageMetrics,
-  });
-  fs.writeFileSync(outputPath, text);
+  const fd = fs.openSync(outputPath, 'w');
+  try {
+    for (const chunk of writeTextChunks({
+      ocrCurrent: doc.pageStore.pageList(),
+      reflowText: false,
+      lineNumbers: false,
+      pageMetrics: doc.pageMetrics,
+    })) fs.writeFileSync(fd, chunk);
+  } finally {
+    fs.closeSync(fd);
+  }
 
   console.log('PDF Type:', type);
 

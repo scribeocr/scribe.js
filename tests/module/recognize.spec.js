@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -49,14 +50,14 @@ describe('Check style detection.', () => {
   });
 
   test('Italic words are identified correctly', async () => {
-    expect(doc.ocr.active[0].lines[0].words[3].style.italic).toBe(false);
-    expect(doc.ocr.active[0].lines[0].words[4].style.italic).toBe(true);
-    expect(doc.ocr.active[0].lines[0].words[5].style.italic).toBe(true);
-    expect(doc.ocr.active[0].lines[0].words[6].style.italic).toBe(false);
+    expect(doc.getPage(0).lines[0].words[3].style.italic).toBe(false);
+    expect(doc.getPage(0).lines[0].words[4].style.italic).toBe(true);
+    expect(doc.getPage(0).lines[0].words[5].style.italic).toBe(true);
+    expect(doc.getPage(0).lines[0].words[6].style.italic).toBe(false);
   });
 
   test('The page names the built-in engine as its text source', async () => {
-    expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
+    expect(doc.getPage(0).textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
   });
 
   afterAll(async () => {
@@ -145,14 +146,14 @@ describe('Check auto-rotate features.', () => {
 
     // Regression guard: the combined merge once decided which LSTM words belong to a Legacy line from page-frame boxes.
     // On a skewed page those are tall enough to reach the neighboring lines, so every line took words from above and below.
-    const { lines } = doc.ocr.active[0];
+    const { lines } = doc.getPage(0);
     expect(lines.length, 'combined recognition of a skewed page lost or merged lines').toBe(14);
     expect(lines[0].words.map((w) => w.text).join(' '), 'a line of a skewed page took words from its neighbors')
       .toBe('JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
 
     const words = lines.flatMap((line) => line.words);
     expect(words.find((w) => w.text === 'Aragon’s')?.lang, 'a recognized word carries the engine\'s language').toBe('eng');
-    expect(doc.ocr.active[0].textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
+    expect(doc.getPage(0).textSource, 'a page recognized by the built-in engine does not name it as the text source').toBe('scribe.js');
     expect(words.find((w) => w.text === 'compound,')?.readings,
       'a word with a classifier reading and a losing engine reading carries its own reading first, then both, higher confidence first, each naming its origin in msg')
       .toEqual([{
@@ -250,20 +251,19 @@ describe('Check comparison between OCR versions.', () => {
 
     await doc.importFilesSupp([`${ASSETS_PATH}/testocr_missing_word.hocr`], 'Missing Word');
 
-    // These words have confidence 100 in the hOCR, so own entries at 90 and 55 show whether the compare keeps an own entry as its layer wrote it or rebuilds it from the word.
-    const wordsA = doc.ocr['User Upload'][0].lines[0].words;
-    const wordsB = doc.ocr['Missing Word'][0].lines[0].words;
-    wordsB[0].readings = [{ source: 'hocr', text: 'This', conf: 90 }, {
-      source: 'hocr', text: 'Th1s', conf: 50, rank: 2, msg: 'c1',
-    }];
+    const wordsA = doc.getPage(0, { layer: 'User Upload' }).lines[0].words;
     wordsA[4].readings = [{ source: 'hocr', text: 'of', conf: 55 }, {
       source: 'hocr', text: '0f', conf: 60, rank: 2, msg: 'c1',
+    }];
+    const wordsB = doc.getPage(0, { layer: 'Missing Word' }).lines[0].words;
+    wordsB[0].readings = [{ source: 'hocr', text: 'This', conf: 90 }, {
+      source: 'hocr', text: 'Th1s', conf: 50, rank: 2, msg: 'c1',
     }];
     wordsB[2].readings = [{ source: 'hocr', text: 'of', conf: 100 }, {
       source: 'hocr', text: 'of.', conf: 40, rank: 2, msg: 'c1',
     }];
 
-    const res = await doc.compareOCR(doc.ocr['User Upload'], doc.ocr['Missing Word'], compOptions);
+    const res = await doc.compareOCR('User Upload', 'Missing Word', compOptions);
 
     // The first word is present in the 'Missing Word' OCR data.
     const { words } = res.ocr[0].lines[0];
@@ -300,7 +300,7 @@ describe('Check comparison between OCR versions.', () => {
       supplementComp: false,
     };
 
-    const res1 = await doc.compareOCR(doc.ocr['User Upload'], doc.ocr['Missing Word'], compOptions1);
+    const res1 = await doc.compareOCR('User Upload', 'Missing Word', compOptions1);
 
     // The second word is missing in the 'Missing Word' OCR data, so the confidence should be 0 when compared to itself.
     expect(res1.ocr[0].lines[0].words[2].conf).toBe(0);
@@ -311,7 +311,7 @@ describe('Check comparison between OCR versions.', () => {
       supplementComp: true,
     };
 
-    const res2 = await doc.compareOCR(doc.ocr['User Upload'], doc.ocr['Missing Word'], compOptions2);
+    const res2 = await doc.compareOCR('User Upload', 'Missing Word', compOptions2);
 
     // When the `supplementComp` option is set to `true`, missing words should be supplemented with new recognition, so the confidence should be 100.
     expect(res2.ocr[0].lines[0].words[2].conf).toBe(100);
@@ -348,14 +348,14 @@ describe('Check monospace font detection and optimization (M.D.Fla.).', () => {
   });
 
   test('Each row of the four-up transcript sheet imports as its own line', () => {
-    const page = doc.ocr.pdf[0];
+    const page = doc.getPage(0, { layer: 'pdf' });
     const texts = page.lines.map((line) => line.words.map((w) => w.text).join(' '));
     expect(page.lines.length, 'the native line count of the four-up sheet').toBe(119);
     expect(texts.slice(15, 17), 'row 4 of the left page and row 4 of the page printed beside it must each import as a line of their own').toEqual([
       '4 Q When you say "second one," I\'m going to -- I\'ll',
       '4 Q I take it that you, Mr. Welsh, and Mr. McConnell',
     ]);
-    expect(doc.ocr.active[0].lines.length, 'the combined layer after recognition keeps every row of the sheet as its own line').toBe(119);
+    expect(doc.getPage(0).lines.length, 'the combined layer after recognition keeps every row of the sheet as its own line').toBe(119);
   });
 
   afterAll(async () => {
@@ -373,17 +373,17 @@ describe('Check vanilla recognition engine.', () => {
     // This region contains text that is recognized by the modified engine
     // however is missed by the unmodified ("vanilla") engine.
     // This test confirms that the unmodified Tesseract.js engine was used.
-    const txt = scribe.utils.ocr.getRegionText(doc.ocr.active[0],
+    const txt = scribe.utils.ocr.getRegionText(doc.getPage(0),
       {
         left: 24, top: 54, right: 930, bottom: 91,
       });
 
     expect(txt, 'the vanilla LSTM reading of the header row').toBe('Debits Credits Balance');
-    const debits = doc.ocr.active[0].lines.flatMap((line) => line.words).find((w) => w.text === 'Debits');
+    const debits = doc.getPage(0).lines.flatMap((line) => line.words).find((w) => w.text === 'Debits');
     expect(debits?.lang, 'a word recognized by the vanilla engine carries its language').toBe('eng');
     // Vanilla Tesseract's font and style output is unreliable, so the vanilla converter should never read it.
     expect(debits?.style.font, 'a word recognized by the vanilla engine carries no Tesseract font').toBe(null);
-    expect(doc.ocr.active[0].textSource, 'a page recognized by the vanilla engine does not name it as the text source').toBe('tesseract');
+    expect(doc.getPage(0).textSource, 'a page recognized by the vanilla engine does not name it as the text source').toBe('tesseract');
   });
 
   test('Combined mode is rejected with vanillaMode, whose cores carry no merge', async () => {
@@ -393,7 +393,7 @@ describe('Check vanilla recognition engine.', () => {
 
   test('The built-in engine comes back after a vanilla run in the same session', async () => {
     await doc.recognize({ mode: 'quality' });
-    expect(doc.ocr.active[0].textSource, 'a run after a vanilla run in the same session still used the vanilla engine').toBe('scribe.js');
+    expect(doc.getPage(0).textSource, 'a run after a vanilla run in the same session still used the vanilla engine').toBe('scribe.js');
   });
 
   afterAll(async () => {
@@ -415,9 +415,9 @@ describe('Check that a run which does not finish leaves the document as it was.'
     controller.abort();
     const err = await rejection(doc.recognize({ langs: ['eng'], ocrPages: 'all', signal: controller.signal }));
     expect(err?.name, 'a run on an aborted signal rejects with an AbortError').toBe('AbortError');
-    expect(doc.ocr.active, 'the parsed text stays the active layer after an aborted run').toBe(doc.ocr.pdf);
-    expect(wordCount(doc.ocr.active), 'the active text is untouched by an aborted run').toBe(497);
-    expect(doc.ocr.active[0].lines[0].words[0].text, 'the first word after an aborted run').toBe('WHISTLEBLOWERS');
+    expect(doc.activeLayer, 'the parsed text stays the active layer after an aborted run').toBe('pdf');
+    expect(wordCount(docPages(doc)), 'the active text is untouched by an aborted run').toBe(497);
+    expect(doc.getPage(0).lines[0].words[0].text, 'the first word after an aborted run').toBe('WHISTLEBLOWERS');
     expect(doc.inputData.ocrApplied, 'no page is marked OCR-applied by an aborted run').toBe(null);
   });
 
@@ -425,9 +425,9 @@ describe('Check that a run which does not finish leaves the document as it was.'
   test('A run that fails on a missing language file rejects and changes nothing', async () => {
     const err = await rejection(doc.recognize({ langs: ['zzz'], ocrPages: 'all' }));
     expect(String(err?.message ?? err), 'a run on a language that cannot load rejects, naming the file').toMatch(/zzz\.traineddata/);
-    expect(doc.ocr.active, 'the parsed text stays the active layer after a failed run').toBe(doc.ocr.pdf);
-    expect(wordCount(doc.ocr.active), 'the active text is untouched by a failed run').toBe(497);
-    expect(doc.ocr.active[0].lines[0].words[0].text, 'the first word after a failed run').toBe('WHISTLEBLOWERS');
+    expect(doc.activeLayer, 'the parsed text stays the active layer after a failed run').toBe('pdf');
+    expect(wordCount(docPages(doc)), 'the active text is untouched by a failed run').toBe(497);
+    expect(doc.getPage(0).lines[0].words[0].text, 'the first word after a failed run').toBe('WHISTLEBLOWERS');
     expect(doc.inputData.ocrApplied, 'no page is marked OCR-applied by a failed run').toBe(null);
   });
 

@@ -74,12 +74,25 @@ async function main(func, params) {
       });
     }
     if (func === 'recognize') {
-      output.text = doc.ocr.active.map((x) => scribe.utils.ocr.getPageText(x)).join('\n');
+      const pageTexts = [];
+      for (let n = 0; n < doc.pageCount; n++) {
+        const page = doc.pageStore.readOnlyPage(n);
+        pageTexts.push(page ? scribe.utils.ocr.getPageText(page) : '');
+      }
+      output.text = pageTexts.join('\n');
     }
   }
 
   if (func === 'check' || func === 'conf' || params.printConf) {
-    const { highConf, total } = scribe.utils.calcConf(doc.ocr.active);
+    let highConf = 0;
+    let total = 0;
+    for (let n = 0; n < doc.pageCount; n++) {
+      const page = doc.pageStore.readOnlyPage(n);
+      if (!page) continue;
+      const conf = scribe.utils.calcConf([page]);
+      highConf += conf.highConf;
+      total += conf.total;
+    }
     console.log(`Confidence: ${highConf / total} (${highConf} of ${total})`);
     if (func === 'conf') {
       await scribe.terminate();
@@ -118,14 +131,14 @@ async function main(func, params) {
     const debugDir = `${outputDir}/${outputStem}_debug`;
     fs.mkdirSync(debugDir, { recursive: true });
     const outputPathCsv = `${debugDir}/_debug.csv`;
-    scribe.utils.writeDebugCsv({ pages: doc.ocr.active, fileName: outputPathCsv });
+    scribe.utils.writeDebugCsv({ pages: doc.pageStore.pageList('active', true), fileName: outputPathCsv });
 
     scribe.utils.dumpDebugImages(doc, debugDir);
     scribe.utils.dumpHOCR(doc, debugDir);
 
-    for (let i = 0; i < doc.ocr.active.length; i++) {
+    for (let i = 0; i < doc.pageCount; i++) {
       const outputPathPngI = `${debugDir}/page_vis_${i}.png`;
-      const img = await doc.renderPageStatic(doc.ocr.active[i]);
+      const img = await doc.renderPageStatic(doc.getPage(i));
       const imgData = new Uint8Array(atob(img.split(',')[1])
         .split('')
         .map((c) => c.charCodeAt(0)));

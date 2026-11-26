@@ -7,6 +7,7 @@ import {
 } from '../../js/pdf/fonts/parsePdfFonts.js';
 import opentype from '../../js/font-parser/src/index.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -280,7 +281,7 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
     const gtH = [];
     const gtW = [];
-    for (const line of doc.ocr.active[0].lines) {
+    for (const line of doc.getPage(0, { detail: true }).lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {
@@ -298,7 +299,7 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     // Broken Type3 PDF — record before-correction baseline, then apply.
     doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
     const beforeH = [];
-    for (const line of doc.ocr.pdf[0].lines) {
+    for (const line of doc.getPage(0, { layer: 'pdf', detail: true }).lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {
@@ -312,11 +313,11 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
 
     const pdfBytes = await readFileBytes(`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`);
     const type3Fonts = extractType3GlyphBBoxes(pdfBytes);
-    correctType3CharBBoxes(doc.ocr.pdf, type3Fonts);
+    doc.pageStore.held(() => correctType3CharBBoxes(docPages(doc, 'pdf'), type3Fonts));
 
     const afterH = [];
     const afterW = [];
-    for (const line of doc.ocr.pdf[0].lines) {
+    for (const line of doc.getPage(0, { layer: 'pdf', detail: true }).lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {
@@ -396,18 +397,20 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     let fromPdf;
 
     beforeAll(async () => {
-      const page = doc.ocr.pdf[0];
-      const word = page.lines[1].words[0];
-      const entry = doc.nativeText.pages[0][word.id];
+      const entry = doc.nativeText.pages[0][doc.getPage(0, { layer: 'pdf' }).lines[1].words[0].id];
       const hashes = await doc.images.getType3GlyphHashes(0);
       const outlines = entry.codes.map((code) => hashes.fonts.get(entry.fontObjNum).byCode.get(code).hash);
-      const read = () => ({
-        word: word.text,
-        chars: word.chars.map((c) => c.text).join(''),
-        mixed: page.lines[1].words[1].text,
-        heading: page.lines[0].words[0].text,
-        nextPage: doc.ocr.pdf[1].lines[1].words[0].text,
-      });
+      const read = () => {
+        const page = doc.getPage(0, { layer: 'pdf', detail: true });
+        const word = page.lines[1].words[0];
+        return {
+          word: word.text,
+          chars: word.chars.map((c) => c.text).join(''),
+          mixed: page.lines[1].words[1].text,
+          heading: page.lines[0].words[0].text,
+          nextPage: doc.getPage(1, { layer: 'pdf' }).lines[1].words[0].text,
+        };
+      };
       setPages = await doc.setType3GlyphMappings(outlines.map((hash, i) => [hash, 'Iris'[i]]));
       afterSet = read();
       doc.undo();
@@ -416,34 +419,34 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
       afterRedo = read();
 
       // The viewer shows a placeholder-text document from its `pdf` layer; the export reads the active one.
-      doc.ocr.active = doc.ocr.pdf;
+      doc.activeLayer = 'pdf';
       const scribeData = await doc.exportData('scribe', { scribeSession: true });
       const restored = await scribe.openDocument({ pdfFiles: [adobePath], scribeFiles: [scribeData] });
-      const restoredLine = restored.ocr.active[0].lines[1];
+      const restoredLine = restored.getPage(0).lines[1];
       afterRestore = {
         word: restoredLine.words[0].text,
         mixed: restoredLine.words[1].text,
-        nextPage: restored.ocr.active[1].lines[1].words[0].text,
+        nextPage: restored.getPage(1).lines[1].words[0].text,
       };
 
-      const mixed = restoredLine.words[1];
-      const mixedEntry = restored.nativeText.pages[0][mixed.id];
+      const mixed = () => restored.getPage(0).lines[1].words[1];
+      const mixedEntry = restored.nativeText.pages[0][mixed().id];
       const restoredHashes = await restored.images.getType3GlyphHashes(0);
       const outlineAt = (i) => restoredHashes.fonts.get(mixedEntry.fontObjNum).byCode.get(mixedEntry.codes[i]).hash;
       const bOutline = outlineAt(2);
       const cOutline = outlineAt(6);
       editPages = await restored.setType3GlyphMappings([[bOutline, 'b']]);
-      afterEdit = mixed.text;
+      afterEdit = mixed().text;
       // A session saved before the parser recorded glyph codes restores its words without them, so the next edit has to fetch them from the PDF.
       for (const record of Object.values(restored.nativeText.pages[0])) delete record.codes;
       await restored.setType3GlyphMappings([[cOutline, 'c']]);
-      afterLegacyEdit = mixed.text;
+      afterLegacyEdit = mixed().text;
 
       const reopened = await scribe.openDocument({ pdfFiles: [await restored.exportData('pdf')] });
-      const reopenedPage = reopened.ocr.pdf[0];
+      const reopenedPage = reopened.getPage(0, { layer: 'pdf' });
       fromPdf = {
         line: reopenedPage.lines[1].words.map((w) => w.text),
-        nextPage: reopened.ocr.pdf[1].lines[1].words[0].text,
+        nextPage: reopened.getPage(1, { layer: 'pdf' }).lines[1].words[0].text,
         lines: reopenedPage.lines.length,
         words: reopenedPage.lines.flatMap((line) => line.words).length,
       };

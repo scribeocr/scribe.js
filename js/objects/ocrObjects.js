@@ -50,8 +50,8 @@ export function OcrPage(n, dims) {
  */
 
 /**
- * Whether a paragraph is page furniture: a page-number line, a running header or footer, or a left-margin line-number column.
- * @param {?OcrPar} par
+ * Return whether a paragraph is a page-number line, header, footer, or line-number column.
+ * @param {?{type: ParType}|undefined} par
  * @returns {boolean}
  */
 export function parIsFurniture(par) {
@@ -301,6 +301,12 @@ export function OcrChar(text, bbox) {
   /** @type {bbox} */
   this.bbox = bbox;
 }
+
+// Force Tagged fields on V8's shared `{ left, top, right, bottom }` shape so integer coordinates stay inline and only fractional coordinates allocate `HeapNumber`s.
+// Root the dummy box on `globalThis` so tree-shaking and V8 garbage collection do not drop it.
+Reflect.set(globalThis, Symbol.for('scribe.js tagged box'), {
+  left: null, top: null, right: null, bottom: null,
+});
 
 /**
  *
@@ -939,9 +945,13 @@ export function reIdPage(page) {
   /** @type {Map<string, string>} */
   const wordIdMap = new Map();
   if (!page) return wordIdMap;
+  /** @type {Map<string, string>} */
+  const parIdMap = new Map();
   const lines = new Set(page.lines || []);
   for (const par of page.pars || []) {
-    par.id = getRandomAlphanum(8);
+    const newId = getRandomAlphanum(8);
+    parIdMap.set(par.id, newId);
+    par.id = newId;
     for (const line of par.lines || []) lines.add(line);
   }
   for (const line of lines) {
@@ -951,6 +961,16 @@ export function reIdPage(page) {
       wordIdMap.set(word.id, newId);
       word.id = newId;
     }
+  }
+  // A footnote reference names its note's paragraph, and the note names the word that refers to it, so both follow the new ids.
+  // A reference to a note on another page keeps the id it had.
+  for (const line of lines) {
+    for (const word of line.words || []) {
+      if (word.footnoteParId) word.footnoteParId = parIdMap.get(word.footnoteParId) ?? word.footnoteParId;
+    }
+  }
+  for (const par of page.pars || []) {
+    if (par.footnoteRefId) par.footnoteRefId = wordIdMap.get(par.footnoteRefId) ?? par.footnoteRefId;
   }
   return wordIdMap;
 }

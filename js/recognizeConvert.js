@@ -1,7 +1,8 @@
 import { opt } from './containers/app.js';
+import { PageStore, holdJson } from './containers/pageStore.js';
 import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
-import { calcCharMetricsFromPages } from './fontStatistics.js';
+import { calcCharMetricsLayer } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { ImageWrapper } from './objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage, addCircularRefsDataTables } from './objects/layoutObjects.js';
@@ -58,47 +59,36 @@ export function ocrAddsNewText(nativePage, ocrPage) {
 }
 
 /**
- * Build the canonical 'Combined' layer for a partial page selection and point `active` at it.
- * Per page it keeps the engine's OCR, or falls back to native (PDF) text when the keep/discard gate finds the OCR adds nothing the native layer lacks.
- * Records the per-page choice in `doc.inputData.ocrApplied`, narrowed in place to the pages this leaves OCR-backed.
+ * Build the 'Combined' text layer for a partial OCR selection and make it active.
+ * Clears `doc.inputData.ocrApplied` in place for pages that use native text.
  * @param {ScribeDoc} doc
- * @param {OcrPage[]} source - The engine's full-document OCR layer ('Combined' itself, or a custom model's).
- * @param {boolean[]} ocrPageMask - Which pages were sent to OCR.
- * @param {boolean} gateApplies - Whether the keep/discard gate runs (the `auto*` ocrPages modes only).
- * @param {boolean} fullOcr - True when every page was OCR'd, in which case `active` already names the engine layer.
- * @param {?OcrPage[]} native - The document's native (PDF) text layer, if any.
- * @param {?OcrPage[]} userOcr - User-uploaded OCR, if any.
+ * @param {string} source - Layer name of the OCR output (`'Combined'` or a custom model layer).
+ * @param {boolean[]} ocrPageMask
+ * @param {boolean} gateApplies
+ * @param {boolean} fullOcr
+ * @param {?string} native - Layer name for native PDF text, if any.
+ * @param {?string} userOcr - Layer name for user-uploaded OCR, if any.
  */
 function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr, native, userOcr) {
   if (fullOcr || userOcr || !ocrPageMask.some(Boolean)) return;
-  const combined = Array(doc.inputData.pageCount);
-  for (let i = 0; i < combined.length; i++) {
-    const nat = native && native[i];
-    const ocrPage = source[i];
-    let chosen;
-    let fromOcr;
-    if (ocrPageMask[i] && ocrPage) {
-      const keepOcr = !(gateApplies && nat && !ocrAddsNewText(nat, ocrPage));
-      chosen = keepOcr ? ocrPage : nat;
-      fromOcr = keepOcr;
-      if (!keepOcr) doc.inputData.ocrApplied[i] = false;
-    } else {
-      chosen = nat || ocrPage;
-      fromOcr = !nat && !!ocrPage;
-      if (nat) doc.inputData.ocrApplied[i] = false;
+  const store = doc.pageStore;
+  for (let i = 0; i < doc.inputData.pageCount; i++) {
+    const hasNative = !!native && store.hasPage(i, native);
+    const hasOcr = store.hasPage(i, source);
+    let fromOcr = !hasNative && hasOcr;
+    if (ocrPageMask[i] && hasOcr) {
+      fromOcr = !(gateApplies && hasNative) || store.held(() => ocrAddsNewText(
+        store.readOnlyPage(i, /** @type {string} */ (native)), /** @type {OcrPage} */ (store.readOnlyPage(i, source)),
+      ));
     }
-    if (!chosen) {
-      combined[i] = new OcrPage(i, doc.pageMetrics[i].dims);
-    } else if (fromOcr && source === doc.ocr.Combined) {
-      // The engine's page is taken as it is, because the document keeps one OCR tree per page and nothing else holds it.
-      combined[i] = chosen;
-    } else {
-      // A native or custom-model page is cloned, so editing 'Combined' cannot corrupt the layer its own holder still reads.
-      combined[i] = ocr.clonePage(chosen);
+    if (!fromOcr && hasNative) doc.inputData.ocrApplied[i] = false;
+    if (!hasNative && !hasOcr) {
+      store.setPage(i, new OcrPage(i, doc.pageMetrics[i].dims), 'Combined');
+    } else if (!(fromOcr && source === 'Combined')) {
+      store.sharePage(i, fromOcr ? source : /** @type {string} */ (native), 'Combined');
     }
   }
-  doc.ocr.Combined = combined;
-  doc.ocr.active = doc.ocr.Combined;
+  store.active = 'Combined';
 }
 
 /**
@@ -213,14 +203,15 @@ export async function evalOCRPage(doc, params) {
 }
 
 /**
- * Compare two sets of OCR data.
+ * Compare two text layers of a document, page by page.
  * @param {ScribeDoc} doc
- * @param {Array<OcrPage>} ocrA
- * @param {Array<OcrPage>} ocrB
+ * @param {string} layerA - Name of a text layer, or `'active'`.
+ * @param {string} layerB - Name of a text layer, or `'active'`.
  * @param {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} [options]
  * @param {?function} [progressCallback=null]
+ * @param {?(i: number, page: OcrPage) => void} [onPage=null] - Receives each compared page as it finishes, leaving the returned `ocr` array empty.
  */
-export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = null) {
+export async function compareOCR(doc, layerA, layerB, options, progressCallback = null, onPage = null) {
   /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
   const compOptions = {
     ignorePunct: scribeDocDefaults.ignorePunct,
@@ -241,8 +232,8 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
   const debugImageArr = [];
 
   const comparePageI = async (i) => {
-    const pageA = ocrA[i];
-    const pageB = ocrB[i];
+    const pageA = doc.pageStore.readOnlyPage(i, layerA, true);
+    const pageB = doc.pageStore.readOnlyPage(i, layerB, true);
     // A per-page OCR subset leaves skipped pages empty, so skip any page missing from either input.
     if (!pageA || !pageB) {
       if (progressCallback) progressCallback();
@@ -264,7 +255,8 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
       docId: doc.id,
     });
 
-    ocrArr[i] = res.page;
+    if (onPage) onPage(i, res.page);
+    else ocrArr[i] = res.page;
 
     metricsArr[i] = res.metrics;
 
@@ -272,10 +264,18 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
     if (progressCallback) progressCallback();
   };
 
-  const indices = [...Array(ocrA.length).keys()];
-  const compPromises = indices.map(async (i) => comparePageI(i));
-  const settled = await Promise.allSettled(compPromises);
-  for (const [i, result] of settled.entries()) if (result.status === 'rejected') errors[i] = result.reason;
+  await gs.getGeneralScheduler();
+  const maxInFlight = gs.schedulerInner.getNumWorkers() + 2;
+  /** @type {Set<Promise<void>>} */
+  const inFlight = new Set();
+  const pageCount = doc.pageStore.slotCount(layerA);
+  for (let i = 0; i < pageCount; i++) {
+    while (inFlight.size >= maxInFlight) await Promise.race(inFlight);
+    const job = comparePageI(i).catch((err) => { errors[i] = err; });
+    inFlight.add(job);
+    job.then(() => inFlight.delete(job));
+  }
+  await Promise.all(inFlight);
 
   return {
     ocr: ocrArr, metrics: metricsArr, debug: debugImageArr, errors,
@@ -448,29 +448,28 @@ async function convertOCRPage(ocrRaw, n, format) {
 }
 
 /**
- * Install a parsed `OcrPage` into the doc at index `n`.
- *
+ * Install a parsed `OcrPage` into `doc` at 0-based page index `n`.
  * @param {ScribeDoc} doc
  * @param {number} n
  * @param {OcrPage} page
  * @param {object} options
- * @param {string} options.engineName - Name of the OCR engine this page came from.
- * @param {LayoutDataTablePage} [options.dataTables] - Per-page layout tables.
- * @param {Object<string,string>} [options.warn] - Per-page conversion warning.
- * @param {boolean} [options.mainData] - When true, this page's data drives pageMetrics and convertPageWarn for index `n`. Default true.
- *   Set false when inserting a secondary engine's results into a doc that already has a primary OCR pass.
- * @param {boolean} [options.setActive] - When true, point `doc.ocr.active` at this engine's array. Default true.
- *   Set false to leave `doc.ocr.active` unchanged (used by recognition's per-page callback, which assigns active itself at the end of the run).
- * @param {?HocrSourcePage} [options.hocrSource] - The page's hOCR source markup, kept under `engineName` for re-export of that layer.
+ * @param {string} [options.layer] - Target text layer name, created if absent.
+ * @param {string} [options.engineName] - Alias of `layer`.
+ * @param {LayoutDataTablePage} [options.dataTables]
+ * @param {Object<string,string>} [options.warn] - Conversion warnings for the page.
+ * @param {boolean} [options.mainData=true] - Whether to update `pageMetrics` and `convertPageWarn` and replace existing default `dataTables` at index `n`.
+ * @param {boolean} [options.setActive=true] - Whether to make this layer active.
+ * @param {?HocrSourcePage} [options.hocrSource] - Source hOCR markup for re-exporting this layer, or `null` to clear it.
  */
 export function insertParsedPage(doc, n, page, {
-  engineName, dataTables, warn = {}, mainData = true, setActive = true, hocrSource = undefined,
+  layer, engineName, dataTables, warn = {}, mainData = true, setActive = true, hocrSource = undefined,
 }) {
+  const name = /** @type {string} */ (layer ?? engineName);
   addCircularRefsOcr([page]);
 
-  if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
-  doc.ocr[engineName][n] = page;
-  if (setActive) doc.ocr.active = doc.ocr[engineName];
+  doc.pageStore.add(name, doc.inputData.pageCount);
+  doc.pageStore.setSnapshot(n, name, PageStore.snapshotOfPage(page));
+  if (setActive) doc.pageStore.active = name;
 
   if (mainData) {
     doc.convertPageWarn[n] = warn;
@@ -480,8 +479,8 @@ export function insertParsedPage(doc, n, page, {
 
   if (hocrSource !== undefined) {
     if (!doc.hocrSource.pages[n]) doc.hocrSource.pages[n] = {};
-    if (hocrSource) doc.hocrSource.pages[n][engineName] = hocrSource;
-    else delete doc.hocrSource.pages[n][engineName];
+    if (hocrSource) doc.hocrSource.pages[n][name] = holdJson(hocrSource);
+    else delete doc.hocrSource.pages[n][name];
   }
 
   doc.inputData.xmlMode[n] = true;
@@ -494,7 +493,7 @@ export function insertParsedPage(doc, n, page, {
     }
   }
 
-  doc.progressHandler({ n, type: 'convert', info: { engineName } });
+  doc.progressHandler({ n, type: 'convert', info: { engineName: name } });
 }
 
 /**
@@ -542,7 +541,6 @@ async function convertPageCallback(doc, {
  */
 export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, pageMetrics = null, options = {}) {
   const docxLineSplitMode = options.docxLineSplitMode ?? scribeDocDefaults.docxLineSplitMode;
-  const promiseArr = [];
   if (format === 'textract') {
     if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Textract data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
@@ -620,12 +618,25 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, p
     return;
   }
 
+  await gs.getGeneralScheduler();
+  const maxInFlight = gs.schedulerInner.getNumWorkers() + 2;
+  /** @type {Set<Promise<void>>} */
+  const inFlight = new Set();
+  /** @type {{ failure: ?Error }} */
+  const run = { failure: null };
   for (let n = 0; n < ocrRawArr.length; n++) {
-    if (ocrRawArr[n] == null) continue;
-    promiseArr.push(convertOCRPage(ocrRawArr[n], n, format)
-      .then((res) => convertPageCallback(doc, res, n, mainData, engineName)));
+    if (run.failure) break;
+    const ocrRaw = ocrRawArr[n];
+    if (ocrRaw == null) continue;
+    while (inFlight.size >= maxInFlight) await Promise.race(inFlight);
+    const job = convertOCRPage(ocrRaw, n, format)
+      .then((res) => convertPageCallback(doc, res, n, mainData, engineName))
+      .catch((err) => { if (!run.failure) run.failure = err; });
+    inFlight.add(job);
+    job.then(() => inFlight.delete(job));
   }
-  await Promise.all(promiseArr);
+  await Promise.all(inFlight);
+  if (run.failure) throw run.failure;
 }
 
 /**
@@ -645,8 +656,8 @@ async function recognizeAllPages(
   const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
 
   // Whichever engines ran, the result lands under 'Combined': the merged page of a dual-engine run, or the engine's own page.
-  if (!doc.ocr.Combined) doc.ocr.Combined = Array(doc.inputData.pageCount);
-  doc.ocr.active = doc.ocr.Combined;
+  doc.pageStore.add('Combined', doc.inputData.pageCount);
+  doc.pageStore.active = 'Combined';
 
   await gs.initTesseract({
     anyOk: false, vanillaMode, langs, config,
@@ -710,7 +721,7 @@ async function recognizeAllPages(
     await checkCharWarn(doc, doc.convertPageWarn);
   }
 
-  doc.ocr.active = doc.ocr.Combined;
+  doc.pageStore.active = 'Combined';
 }
 
 /**
@@ -776,20 +787,16 @@ async function convertModelRawPage(doc, rawData, n, model) {
 }
 
 /**
- * Document-mode recognition path: the model consumes the whole PDF at once (e.g. a
- * server proxy that renders pages and runs OCR remotely) and streams back per-page raw
- * results. Skips browser-side pre-rendering and the per-image dispatch loop entirely.
+ * Recognize a document with a document-mode model that streams per-page results.
  * @param {ScribeDoc} doc
  * @param {Object} options
  * @param {RecognitionModel} options.model
  * @param {Object} [options.modelOptions]
  * @param {AbortSignal} [options.signal]
- * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
- *   No page selected skips OCR entirely.
- *   Models with `documentModePageSelection` are sent only the selected pages.
- *   Every other model is sent the whole PDF, and the selection is applied to its results afterwards.
+ * @param {?boolean[]} ocrPageMask - Pages to recognize, or `null` for all pages.
+ * @param {?string} nativeLayer - Name of the layer holding the document's native (PDF) text, if any.
  */
-async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null, nativeText = doc.ocr.pdf) {
+async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask, nativeLayer) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -799,22 +806,25 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
   // untouched to avoid mutating a user-supplied reference.
   const modelOptionsWithSignal = { ...modelOptions, signal };
 
-  if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
+  doc.pageStore.add(engineName, doc.inputData.pageCount);
   if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
 
   if (ocrPageMask && !ocrPageMask.some(Boolean)) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (nativeLayer && doc.pageStore.hasPage(n, nativeLayer)) doc.pageStore.sharePage(n, nativeLayer, engineName);
+      else doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
     }
-    doc.ocr.active = doc.ocr[engineName];
-    return doc.ocr.active;
+    doc.pageStore.active = engineName;
+    return;
   }
   const pageSelection = model.config.documentModePageSelection && ocrPageMask && !ocrPageMask.every(Boolean) ? ocrPageMask : null;
 
   // Filling `ocrApplied` here would mark unselected pages OCR-applied, which the searchable-PDF export reads to pick pages to flatten.
   if (pageSelection) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      if (!pageSelection[n]) doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (pageSelection[n]) continue;
+      if (nativeLayer && doc.pageStore.hasPage(n, nativeLayer)) doc.pageStore.sharePage(n, nativeLayer, engineName);
+      else doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
     }
   } else {
     if (ocrPageMask && !ocrPageMask.every(Boolean)) {
@@ -869,7 +879,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
         lastErrMsg = errMsg;
         terminalPages.add(entry.pageNum);
         doc.warningHandler({ message: `Recognition failed for page ${entry.pageNum}: ${errMsg}`, page: entry.pageNum });
-        doc.ocr[engineName][entry.pageNum] = new OcrPage(entry.pageNum, doc.pageMetrics[entry.pageNum].dims);
+        doc.pageStore.setPage(entry.pageNum, new OcrPage(entry.pageNum, doc.pageMetrics[entry.pageNum].dims), engineName);
         continue;
       }
       const { pageNum, rawData } = entry;
@@ -890,7 +900,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
   }
 
   // Preserve partial results on abort — caller (and any resume layer) may want them.
-  doc.ocr.active = doc.ocr[engineName];
+  doc.pageStore.active = engineName;
   if (scribeDocDefaults.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
 
   // Always throw if the signal is aborted, regardless of whether the library or the
@@ -908,7 +918,7 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
     failedPagesDoc.push(n);
     lastErrMsg = 'no result was returned for this page.';
     doc.warningHandler({ message: `Recognition failed for page ${n}: no result was returned for this page.`, page: n });
-    doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
+    doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
   }
 
   const expectedPageCount = pageSelection ? pageSelection.filter(Boolean).length : doc.inputData.pageCount;
@@ -919,26 +929,20 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
     failedPagesDoc.sort((a, b) => a - b);
     doc.warningHandler({ message: `Recognition failed for ${failedPagesDoc.length} page(s) (${failedPagesDoc.join(', ')}). These pages will have no OCR data.` });
   }
-
-  return doc.ocr.active;
 }
 
 /**
- * Recognize all pages using a custom (external) recognition model.
- * Called by `recognize` when `options.model` is provided.
- *
+ * Recognize a document using a custom recognition model.
  * @param {ScribeDoc} doc
- * @param {Object} options - Options object from `recognize`, guaranteed non-null with `model` set.
+ * @param {Object} options
  * @param {RecognitionModel} options.model
  * @param {Object} [options.modelOptions]
  * @param {Array<string>} [options.langs]
- * @param {AbortSignal} [options.signal] - Optional abort signal.
- *   When aborted, recognition stops scheduling new pages, drains in-flight work,
- *   preserves whatever pages completed, and throws an AbortError.
- * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
- *   When set, only `true` pages are sent to the model and skipped pages keep their native (PDF) text.
+ * @param {AbortSignal} [options.signal] - Preserves completed pages and throws an `AbortError` when aborted.
+ * @param {?boolean[]} ocrPageMask - Pages to recognize, or `null` for all pages.
+ * @param {?string} nativeLayer - Name of the layer holding the document's native (PDF) text, if any.
  */
-async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText = doc.ocr.pdf) {
+async function recognizeCustomModel(doc, options, ocrPageMask, nativeLayer) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -957,19 +961,23 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
   await gs.getGeneralScheduler();
 
   // Document-mode models OCR the whole PDF in a single call, so route them to their own path.
-  if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options, ocrPageMask, nativeText);
+  if (model.config.documentMode) {
+    await recognizeCustomModelDocumentMode(doc, options, ocrPageMask, nativeLayer);
+    return;
+  }
 
   // Initialize array for custom model results
-  if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
+  doc.pageStore.add(engineName, doc.inputData.pageCount);
   if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
 
   // No page selected: skip the model entirely, filling each page from its native (PDF) text.
   if (ocrPageMask && !ocrPageMask.some(Boolean)) {
     for (let n = 0; n < doc.inputData.pageCount; n++) {
-      doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (nativeLayer && doc.pageStore.hasPage(n, nativeLayer)) doc.pageStore.sharePage(n, nativeLayer, engineName);
+      else doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
     }
-    doc.ocr.active = doc.ocr[engineName];
-    return doc.ocr.active;
+    doc.pageStore.active = engineName;
+    return;
   }
 
   // Different cloud providers implement usage quotas in different ways.
@@ -1001,12 +1009,12 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
     concurrency = Math.max(Math.min(cpuN - 1, 8), 1);
   }
 
-  // Process all selected pages with limited concurrency.
-  // Skipped pages keep their native (PDF) text so `doc.ocr[engineName]` (the active layer below) has no holes.
   const pages = [...Array(doc.images.pageCount).keys()].filter((n) => !ocrPageMask || ocrPageMask[n]);
   if (ocrPageMask) {
     for (let n = 0; n < doc.images.pageCount; n++) {
-      if (!ocrPageMask[n]) doc.ocr[engineName][n] = (nativeText && nativeText[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+      if (ocrPageMask[n]) continue;
+      if (nativeLayer && doc.pageStore.hasPage(n, nativeLayer)) doc.pageStore.sharePage(n, nativeLayer, engineName);
+      else doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
     }
   }
   const executing = new Set();
@@ -1029,7 +1037,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
       const nativeN = await doc.images.getNative(n);
       if (!nativeN) {
         doc.warningHandler({ message: `No image found for page ${n}, skipping.`, page: n });
-        doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
+        doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
         return;
       }
 
@@ -1103,7 +1111,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
         const errMsg = result.error ? result.error.message : 'Unknown error';
         failedPages.push(n);
         doc.warningHandler({ message: `Recognition failed for page ${n}: ${errMsg}`, page: n });
-        doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
+        doc.pageStore.setPage(n, new OcrPage(n, doc.pageMetrics[n].dims), engineName);
         consecutiveFailures++;
         lastErrorMessage = errMsg;
         if (consecutiveFailures >= maxConsecutiveFailures) {
@@ -1129,7 +1137,7 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
   // On abort: preserve whatever pages completed and throw an AbortError.
   // A caller (e.g. the server proxy's resume-cache layer) may want the partial results.
   if (signal && signal.aborted) {
-    doc.ocr.active = doc.ocr[engineName];
+    doc.pageStore.active = engineName;
     if (scribeDocDefaults.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
     throwIfAborted(signal);
   }
@@ -1152,11 +1160,10 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null, nativeText
   }
 
   // Set active OCR to custom model results
-  doc.ocr.active = doc.ocr[engineName];
+  doc.pageStore.active = engineName;
   if (scribeDocDefaults.keepRawData) {
     doc.ocrRaw.active = doc.ocrRaw[engineName];
   }
-  return doc.ocr.active;
 }
 
 /**
@@ -1198,8 +1205,8 @@ export async function recognize(doc, options = {}) {
   const signal = options.signal;
   throwIfAborted(signal);
 
-  // Page selection below reads pageStats, pdfType and ocr.pdf, which are not complete until an on-demand load and any deferred text extraction have finished.
-  if (!(await doc.ensureHydrated())) throw new Error('The document could not be loaded, so it was not recognized.');
+  await doc.textReady;
+  if (doc._textMissing) throw new Error('The document could not be loaded, so it was not recognized.');
   throwIfAborted(signal);
 
   // Decide which pages require OCR based on document contents and options specified.
@@ -1211,10 +1218,11 @@ export async function recognize(doc, options = {}) {
   // A `.scribe` session restored beside its PDF carries the PDF's own parsed text under 'User Upload', because that import runs no parse of its own.
   // Page selection and combining therefore treat the layer as native text rather than as user-supplied OCR.
   // A page the engine or a user produced carries another `textSource`, which keeps a saved recognition on the user-OCR path.
-  const restoredNative = !doc.ocr.pdf && !!doc.ocr['User Upload'] && doc.inputData.pdfMode
-    && doc.ocr['User Upload'].every((page) => !page || page.lines.length === 0 || page.textSource === 'pdf');
-  const userOcr = restoredNative ? null : doc.ocr['User Upload'];
-  const nativeText = doc.ocr.pdf || (restoredNative ? doc.ocr['User Upload'] : null);
+  const store = doc.pageStore;
+  const restoredNative = !store.has('pdf') && store.has('User Upload') && doc.inputData.pdfMode
+    && store.pageList('User Upload').every((page) => !page || page.lines.length === 0 || page.textSource === 'pdf');
+  const userOcr = store.has('User Upload') && !restoredNative ? 'User Upload' : null;
+  const nativeText = store.has('pdf') ? 'pdf' : (restoredNative ? 'User Upload' : null);
 
   /** @type {boolean[]} */
   let ocrPageMask;
@@ -1234,9 +1242,9 @@ export async function recognize(doc, options = {}) {
   // Every place a built-in run writes, so a cancel or a failure can put the document back; a new per-page write belongs here too.
   // Angles are copied because a page can change the angle of an existing metrics object rather than replacing the object.
   const before = {
-    active: doc.ocr.active,
+    active: store.active,
     ocrApplied: doc.inputData.ocrApplied,
-    combined: doc.ocr.Combined ? doc.ocr.Combined.slice() : null,
+    combined: store.has('Combined') ? Array.from({ length: store.slotCount('Combined') }, (_, n) => store.snapshot(n, 'Combined')) : null,
     pageMetrics: doc.pageMetrics.slice(),
     angles: doc.pageMetrics.map((metrics) => (metrics ? metrics.angle : undefined)),
     convertPageWarn: doc.convertPageWarn.slice(),
@@ -1253,14 +1261,14 @@ export async function recognize(doc, options = {}) {
   // Custom recognition model path
   if (options.model) {
     await recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask, nativeText);
-    buildCombinedLayer(doc, doc.ocr.active, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
-    return doc.ocr.active;
+    buildCombinedLayer(doc, /** @type {string} */ (store.active), ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
+    return;
   }
 
   if (!ocrPageMask.some(Boolean)) {
     // No page needs OCR: keep the parsed native/existing text layer as the active layer and skip recognition.
-    if (nativeText) doc.ocr.active = nativeText;
-    return doc.ocr.active;
+    if (nativeText) store.active = nativeText;
+    return;
   }
 
   try {
@@ -1295,7 +1303,6 @@ export async function recognize(doc, options = {}) {
         || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
     ) {
       existingOCR = nativeText;
-      // Not keyed on `doc.ocr.active`, which the editor aliases to `doc.ocr.pdf` for display.
       forceMainData = !((doc.inputData.pdfType === 'text' && usePDFText.native.main)
         || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
     }
@@ -1307,12 +1314,12 @@ export async function recognize(doc, options = {}) {
     if (!dual) {
       // Metrics from the LSTM model are so inaccurate they are not worth using.
       if (oemMode === 'legacy') {
-        const charMetrics = calcCharMetricsFromPages(doc.ocr.Combined);
+        const charMetrics = await calcCharMetricsLayer(store, 'Combined');
         if (Object.keys(charMetrics).length > 0) {
           clearObjectProperties(doc.fonts.state.charMetrics);
           Object.assign(doc.fonts.state.charMetrics, charMetrics);
         }
-        await doc.runOptimization(doc.ocr.Combined).catch((err) => {
+        await doc.runOptimization('Combined').catch((err) => {
           if (err?.name === 'WorkerTerminatedError') throw err;
           doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
         });
@@ -1331,19 +1338,26 @@ export async function recognize(doc, options = {}) {
       // The font eval skips pages without OCR data, so binarizing an unrecognized page would cost a render plus an engine pass for nothing.
       const fontEvalPages = recognizedPages.slice(0, 6);
 
-      const fontLayer = doc.ocr.Combined;
       await doc.images.preRenderRange({ pageArr: fontEvalPages, binary: true });
-      const charMetrics = calcCharMetricsFromPages(fontLayer);
+      const charMetrics = await calcCharMetricsLayer(store, 'Combined');
       if (Object.keys(charMetrics).length > 0) {
         clearObjectProperties(doc.fonts.state.charMetrics);
         Object.assign(doc.fonts.state.charMetrics, charMetrics);
       }
-      await doc.runOptimization(fontLayer).catch((err) => {
+      await doc.runOptimization('Combined').catch((err) => {
         if (err?.name === 'WorkerTerminatedError') throw err;
         doc.warningHandler({ message: `Font optimization failed, so the default fonts are used: ${err?.message || err}` });
       });
 
       if (existingOCR && (userOcr || fullOcr)) {
+        /** @type {Set<number>} */
+        const kept = new Set();
+        const takeMerged = (/** @type {number} */ i, /** @type {OcrPage} */ page) => {
+          store.setSnapshot(i, 'Combined', PageStore.snapshotOfPage(page));
+          kept.add(i);
+        };
+        /** @type {?Awaited<ReturnType<typeof compareOCR>>} */
+        let res = null;
         if (combineMode === 'conf') {
           /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
           const compOptions = {
@@ -1356,17 +1370,7 @@ export async function recognize(doc, options = {}) {
             editConf: true,
           };
 
-          const res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
-
-          if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
-
-          const recognized = doc.ocr.Combined.slice();
-          clearObjectProperties(doc.ocr.Combined);
-          Object.assign(doc.ocr.Combined, res.ocr);
-          for (const [i, err] of Object.entries(res.errors)) {
-            doc.ocr.Combined[i] = recognized[i];
-            doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the existing text failed (${err && err.message ? err.message : err}); the recognition is kept as it is.` });
-          }
+          res = await compareOCR(doc, existingOCR, 'Combined', compOptions, progressCb, takeMerged);
         } else if (combineMode === 'data') {
           /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
           const compOptions = {
@@ -1381,28 +1385,26 @@ export async function recognize(doc, options = {}) {
             useBboxB: !forceMainData && existingOCR === nativeText && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
           };
 
-          let res;
           if (forceMainData) {
-            res = await compareOCR(doc, doc.ocr.Combined, existingOCR, compOptions, progressCb);
+            res = await compareOCR(doc, 'Combined', existingOCR, compOptions, progressCb, takeMerged);
           } else {
-            res = await compareOCR(doc, existingOCR, doc.ocr.Combined, compOptions, progressCb);
+            res = await compareOCR(doc, existingOCR, 'Combined', compOptions, progressCb, takeMerged);
           }
+        }
 
+        if (res) {
           if (doc.debug.debugImg.Combined) doc.debug.debugImg.Combined = res.debug;
 
-          const recognized = doc.ocr.Combined.slice();
-          clearObjectProperties(doc.ocr.Combined);
-          Object.assign(doc.ocr.Combined, res.ocr);
           for (const [i, err] of Object.entries(res.errors)) {
-            doc.ocr.Combined[i] = recognized[i];
+            kept.add(Number(i));
             doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the existing text failed (${err && err.message ? err.message : err}); the recognition is kept as it is.` });
           }
+          for (let i = 0; i < store.slotCount('Combined'); i++) if (!kept.has(i)) store.removePage(i, 'Combined');
         }
       }
     }
 
-    buildCombinedLayer(doc, doc.ocr.Combined, ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
-    return doc.ocr.active;
+    buildCombinedLayer(doc, 'Combined', ocrPageMask, gateApplies, fullOcr, nativeText, userOcr);
   } catch (err) {
     const restore = (arr, saved) => {
       // A page's timing row can land past the end of an array the run found empty, so the length comes back too.
@@ -1412,10 +1414,16 @@ export async function recognize(doc, options = {}) {
         else delete arr[n];
       }
     };
-    doc.ocr.active = before.active;
+    if (before.combined) {
+      before.combined.forEach((snap, n) => {
+        if (snap) store.setSnapshot(n, 'Combined', snap);
+        else store.removePage(n, 'Combined');
+      });
+    } else {
+      store.remove('Combined');
+    }
+    store.active = before.active;
     doc.inputData.ocrApplied = before.ocrApplied;
-    if (before.combined) restore(doc.ocr.Combined, before.combined);
-    else delete doc.ocr.Combined;
     restore(doc.pageMetrics, before.pageMetrics);
     doc.pageMetrics.forEach((metrics, n) => { if (metrics) metrics.angle = before.angles[n]; });
     restore(doc.convertPageWarn, before.convertPageWarn);

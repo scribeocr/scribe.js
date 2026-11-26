@@ -19,9 +19,9 @@ describe('Check Abbyy XML import function.', () => {
   });
 
   test('Should correctly import text content from Abbyy XML (default settings)', async () => {
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.getPage(0).lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Ascenders On');
     expect(text2).toBe('query png');
@@ -29,7 +29,7 @@ describe('Check Abbyy XML import function.', () => {
   });
 
   test('A drop-cap word of only an unrecognized-character mark does not abort the font evaluation', async () => {
-    const line = doc.ocr.active[0].lines[0];
+    const line = doc.getPage(0).lines[0];
     const height = line.bbox.bottom - line.bbox.top;
     const mark = new scribe.utils.ocr.OcrWord(line, 'word_mark', '■', {
       left: line.bbox.left, top: line.bbox.top, right: line.bbox.left + height, bottom: line.bbox.bottom,
@@ -37,7 +37,7 @@ describe('Check Abbyy XML import function.', () => {
     mark.style.dropcap = true;
     mark.visualCoords = true;
     line.words.push(mark);
-    await doc.runOptimization(doc.ocr.active);
+    await doc.runOptimization();
     expect(scribe.utils.calcWordMetrics(mark, doc.fonts).fontSize, 'a mark the font cannot measure is sized from its box height').toBeCloseTo(40.48, 2);
   });
 
@@ -52,9 +52,9 @@ describe('Check Abbyy XML import function.', () => {
   });
 
   test('Should correctly import smallcaps attribute', async () => {
-    const text1 = doc.ocr.active[0].lines[4].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[4].words.map((x) => x.text).join(' ');
 
-    const text2 = doc.ocr.active[0].lines[23].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[23].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Shubhdeep Deb');
 
@@ -69,18 +69,18 @@ describe('Check Abbyy XML import function.', () => {
 describe('Check that text orientation is handled correctly in Abbyy imports (simple layout).', () => {
   test('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/testocr_all_orientations.abbyy.xml`]);
-    expect(doc.ocr.active[0].lines[0].words[0].line.orientation).toBe(0);
-    expect(doc.ocr.active[1].lines[0].words[0].line.orientation).toBe(0);
-    expect(doc.ocr.active[2].lines[0].words[0].line.orientation).toBe(0);
-    expect(doc.ocr.active[3].lines[0].words[0].line.orientation).toBe(3);
-    expect(doc.ocr.active[4].lines[0].words[0].line.orientation).toBe(3);
-    expect(doc.ocr.active[5].lines[0].words[0].line.orientation).toBe(3);
-    expect(doc.ocr.active[6].lines[0].words[0].line.orientation).toBe(2);
-    expect(doc.ocr.active[7].lines[0].words[0].line.orientation).toBe(2);
-    expect(doc.ocr.active[8].lines[0].words[0].line.orientation).toBe(2);
-    expect(doc.ocr.active[9].lines[0].words[0].line.orientation).toBe(1);
-    expect(doc.ocr.active[10].lines[0].words[0].line.orientation).toBe(1);
-    expect(doc.ocr.active[11].lines[0].words[0].line.orientation).toBe(1);
+    expect(doc.getPage(0).lines[0].words[0].line.orientation).toBe(0);
+    expect(doc.getPage(1).lines[0].words[0].line.orientation).toBe(0);
+    expect(doc.getPage(2).lines[0].words[0].line.orientation).toBe(0);
+    expect(doc.getPage(3).lines[0].words[0].line.orientation).toBe(3);
+    expect(doc.getPage(4).lines[0].words[0].line.orientation).toBe(3);
+    expect(doc.getPage(5).lines[0].words[0].line.orientation).toBe(3);
+    expect(doc.getPage(6).lines[0].words[0].line.orientation).toBe(2);
+    expect(doc.getPage(7).lines[0].words[0].line.orientation).toBe(2);
+    expect(doc.getPage(8).lines[0].words[0].line.orientation).toBe(2);
+    expect(doc.getPage(9).lines[0].words[0].line.orientation).toBe(1);
+    expect(doc.getPage(10).lines[0].words[0].line.orientation).toBe(1);
+    expect(doc.getPage(11).lines[0].words[0].line.orientation).toBe(1);
   });
 
   afterAll(async () => {
@@ -91,43 +91,43 @@ describe('Check that text orientation is handled correctly in Abbyy imports (sim
 describe('Check that text orientation is handled correctly in Abbyy imports.', () => {
   test('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`]);
-    expect(doc.ocr.active[0].lines[2].words[0].line.orientation).toBe(3);
-    expect(doc.ocr.active[3].lines[2].words[0].line.orientation).toBe(2);
-    expect(doc.ocr.active[2].lines[2].words[0].line.orientation).toBe(1);
+    expect(doc.getPage(0).lines[2].words[0].line.orientation).toBe(3);
+    expect(doc.getPage(3).lines[2].words[0].line.orientation).toBe(2);
+    expect(doc.getPage(2).lines[2].words[0].line.orientation).toBe(1);
   });
 
   // The following tests compare the coordinates of a rotated line to the same line in a non-rotated version of the same document.
   test('Lines oriented at 90 degrees counterclockwise have coordinates calculated correctly', async () => {
-    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(0).lines[2].words[0].bbox.left) - (doc.getPage(1).lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(0).lines[2].words[0].bbox.right) - (doc.getPage(1).lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(0).lines[2].words[0].bbox.top) - (doc.getPage(1).lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(0).lines[2].words[0].bbox.bottom) - (doc.getPage(1).lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('Lines oriented at 90 degrees clockwise have coordinates calculated correctly', async () => {
-    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(2).lines[2].words[0].bbox.left) - (doc.getPage(1).lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
     // This requires a larger tolerance, however the issue appears to be with the input rather than the parsing.
-    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(2);
-    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(2).lines[2].words[0].bbox.right) - (doc.getPage(1).lines[2].words[0].bbox.right))).toBeLessThanOrEqual(2);
+    expect(Math.abs((doc.getPage(2).lines[2].words[0].bbox.top) - (doc.getPage(1).lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(2).lines[2].words[0].bbox.bottom) - (doc.getPage(1).lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('Lines oriented at 180 degrees have coordinates calculated correctly', async () => {
-    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(3).lines[2].words[0].bbox.left) - (doc.getPage(1).lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(3).lines[2].words[0].bbox.right) - (doc.getPage(1).lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(3).lines[2].words[0].bbox.top) - (doc.getPage(1).lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.getPage(3).lines[2].words[0].bbox.bottom) - (doc.getPage(1).lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('Lines oriented at 90/180/270 degrees have line rotation detected correctly', async () => {
-    expect(Math.abs((doc.ocr.active[4].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[6].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[8].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[10].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[5].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[7].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[9].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((doc.ocr.active[11].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(4).lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(6).lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(8).lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(10).lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(5).lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(7).lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(9).lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.getPage(11).lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
 
     expect(Math.abs((doc.pageMetrics[4].angle) - (5))).toBeLessThanOrEqual(1);
     expect(Math.abs((doc.pageMetrics[6].angle) - (5))).toBeLessThanOrEqual(1);
@@ -141,7 +141,7 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', (
 
   test('Two readings of a turned page compare by where their words lie, whatever frame each stores them in', async () => {
     await doc.importFilesSupp([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.alto.xml`], 'Ground Truth');
-    const res = await doc.compareOCR(doc.ocr.active, doc.ocr['Ground Truth']);
+    const res = await doc.compareOCR('active', 'Ground Truth');
     const quarter = res.metrics[2];
     expect(quarter.total, 'the quarter-turned page counts every word of the upright reading').toBe(240);
     expect(quarter.correct, 'the quarter-turned page matches its words across the two frames').toBe(177);
@@ -166,8 +166,8 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', (
 describe('Check that empty pages are handled correctly in Abbyy imports.', () => {
   test('Check that empty pages are handled correctly in Abbyy imports.', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/yearbook_of_foreign_trade_statistics_of_poland_2024.abbyy.xml`]);
-    expect(doc.ocr.active[0].lines.length).toBe(7);
-    expect(doc.ocr.active[1].lines.length).toBe(0);
+    expect(doc.getPage(0).lines.length).toBe(7);
+    expect(doc.getPage(1).lines.length).toBe(0);
   });
 
   afterAll(async () => {
@@ -179,28 +179,28 @@ describe('Check that font style is detected for Abbyy xml imports.', () => {
   test('Bold style is detected', async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.abbyy.xml`]);
-    expect(doc.ocr.active[1].lines[3].words[0].style.bold).toBe(true);
-    expect(doc.ocr.active[1].lines[3].words[0].style.italic).toBe(false);
-    expect(doc.ocr.active[1].lines[3].words[0].style.underline).toBe(false);
+    expect(doc.getPage(1).lines[3].words[0].style.bold).toBe(true);
+    expect(doc.getPage(1).lines[3].words[0].style.italic).toBe(false);
+    expect(doc.getPage(1).lines[3].words[0].style.underline).toBe(false);
   });
 
   test('Bold + italic style is detected', async () => {
-    expect(doc.ocr.active[0].lines[1].words[0].style.italic).toBe(true);
-    expect(doc.ocr.active[0].lines[1].words[0].style.bold).toBe(true);
-    expect(doc.ocr.active[0].lines[1].words[0].style.underline).toBe(false);
+    expect(doc.getPage(0).lines[1].words[0].style.italic).toBe(true);
+    expect(doc.getPage(0).lines[1].words[0].style.bold).toBe(true);
+    expect(doc.getPage(0).lines[1].words[0].style.underline).toBe(false);
   });
 
   test('Italic style is detected', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
-    expect(doc.ocr.active[0].lines[30].words[0].style.italic).toBe(true);
-    expect(doc.ocr.active[0].lines[30].words[0].style.bold).toBe(false);
-    expect(doc.ocr.active[0].lines[30].words[0].style.underline).toBe(false);
+    expect(doc.getPage(0).lines[30].words[0].style.italic).toBe(true);
+    expect(doc.getPage(0).lines[30].words[0].style.bold).toBe(false);
+    expect(doc.getPage(0).lines[30].words[0].style.underline).toBe(false);
   });
 
   test('Bold + underlined style is detected', async () => {
-    expect(doc.ocr.active[0].lines[22].words[0].style.italic).toBe(false);
-    expect(doc.ocr.active[0].lines[22].words[0].style.bold).toBe(true);
-    expect(doc.ocr.active[0].lines[22].words[0].style.underline).toBe(true);
+    expect(doc.getPage(0).lines[22].words[0].style.italic).toBe(false);
+    expect(doc.getPage(0).lines[22].words[0].style.bold).toBe(true);
+    expect(doc.getPage(0).lines[22].words[0].style.underline).toBe(true);
   });
 
   afterAll(async () => {
@@ -212,7 +212,7 @@ describe('Check Abbyy XML table import.', () => {
   test('Should import Abbyy XML with PDF document', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
 
-    expect(doc.ocr.active[0].lines.length > 0).toBe(true);
+    expect(doc.getPage(0).lines.length > 0).toBe(true);
   });
 
   test('Should correctly import table structures from Abbyy XML', async () => {

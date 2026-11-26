@@ -11,24 +11,89 @@ import {
 import { CharMetricsFamily, CharMetricsFont, CharMetricsRawFamily } from './objects/charMetricsObjects.js';
 
 /**
- * Combine page-level character statistics to calculate overall font metrics.
- * Run after all files (both image and OCR) have been loaded.
- *
- * @param {Array<OcrPage>} pageArr
+ * Calculate a document's font metrics from the character boxes of one text layer.
+ * @param {import('./containers/pageStore.js').PageStore} store
+ * @param {string} layer - Name of a text layer, or `'active'`.
+ * @returns {Promise<Object.<string, CharMetricsFamily>>}
  */
-export function calcCharMetricsFromPages(pageArr) {
-  if (!pageArr || pageArr.length === 0) return {};
+export async function calcCharMetricsLayer(store, layer) {
+  /** @type {Object.<string, CharMetricsRawFamily>} */
+  const raw = {};
 
-  const pageCharMetricsArr = pageArr.map((x) => calcCharMetricsPage(x));
+  const pageCount = store.slotCount(layer);
+  let sliceStart = Date.now();
+  for (let n = 0; n < pageCount; n++) {
+    if (Date.now() - sliceStart > 40) {
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+      sliceStart = Date.now();
+    }
+    const pageObj = store.readOnlyPage(n, layer, true);
+    if (!pageObj) continue;
 
-  if (pageCharMetricsArr.length === 0) return {};
+    for (const lineObj of pageObj.lines) {
+      for (const wordObj of lineObj.words) {
+        if (!wordObj.chars) continue;
 
-  const charMetricsRawObj = pageCharMetricsArr.reduce((x, y) => unionCharMetricsRawObj(x, y));
+        if (wordObj.chars.length !== wordObj.text.length) continue;
+
+        if (wordObj.conf < 80 || wordObj.lang === 'chi_sim' || wordObj.style.sup || wordObj.style.smallCaps) continue;
+
+        const styleLookup = getStyleLookup(wordObj.style);
+        if (!['normal', 'italic', 'bold'].includes(styleLookup)) continue;
+
+        const wordFontFamily = determineSansSerif(wordObj.style.font) || 'Default';
+
+        for (let k = 0; k < wordObj.chars.length; k++) {
+          const charObj = wordObj.chars[k];
+
+          const charHeight = charObj.bbox.bottom - charObj.bbox.top;
+          const charWidth = charObj.bbox.right - charObj.bbox.left;
+
+          // Number-only lines have no x-height characters, so lineObj.xHeight is null there.
+          const charNorm = /\d/.test(charObj.text) ? lineObj.ascHeight : lineObj.xHeight;
+
+          if (!charNorm) continue;
+
+          const charUnicode = String(charObj.text.charCodeAt(0));
+
+          if (!raw[wordFontFamily]) raw[wordFontFamily] = new CharMetricsRawFamily();
+          const rawFont = raw[wordFontFamily][styleLookup];
+
+          if (!rawFont.width[charUnicode]) {
+            rawFont.width[charUnicode] = [];
+            rawFont.height[charUnicode] = [];
+          }
+
+          rawFont.width[charUnicode].push(charWidth / charNorm);
+          rawFont.height[charUnicode].push(charHeight / charNorm);
+          rawFont.obs += 1;
+
+          if (k + 1 < wordObj.chars.length) {
+            const charObjNext = wordObj.chars[k + 1];
+            const trailingSpace = charObjNext.bbox.left - charObj.bbox.right;
+            const charWidthNext = charObjNext.bbox.right - charObjNext.bbox.left;
+
+            // Skip pairs where the next character does not advance past the current one, such as Tesseract identifying the same character twice.
+            if (trailingSpace + charWidthNext > 0) {
+              const bigramUnicode = `${charUnicode},${wordObj.chars[k + 1].text.charCodeAt(0)}`;
+
+              if (!rawFont.kerning[bigramUnicode]) {
+                rawFont.kerning[bigramUnicode] = [];
+                rawFont.kerning2[bigramUnicode] = [];
+              }
+              rawFont.kerning[bigramUnicode].push(trailingSpace / charNorm);
+              rawFont.kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
+            }
+          }
+        }
+      }
+    }
+  }
 
   /** @type {Object.<string, CharMetricsFamily>} */
   const charMetricsOut = {};
 
-  for (const [family, obj] of Object.entries(charMetricsRawObj)) {
+  for (const [family, obj] of Object.entries(raw)) {
     charMetricsOut[family] = new CharMetricsFamily();
     for (const [style, obj2] of Object.entries(obj)) {
       charMetricsOut[family][style] = calculateCharMetrics(obj2);
@@ -37,71 +102,6 @@ export function calcCharMetricsFromPages(pageArr) {
   }
 
   return charMetricsOut;
-}
-
-// The following functions are used for combining an array of page-level charMetrics objects produced by convertPage.js into a single document-level object.
-
-/**
- * Adds observations from `charMetricsRawFontB` into `charMetricsRawFontA`. Modifies `charMetricsRawFontA` in place.
- *
- * @param {?CharMetricsRawFont} charMetricsRawFontA
- * @param {?CharMetricsRawFont} charMetricsRawFontB
- * @param {?number} xHeight - If specified, values from `charMetricsRawFontB` will be normalized by dividing by `xHeight`.
- * @returns {?CharMetricsRawFont} - Returns charMetricsRawFontA after modifying in place
- */
-function unionCharMetricsFont(charMetricsRawFontA, charMetricsRawFontB, xHeight = null) {
-  // If one of the inputs is undefined, return early with the only valid object
-  if (!charMetricsRawFontA) {
-    if (!charMetricsRawFontB) return null;
-    charMetricsRawFontA = structuredClone(charMetricsRawFontB);
-    return charMetricsRawFontA;
-  }
-  if (!charMetricsRawFontB) {
-    return charMetricsRawFontA;
-  }
-
-  if (charMetricsRawFontB?.obs) charMetricsRawFontA.obs += charMetricsRawFontB.obs;
-
-  for (const [prop, obj] of Object.entries(charMetricsRawFontB)) {
-    for (const [key, value] of Object.entries(obj)) {
-      if (!charMetricsRawFontA[prop][key]) {
-        charMetricsRawFontA[prop][key] = [];
-      }
-      if (xHeight) {
-        const valueNorm = value.map((x) => x / xHeight).filter((x) => x);
-        Array.prototype.push.apply(charMetricsRawFontA[prop][key], valueNorm);
-      } else {
-        Array.prototype.push.apply(charMetricsRawFontA[prop][key], value);
-      }
-    }
-  }
-  return (charMetricsRawFontA);
-}
-
-/**
- * Adds observations from `charMetricsRawObjB` into `charMetricsRawObjA`. Modifies `charMetricsRawObjA` in place.
- *
- * @param {Object.<string, CharMetricsRawFamily>} charMetricsRawObjA
- * @param {Object.<string, CharMetricsRawFamily>} charMetricsRawObjB
- * @returns {Object.<string, CharMetricsRawFamily>} - Returns charMetricsRawObjA after modifying in place
- */
-function unionCharMetricsRawObj(charMetricsRawObjA, charMetricsRawObjB) {
-  for (const [family, obj] of Object.entries(charMetricsRawObjB)) {
-    for (const [style, obj2] of Object.entries(obj)) {
-      if (Object.keys(obj2.width).length === 0) continue;
-      if (!charMetricsRawObjA[family]) {
-        charMetricsRawObjA[family] = new CharMetricsRawFamily();
-      }
-    }
-  }
-
-  for (const [family, obj] of Object.entries(charMetricsRawObjA)) {
-    for (const [style, obj2] of Object.entries(obj)) {
-      unionCharMetricsFont(charMetricsRawObjA?.[family]?.[style], charMetricsRawObjB?.[family]?.[style]);
-    }
-  }
-
-  return (charMetricsRawObjA);
 }
 
 /**
@@ -233,101 +233,4 @@ function identifyFontVariants(fontScores, charMetrics) {
   }
 
   return charMetrics;
-}
-
-/**
- *
- * @param {OcrPage} pageObj
- */
-function calcCharMetricsPage(pageObj) {
-  /** @type {Object.<string, CharMetricsRawFamily>} */
-  const charMetricsRawPage = {};
-
-  for (const lineObj of pageObj.lines) {
-    for (const wordObj of lineObj.words) {
-      const wordFontFamily = determineSansSerif(wordObj.style.font) || 'Default';
-
-      // This condition should not occur, however has in the past due to parsing bugs.  Skipping to avoid entire program crashing if this occurs.
-      if (wordObj.chars && wordObj.chars.length !== wordObj.text.length) continue;
-
-      // Do not include superscripts, dropcaps, and low-confidence words in statistics for font optimization.
-      if (wordObj.conf < 80 || wordObj.lang === 'chi_sim' || wordObj.style.sup || wordObj.style.smallCaps) continue;
-      /** @type {Object.<string, CharMetricsRawFamily>} */
-      const charMetricsRawLine = {};
-
-      if (wordObj.chars) {
-        for (let k = 0; k < wordObj.chars.length; k++) {
-          const charObj = wordObj.chars[k];
-
-          const charHeight = charObj.bbox.bottom - charObj.bbox.top;
-          const charWidth = charObj.bbox.right - charObj.bbox.left;
-
-          // Numbers are normalized as a proportion of ascHeight, everything else is normalized as a percentage of x-height.
-          // This is because x-sized characters are more common in text, however numbers are often in "lines" with only numbers,
-          // so do not have any x-sized characters to compare to.
-          const charNorm = /\d/.test(charObj.text) ? lineObj.ascHeight : lineObj.xHeight;
-
-          if (!charNorm) continue;
-
-          // Multiple characters within a single <ocrx_cinfo> tag have been observed from Tesseract (even when set to char-level output).
-          // May cause future issues as this code assumes one character per <ocrx_cinfo> tag.
-          const charUnicode = String(charObj.text.charCodeAt(0));
-
-          if (!charMetricsRawLine[wordFontFamily]) {
-            charMetricsRawLine[wordFontFamily] = new CharMetricsRawFamily();
-          }
-
-          const styleLookup = getStyleLookup(wordObj.style);
-
-          if (!['normal', 'italic', 'bold'].includes(styleLookup)) continue;
-
-          if (!charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode]) {
-            charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode] = [];
-            charMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode] = [];
-          }
-
-          charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode].push(charWidth / charNorm);
-          charMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode].push(charHeight / charNorm);
-          charMetricsRawLine[wordFontFamily][styleLookup].obs += 1;
-
-          if (k + 1 < wordObj.chars.length) {
-            const charObjNext = wordObj.chars[k + 1];
-            const trailingSpace = charObjNext.bbox.left - charObj.bbox.right;
-            const charWidthNext = charObjNext.bbox.right - charObjNext.bbox.left;
-
-            // Only record space between characters when text is moving forward
-            // This *should* always be true, however there are some fringe cases where this assumption does not hold,
-            // such as Tesseract identifying the same character twice.
-            if (trailingSpace + charWidthNext > 0) {
-              const bigramUnicode = `${charUnicode},${wordObj.chars[k + 1].text.charCodeAt(0)}`;
-
-              if (!charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode]) {
-                charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode] = [];
-                charMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode] = [];
-              }
-              charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode].push(trailingSpace / charNorm);
-              charMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
-            }
-          }
-        }
-      }
-
-      for (const [family, obj] of Object.entries(charMetricsRawLine)) {
-        for (const [style, obj2] of Object.entries(obj)) {
-          if (Object.keys(obj2.width).length === 0) continue;
-          if (!charMetricsRawPage[family]) {
-            charMetricsRawPage[family] = new CharMetricsRawFamily();
-          }
-        }
-      }
-
-      for (const [family, obj] of Object.entries(charMetricsRawPage)) {
-        for (const [style, obj2] of Object.entries(obj)) {
-          unionCharMetricsFont(charMetricsRawPage?.[family]?.[style], charMetricsRawLine?.[family]?.[style]);
-        }
-      }
-    }
-  }
-
-  return charMetricsRawPage;
 }

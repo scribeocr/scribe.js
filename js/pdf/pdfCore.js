@@ -8,7 +8,7 @@ import { parseAttachments } from './parseAttachments.js';
 import { parseOutline } from './parseOutline.js';
 import ocr from '../objects/ocrObjects.js';
 import {
-  colorToRgb, executeRewrittenOperator, parseSinglePage, rgbToHex, liftPageAnnotations, pageGeometry,
+  colorToRgb, executeRewrittenOperator, parseSinglePage, rgbToHex, liftPageAnnotations, pageGeometry, readLayoutDocInputs, layoutPdfChunk,
 } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
 import { resolveNumArray } from './pdfPrimitives.js';
@@ -76,6 +76,24 @@ export class PdfCore {
   parsePage({ pageIndex, dpi }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     return parseSinglePage(this.#pages[pageIndex], this.#objCache, pageIndex, dpi, undefined, this.#linkDestInfo ?? undefined);
+  }
+
+  /**
+   * Document-level layout inputs cached across chunk calls.
+   * @type {?import('./parsePdfDoc.js').LayoutDocInputs}
+   */
+  #layoutDocInputs = null;
+
+  /**
+   * Lay out a run of consecutive parsed pages in place.
+   * @param {{ results: Parameters<typeof layoutPdfChunk>[1], pdfType: "image"|"text"|"ocr", carry?: ?import('./parsePdfDoc.js').ChunkCarry, docPageCount?: number }} args
+   */
+  layoutChunk({
+    results, pdfType, carry, docPageCount,
+  }) {
+    // Allow an unloaded core here so closing a document mid-extraction settles without throwing.
+    if (!this.#layoutDocInputs && this.#objCache && this.#pages) this.#layoutDocInputs = readLayoutDocInputs(this.#objCache, this.#objCache.pdfBytes, this.#pages);
+    return layoutPdfChunk(this.#layoutDocInputs, results, { pdfType, carry, docPageCount });
   }
 
   /**
@@ -838,6 +856,7 @@ export class PdfCore {
     this.#objCache = null;
     this.#pages = null;
     this.#linkDestInfo = null;
+    this.#layoutDocInputs = null;
     this.#editPrograms.clear();
     this.#rasterFonts.clear();
     this.#opMappedPages.clear();

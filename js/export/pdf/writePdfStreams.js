@@ -1,10 +1,10 @@
+import { codec } from '../../utils/byteStream.js';
+
 /**
  * @typedef {{ header: string, streamData: Uint8Array, trailer: string }} PdfBinaryObject
  */
 
-// Browsers resolve to null and use the CompressionStream path in `deflateBytes` instead.
-// A top-level `await` here would make every importing module initialize asynchronously.
-// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
+// Load `node:zlib` synchronously because top-level `await` deadlocks scribe-ui's import cycles in the bundled app.
 const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
   ? process.getBuiltinModule('node:zlib').deflateSync
   : null;
@@ -16,11 +16,7 @@ const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versio
  */
 export async function deflateBytes(bytes) {
   if (zlibDeflateSync) return zlibDeflateSync(bytes);
-  // Browser: native CompressionStream (async, zlib-wrapped deflate).
-  const cs = new CompressionStream('deflate');
-  const compressedStream = new Blob([bytes]).stream().pipeThrough(cs);
-  const arrayBuffer = await new Response(compressedStream).arrayBuffer();
-  return new Uint8Array(arrayBuffer);
+  return codec(bytes, 'deflate', false);
 }
 
 /**

@@ -20,27 +20,14 @@ export const TOKENIZER_DEFAULTS = Object.freeze({
 export const MARKER_TERM = '\u0000marker';
 
 /**
- * One text page as the index takes it.
- * It holds what the tokenizer reads and what the page's view block stores.
- * It is a plain structure the main thread can post to the worker.
+ * Single-page text and geometry passed to the search index.
  * @typedef {Object} PageInput
  * @property {{width: number, height: number}} dims
- * @property {number} angle
- * @property {?string} textSource
- * @property {Array<{bbox: Box, type: ?string, headingLevel: ?number, parNum: ?number, marker: ?string}>} pars
  * @property {Array<InputLine>} lines - Lines in reading order.
  */
 /**
  * @typedef {Object} InputLine
  * @property {?string} role - The paragraph's type ('linenum', 'body', ...).
- * @property {Box} bbox
- * @property {[number, number]} baseline
- * @property {?number} ascHeight
- * @property {?number} xHeight
- * @property {number} orientation
- * @property {?number} lineNum
- * @property {?string} pageNum
- * @property {?number} par - Index into the page's `pars`.
  * @property {Array<InputWord>} words
  */
 /**
@@ -48,21 +35,6 @@ export const MARKER_TERM = '\u0000marker';
  * @property {string} t
  * @property {boolean} [sup]
  * @property {Box} bbox
- * @property {?string} id - The word's id, or null when it is the positional id `word_<page>_<line>_<word>`, all counted from 1.
- * @property {?number} size
- * @property {?string} font
- * @property {boolean} bold
- * @property {boolean} italic
- * @property {boolean} smallCaps
- * @property {boolean} dropcap
- * @property {boolean} underline
- * @property {?string} color
- * @property {number} opacity
- * @property {?string} lang
- * @property {number} conf
- * @property {boolean} visualCoords
- * @property {boolean} native - Whether the word has a native-text entry.
- * @property {?string} footnoteParId
  */
 /** @typedef {bbox} Box */
 
@@ -389,57 +361,15 @@ export const recordTokenTerm = (rec, k, rules) => {
 
 /**
  * @param {?import('../../../js/objects/ocrObjects.js').OcrPage} page
- * @param {Record<string, NativeTextWord>} [entries]
  * @returns {?PageInput}
  */
-export const pageInputOf = (page, entries = {}) => {
+export const pageInputOf = (page) => {
   if (!page || !page.lines.length) return null;
-  /** @type {Map<Object, number>} */
-  const parIndex = new Map();
-  const pars = [];
-  for (const line of page.lines) {
-    if (line.par && !parIndex.has(line.par)) {
-      parIndex.set(line.par, pars.length);
-      pars.push({
-        bbox: line.par.bbox, type: line.par.type ?? null, headingLevel: line.par.headingLevel ?? null, parNum: line.par.parNum ?? null, marker: line.par.marker ?? null,
-      });
-    }
-  }
   return {
     dims: page.dims,
-    angle: page.angle || 0,
-    textSource: page.textSource ?? null,
-    pars,
-    lines: page.lines.map((line, li) => ({
+    lines: page.lines.map((line) => ({
       role: line.par ? line.par.type : null,
-      bbox: line.bbox,
-      baseline: [line.baseline?.[0] || 0, line.baseline?.[1] || 0],
-      ascHeight: line.ascHeight ?? null,
-      xHeight: line.xHeight ?? null,
-      orientation: line.orientation || 0,
-      lineNum: line.lineNum ?? null,
-      pageNum: line.pageNum ?? null,
-      par: line.par ? /** @type {number} */ (parIndex.get(line.par)) : null,
-      words: line.words.map((w, wi) => ({
-        t: w.text,
-        ...(w.style && w.style.sup ? { sup: true } : {}),
-        bbox: w.bbox,
-        id: w.id === `word_${page.n + 1}_${li + 1}_${wi + 1}` ? null : w.id,
-        size: w.style?.size ?? null,
-        font: w.style?.font ?? null,
-        bold: !!w.style?.bold,
-        italic: !!w.style?.italic,
-        smallCaps: !!w.style?.smallCaps,
-        dropcap: !!w.style?.dropcap,
-        underline: !!w.style?.underline,
-        color: w.style?.color ?? null,
-        opacity: w.style?.opacity ?? 1,
-        lang: w.lang ?? null,
-        conf: w.conf ?? 0,
-        visualCoords: w.visualCoords !== false,
-        native: !!entries[w.id],
-        footnoteParId: w.footnoteParId ?? null,
-      })),
+      words: line.words.map((w) => ({ t: w.text, ...(w.style && w.style.sup ? { sup: true } : {}), bbox: w.bbox })),
     })),
   };
 };

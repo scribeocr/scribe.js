@@ -91,12 +91,11 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
   const versionMenu = appMenu.addSubmenu('OCR version', BUG_SVG);
   const rebuildVersionMenu = () => {
     const doc = viewer.doc;
-    const names = doc ? Object.keys(doc.ocr).filter((name) => name !== 'active' && Array.isArray(doc.ocr[name])) : [];
+    const names = doc ? doc.layers : [];
     versionMenu.setItems(names.map((name) => ({
-      label: `${doc.ocr[name] === doc.ocr.active ? '✓ ' : ' '}${name}`,
+      label: `${name === doc.activeLayer ? '✓ ' : ' '}${name}`,
       onClick: async () => {
-        // The ground-truth compare replaces the array under its key, so the layer is looked up at click time.
-        doc.ocr.active = doc.ocr[name];
+        doc.activeLayer = name;
         viewer.destroyText(false);
         await viewer.displayPage(viewer.state.cp.n, false, true);
         // The comments panel's mark rows quote the words under them from the active layer.
@@ -114,7 +113,7 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       const doc = viewer.doc;
       if (!doc) return;
       const on = viewer.state.displayMode !== 'eval';
-      if (on && !doc.ocr['Ground Truth']) {
+      if (on && !doc.layers.includes('Ground Truth')) {
         host?._showToast('Eval mode needs an OCR layer named “Ground Truth”.');
         return;
       }
@@ -218,7 +217,7 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
 
   appMenu.addAction('Generate sample comments', BUG_SVG, async () => {
     const doc = viewer.doc;
-    if (!doc || !doc.ocr.active.length) {
+    if (!doc || !doc.pageStore.slotCount()) {
       console.warn('Generate sample comments: open a document with text first.');
       return;
     }
@@ -281,8 +280,8 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
     // The per-page cap spreads the set across pages, so the panel gets several page groups.
     /** @type {Array<{page: number, line: number}>} */
     const slots = [];
-    for (let n = 0; n < doc.ocr.active.length && slots.length < recipes.length; n++) {
-      const pageObj = doc.ocr.active[n];
+    for (let n = 0; n < doc.pageStore.slotCount() && slots.length < recipes.length; n++) {
+      const pageObj = doc.getPage(n);
       if (!pageObj || pageObj.lines.length < 2) continue;
       for (let k = 0; k < 3 && 1 + k * 4 < pageObj.lines.length && slots.length < recipes.length; k++) slots.push({ page: n, line: 1 + k * 4 });
     }

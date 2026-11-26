@@ -6,7 +6,7 @@ import { bboxToPageSpace } from '../../../js/addHighlights.js';
 import { docxStrings } from '../../../js/export/resources/docxFiles.js';
 import { scribeDocDefaults } from '../../../js/containers/scribeDocDefaults.js';
 import { makeIconButton } from './toolbar.js';
-import { hydrateIfProvisional } from './tools.js';
+import { whenTextArrived } from './tools.js';
 import { resolveActiveSheet } from '../viewerTablePreview.js';
 
 const modeIcon = (inner) => `<svg viewBox="0 0 17 17" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
@@ -17,6 +17,8 @@ const CARET_SVG = '<svg viewBox="0 0 11 11" fill="none" stroke="currentColor" st
   + '<path d="M2.5 4.5l3 3 3-3"/></svg>';
 /** The gap the HTML export leaves between pages, in page pixels. */
 const PAGE_GAP = 10;
+/** Word budget for pages rendered at once in the preview pane. */
+const PREVIEW_WORDS = 100000;
 const PANE_GUTTER = 8;
 
 /**
@@ -113,13 +115,13 @@ export const EXPORT_FORMATS = [
 const formatOf = (id) => /** @type {ExportFormat} */ (EXPORT_FORMATS.find((f) => f.id === id));
 
 /**
- * Whether a document has words to export as text.
- * A provisional document passes.
- * @param {?import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+ * Return whether `doc` has any words.
+ * Returns `true` provisionally while `doc._textArriving` is set.
+ * @param {?import('../../../js/containers/scribeDoc.js').ScribeDoc & {_textArriving?: boolean}} doc
+ * @returns {boolean}
  */
 export const docHasWords = (doc) => !!doc
-  // The mode hydrates a provisional document and checks again once its text arrives.
-  && (doc.hydrationState !== 'hydrated' || !!doc.ocr?.active?.some((page) => page?.lines?.some((line) => line.words.length > 0)));
+  && (!!doc._textArriving || doc.pageMetrics.some((pm, n) => (doc.pageStore.pageCounts(n)?.words || 0) > 0));
 
 const PANE_RULES = '  .scribe-export-body {\n    position:relative;\n    margin:0 auto;\n  }\n  .scribe-page {\n    background:#fff;\n    box-shadow:var(--scribe-page-shadow);\n  }\n';
 const BOXES_RULES = '  .scribe-word {\n    outline:1px solid rgba(28,98,212,.45);\n    outline-offset:1px;\n  }\n';
@@ -352,26 +354,26 @@ export function createExportTool(app) {
   let blockHeights = [];
   /** @type {Array<{top: number, bottom: number}>} Each block's span in the viewer's content space. */
   let blockSpans = [];
-  /** @type {Map<string, {par: OcrPar, n: number}>} */
+  /**
+   * Page index and local bounding-box coordinates of a previewed paragraph or line.
+   * @typedef {{n: number, orientation: number, left: number, top: number, bottom: number}} BlockPlace
+   */
+  /** @type {Map<string, BlockPlace & {type: import('../../../js/objects/ocrObjects.js').ParType, headingLevel: ?number}>} */
   let parInfo = new Map();
-  /** @type {Map<string, {line: OcrLine, n: number}>} */
+  /** @type {Map<string, BlockPlace>} */
   let lineInfo = new Map();
+  /**
+   * Page indices shown in the active `document` or `lines` preview window.
+   * Null when the preview is not windowed.
+   * @type {?Array<number>}
+   */
+  let previewPages = null;
   /** @param {HTMLElement} el */
   const blockSpanOf = (el) => {
     const sv = viewerOf();
-    const p = parInfo.get(el.dataset.par || '');
-    if (p) {
-      const orientation = p.par.lines[0]?.orientation || 0;
-      return { top: sv.localToContent(p.n, orientation, p.par.bbox.left, p.par.bbox.top).y, bottom: sv.localToContent(p.n, orientation, p.par.bbox.left, p.par.bbox.bottom).y };
-    }
-    const l = lineInfo.get(el.dataset.line || '');
-    if (l) {
-      return {
-        top: sv.localToContent(l.n, l.line.orientation || 0, l.line.bbox.left, l.line.bbox.top).y,
-        bottom: sv.localToContent(l.n, l.line.orientation || 0, l.line.bbox.left, l.line.bbox.bottom).y,
-      };
-    }
-    return null;
+    const at = parInfo.get(el.dataset.par || '') || lineInfo.get(el.dataset.line || '');
+    if (!at) return null;
+    return { top: sv.localToContent(at.n, at.orientation, at.left, at.top).y, bottom: sv.localToContent(at.n, at.orientation, at.left, at.bottom).y };
   };
   /** @param {HTMLElement} el */
   const paneOffset = (el) => {
@@ -428,7 +430,7 @@ export function createExportTool(app) {
     ['Heading 1', 'h1'], ['Heading 2', 'h2'], ['Heading 3', 'h3'], ['Body', 'body'],
     ['Page header', 'header'], ['Page footer', 'footer'], ['Page number', 'pagenum'], ['Line numbers', 'linenum'],
   ];
-  /** @param {OcrPar} par */
+  /** @param {{type: import('../../../js/objects/ocrObjects.js').ParType, headingLevel: ?number}} par */
   const roleKey = (par) => (par.type === 'title' ? `h${Math.min(Math.max(par.headingLevel || 1, 1), 3)}` : par.type);
   const chipEl = document.createElement('button');
   chipEl.type = 'button';
@@ -480,12 +482,12 @@ export function createExportTool(app) {
     if (el === chipBlock) return;
     closeRoleMenu();
     chipBlock = el;
-    const info = /** @type {{par: OcrPar, n: number}} */ (parInfo.get(el.dataset.par || ''));
-    let label = ROLES.find(([, key]) => key === roleKey(info.par))?.[0] || info.par.type;
+    const info = /** @type {NonNullable<ReturnType<typeof parInfo.get>>} */ (parInfo.get(el.dataset.par || ''));
+    let label = ROLES.find(([, key]) => key === roleKey(info))?.[0] || info.type;
     let note = '';
     let said = '';
-    if (info.par.type === 'footnote' || info.par.type === 'endnote') {
-      label = info.par.type === 'endnote' ? 'Endnote' : 'Footnote';
+    if (info.type === 'footnote' || info.type === 'endnote') {
+      label = info.type === 'endnote' ? 'Endnote' : 'Footnote';
       const own = el.dataset.ownLabel;
       if (!el.closest('.scribe-notes')) {
         note = ' <span class="scribe-export-chip-sub">· kept as text</span>';
@@ -496,7 +498,7 @@ export function createExportTool(app) {
         said = `, ${own} on the page`;
       }
     }
-    const dropped = dropActive() && parIsFurniture(info.par);
+    const dropped = dropActive() && parIsFurniture(info);
     chipEl.innerHTML = `${esc(label)}${dropped ? ' <span class="scribe-export-chip-drop">· dropped</span>' : ''}${note} ${CARET_SVG}`;
     chipEl.setAttribute('aria-label', `Paragraph role: ${label}${dropped ? ', dropped from the export' : ''}${said}`);
     chipEl.hidden = false;
@@ -511,9 +513,13 @@ export function createExportTool(app) {
     closeRoleMenu();
     hideChip();
     const { doc } = viewerOf();
-    if (!info || !doc) return;
-    const { par, n } = info;
+    if (!info || !el || !doc) return;
+    const { n } = info;
+    const parId = el.dataset.par;
     doc.editWords([n], 'Paragraph role', () => {
+      // The preview keeps no paragraph, so the one to change is found on its page by id.
+      const par = doc.getPage(n)?.pars.find((x) => x.id === parId);
+      if (!par) return;
       const heading = /^h([1-3])$/.exec(key);
       if (heading) {
         par.type = 'title';
@@ -530,9 +536,9 @@ export function createExportTool(app) {
   const openRoleMenu = () => {
     const info = chipBlock ? parInfo.get(chipBlock.dataset.par || '') : null;
     if (!info) return;
-    const current = roleKey(info.par);
+    const current = roleKey(info);
     const tagged = dropActive();
-    const rows = info.par.type === 'footnote' || info.par.type === 'endnote' ? [[info.par.type === 'endnote' ? 'Endnote' : 'Footnote', info.par.type], ...ROLES] : ROLES;
+    const rows = info.type === 'footnote' || info.type === 'endnote' ? [[info.type === 'endnote' ? 'Endnote' : 'Footnote', info.type], ...ROLES] : ROLES;
     menuEl.replaceChildren(...rows.map(([label, key]) => {
       const b = document.createElement('button');
       b.type = 'button';
@@ -618,7 +624,7 @@ export function createExportTool(app) {
     const text = /** @type {HTMLElement} */ (li.cloneNode(true));
     for (const el of text.querySelectorAll('.scribe-fnlabel, .scribe-fnback')) el.remove();
     const info = parInfo.get(li.dataset.par || '');
-    noteCard.innerHTML = `<div class="scribe-export-notecard-h">${info?.par.type === 'endnote' ? 'Endnote' : 'Footnote'} ${esc(li.querySelector('.scribe-fnlabel')?.textContent || '')}</div>${esc(text.textContent?.trim() || '')}`;
+    noteCard.innerHTML = `<div class="scribe-export-notecard-h">${info?.type === 'endnote' ? 'Endnote' : 'Footnote'} ${esc(li.querySelector('.scribe-fnlabel')?.textContent || '')}</div>${esc(text.textContent?.trim() || '')}`;
     noteCard.hidden = false;
     const at = paneOffset(a);
     noteCard.style.top = `${at.y + a.offsetHeight + 4}px`;
@@ -703,6 +709,11 @@ export function createExportTool(app) {
   let placedOrder = [];
   let paneScale = 1;
   let renderRun = 0;
+  /**
+   * Page indices in the active preview window, or null when all placed pages fit.
+   * @type {?Set<number>}
+   */
+  let nearPages = null;
   /** @type {?import('../../../js/containers/scribeDoc.js').ScribeDoc} */
   let docRendered = null;
 
@@ -733,7 +744,7 @@ export function createExportTool(app) {
    */
   const pageMarks = (n) => {
     const { doc } = viewerOf();
-    const page = doc?.ocr.active?.[n];
+    const page = doc?.pageStore.readOnlyPage(n);
     if (!active || !page || !dropActive()) return [];
     const pages = includedPages(doc);
     if (pages && !pages.includes(n)) return [];
@@ -796,7 +807,8 @@ export function createExportTool(app) {
     const displayMode = pagesDisplayMode();
     for (const n of pages) {
       const slot = placed.get(n);
-      if (!slot) continue;
+      // A page the preview has moved away from since this loop began is left undrawn.
+      if (!slot || (nearPages && !nearPages.has(n))) continue;
       /** @type {Array<import('../../../js/objects/imageObjects.js').ImageWrapper>|undefined} */
       let images;
       if (withImages) {
@@ -804,8 +816,9 @@ export function createExportTool(app) {
         images[n] = await pageImage(doc, n);
       }
       if (gen !== renderRun) return;
+      if (nearPages && !nearPages.has(n)) continue;
       const frag = writeHtmlFragment({
-        ocrPages: doc.ocr.active, images, annotations: doc.annotations.pages, pageArr: [n], docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode, parIds: true,
+        ocrPages: doc.pageStore.pageList('active', true), images, annotations: doc.annotations.pages, pageArr: [n], docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode, parIds: true,
       });
       if (!paneStyle.textContent) paneStyle.textContent = frag.style + PANE_RULES + (format().surface === 'pages' ? BOXES_RULES : '');
       const tpl = document.createElement('template');
@@ -823,16 +836,45 @@ export function createExportTool(app) {
     }
   };
 
-  /** @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc */
-  const linesBody = (doc) => {
+  /**
+   * Render preview pages nearest `center` up to `PREVIEW_WORDS` total words and unmount pages outside that window.
+   * @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {number} center - Zero-based page index.
+   * @param {number} gen
+   */
+  const showPagesNear = async (doc, center, gen) => {
+    const order = [...placedOrder].sort((a, b) => Math.abs(a - center) - Math.abs(b - center) || a - b);
+    let words = 0;
+    const near = order.filter((n, i) => {
+      words += doc.pageStore.pageCounts(n)?.words || 0;
+      return i === 0 || words <= PREVIEW_WORDS;
+    });
+    nearPages = near.length < order.length ? new Set(near) : null;
+    for (const [n, slot] of placed) {
+      if (!slot.el || near.includes(n)) continue;
+      slot.el.remove();
+      slot.el = null;
+    }
+    await renderPages(doc, near.filter((n) => !placed.get(n)?.el), gen);
+  };
+
+  /**
+   * Build the line-by-line preview HTML for `shown` and populate `lineInfo`.
+   * @param {Array<number>} shown - Zero-based page indices.
+   * @param {Array<OcrPage|undefined>} shownPages - Loaded pages indexed by page index.
+   * @returns {string}
+   */
+  const linesBody = (shown, shownPages) => {
     lineInfo = new Map();
     let body = '<article class="scribe-article">\n';
-    for (const n of includedPages(doc) || doc.pageMetrics.map((pm, i) => i)) {
-      const page = doc.ocr.active[n];
+    for (const n of shown) {
+      const page = shownPages[n];
       if (!page) continue;
       for (let h = 0; h < page.lines.length; h++) {
         const line = page.lines[h];
-        lineInfo.set(line.id, { line, n });
+        lineInfo.set(line.id, {
+          n, orientation: line.orientation || 0, left: line.bbox.left, top: line.bbox.top, bottom: line.bbox.bottom,
+        });
         const prefix = settings.lineNumbers && format().id === 'txt' ? `${n}:${h}  ` : '';
         body += `<p data-line="${esc(line.id)}" data-page="${n}">${esc(prefix + line.words.map((w) => w.text).join(' '))}</p>\n`;
       }
@@ -842,8 +884,7 @@ export function createExportTool(app) {
 
   /** @param {import('../../../js/containers/scribeDoc.js').ScribeDoc} doc */
   const summaryBody = (doc) => {
-    const pages = doc.ocr.active || [];
-    const words = pages.reduce((sum, page) => sum + (page ? page.lines.reduce((s, line) => s + line.words.length, 0) : 0), 0);
+    const words = doc.pageMetrics.reduce((sum, pm, n) => sum + (doc.pageStore.pageCounts(n)?.words || 0), 0);
     const tables = (doc.layoutDataTables?.pages || []).reduce((sum, p) => sum + (p?.tables?.length || 0), 0);
     const annots = (doc.annotations?.pages || []).reduce((sum, a) => sum + (a?.length || 0), 0);
     const edits = doc.docHistory?.undoStack?.length || 0;
@@ -869,6 +910,8 @@ export function createExportTool(app) {
     articleBlocks = [];
     parInfo = new Map();
     lineInfo = new Map();
+    previewPages = null;
+    nearPages = null;
     hideChip();
     closeRoleMenu();
     paneBody.replaceChildren();
@@ -889,13 +932,41 @@ export function createExportTool(app) {
       layoutPane();
       const f = format();
       const word = f.style === 'word';
+      // A long document's whole text is more elements than a browser lays out, so its preview shows the pages around the one in view.
+      const all = includedPages(doc) || doc.pageMetrics.map((pm, i) => i);
+      const wordsOf = (/** @type {number} */ n) => doc.pageStore.pageCounts(n)?.words || 0;
+      let shown = all;
+      if (all.reduce((sum, n) => sum + wordsOf(n), 0) > PREVIEW_WORDS) {
+        const cur = sv.state.cp.n;
+        let lo = all.reduce((best, n, i) => (Math.abs(n - cur) < Math.abs(all[best] - cur) ? i : best), 0);
+        let hi = lo;
+        let words = wordsOf(all[lo]);
+        for (let grew = true; grew;) {
+          grew = false;
+          if (hi + 1 < all.length && words + wordsOf(all[hi + 1]) <= PREVIEW_WORDS) {
+            hi += 1;
+            words += wordsOf(all[hi]);
+            grew = true;
+          }
+          if (lo > 0 && words + wordsOf(all[lo - 1]) <= PREVIEW_WORDS) {
+            lo -= 1;
+            words += wordsOf(all[lo]);
+            grew = true;
+          }
+        }
+        shown = all.slice(lo, hi + 1);
+        previewPages = shown;
+      }
+      /** @type {Array<OcrPage|undefined>} */
+      const shownPages = [];
+      for (const n of shown) shownPages[n] = doc.pageStore.readOnlyPage(n, 'active', true) || undefined;
       let body;
       if (surface === 'document') {
         const frag = writeHtmlFragment({
-          ocrPages: doc.ocr.active,
+          ocrPages: /** @type {Array<OcrPage>} */ (shownPages),
           layoutPageArr: doc.layoutDataTables.pages,
           annotations: doc.annotations.pages,
-          pageArr: includedPages(doc),
+          pageArr: shown,
           docFonts: doc.fonts,
           pageMetrics: doc.pageMetrics,
           reflowText: true,
@@ -910,16 +981,48 @@ export function createExportTool(app) {
         });
         body = frag.body;
         paneStyle.textContent = docRules(f) + PAPER_RULES + CHIP_RULES + DROP_RULES + NOTE_RULES;
-        for (const page of doc.ocr.active) {
-          if (page) for (const par of page.pars) parInfo.set(par.id, { par, n: page.n });
+        for (const n of shown) {
+          for (const par of shownPages[n]?.pars || []) {
+            parInfo.set(par.id, {
+              n, type: par.type, headingLevel: par.headingLevel, orientation: par.lines[0]?.orientation || 0, left: par.bbox.left, top: par.bbox.top, bottom: par.bbox.bottom,
+            });
+          }
         }
       } else {
-        body = linesBody(doc);
+        body = linesBody(shown, shownPages);
         paneStyle.textContent = docRules(f) + PAPER_RULES;
       }
       if (gen !== renderRun) return;
       paneBody.innerHTML = body;
-      // The preview falls back as Word will on a machine without the font, so it shows what the export will show.
+      if (shown.length < all.length) {
+        /**
+         * Build a notice showing the previewed page range and a link to jump to page index `to`.
+         * @param {string} link
+         * @param {number} to
+         * @returns {HTMLDivElement}
+         */
+        const windowNote = (link, to) => {
+          const note = document.createElement('div');
+          Object.assign(note.style, {
+            padding: '8px 16px', textAlign: 'center', color: 'var(--scribe-ink-3)', fontSize: '12px',
+          });
+          note.textContent = `Showing pages ${shown[0] + 1} to ${shown[shown.length - 1] + 1} of ${doc.pageMetrics.length} · `;
+          const a = document.createElement('a');
+          a.href = '#';
+          a.textContent = link;
+          a.style.color = 'var(--scribe-accent)';
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            sv.displayPage(to, true, false);
+          });
+          note.appendChild(a);
+          return note;
+        };
+        const first = all.indexOf(shown[0]);
+        const last = all.indexOf(shown[shown.length - 1]);
+        if (first > 0) paneBody.prepend(windowNote('Earlier pages', all[first - 1]));
+        if (last < all.length - 1) paneBody.append(windowNote('Later pages', all[last + 1]));
+      }
       if (word) {
         for (const span of paneBody.querySelectorAll('[data-font]')) {
           const font = /** @type {string} */ (span.getAttribute('data-font'));
@@ -935,7 +1038,7 @@ export function createExportTool(app) {
       if (surface === 'document' && dropActive()) {
         for (const el of paneBody.querySelectorAll('.scribe-page-header, .scribe-page-footer, .scribe-page-number, .scribe-line-number')) {
           const info = parInfo.get(/** @type {HTMLElement} */ (el).dataset.par || '');
-          if (!info || !parIsFurniture(info.par)) continue;
+          if (!info || !parIsFurniture(info)) continue;
           const ghost = document.createElement('span');
           ghost.className = 'scribe-export-ghost';
           ghost.append(...el.childNodes);
@@ -954,8 +1057,7 @@ export function createExportTool(app) {
     const pages = includedPages(doc) || doc.pageMetrics.map((pm, i) => i);
     for (const n of pages) {
       // The exact HTML layout leaves a page without text out, and the other files write every page.
-      const page = doc.ocr.active?.[n];
-      if (format().id === 'html' && (!page || page.lines.length === 0)) continue;
+      if (format().id === 'html' && !(doc.pageStore.pageCounts(n)?.words > 0)) continue;
       const { dims, rotation } = doc.pageMetrics[n];
       const width = (rotation || 0) % 180 === 90 ? dims.height : dims.width;
       const height = (rotation || 0) % 180 === 90 ? dims.width : dims.height;
@@ -968,9 +1070,7 @@ export function createExportTool(app) {
     layoutPane();
     // Linked before the pages render, so the clamp the new height causes carries the link's own position and is not read as the reader's scroll.
     laneToPane();
-    const cur = sv.state.cp.n;
-    const order = [...placedOrder].sort((a, b) => Math.abs(a - cur) - Math.abs(b - cur) || a - b);
-    await renderPages(doc, order, gen);
+    await showPagesNear(doc, sv.state.cp.n, gen);
     if (gen === renderRun) laneToPane();
   };
 
@@ -983,7 +1083,8 @@ export function createExportTool(app) {
     const { doc } = viewerOf();
     if (!doc || !pane.isConnected) return;
     if (!pages || doc !== docRendered || surfaceOf() !== 'pages') { renderAll(); return; }
-    renderPages(doc, pages.filter((n) => placed.has(n)), renderRun);
+    // Only re-render pages currently mounted in the preview window.
+    renderPages(doc, pages.filter((n) => placed.get(n)?.el), renderRun);
   };
 
   const ensureRendered = () => {
@@ -1042,6 +1143,9 @@ export function createExportTool(app) {
     linkPane = [0];
     const sv = viewerOf();
     if (!sv.doc) return;
+    // Anchor scroll-sync at shown[0] rather than page 0 when previewing a subset window of pages.
+    const shown = blockSurface() ? previewPages : null;
+    if (shown) linkLane = [sv.getPageStop(shown[0])];
     /** @param {number} l @param {number} p */
     const push = (l, p) => {
       linkLane.push(Math.max(l, linkLane[linkLane.length - 1]));
@@ -1059,7 +1163,7 @@ export function createExportTool(app) {
         push(sv.getPageStop(n, false), (slot.top + slot.height) * paneScale);
       }
     }
-    push(sv.getPageStop(sv.doc.pageMetrics.length - 1, false), pane.scrollHeight);
+    push(sv.getPageStop(shown ? shown[shown.length - 1] : sv.doc.pageMetrics.length - 1, false), pane.scrollHeight);
   };
   /**
    * @param {Array<number>} xs
@@ -1089,14 +1193,40 @@ export function createExportTool(app) {
     if (!sv.doc || linkLane.length < 2) return;
     scrollLaneTo(linkMap(linkPane, linkLane, pane.scrollTop) * (sv.zoomLevel || 1));
   };
+  let windowTimer = 0;
   const onLaneScroll = () => {
     const sv = viewerOf();
+    if (previewPages && blockSurface() && pane.isConnected) {
+      clearTimeout(windowTimer);
+      windowTimer = window.setTimeout(() => {
+        const { doc } = viewerOf();
+        if (!doc || !previewPages || !pane.isConnected || !blockSurface()) return;
+        const cur = viewerOf().state.cp.n;
+        const all = includedPages(doc) || doc.pageMetrics.map((pm, i) => i);
+        const nearest = all.reduce((best, n) => (Math.abs(n - cur) < Math.abs(best - cur) ? n : best), all[0]);
+        if (!previewPages.includes(nearest)) renderAll();
+      }, 150);
+    }
     const echo = Math.abs(sv.scrollContainer.scrollTop - linkState.expectLane) <= 1;
     linkState.expectLane = NaN;
     if (echo || !linkState.on || view !== 'beside' || !pane.isConnected) return;
     laneToPane();
   };
+  let pagesTimer = 0;
   pane.addEventListener('scroll', () => {
+    if (surfaceOf() === 'pages' && docRendered) {
+      clearTimeout(pagesTimer);
+      pagesTimer = window.setTimeout(() => {
+        const { doc } = viewerOf();
+        if (!doc || doc !== docRendered || surfaceOf() !== 'pages' || !pane.isConnected) return;
+        const mid = (pane.scrollTop + pane.clientHeight / 2) / paneScale;
+        const center = placedOrder.find((n) => {
+          const slot = placed.get(n);
+          return !!slot && slot.top + slot.height >= mid;
+        }) ?? placedOrder[placedOrder.length - 1];
+        if (center !== undefined) showPagesNear(doc, center, renderRun);
+      }, 150);
+    }
     const echo = Math.abs(pane.scrollTop - linkState.expectPane) <= 1;
     linkState.expectPane = NaN;
     // In Preview the viewer under the pane follows even with the link off, so the page is in place when the pane leaves.
@@ -1325,8 +1455,8 @@ export function createExportTool(app) {
       pdfTimer = null;
       const sv = viewerOf();
       if (!sv.doc || !active || mounted?.kind !== 'pdf') return;
-      // A provisional document reruns `docChanged` once it has loaded, which refreshes again.
-      if (sv.doc.hydrationState !== 'hydrated') return;
+      // A document whose text is still arriving reruns `docChanged` once it is in, which refreshes again.
+      if (sv.doc._textArriving) return;
       const run = ++pdfRun;
       setBusy(true);
       let next;
@@ -1683,7 +1813,7 @@ export function createExportTool(app) {
     const f = format();
     exportBtn.disabled = true;
     try {
-      if (sv.doc._textReadySettle && !(await sv.doc.ensureHydrated())) return;
+      await sv.doc.textReady;
       if (f.id === 'xlsx') {
         const { buildTablesWorkbook } = await import('../automations/extractTables.js');
         const built = await buildTablesWorkbook(sv.doc, {
@@ -1868,13 +1998,14 @@ export function createExportTool(app) {
       articleBlocks = [];
       parInfo = new Map();
       lineInfo = new Map();
+      previewPages = null;
       paneBody.replaceChildren();
       paneStyle.textContent = '';
     }
   };
   toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
-    if (!active && !(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    if (!active && !(await whenTextArrived(app._activeViewer().doc))) return;
     setActive(!active);
   });
 
@@ -1898,9 +2029,10 @@ export function createExportTool(app) {
     syncOptions();
     syncExportBtn();
     if (view === 'page') return;
-    // The app loads a provisional document once the reader rests on it, and runs this again when the load ends, whether it worked or not.
-    if (sv.doc.hydrationState !== 'hydrated') {
-      const failed = !!(/** @type {typeof sv.doc & import('../../basic-viewer/pdf-viewer.js').SeededDocHooks} */ (sv.doc))._loadFailed;
+    // The app runs this again when the document's text is in, and when it could not be loaded.
+    const hooks = /** @type {typeof sv.doc & import('../../basic-viewer/pdf-viewer.js').ProvisionalDocHooks} */ (sv.doc);
+    if (hooks._textArriving || hooks._loadFailed) {
+      const failed = !!hooks._loadFailed;
       if (mounted?.kind === 'pdf') clearPdfPreview();
       else if (mounted?.kind !== 'sheet') paneNote(failed ? 'Couldn’t load the document.' : 'Loading the document…');
       if (failed) setBusy(false);
@@ -1927,7 +2059,7 @@ export function createExportTool(app) {
       else settings.format = /** @type {ExportFormat['id']} */ (formatId);
     }
     if (active) return;
-    if (!(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    if (!(await whenTextArrived(app._activeViewer().doc))) return;
     setActive(true);
   };
 

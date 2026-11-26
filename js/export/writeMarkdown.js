@@ -2,7 +2,7 @@ import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import {
-  getWordStyleSegments, isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+  clonePage, getWordStyleSegments, isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
 } from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
@@ -113,7 +113,8 @@ function renderMarkdownTable(tableResult, applyFormatting) {
 }
 
 /**
- * Convert an array of ocrPage objects to markdown text.
+ * Convert an array of ocrPage objects to markdown text, yielding the text of one page at a time.
+ * `ocrCurrent` may build each page as it is read, since no page is kept or changed.
  *
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrCurrent - The OCR data to convert
@@ -128,7 +129,7 @@ function renderMarkdownTable(tableResult, applyFormatting) {
  * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
-export function writeMarkdown({
+export function* writeMarkdownChunks({
   ocrCurrent, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
   reflowText = false, applyFormatting = true, pageMetrics = null, dropPageHeadersFooters = false, doc = null,
 }) {
@@ -150,25 +151,37 @@ export function writeMarkdown({
     fnLabelsUsed.add(label);
     return label;
   };
-  const parById = new Map();
+  // A reference can come pages before its note, so the labels are tallied from every page before any is written.
+  /** @type {Map<string, ?string>} The marker of each note paragraph, by its id. */
+  const noteMarkers = new Map();
+  /** @type {Array<{parId: string, label: string}>} Each reference to a paragraph, in order, with the label its word prints. */
+  const refs = [];
+  /** @type {Array<{id: string, marker: string}>} Footnotes that print their own marker, which keep it as their label when nothing references them. */
+  const ownMarkerNotes = [];
   for (const g of pageArr) {
-    for (const par of ocrCurrent[g]?.pars || []) parById.set(par.id, par);
-  }
-  for (const g of pageArr) {
-    for (const lineObj of ocrCurrent[g]?.lines || []) {
+    const pageObj = ocrCurrent[g];
+    if (!pageObj) continue;
+    for (const par of pageObj.pars) {
+      if (par.type === 'footnote' || par.type === 'endnote') noteMarkers.set(par.id, par.marker);
+      else noteMarkers.delete(par.id);
+    }
+    for (const lineObj of pageObj.lines) {
       for (const word of lineObj.words) {
-        if (!word || !word.footnoteParId) continue;
-        const fnPar = parById.get(word.footnoteParId);
-        if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || fnLabelById.has(fnPar.id)) continue;
-        const own = fnPar.marker && /^[^\s\]]+$/.test(fnPar.marker) ? fnPar.marker : splitNoteReference(word).label;
-        if (own) fnLabelById.set(fnPar.id, uniqueLabel(own));
+        if (word && word.footnoteParId) refs.push({ parId: word.footnoteParId, label: splitNoteReference(word).label });
       }
     }
-  }
-  for (const g of pageArr) {
-    for (const par of ocrCurrent[g]?.pars || []) {
-      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par) && !fnLabelById.has(par.id)) fnLabelById.set(par.id, uniqueLabel(par.marker));
+    for (const par of pageObj.pars) {
+      if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par)) ownMarkerNotes.push({ id: par.id, marker: par.marker });
     }
+  }
+  for (const { parId, label } of refs) {
+    if (!noteMarkers.has(parId) || fnLabelById.has(parId)) continue;
+    const marker = noteMarkers.get(parId);
+    const own = marker && /^[^\s\]]+$/.test(marker) ? marker : label;
+    if (own) fnLabelById.set(parId, uniqueLabel(own));
+  }
+  for (const { id, marker } of ownMarkerNotes) {
+    if (!fnLabelById.has(id)) fnLabelById.set(id, uniqueLabel(marker));
   }
 
   const evidence = reflowText ? lineEndEvidence(ocrCurrent) : null;
@@ -223,11 +236,13 @@ export function writeMarkdown({
   };
 
   for (const g of pageArr) {
-    if (!ocrCurrent[g] || ocrCurrent[g].lines.length === 0) continue;
+    let pageObj = ocrCurrent[g];
+    if (!pageObj || pageObj.lines.length === 0) continue;
 
-    const pageObj = ocrCurrent[g];
-
-    if (reflowText && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    if (reflowText && pageObj.pars.length === 0) {
+      pageObj = clonePage(pageObj);
+      assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    }
 
     if (!isFirstContent && g > minpage) {
       mdStr += '\n\n---';
@@ -417,7 +432,7 @@ export function writeMarkdown({
     closeFence();
     flushLine();
     doc?.progressHandler({ n: g, type: 'export', info: { } });
+    yield mdStr;
+    mdStr = '';
   }
-
-  return mdStr;
 }

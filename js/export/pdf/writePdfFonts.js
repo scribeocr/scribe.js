@@ -2,9 +2,10 @@
 // Taken from https://stackoverflow.com/questions/40031688/javascript-arraybuffer-to-hex
 
 import { win1252Chars } from '../../../fonts/encoding.js';
-import { determineSansSerif } from '../../utils/miscUtils.js';
+import { determineSansSerif, getStyleLookup } from '../../utils/miscUtils.js';
 import { GlobalFonts } from '../../containers/fontContainer.js';
-import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
+import { subsetFont } from '../../utils/fontUtils.js';
+import { getWordStyleSegments } from '../../objects/ocrObjects.js';
 import { encodeStreamObject, encodeBinaryStreamObject } from './writePdfStreams.js';
 
 /**
@@ -399,6 +400,39 @@ export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
   /** @type {string[][]} */
   const pdfFontObjStrArr = [];
 
+  /** @type {Map<string, Object<string, boolean>>} The characters of each face, keyed `family|style`, and of each family as a whole, keyed `family|`. */
+  const charsByFace = new Map();
+  /**
+   * @param {string} key
+   * @param {string} text
+   */
+  const addChars = (key, text) => {
+    let chars = charsByFace.get(key);
+    if (!chars) {
+      chars = {};
+      charsByFace.set(key, chars);
+    }
+    for (const char of text.split('')) chars[char] = true;
+  };
+  if (ocrArr) {
+    for (const ocrPage of ocrArr) {
+      if (!ocrPage) continue;
+      for (const ocrLine of ocrPage.lines) {
+        for (const ocrWord of ocrLine.words) {
+          const wordFont = docFonts.getWordFont(ocrWord);
+          if (!wordFont) continue;
+          addChars(`${wordFont.family}|`, ocrWord.text);
+          const segments = getWordStyleSegments(ocrWord);
+          if (segments) {
+            for (const segment of segments) addChars(`${wordFont.family}|${getStyleLookup(segment.style)}`, ocrWord.text.slice(segment.start, segment.end));
+          } else {
+            for (const style of wordFont.style === 'normal' ? ['normal', 'italic', 'bold', 'boldItalic'] : [wordFont.style]) addChars(`${wordFont.family}|${style}`, ocrWord.text);
+          }
+        }
+      }
+    }
+  }
+
   /**
    *
    * @param {string} familyKey
@@ -420,7 +454,7 @@ export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
       // Whether the document sets any characters in this font.
       let fontUsed = true;
       if (ocrArr) {
-        const charArr = getDistinctCharsFont(ocrArr, docFonts, familyKey, key);
+        const charArr = Object.keys(charsByFace.get(`${familyKey}|${key}`) || {});
         fontUsed = charArr.length > 0;
         opentype = await subsetFont(value.opentype, charArr);
       }
@@ -493,7 +527,7 @@ export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
   }
 
   if (GlobalFonts.supp.chi_sim && ocrArr) {
-    const charArr = getDistinctCharsFont(ocrArr, docFonts, GlobalFonts.supp.chi_sim.family);
+    const charArr = Object.keys(charsByFace.get(`${GlobalFonts.supp.chi_sim.family}|`) || {});
 
     if (charArr.length > 0) {
       const fontExport = await subsetFont(GlobalFonts.supp.chi_sim.opentype, charArr);

@@ -2,7 +2,9 @@
 // A gate here holds background raster work back while the reader waits on a load.
 
 import scribeLib from '../../scribe.js';
+import { writeSavedDoc } from '../../js/export/writeSavedDoc.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
+import { matchByPlace } from '../js/viewerSearch.js';
 import { titleOf } from './libraryStore.js';
 
 /**
@@ -11,10 +13,9 @@ import { titleOf } from './libraryStore.js';
  */
 
 /**
- * Open a document from the document library as the ingest read it.
- * With a sidecar, the sidecar supplies the text and the saved work.
- * Without one the document opens from its source file with the OCR file the ingest used, if any.
- * @param {{readFile: (relPath: string) => Promise<File>, readSidecar: (hash: string) => Promise<?ArrayBuffer>}} store
+ * Open a document from the document library.
+ * @param {{readFile: (relPath: string) => Promise<File>, recordsBlob: (hash: string) => Promise<?Blob>, sidecarBlob: (hash: string) => Promise<?Blob>,
+ *   writeRecords: (hash: string, blob: Blob) => Promise<void>}} store
  * @param {string} relPath
  * @param {import('./libraryStore.js').LibraryDocEntry} entry
  * @param {{deferText?: boolean, skipFontOpt?: boolean, pdfWorkerN?: number, sessions?: ?import('./docSession.js').DocSessions}} [opts]
@@ -25,17 +26,28 @@ export const openLibraryDoc = async (store, relPath, entry, {
 } = {}) => {
   const file = await store.readFile(relPath);
   const thumbCache = sessions && entry.hash ? sessions.thumbCache({ hash: entry.hash, relPath, entry }, file) : null;
-  const sidecar = entry.hash ? await store.readSidecar(entry.hash) : null;
-  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
-  let doc;
-  if (sidecar) {
-    doc = await scribeLib.openDocument([file, new File([sidecar], `${entry.hash}.scribe`)], { deferText, skipFontOpt, pdfWorkerN });
-  } else {
+  let records = entry.hash ? await store.recordsBlob(entry.hash) : null;
+  const work = entry.hash ? await store.sidecarBlob(entry.hash) : null;
+  /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc = null;
+  if (!records) {
     const ocrFile = entry.ocrFile ? await store.readFile(`${relPath.slice(0, relPath.lastIndexOf('/') + 1)}${entry.ocrFile}`).catch(() => null) : null;
     // The viewer's open, because its fallback makes a scan's own OCR layer the active text.
     doc = await openDocumentFromFile(file, {
-      deferText, skipFontOpt, pdfWorkerN, ocrFiles: ocrFile ? [ocrFile] : [],
+      deferText: deferText && !work, skipFontOpt, pdfWorkerN, ocrFiles: ocrFile ? [ocrFile] : [],
     });
+    if (work) {
+      records = new Blob((await writeSavedDoc(doc)).parts);
+      await store.writeRecords(/** @type {string} */ (entry.hash), records);
+      await doc.close();
+      doc = null;
+    }
+  }
+  if (!doc) {
+    doc = await scribeLib.openDocument({ pdfFiles: [file] }, {
+      pdfWorkerN, saved: { records: /** @type {Blob} */ (records), work, pageDims: entry.pageDims?.map(([width, height]) => [width, height]) },
+    });
+    if (!deferText) await doc.textReady;
   }
   doc.images.setThumbCache(await thumbCache);
   return doc;
@@ -86,14 +98,25 @@ export function createDocLoads({ sessions, engine, getStore }) {
    * @returns {(query: string) => Promise<Array<{pageN: number, wordIds: Array<string>}>>}
    */
   const findThroughIndex = (hash, doc) => async (query) => {
+    await doc.textReady;
+    const store = doc.pageStore;
+    const saved = doc._saved;
     // The index does not hold every open document, as while it is rebuilt.
-    if (!(await engine.hasDoc(hash))) return (await doc.ensureHydrated()) ? scribeLib.utils.ocr.getDocMatches(query, doc.ocr.active) : [];
+    if (!saved || !(await engine.hasDoc(hash))) return scribeLib.utils.ocr.getDocMatches(query, store.pageList());
     const found = await engine.find(hash, query, handoff && handoff.hash === hash && handoff.query === query ? handoff.near : []);
-    return found.pages.flatMap((p) => p.matches.map((wordIds) => ({ pageN: p.page, wordIds })));
+    const asIndexed = (/** @type {number} */ n) => {
+      const record = store.cleanRecord(n);
+      return !!record && saved.keyOf.get(record) === saved.keys[n];
+    };
+    const scanned = [];
+    for (let n = 0; n < store.slotCount(); n++) if (store.hasPage(n, 'active') && !asIndexed(n)) scanned.push(store.readOnlyPage(n));
+    const matches = found.pages.filter((p) => asIndexed(p.page)).flatMap((p) => p.matches.map((places) => matchByPlace(doc, p.page, places)));
+    if (!scanned.length) return matches;
+    return [...matches, ...scribeLib.utils.ocr.getDocMatches(query, scanned)].sort((a, b) => a.pageN - b.pageN);
   };
 
   /**
-   * Builds the seed that opens a document for on-demand loading, with what it shows before it loads.
+   * Open an indexed document for a viewer tab and return its provisional seed.
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
@@ -103,24 +126,19 @@ export function createDocLoads({ sessions, engine, getStore }) {
     const { hash } = entry;
     if (!hash || !entry.pageDims) throw new Error('A document seeds only once it is indexed.');
     const ref = { relPath, entry, hash };
-    const [header, doc] = await Promise.all([sessions.header(hash), sessions.takePixels(ref)]);
-    const pageCount = doc.pageMetrics.length;
+    /** @type {(err: unknown) => void} */
+    let fail = () => {};
+    const failed = new Promise((resolve) => { fail = resolve; });
+    const doc = await sessions.openForTab(ref, fail);
     const edited = () => !!(/** @type {typeof doc & {_libraryEdited?: boolean}} */ (doc))._libraryEdited;
     return {
       doc,
-      initialPage: Math.min(pageN, pageCount - 1),
-      window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
+      initialPage: Math.min(pageN, doc.pageMetrics.length - 1),
       name: titleOf(relPath),
       raster: (n) => (edited() ? null : sessions.pageImage(hash, n)),
       rendered: (n, bitmap) => { if (!edited()) sessions.storeFromBitmap(ref, n, bitmap).catch(() => {}); },
-      ocr: (n) => engine.pages(hash, [n]).then((views) => views[0]),
-      // A saved file's annotations are all in place at open.
-      annots: header?.annotations ? undefined : (n) => doc.liftPdfAnnotations(n),
       find: findThroughIndex(hash, doc),
-      hydration: 'on-demand',
-      // A saved file carries its own record of both, which the document holds from the open.
-      textFromOcrFile: !header && !!entry.ocrFile,
-      deepOcrPages: header ? undefined : entry.ocrDeep,
+      failed,
     };
   };
 

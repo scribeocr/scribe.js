@@ -7,6 +7,7 @@ import {
   LayoutDataColumn, LayoutDataTable, LayoutDataTablePage, removeCircularRefsDataTables,
 } from '../../js/objects/layoutObjects.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
@@ -68,7 +69,7 @@ describe('Round-trip through removeCircularRefsOcr + insertParsedPage matches re
     docB.progressHandler = (msg) => { eventsB.push(msg); };
 
     for (let n = 0; n < PAGE_COUNT; n++) {
-      const wireBytes = JSON.stringify(removeCircularRefsOcr([docA.ocr[engineName][n]])[0]);
+      const wireBytes = JSON.stringify(removeCircularRefsOcr([docA.getPage(n, { layer: engineName })])[0]);
       const parsedPage = JSON.parse(wireBytes);
       docB.insertParsedPage(n, parsedPage, {
         engineName,
@@ -78,8 +79,8 @@ describe('Round-trip through removeCircularRefsOcr + insertParsedPage matches re
   });
 
   test('engine array is fully populated and active points at it', () => {
-    expect(docB.ocr[engineName].length).toBe(PAGE_COUNT);
-    expect(docB.ocr.active).toBe(docB.ocr[engineName]);
+    expect(docPages(docB, engineName).length).toBe(PAGE_COUNT);
+    expect(docB.activeLayer).toBe(engineName);
   });
 
   test('pageMetrics dims match source for every page', () => {
@@ -103,31 +104,31 @@ describe('Round-trip through removeCircularRefsOcr + insertParsedPage matches re
   });
 
   test('first page has 772 words matching docA', () => {
-    const wordsA = docA.ocr[engineName][0].lines.flatMap((l) => l.words);
-    const wordsB = docB.ocr[engineName][0].lines.flatMap((l) => l.words);
+    const wordsA = docA.getPage(0, { layer: engineName }).lines.flatMap((l) => l.words);
+    const wordsB = docB.getPage(0, { layer: engineName }).lines.flatMap((l) => l.words);
     expect(wordsA.length).toBe(772);
     expect(wordsB.length).toBe(772);
   });
 
   test('first word of first page matches docA exactly', () => {
-    const firstWordA = docA.ocr[engineName][0].lines[0].words[0];
-    const firstWordB = docB.ocr[engineName][0].lines[0].words[0];
+    const firstWordA = docA.getPage(0, { layer: engineName }).lines[0].words[0];
+    const firstWordB = docB.getPage(0, { layer: engineName }).lines[0].words[0];
     expect(firstWordB.text).toBe(firstWordA.text);
     expect(firstWordB.id).toBe(firstWordA.id);
   });
 
   test('line.page back-reference is restored', () => {
-    const page0 = docB.ocr[engineName][0];
+    const page0 = docB.getPage(0, { layer: engineName });
     expect(page0.lines[0].page).toBe(page0);
   });
 
   test('word.line back-reference is restored', () => {
-    const line0 = docB.ocr[engineName][0].lines[0];
+    const line0 = docB.getPage(0, { layer: engineName }).lines[0];
     expect(line0.words[0].line).toBe(line0);
   });
 
   test('par.lines is reconstructed from lineIds and par.page is restored', () => {
-    const page0 = docB.ocr[engineName][0];
+    const page0 = docB.getPage(0, { layer: engineName });
     expect(page0.pars.length).toBeGreaterThan(0);
     const par0 = page0.pars[0];
     expect(par0.page).toBe(page0);
@@ -180,7 +181,7 @@ describe('insertParsedPage round-trips layout dataTables and restores circular r
 
     doc = await scribe.openDocument([PDF_PATH]);
 
-    wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.ocr[engineName][TARGET_PAGE]])[0]));
+    wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.getPage(TARGET_PAGE, { layer: engineName })])[0]));
     const wireTables = JSON.parse(JSON.stringify(removeCircularRefsDataTables([sourceTables])[0]));
     doc.insertParsedPage(TARGET_PAGE, wirePage, {
       engineName,
@@ -250,7 +251,7 @@ describe('insertParsedPage round-trips layout dataTables and restores circular r
   });
 });
 
-describe('setActive=false leaves doc.ocr.active untouched.', () => {
+describe('setActive=false leaves the active layer untouched.', () => {
   const engineName = 'No-Active Engine';
   const FixtureModel = makeFixtureModel(engineName, 'google_vision');
 
@@ -264,11 +265,10 @@ describe('setActive=false leaves doc.ocr.active untouched.', () => {
     await sourceDoc.recognize({ model: FixtureModel });
 
     doc = await scribe.openDocument([PDF_PATH]);
-    const initialActive = doc.ocr.active;
-    expect(doc.ocr.active).toBe(initialActive);
+    const initialActive = doc.activeLayer;
 
     for (let n = 0; n < PAGE_COUNT; n++) {
-      const wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.ocr[engineName][n]])[0]));
+      const wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.getPage(n, { layer: engineName })])[0]));
       doc.insertParsedPage(n, wirePage, { engineName, setActive: false });
     }
     doc._initialActive = initialActive;
@@ -276,13 +276,13 @@ describe('setActive=false leaves doc.ocr.active untouched.', () => {
     await sourceDoc.close();
   });
 
-  test('doc.ocr.active is unchanged after insertion with setActive=false', () => {
-    expect(doc.ocr.active).toBe(doc._initialActive);
+  test('the active layer is unchanged after insertion with setActive=false', () => {
+    expect(doc.activeLayer).toBe(doc._initialActive);
   });
 
   test('engine slot is still populated', () => {
-    expect(doc.ocr[engineName].length).toBe(PAGE_COUNT);
-    expect(doc.ocr[engineName][0]).toBeTruthy();
+    expect(docPages(doc, engineName).length).toBe(PAGE_COUNT);
+    expect(doc.getPage(0, { layer: engineName })).toBeTruthy();
   });
 
   afterAll(async () => {
@@ -313,7 +313,7 @@ describe('mainData=false skips pageMetrics and convertPageWarn writes.', () => {
     }));
 
     for (let n = 0; n < PAGE_COUNT; n++) {
-      const wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.ocr[engineName][n]])[0]));
+      const wirePage = JSON.parse(JSON.stringify(removeCircularRefsOcr([sourceDoc.getPage(n, { layer: engineName })])[0]));
       doc.insertParsedPage(n, wirePage, {
         engineName,
         mainData: false,
@@ -338,8 +338,8 @@ describe('mainData=false skips pageMetrics and convertPageWarn writes.', () => {
   });
 
   test('engine slot is still populated', () => {
-    expect(doc.ocr[engineName].length).toBe(PAGE_COUNT);
-    expect(doc.ocr[engineName][0]).toBeTruthy();
+    expect(docPages(doc, engineName).length).toBe(PAGE_COUNT);
+    expect(doc.getPage(0, { layer: engineName })).toBeTruthy();
   });
 
   afterAll(async () => {

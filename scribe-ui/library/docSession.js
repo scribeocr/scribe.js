@@ -1,7 +1,6 @@
 // Per-document sessions for the library: one owner for the in-memory state of each content hash.
 
 import scribeLib from '../../scribe.js';
-import { fallBackToPdfText } from '../js/controls/tools.js';
 import {
   renderPageRaster, PAGE_RASTER_WIDTH, RASTER_LOSSY_QUALITY, RASTER_LOSSLESS_CAP,
 } from './libraryIngest.js';
@@ -12,14 +11,6 @@ const MAX_IDLE_LIVE = 2;
 const MAX_PIXEL_SOURCES = 3;
 /** How many page-image object URLs stay alive across all sessions. */
 const MAX_PAGE_URLS = 400;
-
-/**
- * @typedef {Object} NotesHeader
- * @property {Array<Array<Object>>} [annotations]
- * @property {Array<Object>} [outline]
- * @property {Array<number>} [pageRotations]
- * @property {{contentEdits?: Array<?Array<Object>>, pageSourceIndices?: Array<?number>}} [session]
- */
 
 /**
  * An object URL over a copy of `blob`'s bytes.
@@ -54,13 +45,10 @@ class DocSession {
     this.pixelsDoc = null;
     this.pixelsUse = 0;
     /**
-     * The document a tab holds for this hash.
-     * It stands in for the pixel source while the tab has edited nothing.
-     * @type {?import('../../js/containers/scribeDoc.js').ScribeDoc}
+     * Document open in a tab for this hash.
+     * @type {?WeakRef<import('../../js/containers/scribeDoc.js').ScribeDoc>}
      */
     this.tabDoc = null;
-    /** @type {?Promise<?NotesHeader>} */
-    this.headerPromise = null;
     /** @type {?string} */
     this.coverUrl = null;
     /** @type {?Promise<?string>} */
@@ -186,91 +174,37 @@ export class DocSessions {
   }
 
   /**
-   * The document-level blocks of the document's sidecar, or null when it has none saved.
-   * Callers share one parsed object.
-   * @param {string} hash
-   * @returns {Promise<?NotesHeader>}
-   */
-  header(hash) {
-    const s = this.session(hash);
-    if (!s.headerPromise) {
-      const store = this.store;
-      if (!store) return Promise.resolve(null);
-      const p = store.sidecarBlob(hash).then(async (blob) => {
-        if (!blob) return null;
-        const magic = new Uint8Array(await blob.slice(0, 2).arrayBuffer());
-        let stream = blob.stream();
-        if (magic[0] === 0x1F && magic[1] === 0x8B) stream = stream.pipeThrough(new DecompressionStream('gzip'));
-        const reader = stream.getReader();
-        /** @type {Uint8Array[]} */
-        const chunks = [];
-        let length = 0;
-        let ended = false;
-        // The sidecar's segmented form puts the document-level blocks on its first line, ahead of the page records.
-        while (!ended) {
-          const part = await reader.read();
-          if (part.done) break;
-          const nl = part.value.indexOf(0x0A);
-          const piece = nl === -1 ? part.value : part.value.subarray(0, nl);
-          chunks.push(piece);
-          length += piece.length;
-          ended = nl !== -1;
-        }
-        await reader.cancel().catch(() => {});
-        const line = new Uint8Array(length);
-        let at = 0;
-        for (const c of chunks) {
-          line.set(c, at);
-          at += c.length;
-        }
-        return /** @type {NotesHeader} */ (JSON.parse(new TextDecoder().decode(line)));
-      }).catch(() => null);
-      s.headerPromise = p;
-    }
-    return s.headerPromise;
-  }
-
-  /**
-   * Forget the parsed header and the pixel source built from it.
+   * Close the pooled pixel source for `hash`.
    * @param {string} hash
    */
-  dropHeader(hash) {
+  dropPixels(hash) {
     const s = this.map.get(hash);
-    if (!s) return;
-    s.headerPromise = null;
-    closePixels(s);
+    if (s) closePixels(s);
   }
 
   /**
-   * Open the document's PDF for on-demand loading.
-   * Its pages are arranged as its saved changes arrange them, and none of its text is read.
+   * Open the document from its saved files.
    * @param {DocRef} ref
+   * @param {boolean} text - Whether to load page text in the background.
+   * @param {(err: unknown) => void} [onError] - Called when the text cannot be read.
    * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
    */
-  async #openSeeded(ref) {
+  async #openSaved(ref, text, onError) {
     const store = this.store;
     if (!store) throw new Error('No library is open.');
     const s = this.session(ref.hash);
     if (!s.storedThumbs) s.storedThumbs = store.listPageThumbs(ref.hash).catch(() => new Set());
-    const [file, header] = await Promise.all([store.readFile(ref.relPath), this.header(ref.hash), s.storedThumbs]);
+    const [file, records, work] = await Promise.all([store.readFile(ref.relPath), store.recordsBlob(ref.hash), store.sidecarBlob(ref.hash), s.storedThumbs]);
+    if (!records && text) throw new Error('The document has no records file.');
     const dims = ref.entry.pageDims;
-    const doc = await scribeLib.openDocument({ pdfFiles: [file] }, {
+    const doc = await scribeLib.openDocument({ pdfFiles: [file] }, records ? {
       pdfWorkerN: 1,
-      seeded: {
-        header: header ?? undefined,
-        pageDims: dims ? dims.map(([width, height]) => [width, height]) : undefined,
-        load: async () => {
-          const sidecar = await store.readSidecar(ref.hash);
-          if (sidecar) return { scribeFiles: [sidecar] };
-          const { ocrFile } = ref.entry;
-          const ocr = ocrFile ? await store.readFile(`${ref.relPath.slice(0, ref.relPath.lastIndexOf('/') + 1)}${ocrFile}`).catch(() => null) : null;
-          return ocr ? { ocrFiles: [ocr] } : {};
-        },
+      saved: {
+        records, work, pageDims: dims ? dims.map(([width, height]) => [width, height]) : undefined, text, onError,
       },
+    } : {
+      pdfWorkerN: 1, usePDFText: { native: { main: false, supp: false }, ocr: { main: false, supp: false } },
     });
-    // The mode gates read the type before the document loads, and a document with no saved file learns its own only then.
-    if (doc.inputData.pdfType == null) doc.inputData.pdfType = ref.entry.pdfType || 'text';
-    fallBackToPdfText(doc);
     doc.images.setThumbCache(await this.thumbCache(ref, file));
     return doc;
   }
@@ -322,14 +256,15 @@ export class DocSessions {
    */
   pixels(ref) {
     const s = this.session(ref.hash);
-    if (s.tabDoc) {
+    const lent = s.tabDoc?.deref();
+    if (lent) {
       // A closed document holds no PDF.
-      if (!s.tabDoc.images.pdfData) s.tabDoc = null;
-      else if (!(/** @type {typeof s.tabDoc & {_libraryEdited?: boolean}} */ (s.tabDoc))._libraryEdited) return Promise.resolve(s.tabDoc);
+      if (!lent.images.pdfData) s.tabDoc = null;
+      else if (!(/** @type {typeof lent & {_libraryEdited?: boolean}} */ (lent))._libraryEdited) return Promise.resolve(lent);
     }
     s.pixelsUse = ++this.useTick;
     if (!s.pixelsPromise) {
-      const p = this.#openSeeded(ref).then((doc) => {
+      const p = this.#openSaved(ref, false).then((doc) => {
         if (s.pixelsPromise === p) s.pixelsDoc = doc;
         else doc.close().catch(() => {});
         return doc;
@@ -344,20 +279,15 @@ export class DocSessions {
   }
 
   /**
-   * The document's pixel source, taken out of the pool for a tab to hold as its own document.
-   * The caller owns it and closes it.
+   * Open the document from its saved files for a tab.
+   * The caller owns the returned document and must close it.
    * @param {DocRef} ref
+   * @param {(err: unknown) => void} onError - Called if background text loading fails.
    * @returns {Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>}
    */
-  async takePixels(ref) {
-    const s = this.session(ref.hash);
-    const pooled = s.pixelsPromise ? await s.pixelsPromise.catch(() => null) : null;
-    if (pooled && s.pixelsDoc === pooled) {
-      s.pixelsDoc = null;
-      s.pixelsPromise = null;
-      return pooled;
-    }
-    return this.#openSeeded(ref);
+  openForTab(ref, onError) {
+    closePixels(this.session(ref.hash));
+    return this.#openSaved(ref, true, onError);
   }
 
   /**
@@ -367,7 +297,7 @@ export class DocSessions {
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    */
   lendTab(hash, doc) {
-    this.session(hash).tabDoc = doc;
+    this.session(hash).tabDoc = new WeakRef(doc);
   }
 
   /**

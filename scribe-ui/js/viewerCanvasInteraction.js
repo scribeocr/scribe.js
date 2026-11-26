@@ -72,7 +72,7 @@ function marqueeBox(viewer) {
 async function recognizeArea(viewer, n, box, wordMode = false) {
   if (box.width < 4 || box.height < 4) return;
 
-  if (!viewer.doc.ocr.active[n]) {
+  if (!viewer.doc.getPage(n)) {
     console.error('Base text layer must exist prior to recognizing area.');
     return;
   }
@@ -110,7 +110,7 @@ async function recognizeArea(viewer, n, box, wordMode = false) {
 
   const pageNew = res.convert.page.pageObj;
 
-  scribe.combineOCRPage(pageNew, viewer.doc.ocr.active[n], viewer.doc.pageMetrics[n]);
+  scribe.combineOCRPage(pageNew, viewer.doc.getPage(n), viewer.doc.pageMetrics[n]);
 
   if (viewer.textGroupsRenderIndices.includes(n)) viewer.displayPage(viewer.state.cp.n);
 }
@@ -161,7 +161,7 @@ async function addWordManual(viewer, n, box) {
     left: rectLeftHOCR, top: rectTopHOCR, right: rectRightHOCR, bottom: rectBottomHOCR,
   };
 
-  const pageObj = new scribe.utils.ocr.OcrPage(n, viewer.doc.ocr.active[n].dims);
+  const pageObj = new scribe.utils.ocr.OcrPage(n, viewer.doc.getPage(n).dims);
   const lineObjTemp = new scribe.utils.ocr.OcrLine(pageObj, wordBox, [0, 0], 10, null);
   pageObj.lines = [lineObjTemp];
   const wordIDNew = scribe.utils.getRandomAlphanum(10);
@@ -169,9 +169,9 @@ async function addWordManual(viewer, n, box) {
   wordObj.conf = 100;
   lineObjTemp.words = [wordObj];
 
-  scribe.combineOCRPage(pageObj, viewer.doc.ocr.active[n], viewer.doc.pageMetrics[n], true, false);
+  scribe.combineOCRPage(pageObj, viewer.doc.getPage(n), viewer.doc.pageMetrics[n], true, false);
 
-  const wordObjNew = scribe.utils.ocr.getPageWord(viewer.doc.ocr.active[n], wordIDNew);
+  const wordObjNew = scribe.utils.ocr.getPageWord(viewer.doc.getPage(n), wordIDNew);
 
   if (!wordObjNew) throw new Error('Failed to add word to page.');
 

@@ -83,7 +83,7 @@ const doc = await scribe.openDocument(['receipt.png']);
 await doc.recognize({ langs: ['eng'] });
 
 // Read recognized words.
-for (const word of doc.ocr.active[0].lines.flatMap((line) => line.words)) {
+for (const word of doc.getPage(0).lines.flatMap((line) => line.words)) {
   console.log(word.text, word.conf);
 }
 
@@ -179,15 +179,21 @@ instances instead — each gets its own worker pool.
 
 ### The OCR data model
 
-After import or recognition, a document's text lives under `doc.ocr`. This is a map of named OCR
-versions; `doc.ocr.active` is the one used for export. Other versions may exist depending on what
-ran, for example `'Tesseract Legacy'`, `'Tesseract LSTM'`, `'Tesseract Combined'`, `'User
-Upload'` (imported OCR), and `'pdf'` (text pulled from an input PDF).
+After import or recognition, a document's text is held in named layers. `doc.layers` lists their
+names, and `doc.activeLayer` names the one used for export. Which layers exist depends on what
+ran:
 
-Each version is an array of pages. The hierarchy is page -> line -> word:
+- `'Combined'`: output from the built-in OCR engine.
+- `'User Upload'`: imported OCR or `.scribe` files.
+- `'pdf'`: text extracted from an input PDF.
+- Custom model name: output from a custom recognition model (for example, `'AWS Textract'`).
+
+Each layer holds one `OcrPage` per page, containing paragraphs (`page.pars`) and lines
+(`page.lines`) made up of words (`line.words`). Read a page from the active layer with
+`doc.getPage(n)`, or from a named layer with `doc.getPage(n, { layer: 'pdf' })`:
 
 ```js
-const page = doc.ocr.active[0];          // OcrPage
+const page = doc.getPage(0);             // OcrPage
 const line = page.lines[0];              // OcrLine
 const word = line.words[0];              // OcrWord
 
@@ -195,8 +201,21 @@ word.text;   // 'Hello'
 word.conf;   // confidence, 0-100
 word.bbox;   // { left, top, right, bottom } in page pixels
 word.style;  // { font, size, bold, italic, underline, smallCaps, sup, dropcap, color, opacity }
-word.chars;  // character-level data when available, otherwise null
+word.chars;  // character boxes, populated when read with { detail: true }
 ```
+
+To iterate through a document, loop over `doc.pageCount` and load one page at a time:
+
+```js
+for (let n = 0; n < doc.pageCount; n++) {
+  const page = doc.getPage(n);
+  // ...
+}
+```
+
+Do not hold `OcrPage` references across reads of other pages. Open documents keep up to
+`scribe.opt.pageBudget` words of decoded pages in memory at once; evicted pages are stored as
+compact records and decoded into fresh objects on the next `getPage` call.
 
 Alongside the OCR text, a document carries:
 
@@ -257,8 +276,8 @@ const doc = await scribe.openDocument({
 
 ### Supplemental OCR and ground truth
 
-`doc.importFilesSupp(files, ocrName)` imports an additional OCR version under a name of your
-choice, without replacing `doc.ocr.active`. This is used for alternate engine output or for
+`doc.importFilesSupp(files, ocrName)` imports an additional OCR version as a layer under a name
+of your choice, without changing the active layer. This is used for alternate engine output or for
 ground-truth data to evaluate against (see `doc.compareOCR` / `doc.evalOCRPage` in the [API
 reference](./API.md)).
 
@@ -276,7 +295,7 @@ const restored = await scribe.openDocument({ scribeFiles: [session] });
 ## Recognition (OCR)
 
 Run the built-in Tesseract engine on a document's pages with `doc.recognize(options)`. Files must
-be imported first (they already are after `openDocument`). Results populate `doc.ocr`.
+be imported first (they already are after `openDocument`). The recognized text becomes the active layer.
 
 ```js
 await doc.recognize({

@@ -218,12 +218,13 @@ export function buildRedactionsWorkspace(host, container) {
     const doc = viewer.doc;
     // A freshly-opened PDF may still be extracting text, so searching before it settles reports false misses.
     if (doc._textReadySettle) {
-      if (!(await doc.ensureHydrated()) || viewer.doc !== doc) return null;
+      await doc.textReady;
+      if (viewer.doc !== doc) return null;
     }
     /** @type {Array<Array<OcrWord>>} */
     const found = [];
     for (let n = 0; n < doc.pageMetrics.length; n++) {
-      const page = doc.ocr.active[n];
+      const page = doc.pageStore.readOnlyPage(n);
       if (page) {
         for (const occ of findOccurrences(page, rec.term, rec.mode, store().matchCase)) found.push(occ);
       }

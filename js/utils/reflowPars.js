@@ -39,6 +39,7 @@ function hyphenSides(last, first) {
 
 /**
  * Collects the evidence that decides how a line ending in a hyphen joins the next line.
+ * It reads each page once, since a page may be rebuilt on every read.
  * @param {Array<?OcrPage>} pages
  * @returns {{words: Set<string>, pairs: Set<string>, urls: Set<string>, brokenWordsByPage: Map<number, Set<string>>}}
  */
@@ -49,11 +50,14 @@ export function lineEndEvidence(pages) {
   const pairs = new Set();
   /** @type {Set<string>} */
   const urls = new Set();
+  // A line end shaped like a broken word counts only if the whole document prints the joined word, which is known after the last page.
+  /** @type {Array<{n: number, joined: string, pair: string}>} */
+  const breaks = [];
   for (const page of pages) {
     if (!page) continue;
     let afterDash = false;
-    for (const line of page.lines) {
-      const lineWords = line.words.filter((word) => !!word);
+    for (let h = 0; h < page.lines.length; h++) {
+      const lineWords = page.lines[h].words.filter((word) => !!word);
       const endsInDash = lineWords.length > 0 && LINE_END_DASH_RE.test(lineWords[lineWords.length - 1].text);
       for (let i = 0; i < lineWords.length; i++) {
         // The word a line-end dash ends and the word after it are what the evidence decides, so they are not evidence themselves.
@@ -64,24 +68,24 @@ export function lineEndEvidence(pages) {
         if (/:\/\/|www\./.test(text)) urls.add(lineWords[i].text.replace(URL_TRIM_RE, ''));
       }
       afterDash = endsInDash;
+
+      // Every line end counts, in or out of a paragraph, so the evidence is the same before and after an export assigns paragraphs.
+      if (h === page.lines.length - 1) continue;
+      const last = page.lines[h].words[page.lines[h].words.length - 1];
+      const first = page.lines[h + 1].words[0];
+      if (!last || !first || !LINE_END_HYPHEN_RE.test(last.text)) continue;
+      const { left, right, breakShape } = hyphenSides(last.text, first.text);
+      if (breakShape) breaks.push({ n: page.n, joined: left + right, pair: `${left}-${right}` });
     }
   }
 
   /** @type {Map<number, Set<string>>} */
   const brokenWordsByPage = new Map();
-  for (const page of pages) {
-    if (!page) continue;
-    /** @type {Set<string>} */
-    const brokenWords = new Set();
-    // Every line end counts, in or out of a paragraph, so the evidence is the same before and after an export assigns paragraphs.
-    for (let h = 0; h < page.lines.length - 1; h++) {
-      const last = page.lines[h].words[page.lines[h].words.length - 1];
-      const first = page.lines[h + 1].words[0];
-      if (!last || !first || !LINE_END_HYPHEN_RE.test(last.text)) continue;
-      const { left, right, breakShape } = hyphenSides(last.text, first.text);
-      if (breakShape && words.has(left + right) && !pairs.has(`${left}-${right}`)) brokenWords.add(left + right);
-    }
-    if (brokenWords.size > 0) brokenWordsByPage.set(page.n, brokenWords);
+  for (const { n, joined, pair } of breaks) {
+    if (!words.has(joined) || pairs.has(pair)) continue;
+    const brokenWords = brokenWordsByPage.get(n);
+    if (brokenWords) brokenWords.add(joined);
+    else brokenWordsByPage.set(n, new Set([joined]));
   }
 
   return {

@@ -1,4 +1,5 @@
 import scribeLib from '../../scribe.js';
+import { writeSavedDoc } from '../../js/export/writeSavedDoc.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 
 /**
@@ -100,10 +101,9 @@ const recordTextSignals = (entry, doc) => {
 
 export class LibraryIngest {
   /**
-   * Ingest timeout per document.
-   * A spec shortens it.
+   * Maximum idle time (ms) without per-page import progress before ingest aborts the document.
    */
-  static docTimeoutMs = 240 * 1000;
+  static stallTimeoutMs = 240 * 1000;
 
   /**
    * @param {import('./libraryStore.js').LibraryStore} store
@@ -163,6 +163,11 @@ export class LibraryIngest {
     this.settling = null;
     /** @type {?{relPath: string, kind: 'ingest'|'verify'|'recognize'}} */
     this.current = null;
+    /**
+     * Content hashes of documents currently being saved by a viewer tab.
+     * @type {Set<string>}
+     */
+    this.savesInFlight = new Set();
   }
 
   /**
@@ -413,10 +418,9 @@ export class LibraryIngest {
   }
 
   /**
-   * Import a document and rebuild everything derived from it.
-   * The ingest writes no sidecar of its own, so the docs directory holds saved work alone.
+   * Import a document and rebuild its records file, index entry, and cover.
    * @param {string} relPath
-   * @param {boolean} [resetSidecar] - Remove the sidecar first.
+   * @param {boolean} [resetSidecar]
    */
   async _ingest(relPath, resetSidecar = false) {
     const entry = this.manifest.docs[relPath];
@@ -428,10 +432,14 @@ export class LibraryIngest {
     let hash = '';
     let timedOut = false;
     let outcome = /** @type {'indexed'|'changed'|'pending'} */ ('indexed');
+    let lastProgress = performance.now();
+    // Pause the per-page stall timer during `this.engine.addDoc`, which emits no progress events and enforces its own timeout.
+    let indexing = false;
     const work = (async () => {
       const file = await this.store.readFile(relPath);
       const buf = await file.arrayBuffer();
       hash = await hashBytes(buf);
+      lastProgress = performance.now();
       entry.size = file.size;
       entry.mtime = file.lastModified;
       if (entry.checkHash && entry.hash && entry.hash !== hash) {
@@ -463,40 +471,36 @@ export class LibraryIngest {
 
       // Read before the sidecar, so a save that lands at any point after it shows as a newer edit mark on the entry.
       const editedAtRead = entry.editedAt;
-      const sidecar = resetSidecar ? null : await this.store.readSidecar(hash);
+      const sidecar = resetSidecar ? null : await this.store.sidecarBlob(hash);
+      const cut = relPath.lastIndexOf('/');
+      const dir = await this.store.dirAt(cut < 0 ? '' : relPath.slice(0, cut));
+      const names = [];
+      for await (const name of dir.keys()) names.push(name);
+      const ocrName = filesNamedForPdf(relPath.slice(cut + 1), names).ocrFiles[0];
+      const ocrFile = ocrName ? await (await dir.getFileHandle(ocrName)).getFile() : null;
+      delete entry.ocrFile;
+      delete entry.ocrFileNote;
+      delete entry.ocrFileError;
+      /** @param {number} n */
+      const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
       // The hashed buffer doubles as the import input, so the file's bytes are read and held once.
-      if (sidecar) {
-        doc = await scribeLib.openDocument([new File([buf], relPath.split('/').pop() || relPath), new File([sidecar], `${hash}.scribe`)], { skipFontOpt: true });
-      } else {
-        // The sidecar holds the document's text and edits, so the OCR file is read only without one.
-        const cut = relPath.lastIndexOf('/');
-        const dir = await this.store.dirAt(cut < 0 ? '' : relPath.slice(0, cut));
-        const names = [];
-        // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
-        for await (const name of dir.keys()) names.push(name);
-        const ocrName = filesNamedForPdf(relPath.slice(cut + 1), names).ocrFiles[0];
-        const ocrFile = ocrName ? await (await dir.getFileHandle(ocrName)).getFile() : null;
-        delete entry.ocrFile;
-        delete entry.ocrFileNote;
-        delete entry.ocrFileError;
-        /** @param {number} n */
-        const pages = (n) => `${n} page${n === 1 ? '' : 's'}`;
-        doc = await openDocumentFromFile(buf, {
-          skipFontOpt: true,
-          ocrFiles: ocrFile ? [ocrFile] : [],
-          onOcrFileRejected: (err) => {
-            entry.ocrFileError = err.name === 'OcrPageMismatchError'
-              ? `Text data not used — PDF has ${pages(err.pageCount ?? 0)}, text data (${ocrName}) has ${pages(err.ocrPages ?? 0)}. Text data could not be aligned with PDF.`
-              : `Text data not used — ${ocrName} could not be read as text data.`;
-          },
-        });
-        if (ocrFile && !entry.ocrFileError) {
-          entry.ocrFile = ocrName;
-          const match = doc.inputData.ocrPageMatch;
-          if (match) entry.ocrFileNote = `Text misalignment repaired — PDF has ${pages(doc.inputData.pageCount)}, text data (${ocrName}) has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.`;
-        }
+      doc = await openDocumentFromFile(buf, {
+        // Fit font metrics when importing an OCR file because viewer tabs open from the records file without re-running font optimization.
+        skipFontOpt: !ocrFile,
+        ocrFiles: ocrFile ? [ocrFile] : [],
+        onOcrFileRejected: (err) => {
+          entry.ocrFileError = err.name === 'OcrPageMismatchError'
+            ? `Text data not used — PDF has ${pages(err.pageCount ?? 0)}, text data (${ocrName}) has ${pages(err.ocrPages ?? 0)}. Text data could not be aligned with PDF.`
+            : `Text data not used — ${ocrName} could not be read as text data.`;
+        },
+        onProgress: () => { lastProgress = performance.now(); },
+      });
+      if (ocrFile && !entry.ocrFileError) {
+        entry.ocrFile = ocrName;
+        const match = doc.inputData.ocrPageMatch;
+        if (match) entry.ocrFileNote = `Text misalignment repaired — PDF has ${pages(doc.inputData.pageCount)}, text data (${ocrName}) has ${pages(match.ocrPages)}. Text data auto-aligned with PDF.`;
       }
-      if (entry.editedAt !== editedAtRead) {
+      if (entry.editedAt !== editedAtRead || this.savesInFlight.has(hash)) {
         outcome = 'pending';
         return;
       }
@@ -504,6 +508,25 @@ export class LibraryIngest {
       if (entry.hash !== hash) this.store.trimDue = true;
       entry.hash = hash;
       if (superseded) await this.engine.removeDoc(superseded).catch(() => {});
+      const records = new Blob((await writeSavedDoc(doc)).parts);
+      await this.store.writeRecords(hash, records);
+      lastProgress = performance.now();
+      if (entry.editedAt !== editedAtRead || this.savesInFlight.has(hash)) {
+        outcome = 'pending';
+        return;
+      }
+      if (sidecar) {
+        const sourceDims = doc.pageMetrics.map((pm) => pm.dims);
+        await doc.close();
+        doc = await scribeLib.openDocument({ pdfFiles: [new File([buf], relPath.split('/').pop() || relPath)] }, { pdfWorkerN: 1, saved: { records, work: sidecar, text: false } });
+        // Restore any OCR-file page dimensions, since opening with `saved` sizes pages from the PDF alone.
+        for (const [i, pm] of doc.pageMetrics.entries()) pm.dims = sourceDims[pm.sourcePageN ?? i] ?? pm.dims;
+        // No await sits between this check and addDoc below, so any save starting afterwards queues behind addDoc in the search client.
+        if (entry.editedAt !== editedAtRead || this.savesInFlight.has(hash)) {
+          outcome = 'pending';
+          return;
+        }
+      }
       entry.pageCount = doc.inputData.pageCount;
       if (doc.attachments.collection) entry.portfolio = true;
       else delete entry.portfolio;
@@ -517,11 +540,14 @@ export class LibraryIngest {
       else delete entry.recognizedAt;
 
       const editedAtWritten = entry.editedAt;
-      await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
+      indexing = true;
+      await this.engine.addDoc(hash, records, sidecar);
+      indexing = false;
+      lastProgress = performance.now();
       try {
         const cover = await renderCover(doc);
         const pictured = await coverOf(doc);
-        if (cover && entry.editedAt === editedAtWritten) {
+        if (cover && entry.editedAt === editedAtWritten && !this.savesInFlight.has(hash)) {
           await this.store.writeThumb(hash, cover);
           entry.coverOf = pictured;
           this.sessions?.setCover(hash, cover);
@@ -532,12 +558,13 @@ export class LibraryIngest {
       await Promise.race([
         work,
         new Promise((resolve, reject) => {
-          timer = setTimeout(() => {
+          timer = setInterval(() => {
+            if (indexing || performance.now() - lastProgress < LibraryIngest.stallTimeoutMs) return;
             timedOut = true;
-            const err = new Error(`Timed out after ${Math.round(LibraryIngest.docTimeoutMs / 1000)}s.`);
+            const err = new Error(`No page finished in ${Math.round(LibraryIngest.stallTimeoutMs / 1000)}s.`);
             err.name = 'IngestTimeoutError';
             reject(err);
-          }, LibraryIngest.docTimeoutMs);
+          }, Math.min(1000, LibraryIngest.stallTimeoutMs));
         }),
       ]);
       if (outcome === 'pending') {
@@ -557,7 +584,7 @@ export class LibraryIngest {
       // A new document whose open fails keeps its hash, so the notes another machine saved for it stay referenced.
       if (!entry.hash && hash) entry.hash = hash;
     } finally {
-      if (timer !== null) clearTimeout(timer);
+      if (timer !== null) clearInterval(timer);
       // Work abandoned at the timeout can still open its document, which nothing else would close.
       if (timedOut) work.catch(() => {}).then(() => doc?.close()).catch(() => {});
       else await doc?.close();
@@ -610,11 +637,9 @@ export class LibraryIngest {
         await live.checkpoint(true);
       } else {
         doc.sessionMarks.recognizedAt = Date.now();
-        // The sidecar takes the segmented form at any size, since the provisional open reads only its first line.
-        await this.store.writeSidecar(hash, await doc.exportData('scribe', {
-          scribeSession: true, scribeSegments: true, scribeSegmentThreshold: 0, includeCharBoxesScribe: false,
-        }));
-        await this.engine.addDoc(hash, doc.ocr.active || [], doc.nativeText?.pages || []);
+        const sidecar = new Blob((await writeSavedDoc(doc)).parts);
+        await this.store.writeSidecar(hash, sidecar);
+        await this.engine.addDoc(hash, /** @type {Blob} */ (await this.store.recordsBlob(hash)), sidecar);
         entry.recognizedAt = doc.sessionMarks.recognizedAt;
       }
       delete entry.ocrError;

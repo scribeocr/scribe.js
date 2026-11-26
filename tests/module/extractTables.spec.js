@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /**
  * @param {Uint8Array} bytes - xlsx workbook.
@@ -39,7 +40,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     const sheets = [];
     for (let n = 0; n < doc.layoutDataTables.pages.length; n++) {
       const layoutPage = doc.layoutDataTables.pages[n];
-      const extracted = scribe.extractTextFromTables(doc.ocr.active[n], layoutPage);
+      const extracted = scribe.extractTextFromTables(doc.getPage(n), layoutPage);
       extracted.forEach((t, idx) => {
         sheets.push({ name: layoutPage.tables[idx].title?.text || `Page ${n + 1} Table ${idx + 1}`, rows: t.rows });
       });
@@ -91,7 +92,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
 
   // Runs before the createTablesFromText test below, which overwrites page 0's detected tables.
   test('formatted export carries source styling; plain export keeps bold underlined headers only', async () => {
-    const rich = scribe.extractTextFromTables(doc.ocr.active[0], doc.layoutDataTables.pages[0], { cellFormats: true });
+    const rich = scribe.extractTextFromTables(doc.getPage(0), doc.layoutDataTables.pages[0], { cellFormats: true });
     const headerCell = rich[0].rows[0][0];
     expect(headerCell.text, 'rich extraction keeps the plain cell text alongside runs').toBe('SECTOR');
     expect(headerCell.runs.length, 'a uniformly-styled header cell extracts as a single run').toBe(1);
@@ -103,7 +104,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(mixedCell.runs.map((r) => r.style.size), 'the (pounds) qualifier keeps its smaller source size').toEqual([41, 32.5]);
 
     expect(doc.layoutDataTables.pages[0].tables[0].headerRows, 'the all-text first row inside the grid classifies as one header row').toBe(1);
-    const chains = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages, { cellFormats: true });
+    const chains = scribe.extractDocTableChains(docPages(doc), doc.layoutDataTables.pages, { cellFormats: true });
     expect(chains.map((c) => c.headerRows), 'each chain resolves one header row for styling').toEqual([1, 1, 1, 1]);
 
     const richRows = chains[0].rows;
@@ -137,7 +138,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
     expect(zebraStyles.includes('<fgColor rgb="FFBFEDF8"/>'), 'a range zebraColor writes the source band color as the stripe fill').toBe(true);
     expect(zebraStyles.includes('FFF2F2F2'), 'the neutral-gray fallback fill is not interned when the range carries its own color').toBe(false);
 
-    const plainRows = scribe.extractDocTableChains(doc.ocr.active, doc.layoutDataTables.pages)[0].rows;
+    const plainRows = scribe.extractDocTableChains(docPages(doc), doc.layoutDataTables.pages)[0].rows;
     const plainBytes = await scribe.utils.writeXlsxFromSheets([{
       name: 'Plain',
       rows: plainRows,
@@ -164,7 +165,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
   // Runs before the createTablesFromText test below, which overwrites page 0's detected tables.
   // Regression: a row's reported bottom was its lowest text bottom, which can sit below the centers of the next row's words, so storing the bottoms moved those words up a row.
   test('a table that derives its rows from the text keeps them once the reported row bottoms are stored as its row bounds', () => {
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     const layoutPage = doc.layoutDataTables.pages[0];
     const table = layoutPage.tables[0];
     const detectedBounds = table.rowBounds;
@@ -188,7 +189,7 @@ describe('Check createTablesFromText and extractTextFromTables.', () => {
   test('createTablesFromText creates table with column boxes and rowBounds', async () => {
     const tablesPage = scribe.createTablesFromText(0, [{
       rows: [['SECTOR', 'Apprehensions'], ['Miami', '1,891']],
-    }], doc.ocr.active[0]);
+    }], doc.getPage(0));
     doc.layoutDataTables.pages[0] = tablesPage;
     const table = tablesPage.tables[0];
     expect(table.boxes.length).toBe(2);

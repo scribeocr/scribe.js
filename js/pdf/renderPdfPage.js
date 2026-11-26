@@ -39,6 +39,7 @@ import {
   rebuildFontFromGlyphs, buildFontFromCFF, convertType1ToOTFNew,
 } from './fonts/convertFontToOTF.js';
 import { ca } from '../canvasAdapter.js';
+import { crc32 } from '../utils/byteStream.js';
 import { ensureSubstituteFacesForRecords, substituteFaceResourceEntries } from './substituteFaces.js';
 
 // Helvetica AFM advances (1000-em units) for centering synthesized comb-field characters in their cells, matching the exported appearance and the viewer cover.
@@ -8666,36 +8667,6 @@ export async function renderPdfPageAsImage(
   };
   ca.closeDrawable(canvas);
   return result;
-}
-
-/** CRC-32 lookup table for PNG chunk checksums (browser path only). */
-const crcTable = new Uint32Array(256);
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) {
-    c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
-  }
-  crcTable[n] = c;
-}
-
-// Native CRC-32 is what keeps the fast PNG path net-faster than the compressed path, because its IDAT chunk runs to tens of megabytes per page.
-// A top-level `await` here would make every importing module initialize asynchronously.
-// That deadlocks scribe-ui's import cycles and leaves the bundled app silently dead.
-const zlibCrc32 = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? process.getBuiltinModule('node:zlib').crc32
-  : null;
-
-/**
- * Compute CRC-32 of a byte array, matching the PNG spec (ISO 3309 / ITU-T V.42).
- * @param {Uint8Array} bytes
- */
-function crc32(bytes) {
-  if (zlibCrc32) return zlibCrc32(bytes);
-  let crc = 0xFFFFFFFF;
-  for (let i = 0; i < bytes.length; i++) {
-    crc = crcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
-  }
-  return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 
 /**

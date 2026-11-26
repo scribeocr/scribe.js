@@ -13,7 +13,8 @@ export const strayFields = (d) => {
   const lineSet = new Set();
   const word = new Set();
   const char = new Set();
-  for (const p of d.ocr.active) {
+  for (let n = 0; n < d.pageCount; n++) {
+    const p = d.getPage(n, { detail: true });
     Object.keys(p).filter((k) => !pageFields.includes(k)).forEach((k) => page.add(k));
     for (const line of p.lines) {
       Object.keys(line).filter((k) => !lineFields.includes(k)).forEach((k) => lineSet.add(k));

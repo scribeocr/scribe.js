@@ -19,11 +19,13 @@ const TAIL_RUNS = 2;
 const LEAD_CHAR_RE = /^[\s·•∙⋅‧․]/;
 
 /**
- * Assigns `pageNum` and `lineNum` to every line of a layer in place.
- * Pass every page of the layer in one call, since a number column is recognized only when it recurs across pages.
- * @param {Array<?OcrPage>} pages - A layer's pages.
+ * Assign `pageNum` and `lineNum` in place on pages with margin line numbers.
+ * Column detection requires recurring line-number runs within one call, so pass all pages at once or in multi-page batches.
+ * @param {Array<?OcrPage>} pages - Consecutive pages in document order.
+ * @param {?{label: ?number}} [carry] - Return value from the immediately preceding batch of pages.
+ * @returns {{label: ?number}} Carry state for the next batch, with `label` set to the last printed page number on the final page, or `null` if none.
  */
-export function assignPageLineNums(pages) {
+export function assignPageLineNums(pages, carry = null) {
   /** @type {Array<PageInfo>} */
   const infos = [];
   /** @type {Array<Region>} */
@@ -123,7 +125,7 @@ export function assignPageLineNums(pages) {
     });
     strongCap += Math.min(low, high, Math.floor(kept.length / 4), Math.floor(nonTable / 2));
   }
-  if (strongCap < LOCK_RUNS) return;
+  if (strongCap < LOCK_RUNS) return { label: null };
 
   for (const info of infos) {
     for (const peak of clusterPeaks(info.cands.map((c) => c.xr), info.xTol)) {
@@ -132,7 +134,7 @@ export function assignPageLineNums(pages) {
       for (const members of runsOf(col, null)) runs.push(makeRegion(info, members));
     }
   }
-  if (!runs.length) return;
+  if (!runs.length) return { label: null };
 
   // Runs away from a column where strong runs recur across the document are dropped, which keeps numbered lists, index columns and tables out.
   const tolFrac = median(infos.map((i) => i.xTol / i.width));
@@ -157,7 +159,7 @@ export function assignPageLineNums(pages) {
         && at.some((o) => o.infoIndex === r.infoIndex && o.rows[0].n <= MAX_START && o.firstCy > r.lastCy && o.firstCy - r.lastCy < 5 * r.pitch)) infos[r.infoIndex].tailRuns++;
     }
   }
-  if (!locked.length) return;
+  if (!locked.length) return { label: null };
   // Once the document is numbered paper, a full count at any other x is a page set at its own margin (a certificate or errata page).
   const lockAccepted = new Set(accepted);
   for (const r of runs) if (!lockAccepted.has(r) && r.rows.length >= FULL_RUN && r.rows[0].n <= MAX_START && !r.inTable && !locked.some((l) => Math.abs(l.xFrac - r.xFrac) <= tolFrac)) accept(r);
@@ -373,6 +375,10 @@ export function assignPageLineNums(pages) {
     }
     const keep = new Set();
     for (let i = tailIdx[tails.length - 1]; i >= 0; i = prevIdx[i]) keep.add(i);
+    if (carry && carry.label != null && keep.size >= 2) {
+      const [first, second] = [...keep].sort((a, b) => a - b);
+      if (infos[labeled[first].infoIndex].page === pages[0] && labeled[first].label <= carry.label && labeled[second].label > carry.label) keep.delete(first);
+    }
     const share = keep.size / labeled.length;
     const counts = new Map();
     for (const r of labeled) counts.set(r.label, (counts.get(r.label) || 0) + 1);
@@ -409,6 +415,8 @@ export function assignPageLineNums(pages) {
       line.lineNum = r.rows[lo].n;
     }
   }
+  const lastLabeled = ordered.filter((r) => r.label != null).pop();
+  return { label: lastLabeled && infos[lastLabeled.infoIndex].page === pages[pages.length - 1] ? lastLabeled.label : null };
 }
 
 /**

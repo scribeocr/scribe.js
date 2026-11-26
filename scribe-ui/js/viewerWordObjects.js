@@ -954,7 +954,7 @@ export class UiText {
           };
           // A word of the document's active layer records an undoable step.
           // A stand-in word, such as the table preview's, is edited outright.
-          if (page && viewer.doc?.ocr.active?.[page.n] === page) {
+          if (page && viewer.doc?.getPage(page.n) === page) {
             viewer.doc.editWords([page], 'Edited word', edit);
             const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(itext.word, viewer.state.displayMode,
               scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);

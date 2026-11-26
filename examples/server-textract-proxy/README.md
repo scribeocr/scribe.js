@@ -70,19 +70,19 @@ try {
   for await (const entry of streamServerOcr('https://your-server.example/ocr', pdfArrayBuffer, { signal: ac.signal })) {
     if (entry.error) {
       const dims = doc.pageMetrics[entry.pageNum].dims;
-      doc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { engineName: 'Server Textract' });
+      doc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { layer: 'Server Textract' });
       continue;
     }
     doc.insertParsedPage(entry.pageNum, entry.page, {
-      engineName: 'Server Textract',
+      layer: 'Server Textract',
       dataTables: entry.dataTables,
       warn: entry.warn,
     });
   }
-  // doc.ocr.active is populated; doc.exportData('pdf') returns a searchable PDF.
+  // The active layer is populated; doc.exportData('pdf') returns a searchable PDF.
 } catch (err) {
   if (err.name !== 'AbortError') throw err;
-  // Partial results in doc.ocr.active for pages that arrived before abort.
+  // The active layer holds the pages that arrived before abort.
 }
 ```
 
@@ -92,7 +92,11 @@ No changes to the stock scribeocr GUI are required. The server runs scribe.js's 
 
 `POST /ocr` — body: raw PDF bytes, `Content-Type: application/pdf`. Response: `application/x-ndjson`, one line per page:
 
-- Success: `{"pageNum": 0, "page": <OcrPage>, "dataTables": <LayoutDataTablePage>, "warn": <warning>}` — `page` is the parsed `OcrPage` with circular refs stripped (line.page, line.par, par.page, word.line, par.lines -> par.lineIds); `dataTables` is the per-page layout-table data (empty when `TEXTRACT_TABLES=false`); `warn` is the per-page conversion-warning object. Feed each line into `doc.insertParsedPage(pageNum, page, { engineName, dataTables, warn })` to install it into a browser-side `ScribeDoc`.
+- Success: `{"pageNum": 0, "page": <OcrPage>, "dataTables": <LayoutDataTablePage>, "warn": <warning>}`
+  - `page` is the parsed `OcrPage` with circular refs stripped (line.page, line.par, par.page, word.line, par.lines -> par.lineIds).
+  - `dataTables` is the per-page layout-table data, empty when `TEXTRACT_TABLES=false`.
+  - `warn` is the per-page conversion-warning object.
+  - Feed each line into `doc.insertParsedPage(pageNum, page, { layer, dataTables, warn })` to install it into a browser-side `ScribeDoc`.
 - Failure: `{"pageNum": 0, "error": {"message": "..."}}`
 
 Lines are flushed as each page completes, so the browser merges progressively.

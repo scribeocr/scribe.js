@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -28,7 +29,7 @@ describe('Check Azure Document Intelligence import.', () => {
       scribe.opt.warningHandler = warningHandlerPrev;
     }
 
-    expect(doc.ocr.active[0].lines.length > 0).toBe(true);
+    expect(doc.getPage(0).lines.length > 0).toBe(true);
     expect(warnings, 'an Azure file with the PDF\'s page count imports without a page-mismatch warning').toEqual([]);
   });
 
@@ -45,19 +46,19 @@ describe('Check Azure Document Intelligence import.', () => {
   });
 
   test('Should correctly extract table content via extractTextFromTables', async () => {
-    const tables = scribe.extractTextFromTables(doc.ocr.active[0], doc.layoutDataTables.pages[0]);
+    const tables = scribe.extractTextFromTables(doc.getPage(0), doc.layoutDataTables.pages[0]);
     expect(tables.length).toBe(1);
     expect(tables[0].rows.length).toBe(25);
     expect(tables[0].rows[0].length).toBe(10);
   });
 
   test('Should correctly extract header row content', async () => {
-    const tables = scribe.extractTextFromTables(doc.ocr.active[0], doc.layoutDataTables.pages[0]);
+    const tables = scribe.extractTextFromTables(doc.getPage(0), doc.layoutDataTables.pages[0]);
     expect(tables[0].rows[0][0]).toContain('SECTOR');
   });
 
   test('Should correctly extract data row content', async () => {
-    const tables = scribe.extractTextFromTables(doc.ocr.active[0], doc.layoutDataTables.pages[0]);
+    const tables = scribe.extractTextFromTables(doc.getPage(0), doc.layoutDataTables.pages[0]);
     const miamiRow = tables[0].rows.find((r) => r[0].includes('Miami'));
     expect(miamiRow).not.toBeNull();
     expect(miamiRow[1]).toContain('127');
@@ -79,9 +80,9 @@ describe('Check Azure Document Intelligence import.', () => {
   });
 
   test('Should import Azure paragraphs with their lines in order', async () => {
-    expect(doc.ocr.active.map((page) => page.pars.length), 'one paragraph per Azure paragraph on each page').toEqual([257, 153, 103, 102]);
+    expect(docPages(doc).map((page) => page.pars.length), 'one paragraph per Azure paragraph on each page').toEqual([257, 153, 103, 102]);
 
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(page.lines.filter((line) => !line.par).length, 'every line belongs to a paragraph').toBe(0);
     expect(page.pars.flatMap((par) => par.lines).length, 'the paragraphs partition the page lines').toBe(page.lines.length);
 
@@ -92,7 +93,7 @@ describe('Check Azure Document Intelligence import.', () => {
   });
 
   test('Should map Azure paragraph roles onto paragraph types', async () => {
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(parText(page.pars[1]), 'the first title paragraph is the document title').toBe('United States Border Patrol');
     expect(page.pars[1].type, 'the title role becomes a title paragraph').toBe('title');
     expect(page.pars[1].reason, 'the Azure role is recorded as the paragraph reason').toBe('title');

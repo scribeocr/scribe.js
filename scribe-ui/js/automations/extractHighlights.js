@@ -9,7 +9,7 @@ import { annotMatchesWord } from '../viewerHighlights.js';
  * @param {Array<AnnotationHighlight>} groupAnns
  */
 function highlightText(viewer, pageIndex, groupAnns) {
-  const ocrPage = viewer.doc.ocr.active[pageIndex];
+  const ocrPage = viewer.doc.pageStore.readOnlyPage(pageIndex);
   if (!ocrPage || !ocrPage.lines) return '';
   const words = [];
   for (const line of ocrPage.lines) {
@@ -33,7 +33,8 @@ export async function run(host, params, progress) {
   const doc = viewer.doc;
   if (doc._textReadySettle) {
     progress(0, 'Waiting for text extraction…');
-    if (!(await doc.ensureHydrated())) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
+    await doc.textReady;
+    if (doc._loadFailed) return { rows: [{ kind: 'info', text: 'The document could not be loaded.' }] };
     if (viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
   const pageCount = doc.pageMetrics.length;

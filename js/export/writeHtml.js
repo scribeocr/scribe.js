@@ -1,7 +1,7 @@
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { calcWordMetrics } from '../utils/fontUtils.js';
 import ocr, {
-  isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+  clonePage, isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
 } from '../objects/ocrObjects.js';
 import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
@@ -182,41 +182,56 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
 };
 
 /**
- * Write the pages as the HTML file's body and its stylesheet rules, without the file's head and font faces.
+ * Write pages as an HTML body fragment and CSS rules without document wrapper tags or `@font-face` declarations.
+ * @param {Omit<Parameters<typeof writeHtmlChunks>[0], 'embedFonts' | 'htmlFitWindow' | 'fragment'>} params
+ * @returns {{body: string, style: string, fontsUsed: Set<FontContainerFont>, title?: string}}
+ */
+export function writeHtmlFragment(params) {
+  const chunks = writeHtmlChunks({ ...params, fragment: true });
+  let body = '';
+  let next = chunks.next();
+  for (; !next.done; next = chunks.next()) body += next.value;
+  return { body, ...next.value };
+}
+
+/**
+ * Write pages as an HTML document, yielding markup one page at a time.
+ * Pages in `ocrPages` are neither mutated nor retained, so callers may pass a lazy array view.
  *
  * @param {Object} params
- * @param {Array<OcrPage>} params.ocrPages -
- * @param {Array<ImageWrapper>} [params.images] -
- * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page, for the article's tables.
- * @param {?Array<Array<Annotation>>} [params.annotations=null] - The document's annotations per page, whose links are written as links.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
- * @param {number} [params.minpage=0] - The first page to include in the document.
- * @param {number} [params.maxpage=-1] - The last page to include in the document.
- * @param {boolean} [params.reflowText=false] - Write the text as an article that reflows to the window, instead of each page's exact layout.
- * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out of the article.
- * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
- * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
- *    If omitted, all words are included.
- * @param {import('../containers/fontContainer.js').DocFonts} params.docFonts - Per-document fonts.
- * @param {Array<PageMetrics>} params.pageMetrics - This document's page metrics.
+ * @param {Array<OcrPage>} params.ocrPages
+ * @param {Array<ImageWrapper>} [params.images]
+ * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Per-page table data for `reflowText` mode.
+ * @param {?Array<Array<Annotation>>} [params.annotations=null] - Per-page annotations whose link entries are emitted as `<a>` elements.
+ * @param {?Array<number>} [params.pageArr=null] - Zero-based page indices to export, overriding `minpage` and `maxpage`.
+ * @param {number} [params.minpage=0] - First 0-based page index to export.
+ * @param {number} [params.maxpage=-1] - Inclusive last 0-based page index to export, or `-1` for the last page.
+ * @param {boolean} [params.reflowText=false] - Emit reflowable `<article>` markup when `true`, or positioned per-page layout when `false`.
+ * @param {boolean} [params.dropPageHeadersFooters=false] - Omit headers, footers, page numbers, and margin line numbers in `reflowText` mode.
+ * @param {boolean} [params.removeMargins=false] - Trim outer page margins when `reflowText` is `false`.
+ * @param {?Array<string>} [params.wordIds=null] - Subset of word IDs to include.
+ * @param {import('../containers/fontContainer.js').DocFonts} params.docFonts
+ * @param {Array<PageMetrics>} params.pageMetrics
  * @param {('invis'|'ebook'|'eval'|'proof'|'annot')} [params.displayMode] - Defaults to `scribeDocDefaults.displayMode`.
  * @param {number} [params.confThreshHigh] - Defaults to `scribeDocDefaults.confThreshHigh`.
  * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
  * @param {number} [params.overlayOpacity] - Defaults to `scribeDocDefaults.overlayOpacity`.
  * @param {boolean} [params.kerning] - Defaults to `scribeDocDefaults.kerning`.
- * @param {boolean} [params.autoRotate] - Whether the page images are deskewed, in which case the text is not turned by the page's angle.
+ * @param {boolean} [params.autoRotate] - Whether page images are already deskewed so text needs no skew rotation.
  *    Defaults to `scribeDocDefaults.autoRotate`.
- * @param {boolean} [params.parIds=false] - Mark each line of the exact layout with its paragraph's id, as `data-par`.
- *    Mark each block of the article with its paragraph's id and page, as `data-par` and `data-page`.
- * @param {boolean} [params.runFonts=false] - Mark each run of the article with the font its words record, as `data-font`.
- * @param {boolean} [params.gatherNotes=true] - Write note paragraphs as the article's notes, linked from their references, instead of as paragraphs where the page prints them.
- * @param {boolean} [params.notesPerPage=false] - Write each page's notes after the page's last body block instead of in one list at the end of the article.
- * @param {('page'|'sequential')} [params.noteNumbers='page'] - The label a numbered note shows: the number the page prints, or its place among the numbered notes in reference order.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
- *    progress reporting.
- * @returns {{body: string, style: string, fontsUsed: Set<FontContainerFont>, title?: string}} The body's markup, the stylesheet rules, the fonts the markup names, and the article's title.
+ * @param {boolean} [params.parIds=false] - Emit `data-par` on positioned lines, and `data-par` and `data-page` on reflowed blocks.
+ * @param {boolean} [params.runFonts=false] - Emit `data-font` on text runs in `reflowText` mode.
+ * @param {boolean} [params.gatherNotes=true] - Collect footnotes and endnotes into linked note sections in `reflowText` mode.
+ * @param {boolean} [params.notesPerPage=false] - Emit each page's gathered notes after that page's body blocks.
+ * @param {('page'|'sequential')} [params.noteNumbers='page'] - Keep printed labels on numeric notes for `'page'`, or renumber them sequentially in reference order for `'sequential'`.
+ * @param {boolean} [params.embedFonts] - Inline `@font-face` sources as base64 `data:` URIs when `true`, or link to the CDN when `false`.
+ *    Defaults to `scribeDocDefaults.embedFonts`.
+ * @param {boolean} [params.htmlFitWindow=false] - Add a CSS rule scaling positioned pages down to fit narrower viewports.
+ * @param {boolean} [params.fragment=false] - Yield only inner body markup, omitting the document head, `@font-face` declarations, and wrapper tags.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @returns {Generator<string, {style: string, fontsUsed: Set<FontContainerFont>, title?: string}, void>}
  */
-export function writeHtmlFragment({
+export function* writeHtmlChunks({
   ocrPages, images, layoutPageArr = null, annotations = null, pageArr = null, minpage = 0, maxpage = -1,
   reflowText = false, dropPageHeadersFooters = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
   displayMode = scribeDocDefaults.displayMode,
@@ -230,6 +245,9 @@ export function writeHtmlFragment({
   gatherNotes = true,
   notesPerPage = false,
   noteNumbers = 'page',
+  embedFonts = scribeDocDefaults.embedFonts,
+  htmlFitWindow = false,
+  fragment = false,
   doc = null,
 }) {
   /** @type {Set<FontContainerFont>} */
@@ -242,6 +260,75 @@ export function writeHtmlFragment({
     pageArr = [];
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
+
+  /**
+   * Build the HTML document `<head>` and opening `<body>` wrapper.
+   * @param {string} style
+   * @param {string} title
+   */
+  const fileHead = (style, title) => {
+    let styleStr = `<style>\n${style}`;
+
+    if (htmlFitWindow && !reflowText) {
+      // The tangent of the arctangent is how CSS divides one length by another into a plain number.
+      const widest = Math.max(0, ...pageArr.map((g) => pageMetrics[g]?.dims.width || 0));
+      styleStr += `  body {\n    zoom:min(1, tan(atan2(calc(100vw - 20px), ${widest}px)));\n  }\n`;
+    }
+
+    for (const fontI of fontsUsed) {
+      let fontSrc;
+      if (embedFonts) {
+        const fontBytes = new Uint8Array(fontI.src);
+        const isWoff = fontBytes[0] === 0x77 && fontBytes[1] === 0x4F
+          && fontBytes[2] === 0x46 && fontBytes[3] === 0x46;
+        const fontMime = isWoff ? 'font/woff' : 'font/ttf';
+
+        let fontBase64;
+        if (typeof Buffer !== 'undefined') {
+          fontBase64 = Buffer.from(fontBytes.buffer, fontBytes.byteOffset, fontBytes.byteLength).toString('base64');
+        } else {
+          let binary = '';
+          const chunkSize = 8192;
+          for (let i = 0; i < fontBytes.length; i += chunkSize) {
+            binary += String.fromCharCode.apply(null, fontBytes.subarray(i, i + chunkSize));
+          }
+          fontBase64 = btoa(binary);
+        }
+
+        fontSrc = `url('data:${fontMime};base64,${fontBase64}')`;
+      } else {
+        const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.8.0/fonts/all/';
+        let styleTitleCase = 'Regular';
+        if (fontI.style === 'italic') {
+          styleTitleCase = 'Italic';
+        } else if (fontI.style === 'bold') {
+          styleTitleCase = 'Bold';
+        } else if (fontI.style === 'boldItalic') {
+          styleTitleCase = 'BoldItalic';
+        }
+        fontSrc = `url('${cdnPath}${fontI.family}-${styleTitleCase}.woff')`;
+      }
+
+      styleStr += `  @font-face {
+    font-family: '${fontI.fontFaceName}';
+    font-style: ${fontI.fontFaceStyle};
+    font-weight: ${fontI.fontFaceWeight};
+    src: ${fontSrc};
+  }\n`;
+    }
+
+    if (reflowText) {
+      styleStr += '  body {\n    margin:0;\n    background:#fff;\n  }\n';
+    }
+    styleStr += '</style>\n';
+
+    let metaStr = '<meta charset="UTF-8">\n';
+    if (reflowText) {
+      metaStr += `<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${ocr.escapeXml(title || 'Document')}</title>\n`;
+      return `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n<body>\n<main>\n`;
+    }
+    return `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n<body>\n`;
+  };
 
   /**
    * The link target of each linked word of page `g`, by word id.
@@ -279,33 +366,66 @@ export function writeHtmlFragment({
     const fnLabelById = new Map();
     /** @type {Map<string, string>} */
     const fnPageLabelById = new Map();
-    if (gatherNotes) {
-      const parById = new Map();
-      for (const g of pageArr) {
-        for (const par of ocrPages[g]?.pars || []) parById.set(par.id, par);
-      }
-      let numbered = 0;
-      for (const g of pageArr) {
-        for (const lineObj of ocrPages[g]?.lines || []) {
+    /** @type {Map<string, ?string>} The marker of each note paragraph, by its id. */
+    const noteMarkers = new Map();
+    /** @type {Array<{parId: string, label: string}>} Note references in reading order, with target paragraph ID and the reference word's label. */
+    const refs = [];
+    /** @type {Array<{id: string, marker: string}>} Footnotes whose marker is not part of their text. */
+    const ownMarkerNotes = [];
+    let title = '';
+    for (const g of pageArr) {
+      const pageObj = ocrPages[g];
+      if (!pageObj) continue;
+      if (gatherNotes) {
+        for (const par of pageObj.pars) {
+          if (par.type === 'footnote' || par.type === 'endnote') noteMarkers.set(par.id, par.marker);
+          else noteMarkers.delete(par.id);
+          if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par)) ownMarkerNotes.push({ id: par.id, marker: par.marker });
+        }
+        for (const lineObj of pageObj.lines) {
           for (const word of lineObj.words) {
-            if (!word || !word.footnoteParId || (wordIds && !wordIds.includes(word.id))) continue;
-            const fnPar = parById.get(word.footnoteParId);
-            if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || fnLabelById.has(fnPar.id)) continue;
-            const own = fnPar.marker && /^[^\s\]]+$/.test(fnPar.marker) ? fnPar.marker : splitNoteReference(word).label;
-            if (!own) continue;
-            const label = noteNumbers === 'sequential' && !/\D/.test(own) ? String(++numbered) : own;
-            fnLabelById.set(fnPar.id, label);
-            if (label !== own) fnPageLabelById.set(fnPar.id, own);
+            if (word && word.footnoteParId && (!wordIds || wordIds.includes(word.id))) refs.push({ parId: word.footnoteParId, label: splitNoteReference(word).label });
           }
         }
       }
-      // A Word or Markdown footnote is gathered even when nothing links to it, or writePar would take its metadata label for a list marker.
-      for (const g of pageArr) {
-        for (const par of ocrPages[g]?.pars || []) {
-          if (par.type === 'footnote' && par.marker && /^[^\s\]]+$/.test(par.marker) && !parMarkerInText(par) && !fnLabelById.has(par.id)) fnLabelById.set(par.id, par.marker);
+      if (title) continue;
+      const layoutPage = layoutPageArr?.[g];
+      /** @type {Array<bbox>} */
+      const tableBboxes = [];
+      for (let t = 0; t < (layoutPage?.tables.length || 0); t++) {
+        if (layoutPage.tables[t].boxes.length > 0) tableBboxes.push(calcTableBbox(layoutPage.tables[t]));
+      }
+      /** @type {?Array<OcrLine>} */
+      let heading = null;
+      for (const lineObj of [...pageObj.lines, null]) {
+        const inTable = !!lineObj && tableBboxes.some((tb) => calcBoxOverlap(lineObj.bbox, tb) > 0.5);
+        if (lineObj && !inTable && dropPageHeadersFooters && parIsFurniture(lineObj.par)) continue;
+        if (heading && (!lineObj || inTable || lineObj.par !== heading[0].par)) {
+          title = heading.flatMap((line) => line.words.map((w) => w.text)).join(' ');
+          heading = null;
+          if (title) break;
         }
+        if (!lineObj || inTable) continue;
+        if (heading) heading.push(lineObj);
+        else if (lineObj.par && lineObj.par.type === 'title' && lineObj.par.debug.sourceStyle !== 'HTMLPreformatted') heading = [lineObj];
       }
     }
+    let numberedNotes = 0;
+    for (const { parId, label } of refs) {
+      if (!noteMarkers.has(parId) || fnLabelById.has(parId)) continue;
+      const marker = noteMarkers.get(parId);
+      const own = marker && /^[^\s\]]+$/.test(marker) ? marker : label;
+      if (!own) continue;
+      const shown = noteNumbers === 'sequential' && !/\D/.test(own) ? String(++numberedNotes) : own;
+      fnLabelById.set(parId, shown);
+      if (shown !== own) fnPageLabelById.set(parId, own);
+    }
+    // A Word or Markdown footnote is gathered even when nothing links to it, or writePar would take its metadata label for a list marker.
+    for (const { id, marker } of ownMarkerNotes) {
+      if (!fnLabelById.has(id)) fnLabelById.set(id, marker);
+    }
+
+    if (!fragment) yield fileHead(ARTICLE_RULES, title);
     const referenced = new Set();
     /** @type {Map<string, string>} */
     let hrefs = new Map();
@@ -403,7 +523,6 @@ export function writeHtmlFragment({
     };
 
     let body = '<article class="scribe-article">\n';
-    let title = '';
     /** @type {Array<{depth: number, tag: string, item: boolean}>} */
     const openLists = [];
     /** @param {number} depth */
@@ -447,7 +566,6 @@ export function writeHtmlFragment({
       if (par && par.type === 'title') {
         closeLists(0);
         const level = Math.min(Math.max(par.headingLevel || 1, 1), 6);
-        if (!title) title = lines.flatMap((line) => line.words.map((w) => w.text)).join(' ');
         const marker = par.marker && !parMarkerInText(par) ? ` data-marker="${esc(par.marker)}"` : '';
         body += `<h${level}${marker}${attrs(par)}>${inline(lines, { plainBold: true })}</h${level}>\n`;
         lastBodyEnd = body.length;
@@ -524,14 +642,17 @@ export function writeHtmlFragment({
       if (!roleClass) lastBodyEnd = body.length;
     };
     for (const g of pageArr) {
-      const pageObj = ocrPages[g];
+      let pageObj = ocrPages[g];
       if (!pageObj || pageObj.lines.length === 0) continue;
       pageN = g;
       hrefs = linkHrefs(g);
       const pageNotesStart = notes.length;
       lastBodyEnd = body.length;
 
-      if (pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetricsArr[g]?.angle || 0);
+      if (pageObj.pars.length === 0) {
+        pageObj = clonePage(pageObj);
+        assignParagraphs(pageObj, pageMetricsArr[g]?.angle || 0);
+      }
 
       const layoutPage = layoutPageArr?.[g];
       const tableWordObj = layoutPage && layoutPage.tables.length > 0 ? extractTableContent(pageObj, layoutPage) : {};
@@ -593,496 +714,367 @@ export function writeHtmlFragment({
         body = body.slice(0, lastBodyEnd) + notesHtml(notes.splice(pageNotesStart)) + body.slice(lastBodyEnd);
       }
       doc?.progressHandler({ n: g, type: 'export', info: {} });
+      yield body;
+      body = '';
     }
     closeLists(0);
     if (notes.length > 0) body += notesHtml(notes);
     body += '</article>\n';
-    return {
-      body, style: ARTICLE_RULES, fontsUsed, title,
-    };
+    yield body;
+    if (!fragment) yield '</main>\n</body>\n</html>';
+    return { style: ARTICLE_RULES, fontsUsed, title };
   }
+
+  let exactStyle = '  .scribe-word {\n';
+
+  exactStyle += '    z-index:1;\n';
+  exactStyle += '    white-space:nowrap;\n';
+  if (kerning) {
+    exactStyle += '    font-kerning:normal;\n';
+  } else {
+    exactStyle += '    font-kerning:none;\n';
+  }
+
+  exactStyle += '  }\n';
+
+  exactStyle += '  .scribe-line {\n';
+  exactStyle += '    position:absolute;\n';
+  exactStyle += '    white-space:nowrap;\n';
+  exactStyle += '  }\n';
+
+  exactStyle += '  .scribe-page {\n';
+  exactStyle += '    text-decoration-skip-ink:none;\n';
+  exactStyle += '  }\n';
+
+  exactStyle += '  .scribe-page a {\n';
+  exactStyle += '    color:inherit;\n';
+  exactStyle += '    text-decoration:none;\n';
+  exactStyle += '  }\n';
+
+  exactStyle += '  .scribe-image {\n';
+  exactStyle += '    position:absolute;\n';
+  exactStyle += '    user-select:none;\n';
+  exactStyle += '    pointer-events:none;\n';
+  exactStyle += '  }\n';
 
   const enableOptSaved = fonts.state.enableOpt;
   fonts.state.enableOpt = false;
-
-  if (images && images.length === 0) images = undefined;
-
-  let bodyStr = '';
-
-  let newLine = false;
-
-  const activeLine = {
-    left: 0,
-    y1: 0,
-    maxFontBoundingBoxAscentLine: 0,
-    bodyWordsStr: '',
-    /** @type {?string} */
-    parId: null,
-    orientation: 0,
-    /** @type {string} */
-    href: '',
-  };
-
-  /** @type {Map<number, string>} */
-  let groups = new Map();
-
-  const addLine = () => {
-    if (activeLine.href) {
-      activeLine.bodyWordsStr += '</a>';
-      activeLine.href = '';
-    }
-    if (activeLine.bodyWordsStr !== '') {
-      const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
-      const parAttr = parIds && activeLine.parId ? ` data-par="${activeLine.parId}"` : '';
-      let lineStr = `    <div class="scribe-line"${parAttr} style="left:${activeLine.left}px;top:${topHTML}px;">\n`;
-      lineStr += '        ';
-      lineStr += activeLine.bodyWordsStr;
-      lineStr += '<br>\n';
-      lineStr += '    </div>\n';
-      groups.set(activeLine.orientation, (groups.get(activeLine.orientation) || '') + lineStr);
-    }
-    activeLine.bodyWordsStr = '';
-    activeLine.maxFontBoundingBoxAscentLine = 0;
-    activeLine.y1 = 0;
-    activeLine.left = 0;
-    activeLine.parId = null;
-    activeLine.orientation = 0;
-  };
-
-  let top = 0;
-
-  for (const g of pageArr) {
-    // TODO: change this when an image is included.
-    if (!ocrPages[g] || ocrPages[g].lines.length === 0) continue;
-
-    const pageObj = ocrPages[g];
-
-    let minLeft = 0;
-    let minTop = 0;
-    let maxBottom = 0;
-    if (removeMargins) {
-      const wordArr = ocr.getPageWords(pageObj);
-      for (let h = 0; h < wordArr.length; h++) {
-        const wordObj = wordArr[h];
-        if (wordIds && !wordIds.includes(wordObj.id)) continue;
-        if (minLeft === 0 || wordObj.bbox.left < minLeft) minLeft = wordObj.bbox.left;
-        if (minTop === 0 || wordObj.bbox.top < minTop) minTop = wordObj.bbox.top;
-        if (wordObj.bbox.bottom > maxBottom) maxBottom = wordObj.bbox.bottom;
+  try {
+    for (const g of pageArr) {
+      for (const lineObj of ocrPages[g]?.lines || []) {
+        for (const wordObj of lineObj.words) {
+          if (wordObj && wordObj.text && (!wordIds || wordIds.includes(wordObj.id))) fontsUsed.add(docFonts.getWordFont(wordObj));
+        }
       }
     }
 
-    bodyStr += `  <div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">\n`;
+    if (!fragment) yield fileHead(exactStyle, '');
 
-    const imageObj = images ? images[g] : null;
-    if (imageObj) {
-      // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
-      bodyStr += `  <img class="scribe-image" src="${imageObj.ensureSrc()}">\n`;
-    }
+    if (images && images.length === 0) images = undefined;
 
-    const { dims } = pageMetricsArr[g];
-    const userRotation = pageMetricsArr[g].rotation || 0;
-    const disp = userRotation % 180 === 90 ? { width: dims.height, height: dims.width } : dims;
-    const textRotation = autoRotate ? 0 : (pageMetricsArr[g].angle || 0);
+    let bodyStr = '';
 
-    if (removeMargins) {
-      top += Math.min((maxBottom - minTop) + 200, disp.height + 10);
-    } else {
-      top += disp.height + 10;
-    }
+    let newLine = false;
 
-    const hrefs = linkHrefs(g);
-    groups = new Map();
-    let wordObjPrev = /** @type {?OcrWord} */ (null);
-    let advanceDiffPrev = 0;
-    let rightSideBearingPrev = 0;
-    let charSpacingHTMLPrev = 0;
+    const activeLine = {
+      left: 0,
+      y1: 0,
+      maxFontBoundingBoxAscentLine: 0,
+      bodyWordsStr: '',
+      /** @type {?string} */
+      parId: null,
+      orientation: 0,
+      /** @type {string} */
+      href: '',
+    };
 
-    for (let h = 0; h < pageObj.lines.length; h++) {
-      const lineObj = pageObj.lines[h];
+    /** @type {Map<number, string>} */
+    let groups = new Map();
 
-      newLine = true;
+    const addLine = () => {
+      if (activeLine.href) {
+        activeLine.bodyWordsStr += '</a>';
+        activeLine.href = '';
+      }
+      if (activeLine.bodyWordsStr !== '') {
+        const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
+        const parAttr = parIds && activeLine.parId ? ` data-par="${activeLine.parId}"` : '';
+        let lineStr = `    <div class="scribe-line"${parAttr} style="left:${activeLine.left}px;top:${topHTML}px;">\n`;
+        lineStr += '        ';
+        lineStr += activeLine.bodyWordsStr;
+        lineStr += '<br>\n';
+        lineStr += '    </div>\n';
+        groups.set(activeLine.orientation, (groups.get(activeLine.orientation) || '') + lineStr);
+      }
+      activeLine.bodyWordsStr = '';
+      activeLine.maxFontBoundingBoxAscentLine = 0;
+      activeLine.y1 = 0;
+      activeLine.left = 0;
+      activeLine.parId = null;
+      activeLine.orientation = 0;
+    };
 
-      let underlinePrev = false;
+    let top = 0;
 
-      for (let i = 0; i < lineObj.words.length; i++) {
-        const wordObj = lineObj.words[i];
-        if (!wordObj || !wordObj.text) continue;
+    for (const g of pageArr) {
+      // TODO: change this when an image is included.
+      if (!ocrPages[g] || ocrPages[g].lines.length === 0) continue;
 
-        if (wordIds && !wordIds.includes(wordObj.id)) continue;
+      const pageObj = ocrPages[g];
 
-        if (newLine) {
-          wordObjPrev = null;
+      let minLeft = 0;
+      let minTop = 0;
+      let maxBottom = 0;
+      if (removeMargins) {
+        const wordArr = ocr.getPageWords(pageObj);
+        for (let h = 0; h < wordArr.length; h++) {
+          const wordObj = wordArr[h];
+          if (wordIds && !wordIds.includes(wordObj.id)) continue;
+          if (minLeft === 0 || wordObj.bbox.left < minLeft) minLeft = wordObj.bbox.left;
+          if (minTop === 0 || wordObj.bbox.top < minTop) minTop = wordObj.bbox.top;
+          if (wordObj.bbox.bottom > maxBottom) maxBottom = wordObj.bbox.bottom;
+        }
+      }
 
-          addLine();
+      bodyStr += `  <div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">\n`;
+
+      const imageObj = images ? images[g] : null;
+      if (imageObj) {
+        bodyStr += `  <img class="scribe-image" src="${imageObj.ensureSrc()}">\n`;
+      }
+
+      const { dims } = pageMetricsArr[g];
+      const userRotation = pageMetricsArr[g].rotation || 0;
+      const disp = userRotation % 180 === 90 ? { width: dims.height, height: dims.width } : dims;
+      const textRotation = autoRotate ? 0 : (pageMetricsArr[g].angle || 0);
+
+      if (removeMargins) {
+        top += Math.min((maxBottom - minTop) + 200, disp.height + 10);
+      } else {
+        top += disp.height + 10;
+      }
+
+      const hrefs = linkHrefs(g);
+      groups = new Map();
+      let wordObjPrev = /** @type {?OcrWord} */ (null);
+      let advanceDiffPrev = 0;
+      let rightSideBearingPrev = 0;
+      let charSpacingHTMLPrev = 0;
+
+      for (let h = 0; h < pageObj.lines.length; h++) {
+        const lineObj = pageObj.lines[h];
+
+        newLine = true;
+
+        let underlinePrev = false;
+
+        for (let i = 0; i < lineObj.words.length; i++) {
+          const wordObj = lineObj.words[i];
+          if (!wordObj || !wordObj.text) continue;
+
+          if (wordIds && !wordIds.includes(wordObj.id)) continue;
+
+          if (newLine) {
+            wordObjPrev = null;
+
+            addLine();
+
+            const scale = 1;
+
+            const { leftSideBearing } = calcWordMetrics(wordObj, docFonts);
+
+            activeLine.y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
+
+            activeLine.left = wordObj.bbox.left - minLeft;
+            if (wordObj.visualCoords) activeLine.left -= leftSideBearing * scale;
+            activeLine.parId = wordObj.line.par ? wordObj.line.par.id : null;
+            activeLine.orientation = wordObj.line.orientation || 0;
+          }
+
+          newLine = false;
 
           const scale = 1;
+          const angle = 0;
 
-          const { leftSideBearing } = calcWordMetrics(wordObj, docFonts);
+          const {
+            charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
+          } = calcWordMetrics(wordObj, docFonts);
 
-          activeLine.y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
+          fontsUsed.add(font);
 
-          activeLine.left = wordObj.bbox.left - minLeft;
-          if (wordObj.visualCoords) activeLine.left -= leftSideBearing * scale;
-          activeLine.parId = wordObj.line.par ? wordObj.line.par.id : null;
-          activeLine.orientation = wordObj.line.orientation || 0;
-        }
+          const wordStr = charArr.join('');
 
-        newLine = false;
+          const charSpacingHTML = charSpacing * scale;
 
-        const scale = 1;
-        const angle = 0;
+          const y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
 
-        const {
-          charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-        } = calcWordMetrics(wordObj, docFonts);
+          const fontSizeHTML = fontSize * scale;
 
-        fontsUsed.add(font);
+          const metrics = calcFontMetrics(font, fontSizeHTML);
 
-        const wordStr = charArr.join('');
+          const fontSizeHTMLSmallCaps = fontSize * scale * font.smallCapsMult;
 
-        const charSpacingHTML = charSpacing * scale;
+          if (metrics.fontBoundingBoxAscent > activeLine.maxFontBoundingBoxAscentLine) {
+            activeLine.maxFontBoundingBoxAscentLine = metrics.fontBoundingBoxAscent;
+          }
 
-        const y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
+          const topHTML = Math.round((y1 - metrics.fontBoundingBoxAscent) * 1000) / 1000;
 
-        const fontSizeHTML = fontSize * scale;
+          let styleStr = '';
 
-        const metrics = calcFontMetrics(font, fontSizeHTML);
+          styleStr += `font-size:${fontSizeHTML}px;`;
+          styleStr += `font-family:${font.fontFaceName};`;
 
-        const fontSizeHTMLSmallCaps = fontSize * scale * font.smallCapsMult;
+          if (Math.abs(angle ?? 0) > 0.05) {
+            styleStr += `transform-origin:left ${y1 - topHTML}px;`;
+            styleStr += `transform:rotate(${angle}deg);`;
+          }
 
-        if (metrics.fontBoundingBoxAscent > activeLine.maxFontBoundingBoxAscentLine) {
-          activeLine.maxFontBoundingBoxAscentLine = metrics.fontBoundingBoxAscent;
-        }
+          const { fill, opacity } = ocr.getWordFillOpacity(wordObj, displayMode,
+            confThreshMed, confThreshHigh, overlayOpacity);
 
-        // Align with baseline
-        const topHTML = Math.round((y1 - metrics.fontBoundingBoxAscent) * 1000) / 1000;
-
-        let styleStr = '';
-
-        styleStr += `font-size:${fontSizeHTML}px;`;
-        styleStr += `font-family:${font.fontFaceName};`;
-
-        if (Math.abs(angle ?? 0) > 0.05) {
-          styleStr += `transform-origin:left ${y1 - topHTML}px;`;
-          styleStr += `transform:rotate(${angle}deg);`;
-        }
-
-        const { fill, opacity } = ocr.getWordFillOpacity(wordObj, displayMode,
-          confThreshMed, confThreshHigh, overlayOpacity);
-
-        // Text with opacity 0 is not selectable, so we make it transparent instead.
-        if (opacity === 0) {
-          styleStr += 'color:transparent;';
-          styleStr += 'opacity:1;';
-        } else {
-          styleStr += `color:${fill};`;
-          styleStr += `opacity:${opacity};`;
-        }
-
-        // We cannot make the text uppercase in the input field, as this would result in the text being saved as uppercase.
-        // Additionally, while there is a small-caps CSS property, it does not allow for customizing the size of the small caps.
-        // Therefore, we handle small caps by making all text print as uppercase using the `text-transform` CSS property,
-        // and then wrapping each letter in a span with a smaller font size.
-        let innerHTML;
-        if (wordObj.style.smallCaps) {
-          styleStr += 'text-transform:uppercase;';
-          innerHTML = makeSmallCapsDivs(wordStr, fontSizeHTMLSmallCaps);
-        } else {
-          const styleSegments = ocr.getWordStyleSegments(wordObj);
-          if (styleSegments) {
-            innerHTML = styleSegments.map((segment) => {
-              const fontSegment = docFonts.getFont(segment.style, wordObj.lang);
-              return `<span style="font-style:${fontSegment.fontFaceStyle};font-weight:${fontSegment.fontFaceWeight};">${wordStr.slice(segment.start, segment.end)}</span>`;
-            }).join('');
+          // Text with opacity 0 is not selectable, so we make it transparent instead.
+          if (opacity === 0) {
+            styleStr += 'color:transparent;';
+            styleStr += 'opacity:1;';
           } else {
-            innerHTML = wordStr;
+            styleStr += `color:${fill};`;
+            styleStr += `opacity:${opacity};`;
           }
-        }
 
-        let leftPad = 0;
-        if (wordObjPrev) {
-          let spaceAdj = 0;
-          if (wordObj.visualCoords) {
-            spaceAdj = leftSideBearing + rightSideBearingPrev;
+          // CSS `font-variant: small-caps` cannot set the small-caps size to match `font.smallCapsMult`.
+          let innerHTML;
+          if (wordObj.style.smallCaps) {
+            styleStr += 'text-transform:uppercase;';
+            innerHTML = makeSmallCapsDivs(wordStr, fontSizeHTMLSmallCaps);
           } else {
-            // This is usually 0, however can be non-zero when the PDF glyph advances
-            // are different from the HTML glyph advances.
-            spaceAdj = advanceDiffPrev;
+            const styleSegments = ocr.getWordStyleSegments(wordObj);
+            if (styleSegments) {
+              innerHTML = styleSegments.map((segment) => {
+                const fontSegment = docFonts.getFont(segment.style, wordObj.lang);
+                return `<span style="font-style:${fontSegment.fontFaceStyle};font-weight:${fontSegment.fontFaceWeight};">${wordStr.slice(segment.start, segment.end)}</span>`;
+              }).join('');
+            } else {
+              innerHTML = wordStr;
+            }
           }
 
-          leftPad = (wordObj.bbox.left - wordObjPrev.bbox.right - spaceAdj - charSpacingHTMLPrev) / Math.cos(angle);
-        }
+          let leftPad = 0;
+          if (wordObjPrev) {
+            let spaceAdj = 0;
+            if (wordObj.visualCoords) {
+              spaceAdj = leftSideBearing + rightSideBearingPrev;
+            } else {
+              spaceAdj = advanceDiffPrev;
+            }
 
-        styleStr += `letter-spacing:${formatNum(charSpacingHTML)}px;`;
-
-        styleStr += `font-weight:${font.fontFaceWeight};`;
-        styleStr += `font-style:${font.fontFaceStyle};`;
-
-        // Line height must match the height of the font bounding box for the font metrics to be accurate.
-        styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
-
-        if (wordObj.style.sup) {
-          const supOffset = Math.round(wordObj.line.bbox.bottom + wordObj.line.baseline[1] - wordObj.bbox.bottom);
-          styleStr += `vertical-align:${supOffset}px;`;
-        }
-
-        if (wordObj.style.underline && opacity !== 0) {
-          styleStr += 'text-decoration:underline;';
-          styleStr += `text-decoration-color:${fill};`;
-          styleStr += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
-          styleStr += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
-        }
-
-        const href = hrefs.get(wordObj.id) || '';
-        if (activeLine.href && href !== activeLine.href) {
-          activeLine.bodyWordsStr += '</a>';
-          activeLine.href = '';
-        }
-
-        if (i > 0) {
-          let styleStrSpace = '';
-          const spaceAdvance = font.opentype.charToGlyph(' ').advanceWidth || font.opentype.unitsPerEm * 0.35;
-          const spaceAdvancePx = (spaceAdvance / font.opentype.unitsPerEm);
-          const fontSizeHTMLSpace = leftPad / spaceAdvancePx;
-          if (fontSizeHTMLSpace > fontSizeHTML * 3) {
-            styleStrSpace += `font-size:${fontSizeHTML}px;`;
-
-            const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
-
-            styleStrSpace += `padding-left:${leftPadFinal}px;`;
-          } else {
-            styleStrSpace += `font-size:${fontSizeHTML}px;`;
-            const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
-            styleStrSpace += `word-spacing:${formatNum(leftPadFinal)}px;`;
+            leftPad = (wordObj.bbox.left - wordObjPrev.bbox.right - spaceAdj - charSpacingHTMLPrev) / Math.cos(angle);
           }
 
-          styleStrSpace += `font-family:${font.fontFaceName};`;
-          styleStrSpace += `font-style:${font.fontFaceStyle};`;
-          styleStrSpace += `font-weight:${font.fontFaceWeight};`;
+          styleStr += `letter-spacing:${formatNum(charSpacingHTML)}px;`;
 
-          if (underlinePrev && wordObj.style.underline && opacity !== 0) {
-            styleStrSpace += `color:${fill};`;
-            styleStrSpace += `opacity:${opacity};`;
-            styleStrSpace += 'text-decoration:underline;';
-            styleStrSpace += `text-decoration-color:${fill};`;
-            styleStrSpace += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
-            styleStrSpace += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
+          styleStr += `font-weight:${font.fontFaceWeight};`;
+          styleStr += `font-style:${font.fontFaceStyle};`;
+
+          // Prevent CSS `line-height: normal` leading from shifting the baseline.
+          styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
+
+          if (wordObj.style.sup) {
+            const supOffset = Math.round(wordObj.line.bbox.bottom + wordObj.line.baseline[1] - wordObj.bbox.bottom);
+            styleStr += `vertical-align:${supOffset}px;`;
           }
 
-          activeLine.bodyWordsStr += `<span class="scribe-space" style=${styleStrSpace}> </span>`;
+          if (wordObj.style.underline && opacity !== 0) {
+            styleStr += 'text-decoration:underline;';
+            styleStr += `text-decoration-color:${fill};`;
+            styleStr += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
+            styleStr += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
+          }
+
+          const href = hrefs.get(wordObj.id) || '';
+          if (activeLine.href && href !== activeLine.href) {
+            activeLine.bodyWordsStr += '</a>';
+            activeLine.href = '';
+          }
+
+          if (i > 0) {
+            let styleStrSpace = '';
+            const spaceAdvance = font.opentype.charToGlyph(' ').advanceWidth || font.opentype.unitsPerEm * 0.35;
+            const spaceAdvancePx = (spaceAdvance / font.opentype.unitsPerEm);
+            const fontSizeHTMLSpace = leftPad / spaceAdvancePx;
+            if (fontSizeHTMLSpace > fontSizeHTML * 3) {
+              styleStrSpace += `font-size:${fontSizeHTML}px;`;
+
+              const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
+
+              styleStrSpace += `padding-left:${leftPadFinal}px;`;
+            } else {
+              styleStrSpace += `font-size:${fontSizeHTML}px;`;
+              const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
+              styleStrSpace += `word-spacing:${formatNum(leftPadFinal)}px;`;
+            }
+
+            styleStrSpace += `font-family:${font.fontFaceName};`;
+            styleStrSpace += `font-style:${font.fontFaceStyle};`;
+            styleStrSpace += `font-weight:${font.fontFaceWeight};`;
+
+            if (underlinePrev && wordObj.style.underline && opacity !== 0) {
+              styleStrSpace += `color:${fill};`;
+              styleStrSpace += `opacity:${opacity};`;
+              styleStrSpace += 'text-decoration:underline;';
+              styleStrSpace += `text-decoration-color:${fill};`;
+              styleStrSpace += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
+              styleStrSpace += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
+            }
+
+            activeLine.bodyWordsStr += `<span class="scribe-space" style=${styleStrSpace}> </span>`;
+          }
+
+          if (href && href !== activeLine.href) {
+            activeLine.bodyWordsStr += `<a href="${ocr.escapeXml(href)}">`;
+            activeLine.href = href;
+          }
+
+          activeLine.bodyWordsStr += `<span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
+
+          underlinePrev = wordObj.style.underline;
+
+          const advanceTotalHTML = advanceArr.reduce((a, b) => a + b, 0)
+            + kerningArr.reduce((a, b) => a + b, 0)
+            + charSpacingHTML * (charArr.length - 1);
+          advanceDiffPrev = advanceTotalHTML - (wordObj.bbox.right - wordObj.bbox.left);
+
+          wordObjPrev = wordObj;
+          rightSideBearingPrev = rightSideBearing;
+          charSpacingHTMLPrev = charSpacingHTML;
         }
-
-        if (href && href !== activeLine.href) {
-          activeLine.bodyWordsStr += `<a href="${ocr.escapeXml(href)}">`;
-          activeLine.href = href;
-        }
-
-        activeLine.bodyWordsStr += `<span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
-
-        underlinePrev = wordObj.style.underline;
-
-        const advanceTotalHTML = advanceArr.reduce((a, b) => a + b, 0)
-          + kerningArr.reduce((a, b) => a + b, 0)
-          + charSpacingHTML * (charArr.length - 1);
-        advanceDiffPrev = advanceTotalHTML - (wordObj.bbox.right - wordObj.bbox.left);
-
-        wordObjPrev = wordObj;
-        rightSideBearingPrev = rightSideBearing;
-        charSpacingHTMLPrev = charSpacingHTML;
       }
-    }
 
-    addLine();
-    // Lines that display rotated go in a group with the same box and rotation as the viewer's text group for their orientation.
-    for (const orientation of [...groups.keys()].sort((a, b) => a - b)) {
-      const lines = groups.get(orientation) || '';
-      const rotation = textRotation + orientation * 90 + userRotation;
-      if (!rotation) {
+      addLine();
+      for (const orientation of [...groups.keys()].sort((a, b) => a - b)) {
+        const lines = groups.get(orientation) || '';
+        const rotation = textRotation + orientation * 90 + userRotation;
+        if (!rotation) {
+          bodyStr += lines;
+          continue;
+        }
+        const localW = orientation % 2 === 1 ? dims.height : dims.width;
+        const localH = orientation % 2 === 1 ? dims.width : dims.height;
+        bodyStr += `    <div class="scribe-group" style="position:absolute;left:${disp.width / 2 - localW / 2}px;top:${disp.height / 2 - localH / 2}px;`
+          + `width:${localW}px;height:${localH}px;transform-origin:${localW / 2}px ${localH / 2}px;transform:rotate(${rotation}deg);">\n`;
         bodyStr += lines;
-        continue;
+        bodyStr += '    </div>\n';
       }
-      const localW = orientation % 2 === 1 ? dims.height : dims.width;
-      const localH = orientation % 2 === 1 ? dims.width : dims.height;
-      bodyStr += `    <div class="scribe-group" style="position:absolute;left:${disp.width / 2 - localW / 2}px;top:${disp.height / 2 - localH / 2}px;`
-        + `width:${localW}px;height:${localH}px;transform-origin:${localW / 2}px ${localH / 2}px;transform:rotate(${rotation}deg);">\n`;
-      bodyStr += lines;
-      bodyStr += '    </div>\n';
+      bodyStr += '  </div>\n';
+
+      doc?.progressHandler({ n: g, type: 'export', info: {} });
+      yield bodyStr;
+      bodyStr = '';
     }
-    bodyStr += '  </div>\n';
-
-    doc?.progressHandler({ n: g, type: 'export', info: {} });
+  } finally {
+    fonts.state.enableOpt = enableOptSaved;
   }
 
-  let styleStr = '  .scribe-word {\n';
-
-  styleStr += '    z-index:1;\n';
-  styleStr += '    white-space:nowrap;\n';
-  if (kerning) {
-    styleStr += '    font-kerning:normal;\n';
-  } else {
-    styleStr += '    font-kerning:none;\n';
-  }
-
-  styleStr += '  }\n';
-
-  styleStr += '  .scribe-line {\n';
-  styleStr += '    position:absolute;\n';
-  styleStr += '    white-space:nowrap;\n';
-  styleStr += '  }\n';
-
-  styleStr += '  .scribe-page {\n';
-  styleStr += '    text-decoration-skip-ink:none;\n';
-  styleStr += '  }\n';
-
-  styleStr += '  .scribe-page a {\n';
-  styleStr += '    color:inherit;\n';
-  styleStr += '    text-decoration:none;\n';
-  styleStr += '  }\n';
-
-  styleStr += '  .scribe-image {\n';
-  styleStr += '    position:absolute;\n';
-  styleStr += '    user-select:none;\n';
-  styleStr += '    pointer-events:none;\n';
-  styleStr += '  }\n';
-
-  fonts.state.enableOpt = enableOptSaved;
-
-  return { body: bodyStr, style: styleStr, fontsUsed };
-}
-
-/**
- * Convert an array of ocrPage objects to HTML.
- *
- * @param {Object} params
- * @param {Array<OcrPage>} params.ocrPages -
- * @param {Array<ImageWrapper>} [params.images] -
- * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page, for the article's tables.
- * @param {?Array<Array<Annotation>>} [params.annotations=null] - The document's annotations per page, whose links are written as links.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
- * @param {number} [params.minpage=0] - The first page to include in the document.
- * @param {number} [params.maxpage=-1] - The last page to include in the document.
- * @param {boolean} [params.reflowText=false] - Write the text as an article that reflows to the window, instead of each page's exact layout.
- * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out of the article.
- * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
- * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
- *    If omitted, all words are included.
- * @param {import('../containers/fontContainer.js').DocFonts} params.docFonts - Per-document fonts.
- * @param {Array<PageMetrics>} params.pageMetrics - This document's page metrics.
- * @param {('invis'|'ebook'|'eval'|'proof'|'annot')} [params.displayMode] - Defaults to `scribeDocDefaults.displayMode`.
- * @param {number} [params.confThreshHigh] - Defaults to `scribeDocDefaults.confThreshHigh`.
- * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
- * @param {number} [params.overlayOpacity] - Defaults to `scribeDocDefaults.overlayOpacity`.
- * @param {boolean} [params.kerning] - Defaults to `scribeDocDefaults.kerning`.
- * @param {boolean} [params.autoRotate] - Whether the page images are deskewed, in which case the text is not turned by the page's angle.
- *    Defaults to `scribeDocDefaults.autoRotate`.
- * @param {boolean} [params.embedFonts] - Embed fonts inline as base64 `data:` URIs instead of referencing the CDN.
- *    Defaults to `scribeDocDefaults.embedFonts`.
- * @param {boolean} [params.htmlFitWindow=false] - Add a rule scaling the exact layout's pages down to the window's width.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
- */
-export function writeHtml({
-  ocrPages, images, layoutPageArr = null, annotations = null, pageArr = null, minpage = 0, maxpage = -1,
-  reflowText = false, dropPageHeadersFooters = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
-  displayMode = scribeDocDefaults.displayMode,
-  confThreshHigh = scribeDocDefaults.confThreshHigh,
-  confThreshMed = scribeDocDefaults.confThreshMed,
-  overlayOpacity = scribeDocDefaults.overlayOpacity,
-  kerning = scribeDocDefaults.kerning,
-  autoRotate = scribeDocDefaults.autoRotate,
-  embedFonts = scribeDocDefaults.embedFonts,
-  htmlFitWindow = false,
-  doc = null,
-}) {
-  if (!pageArr) {
-    if (maxpage === -1) maxpage = ocrPages.length - 1;
-    pageArr = [];
-    for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
-  }
-
-  const {
-    body, style, fontsUsed, title,
-  } = writeHtmlFragment({
-    ocrPages,
-    images,
-    layoutPageArr,
-    annotations,
-    pageArr,
-    reflowText,
-    dropPageHeadersFooters,
-    removeMargins,
-    wordIds,
-    docFonts,
-    pageMetrics,
-    displayMode,
-    confThreshHigh,
-    confThreshMed,
-    overlayOpacity,
-    kerning,
-    autoRotate,
-    doc,
-  });
-
-  let styleStr = `<style>\n${style}`;
-
-  if (htmlFitWindow && !reflowText) {
-    // The tangent of the arctangent is how CSS divides one length by another into a plain number.
-    const widest = Math.max(0, ...pageArr.map((g) => pageMetrics[g]?.dims.width || 0));
-    styleStr += `  body {\n    zoom:min(1, tan(atan2(calc(100vw - 20px), ${widest}px)));\n  }\n`;
-  }
-
-  for (const fontI of fontsUsed) {
-    let fontSrc;
-    if (embedFonts) {
-      // Embed the font inline as a base64 data URI so the file is self-contained and opens offline / from `file://` without the CDN.
-      const fontBytes = new Uint8Array(fontI.src);
-      const isWoff = fontBytes[0] === 0x77 && fontBytes[1] === 0x4F
-        && fontBytes[2] === 0x46 && fontBytes[3] === 0x46; // 'wOFF'
-      const fontMime = isWoff ? 'font/woff' : 'font/ttf';
-
-      let fontBase64;
-      if (typeof Buffer !== 'undefined') {
-        fontBase64 = Buffer.from(fontBytes.buffer, fontBytes.byteOffset, fontBytes.byteLength).toString('base64');
-      } else {
-        let binary = '';
-        const chunkSize = 8192;
-        for (let i = 0; i < fontBytes.length; i += chunkSize) {
-          binary += String.fromCharCode.apply(null, fontBytes.subarray(i, i + chunkSize));
-        }
-        fontBase64 = btoa(binary);
-      }
-
-      fontSrc = `url('data:${fontMime};base64,${fontBase64}')`;
-    } else {
-      const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.8.0/fonts/all/';
-      let styleTitleCase = 'Regular';
-      if (fontI.style === 'italic') {
-        styleTitleCase = 'Italic';
-      } else if (fontI.style === 'bold') {
-        styleTitleCase = 'Bold';
-      } else if (fontI.style === 'boldItalic') {
-        styleTitleCase = 'BoldItalic';
-      }
-      fontSrc = `url('${cdnPath}${fontI.family}-${styleTitleCase}.woff')`;
-    }
-
-    styleStr += `  @font-face {
-    font-family: '${fontI.fontFaceName}';
-    font-style: ${fontI.fontFaceStyle};
-    font-weight: ${fontI.fontFaceWeight};
-    src: ${fontSrc};
-  }\n`;
-  }
-
-  if (reflowText) {
-    styleStr += '  body {\n    margin:0;\n    background:#fff;\n  }\n';
-  }
-  styleStr += '</style>\n';
-
-  let metaStr = '<meta charset="UTF-8">\n';
-  if (reflowText) {
-    metaStr += `<meta name="viewport" content="width=device-width, initial-scale=1">\n<title>${ocr.escapeXml(title || 'Document')}</title>\n`;
-    return `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n<body>\n<main>\n${body}</main>\n</body>\n</html>`;
-  }
-
-  return `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n<body>\n${body}</body>\n</html>`;
+  if (!fragment) yield '</body>\n</html>';
+  return { style: exactStyle, fontsUsed };
 }

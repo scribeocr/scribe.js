@@ -58,7 +58,15 @@ export class opt {
    */
   static openExternal = null;
 
-  static dev = { disableGPU: false, forceGPU: false };
+  /** Word budget for decoded `OcrPage` objects kept in memory across all open documents. */
+  static pageBudget = 300000;
+
+  /**
+   * Developer settings.
+   * When set, `layoutChunkPages` overrides `opt.pageBudget` with a maximum page count per layout pass.
+   * @type {{ disableGPU: boolean, forceGPU: boolean, layoutChunkPages: ?number }}
+   */
+  static dev = { disableGPU: false, forceGPU: false, layoutChunkPages: null };
 
   static warningHandler = (x) => console.warn(x);
 

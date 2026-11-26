@@ -12,7 +12,6 @@ import {
 import { resolveCitation as resolveCitationImpl } from '../resolveCitation.js';
 import { parseDocAddress, resolveDocAddress as resolveDocAddressImpl } from '../docAddress.js';
 import { setType3GlyphMappings as setType3GlyphMappingsImpl } from '../type3GlyphMappings.js';
-import { assignPageLineNums } from '../import/assignPageLineNums.js';
 import { setFormValue as setFormValueImpl } from '../formFields.js';
 import { removeCircularRefsRegions, removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import {
@@ -38,16 +37,17 @@ import {
   evalOCRPage as evalOCRPageImpl,
   insertParsedPage as insertParsedPageImpl,
 } from '../recognizeConvert.js';
-import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl, hydrateSeeded as hydrateSeededImpl } from '../import/import.js';
+import { assignLayerLineNums, importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
 import {
   remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant, reassignOutlineIds,
 } from '../objects/outlineObjects.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
 import { clonePage, reIdPage } from '../objects/ocrObjects.js';
+import { PageStore, inflateRecord } from './pageStore.js';
+import { decodePageRecord, decodeDetailRecord } from './pageRecord.js';
 
 /**
- * The distinct OCR/raw-OCR layer arrays.
- * Deduped by identity because callers alias layers (e.g. the viewer sets `doc.ocr.active = doc.ocr.pdf`), so a shared array is spliced only once.
+ * Return the distinct layer arrays in `layers`.
  * @param {Object<string, Array<any>>} layers
  * @returns {Array<Array<any>>}
  */
@@ -56,29 +56,84 @@ function uniqueLayers(layers) {
 }
 
 /**
- * Every dense per-page array that must stay index-aligned with `pageMetrics` under page delete/move.
+ * Plain backing array for each `extrasPages` proxy.
+ * @type {WeakMap<object, Array<unknown>>}
+ */
+const looseOf = new WeakMap();
+
+/**
+ * Build a `{ pages }` proxy for per-page `nativeText` or `fillShapes` metadata.
+ * Indexing `pages[n]` marks a `'pdf'`-layer page modified.
+ * @template {'nativeText'|'fillShapes'} K
  * @param {ScribeDoc} doc
- * @returns {Array<Array<any>>}
+ * @param {K} key
+ * @returns {{pages: Array<K extends 'nativeText' ? Record<string, NativeTextWord> : ?PageFillShapes>}}
+ */
+function extrasPages(doc, key) {
+  /** @type {Array<Record<string, NativeTextWord>|?PageFillShapes>} */
+  const loose = [];
+  const view = new Proxy(loose, {
+    get(target, prop, receiver) {
+      if (prop === 'length') return Math.max(target.length, doc.pageStore.slotCount('pdf'));
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        const extras = doc.pageStore.extras(Number(prop), true);
+        if (extras) {
+          if (key === 'nativeText' && !extras.nativeText) extras.nativeText = {};
+          return extras[key];
+        }
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+        const extras = doc.pageStore.extras(Number(prop), true);
+        if (extras) {
+          extras[key] = value;
+          return true;
+        }
+      }
+      return Reflect.set(target, prop, value, receiver);
+    },
+    has(target, prop) {
+      return (typeof prop === 'string' && /^\d+$/.test(prop) && doc.pageStore.hasPage(Number(prop), 'pdf')) || Reflect.has(target, prop);
+    },
+  });
+  looseOf.set(view, loose);
+  return {
+    get pages() { return /** @type {Array<K extends 'nativeText' ? Record<string, NativeTextWord> : ?PageFillShapes>} */ (view); },
+    set pages(value) {
+      const from = looseOf.get(value) || value;
+      loose.length = 0;
+      from.forEach((item, i) => {
+        loose[i] = /** @type {Record<string, NativeTextWord>|?PageFillShapes} */ (item);
+      });
+    },
+  };
+}
+
+/**
+ * Return every per-page array on `doc` that page-order operations reorder directly.
+ * @param {ScribeDoc} doc
+ * @returns {Array<Array<unknown>>}
  */
 function densePageArrays(doc) {
-  const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages, doc.fillShapes.pages);
+  /** @type {Array<Array<unknown>>} */
+  const arrs = [...uniqueLayers(doc.ocrRaw)];
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages);
+  arrs.push(/** @type {Array<unknown>} */ (looseOf.get(doc.nativeText.pages)), /** @type {Array<unknown>} */ (looseOf.get(doc.fillShapes.pages)));
   arrs.push(doc.truth.pages, doc.hocrSource.pages, doc.stampSources.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.ocrTiming)) arrs.push(doc.ocrTiming);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
-  // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
-  arrs.push(doc.images.nativeSrc, doc.images.pdfDims300);
+  arrs.push(doc.images.nativeSrc, doc.images.pdfDims300, doc.images.thumbnails);
   if (Array.isArray(doc.inputData.xmlMode)) arrs.push(doc.inputData.xmlMode);
   if (Array.isArray(doc.inputData.pageStats)) arrs.push(doc.inputData.pageStats);
   if (Array.isArray(doc.inputData.ocrApplied)) arrs.push(doc.inputData.ocrApplied);
-  // Dedupe so any aliased array (e.g. ocr.active === ocr.pdf) is spliced exactly once.
   return [...new Set(arrs)];
 }
 
 /**
- * Drop the full-resolution render caches so they re-render against the edited page order.
- * Thumbnails are deliberately not among these; page ops reorder that cache in place via `remapThumbnails` instead of re-rendering it.
+ * Drop the full-resolution render caches.
  * @param {ScribeDoc} doc
  */
 function clearImageCaches(doc) {
@@ -94,9 +149,6 @@ function clearImageCaches(doc) {
  * @param {ScribeDoc} doc
  */
 function renumberPages(doc) {
-  for (const layer of uniqueLayers(doc.ocr)) {
-    for (let i = 0; i < layer.length; i++) if (layer[i]) layer[i].n = i;
-  }
   const tag = (arr) => { for (let i = 0; i < arr.length; i++) if (arr[i]) arr[i].n = i; };
   tag(doc.layoutRegions.pages);
   tag(doc.layoutDataTables.pages);
@@ -138,23 +190,16 @@ function materializeSourceIds(doc) {
  * @param {number} i - Source page index.
  */
 function snapshotPage(doc, i) {
-  // One clone per unique OCR array so aliased layers (e.g. `ocr.active === ocr.pdf`) share a single cloned page.
-  const ocrCache = new Map();
-  /** @type {Object<string, ?import('../objects/ocrObjects.js').OcrPage>} */
-  const ocr = {};
-  for (const [engine, arr] of Object.entries(doc.ocr)) {
-    if (!Array.isArray(arr) || i >= arr.length || !arr[i]) { ocr[engine] = null; continue; }
-    if (!ocrCache.has(arr)) ocrCache.set(arr, clonePage(arr[i]));
-    ocr[engine] = ocrCache.get(arr) ?? null;
-  }
-  // Give each cloned page fresh word ids so the paste is a distinct instance, not an id-for-id twin of its source.
-  // Otherwise highlight and selection, which are keyed on word id across the render window, would act on the copy and its source together.
-  // The active layer is re-id'd first so its entries win the merge: edit records reference active-layer words.
+  const { active } = doc.pageStore;
   /** @type {Map<string, string>} */
   const wordIdMap = new Map();
-  for (const p of new Set([ocr.active, ...Object.values(ocr)])) {
-    if (!p) continue;
-    for (const [oldId, newId] of reIdPage(p)) if (!wordIdMap.has(oldId)) wordIdMap.set(oldId, newId);
+  /** @type {Object<string, OcrPage>} */
+  const copies = {};
+  for (const name of active === null ? doc.pageStore.names : [active, ...doc.pageStore.names.filter((x) => x !== active)]) {
+    const page = doc.pageStore.readOnlyPage(i, name, true);
+    if (!page) continue;
+    copies[name] = clonePage(page);
+    for (const [oldId, newId] of reIdPage(copies[name])) if (!wordIdMap.has(oldId)) wordIdMap.set(oldId, newId);
   }
   /** @type {Object<string, string>} */
   const ocrRaw = {};
@@ -190,17 +235,22 @@ function snapshotPage(doc, i) {
     }
   }
 
-  const nativeTextSrc = cloneAt(doc.nativeText.pages);
+  const held = doc.pageStore.extras(i, false);
+  const nativeTextSrc = structuredClone(held ? held.nativeText : /** @type {Array<Record<string, NativeTextWord>>} */ (looseOf.get(doc.nativeText.pages))[i]);
   /** @type {Record<string, NativeTextWord>} */
   const nativeText = {};
   if (nativeTextSrc) {
     for (const [id, entry] of Object.entries(nativeTextSrc)) nativeText[wordIdMap.get(id) || id] = entry;
   }
 
-  const fillShapes = cloneAt(doc.fillShapes.pages);
+  const fillShapes = structuredClone(held ? held.fillShapes : /** @type {Array<?PageFillShapes>} */ (looseOf.get(doc.fillShapes.pages))[i]);
   if (fillShapes?.glyphBoxes) {
     for (const g of fillShapes.glyphBoxes) g.id = wordIdMap.get(g.id) || g.id;
   }
+
+  /** @type {Object<string, import('./pageStore.js').PageSnapshot>} */
+  const slots = {};
+  for (const [name, copy] of Object.entries(copies)) slots[name] = PageStore.snapshotOfPage(copy, name === 'pdf' ? { nativeText, fillShapes: fillShapes ?? null } : null);
 
   /** @type {?TruthPageRecord} */
   const truth = cloneAt(doc.truth.pages) ?? null;
@@ -208,7 +258,6 @@ function snapshotPage(doc, i) {
     for (const key of /** @type {const} */ (['words', 'unresolved'])) {
       const src = truth[key];
       if (!src) continue;
-      /** @type {Record<string, any>} */
       const remapped = {};
       for (const [id, entry] of Object.entries(src)) remapped[wordIdMap.get(id) || id] = entry;
       truth[key] = remapped;
@@ -216,15 +265,16 @@ function snapshotPage(doc, i) {
   }
 
   return {
-    ocr,
+    slots,
+    active,
     ocrRaw,
     pageMetrics: structuredClone(doc.pageMetrics[i]),
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
     annotations,
     contentEdits,
-    nativeText,
-    fillShapes,
+    nativeText: slots.pdf ? null : nativeText,
+    fillShapes: slots.pdf ? null : (fillShapes ?? null),
     stampSources: cloneAt(doc.stampSources.pages) ?? null,
     truth,
     // A copy gets fresh line and paragraph ids, which the source markup's placeholders would no longer name.
@@ -269,21 +319,23 @@ function remapOutlineByTags(doc, tags) {
 }
 
 /**
- * Remap every link annotation's destination after a page-order edit.
- * A link whose target page was removed is dropped.
+ * Remap internal link destinations across `doc.annotations.pages` after a page-order edit.
+ * Links to removed pages are dropped.
+ * Does not mutate `doc.annotations.pages`.
  * @param {ScribeDoc} doc
  * @param {Array<?number>} tags - `tags[newPos]` is the pre-edit index of the page now at `newPos`, or null for a freshly inserted page.
+ * @returns {Array<[number, Array<Annotation>]>} `[pageIndex, annotations]` pairs for changed pages.
  */
 function remapAnnotationDestsByTags(doc, tags) {
   const { pages } = doc.annotations;
-  if (!pages.length) return;
+  /** @type {Array<[number, Array<Annotation>]>} */
+  const changes = [];
   const newByOld = new Map();
   tags.forEach((old, newPos) => { if (old != null && !newByOld.has(old)) newByOld.set(old, newPos); });
   for (let i = 0; i < pages.length; i++) {
     const arr = pages[i];
     if (!arr || !arr.some((a) => a.type === 'link' && a.dest)) continue;
     let changed = false;
-    // Rebuild rather than mutate so history snapshots keep their pre-edit entries.
     /** @type {Array<Annotation>} */
     const next = [];
     for (const entry of arr) {
@@ -294,21 +346,9 @@ function remapAnnotationDestsByTags(doc, tags) {
       changed = true;
       next.push({ ...entry, dest: { ...entry.dest, pageIndex: ni } });
     }
-    if (changed) pages[i] = next;
+    if (changed) changes.push([i, next]);
   }
-}
-
-/**
- * Reorder the retained thumbnail cache to match a page-order edit instead of dropping it:
- * a reorder leaves each thumbnail's pixels unchanged, so re-rendering would be waste.
- * @param {ScribeDoc} doc
- * @param {Array<?number>} tags - tags[newPos] is the pre-edit index of the page now at newPos, or null for a freshly inserted page.
- */
-function remapThumbnails(doc, tags) {
-  const { thumbnails } = doc.images;
-  const remapped = tags.map((old) => (old == null ? undefined : thumbnails[old]));
-  thumbnails.length = 0;
-  for (const t of remapped) thumbnails.push(t);
+  return changes;
 }
 
 /**
@@ -335,49 +375,90 @@ function reconcileForeignSources(doc, target) {
 }
 
 /**
- * A before/after snapshot of every per-page array plus the outline, for undo/redo of a page operation.
- * @param {ScribeDoc} doc
+ * State of a single inserted or removed page across text layers and per-page arrays.
+ * @typedef {Object} PageColumn
+ * @property {Object<string, import('./pageStore.js').PageSnapshot>} slots - Snapshots keyed by text layer name.
+ * @property {Map<Array<unknown>, unknown>} values - Entry for this page in each populated per-page array, keyed by the array.
  */
-function capturePageState(doc) {
-  const primaryId = doc.images.primarySourceId;
-  return {
-    arrays: densePageArrays(doc).map((arr) => [arr, arr === doc.pageMetrics ? arr.map((pm) => structuredClone(pm)) : [...arr]]),
-    pageCount: doc.pageMetrics.length,
-    outline: cloneOutline(doc.outline),
-    // Foreign (cross-document) render sources this state references, captured so undo/redo can re-register or release them.
-    // The primary source is excluded because page ops never add or remove it.
-    foreignSources: new Map([...doc.images.sources].filter(([id]) => id !== primaryId)),
-    // The retained thumbnail cache, so undo/redo restore its slot alignment too (no preview re-render on either).
-    thumbnails: [...doc.images.thumbnails],
-  };
-}
 
 /**
- * Restore a `capturePageState` snapshot, mutating each array in place so references held elsewhere stay valid.
- * @param {ScribeDoc} doc
- * @param {ReturnType<typeof capturePageState>} snap
+ * A reorder of the document's pages.
+ * @typedef {Object} PageRemap
+ * @property {Array<?number>} tags - Per new page index, the previous page index or null for a newly inserted page.
+ * @property {Map<number, PageColumn>} arriving - Per-page state for each newly inserted page index.
+ * @property {?Array<[number, Array<Annotation>|undefined]>} annots - Explicit annotation lists to write at specific new page indices.
+ *   When null, internal link destinations are remapped automatically from `tags`.
  */
-function restorePageState(doc, snap) {
-  for (const [arr, values] of snap.arrays) {
-    arr.length = 0;
-    for (const v of values) arr.push(v);
+
+/**
+ * Reorder, insert, or remove pages across the document's text layers and per-page arrays.
+ * @param {ScribeDoc} doc
+ * @param {PageRemap} remap
+ * @returns {PageRemap} Inverse remap that restores the previous page state.
+ */
+function remapPages(doc, { tags, arriving, annots }) {
+  const oldLength = doc.pageMetrics.length;
+  const kept = new Set(tags);
+  const slotsLeft = doc.pageStore.remap(tags, oldLength, new Map([...arriving].map(([pos, column]) => [pos, column.slots])));
+  /** @type {Map<number, PageColumn>} */
+  const leaving = new Map();
+  for (let old = 0; old < oldLength; old++) {
+    if (!kept.has(old)) leaving.set(old, { slots: slotsLeft.get(old) || {}, values: new Map() });
   }
-  setDocOutline(doc, cloneOutline(snap.outline));
-  renumberPages(doc);
+  for (const arr of densePageArrays(doc)) {
+    const full = arr.length === oldLength;
+    /** @type {Array<unknown>} */
+    const next = [];
+    tags.forEach((old, pos) => {
+      if (old !== null) {
+        if (old in arr) next[pos] = arr[old];
+        return;
+      }
+      const values = arriving.get(pos)?.values;
+      if (full || values?.has(arr)) next[pos] = values?.get(arr);
+    });
+    for (const [old, column] of leaving) if (old in arr) column.values.set(arr, arr[old]);
+    arr.length = 0;
+    next.forEach((value, pos) => { arr[pos] = value; });
+    arr.length = full ? tags.length : next.length;
+  }
+  /** @type {Array<[number, Array<Annotation>|undefined]>} */
+  const annotsBack = [];
+  for (const [pos, list] of annots || remapAnnotationDestsByTags(doc, tags)) {
+    const old = tags[pos];
+    if (old !== null) annotsBack.push([old, doc.annotations.pages[pos]]);
+    doc.annotations.pages[pos] = list;
+  }
   clearImageCaches(doc);
-  // Restore the retained thumbnail cache in lockstep with the page order (clearImageCaches no longer drops it).
-  const { thumbnails } = doc.images;
-  thumbnails.length = 0;
-  for (const t of snap.thumbnails) thumbnails.push(t);
-  doc.inputData.pageCount = snap.pageCount;
-  doc.images.pageCount = snap.pageCount;
-  reconcileForeignSources(doc, snap.foreignSources);
+  renumberPages(doc);
+  doc.inputData.pageCount = doc.pageMetrics.length;
+  doc.images.pageCount = doc.pageMetrics.length;
+  /** @type {Array<?number>} */
+  const back = new Array(oldLength).fill(null);
+  tags.forEach((old, pos) => { if (old !== null) back[old] = pos; });
+  return { tags: back, arriving: leaving, annots: annotsBack };
 }
 
 /**
- * Bounded undo/redo history for a document's PAGE operations (delete/move/reorder/insert/paste/duplicate/rotate).
- * Each recorded op captures a full before/after page-state snapshot that `undo`/`redo` restore.
- * Non-page edits (word text, style, annotations) are out of scope, since the snapshot does not capture the state they mutate.
+ * One step in a page undo or redo entry.
+ * Exactly one property is set.
+ * @typedef {Object} PageStep
+ * @property {PageRemap} [remap]
+ * @property {Array<[import('../objects/pageMetricsObjects.js').PageMetrics, number|undefined]>} [rotations]
+ * @property {Array<import('../objects/pageMetricsObjects.js').PageMetrics>} [unsource] - Pages whose `sourcePageN` resets to `null`.
+ * @property {Array<import('../objects/pageMetricsObjects.js').PageMetrics>} [resource] - Pages whose `sourcePageN` is materialized from their current index.
+ */
+
+/**
+ * Undo or redo entry for a recorded page operation.
+ * @typedef {Object} PageHistoryEntry
+ * @property {Array<PageStep>} steps
+ * @property {?Array<import('../objects/outlineObjects.js').OutlineNode>} outline - Saved outline to restore, or null when empty before and after.
+ * @property {?Map<number, import('./imageContainer.js').RenderSource>} foreign - Foreign render sources to restore, or null when unchanged.
+ */
+
+/**
+ * Bounded undo/redo history for a document's page and outline operations.
  */
 class PageHistory {
   static LIMIT = 100;
@@ -385,12 +466,15 @@ class PageHistory {
   /** @param {ScribeDoc} doc */
   constructor(doc) {
     this.doc = doc;
-    /** @type {Array<{ before: object, after: object }>} */
+    /** @type {Array<PageHistoryEntry>} */
     this.undoStack = [];
-    /** @type {Array<{ before: object, after: object }>} */
+    /** @type {Array<PageHistoryEntry>} */
     this.redoStack = [];
-    // While a mutation is running (or an undo/redo is restoring), nested page ops are folded into the outer step.
-    this.suspended = false;
+    /**
+     * Undo steps collected in execution order for the operation being recorded, or null when idle.
+     * @type {?Array<PageStep>}
+     */
+    this.recording = null;
   }
 
   get canUndo() { return this.undoStack.length > 0; }
@@ -398,23 +482,37 @@ class PageHistory {
   get canRedo() { return this.redoStack.length > 0; }
 
   /**
-   * Run a page mutation `fn` and record it as one undoable step (snapshotting before and after).
-   * Re-entrant: a page op invoked from within another recorded op is folded into the outer step rather than recorded separately,
-   * so a composite edit (e.g. a cut = insert + delete) becomes a single undo.
+   * Run a page or outline mutation `fn` and record it as one undoable step.
+   * Outline and foreign render-source changes are captured automatically.
+   * Page reorders in `fn` must go through `remap`, and other per-page edits through `note`.
    * @param {() => void} fn
-   * @param {string} [label] - Description of the step for the undo timeline, e.g. "Deleted 3 pages".
+   * @param {string} [label]
    */
   record(fn, label = 'Edited pages') {
-    if (this.suspended) { fn(); return; }
-    const before = capturePageState(this.doc);
-    this.suspended = true;
-    try { fn(); } finally { this.suspended = false; }
-    const after = capturePageState(this.doc);
-    this.undoStack.push({ before, after });
+    if (this.recording) { fn(); return; }
+    const { doc } = this;
+    const primaryId = doc.images.primarySourceId;
+    const outline = cloneOutline(doc.outline);
+    const foreign = new Map([...doc.images.sources].filter(([id]) => id !== primaryId));
+    this.recording = [];
+    /** @type {Array<PageStep>} */
+    let steps;
+    try {
+      fn();
+    } finally {
+      steps = this.recording;
+      this.recording = null;
+    }
+    const foreignNow = [...doc.images.sources.keys()].filter((id) => id !== primaryId);
+    this.undoStack.push({
+      steps: steps.reverse(),
+      outline: outline.length || doc.outline.length ? outline : null,
+      foreign: foreignNow.length !== foreign.size || foreignNow.some((id) => !foreign.has(id)) ? foreign : null,
+    });
     if (this.undoStack.length > PageHistory.LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
     // The timeline entry delegates back to this stack rather than replacing it, so its depth stays a valid baseline for callers that unwind a group of page ops back to a saved depth.
-    this.doc.docHistory.record({
+    doc.docHistory.record({
       surface: 'page',
       label,
       undo: () => { this.undo(); },
@@ -422,21 +520,77 @@ class PageHistory {
     });
   }
 
+  /**
+   * Append an undo step to the operation currently being recorded.
+   * @param {PageStep} step
+   */
+  note(step) {
+    /** @type {Array<PageStep>} */ (this.recording).push(step);
+  }
+
+  /**
+   * Reorder, insert, or delete pages and update the outline within the operation currently being recorded.
+   * @param {Array<?number>} tags - Per new page index, the previous page index or null for a newly inserted page.
+   * @param {Map<number, PageColumn>} [arriving] - Per-page state for each newly inserted page index.
+   */
+  remap(tags, arriving = new Map()) {
+    const { doc } = this;
+    const unsourced = doc.pageMetrics.filter((pm) => pm && pm.sourcePageN == null);
+    if (unsourced.length) {
+      materializeSourcePages(doc);
+      this.note({ unsource: unsourced });
+    }
+    this.note({ remap: remapPages(doc, { tags, arriving, annots: null }) });
+    remapOutlineByTags(doc, tags);
+  }
+
+  /**
+   * Apply a history entry to the document and return its inverse entry.
+   * @param {PageHistoryEntry} entry
+   * @returns {PageHistoryEntry}
+   */
+  #apply(entry) {
+    const { doc } = this;
+    const primaryId = doc.images.primarySourceId;
+    /** @type {PageHistoryEntry} */
+    const back = {
+      steps: [],
+      outline: entry.outline ? cloneOutline(doc.outline) : null,
+      foreign: entry.foreign ? new Map([...doc.images.sources].filter(([id]) => id !== primaryId)) : null,
+    };
+    for (const step of entry.steps) {
+      if (step.remap) back.steps.unshift({ remap: remapPages(doc, step.remap) });
+      if (step.rotations) {
+        back.steps.unshift({ rotations: step.rotations.map(([pm]) => [pm, pm.rotation]) });
+        for (const [pm, rotation] of step.rotations) pm.rotation = rotation;
+      }
+      if (step.unsource) {
+        for (const pm of step.unsource) pm.sourcePageN = null;
+        back.steps.unshift({ resource: step.unsource });
+      }
+      if (step.resource) {
+        materializeSourcePages(doc);
+        back.steps.unshift({ unsource: step.resource });
+      }
+    }
+    if (entry.outline) setDocOutline(doc, cloneOutline(entry.outline));
+    reconcileForeignSources(doc, entry.foreign);
+    return back;
+  }
+
   /** Undo the last recorded page operation. @returns {boolean} whether anything was undone. */
   undo() {
-    const step = this.undoStack.pop();
-    if (!step) return false;
-    restorePageState(this.doc, step.before);
-    this.redoStack.push(step);
+    const entry = this.undoStack.pop();
+    if (!entry) return false;
+    this.redoStack.push(this.#apply(entry));
     return true;
   }
 
   /** Redo the last undone page operation. @returns {boolean} whether anything was redone. */
   redo() {
-    const step = this.redoStack.pop();
-    if (!step) return false;
-    restorePageState(this.doc, step.after);
-    this.undoStack.push(step);
+    const entry = this.redoStack.pop();
+    if (!entry) return false;
+    this.undoStack.push(this.#apply(entry));
     return true;
   }
 
@@ -775,8 +929,8 @@ export class ScribeDoc {
     /** Input modes and basic file metadata for this document. */
     this.inputData = new InputData();
 
-    /** @type {Object<string, Array<import('../objects/ocrObjects.js').OcrPage>>} */
-    this.ocr = { active: [] };
+    /** The document's text layers. */
+    this.pageStore = new PageStore();
 
     /** @type {Object<string, Array<string>>} */
     this.ocrRaw = { active: [] };
@@ -831,7 +985,7 @@ export class ScribeDoc {
      * Serialized only into the `.scribe` `session` block, so a default export omits it.
      * @type {{pages: Array<Record<string, NativeTextWord>>}}
      */
-    this.nativeText = { pages: [] };
+    this.nativeText = extrasPages(this, 'nativeText');
 
     /**
      * Per-page ground-truth process records.
@@ -841,11 +995,11 @@ export class ScribeDoc {
     this.truth = { pages: [] };
 
     /**
-     * The hOCR markup each layer of the document was imported from.
-     * `head` holds each layer's `ocr-*` meta tags, keyed by layer name.
-     * `pages[n]` holds each layer's record for page `n`, keyed by layer name.
+     * Source hOCR markup for layers imported from hOCR.
+     * `head` maps layer names to `ocr-*` `<meta>` tags.
+     * `pages[n]` maps layer names to JSON-encoded `HocrSourcePage` objects.
      * Serialized only into the `.scribe` `session` block, so a default export omits it.
-     * @type {{head: Record<string, Array<string>>, pages: Array<?Record<string, HocrSourcePage>>}}
+     * @type {{head: Record<string, Array<string>>, pages: Array<?Record<string, import('./pageStore.js').HeldRecord>>}}
      */
     this.hocrSource = { head: {}, pages: [] };
 
@@ -864,7 +1018,7 @@ export class ScribeDoc {
      * A restore beside the PDF runs no parse of its own, so the persisted copy is what keeps Edit Graphics working there.
      * @type {{pages: Array<?PageFillShapes>}}
      */
-    this.fillShapes = { pages: [] };
+    this.fillShapes = extrasPages(this, 'fillShapes');
 
     /**
      * Per page, the stamp annotations the PDF parse lifted into `annotations`, each with its box as read.
@@ -945,12 +1099,22 @@ export class ScribeDoc {
     this._textStartPending = false;
 
     /**
-     * The on-demand load this document was opened with, until that load has finished.
-     * Null for a document opened whole.
-     * While it is set, `textReady` stays pending, so whatever awaits the document's text does not read just the few pages on hand.
-     * @type {?import('../import/import.js').SeededLoad}
+     * Baseline state from the last saved-file load or save, used to diff incremental saves.
+     * @type {?{layer: ?string, keys: Array<?number|string>, keyOf: Map<import('./pageStore.js').HeldRecord, number|string>, baseBlocks: Record<string, unknown>, basePages: number}}
      */
-    this._seeded = null;
+    this._saved = null;
+
+    /**
+     * Whether this document was opened from saved files whose page text is not loaded.
+     * True while saved text loads, and remains true if text loading was skipped, the read failed, or `close()` aborted it.
+     */
+    this._textMissing = false;
+
+    /**
+     * FreeText annotations and form values edited before saved page text finished loading, queued to sync into `OcrPage` words once text arrives.
+     * @type {{fillText: Map<AnnotationFreeText, {n: number, swept: Array<bbox>}>, formValues: Map<string, ?string>}}
+     */
+    this._liftsOwed = { fillText: new Map(), formValues: new Map() };
 
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
@@ -1022,16 +1186,9 @@ export class ScribeDoc {
     if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     if (i < 0 || i >= this.pageMetrics.length) return;
     this.history.record(() => {
-      materializeSourcePages(this);
       const tags = this.pageMetrics.map((_, k) => k);
-      for (const arr of [...densePageArrays(this), tags]) if (i < arr.length) arr.splice(i, 1);
-      remapOutlineByTags(this, tags);
-      remapAnnotationDestsByTags(this, tags);
-      remapThumbnails(this, tags);
-      clearImageCaches(this);
-      renumberPages(this);
-      this.inputData.pageCount = this.pageMetrics.length;
-      this.images.pageCount = this.pageMetrics.length;
+      tags.splice(i, 1);
+      this.history.remap(tags);
     }, 'Deleted page');
   }
 
@@ -1046,18 +1203,9 @@ export class ScribeDoc {
     const len = this.pageMetrics.length;
     if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
     this.history.record(() => {
-      materializeSourcePages(this);
       const tags = this.pageMetrics.map((_, k) => k);
-      for (const arr of [...densePageArrays(this), tags]) {
-        if (from >= arr.length) continue;
-        const [item] = arr.splice(from, 1);
-        arr.splice(to, 0, item);
-      }
-      remapOutlineByTags(this, tags);
-      remapAnnotationDestsByTags(this, tags);
-      remapThumbnails(this, tags);
-      clearImageCaches(this);
-      renumberPages(this);
+      tags.splice(to, 0, tags.splice(from, 1)[0]);
+      this.history.remap(tags);
     }, 'Moved page');
   }
 
@@ -1068,22 +1216,10 @@ export class ScribeDoc {
   deletePages(indices) {
     // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
     if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
-    // Splice high-to-low so each removal leaves the lower indices valid.
-    const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => b - a);
+    const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length);
     if (sorted.length === 0) return;
     this.history.record(() => {
-      materializeSourcePages(this);
-      const tags = this.pageMetrics.map((_, k) => k);
-      for (const arr of [...densePageArrays(this), tags]) {
-        for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
-      }
-      remapOutlineByTags(this, tags);
-      remapAnnotationDestsByTags(this, tags);
-      remapThumbnails(this, tags);
-      clearImageCaches(this);
-      renumberPages(this);
-      this.inputData.pageCount = this.pageMetrics.length;
-      this.images.pageCount = this.pageMetrics.length;
+      this.history.remap(this.pageMetrics.map((_, k) => k).filter((k) => !sorted.includes(k)));
     }, `Deleted ${sorted.length === 1 ? 'page' : `${sorted.length} pages`}`);
   }
 
@@ -1099,20 +1235,9 @@ export class ScribeDoc {
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
     if (sorted.length === 0) return;
     this.history.record(() => {
-      materializeSourcePages(this);
-      const tags = this.pageMetrics.map((_, k) => k);
-      for (const arr of [...densePageArrays(this), tags]) {
-        const pulled = [];
-        for (let k = sorted.length - 1; k >= 0; k--) {
-          if (sorted[k] < arr.length) pulled.unshift(arr.splice(sorted[k], 1)[0]);
-        }
-        arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
-      }
-      remapOutlineByTags(this, tags);
-      remapAnnotationDestsByTags(this, tags);
-      remapThumbnails(this, tags);
-      clearImageCaches(this);
-      renumberPages(this);
+      const tags = this.pageMetrics.map((_, k) => k).filter((k) => !sorted.includes(k));
+      tags.splice(Math.max(0, Math.min(to, tags.length)), 0, ...sorted);
+      this.history.remap(tags);
     }, `Moved ${sorted.length === 1 ? 'page' : `${sorted.length} pages`}`);
   }
 
@@ -1136,9 +1261,7 @@ export class ScribeDoc {
 
   /**
    * Insert page snapshots as a contiguous block starting at index `to`.
-   * Each full-length per-page array is spliced in lockstep.
-   * Arrays that are not full-length for this document (e.g. `images.nativeSrc` for a PDF, whose rasters come from the worker via `sourcePageN`) are left untouched,
-   * mirroring how delete/move guard on per-array length.
+   * Do not insert the same snapshot more than once.
    * @param {Array<ReturnType<typeof snapshotPage>>} snapshots - Page snapshots from `copyPages`.
    * @param {number} to - Insertion index (0..pageMetrics.length).
    */
@@ -1149,52 +1272,62 @@ export class ScribeDoc {
     this.history.record(() => {
       const prevLen = this.pageMetrics.length;
       const at = Math.max(0, Math.min(to, prevLen));
-      materializeSourcePages(this);
-      // Page-identity tags: existing pages carry their old index.
-      const tags = this.pageMetrics.map((_, k) => k);
-      // Splice only arrays that span every existing page. A sparse/empty array would misalign if inserted into.
-      const spliceFull = (arr, values) => {
-        if (Array.isArray(arr) && arr.length === prevLen) arr.splice(at, 0, ...values);
-      };
-
-      const ocrSeen = new Set();
-      for (const [engine, arr] of Object.entries(this.ocr)) {
-        if (!Array.isArray(arr) || ocrSeen.has(arr)) continue;
-        ocrSeen.add(arr);
-        spliceFull(arr, snapshots.map((b) => b.ocr[engine] ?? null));
-      }
-      const rawSeen = new Set();
-      for (const [engine, arr] of Object.entries(this.ocrRaw)) {
-        if (!Array.isArray(arr) || rawSeen.has(arr)) continue;
-        rawSeen.add(arr);
-        spliceFull(arr, snapshots.map((b) => b.ocrRaw[engine] ?? ''));
-      }
-      spliceFull(this.pageMetrics, snapshots.map((b) => b.pageMetrics));
-      spliceFull(this.layoutRegions.pages, snapshots.map((b) => b.layoutRegions));
-      spliceFull(this.layoutDataTables.pages, snapshots.map((b) => b.layoutDataTables));
-      spliceFull(this.annotations.pages, snapshots.map((b) => {
+      const tags = /** @type {Array<?number>} */ (this.pageMetrics.map((_, k) => k));
+      tags.splice(at, 0, ...snapshots.map(() => null));
+      /** @type {Map<number, PageColumn>} */
+      const arriving = new Map();
+      snapshots.forEach((b, k) => {
+        /** @type {Object<string, import('./pageStore.js').PageSnapshot>} */
+        const slots = {};
+        for (const name of this.pageStore.names) {
+          const snap = name === this.pageStore.active ? b.slots[b.active] : b.slots[name];
+          if (snap) slots[name] = snap;
+        }
+        // Mark `b.slots.pdf` borrowed when it lands outside `slots.pdf` so non-`pdf` layers do not load `nativeText` and `fillShapes` from its detail record.
+        if (b.slots.pdf && slots.pdf !== b.slots.pdf) {
+          const lent = { ...b.slots.pdf, borrowed: true };
+          for (const name of Object.keys(slots)) if (slots[name] === b.slots.pdf) slots[name] = lent;
+        }
+        /** @type {Map<Array<unknown>, unknown>} */
+        const values = new Map();
+        for (const [engine, arr] of Object.entries(this.ocrRaw)) {
+          if (Array.isArray(arr)) values.set(arr, b.ocrRaw[engine] ?? '');
+        }
+        values.set(this.pageMetrics, b.pageMetrics);
+        values.set(this.layoutRegions.pages, b.layoutRegions);
+        values.set(this.layoutDataTables.pages, b.layoutDataTables);
         // A cross-document paste drops internal links, whose page targets are meaningless in the destination document.
-        if (b.srcDocId === this.id || !Array.isArray(b.annotations)) return b.annotations;
-        return b.annotations.filter((a) => !(a.type === 'link' && a.dest));
-      }));
-      spliceFull(this.contentEdits.pages, snapshots.map((b) => b.contentEdits ?? []));
-      spliceFull(this.nativeText.pages, snapshots.map((b) => b.nativeText ?? {}));
-      spliceFull(this.hocrSource.pages, snapshots.map((b) => b.hocrSource ?? null));
-      spliceFull(this.fillShapes.pages, snapshots.map((b) => b.fillShapes ?? null));
-      spliceFull(this.stampSources.pages, snapshots.map((b) => b.stampSources ?? null));
-      spliceFull(this.truth.pages, snapshots.map((b) => b.truth ?? null));
-      spliceFull(this.vis, snapshots.map((b) => b.vis));
-      spliceFull(this.ocrTiming, snapshots.map((b) => b.ocrTiming));
-      spliceFull(this.convertPageWarn, snapshots.map((b) => b.convertPageWarn));
-      spliceFull(this.images.nativeSrc, snapshots.map((b) => b.nativeSrc));
-      spliceFull(this.images.pdfDims300, snapshots.map((b) => b.pdfDims300));
-      spliceFull(this.inputData.xmlMode, snapshots.map((b) => b.xmlMode));
-      spliceFull(this.inputData.pageStats, snapshots.map((b) => b.pageStats));
-      spliceFull(this.inputData.ocrApplied, snapshots.map((b) => b.ocrApplied));
-      spliceFull(tags, snapshots.map(() => null));
-      remapOutlineByTags(this, tags);
-      remapAnnotationDestsByTags(this, tags);
-      remapThumbnails(this, tags);
+        values.set(this.annotations.pages, b.srcDocId === this.id || !Array.isArray(b.annotations) ? b.annotations : b.annotations.filter((a) => !(a.type === 'link' && a.dest)));
+        values.set(this.contentEdits.pages, b.contentEdits ?? []);
+        values.set(this.hocrSource.pages, b.hocrSource ?? null);
+        values.set(this.stampSources.pages, b.stampSources ?? null);
+        values.set(this.truth.pages, b.truth ?? null);
+        if (Array.isArray(this.vis)) values.set(this.vis, b.vis);
+        if (Array.isArray(this.ocrTiming)) values.set(this.ocrTiming, b.ocrTiming);
+        if (Array.isArray(this.convertPageWarn)) values.set(this.convertPageWarn, b.convertPageWarn);
+        values.set(this.images.nativeSrc, b.nativeSrc);
+        values.set(this.images.pdfDims300, b.pdfDims300);
+        if (Array.isArray(this.inputData.xmlMode)) values.set(this.inputData.xmlMode, b.xmlMode);
+        if (Array.isArray(this.inputData.pageStats)) values.set(this.inputData.pageStats, b.pageStats);
+        if (Array.isArray(this.inputData.ocrApplied)) values.set(this.inputData.ocrApplied, b.ocrApplied);
+        arriving.set(at + k, { slots, values });
+      });
+      for (const arr of densePageArrays(this)) {
+        if (arr.length !== prevLen) {
+          for (const column of arriving.values()) column.values.delete(arr);
+        }
+      }
+      this.history.remap(tags, arriving);
+      snapshots.forEach((b, k) => {
+        if (b.slots.pdf && /** @type {PageColumn} */ (arriving.get(at + k)).slots.pdf === b.slots.pdf) return;
+        let held = { nativeText: b.nativeText, fillShapes: b.fillShapes };
+        if (b.slots.pdf && b.slots.pdf.detail) {
+          const { record, detail } = b.slots.pdf;
+          held = decodeDetailRecord(detail.deflated ? inflateRecord(detail.bytes) : detail.bytes, decodePageRecord(record.deflated ? inflateRecord(record.bytes) : record.bytes));
+        }
+        this.nativeText.pages[at + k] = held.nativeText ?? {};
+        this.fillShapes.pages[at + k] = held.fillShapes ?? null;
+      });
 
       // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
       for (const b of snapshots) {
@@ -1204,11 +1337,6 @@ export class ScribeDoc {
           src.refCount += 1;
         }
       }
-
-      clearImageCaches(this);
-      renumberPages(this);
-      this.inputData.pageCount = this.pageMetrics.length;
-      this.images.pageCount = this.pageMetrics.length;
     }, `Inserted ${snapshots.length === 1 ? 'page' : `${snapshots.length} pages`}`);
   }
 
@@ -1229,10 +1357,10 @@ export class ScribeDoc {
    * @returns {boolean} Whether any page was rotated (so a caller can skip a redundant rebuild).
    */
   rotatePages(indices, deltaDeg) {
-    if (this._seeded) { console.warn('Page edit ignored: the document has not loaded yet.'); return false; }
     const targets = [...new Set(indices)].filter((n) => this.pageMetrics[n]);
     if (targets.length === 0) return false;
     this.history.record(() => {
+      this.history.note({ rotations: targets.map((n) => [this.pageMetrics[n], this.pageMetrics[n].rotation]) });
       for (const n of targets) {
         const pm = this.pageMetrics[n];
         pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
@@ -1348,53 +1476,41 @@ export class ScribeDoc {
   /** Whether there is an undone edit available to redo. */
   get canRedo() { return this.docHistory.canRedo; }
 
-  /**
-   * The loading state of a document opened for on-demand loading.
-   * It is `'seeded'` while only its pages are open, `'hydrating'` while the rest of it loads, and `'hydrated'` once it is whole.
-   * A document opened whole is `'hydrated'` throughout.
-   * @returns {'seeded'|'hydrating'|'hydrated'}
-   */
-  get hydrationState() {
-    if (!this._seeded) return 'hydrated';
-    return this._seeded.run ? 'hydrating' : 'seeded';
+  /** The number of pages in this document. */
+  get pageCount() {
+    return this.pageMetrics.length;
   }
 
   /**
-   * Whether a text extraction or an on-demand load is running on this document's workers.
-   * Shrinking or suspending its worker pool while this is true would cut that work short.
-   * A seeded document has nothing running, although its text is still pending.
-   * @returns {boolean}
+   * The names of this document's text layers, in the order they were added.
+   * @returns {Array<string>}
    */
-  get _extracting() {
-    return !!this._textReadySettle && this.hydrationState !== 'seeded';
+  get layers() {
+    return this.pageStore.names;
   }
 
   /**
-   * Load the rest of a document that was opened for on-demand loading, then wait for its text.
-   * Every caller shares one load, and a load that failed is tried again on the next call.
-   * On a document opened whole this only waits for its text.
-   * @returns {Promise<boolean>} False when the load failed, or the document was closed or cleared before it finished.
+   * The name of the layer that `getPage` and exports read by default, or null when no layer is active.
+   * @type {?string}
    */
-  async ensureHydrated() {
-    const seeded = this._seeded;
-    if (seeded) {
-      if (seeded.closed) return false;
-      if (!seeded.run) {
-        seeded.run = hydrateSeededImpl(this, seeded).catch((err) => {
-          if (!seeded.closed) {
-            if (seeded.onError) seeded.onError(err);
-            else this.errorHandler({ message: `The document could not be loaded: ${err instanceof Error ? err.message : err}` });
-          }
-          return false;
-        }).then((loaded) => {
-          if (!loaded) seeded.run = null;
-          return loaded;
-        });
-      }
-      if (!(await seeded.run)) return false;
-    }
-    await this.textReady;
-    return true;
+  get activeLayer() {
+    return this.pageStore.active;
+  }
+
+  set activeLayer(name) {
+    this.pageStore.active = name;
+  }
+
+  /**
+   * Return one page of this document's text.
+   * @param {number} n - 0-based page index.
+   * @param {Object} [options]
+   * @param {string} [options.layer] - Name of the text layer to read, or the active layer when omitted.
+   * @param {boolean} [options.detail] - Also fill each word's character boxes.
+   * @returns {?import('../objects/ocrObjects.js').OcrPage|undefined}
+   */
+  getPage(n, options = {}) {
+    return this.pageStore.getPage(n, options.layer ?? 'active', options.detail ?? false);
   }
 
   /**
@@ -1402,18 +1518,15 @@ export class ScribeDoc {
    * The returned promise waits only for the previous file's fonts to leave the workers.
    */
   async clear() {
-    // An on-demand load in flight ends without writing into the emptied document.
-    if (this._seeded) {
-      this._seeded.closed = true;
-      this._seeded = null;
-    }
     // Settle any pending deferred extraction so its waiters resolve rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
     this.textReady = Promise.resolve(null);
+    this._saved = null;
+    this._textMissing = false;
+    this._liftsOwed = { fillText: new Map(), formValues: new Map() };
     this.inputData.clear();
-    clearObjectProperties(this.ocr);
-    this.ocr.active = [];
+    this.pageStore.clear();
     clearObjectProperties(this.ocrRaw);
     this.ocrRaw.active = [];
     this.annotations.pages.length = 0;
@@ -1459,13 +1572,12 @@ export class ScribeDoc {
    * The document remains usable, and a later `importFiles` spawns a fresh pool.
    */
   async close() {
-    // The PDF an on-demand load reads is released below, so stop a load in flight from writing and keep later ones from starting.
-    if (this._seeded) this._seeded.closed = true;
     // In-flight extraction jobs die with the worker pool below and never settle `textReady`, so settle it now to let waiters proceed rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
     await this.images.terminate();
     this.fonts.clear();
+    this.pageStore.stopCounting();
     await dropFromWorkers(this.fonts);
   }
 
@@ -1510,7 +1622,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addHighlightsImpl>}
    */
   addHighlights(highlights) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addHighlightsImpl(this, highlights);
   }
 
@@ -1520,7 +1631,7 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof resolveCitationImpl>} The spans in page order.
    */
   resolveCitation(text) {
-    return resolveCitationImpl(this.ocr.active || [], text);
+    return resolveCitationImpl(this.pageStore.pageList('active', true, true), text);
   }
 
   /**
@@ -1530,7 +1641,7 @@ export class ScribeDoc {
    */
   resolveDocAddress(uri) {
     const address = parseDocAddress(uri);
-    return address ? resolveDocAddressImpl(this.ocr.active || [], address) : null;
+    return address ? resolveDocAddressImpl(this.pageStore.pageList('active', true, true), address) : null;
   }
 
   /**
@@ -1539,7 +1650,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addFreeTextImpl>}
    */
   addFreeText(annotations) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addFreeTextImpl(this, annotations);
   }
 
@@ -1551,11 +1661,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof setFormValueImpl>}
    */
   setFormValue(name, value) {
-    // Before the load, the value reaches the widgets read so far and the load sets it on the rest.
-    // With no widget read, there is no prior value for the undo to restore.
-    if (this._seeded && !this.annotations.pages.some((rows) => (rows || []).some((row) => row.type === 'field' && row.name === name))) {
-      throw new Error('The document has not loaded yet, and no widget of this form field has been read. Await ensureHydrated() first.');
-    }
     return setFormValueImpl(this, name, value);
   }
 
@@ -1613,7 +1718,6 @@ export class ScribeDoc {
    * Remove all highlights previously added by `addHighlights`.
    */
   clearHighlights() {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearHighlightsImpl(this);
   }
 
@@ -1623,7 +1727,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addShapesImpl>}
    */
   addShapes(shapes) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addShapesImpl(this, shapes);
   }
 
@@ -1631,7 +1734,6 @@ export class ScribeDoc {
    * Remove all shape annotations previously added by `addShapes`.
    */
   clearShapes() {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearShapesImpl(this);
   }
 
@@ -1641,7 +1743,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addTextAnnotsImpl>}
    */
   addTextAnnots(textAnnots) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addTextAnnotsImpl(this, textAnnots);
   }
 
@@ -1649,7 +1750,6 @@ export class ScribeDoc {
    * Remove all freestanding /Text annotations previously added by `addTextAnnots`.
    */
   clearTextAnnots() {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     clearTextAnnotsImpl(this);
   }
 
@@ -1660,7 +1760,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addRedactionsImpl>}
    */
   addRedactions(redactions) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addRedactionsImpl(this, redactions);
   }
 
@@ -1669,7 +1768,6 @@ export class ScribeDoc {
    * @param {Parameters<typeof removeRedactionsImpl>[1]} [filter]
    */
   removeRedactions(filter) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     removeRedactionsImpl(this, filter);
   }
 
@@ -1679,7 +1777,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof addLinksImpl>}
    */
   addLinks(links) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     return addLinksImpl(this, links);
   }
 
@@ -1688,7 +1785,6 @@ export class ScribeDoc {
    * @param {Parameters<typeof removeLinksImpl>[1]} [filter]
    */
   removeLinks(filter) {
-    if (this._seeded) throw new Error('The document has not loaded yet, so this call cannot annotate it. Await ensureHydrated() first.');
     removeLinksImpl(this, filter);
   }
 
@@ -1702,7 +1798,6 @@ export class ScribeDoc {
    */
   deleteTextLines(lines, label) {
     // Lines taken before the load are replaced by it, so the edit is refused rather than deferred until the load finishes.
-    if (this._seeded) return Promise.reject(new Error('The document has not loaded yet, so its text cannot be edited. Await ensureHydrated() first.'));
     return deleteTextLinesImpl(this, lines, label);
   }
 
@@ -1717,87 +1812,54 @@ export class ScribeDoc {
    */
   replaceTextLine(line, newText, opts) {
     // See `deleteTextLines`.
-    if (this._seeded) return Promise.reject(new Error('The document has not loaded yet, so its text cannot be edited. Await ensureHydrated() first.'));
     return replaceTextLineImpl(this, line, newText, opts);
   }
 
   /**
-   * Run `fn`, which edits recognized words or paragraph roles on `pages` in place, and record the change as one step on the undo timeline.
-   * Undo restores each page's paragraphs and their roles, its lines, and its words with their text, boxes, styles and style runs.
-   * `fn` must be synchronous: the step is captured when it returns.
+   * Run `fn` to edit words or paragraph roles on `pages` in place and record one undo step.
+   * Undo and redo replace the affected `OcrPage` instances, so callers must re-read those pages afterwards.
+   * `fn` must be synchronous.
    * @template T
-   * @param {Array<number|OcrPage>} pages - The pages `fn` edits, as indices or page objects of the active layer.
-   * @param {string} label - Description of the step for the undo timeline.
+   * @param {Array<number|OcrPage>} pages - Zero-based page indices or live active-layer `OcrPage` objects.
+   * @param {string} label - Undo history label.
    * @param {() => T} fn
-   * @returns {T} `fn`'s return value.
+   * @returns {T}
    */
   editWords(pages, label, fn) {
-    // The words on hand before an on-demand load are replaced when it finishes, and an edit to them would go with them.
-    if (this._seeded) { console.warn('Word edit ignored: the document has not loaded yet.'); return /** @type {T} */ (undefined); }
-    const pageObjs = pages.map((p) => (typeof p === 'number' ? this.ocr.active?.[p] : p)).filter((p) => !!p);
-    const ns = pageObjs.map((p) => p.n);
-    // Lines, words and paragraphs are kept by reference and only their fields copied, so outside references, such as the viewer's word objects and each line's `par`, stay valid across an undo.
-    const capture = () => pageObjs.map((page) => ({
-      pars: page.pars.map((par) => ({
-        par, type: par.type, headingLevel: par.headingLevel, marker: par.marker,
-      })),
-      lines: page.lines.map((line) => ({
-        line,
-        bbox: { ...line.bbox },
-        baseline: line.baseline.slice(),
-        words: line.words.map((word) => ({
-          word,
-          text: word.text,
-          conf: word.conf,
-          readings: word.readings,
-          styleRuns: word.styleRuns,
-          chars: word.chars,
-          bbox: { ...word.bbox },
-          style: { ...word.style },
-          lang: word.lang,
-          visualCoords: word.visualCoords,
-          compTruth: word.compTruth,
-          matchTruth: word.matchTruth,
-        })),
-      })),
-    }));
-    /** @param {ReturnType<typeof capture>} snap */
-    const apply = (snap) => () => {
-      pageObjs.forEach((page, i) => {
-        page.pars.splice(0, page.pars.length, ...snap[i].pars.map((p) => p.par));
-        for (const p of snap[i].pars) Object.assign(p.par, { type: p.type, headingLevel: p.headingLevel, marker: p.marker });
-        page.lines.splice(0, page.lines.length, ...snap[i].lines.map((l) => l.line));
-        for (const l of snap[i].lines) {
-          l.line.bbox = { ...l.bbox };
-          l.line.baseline = l.baseline.slice();
-          l.line.words.splice(0, l.line.words.length, ...l.words.map((w) => w.word));
-          for (const w of l.words) {
-            Object.assign(w.word, {
-              text: w.text,
-              conf: w.conf,
-              readings: w.readings,
-              styleRuns: w.styleRuns,
-              chars: w.chars,
-              bbox: { ...w.bbox },
-              style: { ...w.style },
-              lang: w.lang,
-              visualCoords: w.visualCoords,
-              compTruth: w.compTruth,
-              matchTruth: w.matchTruth,
-              line: l.line,
-            });
-          }
-        }
+    const store = this.pageStore;
+    const layer = /** @type {string} */ (store.active);
+    return store.held(() => {
+      /** @type {Array<number>} */
+      const ns = [];
+      for (const p of pages) {
+        const n = typeof p === 'number' ? p : p.n;
+        if (store.hasPage(n, layer) && !ns.includes(n)) ns.push(n);
+      }
+      const before = /** @type {Array<import('./pageStore.js').PageSnapshot>} */ (ns.map((n) => store.snapshot(n, layer)));
+      for (const p of pages) {
+        const n = typeof p === 'number' ? p : p.n;
+        // Mark each page dirty and load `detail` up front so `PageStore` invalidates both cached records and re-encodes them from the mutated page.
+        const current = this.getPage(n, { detail: true });
+        if (typeof p !== 'number' && current && current !== p) throw new Error(`editWords: the page object handed in for page ${n} is no longer the document's; read the page again.`);
+      }
+      const result = fn();
+      /** @type {Array<import('./pageStore.js').PageSnapshot>} */
+      let after = [];
+      this.docHistory.record({
+        surface: 'words',
+        label,
+        undo: () => {
+          after = /** @type {Array<import('./pageStore.js').PageSnapshot>} */ (ns.map((n) => store.snapshot(n, layer)));
+          ns.forEach((n, i) => store.restore(n, layer, before[i]));
+          return ns.slice();
+        },
+        redo: () => {
+          ns.forEach((n, i) => store.restore(n, layer, after[i]));
+          return ns.slice();
+        },
       });
-      return ns.slice();
-    };
-    const before = capture();
-    const result = fn();
-    const after = capture();
-    this.docHistory.record({
-      surface: 'words', label, undo: apply(before), redo: apply(after),
+      return result;
     });
-    return result;
   }
 
   /**
@@ -1806,7 +1868,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof deleteImagesImpl>}
    */
   deleteImages(items) {
-    if (this._seeded) { console.warn('Graphics edit ignored: the document has not loaded yet.'); return null; }
     return deleteImagesImpl(this, items);
   }
 
@@ -1816,7 +1877,6 @@ export class ScribeDoc {
    * @returns {ReturnType<typeof deleteGraphicsImpl>}
    */
   deleteGraphics(items) {
-    if (this._seeded) { console.warn('Graphics edit ignored: the document has not loaded yet.'); return null; }
     return deleteGraphicsImpl(this, items);
   }
 
@@ -1874,14 +1934,12 @@ export class ScribeDoc {
   /**
    * Recognize this document's pages with the OCR engine.
    * @param {Parameters<typeof recognizeImpl>[1]} [options]
-   * @returns {ReturnType<typeof recognizeImpl>}
+   * @returns {Promise<void>}
    */
-  recognize(options) {
+  async recognize(options) {
+    await recognizeImpl(this, options);
     // The page:line pass runs once on the layer recognition leaves active, whichever internal exit produced it.
-    return recognizeImpl(this, options).then((res) => {
-      if (this.ocr.active) assignPageLineNums(this.ocr.active);
-      return res;
-    });
+    await assignLayerLineNums(this.pageStore, 'active');
   }
 
   /**
@@ -1902,21 +1960,21 @@ export class ScribeDoc {
    * @returns {Promise<import('../textDiff.js').TextDiff>}
    */
   async diffText(other, options) {
-    const loaded = await Promise.all([this.ensureHydrated(), other.ensureHydrated()]);
-    if (loaded.includes(false)) throw new Error('A document could not be loaded, so the two were not compared.');
-    return diffDocText(this.ocr.active || [], other.ocr.active || [], options);
+    await Promise.all([this.textReady, other.textReady]);
+    if (this._textMissing || other._textMissing) throw new Error('A document could not be loaded, so the two were not compared.');
+    return diffDocText(this.pageStore.pageList(), other.pageStore.pageList(), options);
   }
 
   /**
-   * Compare two sets of OCR data.
-   * @param {Parameters<typeof compareOCRImpl>[1]} ocrA
-   * @param {Parameters<typeof compareOCRImpl>[2]} ocrB
+   * Compare two of this document's text layers, page by page.
+   * @param {string} layerA - Name of a text layer, or `'active'`.
+   * @param {string} layerB - Name of a text layer, or `'active'`.
    * @param {Parameters<typeof compareOCRImpl>[3]} [options]
    * @param {Parameters<typeof compareOCRImpl>[4]} [progressCallback]
    * @returns {ReturnType<typeof compareOCRImpl>}
    */
-  compareOCR(ocrA, ocrB, options, progressCallback = null) {
-    return compareOCRImpl(this, ocrA, ocrB, options, progressCallback);
+  compareOCR(layerA, layerB, options, progressCallback = null) {
+    return compareOCRImpl(this, layerA, layerB, options, progressCallback);
   }
 
   /**
@@ -1975,11 +2033,11 @@ export class ScribeDoc {
 
   /**
    * Run font optimization and validation for this document.
-   * @param {Parameters<typeof runOptimizationImpl>[1]} ocrArr
+   * @param {string} [layer] - Name of the text layer to validate fonts against, defaulting to `'active'`.
    * @returns {ReturnType<typeof runOptimizationImpl>}
    */
-  runOptimization(ocrArr) {
-    return runOptimizationImpl(this, ocrArr);
+  runOptimization(layer = 'active') {
+    return runOptimizationImpl(this, layer);
   }
 
   /**

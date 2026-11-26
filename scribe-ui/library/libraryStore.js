@@ -727,13 +727,12 @@ export class LibraryStore {
   }
 
   /**
+   * Write a document's incremental `.work` sidecar file.
    * @param {string} hash
-   * @param {ArrayBuffer|Uint8Array|Blob} data - Serialized `.scribe` data for this document.
+   * @param {ArrayBuffer|Uint8Array|Blob} data
    */
   async writeSidecar(hash, data) {
-    await writeFileIn(await this.docsDirForWrite(), `${hash}.scribe`, data);
-    // Notes kept in the site's storage can be evicted under disk pressure unless the browser is asked to keep them.
-    // Chromium decides that request without a prompt.
+    await writeFileIn(await this.docsDirForWrite(), `${hash}.work`, data);
     if (!this.notesBeside && !this.persistAsked) {
       this.persistAsked = true;
       navigator.storage.persist?.().catch(() => {});
@@ -747,7 +746,7 @@ export class LibraryStore {
   async sidecarBlob(hash) {
     for (const dir of [this.docsDir, this.otherDocsDir]) {
       if (!dir) continue;
-      const file = await readFileIn(dir, `${hash}.scribe`);
+      const file = await readFileIn(dir, `${hash}.work`);
       if (file) return file;
     }
     return null;
@@ -767,7 +766,7 @@ export class LibraryStore {
 
   /** @param {string} hash */
   async deleteSidecar(hash) {
-    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.scribe`);
+    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.work`);
   }
 
   /**
@@ -777,7 +776,7 @@ export class LibraryStore {
   async backupSidecar(hash) {
     const file = await this.sidecarBlob(hash);
     if (!file) return false;
-    await writeFileIn(await this.docsDirForWrite(), `${hash}.scribe.bak`, file);
+    await writeFileIn(await this.docsDirForWrite(), `${hash}.work.bak`, file);
     return true;
   }
 
@@ -788,16 +787,38 @@ export class LibraryStore {
    */
   async restoreSidecarBackup(hash) {
     const dir = await this.docsDirForWrite();
-    const file = await readFileIn(dir, `${hash}.scribe.bak`);
+    const file = await readFileIn(dir, `${hash}.work.bak`);
     if (!file) return false;
-    await writeFileIn(dir, `${hash}.scribe`, file);
-    await deleteFileIn(dir, `${hash}.scribe.bak`);
+    await writeFileIn(dir, `${hash}.work`, file);
+    await deleteFileIn(dir, `${hash}.work.bak`);
     return true;
   }
 
   /** @param {string} hash */
   async deleteSidecarBackup(hash) {
-    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.scribe.bak`);
+    for (const dir of [this.docsDir, this.otherDocsDir]) if (dir) await deleteFileIn(dir, `${hash}.work.bak`);
+  }
+
+  /**
+   * Write a document's base `.bin` records file.
+   * @param {string} hash
+   * @param {Blob} blob
+   */
+  async writeRecords(hash, blob) {
+    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('records', { create: true });
+    await writeFileIn(dir, `${hash}.bin`, blob);
+  }
+
+  /** @param {string} hash @returns {Promise<?File>} */
+  async recordsBlob(hash) {
+    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('records').catch(() => null);
+    return dir ? readFileIn(dir, `${hash}.bin`) : null;
+  }
+
+  /** @param {string} hash */
+  async deleteRecords(hash) {
+    const dir = await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('records').catch(() => null);
+    if (dir) await deleteFileIn(dir, `${hash}.bin`);
   }
 
   /** @param {string} hash @param {Blob} blob */
@@ -1023,7 +1044,7 @@ export class LibraryStore {
       for (const dir of [this.docsDir, this.otherDocsDir]) {
         if (!dir) continue;
         // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-        for await (const [name, handle] of dir.entries()) if (handle.kind === 'file' && name.endsWith('.scribe')) files++;
+        for await (const [name, handle] of dir.entries()) if (handle.kind === 'file' && name.endsWith('.work')) files++;
       }
     } catch {
       return {
@@ -1109,7 +1130,7 @@ export class LibraryStore {
       let files = 0;
       const docs = await dataDir.getDirectoryHandle('docs').catch(() => null);
       // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
-      if (docs) for await (const [name, handle] of docs.entries()) if (handle.kind === 'file' && name.endsWith('.scribe')) files++;
+      if (docs) for await (const [name, handle] of docs.entries()) if (handle.kind === 'file' && name.endsWith('.work')) files++;
       const file = await readFileIn(dataDir, MANIFEST_FILE);
       const entries = file ? Object.values(JSON.parse(await file.text())?.docs ?? {}) : [];
       return {
@@ -1189,6 +1210,16 @@ export class LibraryStore {
       // @ts-ignore - keys() is missing from lib.dom's FileSystemDirectoryHandle.
       for await (const name of thumbsDir.keys()) if (name.endsWith('.jpg')) names.push(name);
       for (const name of names) if (!referenced(name.slice(0, -4))) await deleteFileIn(thumbsDir, name);
+    }
+    const recordsDir = settled ? await /** @type {FileSystemDirectoryHandle} */ (this.dataDir).getDirectoryHandle('records').catch(() => null) : null;
+    if (recordsDir) {
+      const names = [];
+      for await (const name of recordsDir.keys()) {
+        if (name.endsWith('.bin')) names.push(name);
+      }
+      for (const name of names) {
+        if (!referenced(name.slice(0, -4))) await deleteFileIn(recordsDir, name);
+      }
     }
     if (!pagesDir) return;
     /** @type {Map<string, number>} */

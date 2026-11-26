@@ -56,7 +56,7 @@ export function addHighlights(doc, highlights) {
   const groups = [];
 
   for (const highlight of highlights) {
-    const pageObj = doc.ocr.active[highlight.page];
+    const pageObj = doc.pageStore.readOnlyPage(highlight.page);
     if (!pageObj) continue;
 
     if (highlight.startLine == null && !highlight.text) {
@@ -387,7 +387,7 @@ export function addRedactions(doc, redactions) {
       continue;
     }
 
-    const pageObj = doc.ocr.active[spec.page];
+    const pageObj = doc.pageStore.readOnlyPage(spec.page);
     if (!pageObj) continue;
     /** @type {Map<string, OcrWord>} */
     const wordsById = new Map();

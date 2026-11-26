@@ -204,7 +204,7 @@ const openPage = async (name) => {
     const viewer = globalThis.df.pdfViewer;
     return {
       pages: viewer.pageCount,
-      lines: viewer.scribe.doc?.ocr.active[0]?.lines.length ?? -1,
+      lines: viewer.scribe.doc?.getPage(0)?.lines.length ?? -1,
       theme: viewer.pdfViewerElem.getAttribute('data-theme'),
       controlled: globalThis.__controlled,
       fetched: !!globalThis.df.scribe.opt.fetchWorkerScripts,
@@ -305,7 +305,7 @@ try {
   await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
   await browser.waitUntil(async () => browser.execute((pages, lines) => {
     const viewer = globalThis.df.pdfViewer;
-    return viewer.pageCount === pages && viewer.scribe.doc?.ocr.active[0]?.lines.length === lines;
+    return viewer.pageCount === pages && viewer.scribe.doc?.getPage(0)?.lines.length === lines;
   }, PDF2_PAGES, PDF2_LINES_PAGE0), {
     timeout: 60000, interval: 250, timeoutMsg: `reload: the viewer did not show the ${PDF2_PAGES}-page document with ${PDF2_LINES_PAGE0} lines on its first page within 60 s`,
   });
@@ -393,7 +393,7 @@ try {
   await browser.execute(() => { window.postMessage({ type: 'reload' }, '*'); });
   await browser.waitUntil(async () => browser.execute((lines) => {
     const viewer = globalThis.df.pdfViewer;
-    return viewer.pageCount === 1 && viewer.scribe.doc?.ocr.active[0]?.lines.length === lines;
+    return viewer.pageCount === 1 && viewer.scribe.doc?.getPage(0)?.lines.length === lines;
   }, NATIVE_LINES), {
     timeout: 30000, interval: 250, timeoutMsg: `try again after a failed open: the viewer did not open the 1-page document with ${NATIVE_LINES} lines within 30 s`,
   });

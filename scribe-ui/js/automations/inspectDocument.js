@@ -388,10 +388,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const masks = new Map();
   const maskId = Math.random().toString(36).slice(2, 8);
   /**
-   * The glyph view, in place of the list while a font is open.
+   * State for the open glyph view, or null when closed.
    * @type {?{font: import('../../../js/pdf/resourceInventory.js').InventoryFont, program: import('../../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string,
    *   glyphs: DrillGlyph[], byCode: Map<number, DrillGlyph>, part: ?HTMLElement, scrollTop: number, paintSel: () => void, setFoot: (g: ?DrillGlyph) => void,
-   *   refreshCaps: () => void}}
+   *   refreshCaps: () => void, counting: boolean}}
    */
   let drill = null;
   /** @type {?DrillGlyph} */
@@ -439,7 +439,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
     for (const n of viewer.windowPages(viewer.state.cp.n)) {
       const pageEl = viewer.pageContainerArr[n];
       if (!pageEl) continue;
-      const page = doc.ocr.active[n];
+      const page = doc.pageStore.readOnlyPage(n);
       const nt = nativeTextForPage(doc, page);
       const runs = [];
       for (const line of page?.lines || []) {
@@ -562,13 +562,13 @@ export function buildInspectWorkspace(host, container, nav = null) {
    */
   const sampleFor = (f, onProgram) => {
     const doc = viewer.doc;
-    if (!doc?.ocr?.active) return null;
+    if (!doc) return null;
     const words = [];
     let firstPage = -1;
     for (const p of f.pages.slice(0, 3)) {
-      const page = doc.ocr.active[p];
+      const page = doc.pageStore.readOnlyPage(p);
       if (!page || page.textSource !== 'pdf') continue;
-      const nt = doc.nativeText.pages[p] || {};
+      const nt = nativeTextForPage(doc, page);
       for (const line of page.lines) {
         for (const w of line.words) {
           if (nt[w.id]?.fontObjNum == null || !f.fontObjNums.includes(nt[w.id].fontObjNum)) continue;
@@ -652,7 +652,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       if (stats) {
         const bodyPages = stats.filter((p) => p && p.bodyReadableChars >= 100).length;
         const scanPages = stats.filter((p) => p && p.largestImageFrac >= 0.95).length;
-        const sparseNative = !bodyPages && doc.ocr?.active === doc.ocr?.pdf
+        const sparseNative = !bodyPages && doc.activeLayer === 'pdf'
           && stats.some((p) => p && p.bodyReadableChars > 0 && p.largestImageFrac < 0.95);
         const textKind = type === 'ocr' ? `OCR layer on ${pageCount} pages`
           : bodyPages ? `Native text on ${bodyPages} of ${pageCount} pages`
@@ -957,9 +957,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
   const paintDocument = () => {
     const next = el('div', 'scribe-am-ins-part');
     next.hidden = !!drill;
-    if (viewer.doc && viewer.doc.hydrationState !== 'hydrated') {
-      // The app's `_loadUnderMode` starts the load once the reader rests on this document.
-      // A failed load rebuilds this workspace, which then shows the failure note.
+    if (viewer.doc && (viewer.doc._textArriving || viewer.doc._loadFailed)) {
       next.append(el('div', 'scribe-am-note', viewer.doc._loadFailed ? 'Couldn’t load the document.' : 'Loading the document…'));
     } else if (!viewer.doc || viewer.doc.pageMetrics.length === 0) {
       next.append(el('div', 'scribe-am-note', 'No document open.'));
@@ -1042,6 +1040,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const usesText = (g) => {
       if (!g.keys.length && !g.codes.length) return 'reached by code, not by a character';
       if (g.text != null && /^\s+$/.test(g.text)) return 'word spacing, not counted';
+      if (drill?.counting) return 'counting uses';
       if (!g.uses) return 'not used in the text';
       const pages = [...g.pages].sort((a, b) => a - b);
       const where = pagesLabel(pages, pageCount);
@@ -1200,7 +1199,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
         const { path } = g.glyph;
         if (path.commands.some((k) => k.type === 'L' || k.type === 'C' || k.type === 'Q')) { d = path.toPathData(1); bb = path.getBoundingBox(); }
       } catch { /* An unreadable glyph is an empty cell. */ }
-      if (!g.uses && !(g.text != null && /^\s+$/.test(g.text))) c.classList.add('unused');
+      if (!drill?.counting && !g.uses && !(g.text != null && /^\s+$/.test(g.text))) c.classList.add('unused');
       const yMax = bb ? Math.max(asc, bb.y2 + pad) : asc;
       const yMin = bb ? Math.min(desc, bb.y1 - pad) : desc;
       let w = yMax - yMin;
@@ -1259,7 +1258,10 @@ export function buildInspectWorkspace(host, container, nav = null) {
       // A word or glyph recorded elsewhere leaves items with nothing to teach.
       const teaches = (it) => {
         if (it.kind === 'glyph') return charOf(it.g) == null ? 1 : 0;
-        const fresh = it.entry.codes.map((c) => { const g = c >= 0 ? drill.byCode.get(c) : null; return g?.placeholder && g.hash && charOf(g) == null ? g.hash : null; });
+        const fresh = it.codes.map((c) => {
+          const g = c >= 0 ? drill.byCode.get(c) : null;
+          return g?.placeholder && g.hash && charOf(g) == null ? g.hash : null;
+        });
         return new Set(fresh.filter(Boolean)).size;
       };
       while (queue[queueAt] && !teaches(queue[queueAt])) queueAt += 1;
@@ -1269,7 +1271,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
         buildQueue();
       }
       const it = queue[queueAt] || null;
-      const key = it ? `${it.n}:${it.word.id}:${it.kind === 'glyph' ? it.g.i : ''}` : '';
+      const key = it ? `${it.n}:${it.wordId}:${it.kind === 'glyph' ? it.g.i : ''}` : '';
       qbox.dataset.item = key;
       const wordsTotal = queue.filter((q) => q.kind === 'word').length;
       const recorded = placeholders.length - remaining();
@@ -1279,8 +1281,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       else head.append(el('span', 'tt', 'Type the blue glyph only'), el('span', 'n', `${fmtInt(queueAt - wordsTotal + 1)} of ${fmtInt(queue.length - wordsTotal)}`));
       qbox.append(head);
       if (it) {
-        const { word, entry } = it;
-        const gs = entry.codes.map((c, i) => ({ code: c, g: c >= 0 ? drill.byCode.get(c) || null : null, ch: c >= 0 ? String.fromCodePoint(0xE000 + c) : (word.chars?.[i]?.text ?? '') }));
+        const gs = it.codes.map((c, i) => ({ code: c, g: c >= 0 ? drill.byCode.get(c) || null : null, ch: c >= 0 ? String.fromCodePoint(0xE000 + c) : it.charTexts[i] }));
         const tgt = it.kind === 'glyph' ? gs.findIndex((x) => x.g === it.g) : -1;
         const known = gs.map((x) => (x.g ? (x.g.placeholder ? charOf(x.g) : (x.g.text ?? null)) : x.ch));
         const row = el('div', 'scribe-am-ins-glqrow');
@@ -1386,16 +1387,16 @@ export function buildInspectWorkspace(host, container, nav = null) {
       closeRing?.();
       if (!it) { queueShown = null; return; }
       const ring = () => {
-        const layer = floatingLayer(it.n, it.word.line.orientation || 0);
+        const layer = floatingLayer(it.n, it.orientation);
         if (!layer) return;
         const z = 'var(--scribe-zoom, 1)';
         const box = el('div', 'scribe-inspect-wordring');
         Object.assign(box.style, {
           position: 'absolute',
-          left: `${it.word.bbox.left}px`,
-          top: `${it.word.bbox.top}px`,
-          width: `${it.word.bbox.right - it.word.bbox.left}px`,
-          height: `${it.word.bbox.bottom - it.word.bbox.top}px`,
+          left: `${it.bbox.left}px`,
+          top: `${it.bbox.top}px`,
+          width: `${it.bbox.right - it.bbox.left}px`,
+          height: `${it.bbox.bottom - it.bbox.top}px`,
           boxShadow: `0 0 0 calc(2px / ${z}) var(--scribe-accent)`,
           borderRadius: `calc(2px / ${z})`,
           pointerEvents: 'none',
@@ -1407,7 +1408,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       queueShown = key;
       (async () => {
         await viewer.displayPage(it.n, false, false);
-        const kw = viewer.getUiWords().find((x) => x.word.line.page.n === it.n && x.word.id === it.word.id);
+        const kw = viewer.getUiWords().find((x) => x.word.line.page.n === it.n && x.word.id === it.wordId);
         if (kw) viewer.scrollToWord(kw);
         if (queueShown === key && editMode) { closeRing?.(); ring(); }
         maskNow();
@@ -1462,11 +1463,12 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const { font: f, byCode, glyphs } = drill;
     /** The outline a glyph code stands for while it still has no character, else null. */
     const outlineOf = (c) => { const g = c >= 0 ? byCode.get(c) : null; return g?.placeholder && g.hash && charOf(g) == null ? g.hash : null; };
+    // Extract lightweight word metadata up front so OcrPage objects can be evicted as the loop scans font pages.
     const words = [];
     for (const p of f.pages) {
-      const page = doc?.ocr?.active?.[p] ?? doc?.ocr?.pdf?.[p];
+      const page = doc?.pageStore.readOnlyPage(p, 'active', true) ?? doc?.pageStore.readOnlyPage(p, 'pdf', true);
       if (!page || page.textSource !== 'pdf') continue;
-      const nt = doc.nativeText.pages[p] || {};
+      const nt = nativeTextForPage(doc, page);
       for (const line of page.lines) {
         for (const w of line.words) {
           const entry = nt[w.id];
@@ -1474,7 +1476,14 @@ export function buildInspectWorkspace(host, container, nav = null) {
           const outlines = [...new Set(entry.codes.map(outlineOf).filter(Boolean))];
           if (outlines.length) {
             words.push({
-              n: p, word: w, entry, outlines, len: entry.codes.filter((c) => c >= 0).length,
+              n: p,
+              wordId: w.id,
+              codes: entry.codes.slice(),
+              charTexts: entry.codes.map((c, i) => (c >= 0 ? '' : (w.chars?.[i]?.text ?? ''))),
+              orientation: line.orientation || 0,
+              bbox: { ...w.bbox },
+              outlines,
+              len: entry.codes.filter((c) => c >= 0).length,
             });
           }
         }
@@ -1492,18 +1501,14 @@ export function buildInspectWorkspace(host, container, nav = null) {
       }
       // A word that teaches a single glyph costs more typing than that glyph alone.
       if (!best || bestGain < 2) break;
-      queue.push({
-        kind: 'word', n: best.n, word: best.word, entry: best.entry,
-      });
+      queue.push({ kind: 'word', ...best });
       for (const h of best.outlines) { left.delete(h); covered.add(h); }
     }
     for (const g of glyphs) {
       if (!g.placeholder || !g.hash || charOf(g) != null || covered.has(g.hash)) continue;
       const holder = words.filter((x) => x.outlines.includes(g.hash)).sort((a, b) => a.len - b.len)[0];
       if (holder) {
-        queue.push({
-          kind: 'glyph', g, n: holder.n, word: holder.word, entry: holder.entry,
-        });
+        queue.push({ kind: 'glyph', g, ...holder });
       }
     }
   };
@@ -1536,7 +1541,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
     const d = drill;
     const { word } = kw;
     const n = word.line.page.n;
-    const entry = doc?.nativeText.pages[n]?.[word.id];
+    const entry = doc ? nativeTextForPage(doc, word.line.page)[word.id] : null;
     if (!doc || !d || !entry?.codes) return false;
     const layer = floatingLayer(n, word.line.orientation || 0);
     if (!layer) return false;
@@ -1687,24 +1692,6 @@ export function buildInspectWorkspace(host, container, nav = null) {
       g.pages.add(p);
       if (!g.first) g.first = { n: p, wordId: w.id };
     };
-    for (const p of f.pages) {
-      const page = doc.ocr?.active?.[p] ?? doc.ocr?.pdf?.[p];
-      if (!page || page.textSource !== 'pdf') continue;
-      const nt = doc.nativeText.pages[p] || {};
-      for (const line of page.lines) {
-        for (const w of line.words) {
-          const entry = nt[w.id];
-          if (entry?.fontObjNum == null || !f.fontObjNums.includes(entry.fontObjNum)) continue;
-          // A word with recorded glyph codes is matched by them, since its text may already read as characters.
-          if (entry.codes) {
-            for (const c of entry.codes) { const g = c >= 0 ? byCode.get(c) : null; if (g) hit(g, p, w); }
-            continue;
-          }
-          for (const ch of w.text) { const gs = byCp.get(ch.codePointAt(0)); if (gs) for (const g of gs) hit(g, p, w); }
-          for (const [k, g] of multi) { let at = w.text.indexOf(k); while (at >= 0) { hit(g, p, w); at = w.text.indexOf(k, at + k.length); } }
-        }
-      }
-    }
     closeField?.();
     editMode = false;
     drill = {
@@ -1715,6 +1702,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       byCode,
       part: null,
       scrollTop: body.scrollTop,
+      counting: false,
       paintSel: () => {},
       setFoot: () => {},
       refreshCaps: () => {},
@@ -1723,14 +1711,57 @@ export function buildInspectWorkspace(host, container, nav = null) {
     shownGlyphs = GLYPH_CELL_LIMIT;
     // Only the footer's list of other fonts reads these, so a document restored without its PDF goes without.
     if (!hashes && f.pages.length) doc.images.getType3GlyphHashes(f.pages[0]).then((t) => { hashes = t; if (drill?.font === f) drill.setFoot(selGlyph); }).catch(() => {});
-    // A session saved before the parser recorded glyph codes gets them now, so the word field can read the words it is clicked on.
-    if (f.pages.length) ensureType3GlyphCodes(doc, f.pages).catch(() => {});
-    // The row's hover mask ends with the list.
+    if (f.subtype === 'Type3' && f.pages.length) ensureType3GlyphCodes(doc, f.pages).catch(() => {});
     hoverFont = null;
     applyMask(pinnedFont);
     docPart.hidden = true;
     invPart.hidden = true;
     nav?.setSubview(f.baseName);
+    const opened = /** @type {NonNullable<typeof drill>} */ (drill);
+    (async () => {
+      let sliceEnd = performance.now() + 40;
+      for (const p of f.pages) {
+        const page = doc.pageStore.readOnlyPage(p) ?? doc.pageStore.readOnlyPage(p, 'pdf');
+        if (page && page.textSource === 'pdf') {
+          const nt = nativeTextForPage(doc, page);
+          for (const line of page.lines) {
+            for (const w of line.words) {
+              const entry = nt[w.id];
+              if (entry?.fontObjNum == null || !f.fontObjNums.includes(entry.fontObjNum)) continue;
+              if (entry.codes) {
+                for (const c of entry.codes) {
+                  const g = c >= 0 ? byCode.get(c) : null;
+                  if (g) hit(g, p, w);
+                }
+                continue;
+              }
+              for (const ch of w.text) {
+                const gs = byCp.get(ch.codePointAt(0));
+                if (gs) {
+                  for (const g of gs) hit(g, p, w);
+                }
+              }
+              for (const [k, g] of multi) {
+                let at = w.text.indexOf(k);
+                while (at >= 0) {
+                  hit(g, p, w);
+                  at = w.text.indexOf(k, at + k.length);
+                }
+              }
+            }
+          }
+        }
+        if (performance.now() > sliceEnd) {
+          opened.counting = true;
+          await new Promise((r) => { setTimeout(r, 0); });
+          if (drill !== opened) return;
+          sliceEnd = performance.now() + 40;
+        }
+      }
+      if (!opened.counting) return;
+      opened.counting = false;
+      paintDrill();
+    })();
     paintDrill();
     body.scrollTop = 0;
   };
@@ -1813,8 +1844,8 @@ export function buildInspectWorkspace(host, container, nav = null) {
     selectWord: (n, wordId) => {
       const doc = viewer.doc;
       if (!doc || !inv) return false;
-      const page = doc.ocr?.active?.[n];
-      const entry = page && page.textSource === 'pdf' ? doc.nativeText.pages[n]?.[wordId] : null;
+      const page = doc.pageStore.readOnlyPage(n);
+      const entry = page && page.textSource === 'pdf' ? nativeTextForPage(doc, page)[wordId] : null;
       if (!entry || entry.fontObjNum == null) return false;
       const font = inv.fonts.find((f) => f.fontObjNums.includes(entry.fontObjNum));
       if (!font) return false;
@@ -1875,7 +1906,7 @@ export function buildInspectWorkspace(host, container, nav = null) {
       // The phone's sheet covers the page, so the phone keeps the cell fields alone.
       if (!editMode || !drill || host.app?._phoneUi) return false;
       const page = kw?.word?.line?.page;
-      const entry = page && page.textSource === 'pdf' ? viewer.doc?.nativeText.pages[page.n]?.[kw.word.id] : null;
+      const entry = page && page.textSource === 'pdf' && viewer.doc ? nativeTextForPage(viewer.doc, page)[kw.word.id] : null;
       if (!entry?.codes || !drill.font.fontObjNums.includes(entry.fontObjNum)) return false;
       return openWordField(kw);
     },

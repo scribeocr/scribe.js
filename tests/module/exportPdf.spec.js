@@ -13,6 +13,7 @@ import { ca } from '../../js/canvasAdapter.js';
 import { renderPdfPage } from '../_renderPdfPage.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 import { strayFields } from './_ocrFields.js';
+import { docPages, expectSamePage } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -110,7 +111,7 @@ describe('Check export for .pdf files.', () => {
 
     // Inject an empty-text word to verify empty words do not cause errors during PDF export.
     // See: https://github.com/scribeocr/scribeocr/issues/91
-    const line0 = doc.ocr.active[0].lines[0];
+    const line0 = doc.getPage(0).lines[0];
     line0.words.push(new scribe.utils.ocr.OcrWord(line0, 'empty_word_test', '', {
       left: 100, top: 100, right: 100, bottom: 120,
     }));
@@ -142,7 +143,7 @@ describe('Check export for .pdf files.', () => {
 
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
     const reExportedText = await doc.exportData('text');
 
     expect(reExportedText).toBe(exportedText);
@@ -160,7 +161,7 @@ describe('Check export for .pdf files.', () => {
 
     // Inject an empty-text word to verify empty words do not cause errors during HTML export.
     // See: https://github.com/scribeocr/scribeocr/issues/91
-    const line0html = doc.ocr.active[0].lines[0];
+    const line0html = doc.getPage(0).lines[0];
     line0html.words.push(new scribe.utils.ocr.OcrWord(line0html, 'empty_word_html_test', '', {
       left: 100, top: 100, right: 100, bottom: 120,
     }));
@@ -173,7 +174,7 @@ describe('Check export for .pdf files.', () => {
 
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
     const reExportedText = await doc.exportData('text');
 
     expect(reExportedText).toBe(exportedText);
@@ -186,7 +187,7 @@ describe('Check export for .pdf files.', () => {
       doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
       expect(doc.inputData.pdfType).toBe('ocr');
 
-      const sourceOcr = doc.ocr.active.length ? doc.ocr.active : doc.ocr.pdf;
+      const sourceOcr = docPages(doc).length ? docPages(doc) : docPages(doc, 'pdf');
       let sourceLines = 0;
       let sourceWords = 0;
       for (const page of sourceOcr) {
@@ -203,7 +204,7 @@ describe('Check export for .pdf files.', () => {
       scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
       scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
       doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
-      const ocr = doc.ocr.active.length ? doc.ocr.active : doc.ocr.pdf;
+      const ocr = docPages(doc).length ? docPages(doc) : docPages(doc, 'pdf');
 
       let lines = 0;
       let words = 0;
@@ -252,7 +253,7 @@ describe('Check export for .pdf files.', () => {
     // Delete the active OCR data before export so no invisible text overlay is added.
     // Without this, the native text extracted on import would be written back as an
     // invisible overlay, creating the same duplication issue tested above.
-    doc.ocr.active.length = 0;
+    doc.activeLayer = null;
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     const exportedPdf = await doc.exportData('pdf');
@@ -263,7 +264,7 @@ describe('Check export for .pdf files.', () => {
 
     expect(doc.inputData.pdfType).toBe('text');
 
-    const text = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
+    const text = doc.getPage(0).lines[3].words.map((x) => x.text).join(' ');
     expect(text).toBe('Shubhdeep Deb');
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
@@ -682,9 +683,9 @@ describe('Check export for .pdf files.', () => {
       await doc.clear();
       scribe.ScribeDoc.defaults.usePDFText.native.main = true;
       doc = await scribe.openDocument({ pdfFiles: [pdfCompressed] });
-      doc.ocr.active = doc.ocr.pdf;
+      doc.activeLayer = 'pdf';
       compressedWords = [];
-      for (const line of doc.ocr.active[0].lines) {
+      for (const line of doc.getPage(0).lines) {
         for (const w of line.words) compressedWords.push({ color: w.style.color, opacity: w.style.opacity });
       }
       textCompressed = /** @type {string} */ (await doc.exportData('text'));
@@ -692,7 +693,7 @@ describe('Check export for .pdf files.', () => {
       await doc.clear();
       scribe.ScribeDoc.defaults.usePDFText.native.main = true;
       doc = await scribe.openDocument({ pdfFiles: [pdfHuman] });
-      doc.ocr.active = doc.ocr.pdf;
+      doc.activeLayer = 'pdf';
       textHuman = /** @type {string} */ (await doc.exportData('text'));
     });
 
@@ -734,8 +735,8 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
 
-    expect(doc.ocr.active.length).toBe(3);
-    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    expect(docPages(doc).length).toBe(3);
+    expect(doc.getPage(0).lines[0].words[0].text).toBe('Iris');
 
     // Dimensions are asserted rather than encoded byte sizes because encoders differ between the Node canvas fork and browsers, while canvas sizing from dpi does not.
     const jpegRender = await doc.renderPageImage(0, { dpi: 150, format: 'jpeg', quality: 0.75 });
@@ -786,8 +787,8 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    doc.ocr.active = doc.ocr.pdf;
-    expect(doc.ocr.active.length).toBe(2);
+    doc.activeLayer = 'pdf';
+    expect(docPages(doc).length).toBe(2);
 
     for (let i = 0; i < 2; i++) {
       const pageText = /** @type {string} */ (await doc.exportData('text', { minPage: i, maxPage: i }));
@@ -802,12 +803,12 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [reorderedPdf] });
-    doc.ocr.active = doc.ocr.pdf;
-    expect(doc.ocr.active.length, 'a full-length pageArr export keeps every page').toBe(3);
-    expect(doc.ocr.active[0].lines[0].words.map((w) => w.text).join(' '), 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s last page comes first')
+    doc.activeLayer = 'pdf';
+    expect(docPages(doc).length, 'a full-length pageArr export keeps every page').toBe(3);
+    expect(doc.getPage(0).lines[0].words.map((w) => w.text).join(' '), 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s last page comes first')
       .toBe('contact only with the non-receptive lower face of the stigma. Thus, an insect bearing pollen from one');
-    expect(doc.ocr.active[2].lines[0].words[0].text, 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s first page comes last').toBe('Iris');
-    expect(doc.ocr.active.map((p) => p.lines.reduce((n, l) => n + l.words.length, 0)), 'each reordered page carries its own text once').toEqual([452, 372, 240]);
+    expect(doc.getPage(2).lines[0].words[0].text, 'a pure page reorder passed as pageArr reaches the exported PDF: the source\'s first page comes last').toBe('Iris');
+    expect(docPages(doc).map((p) => p.lines.reduce((n, l) => n + l.words.length, 0)), 'each reordered page carries its own text once').toEqual([452, 372, 240]);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();
@@ -825,10 +826,10 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [subsetBytes02] });
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
 
-    expect(doc.ocr.active.length).toBe(2);
-    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    expect(docPages(doc).length).toBe(2);
+    expect(doc.getPage(0).lines[0].words[0].text).toBe('Iris');
     const subsetPage1Text = /** @type {string} */ (await doc.exportData('text', { minPage: 1, maxPage: 1 }));
     expect(subsetPage1Text).not.toContain('Iris (plant)');
 
@@ -840,9 +841,9 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [subsetBytes1] });
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
 
-    expect(doc.ocr.active.length).toBe(1);
+    expect(docPages(doc).length).toBe(1);
     const middlePageText = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(middlePageText).not.toContain('Iris (plant)');
 
@@ -862,11 +863,11 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [mergedBytes] });
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
 
-    expect(doc.ocr.active.length).toBe(6);
-    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
-    expect(doc.ocr.active[3].lines[0].words[0].text).toBe('Iris');
+    expect(docPages(doc).length).toBe(6);
+    expect(doc.getPage(0).lines[0].words[0].text).toBe('Iris');
+    expect(doc.getPage(3).lines[0].words[0].text).toBe('Iris');
 
     await doc.clear();
   });
@@ -883,7 +884,7 @@ describe('Check export for .pdf files.', () => {
       }
       return n;
     };
-    expect(countWords(doc.ocr.active), 'source PDF native word count baseline').toBe(1064);
+    expect(countWords(docPages(doc)), 'source PDF native word count baseline').toBe(1064);
 
     // A single-word highlight consolidates to one annotation regardless, so the span must cover multiple words to catch the regression.
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
@@ -930,10 +931,10 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    doc.ocr.active = doc.ocr.pdf;
-    expect(doc.ocr.active.length, 'all 3 source pages survive the overlay round-trip').toBe(3);
+    doc.activeLayer = 'pdf';
+    expect(docPages(doc).length, 'all 3 source pages survive the overlay round-trip').toBe(3);
     expect(
-      countWords(doc.ocr.active),
+      countWords(docPages(doc)),
       'annot mode must not emit a visible overlay text layer on top of the source text',
     ).toBe(1064);
 
@@ -1013,7 +1014,7 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
     const reExportedText = await doc.exportData('text');
     expect(reExportedText).toBe('Tesseract.js');
 
@@ -1042,6 +1043,22 @@ describe('Check export for .pdf files.', () => {
     // Before the fix a byte-per-character read of the packet turned its "®" into "Â®".
     expect(/<pdf:Producer>([^<]*)</.exec(sourceMeta.xmp.catalog)?.[1], 'the XMP packet reads as text').toBe('Acrobat Distiller 3.0 for Power Macintosh; modified using iText® 5.1.0_SNAPSHOT ©2000-2011 1T3XT BVBA');
     expect(sourceMeta.xmp.catalogBytes, 'the packet’s size on disk is reported in bytes').toBe(3570);
+
+    const originals = docPages(doc);
+    const pageBudget = scribe.opt.pageBudget;
+    scribe.opt.pageBudget = 1;
+    doc.getPage(21);
+    const bare = originals.map((_, n) => doc.getPage(n));
+    const bareCharWords = bare.flatMap((page) => page.lines.flatMap((line) => line.words)).filter((word) => word.chars).length;
+    const detailed = originals.map((_, n) => doc.getPage(n, { detail: true }));
+    scribe.opt.pageBudget = pageBudget;
+    expect(bareCharWords, 'a page read back without detail carries character boxes').toBe(0);
+    expect(detailed.flatMap((page) => page.lines.flatMap((line) => line.words)).filter((word) => word.chars?.some((c) => c.text.length > 1)).length,
+      'a ligature keeps its one box for several letters when its page is read back').toBe(240);
+    for (let n = 0; n < 22; n++) {
+      expectSamePage(originals[n], bare[n], `page ${n}'s record`, 'chars');
+      expectSamePage(originals[n], detailed[n], `page ${n}'s page and detail records`);
+    }
 
     scribe.ScribeDoc.defaults.displayMode = 'proof';
     scribe.ScribeDoc.defaults.addOverlay = true;
@@ -1116,7 +1133,7 @@ describe('Check export for .pdf files.', () => {
     doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
     expect(doc.inputData.pageCount).toBe(22);
-    const page7Words = doc.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
+    const page7Words = doc.getPage(7, { layer: 'pdf' }).lines.flatMap((l) => l.words.map((w) => w.text));
     expect(page7Words.slice(0, 5)).toEqual(['12', 'Intel', 'Corporation', '1996', 'www.intel.com']);
     // The second half of the same bug: the export copied the source's Info dict verbatim, ciphertext and all, into an output with no encryption.
     const exportedMeta = doc.getMetadata();
@@ -1142,8 +1159,8 @@ describe('Check export for .pdf files.', () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
 
     expect(doc.inputData.pageCount).toBe(1);
-    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('UNITED');
-    expect(doc.ocr.active[0].lines[0].words[0].bbox).toEqual({
+    expect(doc.getPage(0).lines[0].words[0].text).toBe('UNITED');
+    expect(doc.getPage(0).lines[0].words[0].bbox).toEqual({
       left: 1014, top: 83, right: 1234, bottom: 146,
     });
 
@@ -1166,7 +1183,7 @@ describe('Check export for .pdf files.', () => {
     // metrics rather than the source's embedded font, so the bbox vertical extent differs
     // by a handful of pixels from font ascent/descent — this is not a positioning bug.)
     // Pre-fix the overlay was offset to (1007, 38, 1234, 118): dx=-7 px, dy=-45 px.
-    const reImportedWords = doc.ocr.pdf[0].lines.flatMap((l) => l.words);
+    const reImportedWords = doc.getPage(0, { layer: 'pdf' }).lines.flatMap((l) => l.words);
     const unitedWords = reImportedWords.filter((w) => w.text === 'UNITED');
     expect(unitedWords.length).toBe(2);
     const sortedByTop = unitedWords.slice().sort((a, b) => a.bbox.top - b.bbox.top);
@@ -1278,7 +1295,7 @@ describe('Check export for .pdf files.', () => {
 
     doc = await scribe.openDocument({ pdfFiles: [strippedBytes.buffer] });
     expect(doc.inputData.pageCount, 'page count survives metadata strip').toBe(4);
-    expect(doc.ocr.active[0].lines[0].words[0].text, 'body text survives metadata strip').toBe('SECTOR');
+    expect(doc.getPage(0).lines[0].words[0].text, 'body text survives metadata strip').toBe('SECTOR');
 
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
@@ -1310,7 +1327,7 @@ describe('Redaction marks are applied destructively on export.', () => {
     const res = redactDoc.addRedactions([{ page: 0, text: 'misrepresentation' }]);
     expect(res.marksAdded, 'quote-mode redaction marks the unique target word').toBe(1);
     // The replacement must end inside the page, because glyphs past the page edge parse as nothing and the replacement would be refused.
-    const editLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+    const editLine = redactDoc.getPage(0).lines.find((line) => line.words.map((w) => w.text).join(' ')
       .startsWith('latory enforcement action.'));
     const editBox = { ...editLine.bbox };
     // The replacement keeps the line's word count, because fewer words would leave a hole the re-import splits the line at, which the edit refuses.
@@ -1325,14 +1342,14 @@ describe('Redaction marks are applied destructively on export.', () => {
       bbox: {
         left: leakWord.bbox.left - 4,
         top: editBox.top - 8,
-        right: redactDoc.ocr.active[0].dims.width - 10,
+        right: redactDoc.getPage(0).dims.width - 10,
         bottom: editBox.bottom + 8,
       },
     }]);
-    const markLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+    const markLine = redactDoc.getPage(0).lines.find((line) => line.words.map((w) => w.text).join(' ')
       === 'cial misrepresentation since the passage of the Sarbanes-Oxley Act of');
     await redactDoc.replaceTextLine(markLine, markLine.words.map((w) => w.text).join(' '), { wordStyles: markLine.words.map(() => ({ color: '#ff0000' })) });
-    const deleteLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+    const deleteLine = redactDoc.getPage(0).lines.find((line) => line.words.map((w) => w.text).join(' ')
       === 'whistleblower awards, raising questions about the usefulness of whistleblow-');
     await redactDoc.deleteTextLines([deleteLine]);
     redactTxt = /** @type {string} */ (await redactDoc.exportData('txt'));
@@ -1349,7 +1366,7 @@ describe('Redaction marks are applied destructively on export.', () => {
 
   test('the marked word is not extractable from the exported PDF', () => {
     const words = [];
-    for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    for (const line of redactReimportDoc.getPage(0).lines) for (const w of line.words) words.push(w.text);
     expect(words.includes('misrepresentation'), 'redacted word must not be extractable from the exported PDF').toBe(false);
     expect(words.includes('passage'), 'neighboring word must survive in the exported PDF').toBe(true);
     expect(words.length, 'exact word count of the redacted page on re-import').toBe(483);
@@ -1358,12 +1375,12 @@ describe('Redaction marks are applied destructively on export.', () => {
   test('a line deleted and a line recolored beside the marks reach the exported PDF as edited, with the mark applied over the recolored line', () => {
     const lineText = (line) => line.words.map((w) => w.text).join(' ');
     expect(redactTxt.includes('whistleblower awards, raising questions'), 'the deleted line must not reach the txt export').toBe(false);
-    const lines = redactReimportDoc.ocr.active[0].lines.map(lineText);
+    const lines = redactReimportDoc.getPage(0).lines.map(lineText);
     expect(lines.includes('whistleblower awards, raising questions about the usefulness of whistleblow-'), 'the deleted line is still in the exported PDF').toBe(false);
     expect(lines[1], 'the line above the deletion was damaged by the export').toBe('the cracks. 1 Further, regulators have historically conferred relatively few');
     expect(lines[2], 'the line below the deletion was damaged by the export').toBe('ers in enforcement efforts. 2 Given that regulators have the power to sub-');
-    const before = redactReimportDoc.ocr.active[0].lines.find((line) => lineText(line) === 'cial');
-    const after = redactReimportDoc.ocr.active[0].lines.find((line) => lineText(line) === 'since the passage of the Sarbanes-Oxley Act of');
+    const before = redactReimportDoc.getPage(0).lines.find((line) => lineText(line) === 'cial');
+    const after = redactReimportDoc.getPage(0).lines.find((line) => lineText(line) === 'since the passage of the Sarbanes-Oxley Act of');
     expect(!!before && !!after, 'the recolored line must re-import around the redacted word').toBe(true);
     expect([...before.words, ...after.words].map((w) => w.style.color), 'every word of the recolored line must re-import in the new ink')
       .toEqual(new Array(9).fill('#ff0000'));
@@ -1371,7 +1388,7 @@ describe('Redaction marks are applied destructively on export.', () => {
 
   test('changed text under a mark is dropped from the exported PDF, and the rest of the replacement survives', () => {
     const words = [];
-    for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    for (const line of redactReimportDoc.getPage(0).lines) for (const w of line.words) words.push(w.text);
     expect(words.includes('REDLEAK'), 'a changed word under a redaction mark reached the exported PDF').toBe(false);
     expect(words.filter((w) => w === 'REDKEPT').length, 'the changed words outside the mark must survive the export').toBe(2);
     expect(words.includes('latory'), 'the replaced line\'s original text survived the export').toBe(false);
@@ -1387,7 +1404,7 @@ describe('Redaction marks are applied destructively on export.', () => {
 
   test('the live document keeps the word and the editable mark (apply-at-export)', () => {
     const words = [];
-    for (const line of redactDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    for (const line of redactDoc.getPage(0).lines) for (const w of line.words) words.push(w.text);
     expect(words.includes('misrepresentation'), 'live document must keep the word after export').toBe(true);
     expect(redactDoc.annotations.pages[0].filter((a) => a.type === 'redact').length, 'live document must keep the redaction marks after export').toBe(2);
     redactDoc.removeRedactions();
@@ -1398,8 +1415,8 @@ describe('Redaction marks are applied destructively on export.', () => {
 describe('Check addHighlights and clearHighlights.', () => {
   test('Should import document for highlight tests', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/testocr_all_orientations.abbyy.xml`]);
-    expect(doc.ocr.active.length).toBe(12);
-    expect(doc.ocr.active[0].lines.length).toBe(8);
+    expect(docPages(doc).length).toBe(12);
+    expect(doc.getPage(0).lines.length).toBe(8);
   });
 
   test('addHighlights with startLine/endLine creates one annotation per word on that line', async () => {
@@ -1436,8 +1453,8 @@ describe('Check addHighlights and clearHighlights.', () => {
     expect(result.groups[0].bbox).toEqual({
       left: 36, top: 92, right: 580, bottom: 122,
     });
-    expect(doc.ocr.active[0].dims.height).toBe(480);
-    const fracY = result.groups[0].bbox.top / doc.ocr.active[0].dims.height;
+    expect(doc.getPage(0).dims.height).toBe(480);
+    const fracY = result.groups[0].bbox.top / doc.getPage(0).dims.height;
     expect(fracY).toBeCloseTo(0.1917, 4);
   });
 
@@ -1481,7 +1498,7 @@ describe('Check addHighlights and clearHighlights.', () => {
     ];
     for (const c of cases) {
       doc.clearHighlights();
-      expect(doc.ocr.active[c.page].lines[0].orientation, `page ${c.page} orientation`).toBe(c.orientation);
+      expect(doc.getPage(c.page).lines[0].orientation, `page ${c.page} orientation`).toBe(c.orientation);
       const result = doc.addHighlights([{ page: c.page, startLine: 0, endLine: 0 }]);
       expect(result.groups.length, `page ${c.page} group count`).toBe(1);
       expect(result.groups[0].bbox, `page ${c.page} bbox`).toEqual(c.expected);
@@ -1506,7 +1523,7 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
 
     // No committed asset has a dash-joined style flip, so one word is rewritten in place to cover that case.
     // The bbox is narrowed to the new text's natural width, since the wider original makes the export letter-space the word enough for the reimporter to split it.
-    const craft = doc.ocr.active[1].lines[18].words[3];
+    const craft = doc.getPage(1).lines[18].words[3];
     craft.text = 'alpha—beta';
     craft.style.italic = true;
     craft.styleRuns = [{ i: 6, style: { italic: false } }];
@@ -1532,7 +1549,7 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
   });
 
   test('Non-italic trailing comma of the italic citation survives as a style run', () => {
-    const words = doc.ocr.active[0].lines[30].words;
+    const words = doc.getPage(0).lines[30].words;
     expect(words[10].text, 'mixed-style word changed on visible-text PDF round-trip').toBe('Ltd.,');
     expect(words[10].style.italic, 'italic body style lost on visible-text PDF round-trip').toBe(true);
     expect(words[10].styleRuns, 'intra-word style run lost on visible-text PDF round-trip').toEqual([{ i: 4, style: { italic: false } }]);
@@ -1541,7 +1558,7 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
   });
 
   test('Dash-joined style flip stays one word with the non-italic half captured as a style run', () => {
-    const words = doc.ocr.active[1].lines[18].words;
+    const words = doc.getPage(1).lines[18].words;
     expect(words[3].text, 'dash-joined mixed-style token split or corrupted on PDF round-trip').toBe('alpha—beta');
     expect(words[3].style.italic, 'italic first half lost on the dash-joined token').toBe(true);
     expect(words[3].styleRuns, 'style flip at the dash not captured on PDF round-trip').toEqual([{ i: 6, style: { italic: false } }]);
@@ -1612,9 +1629,9 @@ describe('Check native text line deletion and replacement survive .scribe persis
   beforeAll(async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     const srcDoc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
-    const target = srcDoc.ocr.active[0].lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
+    const target = srcDoc.getPage(0).lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
     await srcDoc.replaceTextLine(target, 'Several Iris varieties are used in the Iris flower data set');
-    await srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
+    await srcDoc.deleteTextLines([srcDoc.getPage(0).lines[21]]);
     const photoA = pageImagePlacements(srcDoc, 1)[0];
     srcDoc.deleteImages([{
       n: 1,
@@ -1660,14 +1677,14 @@ describe('Check native text line deletion and replacement survive .scribe persis
       page: {
         status: 'built', attributes: ['wholesale-disagreement'], process: 1, run: '2026-10-23T12-00-00-000Z-resolve',
       },
-      words: { [srcDoc.ocr.active[1].lines[0].words[0].id]: { settledBy: 'control', kind: 'letters or digits', flags: ['lookalike'] } },
-      unresolved: { [srcDoc.ocr.active[1].lines[1].words[0].id]: { reason: 'unclear', verdicts: ['run-a/batch-01/4'] } },
+      words: { [srcDoc.getPage(1).lines[0].words[0].id]: { settledBy: 'control', kind: 'letters or digits', flags: ['lookalike'] } },
+      unresolved: { [srcDoc.getPage(1).lines[1].words[0].id]: { reason: 'unclear', verdicts: ['run-a/batch-01/4'] } },
     };
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
     // The library writes its sidecars without char boxes, so words restored from them carry no `chars`.
-    const lineA = srcDoc.ocr.active[0].lines.find((line) => lineText(line).includes('junos'));
+    const lineA = srcDoc.getPage(0).lines.find((line) => lineText(line).includes('junos'));
     await srcDoc.deleteTextLines([lineA]);
     const noCharsScribeData = await srcDoc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false });
     await srcDoc.close();
@@ -1679,7 +1696,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     // The library opens a PDF beside its sidecar, so this leg models that pairing rather than the sidecar-only restore above.
     noCharsDoc = await scribe.openDocument({ pdfFiles: [`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`], scribeFiles: [noCharsScribeData] });
-    const lineB = noCharsDoc.ocr.active[0].lines.find((line) => lineText(line).includes('horticulture'));
+    const lineB = noCharsDoc.getPage(0).lines.find((line) => lineText(line).includes('horticulture'));
     await noCharsDoc.deleteTextLines([lineB]);
     // The sidecar restore skips the PDF parse, so this deletion can only work off placements restored from the session block.
     noCharsDoc.deleteGraphics([{
@@ -1718,7 +1735,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(restoredDoc.truth.pages[1], 'the truth record changed on .scribe restore').toEqual(sessionObj.session.truth[1]);
     expect(restoredDoc.truth.pages[0], 'a page that is no truth gained a record on restore').toBe(null);
     const [settledId] = Object.keys(restoredDoc.truth.pages[1].words);
-    expect(restoredDoc.ocr.active[1].lines[0].words[0].id, 'the restored record no longer keys the word it describes').toBe(settledId);
+    expect(restoredDoc.getPage(1).lines[0].words[0].id, 'the restored record no longer keys the word it describes').toBe(settledId);
   });
 
   test('Assistant chat history survives the .scribe session round-trip', () => {
@@ -1734,7 +1751,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
   });
 
   test('Deleted line, replaced line, and their edit records survive the .scribe round-trip', () => {
-    const page = restoredDoc.ocr.active[0];
+    const page = restoredDoc.getPage(0);
     expect(page.lines.length, 'the deleted line returned to the restored model').toBe(43);
     expect(page.lines.some((line) => lineText(line).includes('As well as being the scientific name')),
       'the deleted line\'s text reappeared in the restored model').toBe(false);
@@ -1762,8 +1779,8 @@ describe('Check native text line deletion and replacement survive .scribe persis
   });
 
   test('Deleted line is gone from the exported PDF while its neighbors survive intact', () => {
-    expect(reDoc.ocr.active.length, 'page count changed on export with a pending deletion').toBe(3);
-    const page = reDoc.ocr.active[0];
+    expect(docPages(reDoc).length, 'page count changed on export with a pending deletion').toBe(3);
+    const page = reDoc.getPage(0);
     expect(page.lines.length, 'the deleted line still exports to the PDF').toBe(43);
     expect(page.lines.some((line) => lineText(line).includes('As well as being the scientific name')),
       'the deleted line\'s text is still in the exported PDF').toBe(false);
@@ -1771,7 +1788,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
       .toBe('Iris is a flowering plant genus of 310 accepted species [1] with');
     expect(lineText(page.lines[21]), 'the line below the deletion was damaged by the export')
       .toBe('widely used as a common name for all Iris species, as well as');
-    expect(lineText(reDoc.ocr.active[1].lines[0]), 'an untouched page was damaged by the export')
+    expect(lineText(reDoc.getPage(1).lines[0]), 'an untouched page was damaged by the export')
       .toBe('Hermodactyloides');
   });
 
@@ -1794,7 +1811,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
   });
 
   test('Replaced line exports its corrected text in place with intact neighbors', () => {
-    const page = reDoc.ocr.active[0];
+    const page = reDoc.getPage(0);
     expect(lineText(page.lines[30]), 'the replacement text does not extract in place from the exported PDF')
       .toBe('Several Iris varieties are used in the Iris flower data set');
     expect(page.lines.some((line) => lineText(line).includes('Three Iris')),
@@ -1809,7 +1826,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const recB = noCharsDoc.contentEdits.pages[0][noCharsDoc.contentEdits.pages[0].length - 1];
     expect(recB.type, 'a chars-less word must still be found in the page stream by the pen origins its restored entry carries').toBe('patchText');
     expect(recB.edits.length, 'the deletion must rewrite both operators that draw the line').toBe(2);
-    const page = noCharsReDoc.ocr.active[0];
+    const page = noCharsReDoc.getPage(0);
     expect(page.lines.some((line) => lineText(line).includes('popular garden flower')),
       'the line deleted after a chars-less .scribe restore is still in the exported PDF').toBe(false);
     const neighbor = page.lines.find((line) => lineText(line).startsWith('name for some species'));
@@ -1839,7 +1856,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const recA = noCharsDoc.contentEdits.pages[0][3];
     expect(recA.type, 'the saved deletion record was lost from the restored session').toBe('patchText');
     expect(recA.edits.length, 'the saved deletion record lost operator rewrites on the sidecar restore').toBe(12);
-    const page = noCharsReDoc.ocr.active[0];
+    const page = noCharsReDoc.getPage(0);
     expect(page.lines.some((line) => lineText(line).includes('known as junos')),
       'the saved deletion\'s line is still in the exported PDF').toBe(false);
   });
@@ -1864,7 +1881,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     editDoc = await scribe.openDocument([`${ASSETS_PATH}/online-articles-text-overlap.pdf`]);
     const find = (n, prefix) => {
-      const line = editDoc.ocr.active[n].lines.find((l) => lineText(l).startsWith(prefix));
+      const line = editDoc.getPage(n).lines.find((l) => lineText(l).startsWith(prefix));
       if (!line) throw new Error(`fixture line not found on page ${n}: ${prefix}`);
       return line;
     };
@@ -1916,21 +1933,21 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('A plain non-overlapping line deletes cleanly with intact neighbors', () => {
-    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    const lines = reDoc.getPage(1).lines.map(lineText);
     expect(lines.some((t) => t.includes('Bais Naftoli honored Baca')), 'the deleted plain line is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t === '50 years of service to the county community and for his longstanding friendship to'),
       'a neighbor of the deleted plain line was damaged').toBe(true);
   });
 
   test('Body text survives deleting the different-font menu printed across it', () => {
-    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    const lines = reDoc.getPage(1).lines.map(lineText);
     expect(lines.some((t) => t.includes('HOME NEWS OPINION HOLLYWOOD CULTURE BLOG')), 'the deleted menu line is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t === 'what fate may await him. The 74-year-old member of the Catholic community said'),
       'the body line under the deleted menu was co-deleted').toBe(true);
   });
 
   test('Body text survives deleting a same-font banner printed over it', () => {
-    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    const lines = reDoc.getPage(1).lines.map(lineText);
     expect(lines.some((t) => t.includes('SUPPORT THE JEWISH JOURNAL')), 'the deleted banner line is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t === 'Actress Zooey Deschanel converts to Judaism'),
       'the headline under the deleted same-font banner was co-deleted').toBe(true);
@@ -1939,7 +1956,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('Faux-bold ghost copies fold with the deleted text and merged real text survives', () => {
-    const lines = reDoc.ocr.active[6].lines.map(lineText);
+    const lines = reDoc.getPage(6).lines.map(lineText);
     expect(lines.some((t) => t.includes('SFGate Screen Name:')), 'the deleted line is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t.includes('SF ate Sc een Name:')), 'the faux-bold ghost copy was stranded by the deletion').toBe(false);
     expect(lines.some((t) => t.includes('Sign On to post')), 'the deleted comment-prompt line is still in the exported PDF').toBe(false);
@@ -1956,7 +1973,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     const overlapped = [[2345.8, 2375], [2375, 2404.2]].map(([left, right]) => p3.find((e) => Math.abs(e.left - left) <= 2
       && Math.abs(e.right - right) <= 2 && Math.abs(e.top - 433.3) <= 2 && Math.abs(e.bottom - 608.3) <= 2));
     expect(overlapped.filter(Boolean).length, 'an image the deleted one overlapped was co-deleted, so the strike used geometry instead of site identity').toBe(2);
-    expect(lineText(reDoc.ocr.active[3].lines[0]), 'the image-delete page\'s text was damaged by the export').toBe('2/25/08 1:46 PM');
+    expect(lineText(reDoc.getPage(3).lines[0]), 'the image-delete page\'s text was damaged by the export').toBe('2/25/08 1:46 PM');
   });
 
   test('Deleted path is gone from the exported PDF while fills sharing its edges survive', () => {
@@ -1971,7 +1988,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('Two page fonts drawing with the same substitute face share one embedded copy of its program in the exported PDF', () => {
-    const lines = reDoc.ocr.active[0].lines.map(lineText);
+    const lines = reDoc.getPage(0).lines.map(lineText);
     expect(lines.includes('TwitterX'), 'the replacement in the first font must re-import from the exported PDF').toBe(true);
     expect(lines.includes('Jewish communityX.'), 'the replacement in the second font must re-import from the exported PDF').toBe(true);
     const faces = /** @type {NonNullable<ReturnType<typeof reDoc.getResourceInventory>>} */ (reDoc.getResourceInventory()).fonts.filter((f) => f.baseName === 'NimbusSans-Regular');
@@ -1980,7 +1997,7 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('White text-shadow halo copies fold with the deleted sentence', () => {
-    const lines = reDoc.ocr.active[8].lines.map(lineText);
+    const lines = reDoc.getPage(8).lines.map(lineText);
     expect(lines.some((t) => t.includes('Justice made public')), 'the deleted sentence is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t.includes('antit ust lawsuit') || t.includes('antitrust lawsu it')),
       'a hidden white halo copy of the deleted sentence was stranded').toBe(false);
@@ -1993,16 +2010,16 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     // Deleting the sentence with white halo copies also drops the "t" of "it" from the export, a defect in deleting overlapping text layers.
     expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'a PDF export re-imported must diff to no changes against its source beyond the known glyph loss').toEqual(['replaced: it -> i']);
     expect([diff.changes[0].a.pageN, diff.changes[0].b.pageN], 'the known glyph loss is on page 9').toEqual([8, 8]);
-    expect(diff.pages.length, 'every page of the source pairs with a page of the re-import').toBe(editDoc.ocr.active.length);
+    expect(diff.pages.length, 'every page of the source pairs with a page of the re-import').toBe(docPages(editDoc).length);
     expect(diff.lines.length, 'every text line of the source pairs with its line in the re-import, the glyph-loss line on its other words').toBe(675);
     expect(diff.lines[0], 'the first pair is the first text line of page 1 in both documents').toEqual({ a: { pageN: 0, wordId: 'word_1_1_1' }, b: { pageN: 0, wordId: 'word_1_1_1' } });
     const self = await reDoc.diffText(reDoc);
-    expect([self.changes.length, self.pages.length], 'a document against itself has no changes and pairs every page').toEqual([0, reDoc.ocr.active.length]);
+    expect([self.changes.length, self.pages.length], 'a document against itself has no changes and pairs every page').toEqual([0, docPages(reDoc).length]);
     expect(self.lines.length, 'a document against itself pairs every text line').toBe(675);
   });
 
   test('A line replaced after the round trip is one replaced change with the old and new wording', async () => {
-    const line = reDoc.ocr.active[1].lines.find((l) => lineText(l) === '50 years of service to the county community and for his longstanding friendship to');
+    const line = reDoc.getPage(1).lines.find((l) => lineText(l) === '50 years of service to the county community and for his longstanding friendship to');
     await reDoc.replaceTextLine(line, '50 years of service to the county community and for his lasting friendship to');
     const diff = await editDoc.diffText(reDoc);
     expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'one replaced word is one replaced change').toEqual(['replaced: longstanding -> lasting', 'replaced: it -> i']);
@@ -2012,13 +2029,13 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
   });
 
   test('A line deleted after the round trip is one removed change', async () => {
-    const line = reDoc.ocr.active[2].lines[0];
+    const line = reDoc.getPage(2).lines[0];
     const text = lineText(line);
     await reDoc.deleteTextLines([line]);
     const diff = await editDoc.diffText(reDoc);
     expect(diff.changes.map((c) => `${c.kind}: ${c.a.text} -> ${c.b.text}`), 'the earlier replacement and the deleted line').toEqual(['replaced: longstanding -> lasting', `removed: ${text} -> `, 'replaced: it -> i']);
     expect(text, 'the deleted line is the first line of page 3').toBe('controversy, and you can’t just assume that everyone who uses force is doing it for');
-    expect(diff.changes[1].b.anchorId, 'the removed line\'s newer side anchors on the word that follows it').toBe(reDoc.ocr.active[2].lines[0].words[0].id);
+    expect(diff.changes[1].b.anchorId, 'the removed line\'s newer side anchors on the word that follows it').toBe(reDoc.getPage(2).lines[0].words[0].id);
     expect([diff.lines.length, diff.lines.some((l) => l.a.wordId === diff.changes[1].a.wordIds[0])], 'the deleted line drops out of the pairs').toEqual([674, false]);
   });
 });
@@ -2078,7 +2095,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     // Uncompressed streams let the splice assertions read the replacement's drawing state directly.
     scribe.ScribeDoc.defaults.humanReadablePDF = true;
     editDoc = await scribe.openDocument([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
-    const page = editDoc.ocr.active[0];
+    const page = editDoc.getPage(0);
     const line = page.lines[2];
     // 隔 already appears stroked at word 13 of the same line, so the redrawn glyph's weight can be compared against an untouched copy in the same render.
     await editDoc.replaceTextLine(line, line.words.map((w, i) => (i === 18 ? '隔' : w.text)).join(' '));
@@ -2105,12 +2122,12 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   });
 
   test('Replaced word extracts in place from the exported PDF with its faux-bold neighbors intact', () => {
-    expect(lineText(editReDoc.ocr.active[0].lines[2]), 'the replacement text does not extract in place from the exported PDF')
+    expect(lineText(editReDoc.getPage(0).lines[2]), 'the replacement text does not extract in place from the exported PDF')
       .toBe('嚴 重 特 殊 傳 染 性 肺 炎 指 定 處 所 隔 離 通 知 書 隔 提 審 利 利 告 知');
   });
 
   test('Replaced word re-imports as bold like the stroked text it replaced', () => {
-    const words = editReDoc.ocr.active[0].lines[2].words;
+    const words = editReDoc.getPage(0).lines[2].words;
     expect(words[18].style.bold, 'the folded first edit lost the faux-bold (render mode 2) weight on export').toBe(true);
     expect(words[21].style.bold, 'the second edit lost the faux-bold (render mode 2) weight on export').toBe(true);
     expect(words[13].style.bold, 'an untouched faux-bold word lost its weight on export').toBe(true);
@@ -2133,7 +2150,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   });
 
   test('Bold toggle on a plain word re-imports as bold and draws heavier than its plain twin', () => {
-    const line = editReDoc.ocr.active[0].lines[18];
+    const line = editReDoc.getPage(0).lines[18];
     expect(lineText(line), 'the bold-toggled line must keep its text in place')
       .toBe('public, please comply with the following regulations regarding designated residence isolation (home');
     expect(line.words[4].style.bold, 'a bold toggle on plain native text must survive export and re-import').toBe(true);
@@ -2146,7 +2163,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   });
 
   test('Word appended past the end of a line survives export and draws in the raster', () => {
-    expect(lineText(editReDoc.ocr.active[0].lines[4]), 'a pure-append replacement must extract in place from the exported PDF')
+    expect(lineText(editReDoc.getPage(0).lines[4]), 'a pure-append replacement must extract in place from the exported PDF')
       .toBe('and Right to Petition for Habeas Corpus Relief APPENDSENT');
     if (!isNode) return;
     // The appended word draws about 7550 ink px, and a dropped one draws near zero.
@@ -2155,7 +2172,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   });
 
   test('Italic toggle on a plain word re-imports as italic with the synthesized shear', async () => {
-    const line = editReDoc.ocr.active[0].lines[17];
+    const line = editReDoc.getPage(0).lines[17];
     expect(lineText(line), 'the italic-toggled line must keep its text in place')
       .toBe('the spread of the disease and protect the health and safety of your friends, family members and the');
     expect(line.words[4].style.italic, 'an italic toggle on plain native text must survive export and re-import').toBe(true);
@@ -2168,7 +2185,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   });
 
   test('A bold toggle retypes the word in the page\'s own bold font, and an italic toggle with no italic font on the page leaves every box where the page drew it', () => {
-    const boldWords = editDoc.ocr.active[0].lines[18].words;
+    const boldWords = editDoc.getPage(0).lines[18].words;
     const nt = editDoc.nativeText.pages[0];
     expect(boldWords.slice(3, 6).map((w) => nt[w.id].fontObjNum), 'the bold toggle must draw the word in the page\'s Times New Roman Bold, object 135, and leave its neighbors in object 132')
       .toEqual([132, 135, 132]);
@@ -2180,7 +2197,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
     expect(boldWords[5].bbox, 'the word after the bold-toggled word must move by the width the bold font adds').toEqual({
       left: 892, top: 1484, right: 1087, bottom: 1539,
     });
-    const italicWords = editDoc.ocr.active[0].lines[17].words;
+    const italicWords = editDoc.getPage(0).lines[17].words;
     expect(italicWords[4].bbox, 'an italic toggle must not move or resize the word box').toEqual({
       left: 614, top: 1400, right: 759, bottom: 1456,
     });
@@ -2192,7 +2209,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
   // Every native word carries the font box its PDF font declares, and consumers read a word's height and side bearings by that convention.
   // A word redrawn with a glyph-extent box shrinks the line box and misreports itself to every consumer, and a substitute face must not change the box either.
   test('Changed, appended and substitute-drawn words carry the font box the parser gives their neighbors', () => {
-    const line = editDoc.ocr.active[0].lines[2];
+    const line = editDoc.getPage(0).lines[2];
     expect(line.words[18].bbox, 'a changed word must keep the font box of its line').toEqual({
       left: 1634, top: 270, right: 1701, bottom: 336,
     });
@@ -2206,7 +2223,7 @@ describe('Check faux-bold (stroked) native text keeps its weight through edit an
       left: 433, top: 270, right: 2101, bottom: 336,
     });
     expect(line.baseline, 'a replacement must not move the line baseline').toEqual([0, -13]);
-    const appendLine = editDoc.ocr.active[0].lines[4];
+    const appendLine = editDoc.getPage(0).lines[4];
     const appended = appendLine.words[appendLine.words.length - 1];
     expect(appended.visualCoords, 'an appended word must carry its line\'s box convention').toBe(false);
     // The page kerns the last pair of the word before the append, so the appended word starts after that word's true end pen, not after its substitute-face width.
@@ -2249,14 +2266,14 @@ describe('Check a changed word in a non-embedded font takes the declared widths 
   beforeAll(async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     subDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
-    const line = subDoc.ocr.active[0].lines[0];
+    const line = subDoc.getPage(0).lines[0];
     await subDoc.replaceTextLine(line, line.words.map((w, i) => (i === 1 ? 'Status' : w.text)).join(' '));
     const subPdf = /** @type {ArrayBuffer} */ (await subDoc.exportData('pdf'));
     subReDoc = await scribe.openDocument({ pdfFiles: [subPdf] });
   });
 
   test('Changed glyphs advance by the declared widths and keep the line\'s spacing', () => {
-    const line = subDoc.ocr.active[0].lines[0];
+    const line = subDoc.getPage(0, { detail: true }).lines[0];
     expect(line.words.map((w) => w.text), 'the replaced line must keep its words').toEqual(['United', 'Status', 'and', 'Canada']);
     expect(line.words[1].bbox, 'the changed word box must end at its last declared width').toEqual({
       left: 193, top: 252, right: 275, bottom: 268,
@@ -2277,7 +2294,7 @@ describe('Check a changed word in a non-embedded font takes the declared widths 
   });
 
   test('The replaced line re-imports from the export as the same four words with the editor\'s boxes and pens', () => {
-    const line = subReDoc.ocr.active[0].lines[0];
+    const line = subReDoc.getPage(0, { detail: true }).lines[0];
     expect(line.words.map((w) => w.text), 'the changed word must re-import as one word').toEqual(['United', 'Status', 'and', 'Canada']);
     expect(line.words.map((w) => w.bbox), 'the re-imported words must sit where the editor left them').toEqual([
       {
@@ -2326,13 +2343,13 @@ describe('Check replacements on the rotated superscript page and the transcript 
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     rotDoc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
     for (const li of [17, 34]) {
-      const line = rotDoc.ocr.active[0].lines[li];
+      const line = rotDoc.getPage(0).lines[li];
       await rotDoc.replaceTextLine(line, rotateLongest(line));
     }
     const rotPdf = /** @type {ArrayBuffer} */ (await rotDoc.exportData('pdf'));
     rotReDoc = await scribe.openDocument({ pdfFiles: [rotPdf] });
     flaDoc = await scribe.openDocument([`${ASSETS_PATH}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
-    const flaLine = /** @type {OcrLine} */ (flaDoc.ocr.active[0].lines.find((line) => lineText(line) === 'A It was damage to the roof caused by different'));
+    const flaLine = /** @type {OcrLine} */ (flaDoc.getPage(0).lines.find((line) => lineText(line) === 'A It was damage to the roof caused by different'));
     await flaDoc.replaceTextLine(flaLine, rotateLongest(flaLine));
     const flaPdf = /** @type {ArrayBuffer} */ (await flaDoc.exportData('pdf'));
     flaReDoc = await scribe.openDocument({ pdfFiles: [flaPdf] });
@@ -2340,15 +2357,15 @@ describe('Check replacements on the rotated superscript page and the transcript 
 
   test('The rotated page\'s replaced lines re-import with their first letters', () => {
     expect(rotDoc.contentEdits.pages[0].map((r) => r.type), 'both replacements must patch the page stream').toEqual(['patchText', 'patchText']);
-    expect(lineText(rotReDoc.ocr.active[0].lines[17]), 'line 17 lost text on export after a replacement')
+    expect(lineText(rotReDoc.getPage(0).lines[17]), 'line 17 lost text on export after a replacement')
       .toBe('ributest 8.1% to the rise in the skill premium, and accounts for 54.8% of the increase');
-    expect(lineText(rotReDoc.ocr.active[0].lines[34]), 'line 34 lost text on export after a replacement')
+    expect(lineText(rotReDoc.getPage(0).lines[34]), 'line 34 lost text on export after a replacement')
       .toBe('American Meeting in June 2021, scheduled to be held at the niversitéU du Québec à Montréal and delivered');
   });
 
   test('The transcript page\'s replaced row re-imports on its own, apart from its margin line number and the row printed beside it', () => {
     expect(flaDoc.contentEdits.pages[0].map((r) => r.type), 'the replacement must patch the page stream').toEqual(['patchText']);
-    const reLines = flaReDoc.ocr.active[0].lines.map(lineText);
+    const reLines = flaReDoc.getPage(0).lines.map(lineText);
     expect(reLines.filter((t) => t.includes('ifferentd')), 'the replaced row must re-import as a line of its own').toEqual(['A It was damage to the roof caused by ifferentd']);
     expect(reLines.filter((t) => t === '15').length, 'the margin line numbers must stay lines of their own').toBe(2);
     expect(reLines.includes('15 A No. I just was saying that that\'s one of the'), 'the right-hand row printed beside the replaced one must stay its own line').toBe(true);
@@ -2498,9 +2515,9 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
     await noOverlayDoc.textReady;
     expect(noOverlayDoc.pageMetrics.map((pm) => pm.dims), 'the re-import returns to the source pixel frame instead of tripping the width cap')
       .toEqual([{ width: 2550, height: 3300 }, { width: 3300, height: 2550 }]);
-    expect(noOverlayDoc.ocr.active.map((page) => page.lines.reduce((n, line) => n + line.words.length, 0)),
+    expect(docPages(noOverlayDoc).map((page) => page.lines.reduce((n, line) => n + line.words.length, 0)),
       'the invisible text layer of a fresh PDF carries every word of both pages').toEqual([211, 208]);
-    const mayor = noOverlayDoc.ocr.active[1].lines.filter((line) => lineText(line) === 'Mayor');
+    const mayor = noOverlayDoc.getPage(1).lines.filter((line) => lineText(line) === 'Mayor');
     expect(mayor.length, 'the body line "Mayor" survives the point-frame round-trip as one line').toBe(1);
     expect(mayor[0].bbox, 'the text layer is scaled with the page, so the word returns to its source position').toEqual({
       left: 1501, top: 332, right: 1639, bottom: 406,
@@ -2520,7 +2537,7 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
   });
 
   test('OCR text over a /Rotate source page imports in the display frame', async () => {
-    const page = doc.ocr.active[1];
+    const page = doc.getPage(1);
 
     const body = page.lines.filter((line) => lineText(line) === 'Mayor');
     expect(body.length, 'the body line "Mayor" imports as one line over a /Rotate page').toBe(1);
@@ -2532,7 +2549,7 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
   });
 
   test('Invisible text layer is written at display orientation on a /Rotate page', async () => {
-    const page = reDoc.ocr.active[0];
+    const page = reDoc.getPage(0);
     expect(page !== undefined, 'the exported page re-imports with a readable text layer').toBe(true);
 
     const body = page.lines.filter((line) => lineText(line) === 'Mayor');

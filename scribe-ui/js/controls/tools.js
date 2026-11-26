@@ -2999,24 +2999,20 @@ export function filesNamedForPdf(pdfName, names) {
 /**
  * Open a `ScribeDoc` from any supported input.
  * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-`File` `Blob`) are treated as PDFs.
- * `File` and path strings are sorted by extension.
  * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
  * @param {Object} [options]
+ * @param {boolean} [options.deferText] - Resolve as soon as the document is renderable, leaving text extraction running behind `doc.textReady`.
+ * @param {Promise<unknown>} [options.textStart] - With `deferText`, start text extraction once this promise settles.
+ * @param {boolean} [options.skipFontOpt]
+ * @param {number} [options.pdfWorkerN]
  * @param {File[]} [options.ocrFiles]
  * @param {File[]} [options.scribeFiles]
- * @param {(err: Error & {ocrPages?: number, pageCount?: number}) => void} [options.onOcrFileRejected] - Called with the error when an import that includes OCR files fails.
- *    The document then opens without them.
- * @param {boolean} [options.deferText] - Resolve as soon as the document is renderable, leaving text extraction running behind `doc.textReady` (see `importFiles`).
- *    For open-and-display paths only.
- *    Callers that read the document's text right after opening must leave this unset.
- * @param {Promise<unknown>} [options.textStart] - With `deferText`, extraction begins once this promise settles, so the first screen can render first.
- * @param {boolean} [options.skipFontOpt] - Skip font optimization.
- *    Safe only for callers that read text and never render styled overlays.
- * @param {number} [options.pdfWorkerN]
+ * @param {(err: Error & {ocrPages?: number, pageCount?: number}) => void} [options.onOcrFileRejected] - Called when importing with `ocrFiles` fails, before retrying without them.
+ * @param {() => void} [options.onProgress]
  * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
  */
 export async function openDocumentFromFile(file, {
-  deferText = false, textStart = undefined, skipFontOpt = false, pdfWorkerN = undefined, ocrFiles = [], scribeFiles = [], onOcrFileRejected = undefined,
+  deferText = false, textStart = undefined, skipFontOpt = false, pdfWorkerN = undefined, ocrFiles = [], scribeFiles = [], onOcrFileRejected = undefined, onProgress = undefined,
 } = {}) {
   /** @type {Parameters<typeof scribeLib.openDocument>[0]} */
   let input;
@@ -3044,14 +3040,14 @@ export async function openDocumentFromFile(file, {
 
   let doc;
   try {
-    doc = await scribeLib.openDocument(input, (deferText || skipFontOpt || pdfWorkerN) ? {
-      deferText, textStart, skipFontOpt, pdfWorkerN,
+    doc = await scribeLib.openDocument(input, (deferText || skipFontOpt || pdfWorkerN || onProgress) ? {
+      deferText, textStart, skipFontOpt, pdfWorkerN, onProgress,
     } : undefined);
   } catch (err) {
     if (!ocrFiles.length) throw err;
     onOcrFileRejected?.(err instanceof Error ? err : new Error(String(err)));
     return openDocumentFromFile(file, {
-      deferText, textStart, skipFontOpt, pdfWorkerN, scribeFiles,
+      deferText, textStart, skipFontOpt, pdfWorkerN, scribeFiles, onProgress,
     });
   }
 
@@ -3067,10 +3063,11 @@ export async function openDocumentFromFile(file, {
  */
 export function fallBackToPdfText(doc) {
   doc.textReady = doc.textReady.then((res) => {
-    if (doc.ocr.pdf && !doc.ocr.active.some(Boolean)) {
-      doc.ocr.active = doc.ocr.pdf;
-      for (let i = 0; i < doc.ocr.pdf.length; i++) {
-        if (doc.ocr.pdf[i] && doc.pageMetrics[i]) doc.pageMetrics[i].angle = doc.ocr.pdf[i].angle;
+    if (doc.layers.includes('pdf') && !doc.pageMetrics.some((pm, i) => doc.pageStore.hasPage(i, 'active'))) {
+      doc.activeLayer = 'pdf';
+      for (let i = 0; i < doc.pageStore.slotCount(); i++) {
+        const page = doc.pageStore.readOnlyPage(i);
+        if (page && doc.pageMetrics[i]) doc.pageMetrics[i].angle = page.angle;
       }
     }
     return res;
@@ -3170,14 +3167,14 @@ export function refreshEditedPages(scribe, pages) {
 }
 
 /**
- * Load a provisional document.
+ * Wait for saved text to finish loading on a provisionally opened document.
+ * Resolves immediately for any other document, even during a `deferText` import.
  * @param {?Object} doc
- * @returns {Promise<boolean>} Whether the document is loaded, which is false when its load failed or it was closed first.
+ * @returns {Promise<boolean>} False when the document's text could not be loaded.
  */
-export const hydrateIfProvisional = async (doc) => {
-  // A loaded document passes at once, without waiting on a deferred text import the way `ensureHydrated` does.
-  if (!doc || doc.hydrationState === 'hydrated') return true;
-  return doc.ensureHydrated();
+export const whenTextArrived = async (doc) => {
+  if (doc && doc._textArriving) await doc.textReady;
+  return !doc || !doc._loadFailed;
 };
 
 /**
@@ -3214,7 +3211,7 @@ export function createEditTextTool(initialViewer) {
   const lineEligible = (line) => nativeLineEligible(scribe.doc, line);
 
   toolbarElem.addEventListener('click', async () => {
-    if (!editMode && !(await hydrateIfProvisional(scribe.doc))) return;
+    if (!editMode && !(await whenTextArrived(scribe.doc))) return;
     editMode = !editMode;
     scribe._editTextActive = editMode;
     toolbarElem.classList.toggle('active', editMode);
@@ -3346,7 +3343,7 @@ export function createEditTextTool(initialViewer) {
     // Edits and undo replace line objects, and a switch replaces the document, so a selection only ever keeps lines the document on screen has.
     const validateSelection = () => {
       for (const line of [...selected]) {
-        if (!line.page || !line.page.lines.includes(line) || scribe.doc?.ocr?.active?.[line.page.n] !== line.page) selected.delete(line);
+        if (!line.page || !line.page.lines.includes(line) || scribe.doc?.pageStore.readOnlyPage(line.page.n) !== line.page) selected.delete(line);
       }
     };
     const renderFrames = () => {
@@ -3664,7 +3661,7 @@ export function createEditTextTool(initialViewer) {
       const ids = new Set();
       let name = null;
       for (const line of lines) {
-        const nt = scribe.doc.nativeText.pages[line.page.n] || {};
+        const nt = scribe.doc.pageStore.extras(line.page.n, false)?.nativeText || {};
         for (const w of line.words) {
           const face = faceIdOf(w.style.font || '');
           const objNum = face ? null : (nt[w.id]?.fontObjNum ?? null);
@@ -3697,8 +3694,8 @@ export function createEditTextTool(initialViewer) {
       /** @type {Map<number, { lines: Set<import('../../../js/objects/ocrObjects.js').OcrLine>, n: number }>} */
       const used = new Map();
       for (const n of pages) {
-        const page = scribe.doc.ocr.active?.[n];
-        const nt = scribe.doc.nativeText.pages[n] || {};
+        const page = scribe.doc.pageStore.readOnlyPage(n);
+        const nt = scribe.doc.pageStore.extras(n, false)?.nativeText || {};
         if (!page) continue;
         for (const line of page.lines) {
           for (const w of line.words) {
@@ -4963,7 +4960,7 @@ export function createGraphicsEditTool(initialViewer) {
   };
 
   toolbarElem.addEventListener('click', async () => {
-    if (!graphicsMode && !(await hydrateIfProvisional(scribe.doc))) return;
+    if (!graphicsMode && !(await whenTextArrived(scribe.doc))) return;
     graphicsMode = !graphicsMode;
     scribe._graphicsEditActive = graphicsMode;
     toolbarElem.classList.toggle('active', graphicsMode);
@@ -5284,8 +5281,6 @@ export function createFillSignTool(app) {
         app.pdfViewerElem.appendChild(palette.elem);
       }
       palette.show();
-      // The palette's offered spots come from the document's text and shapes, which a provisional document has not loaded.
-      hydrateIfProvisional(app._activeViewer().doc);
     } else if (palette) {
       palette.hide();
     }
@@ -5336,8 +5331,6 @@ export function createEditPagesTool(app) {
     // The open animation reads the panel width when it starts, so this order slides the rail in at the mode's final width.
     app._activeThumbnails()?.setPageEditMode(active);
     if (active) app._showActiveSidebar('thumbnails');
-    // A page edit waits for a provisional document to load, so the load starts here, ahead of the first edit.
-    if (active) hydrateIfProvisional(app._activeViewer().doc);
   };
   toolbarElem.addEventListener('click', () => {
     if (toolbarElem.classList.contains('disabled')) return;
@@ -5583,8 +5576,7 @@ export function createExtractTablesTool(app) {
       v._tpSel = null;
       if (v.onLayoutTablesEdited === paneEdited) v.onLayoutTablesEdited = null;
     };
-    // A provisional document holds no tables until it has loaded.
-    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle || doc.hydrationState !== 'hydrated';
+    const retarget = (doc) => doc.layoutDataTables.pages.some((p) => p?.tables?.length > 0) || !!doc._textReadySettle;
     const onClose = () => {
       if (view !== 'beside') return;
       view = 'page';
@@ -5669,7 +5661,7 @@ export function createExtractTablesTool(app) {
   };
   toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
-    if (!active && !(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    if (!active && !(await whenTextArrived(app._activeViewer().doc))) return;
     setActive(!active);
   });
 
@@ -5681,8 +5673,7 @@ export function createExtractTablesTool(app) {
     const sv = viewerOf();
     if (view === 'preview') {
       const sheet = resolveActiveSheet(sv);
-      // A document that is still extracting, or has not loaded, may yet hold tables, so only a settled tableless one drops the preview.
-      if (!sheet && !sv.doc._textReadySettle && sv.doc.hydrationState === 'hydrated') setView('page');
+      if (!sheet && !sv.doc._textReadySettle) setView('page');
       else if (sheet && sheet.n !== sv.state.cp.n) sv.displayPage(sheet.n, true, true);
     }
     app._automatePanel?.openTablesWorkspace();
@@ -5691,7 +5682,7 @@ export function createExtractTablesTool(app) {
   // The catalog row's entry point, which unlike the toolbar button never toggles the mode off.
   const open = async () => {
     if (active) { app._automatePanel?.openTablesWorkspace(); return; }
-    if (!(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    if (!(await whenTextArrived(app._activeViewer().doc))) return;
     setActive(true);
   };
 
@@ -5760,7 +5751,7 @@ export function createInspectDocumentTool(app) {
     const doc = app._activeViewer().doc;
     const page = kw?.word?.line?.page;
     if (!doc || !page || page.textSource !== 'pdf') return false;
-    return doc.nativeText.pages[page.n]?.[kw.word.id]?.fontObjNum != null;
+    return doc.pageStore.extras(page.n, false)?.nativeText?.[kw.word.id]?.fontObjNum != null;
   };
   /** Mount `el` over `word` in its page's text group, `pad` px out from the drawn box; off-window pages get nothing. */
   const placeBox = (el, word, pad) => {
@@ -5903,7 +5894,7 @@ export function createInspectDocumentTool(app) {
   };
   toolbarElem.addEventListener('click', async () => {
     if (toolbarElem.classList.contains('disabled')) return;
-    if (!active && !(await hydrateIfProvisional(app._activeViewer().doc))) return;
+    if (!active && !(await whenTextArrived(app._activeViewer().doc))) return;
     setActive(!active);
   });
 
@@ -6002,15 +5993,9 @@ export function createProofreadTextTool(app) {
     if (toolbarElem.classList.contains('disabled')) return;
     const doc = app._activeViewer().doc;
     // Awaiting before the toggle would let the exclusivity click see this button inactive and leave the other mode on.
-    if (doc && doc.hydrationState !== 'hydrated') {
-      hydrateIfProvisional(doc).then(async (ok) => {
-        if (!ok) return;
-        // Once its text is in, the loaded document decides whether there is anything to proofread.
-        // Activating on the unloaded document's answer could leave the mode on with its row disabled.
-        const real = app._activeViewer().doc;
-        if (!real || real.hydrationState !== 'hydrated') return;
-        if (real.textReady) await real.textReady.catch(() => {});
-        if (app._activeViewer().doc !== real) return;
+    if (doc && doc._textArriving) {
+      whenTextArrived(doc).then((ok) => {
+        if (!ok || app._activeViewer().doc !== doc) return;
         app._syncDocGatedControls?.();
         if (toolbarElem.classList.contains('disabled')) return;
         // The exclusivity click saw this button inactive, so the mode that was on is closed here before this one opens.
@@ -6049,13 +6034,11 @@ export function createCompareVersionsTool(app) {
   toolbarElem.addEventListener('click', () => {
     if (active) { setActive(false); return; }
     if (toolbarElem.classList.contains('disabled')) return;
-    const provisional = app._compareDocs().filter((doc) => doc && doc.hydrationState !== 'hydrated');
-    if (provisional.length) {
-      Promise.all(provisional.map((doc) => hydrateIfProvisional(doc))).then(async (oks) => {
+    const arriving = app._compareDocs().filter((doc) => doc && doc._textArriving);
+    if (arriving.length) {
+      Promise.all(arriving.map((doc) => whenTextArrived(doc))).then((oks) => {
         if (oks.some((ok) => !ok)) return;
-        const docs = app._compareDocs();
-        if (docs.some((doc) => !doc || doc.hydrationState !== 'hydrated')) return;
-        await Promise.all(docs.map((doc) => (doc.textReady ? doc.textReady.catch(() => {}) : null)));
+        if (app._compareDocs().some((doc) => !doc || doc._textArriving)) return;
         app._syncDocGatedControls?.();
         if (toolbarElem.classList.contains('disabled')) return;
         // The exclusivity click saw this button inactive, so the mode that was on is closed here before this one opens.

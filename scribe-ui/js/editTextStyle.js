@@ -71,8 +71,8 @@ export const docFontDisplayName = (baseName) => baseName.replace(/^[A-Z]{6}\+/, 
  */
 export const pageHasSiblingWithout = (scribe, n, fontObjNum, prop) => {
   if (fontObjNum === null || fontObjNum === undefined) return false;
-  const page = scribe.doc.ocr.active?.[n];
-  const nt = scribe.doc.nativeText.pages[n] || {};
+  const page = scribe.doc.pageStore.readOnlyPage(n);
+  const nt = scribe.doc.pageStore.extras(n, false)?.nativeText || {};
   if (!page) return false;
   const ownEntry = scribe.doc.images.getEditFontSync(n, fontObjNum);
   if (ownEntry === undefined) return null;
@@ -101,8 +101,8 @@ export const pageHasSiblingWithout = (scribe, n, fontObjNum, prop) => {
  * @param {number} n
  */
 export const loadPageFonts = (scribe, n) => {
-  const page = scribe.doc.ocr.active?.[n];
-  const nt = scribe.doc.nativeText.pages[n] || {};
+  const page = scribe.doc.pageStore.readOnlyPage(n);
+  const nt = scribe.doc.pageStore.extras(n, false)?.nativeText || {};
   const seen = new Set();
   /** @type {Array<Promise<*>>} */
   const loads = [];
@@ -198,7 +198,7 @@ function hsvToHex(h, s, v) {
 export function docInkGroup(scribe, applied) {
   /** @type {Map<string, number>} */
   const counts = new Map();
-  for (const page of scribe.doc?.ocr?.active || []) {
+  for (const page of scribe.doc?.pageStore.pageList() || []) {
     if (!page) continue;
     for (const line of page.lines) {
       for (const w of line.words) {

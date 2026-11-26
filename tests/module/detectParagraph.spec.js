@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -15,7 +16,7 @@ scribe.opt.langPath = LANG_PATH;
 describe('Check paragraph detection with academic article.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
-    doc.ocr.active.forEach((page, index) => {
+    docPages(doc).forEach((page, index) => {
       const angle = doc.pageMetrics[index].angle || 0;
       scribe.utils.assignParagraphs(page, angle);
     });
@@ -23,9 +24,9 @@ describe('Check paragraph detection with academic article.', () => {
 
   test('Paragraph detection functions with single-column layout with header and footnotes', async () => {
     // The test document contains a header, 3 body paragraphs, and 3 footnotes.
-    expect(doc.ocr.active[0].pars.length).toBe(7);
-    expect(scribe.utils.ocr.getParText(doc.ocr.active[0].pars[0])).toBe('WHISTLEBLOWERS AND ENFORCEMENT ACTIONS 125');
-    expect(scribe.utils.ocr.getParText(doc.ocr.active[0].pars[6])).toBe('3 The respondent is the party (either a firm or an individual) targeted by the SEC/DOJ.');
+    expect(doc.getPage(0).pars.length).toBe(7);
+    expect(scribe.utils.ocr.getParText(doc.getPage(0).pars[0])).toBe('WHISTLEBLOWERS AND ENFORCEMENT ACTIONS 125');
+    expect(scribe.utils.ocr.getParText(doc.getPage(0).pars[6])).toBe('3 The respondent is the party (either a firm or an individual) targeted by the SEC/DOJ.');
   });
 
   afterAll(async () => {
@@ -36,7 +37,7 @@ describe('Check paragraph detection with academic article.', () => {
 describe('Check paragraph detection with complaint.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.pdf`]);
-    doc.ocr.active.forEach((page, index) => {
+    docPages(doc).forEach((page, index) => {
       const angle = doc.pageMetrics[index].angle || 0;
       scribe.utils.assignParagraphs(page, angle);
     });
@@ -44,13 +45,13 @@ describe('Check paragraph detection with complaint.', () => {
 
   test('Paragraph detection functions with single-column layout with header and footnotes', async () => {
     // The test document contains a header, 3 body paragraphs, and 3 footnotes.
-    expect(doc.ocr.active[0].pars.length).toBe(7);
-    expect(scribe.utils.ocr.getLineText(doc.ocr.active[0].pars[2].lines[3])).toBe('partially offset by lower sales volumes of ($0.1 billion).” They further represented:');
-    expect(scribe.utils.ocr.getLineText(doc.ocr.active[0].pars[3].lines[0])).toBe('Nutrition operating profit increased 20%. Human Nutrition results were higher');
+    expect(doc.getPage(0).pars.length).toBe(7);
+    expect(scribe.utils.ocr.getLineText(doc.getPage(0).pars[2].lines[3])).toBe('partially offset by lower sales volumes of ($0.1 billion).” They further represented:');
+    expect(scribe.utils.ocr.getLineText(doc.getPage(0).pars[3].lines[0])).toBe('Nutrition operating profit increased 20%. Human Nutrition results were higher');
   });
 
   test('Paragraph detection creates new paragraph when switching to center alignment', async () => {
-    expect(scribe.utils.ocr.getParText(doc.ocr.active[1].pars[2])).toBe('APPLICABILITY OF PRESUMPTION OF RELIANCE: FRAUD-ON-THE-MARKET DOCTRINE');
+    expect(scribe.utils.ocr.getParText(doc.getPage(1).pars[2])).toBe('APPLICABILITY OF PRESUMPTION OF RELIANCE: FRAUD-ON-THE-MARKET DOCTRINE');
   });
 
   afterAll(async () => {
@@ -61,7 +62,7 @@ describe('Check paragraph detection with complaint.', () => {
 describe('Check paragraph detection with document with significant line sepacing.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_2.hocr`]);
-    doc.ocr.active.forEach((page, index) => {
+    docPages(doc).forEach((page, index) => {
       const angle = doc.pageMetrics[index].angle || 0;
       scribe.utils.assignParagraphs(page, angle);
     });
@@ -69,8 +70,8 @@ describe('Check paragraph detection with document with significant line sepacing
 
   test('Paragraph detection creates the correct number of paragraphs', async () => {
     // The test document contains a header, 3 body paragraphs, and 3 footnotes.
-    expect(doc.ocr.active[0].pars.length).toBe(5);
-    const par2 = doc.ocr.active[0].pars[2];
+    expect(doc.getPage(0).pars.length).toBe(5);
+    const par2 = doc.getPage(0).pars[2];
     const firstWord = par2.lines[0].words[0];
     const lastWord = par2.lines[4].words[par2.lines[4].words.length - 1];
     expect(firstWord.text).toBe('8.');
@@ -86,13 +87,13 @@ describe('Check paragraph detection with numbered list.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/October2020CBX_Questions.pdf`]);
     // Page 13 (0-indexed as 12) contains 8 numbered items
-    const page = doc.ocr.active[12];
+    const page = doc.getPage(12);
     const angle = doc.pageMetrics[12].angle || 0;
     scribe.utils.assignParagraphs(page, angle);
   });
 
   test('Each numbered list item should be a separate paragraph', async () => {
-    const page = doc.ocr.active[12];
+    const page = doc.getPage(12);
     // Page should have 9 paragraphs: 1 title + 8 numbered items
     expect(page.pars.length).toBe(9);
 
@@ -128,13 +129,13 @@ describe('Check paragraph detection with footnotes.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`]);
     // Page 9 (0-indexed as 8) contains 3 footnotes starting with superscript numbers
-    const page = doc.ocr.active[8];
+    const page = doc.getPage(8);
     const angle = doc.pageMetrics[8].angle || 0;
     scribe.utils.assignParagraphs(page, angle);
   });
 
   test('Each footnote starting with superscript should be a separate paragraph', async () => {
-    const page = doc.ocr.active[8];
+    const page = doc.getPage(8);
 
     // Find the footnote paragraphs (last 3 paragraphs should be footnotes 7, 8, 9)
     const footnoteParCount = page.pars.filter((par) => {
@@ -154,11 +155,11 @@ describe('Check paragraph detection with footnotes.', () => {
 
   test('The printed page number is read into every line of its page at the document\'s convention', async () => {
     // The report numbers its pages 1-22 in the foot. The cover carries no number, and the appended CV restarts at 2, so 2-8 name two pages each and are not read.
-    expect(doc.ocr.active[0].lines[0].pageNum, 'the unnumbered cover page gets no page number').toBe(null);
-    expect(doc.ocr.active[2].lines[0].pageNum, 'the first numbered page reads its printed 1').toBe('1');
-    expect(doc.ocr.active[10].lines[0].pageNum, 'a page inside the report reads its printed number').toBe('9');
-    expect(doc.ocr.active[23].lines[0].pageNum, 'the last report page reads its printed 22').toBe('22');
-    const folios = doc.ocr.active[10].lines.filter((line) => line.par && line.par.type === 'pagenum');
+    expect(doc.getPage(0).lines[0].pageNum, 'the unnumbered cover page gets no page number').toBe(null);
+    expect(doc.getPage(2).lines[0].pageNum, 'the first numbered page reads its printed 1').toBe('1');
+    expect(doc.getPage(10).lines[0].pageNum, 'a page inside the report reads its printed number').toBe('9');
+    expect(doc.getPage(23).lines[0].pageNum, 'the last report page reads its printed 22').toBe('22');
+    const folios = doc.getPage(10).lines.filter((line) => line.par && line.par.type === 'pagenum');
     expect(folios.map((line) => line.words[0].text), 'only the folio line is typed pagenum, the role export drops as furniture').toEqual(['9']);
   });
 
@@ -201,13 +202,13 @@ describe('Check paragraph detection with footnotes.', () => {
 describe('Check paragraph detection with hanging-indent CV entries.', () => {
   beforeAll(async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`]);
-    const page = doc.ocr.active[31];
+    const page = doc.getPage(31);
     const angle = doc.pageMetrics[31].angle || 0;
     scribe.utils.assignParagraphs(page, angle);
   });
 
   test('CV entry whose company name wraps to a second line is kept in one paragraph', async () => {
-    const page = doc.ocr.active[31];
+    const page = doc.getPage(31);
     const matches = page.pars.filter((p) => scribe.utils.ocr.getParText(p).startsWith('Primen'));
     expect(matches.length).toBe(1);
     // eslint-disable-next-line max-len

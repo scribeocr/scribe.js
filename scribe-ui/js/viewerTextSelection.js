@@ -120,6 +120,14 @@ const NO_ADJ = { x: 0, y: 0 };
 const cmpPoint = (a, b) => (a.n !== b.n ? a.n - b.n : a.off - b.off);
 
 /**
+ * Return the words in `line` with non-empty text and finite bounding boxes.
+ * @param {import('../../js/objects/ocrObjects.js').OcrLine} line
+ * @returns {Array<import('../../js/objects/ocrObjects.js').OcrWord>}
+ */
+const caretWords = (line) => line.words.filter((w) => w.text && !!w.bbox && Number.isFinite(w.bbox.left) && Number.isFinite(w.bbox.right)
+  && Number.isFinite(w.bbox.top) && Number.isFinite(w.bbox.bottom));
+
+/**
  * A page's text as a linear character sequence, plus the geometry to map between offsets in that sequence and points on the page.
  *
  * Words in a line join with a single space and lines join with a newline, so every inter-word gap and line break owns exactly one offset,
@@ -149,15 +157,11 @@ export class PageTextIndex {
 
     const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
-    /** @param {{left: number, top: number, right: number, bottom: number}} b */
-    const finiteBox = (b) => !!b && Number.isFinite(b.left) && Number.isFinite(b.right)
-      && Number.isFinite(b.top) && Number.isFinite(b.bottom);
     /** @param {{x: number, y: number}} adj */
     const finiteAdj = (adj) => ((Number.isFinite(adj.x) && Number.isFinite(adj.y)) ? adj : NO_ADJ);
 
     for (const line of page.lines) {
-      // A word with no finite box (OCR junk carrying null coordinates) cannot host a caret, so it is excluded from the index the way empty-text words are.
-      const words = line.words.filter((w) => w.text && finiteBox(w.bbox));
+      const words = caretWords(line);
       if (words.length === 0) continue;
 
       // De-skew adjustments derive from the line/word geometry, so junk boxes elsewhere on the line can make them NaN.
@@ -685,6 +689,11 @@ export class TextSelection {
 
     /** @type {Array<?PageTextIndex>} Per-page, built on demand, dropped when the page's text changes. */
     this._index = [];
+    /**
+     * Pages indexed while unrendered, ordered oldest first.
+     * @type {Array<number>}
+     */
+    this._undrawnIndexed = [];
 
     /**
      * A linear selection is an interval of reading order.
@@ -773,7 +782,7 @@ export class TextSelection {
    * @returns {?PageTextIndex}
    */
   index(n) {
-    const page = this.viewer.doc.ocr.active?.[n];
+    const page = this.viewer.doc.pageStore.readOnlyPage(n);
     const cached = this._index[n];
     if (cached && cached.page === page) return cached;
     const metrics = this.viewer.doc.pageMetrics?.[n];
@@ -781,6 +790,15 @@ export class TextSelection {
     const built = new PageTextIndex(page, metrics.angle || 0, metrics.dims, this.viewer.doc.fonts);
     if (built.lines.length === 0) return null;
     this._index[n] = built;
+    const drawn = this.viewer.textGroupsRenderIndices;
+    if (!drawn.includes(n)) {
+      this._undrawnIndexed = this._undrawnIndexed.filter((k) => k !== n);
+      this._undrawnIndexed.push(n);
+      if (this._undrawnIndexed.length > 3) {
+        const dropped = /** @type {number} */ (this._undrawnIndexed.shift());
+        if (!drawn.includes(dropped)) this._index[dropped] = null;
+      }
+    }
     return built;
   }
 
@@ -792,6 +810,7 @@ export class TextSelection {
 
   invalidateAll() {
     this._index.length = 0;
+    this._undrawnIndexed = [];
     this._rectPool.length = 0;
     this._markPool.length = 0;
     this._handleGroups.length = 0;
@@ -871,7 +890,7 @@ export class TextSelection {
 
   /** Select every page of the document, in reading order. */
   selectAll() {
-    const pageCount = this.viewer.doc.ocr.active.length;
+    const pageCount = this.viewer.doc.pageStore.slotCount();
     let first = 0;
     while (first < pageCount && !this.index(first)) first++;
     let last = pageCount - 1;
@@ -977,6 +996,12 @@ export class TextSelection {
     const { start, end } = this.range;
     const parts = [];
     for (let n = start.n; n <= end.n; n++) {
+      if (n > start.n && n < end.n && !this._index[n]) {
+        const page = this.viewer.doc.pageStore.readOnlyPage(n);
+        const text = page ? page.lines.map(caretWords).filter((words) => words.length > 0).map((words) => words.map((w) => w.text).join(' ')).join('\n') : '';
+        if (text) parts.push(text);
+        continue;
+      }
       const idx = this.index(n);
       if (!idx) continue;
       const a = n === start.n ? start.off : 0;
@@ -1688,8 +1713,10 @@ export class TextSelection {
     let pageRects = null;
 
     if (!this.isEmpty()) {
-      const idx = this.index(n);
       const range = /** @type {NonNullable<typeof this.range>} */ (this.range);
+      const reached = range.kind === 'box' ? range.n === n : n >= range.start.n && n <= range.end.n;
+      const retain = /** @type {typeof import('../viewer.js').ScribeViewer} */ (this.viewer.constructor).textRetainPages;
+      const idx = reached && Math.abs(n - this.viewer.state.cp.n) <= retain ? this.index(n) : null;
       if (idx) {
         /** @type {Array<SelRect>} */
         let rects = [];
@@ -1761,6 +1788,7 @@ export class TextSelection {
     this._rectPool[n] = {};
     this._markPool[n] = null;
     this._handleGroups[n] = null;
+    this._index[n] = null;
   }
 
   /**
@@ -1776,7 +1804,11 @@ export class TextSelection {
     if (words && words.length) {
       // Which match each word belongs to, so adjacent words of two different matches keep their own rectangles.
       const matchOf = new Map();
-      this.viewer._searchState.matchList.forEach((m, i) => { for (const id of m.wordIds) matchOf.set(id, i); });
+      this.viewer._searchState.matchList.forEach((m, i) => {
+        if (m.pageN === n) {
+          for (const id of m.wordIds) matchOf.set(id, i);
+        }
+      });
       const air = 1 / (this.viewer.zoomLevel || 1);
       /**
        * @type {?{key: string, line: import('../../js/objects/ocrObjects.js').OcrLine, member: number|string, kind: 'active'|'match'|'cited'|'diff-removed'|'diff-added',

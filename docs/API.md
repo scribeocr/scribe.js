@@ -23,6 +23,7 @@ object, and a [`utils`](#scribeutils) namespace.
 - [Other top-level exports](#other-top-level-exports)
 - [ScribeDoc](#scribedoc)
   - [Properties](#properties)
+  - [Text](#text-methods)
   - [Import](#import-methods)
   - [Recognition](#recognition-methods)
   - [Export](#export-methods)
@@ -104,6 +105,7 @@ list.
 | Property | Type | Default | Description |
 | --- | --- | --- | --- |
 | `workerN` | `?number` | `null` | Worker count. `null` means up to 6 (browser) / 8 (Node). |
+| `pageBudget` | `number` | `300000` | Maximum words of decoded page text kept in memory across open documents. Least-recently-read pages above the budget are stored as compact records until read again. |
 | `langPath` | `?string` | `null` | Directory containing `<lang>.traineddata.gz`. `null` means fetch from the jsdelivr CDN. |
 | `usePdfSharedBuffer` | `boolean` | `false` | Share the loaded PDF across PDF workers via `SharedArrayBuffer` instead of cloning per worker. Requires a supported environment (Chrome with COOP/COEP, Node with shared memory enabled). |
 | `progressHandler` | `(msg) => void` | no-op | Called with progress messages during recognition and export. |
@@ -161,7 +163,9 @@ scribe.ScribeDoc()` followed by [`doc.importFiles`](#docimportfilesfiles).
 | --- | --- | --- |
 | `id` | `number` | Process-unique id, used to namespace this document's fonts. |
 | `inputData` | `InputData` | Input modes and file metadata (see [Data model](#inputdata)). |
-| `ocr` | `Object<string, Array<OcrPage>>` | OCR versions by name; `ocr.active` is used for export. |
+| `pageCount` | `number` | Number of pages in the document. |
+| `layers` | `Array<string>` | Names of the document's text layers, in the order they were added. |
+| `activeLayer` | `?string` | Name of the layer that `getPage` and exports read by default, `null` when no layer is active. Assigning a name not in `layers` throws. |
 | `ocrRaw` | `Object<string, Array<string>>` | Raw OCR source data (kept when `ScribeDoc.defaults.keepRawData`). |
 | `pageMetrics` | `Array<PageMetrics>` | Per-page dimensions and rotation. |
 | `layoutRegions` | `{ pages: Array<LayoutPage> }` | User-drawn layout regions, one `boxes` dict per page. A region's `type` is `'order'` (reading-order priority), `'exclude'` (drop the text under it), or `'image'` (render the rectangle as an image cropped from the page raster). |
@@ -170,6 +174,37 @@ scribe.ScribeDoc()` followed by [`doc.importFiles`](#docimportfilesfiles).
 | `fonts` | `DocFonts` | Document-scoped font container. |
 | `images` | `ImageStore` | Document-scoped image cache. |
 | `debug` | `{ debugImg: {...} }` | Debug visualization images. |
+
+### Text methods
+
+#### `doc.getPage(n, options?)`
+
+Read one page of this document's text.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `n` | `number` | — | 0-based page index. |
+| `options.layer` | `string` | active layer | Name of the text layer to read, one of `doc.layers`. |
+| `options.detail` | `boolean` | `false` | Populate character boxes (`word.chars`) on each word. |
+
+Returns `OcrPage | null | undefined`, or `null` / `undefined` when the layer has no page at `n`.
+
+#### `doc.insertParsedPage(n, page, options)`
+
+Install a parsed `OcrPage` at index `n` of a text layer.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `n` | `number` | — | 0-based page index. |
+| `page` | `OcrPage` | — | Parsed page to store. |
+| `options.layer` | `string` | — | Target text layer name (created if absent). `engineName` is accepted as an alias. |
+| `options.dataTables` | `LayoutDataTablePage` | — | Detected data tables for page `n`. |
+| `options.warn` | `Object<string, string>` | `{}` | Conversion warnings for page `n`. |
+| `options.mainData` | `boolean` | `true` | Update `doc.pageMetrics[n]` with `page`'s dimensions and angle. |
+| `options.setActive` | `boolean` | `true` | Make `layer` the active layer. |
+| `options.hocrSource` | `?HocrSourcePage` | — | Preserved hOCR source markup for round-trip hOCR export. |
+
+Returns `void`.
 
 ### Import methods
 
@@ -188,12 +223,12 @@ Returns `Promise<void>`. (Async)
 #### `doc.importFilesSupp(files, ocrName)`
 
 Import supplemental OCR files (e.g. an alternate OCR version or ground truth) under `ocrName`,
-without replacing `doc.ocr.active`.
+without changing the active layer.
 
 | Parameter | Type | Description |
 | --- | --- | --- |
 | `files` | `Array<File>` \| `FileList` \| `Array<string>` \| `SortedInputFiles` | OCR files. |
-| `ocrName` | `string` | Name to store the version under in `doc.ocr`. |
+| `ocrName` | `string` | Name of the text layer to store the version under. |
 
 Returns `Promise<void>`. (Async)
 
@@ -201,8 +236,8 @@ Returns `Promise<void>`. (Async)
 
 #### `doc.recognize(options?)`
 
-Recognize all of this document's pages with the OCR engine. Returns the recognized pages and
-populates `doc.ocr`.
+Recognize all of this document's pages with the OCR engine. The recognized text becomes the
+active layer.
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -216,12 +251,21 @@ populates `doc.ocr`.
 | `modelOptions` | `Object` | `{}` | Options forwarded to the custom model. |
 | `signal` | `AbortSignal` | — | Cancel a custom-model run; completed pages are preserved. |
 
-Returns `Promise<Array<OcrPage>>`. (Async)
+Returns `Promise<void>`. (Async)
 
-#### `doc.compareOCR(ocrA, ocrB, options?, progressCallback?)`
+#### `doc.compareOCR(layerA, layerB, options?, progressCallback?)`
 
-Compare two sets of OCR data and return comparison results and metrics. Used for evaluation and
-for combining engine outputs. Returns `Promise<Object>`. (Async)
+Compare two of this document's text layers page by page.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `layerA` | `string` | — | Name of a text layer, or `'active'`. |
+| `layerB` | `string` | — | Name of a text layer, or `'active'`. |
+| `options` | `Object` | — | Comparison options. `ignorePunct`, `ignoreCap`, `confThreshHigh` and `confThreshMed` default to their `ScribeDoc.defaults` values. |
+| `progressCallback` | `function` | `null` | Called once per page, compared or skipped. |
+
+Returns `Promise<{ ocr, metrics, debug, errors }>`, each an array by 0-based page index. A page
+missing from either layer is skipped. (Async)
 
 #### `doc.recognizePageImp(n, legacy, lstm, areaMode, tessOptions?, debugVis?, langs?, vanillaMode?)`
 
@@ -252,6 +296,7 @@ Export this document's active OCR data to the specified format.
 | `options.minPage` | `number` | `0` | First page to export. |
 | `options.maxPage` | `number` | `-1` | Last page (inclusive); `-1` means the last page. |
 | `options.pageArr` | `Array<number>` | `null` | Explicit 0-based page indices. Overrides `minPage`/`maxPage`. |
+| `options.layer` | `string` | active layer | Name of the text layer to export. `ocrName` is accepted as an alias. |
 
 Returns `Promise<string \| ArrayBuffer>` (string for text formats, `ArrayBuffer` for `pdf`,
 `docx`, `xlsx`, and compressed `scribe`). (Async)
@@ -314,10 +359,11 @@ Throws for a page not backed by a PDF. (Async)
 
 ### Font methods
 
-#### `doc.runOptimization(ocrArr)`
+#### `doc.runOptimization(layer?)`
 
-Run font optimization and validation for this document based on the provided OCR pages. Returns
-`Promise<void>`. (Async)
+Run font optimization and validation for this document against `layer` (or the active layer
+when omitted). Returns `Promise<boolean>` indicating whether optimized fonts are enabled for
+the document. (Async)
 
 #### `doc.enableFontOpt(enable, force?)`
 
@@ -377,7 +423,7 @@ OcrWord  { text, conf, bbox, style, chars, ... }
 | `conf` | `number` | Confidence, 0-100. |
 | `bbox` | `{ left, top, right, bottom }` | Word bounds in page pixels. |
 | `style` | `Object` | `{ font, size, bold, italic, underline, smallCaps, sup, dropcap, color, opacity }`. |
-| `chars` | `Array<OcrChar> \| null` | Character-level data when available. |
+| `chars` | `Array<OcrChar> \| null` | Character boxes, populated when the page is read with `getPage(n, { detail: true })`. |
 | `lang` | `string` | Word language. |
 
 ### PageMetrics

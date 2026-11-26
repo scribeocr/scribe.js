@@ -77,6 +77,8 @@ export async function initPdfWorker() {
 
     obj.loadPdfForParsing = wrap('loadPdfForParsing');
     obj.parsePdfPage = wrap('parsePdfPage');
+    obj.parsePdfPageRecords = wrap('parsePdfPageRecords');
+    obj.layoutPdfChunkRecords = wrap('layoutPdfChunkRecords');
     obj.parsePdfPageAnnotations = wrap('parsePdfPageAnnotations');
     obj.renderPdfPage = wrap('renderPdfPage');
     obj.renderPdfAnnotation = wrap('renderPdfAnnotation');

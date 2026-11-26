@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -18,13 +19,13 @@ describe('Check evaluate function.', () => {
 
   test('Should correctly compare page to ground truth', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.hocr`]);
-    expect(doc.ocr.active[0].pars.length, 'a Scribe-written hOCR file without ocr_par must import paragraph-less').toBe(0);
+    expect(doc.getPage(0).pars.length, 'a Scribe-written hOCR file without ocr_par must import paragraph-less').toBe(0);
     await doc.importFilesSupp([`${ASSETS_PATH}/complaint_1.truth.hocr`], 'Ground Truth');
 
     // The ternary's first branch holds the soft hyphen (U+00AD), which has no visible glyph.
     let retyped = 0;
     let hyphenated = 0;
-    for (const line of doc.ocr['Ground Truth'][0].lines) {
+    for (const line of doc.getPage(0, { layer: 'Ground Truth' }).lines) {
       for (const word of line.words) {
         if (/[‘’“”]/.test(word.text)) { word.text = word.text.replace(/[‘’]/g, "'").replace(/[“”]/g, '"'); retyped++; }
         if (/[A-Za-z]-[A-Za-z]/.test(word.text)) { word.text = word.text.replace('-', hyphenated % 2 ? '­' : '–'); hyphenated++; }
@@ -33,7 +34,7 @@ describe('Check evaluate function.', () => {
     expect(retyped, 'the ground truth holds words with curly quotes to retype').toBe(12);
     expect(hyphenated, 'the ground truth holds hyphenated words to retype').toBe(2);
 
-    const res = await doc.compareOCR(doc.ocr.active, doc.ocr['Ground Truth']);
+    const res = await doc.compareOCR('active', 'Ground Truth');
 
     const evalStatsDoc = scribe.utils.calcEvalStatsDoc(res.metrics);
 
@@ -43,7 +44,7 @@ describe('Check evaluate function.', () => {
     expect(evalStatsDoc.missed).toBe(0);
     expect(evalStatsDoc.extra).toBe(0);
 
-    const truthWord = scribe.utils.ocr.getPageWords(doc.ocr['Ground Truth'][0]).find((w) => w.text === 'PageID');
+    const truthWord = scribe.utils.ocr.getPageWords(doc.getPage(0, { layer: 'Ground Truth' })).find((w) => w.text === 'PageID');
     if (!truthWord) throw new Error('the ground truth no longer holds the word PageID');
     truthWord.readings = [{
       source: 'abbyy', text: 'PageID', conf: 100,
@@ -51,11 +52,11 @@ describe('Check evaluate function.', () => {
       source: 'abbyy', text: 'PageId', conf: 40, rank: 2, msg: 'c1',
     }];
     // Three words' flags are set wrong on a clone to prove the consensus sets its own.
-    const base = doc.ocr.active.map((p) => scribe.utils.ocr.clonePage(p));
+    const base = docPages(doc).map((p) => scribe.utils.ocr.clonePage(p));
     for (const w of scribe.utils.ocr.getPageWords(base[0])) {
       if (['word_1_41', 'word_1_11', 'word_1_325'].includes(w.id)) { w.compTruth = w.id === 'word_1_41'; w.matchTruth = w.id !== 'word_1_41'; }
     }
-    const consensus = scribe.buildConsensusLayer(base, [doc.ocr['Ground Truth']], { names: ['truth'], replaceMinAgree: 0 });
+    const consensus = scribe.buildConsensusLayer(base, [docPages(doc, 'Ground Truth')], { names: ['truth'], replaceMinAgree: 0 });
     expect(consensus.stats, 'the consensus of the OCR and the ground truth corroborates every word the comparison counts correct, and no other').toEqual({
       total: 655, high: 650, medium: 0, low: 5, replaced: 0, added: 0, spanned: 1, crossLine: 0,
     });
@@ -72,7 +73,7 @@ describe('Check evaluate function.', () => {
         },
       ]);
     expect(byId.get('word_1_11')?.text, 'with the plurality overwrite off, a disputed word keeps the base layer\'s text').toBe('PagelD');
-    const replaced = scribe.buildConsensusLayer(base, [doc.ocr['Ground Truth']], { names: ['truth'], replaceMinAgree: 1 });
+    const replaced = scribe.buildConsensusLayer(base, [docPages(doc, 'Ground Truth')], { names: ['truth'], replaceMinAgree: 1 });
     expect(replaced.stats.replaced, 'the plurality overwrite replaces the words one comparator read differently').toBe(3);
     const replacedWord = scribe.utils.ocr.getPageWords(replaced.ocr[0]).find((w) => w.id === 'word_1_11');
     expect(replacedWord?.text, 'the comparator\'s reading replaces the disputed base text').toBe('PageID');
@@ -82,13 +83,13 @@ describe('Check evaluate function.', () => {
       },
     ]);
     // Regression: the vote counted raw spellings, so two comparators that agreed except for quote style tied instead of outvoting a wrong base word.
-    const truthCurly = doc.ocr['Ground Truth'].map((p) => scribe.utils.ocr.clonePage(p));
+    const truthCurly = docPages(doc, 'Ground Truth').map((p) => scribe.utils.ocr.clonePage(p));
     for (const w of scribe.utils.ocr.getPageWords(truthCurly[0])) w.text = w.text.replace(/"/g, '”').replace(/'/g, '’');
-    const baseWrong = doc.ocr.active.map((p) => scribe.utils.ocr.clonePage(p));
+    const baseWrong = docPages(doc).map((p) => scribe.utils.ocr.clonePage(p));
     const wrongWord = scribe.utils.ocr.getPageWords(baseWrong[0]).find((w) => w.id === 'word_1_41');
     if (!wrongWord) throw new Error('the base layer no longer holds word_1_41');
     wrongWord.text = '2O2O.';
-    const outvoted = scribe.buildConsensusLayer(baseWrong, [doc.ocr['Ground Truth'], truthCurly], { names: ['truth', 'curly'] });
+    const outvoted = scribe.buildConsensusLayer(baseWrong, [docPages(doc, 'Ground Truth'), truthCurly], { names: ['truth', 'curly'] });
     expect(outvoted.stats.replaced, 'two comparators that agree except for quote style outvote a base word neither matches').toBe(4);
     const outvotedWord = scribe.utils.ocr.getPageWords(outvoted.ocr[0]).find((w) => w.id === 'word_1_41');
     expect(outvotedWord?.text, 'the outvoting reading replaces the base text in the first comparator\'s spelling').toBe('2020."');
@@ -106,7 +107,7 @@ describe('Check evaluate function.', () => {
     ]);
     expect(byId.get('word_1_325')?.readings, 'the second word of a joined reading keeps only its own reading').toEqual([{ source: 'hocr', text: '’s', conf: 0 }]);
 
-    const gtPage = doc.ocr['Ground Truth'][0];
+    const gtPage = doc.getPage(0, { layer: 'Ground Truth' });
     const box = {
       left: 300, top: gtPage.dims.height - 120, right: 520, bottom: gtPage.dims.height - 80,
     };
@@ -115,7 +116,7 @@ describe('Check evaluate function.', () => {
     extraWord.conf = 100;
     extraLine.words.push(extraWord);
     gtPage.lines.push(extraLine);
-    const consensus2 = scribe.buildConsensusLayer(doc.ocr.active, [doc.ocr['Ground Truth'], doc.ocr['Ground Truth']], { names: ['truth', 'truth2'], replaceMinAgree: 0 });
+    const consensus2 = scribe.buildConsensusLayer(docPages(doc), [docPages(doc, 'Ground Truth'), docPages(doc, 'Ground Truth')], { names: ['truth', 'truth2'], replaceMinAgree: 0 });
     expect(consensus2.stats.added, 'a word two comparators read where the base has none is added once, not once per comparator').toBe(1);
     const addedWord = scribe.utils.ocr.getPageWords(consensus2.ocr[0]).find((w) => w.text === 'Appendix');
     expect(addedWord?.readings, 'the added word carries every comparator\'s reading of it').toEqual([
@@ -126,7 +127,7 @@ describe('Check evaluate function.', () => {
 
   test('Words and lines merged into a page enter it in reading order', () => {
     // Regression: a word right of a line's last word landed before it, and a new line always landed last.
-    const page = scribe.utils.ocr.clonePage(doc.ocr.active[0]);
+    const page = scribe.utils.ocr.clonePage(doc.getPage(0));
     const extra = new scribe.utils.ocr.OcrPage(0, { ...page.dims });
     /** @type {Array<[string, {left: number, top: number, right: number, bottom: number}]>} */
     const additions = [
@@ -157,7 +158,7 @@ describe('Check evaluate function.', () => {
     expect(texts[3], 'the line below an inserted line keeps its place')
       .toBe('impressive growth path, with strength across the Human and Animal Nutrition leading to strong');
 
-    const truth = scribe.utils.ocr.clonePage(doc.ocr['Ground Truth'][0]);
+    const truth = scribe.utils.ocr.clonePage(doc.getPage(0, { layer: 'Ground Truth' }));
     /** @type {Array<[string, {left: number, top: number, right: number, bottom: number}]>} */
     const truthAdditions = [
       ['EXTRA', {
@@ -174,7 +175,7 @@ describe('Check evaluate function.', () => {
       line.words.push(word);
       truth.lines.push(line);
     }
-    const consensus = scribe.buildConsensusLayer(doc.ocr.active, [[truth]], { names: ['truth'], replaceMinAgree: 0 });
+    const consensus = scribe.buildConsensusLayer(docPages(doc), [[truth]], { names: ['truth'], replaceMinAgree: 0 });
     const { lines } = consensus.ocr[0];
     expect(scribe.utils.ocr.getLineText(lines[1]), 'a comparator\'s line at a place the base lacks enters the consensus between the lines around it').toBe('MIDDLE');
     expect(scribe.utils.ocr.getLineText(lines[2]), 'a comparator\'s word right of a base line\'s last word enters that line after it')
@@ -204,7 +205,7 @@ describe('Check importFilesSupp works with Textract data.', () => {
     );
 
     // Verify the imported data matches expected content exactly.
-    const textractPage = doc.ocr.Textract[0];
+    const textractPage = doc.getPage(0, { layer: 'Textract' });
     expect(textractPage.lines.length).toBe(3);
     expect(textractPage.lines[0].words.map((x) => x.text).join(' ')).toBe('Ascenders On');
     expect(textractPage.lines[1].words.map((x) => x.text).join(' ')).toBe('query png');
@@ -243,7 +244,7 @@ describe('Check importFilesSupp works with per-page Textract files.', () => {
     ];
 
     for (let i = 0; i < 7; i++) {
-      const page = doc.ocr.Textract[i];
+      const page = doc.getPage(i, { layer: 'Textract' });
       const wordCount = page.lines.reduce((sum, l) => sum + l.words.length, 0);
       const firstLine = page.lines[0].words.map((w) => w.text).join(' ');
       expect(page.lines.length).toBe(expected[i].lines);

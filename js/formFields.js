@@ -14,7 +14,7 @@ const PX_PER_PT = 300 / 72;
  * @returns {number} Number of widget rows updated.
  */
 export function setFormValue(doc, name, value) {
-  if (doc._seeded) doc._seeded.formValues.set(name, value);
+  if (doc._textMissing) doc._liftsOwed.formValues.set(name, value);
   let prevSeen = false;
   let prev = null;
   for (let n = 0; n < doc.annotations.pages.length; n++) {
@@ -32,7 +32,7 @@ export function setFormValue(doc, name, value) {
       row.value = value === '' || (isToggle && value === 'Off') ? null : value;
       updated++;
 
-      const pageObj = doc.ocr.active?.[n];
+      const pageObj = doc.getPage(n);
       if (!pageObj) continue;
 
       // The lifted-word id prefix is shared by every field, so the bbox test is what scopes removal to this widget.

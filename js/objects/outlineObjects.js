@@ -41,6 +41,12 @@ export function makeOutlineNode({
 }
 
 /**
+ * Detected headings per page, cached by clean page record.
+ * @type {WeakMap<object, Array<{title: string, yFrac: ?number, level: ?number}>>}
+ */
+const headingsOfRecord = new WeakMap();
+
+/**
  * Detected content headings usable as bookmarks, in reading order.
  * Only a text-native document yields candidates, because the layout pass that types `title` paragraphs runs only for those.
  * @param {import('../containers/scribeDoc.js').ScribeDoc} doc
@@ -48,21 +54,24 @@ export function makeOutlineNode({
  */
 export function detectHeadingBookmarks(doc) {
   if (!doc || !doc.inputData || doc.inputData.pdfType !== 'text') return [];
-  const pages = (doc.ocr && doc.ocr.active) || [];
   const out = [];
-  for (let n = 0; n < pages.length; n += 1) {
-    const page = pages[n];
-    if (!page || !page.pars) continue;
-    for (const par of page.pars) {
-      if (par.type !== 'title') continue;
-      const text = par.lines.map((line) => line.words.map((word) => word.text).join(' ')).join(' ').trim();
-      if (!text || text.length > 150) continue;
-      const pageHeight = page.dims && page.dims.height;
-      const yFrac = pageHeight && par.bbox ? Math.max(0, Math.min(1, par.bbox.top / pageHeight)) : null;
-      out.push({
-        title: text, pageIndex: n, yFrac, level: par.headingLevel ?? null,
-      });
+  for (let n = 0; n < doc.pageCount; n += 1) {
+    const record = doc.pageStore.cleanRecord(n);
+    let found = record ? headingsOfRecord.get(record) : undefined;
+    if (!found) {
+      found = [];
+      const page = doc.pageStore.readOnlyPage(n);
+      for (const par of (page && page.pars) || []) {
+        if (par.type !== 'title') continue;
+        const text = par.lines.map((line) => line.words.map((word) => word.text).join(' ')).join(' ').trim();
+        if (!text || text.length > 150) continue;
+        const pageHeight = page.dims && page.dims.height;
+        const yFrac = pageHeight && par.bbox ? Math.max(0, Math.min(1, par.bbox.top / pageHeight)) : null;
+        found.push({ title: text, yFrac, level: par.headingLevel ?? null });
+      }
+      if (record) headingsOfRecord.set(record, found);
     }
+    for (const heading of found) out.push({ ...heading, pageIndex: n });
   }
   return out;
 }

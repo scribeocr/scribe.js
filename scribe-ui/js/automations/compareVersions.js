@@ -10,7 +10,7 @@ import ocr from '../../../js/objects/ocrObjects.js';
 function lineContext(doc, s) {
   const none = { before: '', after: '' };
   if (s.pageN == null || !s.wordIds.length) return none;
-  const page = doc.ocr.active?.[s.pageN];
+  const page = doc.pageStore.readOnlyPage(s.pageN);
   if (!page) return none;
   const ids = new Set(s.wordIds);
   const line = page.lines.find((l) => l.words.some((w) => ids.has(w.id)));

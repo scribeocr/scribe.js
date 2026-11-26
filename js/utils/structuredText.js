@@ -12,7 +12,7 @@ import { assignParagraphs } from './reflowPars.js';
  * @returns {string}
  */
 export function buildStructuredPageText(doc, pageIdx, { parAnnots, footnoteAnnots }) {
-  const pageObj = doc.ocr.active[pageIdx];
+  const pageObj = doc.getPage(pageIdx);
   if (!pageObj || pageObj.lines.length === 0) return '';
 
   const hasPars = pageObj.pars && pageObj.pars.length > 0;

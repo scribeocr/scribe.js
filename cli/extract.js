@@ -54,8 +54,11 @@ export const extract = async (inputFile, output, options) => {
   const includeCharBoxesScribe = !!options?.charBoxes;
 
   if (format === 'scribe.json') {
-    // Uncompressed scribe export; with compression off exportData returns the JSON string to write directly.
-    fs.writeFileSync(outputPath, /** @type {string} */ (await doc.exportData('scribe', { compressScribe: false, includeCharBoxesScribe })));
+    // Stream via `doc.download` so large exports do not hit JavaScript's max string length.
+    // When `compressScribe` is false, `doc.download` rewrites any path not ending in `.scribe.json`.
+    const savedPath = outputPath.endsWith('.scribe.json') ? outputPath : `${outputPath}.scribe.json`;
+    await doc.download('scribe', savedPath, { compressScribe: false, includeCharBoxesScribe });
+    if (savedPath !== outputPath) fs.renameSync(savedPath, outputPath);
   } else {
     await doc.download(format, outputPath, { includeCharBoxesScribe });
   }

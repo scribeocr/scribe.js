@@ -2427,6 +2427,9 @@ export function createThumbnailPanel(scribe, {
       selAnchor = range.start;
       syncSelectionUI();
     } else {
+      // doc.insertPages adopts each snapshot's cloned objects and fresh IDs directly, so re-copy the pasted pages in case the user pastes again.
+      pageClipboard.payloads = scribe.doc.copyPages(Array.from({ length: range.count }, (_, k) => range.start + k));
+      pageClipboard.sourceDocId = scribe.doc.id;
       insertPagesAt(range.start, range.count, range.cp);
       selected.clear();
       selAnchor = -1;

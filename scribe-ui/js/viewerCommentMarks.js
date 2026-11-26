@@ -161,7 +161,7 @@ const pageLineMetricsCache = new WeakMap();
  * @param {dims} disp - The page's displayed dimensions.
  */
 function getPageLineMetrics(viewer, n, disp) {
-  const ocrPage = viewer.doc.ocr.active?.[n];
+  const ocrPage = viewer.doc.pageStore.readOnlyPage(n);
   if (!ocrPage || ocrPage.lines.length === 0) {
     const assumedH = Math.max(12, Math.min(48, disp.height * 0.012));
     return { linesDisp: [], medianLineH: assumedH, linePitch: assumedH * 1.25 };

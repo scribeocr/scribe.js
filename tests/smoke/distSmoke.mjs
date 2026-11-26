@@ -70,7 +70,7 @@ try {
     await viewer.importFile(new File([buf], 'smoke.pdf', { type: 'application/pdf' }), 0);
     const { doc } = viewer.scribe;
     if (doc.textReady) await doc.textReady;
-    return { pages: doc.ocr.active.length, lines: doc.ocr.active[0] ? doc.ocr.active[0].lines.length : -1 };
+    return { pages: doc.activeLayer ? doc.pageCount : 0, lines: doc.getPage(0) ? doc.getPage(0).lines.length : -1 };
   }, PDF, 60000);
   if (opened.pages !== 1) throw new Error(`open PDF: expected 1 page, got ${opened.pages}`);
   if (opened.lines !== NATIVE_LINES) throw new Error(`open PDF: expected ${NATIVE_LINES} extracted lines, got ${opened.lines}`);
@@ -84,7 +84,7 @@ try {
   const ocrLines = await runInPage('recognize', async () => {
     const { doc } = globalThis.df.pdfViewer.scribe;
     await doc.recognize({ langs: ['eng'] });
-    return doc.ocr.active[0].lines.length;
+    return doc.getPage(0).lines.length;
   }, null, 300000);
   if (Math.abs(ocrLines - OCR_LINES) > OCR_LINES_TOLERANCE) throw new Error(`recognize: expected about ${OCR_LINES} lines, got ${ocrLines}`);
 

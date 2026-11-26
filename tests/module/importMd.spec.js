@@ -4,19 +4,20 @@ import {
 import { Parser } from 'commonmark';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
 /** @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc */
-const wordSequence = (doc) => doc.ocr.active
+const wordSequence = (doc) => docPages(doc)
   .map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join(' ')).join(' ');
 
 /** @param {import('../../js/objects/ocrObjects.js').OcrPar} par */
 const parText = (par) => par.lines.map((line) => line.words.map((word) => word.text).join(' ')).join(' ');
 
 /** @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc */
-const parStructure = (doc) => doc.ocr.active.flatMap((page, n) => page.pars.map(
+const parStructure = (doc) => docPages(doc).flatMap((page, n) => page.pars.map(
   (par) => `page ${n} | ${par.type} | h${par.headingLevel} | ${par.marker} | left ${par.bbox.left} | ${parText(par)}`,
 ));
 
@@ -102,7 +103,7 @@ describe('Check markdown import.', () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     docPdfReimport = await scribe.openDocument({ pdfFiles: [pdf] });
-    docPdfReimport.ocr.active = docPdfReimport.ocr.pdf;
+    docPdfReimport.activeLayer = 'pdf';
   }, 120_000);
 
   test('the HTML article writes list items whose markers are metadata as list elements, nested by their columns', () => {
@@ -117,48 +118,48 @@ describe('Check markdown import.', () => {
 
   test('Markdown is laid out onto real pages tagged with the markdown source', () => {
     expect(doc.inputData.pageCount, 'markdown must paginate onto the number of pages its text fills').toBe(2);
-    expect(doc.ocr.active.length, 'every synthesized page must carry OCR data').toBe(2);
-    expect(doc.ocr.active[0].dims, 'synthesized pages are US Letter at 72 dpi').toEqual({ width: 612, height: 792 });
-    expect(doc.ocr.active[0].textSource, 'the first page must be tagged as imported from markdown').toBe('md');
-    expect(doc.ocr.active[1].textSource, 'a page created by overflow must be tagged as imported from markdown too').toBe('md');
+    expect(docPages(doc).length, 'every synthesized page must carry OCR data').toBe(2);
+    expect(doc.getPage(0).dims, 'synthesized pages are US Letter at 72 dpi').toEqual({ width: 612, height: 792 });
+    expect(doc.getPage(0).textSource, 'the first page must be tagged as imported from markdown').toBe('md');
+    expect(doc.getPage(1).textSource, 'a page created by overflow must be tagged as imported from markdown too').toBe('md');
 
-    const words = doc.ocr.active.flatMap((page) => page.lines.flatMap((line) => line.words));
+    const words = docPages(doc).flatMap((page) => page.lines.flatMap((line) => line.words));
     expect(words.length, 'every word of the source document must be imported').toBe(538);
     expect(words.filter((word) => word.visualCoords !== false).length,
       'synthesized coordinates are font bounding boxes, not measured pixels, so no word may claim visual coordinates').toBe(0);
   });
 
   test('Headings become title paragraphs carrying their level', () => {
-    expect(doc.ocr.active[0].pars[0].type, 'a top-level heading must import as a title paragraph').toBe('title');
-    expect(doc.ocr.active[0].pars[0].headingLevel, 'a `#` heading is level 1').toBe(1);
-    expect(parText(doc.ocr.active[0].pars[0]), 'the heading text must survive without its `#` marker').toBe('Coastal Survey Field Guide');
-    expect(doc.ocr.active[0].pars[2].headingLevel, 'a `##` heading is level 2').toBe(2);
-    expect(parText(doc.ocr.active[0].pars[2]), 'the level 2 heading text must survive').toBe('Before you go');
-    expect(doc.ocr.active[0].pars[10].headingLevel, 'a `###` heading is level 3').toBe(3);
-    expect(parText(doc.ocr.active[0].pars[10]), 'the level 3 heading text must survive').toBe('Recording a transect');
+    expect(doc.getPage(0).pars[0].type, 'a top-level heading must import as a title paragraph').toBe('title');
+    expect(doc.getPage(0).pars[0].headingLevel, 'a `#` heading is level 1').toBe(1);
+    expect(parText(doc.getPage(0).pars[0]), 'the heading text must survive without its `#` marker').toBe('Coastal Survey Field Guide');
+    expect(doc.getPage(0).pars[2].headingLevel, 'a `##` heading is level 2').toBe(2);
+    expect(parText(doc.getPage(0).pars[2]), 'the level 2 heading text must survive').toBe('Before you go');
+    expect(doc.getPage(0).pars[10].headingLevel, 'a `###` heading is level 3').toBe(3);
+    expect(parText(doc.getPage(0).pars[10]), 'the level 3 heading text must survive').toBe('Recording a transect');
     // A setext heading is an ordinary paragraph until its underline is read, so it exercises a different path than the `#` headings above.
-    expect(doc.ocr.active[0].pars[25].type, 'a dash-underlined (setext) heading must import as a title paragraph').toBe('title');
-    expect(doc.ocr.active[0].pars[25].headingLevel, 'a dash-underlined heading is level 2').toBe(2);
-    expect(parText(doc.ocr.active[0].pars[25]), 'the setext heading must lose its underline, not its text').toBe('Reporting problems');
+    expect(doc.getPage(0).pars[25].type, 'a dash-underlined (setext) heading must import as a title paragraph').toBe('title');
+    expect(doc.getPage(0).pars[25].headingLevel, 'a dash-underlined heading is level 2').toBe(2);
+    expect(parText(doc.getPage(0).pars[25]), 'the setext heading must lose its underline, not its text').toBe('Reporting problems');
   });
 
   test('List markers leave the text and become the paragraph number', () => {
-    expect(parText(doc.ocr.active[0].pars[5]), 'a bullet item must import without its `-` marker').toBe('A charged phone with the survey app installed');
-    expect(doc.ocr.active[0].pars[5].marker, 'a bullet item records the bullet the reader sees').toBe('•');
-    expect(parText(doc.ocr.active[0].pars[6]), 'a nested bullet item must import as its own paragraph').toBe('A battery pack, for a full day in the field');
-    expect(parText(doc.ocr.active[0].pars[12]), 'a numbered item must import without its `1.` marker').toBe('Photograph the quadrat from directly above.');
-    expect(doc.ocr.active[0].pars[12].marker, 'a numbered item records its number as written').toBe('1.');
-    expect(doc.ocr.active[0].pars[15].marker, 'list numbering must follow the source through the whole list').toBe('4.');
+    expect(parText(doc.getPage(0).pars[5]), 'a bullet item must import without its `-` marker').toBe('A charged phone with the survey app installed');
+    expect(doc.getPage(0).pars[5].marker, 'a bullet item records the bullet the reader sees').toBe('•');
+    expect(parText(doc.getPage(0).pars[6]), 'a nested bullet item must import as its own paragraph').toBe('A battery pack, for a full day in the field');
+    expect(parText(doc.getPage(0).pars[12]), 'a numbered item must import without its `1.` marker').toBe('Photograph the quadrat from directly above.');
+    expect(doc.getPage(0).pars[12].marker, 'a numbered item records its number as written').toBe('1.');
+    expect(doc.getPage(0).pars[15].marker, 'list numbering must follow the source through the whole list').toBe('4.');
   });
 
   test('A block quote imports as a blockquote paragraph', () => {
-    expect(doc.ocr.active[0].pars[17].type, 'a `>` block must import as a blockquote paragraph').toBe('blockquote');
-    expect(parText(doc.ocr.active[0].pars[17]), 'quote text must survive without its `>` markers, reflowed into one paragraph')
+    expect(doc.getPage(0).pars[17].type, 'a `>` block must import as a blockquote paragraph').toBe('blockquote');
+    expect(parText(doc.getPage(0).pars[17]), 'quote text must survive without its `>` markers, reflowed into one paragraph')
       .toBe('Survey data is only as good as its worst observation. When you cannot identify a species, photograph it and mark the entry as unconfirmed.');
   });
 
   test('Emphasis becomes word styles, including where it changes inside a word', () => {
-    const words = doc.ocr.active[0].lines.flatMap((line) => line.words);
+    const words = doc.getPage(0).lines.flatMap((line) => line.words);
     const bold = words.find((word) => word.text === 'thirty');
     expect(bold.style.bold, '`**thirty**` must import as a bold word').toBe(true);
     const italic = words.find((word) => word.text === 'rain');
@@ -171,20 +172,20 @@ describe('Check markdown import.', () => {
   });
 
   test('Code keeps its text and loses its backticks', () => {
-    const inlineCode = doc.ocr.active[0].lines.flatMap((line) => line.words).find((word) => word.text === 'Sync');
+    const inlineCode = doc.getPage(0).lines.flatMap((line) => line.words).find((word) => word.text === 'Sync');
     expect(inlineCode.style.font, 'an inline code span must import as monospace text').toBe('Courier');
 
-    const codeBlock = doc.ocr.active[0].pars[20];
+    const codeBlock = doc.getPage(0).pars[20];
     expect(codeBlock.debug.sourceStyle, 'a fenced code block must import as preformatted text').toBe('HTMLPreformatted');
     expect(parText(codeBlock), 'code block contents must survive with the fence lines removed')
       .toBe('{"transect": 4, "stop": 3, "substrate": "cobble", "count": 17}');
   });
 
   test('A link keeps its text and carries its target', () => {
-    const words = doc.ocr.active[0].lines.flatMap((line) => line.words);
+    const words = doc.getPage(0).lines.flatMap((line) => line.words);
     expect(words.find((word) => word.text === 'volunteer').style.link, 'link text must carry the link target')
       .toBe('https://example.org/coastal/contact');
-    expect(parText(doc.ocr.active[0].pars[22]), 'a link contributes its text to the paragraph and its URL to nothing')
+    expect(parText(doc.getPage(0).pars[22]), 'a link contributes its text to the paragraph and its URL to nothing')
       .toBe('Questions go to the volunteer coordinator, who answers within two working days.');
   });
 
@@ -196,11 +197,11 @@ describe('Check markdown import.', () => {
     expect(plainText.includes('- A charged phone'), 'list markers must be consumed by the importer').toBe(false);
     expect(plainText.includes('> Survey data'), 'block quote markers must be consumed by the importer').toBe(false);
     expect(plainText.includes('Quadrat frame placed on cobble'), 'an image must be dropped rather than importing its alt text as body text').toBe(false);
-    expect(doc.ocr.active[0].pars.length, 'the image line and the thematic break must each produce no paragraph').toBe(27);
+    expect(doc.getPage(0).pars.length, 'the image line and the thematic break must each produce no paragraph').toBe(27);
   });
 
   test('Escaped syntax characters import as literal text', () => {
-    const pars = doc.ocr.active[1].pars;
+    const pars = doc.getPage(1).pars;
     expect(parText(pars[4]), 'an escaped `#` must import as body text with the character kept').toBe('# of quadrats is recorded before species counts, never after.');
     expect(pars[4].type, 'a line beginning with an escaped `#` must not become a heading').toBe('body');
     expect(parText(pars[5]), 'an escaped `>` must import as body text with the character kept').toBe('> 90% of transects finish within two hours of low tide.');
@@ -215,11 +216,11 @@ describe('Check markdown import.', () => {
 
   test('Front matter is metadata, not content', () => {
     expect(plainText.includes('season: 2026'), 'YAML front matter must not import as document text').toBe(false);
-    expect(parText(doc.ocr.active[0].pars[0]), 'the first paragraph must be the title, not front matter read as a setext heading').toBe('Coastal Survey Field Guide');
+    expect(parText(doc.getPage(0).pars[0]), 'the first paragraph must be the title, not front matter read as a setext heading').toBe('Coastal Survey Field Guide');
   });
 
   test('Inline HTML becomes styles and entities become characters', () => {
-    const words = doc.ocr.active[1].lines.flatMap((line) => line.words);
+    const words = doc.getPage(1).lines.flatMap((line) => line.words);
     expect(words.find((word) => word.text === 'flooded').style.bold, 'a `<b>` element must import as a bold word').toBe(true);
     expect(words.find((word) => word.text === 'H&S'), '`&amp;` must decode to a literal ampersand').toBeTruthy();
     expect(words.find((word) => word.text === '—'), '`&mdash;` must decode to an em dash').toBeTruthy();
@@ -235,14 +236,14 @@ describe('Check markdown import.', () => {
   });
 
   test('Strikethrough markers are consumed and their text kept', () => {
-    expect(parText(doc.ocr.active[1].pars[12]), 'the struck word must survive without its tildes')
+    expect(parText(doc.getPage(1).pars[12]), 'the struck word must survive without its tildes')
       .toBe('The 2025 edition said to skip flooded quadrats; H&S guidance now says to record them from the nearest '
         + 'safe rock — see the safety appendix.1 The app shows three four substrate types this season.');
     expect(plainText.includes('~'), 'no strikethrough tilde may reach the imported text').toBe(false);
   });
 
   test('A hard line break forces a new line inside the paragraph', () => {
-    const par = doc.ocr.active[1].pars[13];
+    const par = doc.getPage(1).pars[13];
     expect(parText(par), 'both halves of the broken paragraph must import').toBe('Site access changed too: the west stairs are closed until May.');
     expect(par.lines.length, 'a trailing-backslash break must produce two lines').toBe(2);
     expect(par.lines[0].words.map((word) => word.text).join(' '), 'the break must fall exactly where the source put it, not where reflow would')
@@ -250,17 +251,17 @@ describe('Check markdown import.', () => {
   });
 
   test('Reference links resolve through their definitions', () => {
-    const words = doc.ocr.active[1].lines.flatMap((line) => line.words);
+    const words = doc.getPage(1).lines.flatMap((line) => line.words);
     expect(words.find((word) => word.text === 'regional').style.link, 'a `[text][ref]` link must carry the destination from its definition')
       .toBe('https://example.org/coastal/archive');
-    expect(parText(doc.ocr.active[1].pars[14]), 'reference brackets must leave the text')
+    expect(parText(doc.getPage(1).pars[14]), 'reference brackets must leave the text')
       .toBe('Field reports go to the regional archive, with survey photos attached 1 before the end of the month.');
     expect(plainText.includes('archive]:'), 'a reference definition line must produce no visible text').toBe(false);
   });
 
   test('A document address link keeps its target, as a web link does', async () => {
     const cited = await scribe.openDocument([new File(['Bentley conceded the point ([p. 54, lines 1-20](scribe-doc://0123456789abcdef/41?cite=54%3A1-20)).'], 'cited.md', { type: 'text/markdown' })]);
-    const words = cited.ocr.active[0].lines.flatMap((line) => line.words);
+    const words = cited.getPage(0).lines.flatMap((line) => line.words);
     expect(words.find((word) => word.text === 'lines').style.link, 'a scribe-doc link must carry its address, which only this library follows')
       .toBe('scribe-doc://0123456789abcdef/41?cite=54%3A1-20');
     expect(words.map((word) => word.text).join(' '), 'the address contributes nothing to the text').toBe('Bentley conceded the point (p. 54, lines 1-20).');
@@ -268,47 +269,47 @@ describe('Check markdown import.', () => {
   });
 
   test('A footnote definition becomes a linked footnote paragraph', () => {
-    const notePar = doc.ocr.active[1].pars[25];
+    const notePar = doc.getPage(1).pars[25];
     expect(notePar.type, 'a `[^1]:` definition must import as a footnote paragraph').toBe('footnote');
     expect(notePar.marker, 'the footnote keeps its label as the marker').toBe('1');
     expect(parText(notePar), 'the footnote body must survive without its label syntax').toBe('Photos larger than 10 MB upload only on wifi.');
-    const marker = doc.ocr.active[1].lines.flatMap((line) => line.words).find((word) => word.text === '1' && word.style.sup);
+    const marker = doc.getPage(1).lines.flatMap((line) => line.words).find((word) => word.text === '1' && word.style.sup);
     expect(marker.footnoteParId, 'the `[^1]` reference must link to its footnote paragraph').toBe(notePar.id);
     expect(notePar.footnoteRefId, 'the footnote paragraph must link back to its reference word').toBe(marker.id);
   });
 
   test('A footnote reference written against its word re-imports as its own linked marker', () => {
-    const words = docMdReimport.ocr.active.flatMap((page) => page.lines.flatMap((line) => line.words));
+    const words = docPages(docMdReimport).flatMap((page) => page.lines.flatMap((line) => line.words));
     const i = words.findIndex((word) => word.text === 'attached');
     expect(words[i + 1].text, 'the reference must come back as its own word, not fused into the word before it').toBe('1');
     expect(words[i + 1].style.sup, 'the reference must stay superscript').toBe(true);
-    const note = docMdReimport.ocr.active.flatMap((page) => page.pars).find((par) => par.id === words[i + 1].footnoteParId);
+    const note = docPages(docMdReimport).flatMap((page) => page.pars).find((par) => par.id === words[i + 1].footnoteParId);
     expect(note?.type, 'the reference must link to its footnote paragraph').toBe('footnote');
     expect(note && parText(note), 'the linked note must be the one the reference names').toBe('Photos larger than 10 MB upload only on wifi.');
   });
 
   test('Task-list checkboxes become visible markers', () => {
-    expect(doc.ocr.active[1].pars[15].marker, 'an unchecked task imports with an empty-checkbox marker').toBe('☐');
-    expect(parText(doc.ocr.active[1].pars[15]), 'the checkbox syntax must leave the item text').toBe('Confirm your tide-table subscription');
-    expect(doc.ocr.active[1].pars[16].marker, 'a checked task imports with a checked-checkbox marker').toBe('☑');
+    expect(doc.getPage(1).pars[15].marker, 'an unchecked task imports with an empty-checkbox marker').toBe('☐');
+    expect(parText(doc.getPage(1).pars[15]), 'the checkbox syntax must leave the item text').toBe('Confirm your tide-table subscription');
+    expect(doc.getPage(1).pars[16].marker, 'a checked task imports with a checked-checkbox marker').toBe('☑');
   });
 
   test('List nesting follows the parent content column', () => {
-    expect(doc.ocr.active[1].pars[17].marker, 'the outer numbered item keeps its number').toBe('1.');
-    expect(doc.ocr.active[1].pars[17].bbox.left, 'the outer numbered item sits at first-level indent').toBe(44);
-    expect(doc.ocr.active[1].pars[18].marker, 'the nested numbered item keeps its number').toBe('1.');
-    expect(doc.ocr.active[1].pars[18].bbox.left, 'a marker at the parent content column nests one level, not two').toBe(68);
+    expect(doc.getPage(1).pars[17].marker, 'the outer numbered item keeps its number').toBe('1.');
+    expect(doc.getPage(1).pars[17].bbox.left, 'the outer numbered item sits at first-level indent').toBe(44);
+    expect(doc.getPage(1).pars[18].marker, 'the nested numbered item keeps its number').toBe('1.');
+    expect(doc.getPage(1).pars[18].bbox.left, 'a marker at the parent content column nests one level, not two').toBe(68);
   });
 
   test('An indented chunk outside a list imports as a code block', () => {
-    const codePar = doc.ocr.active[1].pars[20];
+    const codePar = doc.getPage(1).pars[20];
     expect(codePar.debug.sourceStyle, 'four-space indentation must import as preformatted text').toBe('HTMLPreformatted');
     expect(codePar.lines.length, 'the code block must keep its source line break').toBe(2);
     expect(parText(codePar), 'the code text must survive with its indentation removed').toBe('TRANSECT 4 / STOP 3 substrate: cobble');
   });
 
   test('Blocks inside a block quote keep their structure without their syntax', () => {
-    const pars = doc.ocr.active[1].pars;
+    const pars = doc.getPage(1).pars;
     expect(parText(pars[21]), 'a quoted heading must import without its `#` markers').toBe('From the coordinator');
     expect(pars[21].type, 'a quoted heading imports as a quote paragraph').toBe('blockquote');
     expect(pars[21].lines[0].words[0].style.size, 'a quoted heading keeps its heading size').toBe(20);
@@ -320,7 +321,7 @@ describe('Check markdown import.', () => {
   });
 
   test('Soft line breaks inside a paragraph reflow', () => {
-    const par = doc.ocr.active[0].pars[1];
+    const par = doc.getPage(0).pars[1];
     expect(parText(par), 'two source lines separated by a soft break belong to one paragraph')
       .toBe('A short handbook for volunteers recording shoreline conditions. Read it before your first survey, and keep a copy in your field bag.');
     // The source file breaks this paragraph after "before", so a line ending in "and" proves it re-wrapped.
@@ -382,11 +383,11 @@ describe('Check markdown import.', () => {
   });
 
   test('Exported PDF re-imports with the text intact', () => {
-    expect(docPdfReimport.ocr.active.length, 'the exported PDF must keep both pages of the markdown import').toBe(2);
+    expect(docPages(docPdfReimport).length, 'the exported PDF must keep both pages of the markdown import').toBe(2);
     // The word "miscount" is drawn as two runs, roman then bold, which the PDF text extractor reads back as two words.
     expect(wordSequence(docPdfReimport).replace(/\s+/g, ''), 'text was lost exporting the markdown import to PDF and re-importing it')
       .toBe(wordSequence(doc).replace(/\s+/g, ''));
-    expect(docPdfReimport.ocr.active[0].lines[0].words.map((word) => word.text).join(' '),
+    expect(docPdfReimport.getPage(0).lines[0].words.map((word) => word.text).join(' '),
       'the heading must come back as readable text from the exported PDF').toBe('Coastal Survey Field Guide');
   });
 

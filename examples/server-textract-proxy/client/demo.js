@@ -192,12 +192,12 @@ runBtn.addEventListener('click', async () => {
       if (entry.error) {
         pagesFailed++;
         const dims = currentDoc.pageMetrics[entry.pageNum].dims;
-        currentDoc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { engineName: SERVER_ENGINE_NAME });
+        currentDoc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { layer: SERVER_ENGINE_NAME });
         log(`  page ${entry.pageNum} failed: ${entry.error.message}`);
         continue;
       }
       currentDoc.insertParsedPage(entry.pageNum, entry.page, {
-        engineName: SERVER_ENGINE_NAME,
+        layer: SERVER_ENGINE_NAME,
         dataTables: entry.dataTables,
         warn: entry.warn,
       });

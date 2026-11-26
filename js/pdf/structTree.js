@@ -195,17 +195,16 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
 }
 
 /**
- * Fill `structElemId` and `structElemTag` on each page's word signals, from the resolved element map.
- * @param {Array<{wordSignals?: Map<OcrWord, PdfWordSignal>}|null>} results - parsed pages (index = page index).
+ * Fill `structElemId` and `structElemTag` on each page's word signals from `elemMap`.
+ * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>}|null>} results
  * @param {Map<string, {elemNum: number, tag: string}>} elemMap
  */
 export function resolveStructElems(results, elemMap) {
-  for (let n = 0; n < results.length; n++) {
-    const r = results[n];
+  for (const r of results) {
     if (!r || !r.wordSignals) continue;
     for (const sig of r.wordSignals.values()) {
       if (sig.mcid == null) continue;
-      const o = elemMap.get(`${n}:${sig.mcid}`);
+      const o = elemMap.get(`${r.pageObj.n}:${sig.mcid}`);
       if (o) { sig.structElemId = o.elemNum; sig.structElemTag = o.tag; }
     }
   }

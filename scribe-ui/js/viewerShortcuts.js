@@ -94,22 +94,40 @@ export function selectPrevWord(viewer) {
 }
 
 /**
- * The words still to check in proofreading, in reading order across the document.
- * A word is still to check while its confidence is at or below the high threshold.
+ * Cached positions of words to check, keyed by clean page record.
+ * @type {WeakMap<object, {thresh: number, places: Array<number>}>}
+ */
+const toCheckOfRecord = new WeakMap();
+
+/**
+ * Return the positions of words to check in proofreading on each page, in reading order.
  * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
- * @returns {Array<OcrWord>}
+ * @returns {Array<Array<number>>} One array per page of `lineIndex * 65536 + wordIndex` positions for non-empty words with confidence at or below `confThreshHigh`.
  */
 export function wordsToCheck(doc) {
   const thresh = scribe.ScribeDoc.defaults.confThreshHigh;
-  /** @type {Array<OcrWord>} */
-  const words = [];
-  for (const page of doc.ocr.active || []) {
-    if (!page) continue;
-    for (const line of page.lines) {
-      for (const word of line.words) if (word.text && word.conf <= thresh) words.push(word);
+  /** @type {Array<Array<number>>} */
+  const lists = [];
+  const pageCount = doc.pageStore.slotCount();
+  for (let n = 0; n < pageCount; n++) {
+    const record = doc.pageStore.cleanRecord(n);
+    const known = record && toCheckOfRecord.get(record);
+    if (known && known.thresh === thresh) {
+      lists.push(known.places);
+      continue;
     }
+    /** @type {Array<number>} */
+    const places = [];
+    const page = doc.pageStore.readOnlyPage(n);
+    if (page) {
+      page.lines.forEach((line, li) => {
+        line.words.forEach((word, wi) => { if (word.text && word.conf <= thresh) places.push(li * 65536 + wi); });
+      });
+    }
+    if (record) toCheckOfRecord.set(record, { thresh, places });
+    lists.push(places);
   }
-  return words;
+  return lists;
 }
 
 /**
@@ -122,28 +140,29 @@ export function wordsToCheck(doc) {
 export async function selectNextToCheck(viewer, dir) {
   const _viewer = viewer || ScribeViewer.getDefault();
   if (!_viewer.doc) return;
-  const queue = wordsToCheck(_viewer.doc);
-  if (queue.length === 0) return;
+  const lists = wordsToCheck(_viewer.doc);
+  if (!lists.some((list) => list.length > 0)) return;
   const selected = _viewer.CanvasSelection.getUiWords();
   // Taken before the deselect below empties the selection's own array.
   const from = selected.length === 1 ? selected[0] : null;
-  const cur = from ? from.word : null;
-  /** @param {OcrWord} w */
-  const place = (w) => [w.line.page.n, w.line.page.lines.indexOf(w.line), w.line.words.indexOf(w)];
-  /** @param {OcrWord} a @param {OcrWord} b */
-  const cmp = (a, b) => { const x = place(a); const y = place(b); return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
-  let target;
-  if (cur && queue.includes(cur)) {
-    target = queue[(queue.indexOf(cur) + dir + queue.length) % queue.length];
-  } else if (cur) {
-    target = dir > 0 ? (queue.find((w) => cmp(w, cur) > 0) || queue[0]) : (queue.slice().reverse().find((w) => cmp(w, cur) < 0) || queue[queue.length - 1]);
-  } else {
-    const n = _viewer.state.cp.n;
-    target = dir > 0 ? (queue.find((w) => w.line.page.n >= n) || queue[0]) : (queue.slice().reverse().find((w) => w.line.page.n <= n) || queue[queue.length - 1]);
+  let n = _viewer.state.cp.n;
+  let k = dir > 0 ? 0 : (lists[n] || []).length - 1;
+  if (from) {
+    const { line } = from.word;
+    n = line.page.n;
+    const place = line.page.lines.indexOf(line) * 65536 + line.words.indexOf(from.word);
+    const list = lists[n] || [];
+    const after = list.findIndex((x) => x > place);
+    k = dir > 0 ? (after < 0 ? list.length : after) : list.filter((x) => x < place).length - 1;
   }
-  const n = target.line.page.n;
+  for (let hops = 0; hops < lists.length && (k < 0 || k >= (lists[n] || []).length); hops++) {
+    n = (n + dir + lists.length) % lists.length;
+    k = dir > 0 ? 0 : lists[n].length - 1;
+  }
+  const place = lists[n][k];
   if (n !== _viewer.state.cp.n) await _viewer.displayPage(n, true, false);
-  const ui = _viewer.getUiWords().find((x) => x.word === target);
+  const target = _viewer.doc.pageStore.readOnlyPage(n)?.lines[Math.floor(place / 65536)]?.words[place % 65536];
+  const ui = target && _viewer.getUiWords().find((x) => x.word === target);
   if (!ui) return;
   _viewer.destroyControls(true);
   scrollIntoView(_viewer, ui, from);

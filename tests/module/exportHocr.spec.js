@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
@@ -59,40 +60,50 @@ describe('Check .hocr export of a document from another format.', () => {
   test('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
     const doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.abbyy.xml`]);
     // A drop cap's nested span once ended its line early on re-import.
-    doc.ocr.active[0].lines[0].words[0].style.dropcap = true;
+    doc.getPage(0).lines[0].words[0].style.dropcap = true;
 
-    const page0 = doc.ocr.active[0];
-    const undone = page0.lines[0].words[1];
-    const redone = page0.lines[12].words[0];
-    expect([undone.text, undone.conf, redone.text, redone.conf], 'the two doubtful words these edits correct').toEqual(['grave.', 0, 't', 0]);
-    doc.editWords([0], 'Edited word', () => { undone.text = 'tomb.'; undone.conf = 100; });
+    const undone = () => doc.getPage(0).lines[0].words[1];
+    const redone = () => doc.getPage(0).lines[12].words[0];
+    expect([undone().text, undone().conf, redone().text, redone().conf], 'the two doubtful words these edits correct').toEqual(['grave.', 0, 't', 0]);
+    doc.editWords([0], 'Edited word', () => {
+      const word = undone();
+      word.text = 'tomb.';
+      word.conf = 100;
+    });
     expect(doc.docHistory.undoStack.at(-1)?.label, 'a word edit records one undo step under its label').toBe('Edited word');
     expect(doc.undo(), 'a word edit is undoable').toBe(true);
-    expect([undone.text, undone.conf], 'undo restores the word\'s text and confidence').toEqual(['grave.', 0]);
-    doc.editWords([page0], 'Edited word', () => { redone.text = 'to'; redone.conf = 100; });
+    expect([undone().text, undone().conf], 'undo restores the word\'s text and confidence').toEqual(['grave.', 0]);
+    doc.editWords([doc.getPage(0)], 'Edited word', () => {
+      const word = redone();
+      word.text = 'to';
+      word.conf = 100;
+    });
     doc.undo();
-    expect([redone.text, redone.conf], 'undoing the second edit restores its word').toEqual(['t', 0]);
+    expect([redone().text, redone().conf], 'undoing the second edit restores its word').toEqual(['t', 0]);
     expect(doc.redo(), 'an undone word edit is redoable').toBe(true);
-    expect([redone.text, redone.conf], 'redo re-applies the correction and its confidence').toEqual(['to', 100]);
+    expect([redone().text, redone().conf], 'redo re-applies the correction and its confidence').toEqual(['to', 100]);
 
-    // The Export mode's role chips edit a paragraph's role through `editWords`, whose undo once left the role unchanged.
-    const rolePar = page0.lines[0].par;
-    expect([rolePar.type, rolePar.headingLevel], 'the first paragraph starts as body text').toEqual(['body', null]);
-    doc.editWords([0], 'Paragraph role', () => { rolePar.type = 'title'; rolePar.headingLevel = 2; });
+    const rolePar = () => doc.getPage(0).lines[0].par;
+    expect([rolePar().type, rolePar().headingLevel], 'the first paragraph starts as body text').toEqual(['body', null]);
+    doc.editWords([0], 'Paragraph role', () => {
+      const par = rolePar();
+      par.type = 'title';
+      par.headingLevel = 2;
+    });
     expect(await doc.exportData('md', { pageArr: [0] }), 'a paragraph made a level-2 heading opens the Markdown export as one').toMatch(/^## /);
     expect(doc.undo(), 'a paragraph role edit is undoable').toBe(true);
-    expect([rolePar.type, rolePar.headingLevel], 'undo restores the paragraph role').toEqual(['body', null]);
+    expect([rolePar().type, rolePar().headingLevel], 'undo restores the paragraph role').toEqual(['body', null]);
     expect(await doc.exportData('md', { pageArr: [0] }), 'the undone heading leaves the Markdown export').not.toMatch(/^## /);
 
-    const view1 = hocrView(doc.ocr.active);
+    const view1 = hocrView(docPages(doc));
 
     const hocrOutStr = /** @type {string} */ (await doc.exportData('hocr'));
     const doc2 = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(hocrOutStr).buffer] });
 
-    expect(hocrView(doc2.ocr.active), 'words, lines, metrics or paragraphs changed across an hOCR export and re-import').toEqual(view1);
+    expect(hocrView(docPages(doc2)), 'words, lines, metrics or paragraphs changed across an hOCR export and re-import').toEqual(view1);
     expect(ocrSystem(hocrOutStr), 'a document not from hOCR names another producer').toBe('scribe.js');
-    expect([doc2.ocr.active[0].lines[0].words[1].text, doc2.ocr.active[0].lines[0].words[1].conf], 'an undone word edit must not reach the hOCR export').toEqual(['grave.', 0]);
-    expect([doc2.ocr.active[0].lines[12].words[0].text, doc2.ocr.active[0].lines[12].words[0].conf], 'a redone word edit reaches the hOCR export with its confidence').toEqual(['to', 100]);
+    expect([doc2.getPage(0).lines[0].words[1].text, doc2.getPage(0).lines[0].words[1].conf], 'an undone word edit must not reach the hOCR export').toEqual(['grave.', 0]);
+    expect([doc2.getPage(0).lines[12].words[0].text, doc2.getPage(0).lines[12].words[0].conf], 'a redone word edit reaches the hOCR export with its confidence').toEqual(['to', 100]);
   });
 
   afterAll(async () => {
@@ -153,40 +164,41 @@ describe('Check .hocr export of a document imported from hOCR.', () => {
   beforeAll(async () => {
     input = await readFileContent(`${ASSETS_PATH}/bill.hocr`);
     const doc = await scribe.openDocument([`${ASSETS_PATH}/bill.png`, `${ASSETS_PATH}/bill.hocr`]);
-    const page = doc.ocr.active[0];
-    parsBefore = page.pars.map((par) => ({ id: par.id, lines: par.lines.map((line) => line.id) }));
+    // Every export below reads pages, and a page object held across one may no longer be the document's, so each edit reads the page again.
+    const page = () => doc.getPage(0);
+    parsBefore = page().pars.map((par) => ({ id: par.id, lines: par.lines.map((line) => line.id) }));
     unedited = /** @type {string} */ (await doc.exportData('hocr'));
-    page.lines[1].words[0].text = 'Lien';
-    page.lines[1].words[1].style.font = 'Q&A Sans';
-    page.lines[1].words[2].style.font = "O'Brien; Serif";
+    page().lines[1].words[0].text = 'Lien';
+    page().lines[1].words[1].style.font = 'Q&A Sans';
+    page().lines[1].words[2].style.font = "O'Brien; Serif";
     edited = /** @type {string} */ (await doc.exportData('hocr'));
     reimported = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(edited).buffer] });
 
     // The editor's word deletion removes an emptied line from the page but not from its paragraph.
-    scribe.utils.ocr.deletePageWords(page, page.lines[page.lines.length - 1].words.map((word) => word.id));
+    scribe.utils.ocr.deletePageWords(page(), page().lines[page().lines.length - 1].words.map((word) => word.id));
     lastLineDeleted = /** @type {string} */ (await doc.exportData('hocr'));
 
     const addedBox = {
       left: 40, top: 96, right: 120, bottom: 108,
     };
-    const addedLine = new scribe.utils.ocr.OcrLine(page, { ...addedBox }, [0, 0], 10, null);
+    const addedLine = new scribe.utils.ocr.OcrLine(page(), { ...addedBox }, [0, 0], 10, null);
     const addedWord = new scribe.utils.ocr.OcrWord(addedLine, 'added_word', 'ADDED', { ...addedBox });
     addedWord.conf = 100;
     addedLine.words = [addedWord];
-    page.lines.splice(3, 0, addedLine);
-    addedOrder = page.lines.map((line) => line.id);
+    page().lines.splice(3, 0, addedLine);
+    addedOrder = page().lines.map((line) => line.id);
     lineAdded = /** @type {string} */ (await doc.exportData('hocr'));
 
-    scribe.utils.assignParagraphs(page, 0);
+    scribe.utils.assignParagraphs(page(), 0);
     regrouped = /** @type {string} */ (await doc.exportData('hocr'));
 
-    page.lines.find((line) => line.id === 'line_1_6').words[0].lang = 'deu';
+    page().lines.find((line) => line.id === 'line_1_6').words[0].lang = 'deu';
     langEdited = /** @type {string} */ (await doc.exportData('hocr'));
 
     // The tesseract.js reading of the same scan reuses the upload's line ids.
     secondInput = await readFileContent(`${ASSETS_PATH}/bill.tesseractjs.hocr`);
     await doc.importFilesSupp([`${ASSETS_PATH}/bill.tesseractjs.hocr`], 'Second');
-    secondOrder = doc.ocr.Second[0].lines.map((line) => line.id);
+    secondOrder = doc.getPage(0, { layer: 'Second' }).lines.map((line) => line.id);
     otherLayer = /** @type {string} */ (await doc.exportData('hocr', { ocrName: 'Second' }));
 
     class MockHocrModel {
@@ -208,7 +220,7 @@ describe('Check .hocr export of a document imported from hOCR.', () => {
     restoredUpload = await saveAndRestore('User Upload');
     restoredModel = await saveAndRestore('Mock hOCR');
 
-    const second = doc.ocr.Second[0];
+    const second = doc.getPage(0, { layer: 'Second' });
     scribe.utils.ocr.deletePageWords(second, second.lines[0].words.map((word) => word.id));
     secondParDeleted = /** @type {string} */ (await doc.exportData('hocr', { ocrName: 'Second' }));
 
@@ -230,7 +242,7 @@ describe('Check .hocr export of a document imported from hOCR.', () => {
     const lineOnlyDoc = await scribe.openDocument([`${ASSETS_PATH}/${fix}`]);
     await lineOnlyDoc.exportData('txt', { reflow: true });
     lineOnlyAfterReflow = /** @type {string} */ (await lineOnlyDoc.exportData('hocr'));
-    const lineOnlyFirst = lineOnlyDoc.ocr.active[0].lines[0];
+    const lineOnlyFirst = lineOnlyDoc.getPage(0).lines[0];
     for (const word of lineOnlyFirst.words) word.lang = 'deu';
     lineOnlyFirst.words[0].text = 'EDITED';
     const lineOnlyEdited = /** @type {string} */ (await lineOnlyDoc.exportData('hocr'));
@@ -324,17 +336,17 @@ describe('Check .hocr export of a document imported from hOCR.', () => {
   });
 
   test('A rebuilt line outside any paragraph keeps its language', async () => {
-    const first = lineOnlyLangEdited.ocr.active[0].lines[0];
+    const first = lineOnlyLangEdited.getPage(0).lines[0];
     expect(first.words[0].text, 'the edit did not survive re-import').toBe('EDITED');
     expect([...new Set(first.words.map((word) => word.lang))], 'the words of a rebuilt paragraph-less line lost their language').toEqual(['deu']);
   });
 
   test('The edited export re-imports with the edit and the same paragraphs', async () => {
-    expect(reimported.ocr.active[0].lines[1].words[0].text, 'the edit did not survive re-import').toBe('Lien');
-    expect(reimported.ocr.active[0].lines[1].words[0].conf, 'the edited word lost its confidence on re-import').toBe(96);
-    expect(reimported.ocr.active[0].lines[1].words[1].style.font, 'a font name holding an ampersand changed across an hOCR round trip').toBe('Q&A Sans');
-    expect(reimported.ocr.active[0].lines[1].words[2].style.font, 'a font name holding an apostrophe and a semicolon changed across an hOCR round trip').toBe("O'Brien; Serif");
-    expect(reimported.ocr.active[0].pars.map((par) => ({ id: par.id, lines: par.lines.map((line) => line.id) })), 'paragraphs changed across an hOCR export and re-import').toEqual(parsBefore);
+    expect(reimported.getPage(0).lines[1].words[0].text, 'the edit did not survive re-import').toBe('Lien');
+    expect(reimported.getPage(0).lines[1].words[0].conf, 'the edited word lost its confidence on re-import').toBe(96);
+    expect(reimported.getPage(0).lines[1].words[1].style.font, 'a font name holding an ampersand changed across an hOCR round trip').toBe('Q&A Sans');
+    expect(reimported.getPage(0).lines[1].words[2].style.font, 'a font name holding an apostrophe and a semicolon changed across an hOCR round trip').toBe("O'Brien; Serif");
+    expect(reimported.getPage(0).pars.map((par) => ({ id: par.id, lines: par.lines.map((line) => line.id) })), 'paragraphs changed across an hOCR export and re-import').toEqual(parsBefore);
   });
 
   afterAll(async () => {

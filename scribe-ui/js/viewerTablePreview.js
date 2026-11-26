@@ -105,7 +105,7 @@ export function applyTablePreview(viewer, n) {
   const fragIdx = pageFrag && activeChain ? activeChain.indexOf(pageFrag) : 0;
   if (pageFrag && activeChain) {
     chainName = viewer.doc.tableExport.names[activeChain[0].table.id] || scribe.tableChainName(viewer.doc.layoutDataTables.pages, activeChain);
-    const fragRows = (f) => scribe.extractTextFromTables(viewer.doc.ocr.active[f.n], /** @type {any} */ ({ tables: [f.table] }))[0]?.rows || [];
+    const fragRows = (f) => scribe.extractTextFromTables(viewer.doc.pageStore.readOnlyPage(f.n), /** @type {any} */ ({ tables: [f.table] }))[0]?.rows || [];
     const headRows = fragRows(activeChain[0]);
     const headRow0 = headRows.length ? headRows[0].join(' ').toLowerCase().replace(/\s+/g, ' ').trim() : null;
     const dedups = (rows) => !!(headRow0 && headRow0.length >= 6 && rows.length && rows[0].join(' ').toLowerCase().replace(/\s+/g, ' ').trim() === headRow0);

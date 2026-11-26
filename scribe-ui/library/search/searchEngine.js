@@ -1,6 +1,6 @@
 import { compareHits, evaluate } from './searchEvaluator.js';
 import {
-  encodePageRecords, readPageBoxes, readPageRecord, readPageView,
+  encodePageBlocks, joinPageBlocks, readPageBoxes, readPageRecord,
 } from './searchPageRecords.js';
 import {
   PAGE_KEY_SPAN, compareBytes, openSegment, readAllPostings, writeSegment,
@@ -557,14 +557,13 @@ export const createSearchEngine = (storage, settings = {}) => {
   };
 
   /**
-   * @template T
+   * Return the 0-based page-wide word indices for each occurrence.
    * @param {import('./searchPageRecords.js').PageRecord} rec
-   * @param {Array<T>} perWord
    * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
    * @param {(v: number) => number} indexOf
-   * @returns {Array<Array<T>>}
+   * @returns {Array<Array<number>>}
    */
-  const wordsOf = (rec, perWord, marks, indexOf) => {
+  const wordsOf = (rec, marks, indexOf) => {
     const groups = [];
     // A word with no token, such as a line number right after a line-end hyphenation, lies inside an occurrence's range without being part of it.
     const tokenWords = new Set(rec.wordIndex);
@@ -574,19 +573,27 @@ export const createSearchEngine = (storage, settings = {}) => {
       if (i < 0 || j < 0) continue;
       const from = rec.wordIndex[i];
       // A joined hyphenation's second half is the token two after the joined one, and its word need not be the next word.
-      const last = rec.span[j] && j + 2 < rec.wordIndex.length ? rec.wordIndex[j + 2] : rec.wordIndex[j];
-      const to = Math.min(perWord.length - 1, last);
-      if (from > to) continue;
+      const to = rec.span[j] && j + 2 < rec.wordIndex.length ? rec.wordIndex[j + 2] : rec.wordIndex[j];
       const group = [];
-      for (let k = from; k <= to; k++) if (tokenWords.has(k)) group.push(perWord[k]);
+      for (let k = from; k <= to; k++) if (tokenWords.has(k)) group.push(k);
       if (group.length) groups.push(group);
     }
     return groups;
   };
 
   /**
-   * Cut a page's excerpt around its first match.
-   * It starts at the match's sentence when that begins near, otherwise on a whole word, and ends on a whole word.
+   * Return the word bounding boxes for each occurrence.
+   * @param {import('./searchPageRecords.js').PageRecord} rec
+   * @param {Array<import('./searchPageRecords.js').Box>} boxes
+   * @param {Array<[number, number]>} marks
+   * @param {(v: number) => number} indexOf
+   */
+  const rectsOf = (rec, boxes, marks, indexOf) => wordsOf(rec, marks, indexOf)
+    .map((group) => group.filter((place) => place < boxes.length).map((place) => boxes[place]))
+    .filter((group) => group.length);
+
+  /**
+   * Build a snippet around the page's first match.
    * @param {import('./searchPageRecords.js').PageRecord} rec
    * @param {Array<[number, number]>} marks - (position << 1 | span) values of each occurrence's first and last token.
    * @param {(v: number) => number} indexOf
@@ -730,7 +737,7 @@ export const createSearchEngine = (storage, settings = {}) => {
           }
           const indexOf = tokenIndexOf(rec);
           snippets.set(h, snippetOf(rec, h.marks, indexOf));
-          if (boxes) rects.set(h, { dims: boxes.dims, rects: wordsOf(rec, boxes.boxes, h.marks, indexOf) });
+          if (boxes) rects.set(h, { dims: boxes.dims, rects: rectsOf(rec, boxes.boxes, h.marks, indexOf) });
         }));
       }));
       return {
@@ -765,24 +772,31 @@ export const createSearchEngine = (storage, settings = {}) => {
     open: openIndex,
 
     /**
+     * Index or replace a document under `hash`.
      * @param {string} hash
-     * @param {Array<?import('./searchTokenizer.js').PageInput>} pages
+     * @param {Iterable<?import('./searchTokenizer.js').PageInput>|AsyncIterable<?import('./searchTokenizer.js').PageInput>} pages - Pages in 0-based order, with null for pages without text.
      * @returns {Promise<{pages: number, positions: number, tokens: number, unpositioned: number, markers: number, segmentBytes: number, recordBytes: number, ms: number}>}
      */
     async addDoc(hash, pages) {
       await openIndex();
       const t0 = performance.now();
       if (!manifest.segments.length) indexRules = { ...options.tokenizer };
-      const streams = pages.map((p) => tokenizePage(p, indexRules));
-      const records = await encodePageRecords(streams, pages);
       /** @type {Map<string, Map<number, number[]>>} */
       const byTerm = new Map();
       let positions = 0;
       let tokens = 0;
       let unpositioned = 0;
       let markers = 0;
-      if (streams.length >= PAGE_KEY_SPAN) throw new Error(`A document of ${streams.length} pages exceeds the page key span.`);
-      streams.forEach((s, page) => {
+      /** @type {Array<{tokens: ?Uint8Array, boxes: ?Uint8Array}>} */
+      const blocks = [];
+      /** @type {Array<number>} */
+      const pageLengths = [];
+      for await (const input of pages) {
+        const page = blocks.length;
+        if (page + 1 >= PAGE_KEY_SPAN) throw new Error(`A document of more than ${page} pages exceeds the page key span.`);
+        const s = tokenizePage(input, indexRules);
+        blocks.push(await encodePageBlocks(s, input));
+        pageLengths.push(s.positions);
         positions += s.positions;
         tokens += s.terms.length;
         unpositioned += s.unpositioned;
@@ -808,7 +822,8 @@ export const createSearchEngine = (storage, settings = {}) => {
           }
           termPages.set(page, s.markers.map((p) => p << 1));
         }
-      });
+      }
+      const records = joinPageBlocks(blocks);
       const terms = [...byTerm.keys()].map((term) => ({ term, bytes: utf8Encode(term) })).sort((a, b) => compareBytes(a.bytes, b.bytes));
       const termEntries = function* docTerms() {
         for (const { term, bytes } of terms) {
@@ -816,7 +831,7 @@ export const createSearchEngine = (storage, settings = {}) => {
           yield { bytes, entries: [...termPages.entries()].map(([key, values]) => ({ key, values })) };
         }
       };
-      const segment = writeSegment([{ hash, pageCount: streams.length, pageLengths: streams.map((s) => s.positions) }], termEntries(), options.encoding);
+      const segment = writeSegment([{ hash, pageCount: blocks.length, pageLengths }], termEntries(), options.encoding);
       const k = manifest.next++;
       const recordsName = `pr-${k}.bin`;
       const segName = `seg-${k}.bin`;
@@ -829,7 +844,7 @@ export const createSearchEngine = (storage, settings = {}) => {
         name: segName,
         bytes: segment.length,
         docs: [{
-          hash, pages: streams.length, records: recordsName, recordBytes: records.length, ingestSeq,
+          hash, pages: blocks.length, records: recordsName, recordBytes: records.length, ingestSeq,
         }],
         dead: [],
       });
@@ -839,7 +854,7 @@ export const createSearchEngine = (storage, settings = {}) => {
       await mergeDown();
       recount();
       return {
-        pages: streams.length, positions, tokens, unpositioned, markers, segmentBytes: segment.length, recordBytes: records.length, ms: performance.now() - t0,
+        pages: blocks.length, positions, tokens, unpositioned, markers, segmentBytes: segment.length, recordBytes: records.length, ms: performance.now() - t0,
       };
     },
 
@@ -901,41 +916,21 @@ export const createSearchEngine = (storage, settings = {}) => {
         }
         const indexOf = tokenIndexOf(rec);
         return {
-          page: p.page, snippet: snippetOf(rec, p.marks, indexOf), rects: boxes ? wordsOf(rec, boxes.boxes, p.marks, indexOf) : null, dims: boxes ? boxes.dims : null,
+          page: p.page,
+          snippet: snippetOf(rec, p.marks, indexOf),
+          rects: boxes ? rectsOf(rec, boxes.boxes, p.marks, indexOf) : null,
+          dims: boxes ? boxes.dims : null,
         };
       }));
     },
 
     /**
-     * @param {string} hash
-     * @param {number[]} pageNs
-     * @returns {Promise<Array<?import('./searchPageRecords.js').PageView>>}
-     */
-    async pages(hash, pageNs) {
-      await openIndex();
-      const live = findLive(hash);
-      if (!live) return pageNs.map(() => null);
-      const name = live.seg.docs[live.ord].records;
-      const file = await acquire(name);
-      try {
-        const out = [];
-        for (const n of pageNs) {
-          const rec = await readPageRecord(file, n);
-          out.push(rec ? await readPageView(file, n, rec.text) : null);
-        }
-        return out;
-      } finally {
-        release(name);
-      }
-    },
-
-    /**
-     * The document's matches of a query, in page order, with the ids of each occurrence's words.
+     * Find a document's matches for a query, ordered by 0-based page index.
+     * Each entry in `matches` lists 0-based word indices across the page as indexed.
      * @param {string} hash
      * @param {string} query
-     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Near matches of the document to return with its matches, as the results list shows them.
-     *   A page that merely holds every word (tier 5) is one match of all its marked words.
-     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
+     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Fallback-tier hits to include for pages with no exact or prefix match.
+     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<number>>}>}>}
      */
     async find(hash, query, near = []) {
       await openIndex();
@@ -981,10 +976,8 @@ export const createSearchEngine = (storage, settings = {}) => {
         const pages = [];
         for (const h of wanted) {
           const rec = await readPageRecord(file, h.page);
-          const view = rec ? await readPageView(file, h.page, rec.text) : null;
-          if (!rec || !view) continue;
-          const ids = view.lines.flatMap((l) => l.words.map((w) => w.id));
-          const groups = wordsOf(rec, ids, h.marks, tokenIndexOf(rec));
+          if (!rec) continue;
+          const groups = wordsOf(rec, h.marks, tokenIndexOf(rec));
           pages.push({ page: h.page, count: h.count, matches: h.whole ? [groups.flat()] : groups });
         }
         return { pages };

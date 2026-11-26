@@ -67,15 +67,13 @@ const init = async (params) => {
 
 /**
  * Open a new document from the provided files and return a handle to it.
- * The returned `ScribeDoc` can be operated on directly (`doc.recognize()`, `doc.exportData()`,
- * `doc.ocr`, …). Multiple documents can be open at once; each operates on its own state.
  * @public
  * @param {Parameters<ScribeDoc['importFiles']>[0]} files
  * @param {Parameters<ScribeDoc['importFiles']>[1]} [options]
  * @returns {Promise<ScribeDoc>}
  */
 const openDocument = async (files, options) => {
-  if (options && (options.deferText || options.seeded)) {
+  if (options && (options.deferText || options.saved)) {
     // Not awaited: the render critical path needs neither the general worker pool nor the built-in fonts,
     // and the background extraction awaits the fonts it needs itself, so gating init here would only delay first paint.
     // It still starts now to be warm for later verbs.
@@ -284,16 +282,11 @@ async function dumpHOCR(doc, dir) {
   if (typeof process === 'undefined') {
     throw new Error('This function is only available in Node.js.');
   } else {
-    const activeCurrent = doc.ocr.active;
-
     const fs = await import('node:fs');
-    for (const [name, pages] of Object.entries(doc.ocr)) {
-      doc.ocr.active = pages;
-      const hocrStr = await doc.exportData('hocr');
+    for (const name of ['active', ...doc.layers]) {
+      const hocrStr = await doc.exportData('hocr', { layer: name });
       fs.writeFileSync(`${dir}/${name}.hocr`, hocrStr);
     }
-
-    doc.ocr.active = activeCurrent;
   }
 }
 

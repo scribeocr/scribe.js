@@ -84,7 +84,7 @@ export async function goToChange(viewer, diff, side, n) {
   const wordId = s.wordIds[0] || s.anchorId;
   let pageN = s.pageN;
   if (pageN == null && wordId) {
-    pageN = (viewer.doc.ocr.active || []).findIndex((p) => p && p.lines.some((l) => l.words.some((w) => w.id === wordId)));
+    pageN = viewer.doc.pageStore.pageList().findIndex((p) => p && p.lines.some((l) => l.words.some((w) => w.id === wordId)));
     if (pageN < 0) pageN = null;
   }
   if (pageN == null) {
@@ -92,8 +92,6 @@ export async function goToChange(viewer, diff, side, n) {
     if (other.pageN != null && other.pageN < viewer.doc.pageMetrics.length) await viewer.displayPage(other.pageN, true, false);
     return;
   }
-  // A provisional document's page has its words only once asked for, and the scroll to the word below needs them.
-  if (viewer.doc.pageText) await viewer.doc.pageText(pageN);
   if (c.kind === 'page' && s.wordIds.length) { await viewer.displayPage(pageN, true, false); return; }
   await viewer.displayPage(pageN, false, false);
   const kw = !wordId ? null : viewer.useCustomSelection ? viewer.ensureWordObjs(pageN).get(wordId) || null : (viewer._wordObjs[pageN] || []).find((w) => w.word.id === wordId) || null;
@@ -121,7 +119,7 @@ export function diffRunsFor(doc, diff, side, colors) {
   }
   return (n) => {
     const ids = idsByPage.get(n);
-    const page = doc.ocr.active?.[n];
+    const page = doc.pageStore.readOnlyPage(n);
     if (!ids || !page) return [];
     const runs = [];
     for (const line of page.lines) {

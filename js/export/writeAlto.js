@@ -45,19 +45,26 @@ function tesseractToISO6392(tesseractLang) {
 }
 
 /**
- * Exports OCR data to ALTO XML format (v2.0)
- * @param {Object} params
- * @param {Array<OcrPage>} params.ocrData - OCR data to export
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minValue/maxValue when provided.
- * @param {number} [params.minValue] - First page to export (inclusive)
- * @param {number} [params.maxValue] - Last page to export (inclusive)
- * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
- *   exported; supplies dimensions for pages missing from the OCR data.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
- *    progress reporting.
- * @returns {string} ALTO XML formatted string
+ * Export OCR data to ALTO XML (v2.0).
+ * @param {Parameters<typeof writeAltoChunks>[0]} params
+ * @returns {string}
  */
-export function writeAlto({
+export function writeAlto(params) {
+  return [...writeAltoChunks(params)].join('');
+}
+
+/**
+ * Yield OCR data as ALTO XML (v2.0) string chunks.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrData
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to export, overriding `minValue` and `maxValue`.
+ * @param {number} [params.minValue] - First 0-based page index to export (inclusive).
+ * @param {number} [params.maxValue] - Last 0-based page index to export (inclusive).
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Supplies dimensions for pages missing from `ocrData`.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @returns {Generator<string>}
+ */
+export function* writeAltoChunks({
   ocrData, pageArr = null, minValue, maxValue, pageMetrics = null, doc = null,
 }) {
   if (!pageArr) {
@@ -125,8 +132,10 @@ export function writeAlto({
   }
 
   altoOut += '<Layout>\n';
+  yield altoOut;
 
   for (const pageIndex of pageArr) {
+    altoOut = '';
     const pageObj = ocrData[pageIndex];
 
     let pageHeight = 0;
@@ -143,6 +152,7 @@ export function writeAlto({
 
     if (!pageObj || pageObj.lines.length === 0) {
       altoOut += '</Page>\n';
+      yield altoOut;
       continue;
     }
 
@@ -313,10 +323,8 @@ export function writeAlto({
     altoOut += '</Page>\n';
 
     doc?.progressHandler({ n: pageIndex, type: 'export', info: {} });
+    yield altoOut;
   }
 
-  altoOut += '</Layout>\n';
-  altoOut += '</alto>\n';
-
-  return altoOut;
+  yield '</Layout>\n</alto>\n';
 }

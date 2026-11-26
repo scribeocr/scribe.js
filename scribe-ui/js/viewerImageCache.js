@@ -930,7 +930,7 @@ export class ViewerImageCache {
     // While OCR uploaded with a PDF is still converting, its dimensions are not yet available and nothing re-renders the neighbors once they are.
     // Raw OCR without converted OCR marks the next page as still converting.
     // A page with no text has neither.
-    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.ocrRaw?.active?.[curr + 1]
+    if (curr === 0 && viewer.doc.pageStore.hasPage(curr, 'active') && !viewer.doc.pageStore.hasPage(curr + 1, 'active') && viewer.doc.ocrRaw?.active?.[curr + 1]
       && viewer.doc.pageMetrics.length > curr + 1) {
       await this.addPageCanvas(curr);
       return;

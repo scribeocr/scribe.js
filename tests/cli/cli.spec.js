@@ -10,6 +10,7 @@ import {
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 import { getPngDimensions } from '../../js/utils/imageUtils.js';
 import { ASSETS_PATH } from '../module/_paths.js';
+import { docPages } from '../module/_pages.js';
 
 scribe.opt.workerN = 1;
 
@@ -147,11 +148,11 @@ describe('Check Node.js commands.', () => {
       scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
       scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
       const doc = await scribe.openDocument({ pdfFiles: [outputArrayBuffer] });
-      doc.ocr.active = doc.ocr.pdf;
+      doc.activeLayer = 'pdf';
       extractedText = /** @type {string} */ (await doc.exportData('text'));
       colorCounts = new Map();
       opacities = new Set();
-      for (const page of doc.ocr.active) {
+      for (const page of docPages(doc)) {
         for (const line of page.lines) {
           for (const w of line.words) {
             colorCounts.set(w.style.color, (colorCounts.get(w.style.color) || 0) + 1);
@@ -244,6 +245,12 @@ describe('Extract CLI command.', () => {
 
     expect(fs.existsSync(outputPath)).toBe(true);
     expect(fs.readFileSync(outputPath, 'utf8')).toContain('WHISTLEBLOWERS');
+
+    const jsonPath = `${tmpDir}/academic_article_1.json`;
+    await extractCLI(`${ASSETS_PATH}/academic_article_1.pdf`, jsonPath, { format: 'scribe.json' });
+    expect(fs.readdirSync(tmpDir).filter((name) => name.includes('json')), 'a scribe.json extract is saved under the output name it was given, and under no other')
+      .toStrictEqual(['academic_article_1.json']);
+    expect(JSON.parse(fs.readFileSync(jsonPath, 'utf8')).ocr[0].lines[0].words[0].text, 'the saved scribe.json holds the document\'s words').toBe('WHISTLEBLOWERS');
   }, 15000);
 
   // Regression gate: the converter that lays out a text document runs in a general worker, and the in-process CLI never pre-warms that pool.
@@ -409,7 +416,7 @@ describe('Subset CLI command.', () => {
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     const doc = await scribe.openDocument({ pdfFiles: [ab] });
-    doc.ocr.active = doc.ocr.pdf;
+    doc.activeLayer = 'pdf';
     pageCount = doc.inputData.pageCount;
     page0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     page1Text = /** @type {string} */ (await doc.exportData('text', { minPage: 1, maxPage: 1 }));

@@ -80,7 +80,8 @@ async function loadDocument({ file, dataFile }) {
   }
   const doc = await ensureFileLoaded(filePath, dataFilePath);
   const pageCount = doc.inputData.pageCount;
-  const hasOcrData = doc.ocr.active?.some((page) => page?.lines?.length > 0) || false;
+  let hasOcrData = false;
+  for (let n = 0; n < pageCount && !hasOcrData; n++) hasOcrData = doc.pageStore.readOnlyPage(n)?.lines?.length > 0;
   return {
     file: filePath, dataFile: dataFilePath || null, pageCount, loaded: true, hasOcrData,
   };
@@ -192,7 +193,7 @@ async function extractDocumentText({
       }
     } else {
       text = writeText({
-        ocrCurrent: doc.ocr.active,
+        ocrCurrent: doc.pageStore.pageList(),
         pageArr: null,
         lineNumbers: true,
         preserveSpacing: preserveSpacing || false,
@@ -220,8 +221,10 @@ async function extractDocumentText({
     }
   } else {
     for (let p = start; p < pageCount; p++) {
+      const ocrCurrent = [];
+      ocrCurrent[p] = doc.getPage(p);
       const pageText = writeText({
-        ocrCurrent: doc.ocr.active,
+        ocrCurrent,
         pageArr: [p],
         lineNumbers: true,
         preserveSpacing: preserveSpacing || false,
@@ -312,7 +315,7 @@ async function batchExtractText({
         }
       } else {
         text = writeText({
-          ocrCurrent: doc.ocr.active,
+          ocrCurrent: doc.pageStore.pageList(),
           pageArr: null,
           lineNumbers: true,
           preserveSpacing: preserveSpacing || false,
@@ -524,7 +527,7 @@ async function defineTablesHandler({
   }
 
   const doc = currentDoc;
-  const tablesPage = scribe.createTablesFromText(page, tables, doc.ocr.active[page]);
+  const tablesPage = scribe.createTablesFromText(page, tables, doc.getPage(page));
   doc.layoutDataTables.pages[page] = tablesPage;
   return { page, tablesCreated: tables.length, totalRows: tables.reduce((sum, t) => sum + (t.rows?.length || 0), 0) };
 }
@@ -550,13 +553,13 @@ async function extractTablesHandler({
   const result = {};
 
   if (page != null) {
-    result.tables = scribe.extractTextFromTables(doc.ocr.active[page], doc.layoutDataTables.pages[page]);
+    result.tables = scribe.extractTextFromTables(doc.getPage(page), doc.layoutDataTables.pages[page]);
     result.page = page;
   } else {
     // Return tables for all pages
     result.pages = {};
     for (let p = 0; p < pageCount; p++) {
-      const tables = scribe.extractTextFromTables(doc.ocr.active[p], doc.layoutDataTables.pages[p]);
+      const tables = scribe.extractTextFromTables(doc.getPage(p), doc.layoutDataTables.pages[p]);
       if (tables.length > 0) result.pages[p] = tables;
     }
   }

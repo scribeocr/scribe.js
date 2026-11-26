@@ -58,9 +58,19 @@ export function buildBulkEditWorkspace(host, container) {
   let stage = 'empty';
   /** @type {Array<{prop: string, op: string, value: string}>} */
   let rules = [];
-  /** @type {?{line: import('../../../js/objects/ocrObjects.js').OcrLine, n: number}} */
+  /**
+   * Cached summary of an editable native-text line.
+   * @typedef {Object} LineSummary
+   * @property {number} n - 0-based page index.
+   * @property {string} id
+   * @property {{font: string, size: number, color: string, style: {entire: ?string, byCombo: Map<string, number>, total: number}, position: string, text: string}} p - Rule-matching properties.
+   * @property {number} relTop - Vertical center as a fraction of page height.
+   * @property {{left: number, top: number, right: number, bottom: number}} bbox
+   * @property {Object} [lookGroup]
+   */
+  /** @type {?LineSummary} */
   let example = null;
-  /** @type {Array<{n: number, line: import('../../../js/objects/ocrObjects.js').OcrLine, p: Object, lookGroup?: Object}>} */
+  /** @type {Array<LineSummary>} */
   let matches = [];
   /** @type {Array<{key: string, items: Array<Object>, excluded: boolean, cursor: number}>} */
   let groups = [];
@@ -77,7 +87,10 @@ export function buildBulkEditWorkspace(host, container) {
   /** @type {'before'|'after'} */
   let view = 'before';
   let cardLimit = CARD_BATCH;
-  /** @type {?Object} The match ringed in the document after a card jump. */
+  /**
+   * Active match highlighted in the viewer after jumping from a card.
+   * @type {?LineSummary}
+   */
   let current = null;
   /** @type {?{entry: Object, count: number, pages: number, excluded: number}} */
   let lastDelete = null;
@@ -88,48 +101,107 @@ export function buildBulkEditWorkspace(host, container) {
 
   const eligible = (line) => nativeLineEligible(doc, line);
 
-  /** @type {WeakMap<import('../../../js/objects/ocrObjects.js').OcrLine, {words: Array<Object>, n: number, props: Object}>} */
-  const propsCache = new WeakMap();
+  /**
+   * Per-page cache of editable line summaries and the clean page record they were built from.
+   * @type {Array<{record: ?object, lines: Array<LineSummary>}>}
+   */
+  const pageLines = [];
+  /** @type {Map<string, string>} */
+  const familyOfFont = new Map();
+  /** @type {Map<string, LineSummary['p']['style']>} */
+  const styleOfCombo = new Map();
+  const readingNote = document.createElement('div');
+  readingNote.className = 'scribe-am-rdnote';
+  /**
+   * Promise chain serializing page-line reads.
+   * @type {Promise<boolean>}
+   */
+  let reading = Promise.resolve(true);
 
   /**
-   * The properties a rule can test.
-   * Read off the line's first alphanumeric word, except style, which aggregates every word.
-   * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
-   * @param {number} n
+   * Read editable line summaries for unread or modified pages.
+   * @returns {Promise<boolean>} False if the workspace was torn down, or true once all pages are up to date.
    */
-  const propsOf = (line, n) => {
-    const hit = propsCache.get(line);
-    // Edits replace the line object (delete/undo) or its `words` array (`replaceTextLine`), so both are the validity check.
-    if (hit && hit.words === line.words && hit.n === n) return hit.props;
-    const w = line.words.find((x) => /[\p{L}\p{N}]/u.test(x.text)) || line.words[0];
-    const raw = (w.style.font || '').replace(/^[A-Z]{6}\+/, '');
-    const dims = doc.pageMetrics[n].dims;
-    const mid = (line.bbox.top + line.bbox.bottom) / 2;
-    const styleWords = line.words.filter((x) => /[\p{L}\p{N}]/u.test(x.text));
-    const byCombo = new Map();
-    let total = 0;
-    for (const sw of (styleWords.length ? styleWords : line.words)) {
-      const parts = [];
-      if (sw.style.bold) parts.push('Bold');
-      if (sw.style.italic) parts.push('Italic');
-      if (sw.style.smallCaps) parts.push('Small caps');
-      if (sw.style.underline) parts.push('Underline');
-      const combo = parts.join(' ') || 'Regular';
-      const chars = sw.text.replace(/[^\p{L}\p{N}]/gu, '').length || 1;
-      byCombo.set(combo, (byCombo.get(combo) || 0) + chars);
-      total += chars;
-    }
-    const props = {
-      font: raw ? cleanFamilyName(raw) : 'Unknown',
-      size: w.style.size ? Math.round((w.style.size / pxPerPt(viewer, n)) * 2) / 2 : 0,
-      color: (w.style.color || '#000000').toLowerCase(),
-      style: { entire: byCombo.size === 1 ? byCombo.keys().next().value : null, byCombo, total },
-      position: mid < dims.height * STRIP ? 'top' : (mid > dims.height * (1 - STRIP) ? 'bottom' : 'body'),
-      text: getLineText(line),
-    };
-    propsCache.set(line, { words: line.words, n, props });
-    return props;
-  };
+  function readLines() {
+    reading = reading.catch(() => true).then(async () => {
+      const pageCount = doc.pageMetrics.length;
+      pageLines.length = pageCount;
+      let sliceEnd = performance.now() + 40;
+      for (let n = 0; n < pageCount; n++) {
+        if (destroyed) return false;
+        const record = doc.pageStore.cleanRecord(n);
+        if (pageLines[n] && record && pageLines[n].record === record) continue;
+        const page = doc.pageStore.readOnlyPage(n);
+        /** @type {Array<LineSummary>} */
+        const lines = [];
+        if (page && page.textSource === 'pdf') {
+          let bits = doc.pageStore.nativeBits(n);
+          if (bits && bits.length !== page.lines.reduce((sum, l) => sum + l.words.length, 0)) bits = null;
+          const dims = doc.pageMetrics[n].dims;
+          const pxPt = pxPerPt(viewer, n);
+          let k = 0;
+          for (const line of page.lines) {
+            const firstWord = k;
+            k += line.words.length;
+            if (bits ? line.words.length === 0 || bits.subarray(firstWord, k).some((x) => x !== 1) : !eligible(line)) continue;
+            const w = line.words.find((x) => /[\p{L}\p{N}]/u.test(x.text)) || line.words[0];
+            const raw = (w.style.font || '').replace(/^[A-Z]{6}\+/, '');
+            let font = familyOfFont.get(raw);
+            if (font === undefined) {
+              font = raw ? cleanFamilyName(raw) : 'Unknown';
+              familyOfFont.set(raw, font);
+            }
+            const mid = (line.bbox.top + line.bbox.bottom) / 2;
+            const styleWords = line.words.filter((x) => /[\p{L}\p{N}]/u.test(x.text));
+            /** @type {Map<string, number>} */
+            const byCombo = new Map();
+            let total = 0;
+            for (const sw of (styleWords.length ? styleWords : line.words)) {
+              const parts = [];
+              if (sw.style.bold) parts.push('Bold');
+              if (sw.style.italic) parts.push('Italic');
+              if (sw.style.smallCaps) parts.push('Small caps');
+              if (sw.style.underline) parts.push('Underline');
+              const combo = parts.join(' ') || 'Regular';
+              const chars = sw.text.replace(/[^\p{L}\p{N}]/gu, '').length || 1;
+              byCombo.set(combo, (byCombo.get(combo) || 0) + chars);
+              total += chars;
+            }
+            let style = { entire: /** @type {?string} */ (null), byCombo, total };
+            if (byCombo.size === 1) {
+              const combo = /** @type {string} */ (byCombo.keys().next().value);
+              style = styleOfCombo.get(combo) || { entire: combo, byCombo: new Map([[combo, 1]]), total: 1 };
+              styleOfCombo.set(combo, style);
+            }
+            lines.push({
+              n,
+              id: line.id,
+              p: {
+                font,
+                size: w.style.size ? Math.round((w.style.size / pxPt) * 2) / 2 : 0,
+                color: (w.style.color || '#000000').toLowerCase(),
+                style,
+                position: mid < dims.height * STRIP ? 'top' : (mid > dims.height * (1 - STRIP) ? 'bottom' : 'body'),
+                text: getLineText(line),
+              },
+              relTop: mid / dims.height,
+              bbox: { ...line.bbox },
+            });
+          }
+        }
+        pageLines[n] = { record, lines };
+        if (performance.now() > sliceEnd) {
+          readingNote.textContent = `Reading page ${n + 1} of ${pageCount}`;
+          if (!readingNote.isConnected) body.prepend(readingNote);
+          await new Promise((r) => { setTimeout(r, 0); });
+          sliceEnd = performance.now() + 40;
+        }
+      }
+      readingNote.remove();
+      return !destroyed;
+    });
+    return reading;
+  }
 
   const ruleOk = (rule, p) => {
     if (rule.prop === 'font') return (p.font === rule.value) === (rule.op === 'is');
@@ -168,24 +240,21 @@ export function buildBulkEditWorkspace(host, container) {
   };
 
   const lookKey = (m) => [m.p.text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().toLowerCase(), m.p.font, m.p.color].join('|');
-  const relTop = (m) => ((m.line.bbox.top + m.line.bbox.bottom) / 2) / doc.pageMetrics[m.n].dims.height;
-  const sameLook = (g, m) => g.look === lookKey(m) && Math.abs(g.size - m.p.size) <= 0.5 && Math.abs(g.relTop - relTop(m)) <= RELTOP_TOL;
+  const sameLook = (g, m) => g.look === lookKey(m) && Math.abs(g.size - m.p.size) <= 0.5 && Math.abs(g.relTop - m.relTop) <= RELTOP_TOL;
 
+  /** Match cached page lines against `rules` and group the matches by look. */
   function scan() {
     matches = [];
     fontsSeen = new Map();
     colorsSeen = new Map();
     stylesSeen = new Map();
-    for (let n = 0; n < doc.pageMetrics.length; n++) {
-      const page = doc.ocr.active[n];
-      if (!page) continue;
-      for (const line of page.lines) {
-        if (!eligible(line)) continue;
-        const p = propsOf(line, n);
+    for (const { lines } of pageLines) {
+      for (const m of lines) {
+        const { p } = m;
         fontsSeen.set(p.font, (fontsSeen.get(p.font) || 0) + 1);
         colorsSeen.set(p.color, (colorsSeen.get(p.color) || 0) + 1);
         for (const combo of p.style.byCombo.keys()) stylesSeen.set(combo, (stylesSeen.get(combo) || 0) + 1);
-        if (rules.length && rules.every((r) => ruleOk(r, p))) matches.push({ n, line, p });
+        if (rules.length && rules.every((r) => ruleOk(r, p))) matches.push(m);
       }
     }
     groups = [];
@@ -195,7 +264,7 @@ export function buildBulkEditWorkspace(host, container) {
     const groupAt = new Map();
     for (const m of matches) {
       const look = lookKey(m);
-      const rt = relTop(m);
+      const rt = m.relTop;
       const bucket = Math.round(rt / RELTOP_TOL);
       const base = `${look}|${m.p.size}|`;
       let g = null;
@@ -218,29 +287,36 @@ export function buildBulkEditWorkspace(host, container) {
     }
     groups.sort((a, b) => b.items.length - a.items.length || a.items[0].n - b.items[0].n);
     cardLimit = CARD_BATCH;
-    if (current && !matches.some((m) => m.line === current.line)) current = null;
+    if (current && !matches.includes(current)) current = null;
+  }
+
+  /**
+   * Refresh cached page lines, rescan matches, and call `draw` if the workspace is still open.
+   * @param {() => void} draw
+   */
+  async function scanThen(draw) {
+    if (!(await readLines())) return;
+    scan();
+    draw();
   }
 
   const keptCount = () => groups.reduce((sum, g) => sum + (g.excluded ? 0 : g.items.length), 0);
   const excludedCount = () => groups.reduce((sum, g) => sum + (g.excluded ? g.items.length : 0), 0);
 
+  /** @param {LineSummary} ex */
   function rulesFromExample(ex) {
-    const p = propsOf(ex.line, ex.n);
-    const exMatch = { n: ex.n, line: ex.line, p };
-    const exLook = { look: lookKey(exMatch), size: p.size, relTop: relTop(exMatch) };
+    const { p } = ex;
+    const exLook = { look: lookKey(ex), size: p.size, relTop: ex.relTop };
     /** @type {Array<string>} */
     const family = [];
     /** @type {Array<string>} */
     const rivals = [];
-    for (let n = 0; n < doc.pageMetrics.length; n++) {
-      const page = doc.ocr.active[n];
-      if (!page) continue;
-      for (const line of page.lines) {
-        if (!eligible(line)) continue;
-        const q = propsOf(line, n);
+    for (const { lines } of pageLines) {
+      for (const m of lines) {
+        const q = m.p;
         if (q.font !== p.font || q.size !== p.size || q.color !== p.color || q.position !== p.position) continue;
         const text = q.text.toLowerCase();
-        if (sameLook(exLook, { n, line, p: q })) family.push(text);
+        if (sameLook(exLook, m)) family.push(text);
         else rivals.push(text);
       }
     }
@@ -263,7 +339,7 @@ export function buildBulkEditWorkspace(host, container) {
     ];
   }
 
-  /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
+  /** @type {Map<LineSummary, HTMLDivElement>} */
   const marks = new Map();
   const clearMarks = () => {
     for (const el of marks.values()) el.remove();
@@ -276,25 +352,26 @@ export function buildBulkEditWorkspace(host, container) {
       // Iterating every match would materialize marks, page containers, and text indexes for hundreds of unseen pages, so only pages with built text are painted.
       // Pages scrolled into view are repainted by the `displayPageCallback` hook.
       for (const n of viewer.textGroupsRenderIndices) {
-        for (const m of matchesByPage.get(n) || []) wanted.set(m.line, { m, excluded: m.lookGroup.excluded });
+        const onPage = matchesByPage.get(n);
+        if (!onPage) continue;
+        const drawn = new Map((viewer.textSel?.index(n)?.lines || []).map((x) => [x.line.id, x]));
+        for (const m of onPage) wanted.set(m, { e: drawn.get(m.id), excluded: m.lookGroup.excluded });
       }
     }
-    for (const [line, el] of marks) {
-      if (!wanted.has(line)) {
+    for (const [m, el] of marks) {
+      if (!wanted.has(m)) {
         el.remove();
-        marks.delete(line);
+        marks.delete(m);
       }
     }
     const zoom = 'var(--scribe-zoom, 1)';
-    for (const [line, { m, excluded }] of wanted) {
-      const idx = viewer.textSel?.index(m.n);
-      const e = idx ? idx.lines.find((x) => x.line === line) : null;
+    for (const [m, { e, excluded }] of wanted) {
       const group = e ? viewer.getTextGroup(m.n, e.orientation) : null;
       if (!group) {
-        marks.get(line)?.remove();
+        marks.get(m)?.remove();
         continue;
       }
-      let el = marks.get(line);
+      let el = marks.get(m);
       if (!el) {
         el = document.createElement('div');
         el.className = 'scribe-be-mark';
@@ -304,7 +381,7 @@ export function buildBulkEditWorkspace(host, container) {
           boxSizing: 'border-box',
           borderRadius: `calc(3px / ${zoom})`,
         });
-        marks.set(line, el);
+        marks.set(m, el);
       }
       const hidden = view === 'after' && !excluded;
       if (hidden) {
@@ -313,7 +390,7 @@ export function buildBulkEditWorkspace(host, container) {
       } else if (excluded) {
         el.style.border = `calc(1.5px / ${zoom}) dashed var(--scribe-ink-3, #98a1b0)`;
         el.style.background = 'transparent';
-      } else if (current && current.line === line) {
+      } else if (current === m) {
         el.style.border = `calc(2px / ${zoom}) solid var(--scribe-accent, #1c62d4)`;
         el.style.background = 'var(--scribe-accent-wash, rgba(28, 98, 212, .14))';
       } else {
@@ -321,7 +398,7 @@ export function buildBulkEditWorkspace(host, container) {
         el.style.background = 'var(--scribe-active, rgba(28, 98, 212, .10))';
       }
       const pad = 2;
-      const box = nativeLineDrawBox(doc, line, e.lbox);
+      const box = nativeLineDrawBox(doc, e.line, e.lbox);
       el.style.left = `${box.left - pad}px`;
       el.style.top = `${box.top - pad}px`;
       el.style.width = `${box.right - box.left + 2 * pad}px`;
@@ -425,7 +502,7 @@ export function buildBulkEditWorkspace(host, container) {
     const info = nativeLineHitAt(viewer, ev.clientX, ev.clientY, eligible);
     if (!info) return;
     ev.stopPropagation();
-    pickExample({ line: info.line, n: info.n });
+    pickExample(info.n, info.line.id);
   };
   const onKeyDown = (ev) => {
     if (stage !== 'picking' || ev.key !== 'Escape') return;
@@ -457,15 +534,24 @@ export function buildBulkEditWorkspace(host, container) {
     render();
     paintMarks();
   }
-  function pickExample(ex) {
+  /**
+   * Set line `id` on page `n` as the example, seed rules from its properties, and rescan.
+   * @param {number} n - 0-based page index.
+   * @param {string} id
+   */
+  async function pickExample(n, id) {
     endPicking();
-    example = ex;
-    rules = rulesFromExample(ex);
-    excludedKeys.clear();
-    current = null;
-    view = 'before';
-    hidePill();
-    stage = 'select';
+    if (!(await readLines())) return;
+    const picked = pageLines[n]?.lines.find((m) => m.id === id);
+    if (picked) {
+      example = picked;
+      rules = rulesFromExample(picked);
+      excludedKeys.clear();
+      current = null;
+      view = 'before';
+      hidePill();
+    }
+    stage = rules.length ? 'select' : 'empty';
     scan();
     render();
     paintMarks();
@@ -586,9 +672,10 @@ export function buildBulkEditWorkspace(host, container) {
   const rescanSoon = () => {
     clearTimeout(rescanTimer);
     rescanTimer = window.setTimeout(() => {
-      scan();
-      renderMatches();
-      paintMarks();
+      scanThen(() => {
+        renderMatches();
+        paintMarks();
+      });
     }, 150);
   };
 
@@ -605,7 +692,7 @@ export function buildBulkEditWorkspace(host, container) {
         const next = PROPS.find((p) => p.id === id);
         rule.prop = id;
         rule.op = next.ops[0];
-        const exProps = example ? propsOf(example.line, example.n) : null;
+        const exProps = example ? example.p : null;
         if (id === 'style') {
           const seed = exProps ? styleRuleFor(exProps.style) : null;
           rule.op = seed ? seed.op : next.ops[0];
@@ -613,9 +700,10 @@ export function buildBulkEditWorkspace(host, container) {
         } else {
           rule.value = exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '');
         }
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       },
     }));
     const opBtn = selButton(esc(rule.op), false);
@@ -624,9 +712,10 @@ export function buildBulkEditWorkspace(host, container) {
       items: def.ops.map((op) => ({ value: op, html: esc(op), checked: op === rule.op })),
       onPick: (op) => {
         rule.op = op;
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       },
     }));
     row.append(propBtn, opBtn);
@@ -652,9 +741,10 @@ export function buildBulkEditWorkspace(host, container) {
           items,
           onPick: (v) => {
             rule.value = v;
-            scan();
-            render();
-            paintMarks();
+            scanThen(() => {
+              render();
+              paintMarks();
+            });
           },
         };
       });
@@ -696,9 +786,10 @@ export function buildBulkEditWorkspace(host, container) {
     rx.innerHTML = X_SVG;
     const remove = () => {
       rules.splice(index, 1);
-      scan();
-      render();
-      paintMarks();
+      scanThen(() => {
+        render();
+        paintMarks();
+      });
     };
     rx.addEventListener('click', remove);
     rx.addEventListener('keydown', (e) => {
@@ -737,15 +828,16 @@ export function buildBulkEditWorkspace(host, container) {
         items: unused.map((p) => ({ value: p.id, html: esc(p.label) })),
         onPick: (id) => {
           const def = PROPS.find((p) => p.id === id);
-          const exProps = example ? propsOf(example.line, example.n) : null;
+          const exProps = example ? example.p : null;
           if (id === 'style') {
             rules.push(exProps ? styleRuleFor(exProps.style) : { prop: 'style', op: def.ops[0], value: topStyleSeen() });
           } else {
             rules.push({ prop: id, op: def.ops[0], value: exProps ? String(exProps[id]) : (id === 'position' ? 'top' : '') });
           }
-          scan();
-          render();
-          paintMarks();
+          scanThen(() => {
+            render();
+            paintMarks();
+          });
         },
       }));
       wrap.appendChild(add);
@@ -757,36 +849,36 @@ export function buildBulkEditWorkspace(host, container) {
   }
 
   /**
-   * The page's own text around `m`, drawn at snippet scale with the match highlighted.
-   * @param {Object} m
+   * Build a scaled DOM preview of the page lines around `m` with `m` highlighted.
+   * @param {LineSummary} m
    * @param {number} width
+   * @returns {HTMLDivElement}
    */
   function buildSnippetImage(m, width) {
     const img = document.createElement('div');
     img.className = 'scribe-am-be-simg';
-    const page = doc.ocr.active[m.n];
+    const page = doc.pageStore.readOnlyPage(m.n);
     if (!page) return img;
     const dims = doc.pageMetrics[m.n].dims;
-    const lineW = Math.max(1, m.line.bbox.right - m.line.bbox.left);
+    const lineW = Math.max(1, m.bbox.right - m.bbox.left);
     const scalePx = Math.min(SNIP_PX_PER_PT / pxPerPt(viewer, m.n), (width - 16) / lineW);
     const bandH = SNIP_HEIGHT / scalePx;
     const viewW = width / scalePx;
-    const midY = (m.line.bbox.top + m.line.bbox.bottom) / 2;
-    const midX = (m.line.bbox.left + m.line.bbox.right) / 2;
-    // A line at the page's edge sits at the band's edge, so the band still reaches its one neighbor for context.
-    const others = page.lines.filter((l) => l !== m.line && l.words.length > 0);
-    const above = others.some((l) => l.bbox.bottom <= m.line.bbox.top);
-    const below = others.some((l) => l.bbox.top >= m.line.bbox.bottom);
+    const midY = (m.bbox.top + m.bbox.bottom) / 2;
+    const midX = (m.bbox.left + m.bbox.right) / 2;
+    const others = page.lines.filter((l) => l.id !== m.id && l.words.length > 0);
+    const above = others.some((l) => l.bbox.bottom <= m.bbox.top);
+    const below = others.some((l) => l.bbox.top >= m.bbox.bottom);
     let top = midY - bandH / 2;
-    if (!above && below) top = m.line.bbox.top - 6 / scalePx;
-    else if (above && !below) top = m.line.bbox.bottom + 6 / scalePx - bandH;
+    if (!above && below) top = m.bbox.top - 6 / scalePx;
+    else if (above && !below) top = m.bbox.bottom + 6 / scalePx - bandH;
     const left = Math.max(0, Math.min(dims.width - viewW, midX - viewW / 2));
     for (const line of page.lines) {
       if (line.bbox.bottom < top || line.bbox.top > top + bandH || line.words.length === 0) continue;
       const w = line.words.find((x) => /[\p{L}\p{N}]/u.test(x.text)) || line.words[0];
       const sizePx = (w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75) * scalePx;
       const el = document.createElement('span');
-      el.className = `scribe-am-be-sline${line === m.line ? ' hit' : ''}`;
+      el.className = `scribe-am-be-sline${line.id === m.id ? ' hit' : ''}`;
       el.textContent = getLineText(line);
       el.dataset.tw = String((line.bbox.right - line.bbox.left) * scalePx);
       Object.assign(el.style, {
@@ -797,7 +889,7 @@ export function buildBulkEditWorkspace(host, container) {
         fontWeight: w.style.bold ? '700' : '400',
         fontStyle: w.style.italic ? 'italic' : 'normal',
         color: w.style.color || '#000',
-        opacity: line === m.line ? '1' : '.45',
+        opacity: line.id === m.id ? '1' : '.45',
         transformOrigin: '0 50%',
       });
       img.appendChild(el);
@@ -821,9 +913,9 @@ export function buildBulkEditWorkspace(host, container) {
     await viewer.displayPage(m.n, false, false);
     if (destroyed) return;
     const idx = viewer.textSel?.index(m.n);
-    const e = idx ? idx.lines.find((x) => x.line === m.line) : null;
+    const e = idx ? idx.lines.find((x) => x.line.id === m.id) : null;
     if (e) {
-      const box = nativeLineDrawBox(doc, m.line, e.lbox);
+      const box = nativeLineDrawBox(doc, e.line, e.lbox);
       const c = viewer.localToContent(m.n, e.orientation, (box.left + box.right) / 2, (box.top + box.bottom) / 2);
       const sc = viewer.scrollContainer;
       const zoom = viewer.zoomLevel || 1;
@@ -967,14 +1059,16 @@ export function buildBulkEditWorkspace(host, container) {
 
   async function doDelete() {
     if (deleting) return;
+    // Each line is named by its page and id, so a delete across the document holds none of its pages.
+    /** @type {Array<{n: number, id: string}>} */
     const lines = [];
     for (const g of groups) {
       if (g.excluded) continue;
-      for (const m of g.items) if (m.line.page && m.line.page.lines.includes(m.line)) lines.push(m.line);
+      for (const m of g.items) lines.push({ n: m.n, id: m.id });
     }
     if (!lines.length) return;
     const excluded = excludedCount();
-    const pages = new Set(lines.map((l) => l.page.n));
+    const pages = new Set(lines.map((l) => l.n));
     deleting = true;
     if (deleteBtn) {
       deleteBtn.disabled = true;
@@ -1029,9 +1123,10 @@ export function buildBulkEditWorkspace(host, container) {
       const manual = quietButton('Or add criteria manually');
       manual.addEventListener('click', () => {
         stage = 'select';
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       });
       body.appendChild(manual);
       renderFoot();
@@ -1065,17 +1160,19 @@ export function buildBulkEditWorkspace(host, container) {
         if (!viewer.undo()) return;
         lastDelete = null;
         stage = 'select';
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       });
       const again = quietButton('Run again');
       again.addEventListener('click', () => {
         lastDelete = null;
         stage = 'select';
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       });
       acts.append(undo, again);
       body.appendChild(acts);
@@ -1108,8 +1205,13 @@ export function buildBulkEditWorkspace(host, container) {
   viewer.displayPageCallback = ourDisplayCb;
 
   // A freshly-opened PDF may still be extracting text, so a scan before it settles would miss lines.
-  (doc._textReadySettle ? doc.ensureHydrated() : Promise.resolve(true)).then((loaded) => {
-    if (loaded && !destroyed && stage === 'select') { scan(); render(); paintMarks(); }
+  doc.textReady.then(() => {
+    if (!destroyed && stage === 'select') {
+      scanThen(() => {
+        render();
+        paintMarks();
+      });
+    }
   });
 
   render();
@@ -1117,9 +1219,10 @@ export function buildBulkEditWorkspace(host, container) {
   return {
     refresh: () => {
       if (stage === 'select') {
-        scan();
-        render();
-        paintMarks();
+        scanThen(() => {
+          render();
+          paintMarks();
+        });
       }
     },
     teardown: () => {

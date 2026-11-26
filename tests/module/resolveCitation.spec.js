@@ -3,11 +3,12 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 const texts = (span) => span.lines.map((l) => l.words.map((w) => w.text).join(' '));
 const box = (span) => Object.fromEntries(Object.entries(span.bbox).map(([k, v]) => [k, Math.round(v)]));
-const pageNums = (doc) => doc.ocr.active.map((pg) => [...new Set(pg.lines.map((l) => l.pageNum).filter((x) => x != null))]);
-const wordsWithLineNum = (doc) => doc.ocr.active.reduce((a, pg) => a + pg.lines.reduce((b, l) => b + l.words.filter((w) => 'lineNum' in w).length, 0), 0);
+const pageNums = (doc) => docPages(doc).map((pg) => [...new Set(pg.lines.map((l) => l.pageNum).filter((x) => x != null))]);
+const wordsWithLineNum = (doc) => docPages(doc).reduce((a, pg) => a + pg.lines.reduce((b, l) => b + l.words.filter((w) => 'lineNum' in w).length, 0), 0);
 
 // The fixture is a court filing whose pages 0 to 7 are a hearing transcript printed 36 to 43.
 // Its pages 8 to 11 are scans and its pages 12 to 15 text in an unreadable font, none of them numbered paper.
@@ -23,7 +24,7 @@ describe('one-up native transcript', () => {
   afterAll(async () => { await scribe.terminate(); });
 
   test('every numbered row carries its number and every line its printed page', () => {
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     const nums = page.lines.filter((l) => l.lineNum != null).map((l) => l.lineNum);
     expect(page.lines.length, 'line count of the first page').toBe(53);
     expect(nums.length, 'the number lines and the body lines of 25 rows carry a line number').toBe(50);
@@ -70,7 +71,7 @@ describe('one-up native transcript', () => {
 
   test('a document address resolves to its cited rows, its quoted passage, or its page', () => {
     const wordTexts = (target) => target.words.map((w) => w.text);
-    const lineOf = (target) => doc.ocr.active[target.pageIndex].lines.indexOf(target.words[0].line);
+    const lineOf = (target) => doc.getPage(target.pageIndex).lines.indexOf(target.words[0].line);
     const rows = doc.resolveDocAddress('scribe-doc://0123456789abcdef/4?cite=40%3A10-12');
     expect([rows.state, rows.pageIndex], 'a citation address resolves on the page it names').toEqual(['ok', 4]);
     expect(wordTexts(rows), 'the address names rows 10 to 12 of printed page 40: their numbers and their words')
@@ -102,7 +103,7 @@ describe('one-up native transcript', () => {
     const restored = doc.resolveCitation('43:25');
     expect([restored[0].page, restored[0].first, restored[0].last], 'the citation resolves to the same row after the round trip').toEqual([7, 25, 25]);
     expect(texts(restored[0]), 'the row\'s line survives the round trip').toEqual(['25']);
-    expect(doc.ocr.active[0].lines.filter((l) => l.lineNum != null).length, 'every numbered line keeps its number').toBe(50);
+    expect(doc.getPage(0).lines.filter((l) => l.lineNum != null).length, 'every numbered line keeps its number').toBe(50);
     expect(wordsWithLineNum(doc), 'no word carries the retired line-number flag').toBe(0);
 
     // Emulates a file saved before the line fields existed, whose words carried a boolean `lineNum`.
@@ -115,7 +116,7 @@ describe('one-up native transcript', () => {
     expect(wordsWithLineNum(doc), 'the stale word flag is dropped on restore').toBe(0);
   });
   test('the number column is one paragraph ahead of the page\'s text, and every paragraph keeps its lines together', () => {
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(page.pars.map((p) => p.type).slice(0, 3), 'the number column is not the first paragraph of the page').toEqual(['linenum', 'footer', 'pagenum']);
     expect(page.pars[0].lines.length, 'the number column does not hold its 25 numbers').toBe(25);
     expect(parsConsecutive(page), 'a paragraph holds lines that are not consecutive in the page\'s line order').toBe(true);
@@ -154,7 +155,7 @@ describe('four-up native transcript', () => {
   });
 
   test('the number column is one paragraph ahead of the sheet\'s text, and every paragraph keeps its lines together', () => {
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(parsConsecutive(page), 'a paragraph holds lines that are not consecutive in the page\'s line order').toBe(true);
     expect(page.pars[0].type, 'the number column is not the first paragraph of the sheet').toBe('linenum');
     expect(page.pars.filter((p) => p.type === 'linenum').map((p) => p.lines.length), 'the margin numbers are not gathered into one paragraph per column').toEqual([50]);
@@ -173,7 +174,7 @@ describe('scanned transcript with an imported Textract layer', () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2.pdf`, `${ASSETS_PATH}/D.Md._8_25-cr-00006-LKG_402_2-AwsTextractLayoutSync.json`]);
     if (doc._textReadySettle) await doc.textReady;
     expect(pageNums(doc), 'a direct import numbers only the pages with a line-number column: 62 to 64 from their printed numbers, not the filing header\'s "Page 3 of 5", and nothing on the cover and index').toEqual([[], [], ['62'], ['63'], ['64']]);
-    expect(doc.ocr.active.map((pg) => pg.lines.filter((l) => l.lineNum != null).length), 'numbered lines per page').toEqual([0, 0, 50, 50, 50]);
+    expect(docPages(doc).map((pg) => pg.lines.filter((l) => l.lineNum != null).length), 'numbered lines per page').toEqual([0, 0, 50, 50, 50]);
     const first = doc.resolveCitation('62:1');
     expect([first[0].page, texts(first[0])], 'row 1 of page 62').toEqual([2, ['1', 'So, if Mr. Goldstein was playing poker at the end of 2016,']]);
     expect(box(first[0]), 'the box of row 1').toEqual({
@@ -195,8 +196,7 @@ describe('scanned transcript with an imported Textract layer', () => {
     const reDoc = await scribe.openDocument({ pdfFiles: [out] });
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     await reDoc.textReady;
-    expect(reDoc.ocr.active.map((pg) => pg.lines[0].orientation), 'the turned page imports sideways, its neighbors upright').toEqual([0, 0, 0, 1, 0]);
-    // The re-import also runs the page-number pass, which reads the "1" and "2" printed in the same corner as the 62 to 64.
+    expect(docPages(reDoc).map((pg) => pg.lines[0].orientation), 'the turned page imports sideways, its neighbors upright').toEqual([0, 0, 0, 1, 0]);
     expect(pageNums(reDoc), 'after the round trip every sheet carries its printed page number, the cover\'s and the index\'s included, when one page is turned').toEqual([['1'], ['2'], ['62'], ['63'], ['64']]);
     const row = reDoc.resolveCitation('63:25');
     expect([row[0].page, row[0].first, row[0].last, texts(row[0])], 'row 25 of the turned page').toEqual([3, 25, 25, ['25', 'you’re going to hear from these people at different points in']]);

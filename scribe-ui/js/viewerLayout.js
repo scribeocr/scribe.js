@@ -427,7 +427,7 @@ export function addLayoutDataTable(viewer, n, box) {
     left: box.left, top: box.top, right: box.left + box.width, bottom: box.top + box.height,
   };
 
-  const lines = viewer.doc.ocr.active[n].lines.filter((line) => scribe.utils.calcBoxOverlap(line.bbox, bbox) > 0.5);
+  const lines = viewer.doc.pageStore.readOnlyPage(n).lines.filter((line) => scribe.utils.calcBoxOverlap(line.bbox, bbox) > 0.5);
 
   let columnBboxArr;
   if (lines.length > 0) {

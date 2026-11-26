@@ -19,10 +19,10 @@ export function deleteSelectedWord(viewer) {
     selectedObjects[i].destroy();
   }
 
-  const pages = Object.keys(selectedIds).map((n) => _viewer.doc.ocr.active[Number(n)]);
+  const pages = Object.keys(selectedIds).map((n) => _viewer.doc.getPage(Number(n)));
   _viewer.doc.editWords(pages, selectedN === 1 ? 'Deleted word' : 'Deleted words', () => {
     for (const [n, ids] of Object.entries(selectedIds)) {
-      scribe.utils.ocr.deletePageWords(_viewer.doc.ocr.active[Number(n)], ids);
+      scribe.utils.ocr.deletePageWords(_viewer.doc.getPage(Number(n)), ids);
     }
   });
 

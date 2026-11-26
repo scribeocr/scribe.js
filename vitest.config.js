@@ -58,6 +58,7 @@ const CLI_TESTS = `${ROOT}/tests/cli/**/*.spec.js`;
 const SHARED_TEST_OPTIONS = {
   testTimeout: 90_000,
   hookTimeout: 90_000,
+  setupFiles: process.env.SCRIBE_LOW_PAGE_BUDGET ? [`${ROOT}/tests/module/_lowPageBudget.js`] : [],
 };
 
 // Build a browser project with a single instance + an explicit project name.

@@ -5,6 +5,7 @@ import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 import { writeText } from '../../js/export/writeText.js';
+import { docPages } from './_pages.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
@@ -124,7 +125,7 @@ describe('Check export -> import for .txt files.', () => {
   test('Importing .txt file and exporting to text should preserve content (simple example)', async () => {
     const doc = await scribe.openDocument([`${ASSETS_PATH}/text_simple.txt`]);
 
-    const importedText = doc.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
+    const importedText = docPages(doc).map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
 
     const exportedText = await doc.exportData('text');
 
@@ -144,10 +145,10 @@ describe('Check preserveSpacing text export.', () => {
   test('preserveSpacing output is longer than compact output due to padding', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
     const compact = writeText({
-      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, pageMetrics: doc.pageMetrics,
+      ocrCurrent: docPages(doc), pageArr: [0], lineNumbers: true, pageMetrics: doc.pageMetrics,
     });
     const spaced = writeText({
-      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
+      ocrCurrent: docPages(doc), pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
     });
     expect(compact.length).toBe(3348);
     expect(spaced.length).toBe(17325);
@@ -155,7 +156,7 @@ describe('Check preserveSpacing text export.', () => {
 
   test('preserveSpacing indents words based on their horizontal position', async () => {
     const spaced = writeText({
-      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
+      ocrCurrent: docPages(doc), pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
     });
     // "SECTOR" starts with significant left indent in the document
     expect(spaced).toContain('0:0             SECTOR');

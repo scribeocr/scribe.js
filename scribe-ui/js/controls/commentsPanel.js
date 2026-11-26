@@ -180,7 +180,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    * @returns {string}
    */
   function quoteText(pageIndex, groupAnns) {
-    const ocrPage = scribe.doc.ocr && scribe.doc.ocr.active && scribe.doc.ocr.active[pageIndex];
+    const ocrPage = scribe.doc.pageStore.readOnlyPage(pageIndex);
     if (!ocrPage || !ocrPage.lines) return '';
     const byArea = groupAnns.length > 0 && (groupAnns[0].type === 'redact' || MARK_TYPES.has(groupAnns[0].type));
     const words = [];

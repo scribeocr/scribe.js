@@ -6,6 +6,7 @@ import {
 // Superscript-digit footnote markers are unreliable in CJK text, where ordinary digits get spuriously flagged as superscript, so every digit-convention site skips CJK lines.
 // The symbol footnote convention (asterisks, daggers) is script-neutral, so do not extend this gate to it.
 const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/;
+const WAITING_MARKS_MAX = 2000;
 
 // Symbol and math faces legitimately interleave with prose, so family-switch rules skip them.
 // The trailing alternative is unanchored, so any core containing "math" (LucidaNewMath, CambriaMath) matches too.
@@ -58,18 +59,19 @@ const familyCore = (fam) => {
 };
 
 /**
- * Document-level layout analysis and paragraph detection for native-text PDFs, written back onto `pages` in place.
- *
- * @param {Array<OcrPage>} pages - all pages of one document, lines already in reading order.
+ * Analyze document layout and assign paragraphs and roles on `pages` in place.
+ * @param {Array<OcrPage>} pages - Consecutive non-empty pages from one document (whole document or one chunk), with lines in reading order.
  * @param {{ debug?: boolean, elementFaithful?: boolean, pdfType?: ("image"|"text"|"ocr"),
  *   wordSignals?: (Map<OcrWord, PdfWordSignal>|null), outlineHeadings?: (Map<OcrPage, Set<string>>|null),
- *   fullPageImagePages?: (boolean[]|null) }} [opts]
- * @returns {object} the derived document model, for diagnostics and tests only.
+ *   fullPageImagePages?: (boolean[]|null), carry?: ?LayoutCarry, docPageCount?: number }} [opts]
+ *   For chunked runs, pass the previous chunk's `carry` and set `docPageCount` to the document's total non-empty page count.
+ * @returns {object} Derived layout analysis, including `carry` for the next chunk and `notePatches` linking notes to reference marks on earlier pages.
  */
 export function analyzeLayout(pages, opts = {}) {
   const wordSignals = opts.wordSignals || null;
   const outlineHeadings = opts.outlineHeadings || null;
   const fullPageImagePages = opts.fullPageImagePages || null;
+  const carryIn = opts.carry || null;
   // On a scan's OCR layer the font family, weight, slant and color are the recognizer's guesses or constants, and the size is fitted per line.
   // The rules that read them as the author's typography are off there.
   const ocrText = opts.pdfType === 'ocr' || opts.pdfType === 'image';
@@ -355,9 +357,12 @@ export function analyzeLayout(pages, opts = {}) {
     if (bestRun.length >= LN_GATE_RUN && lnLike) lnGateFired = true;
   }
 
-  if (lnGateFired) {
-    // The recurEntries filter below keys on cross-page recurrence, not the per-page lnLike test.
-    // lnLike false-negatives on Q&A deposition pages, where a full 1..25 column recurs at one x across dozens of pages yet almost no single page passes it.
+  // A column that was confident on the page before these pages is already locked, with that page standing as page -1.
+  const carriedLnCols = carryIn ? carryIn.lineNumCols : [];
+  /** @type {LayoutCarry['lineNumCols']} */
+  const lineNumColsOut = [];
+  if (lnGateFired || carriedLnCols.length) {
+    // recurEntries omits r.lnLike because on Q&A deposition pages a full 1-25 column can recur at one x across dozens of pages while almost no single page passes lnLike.
     const LN_LOCK_PAGES = 3; // a column locks only if a strong margin run recurs at its x on this many pages
     const recurEntries = [...lnPageRuns.entries()]
       .filter(([, r]) => r.run >= LN_CONF_RUN && r.startVal <= LN_MAX_START && r.indentOk);
@@ -365,18 +370,17 @@ export function analyzeLayout(pages, opts = {}) {
     // Falls back to 28 (typical transcript lines-per-page) when no page is lnLike.
     let lnCeil = 0;
     for (const [, r] of lnPageRuns) if (r.lnLike) for (const c of r.members) if (c.value > lnCeil) lnCeil = c.value;
-    if (!lnCeil) lnCeil = 28;
-    // A document's line-number column can sit at more than one x, so lock every qualifying x-cluster as its own column rather than collapsing to a single dominant one.
-    const lockPeaks = clusterPeaks(recurEntries.map(([, r]) => r.colX), bodySize).filter((q) => q.count >= LN_LOCK_PAGES);
-    for (const peak of lockPeaks) {
-      const atX = recurEntries.filter(([, r]) => Math.abs(r.colX - peak.center) <= bodySize).map(([p]) => p).sort((a, b) => a - b);
-      // Extend the rescue window one page past the confident span so the first/last page of a numbered run (a caption page or a section's final page, where the run is partial) is still recovered.
+    if (!lnCeil) lnCeil = Math.max(0, ...carriedLnCols.map((c) => c.ceil)) || 28;
+    const lockXs = clusterPeaks(recurEntries.map(([, r]) => r.colX), bodySize)
+      .filter((q) => q.count >= LN_LOCK_PAGES || carriedLnCols.some((c) => Math.abs(c.x - q.center) <= bodySize)).map((q) => q.center);
+    for (const c of carriedLnCols) if (!lockXs.some((x) => Math.abs(c.x - x) <= bodySize)) lockXs.push(c.x);
+    for (const lockX of lockXs) {
+      const atX = recurEntries.filter(([, r]) => Math.abs(r.colX - lockX) <= bodySize).map(([p]) => p).sort((a, b) => a - b);
+      if (carriedLnCols.some((c) => Math.abs(c.x - lockX) <= bodySize)) atX.unshift(-1);
       const confMin = Math.min(...atX) - 1; const confMax = Math.max(...atX) + 1; const confSet = new Set(atX);
+      if (confMax === pages.length) lineNumColsOut.push({ x: lockX, ceil: lnCeil });
       for (const [p, r] of lnPageRuns) {
-        if (Math.abs(r.colX - peak.center) > bodySize) continue;
-        // The rescue arm deliberately omits the per-page lnLikeCore test, which false-negatives on a colloquy or rapid-exchange page between confident pages at this locked column.
-        // The cross-page lock already vouches for such a page.
-        // Start-near-1 plus the in-span window still reject a real table index, which starts high and lives outside the numbered range.
+        if (Math.abs(r.colX - lockX) > bodySize) continue;
         const accept = confSet.has(p)
           || (r.run >= LN_RESCUE_RUN && r.startVal <= LN_MAX_START && p >= confMin && p <= confMax);
         if (!accept) continue;
@@ -390,7 +394,7 @@ export function analyzeLayout(pages, opts = {}) {
         // No run-length floor here: the page and column are already confirmed.
         // A run-length floor instead drops the short partial runs at a multi-up sheet's mini-page boundaries, leaving those turn-start lines unstripped so the turn cannot be recognised.
         // The value cap still rejects a stray large margin integer.
-        const colCands = r.cands.filter((c) => Math.abs(c.x - peak.center) <= bodySize);
+        const colCands = r.cands.filter((c) => Math.abs(c.x - lockX) <= bodySize);
         for (const c of colCands) if (c.value >= 1 && c.value <= lnCeil) markMember(c);
       }
     }
@@ -809,6 +813,7 @@ export function analyzeLayout(pages, opts = {}) {
         }
       }
     }
+    if (carryIn) for (const m of carryIn.refMarks) bodyRefLabelsDoc.add(m.label);
   }
 
   // Restore raised note markers that extraction hid from the sup flag and the enumerator.
@@ -1122,57 +1127,56 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
   const notesEndUnpunct = completedNotes >= 2 && completedUnpunct * 2 > completedNotes;
-  for (let p = 1; p < pages.length; p++) {
-    // rawSepAnyY takes the separator at any height with no low-on-page guard because the cross-page continuation test below is the real gate.
-    // That test requires an open footnote on p-1 and a bottom-anchored note zone on p, since an open note alone does not stop a high separator opening a spurious region.
-    const sepCur = rawSepAnyY.get(p);
-    if (sepCur == null) continue;
-    const prevH = pages[p - 1].dims?.height || 0;
-    if (!prevH) continue;
-    // Top of p-1's note zone: its separator-shaped line, lowered to the topmost active sup-ref marker pinned to the page's lower half.
-    // The marker arm lets a page with no drawn line but marked notes still locate the zone.
-    // Infinity means p-1 has no note zone, so its tail is body, not an open footnote, and this is no continuation.
-    let prevNoteTop = rawSepAnyY.get(p - 1) ?? Infinity;
-    for (const f of pageFeats3[p - 1]) {
-      if (f.bottom / prevH <= 0.5 || f.lineNum) continue;
+  // A standalone raised marker is its own letterless fragment beside the note's first text line, so the note lines never include it and the prose line beside it is not itself superscript-led.
+  /** @type {(feats2: LineFeat[], zoneTop: number, g: LineFeat) => boolean} */
+  const markerOnRow = (feats2, zoneTop, g) => feats2.some((m) => m !== g && !m.lineNum
+    && m.top >= zoneTop && m.top < g.bottom && m.bottom > g.top && m.left < g.left
+    && m.firstWordSup && m.enumerator && m.enumerator.scheme === 'sup-ref'
+    && supRefRun && supRefRun.active && supRefRun.sequenceValues && m.enumerator.value != null
+    && supRefRun.sequenceValues.has(m.enumerator.value));
+  /**
+   * Return the font size of the footnote left open at the bottom of page `q`, or `null` if none.
+   * @param {number} q
+   * @returns {?number}
+   */
+  const openNoteAt = (q) => {
+    const qH = pages[q].dims?.height || 0;
+    if (!qH) return null;
+    let noteTop = rawSepAnyY.get(q) ?? Infinity;
+    for (const f of pageFeats3[q]) {
+      if (f.bottom / qH <= 0.5 || f.lineNum) continue;
       if (f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
         && supRefRun && supRefRun.active && supRefRun.sequenceValues && f.enumerator.value != null
-        && supRefRun.sequenceValues.has(f.enumerator.value)) prevNoteTop = Math.min(prevNoteTop, f.top);
+        && supRefRun.sequenceValues.has(f.enumerator.value)) noteTop = Math.min(noteTop, f.top);
     }
-    if (prevNoteTop === Infinity) continue;
-    // A numbered multi-page table has rows shaped like baseline notes, and its last row reaches the page bottom unpunctuated.
-    // Dropping !f.inTable would therefore read the whole table, page after page, as one giant note continuation.
-    const prevNotes = pageFeats3[p - 1].filter((f) => f.top >= prevNoteTop && !f.inTable
-      && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p - 1));
-    if (!prevNotes.length) continue;
-    // prevNotes is only prose below a separator-shaped line, which over-fires on markerless matter like word indexes and deposition Q&A.
-    // Requiring a real note here stops those false note zones from spilling onto the next page.
-    const prevRefs = bodyRefLabels.get(p - 1);
-    // A standalone raised marker is its own letterless fragment beside the note's first text line, so prevNotes never contains it and the prose line beside it is not itself superscript-led.
-    /** @type {(feats2: LineFeat[], zoneTop: number, g: LineFeat) => boolean} */
-    const markerOnRow = (feats2, zoneTop, g) => feats2.some((m) => m !== g && !m.lineNum
-      && m.top >= zoneTop && m.top < g.bottom && m.bottom > g.top && m.left < g.left
-      && m.firstWordSup && m.enumerator && m.enumerator.scheme === 'sup-ref'
-      && supRefRun && supRefRun.active && supRefRun.sequenceValues && m.enumerator.value != null
-      && supRefRun.sequenceValues.has(m.enumerator.value));
-    const realNotes = prevNotes.filter((g) => {
+    if (noteTop === Infinity) return null;
+    const notes = pageFeats3[q].filter((f) => f.top >= noteTop && !f.inTable
+      && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(q));
+    if (!notes.length) return null;
+    const refs = bodyRefLabels.get(q);
+    const realNotes = notes.filter((g) => {
       if (g.firstWordSup && g.enumerator && g.enumerator.scheme === 'sup-ref' && !g.lineNum
         && supRefRun && supRefRun.active && supRefRun.sequenceValues && g.enumerator.value != null
         && supRefRun.sequenceValues.has(g.enumerator.value)) return true;
-      if (markerOnRow(pageFeats3[p - 1], prevNoteTop, g)) return true;
-      if (!prevRefs) return false;
+      if (markerOnRow(pageFeats3[q], noteTop, g)) return true;
+      if (!refs) return false;
       const lead = ((g.line.words[0] && g.line.words[0].text) || '').trim().replace(/[.)\]]+$/, '');
-      if (!/^[\d*†‡]{1,3}$/.test(lead) || !prevRefs.has(lead)) return false;
+      if (!/^[\d*†‡]{1,3}$/.test(lead) || !refs.has(lead)) return false;
       // A note opener starts a sentence or citation, so a lowercase second word means the marker is running body text, not a note.
       return !(g.line.words[1] && /^[a-z]/.test(g.line.words[1].text || ''));
     });
-    if (!realNotes.length) continue;
+    if (!realNotes.length) return null;
     // an open note reaches the page bottom and ends without terminal punctuation
-    const lastPrev = prevNotes.reduce((a, b) => (b.bottom > a.bottom ? b : a));
-    if (notesEndUnpunct || lastPrev.bottom / prevH <= 0.8 || /[.!?)”’"']\s*$/.test(lastPrev.text.trim())) continue;
-    // A last line much larger than the real notes is body text that reached the page bottom unpunctuated via a column break, not an open note.
-    // Treating it as the open note cascades whole magazine-layout pages into the note role page after page.
-    if (lastPrev.size > Math.max(...realNotes.map((g) => g.size)) * 1.15) continue;
+    const last = notes.reduce((a, b) => (b.bottom > a.bottom ? b : a));
+    if (notesEndUnpunct || last.bottom / qH <= 0.8 || /[.!?)”’"']\s*$/.test(last.text.trim())) return null;
+    if (last.size > Math.max(...realNotes.map((g) => g.size)) * 1.15) return null;
+    return last.size;
+  };
+  for (let p = 0; p < pages.length; p++) {
+    const sepCur = rawSepAnyY.get(p);
+    if (sepCur == null) continue;
+    const openSize = p > 0 ? openNoteAt(p - 1) : (carryIn ? carryIn.openNoteSize : null);
+    if (openSize == null) continue;
     const curNotes = pageFeats3[p].filter((f) => f.top > sepCur && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p));
     if (!curNotes.length) continue;
@@ -1187,9 +1191,10 @@ export function analyzeLayout(pages, opts = {}) {
       && supRefRun.sequenceValues.has(opener.enumerator.value))
       || markerOnRow(pageFeats3[p], sepCur, opener);
     if (openerIsMarker) continue;
-    footnoteContinues.set(p, lastPrev.size);
+    footnoteContinues.set(p, openSize);
     if (!footnoteLineY.has(p)) footnoteLineY.set(p, sepCur); // the continuation corroborates this page's separator
   }
+  const openNoteSizeOut = suppressNotes ? null : openNoteAt(pages.length - 1);
   // A line-numbered transcript's small, low testimony corroborates a footnote separator via the size-only path even with sup-ref disabled.
   // The drawn-line footnote region must therefore also be dropped under the gate.
   if (suppressNotes) { footnoteLineY.clear(); footnoteContinues.clear(); }
@@ -1235,7 +1240,7 @@ export function analyzeLayout(pages, opts = {}) {
     return f.artifact && mid > 0.08 && mid < 0.92;
   }).length;
   model.artifactUnreliable = feats.length > 0 && midPageArtifact / feats.length > 0.15;
-  model.pageCount = pages.length;
+  model.pageCount = opts.docPageCount ?? pages.length;
   for (const f of feats) {
     if (!(f.topFrac < 0.12 || f.bottomFrac > 0.88)) continue;
     const key = `${f.bottomFrac > 0.88 ? 'b' : 't'}|${f.text.toLowerCase().replace(/\d+/g, '').replace(/[^a-z]+/g, ' ').trim()}`;
@@ -1484,6 +1489,8 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
 
+  const carriedPageNumOff = carryIn ? carryIn.pageNumOff : null;
+  let pageNumOffOut = carriedPageNumOff;
   if (convention) {
     /** @type {Map<number, PageNumCandidate>} */
     const readPage = new Map();
@@ -1494,21 +1501,23 @@ export function analyzeLayout(pages, opts = {}) {
     const numbered = [...readPage.keys()].sort((a, b) => a - b);
     for (let i = 0; i < numbered.length; i++) {
       const c = readPage.get(numbered[i]);
-      const before = i > 0 ? readPage.get(numbered[i - 1]) : null;
+      const beforeOff = i > 0 ? readPage.get(numbered[i - 1]).off : carriedPageNumOff;
       const after = i + 1 < numbered.length ? readPage.get(numbered[i + 1]) : null;
       // Page numbers count up one per page, so a page is read only if its value continues the count of the nearest numbered page before or after it.
-      const carriesCount = (before && before.off === c.off) || (after && after.off === c.off);
+      const carriesCount = beforeOff === c.off || (after && after.off === c.off);
       if (!carriesCount) continue;
       // The 'pagenum' role marks a line holding only the page number, bare or wrapped, so a running head that shares its row with the number keeps its own role.
       if (c.whole) c.f.pageNumLine = true;
       for (const line of pages[numbered[i]].lines) line.pageNum = c.value;
     }
+    pageNumOffOut = readPage.get(numbered[numbered.length - 1]).off;
   }
 
-  // An endnote section and a voluminous footnote page look identical block-by-block (flush-left, superscript-marker-led, body-or-smaller).
-  // The discriminator is page structure: endnotes form a consecutive run of note-dominated pages, while an isolated dominated page is footnotes filling one page.
-  // footnoteBlock still matters: such a block crosses the page midline, so its upper lines escape every bottomFrac-gated footnote rule in classifyRole and would otherwise fall to 'body'.
+  // Consecutive pages dominated by superscript-marked notes form an endnote section, while an isolated dominated page gets footnoteBlock.
+  // A page-dominating footnote block crosses the midline, so without a separator line its upper lines fail classifyRole's bottomFrac > 0.5 footnote gates.
   const supRefScheme = model.schemes['sup-ref'];
+  /** @type {LayoutCarry['supNoteRun']} */
+  let supNoteRunOut = null;
   if (supRefScheme && supRefScheme.active) {
     // Furniture is never a note entry: a pleading-paper margin number is itself a raised sup-ref digit, and once the scheme is active it would open a "note block" that swallows the page's body text.
     const opensEntry = (f) => f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
@@ -1561,17 +1570,23 @@ export function analyzeLayout(pages, opts = {}) {
     const endnotePages = new Set();
     /** @type {Set<number>} */
     const footnoteBlockPages = new Set();
+    const carriedRun = carryIn ? carryIn.supNoteRun : null;
+    const joinedRun = carriedRun && runs.length && runs[0][0] === 0 ? carriedRun : null;
+    /** @param {number[]} run */
+    const runLength = (run) => run.length + (joinedRun && run === runs[0] ? joinedRun.len : 0);
     for (const run of runs) {
-      const referenced = run.some((p) => pageNotes.get(p).values.some((v) => bodyRefLabelsDoc.has(String(v))));
+      const referenced = (run === runs[0] && !!joinedRun && joinedRun.referenced)
+        || run.some((p) => pageNotes.get(p).values.some((v) => bodyRefLabelsDoc.has(String(v))));
+      if (run[run.length - 1] === pages.length - 1) {
+        const lastPageValues = pageNotes.get(pages.length - 1).values;
+        supNoteRunOut = { len: runLength(run), referenced, lastValue: lastPageValues[lastPageValues.length - 1] };
+      }
       if (!referenced) continue;
-      if (run.length >= 2) for (const p of run) endnotePages.add(p);
+      if (runLength(run) >= 2) for (const p of run) endnotePages.add(p);
       else footnoteBlockPages.add(run[0]);
     }
-    // Extend a >=3-page endnote run onto an adjacent non-dominated page: a reference list's first page often shares the end of the report body, so its opening entries do not dominate.
-    // Value contiguity across the page boundary keeps out a separate numbered block that restarts at 1.
-    // The >=3 floor keeps a 2-page span, which can be one long footnote spilling over rather than a dedicated section, from growing.
     for (const run of runs) {
-      if (run.length < 3) continue;
+      if (runLength(run) < 3) continue;
       const firstVals = pageNotes.get(run[0]).values;
       const before = pageNotes.get(run[0] - 1);
       if (before && !before.dominated && firstVals.length && before.values.length
@@ -1580,6 +1595,10 @@ export function analyzeLayout(pages, opts = {}) {
       const after = pageNotes.get(run[run.length - 1] + 1);
       if (after && !after.dominated && lastVals.length && after.values.length
         && after.values[0] - 1 === lastVals[lastVals.length - 1]) endnotePages.add(run[run.length - 1] + 1);
+    }
+    if (carriedRun && !joinedRun && carriedRun.len >= 3) {
+      const after = pageNotes.get(0);
+      if (after && !after.dominated && after.values.length && after.values[0] - 1 === carriedRun.lastValue) endnotePages.add(0);
     }
     for (const [p, { noteLines }] of pageNotes) {
       if (endnotePages.has(p)) for (const f of noteLines) f.endnote = true;
@@ -1594,7 +1613,10 @@ export function analyzeLayout(pages, opts = {}) {
     && f.enumerator.value != null && !f.firstWordSup
     && !f.lineNum && !f.pageNumLine && !f.runningFurniture
     && bodyRefLabelsDoc.has(String(f.enumerator.value)));
-  if (feats.some(baselineOpens)) {
+  /** @type {LayoutCarry['baseNoteRun']} */
+  let baseNoteRunOut = null;
+  let openNoteBlockOut = false;
+  if (feats.some(baselineOpens) || (carryIn && carryIn.openNoteBlock)) {
     /** @type {Map<number, LineFeat[]>} */
     const byPage = new Map();
     for (const f of feats) {
@@ -1638,36 +1660,20 @@ export function analyzeLayout(pages, opts = {}) {
       else sectionRuns.push([p]);
     }
     const noteHeadingRe = /^((end|foot)?notes(\s+to\s+.{1,40})?|references?|bibliography|works\s+cited|literature(\s+cited)?|sources|citations|list\s+of\s+(references|authorities|sources|documents))\s*[:.]?$/i;
-    for (const run of sectionRuns) {
-      if (run.length < 2) continue;
-      // A value-contiguous non-dominated neighbour page belongs to the section: its opening shares the last body page, and its tail page no longer dominates.
-      // No minimum run length for this, unlike the superscript pass, because the heading gate below already corroborates the section.
-      let first = run[0];
-      const before = notePages.get(run[0] - 1);
-      const firstVals = notePages.get(run[0]).values;
-      if (before && !before.dominated && firstVals.length && before.values.length
-        && before.values[before.values.length - 1] + 1 === firstVals[0]) first = run[0] - 1;
-      let last = run[run.length - 1];
-      const after = notePages.get(run[run.length - 1] + 1);
-      const lastVals = notePages.get(run[run.length - 1]).values;
-      if (after && !after.dominated && lastVals.length && after.values.length
-        && after.values[0] - 1 === lastVals[lastVals.length - 1]) last = run[run.length - 1] + 1;
-      // Roles are not assigned yet at this stage (classifyRole itself consumes f.endnote), so the heading is matched by its text form alone.
-      const fo = notePages.get(first).openers.slice().sort((a, b) => a.top - b.top)[0];
-      const anchored = (byPage.get(first) || []).some((f) => {
-        if (f.runningFurniture || f.pageNumLine || f.lineNum || f.top >= fo.top - 1) return false;
-        const t = (f.text || '').trim();
-        return noteHeadingRe.test(t)
-          || (t.length <= 60 && /\b(documents?|materials?|sources)\b/i.test(t) && /\b(cited|considered|reviewed|relied)\b/i.test(t));
-      });
-      if (!anchored) continue;
+    /**
+     * Mark note blocks on pages `first..last` as endnotes, plus any top-of-page note spillover on pages `spillFrom..last`.
+     * @param {number} first
+     * @param {number} last
+     * @param {number} spillFrom
+     */
+    const markSection = (first, last, spillFrom) => {
       for (let p = first; p <= last; p++) {
         const block = notePages.get(p);
         if (block) for (const f of block.noteLines) f.endnote = true;
       }
       // A note's tail spills onto the section's next page above that page's first marker, where the forward walk cannot reach it.
       // Scoped to these anchored runs: a superscript-marker note page can carry body text above its notes, which this walk must never eat.
-      for (let p = first + 1; p <= last; p++) {
+      for (let p = spillFrom; p <= last; p++) {
         const block = notePages.get(p);
         if (!block) continue;
         const fo = block.openers.slice().sort((a, b) => a.top - b.top)[0];
@@ -1683,10 +1689,36 @@ export function analyzeLayout(pages, opts = {}) {
           cur = g;
         }
       }
+    };
+    const carriedSection = carryIn ? carryIn.baseNoteRun : null;
+    for (const run of sectionRuns) {
+      const joined = carriedSection && run[0] === 0 ? carriedSection : null;
+      const runLength = run.length + (joined ? joined.len : 0);
+      let first = run[0];
+      const before = notePages.get(run[0] - 1);
+      const firstVals = notePages.get(run[0]).values;
+      if (before && !before.dominated && firstVals.length && before.values.length
+        && before.values[before.values.length - 1] + 1 === firstVals[0]) first = run[0] - 1;
+      let last = run[run.length - 1];
+      const after = notePages.get(run[run.length - 1] + 1);
+      const lastVals = notePages.get(run[run.length - 1]).values;
+      if (after && !after.dominated && lastVals.length && after.values.length
+        && after.values[0] - 1 === lastVals[lastVals.length - 1]) last = run[run.length - 1] + 1;
+      const fo = notePages.get(first).openers.slice().sort((a, b) => a.top - b.top)[0];
+      const anchored = joined ? joined.anchored : (byPage.get(first) || []).some((f) => {
+        if (f.runningFurniture || f.pageNumLine || f.lineNum || f.top >= fo.top - 1) return false;
+        const t = (f.text || '').trim();
+        return noteHeadingRe.test(t)
+          || (t.length <= 60 && /\b(documents?|materials?|sources)\b/i.test(t) && /\b(cited|considered|reviewed|relied)\b/i.test(t));
+      });
+      if (run[run.length - 1] === pages.length - 1) baseNoteRunOut = { len: runLength, anchored, lastValue: lastVals[lastVals.length - 1] };
+      if (runLength < 2 || !anchored) continue;
+      markSection(first, last, joined ? first : first + 1);
     }
-    // A page-bottom run of these same baseline markers with no notes heading is a plain footnote tail, not an endnote section.
-    // Region evidence replaces the missing separator line.
-    // The whole region is the note block, so a long note's continuation paragraphs stay notes.
+    if (carriedSection && carriedSection.anchored && carriedSection.len >= 2 && !(sectionRuns.length && sectionRuns[0][0] === 0)) {
+      const after = notePages.get(0);
+      if (after && !after.dominated && after.values.length && after.values[0] - 1 === carriedSection.lastValue) markSection(0, 0, 0);
+    }
     for (const [p, pf] of byPage) {
       const rp = bodyRefLabels.get(p);
       if (!rp) continue;
@@ -1699,16 +1731,18 @@ export function analyzeLayout(pages, opts = {}) {
       if (!opener) continue;
       for (const f of regionContent) if (f.top >= opener.top && !f.inTable) f.footnoteBlock = true;
     }
-    // A note that spills across the page break continues at the bottom of the next page with no marker, so the opener-keyed loop above cannot reach it.
-    // The previous page's open block (its last content line mid-sentence) is the evidence tying the next page's bottom run to the note.
-    // Ascending page order chains a note spilling across several pages.
-    for (let p = 1; p < pages.length; p++) {
-      const prevPf = byPage.get(p - 1);
+    /**
+     * Page `q` ends inside a note block, on a line that stops mid-sentence.
+     * @param {number} q
+     */
+    const openBlockAt = (q) => {
+      const content = (byPage.get(q) || []).filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
+      const lastLine = content.reduce((a, b) => (!a || b.top > a.top ? b : a), null);
+      return !!lastLine && !!lastLine.footnoteBlock && !lastLine.endsTerminal;
+    };
+    for (let p = 0; p < pages.length; p++) {
       const pf = byPage.get(p);
-      if (!prevPf || !pf) continue;
-      const prevContent = prevPf.filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
-      const prevLast = prevContent.reduce((a, b) => (!a || b.top > a.top ? b : a), null);
-      if (!prevLast || !prevLast.footnoteBlock || prevLast.endsTerminal) continue;
+      if (!pf || !(p > 0 ? openBlockAt(p - 1) : (carryIn && carryIn.openNoteBlock))) continue;
       const content = pf.filter((f) => !f.runningFurniture && !f.pageNumLine && !f.lineNum && f.nChar >= 2);
       const marked = content.filter((f) => f.footnoteBlock);
       const regionTop = marked.length ? Math.min(...marked.map((f) => f.top)) : Infinity;
@@ -1725,10 +1759,9 @@ export function analyzeLayout(pages, opts = {}) {
       }
       for (const f of tail) f.footnoteBlock = true;
     }
+    openNoteBlockOut = openBlockAt(pages.length - 1);
   }
 
-  // Note-style profile: the document's note conventions.
-  // Doc-level gate for classifyRole's rule that admits a full-size leading number matching an in-text reference as a note.
   let baselineMarkerNotesBelowSep = 0;
   for (const f of feats) {
     if (f.firstWordSup || f.bottomFrac <= 0.5) continue;
@@ -2099,41 +2132,53 @@ export function analyzeLayout(pages, opts = {}) {
 
   // 'alpha-dot'/'roman-dot' are held non-splittable doc-wide because a bare line-leading "a." or "ii." is usually an initial, abbreviation, or citation fragment, not a list marker.
   // Genuine lists are recovered here per-run and flagged listConfirmed so only those members split, leaving scattered prose initials untouched.
+  /** @type {LayoutCarry['listRuns']} */
+  const listRunsOut = {};
   for (const scheme of ['alpha-dot', 'roman-dot']) {
-    /** @type {Array<{members: Array<LineFeat>, column: number}>} */
+    /** @type {Array<{members: Array<LineFeat>, column: number, n: number}>} */
     const runs = [];
     /** @type {Array<LineFeat>} */
     let run = [];
-    let runColumn = 0;
-    let broken = false; // a disqualifying line (heading/other-list) seen since the last run member
-    const closeRun = () => { if (run.length >= 2) runs.push({ members: run, column: runColumn }); run = []; };
+    // A run the pages before left open goes on here, with `earlier` of its markers on those pages.
+    const openRun = carryIn ? carryIn.listRuns[scheme] : null;
+    let earlier = openRun ? openRun.n : 0;
+    let lastValue = openRun ? openRun.lastValue : 0;
+    let runColumn = openRun ? openRun.column : 0;
+    let broken = false;
+    const closeRun = () => {
+      if (run.length && run.length + earlier >= 2) runs.push({ members: run, column: runColumn, n: run.length + earlier });
+      run = [];
+      earlier = 0;
+    };
     for (const f of feats) {
       const en = f.enumerator;
       const isMarker = en && en.scheme === scheme && en.value != null && f.role === 'body';
       if (isMarker) {
-        if (run.length && !broken
-          && en.value === run[run.length - 1].enumerator.value + 1
+        if ((run.length || earlier) && !broken
+          && en.value === lastValue + 1
           && Math.abs(f.left - runColumn) <= bodySize * 0.5) {
           run.push(f);
         } else {
           closeRun();
           run = [f]; runColumn = f.left; broken = false;
         }
-      } else if (run.length && !broken) {
+        lastValue = en.value;
+      } else if ((run.length || earlier) && !broken) {
         // An intervening line breaks the run only if it is structural: a heading/title (a new section) or a marker of a different active scheme (a different list).
         // Furniture interleaves in content-stream order and is skipped, and ordinary body lines are item wraps.
         if (f.role === 'heading' || f.role === 'title') broken = true;
         else if (en && en.scheme !== scheme && model.schemes[en.scheme] && model.schemes[en.scheme].active) broken = true;
       }
     }
+    if ((run.length || earlier) && !broken) listRunsOut[scheme] = { n: run.length + earlier, lastValue, column: runColumn };
     closeRun();
     // A run of >=3 aligned markers proves its column hosts a lettered list (three stray initials aligning consecutively is implausible), so it confirms even at the body margin.
     // The >=2 relaxation confirms a shorter run only when its column was already proved by a >=3 run and is indented past body prose.
     // At the body margin, prose initials and wrapped case-citations that start a line are indistinguishable from a two-letter list.
-    const provenColumns = runs.filter((r) => r.members.length >= 3).map((r) => r.column);
+    const provenColumns = runs.filter((r) => r.n >= 3).map((r) => r.column);
     for (const r of runs) {
       const indentedSubColumn = r.column > bodyTextLeft + bodySize * 0.5;
-      if (r.members.length >= 3
+      if (r.n >= 3
         || (indentedSubColumn && provenColumns.some((c) => Math.abs(c - r.column) <= bodySize * 0.5))) {
         for (const m of r.members) m.listConfirmed = true;
       }
@@ -2142,35 +2187,43 @@ export function analyzeLayout(pages, opts = {}) {
 
   // A lone dash doubles as inline sentence punctuation, not a list marker, so only a run of >=3 column-aligned dash markers is confirmed as a list.
   // Confirmed members get listConfirmed, which promotes them to strong markers in the bullet rule (strongScheme otherwise excludes a bare dash).
+  /** @type {LayoutCarry['dashRun']} */
+  let dashRunOut = null;
   {
     /** @type {Array<Array<LineFeat>>} */
     const runs = [];
     /** @type {Array<LineFeat>} */
     let run = [];
-    let runColumn = 0;
+    const openRun = carryIn ? carryIn.dashRun : null;
+    let earlier = openRun ? openRun.n : 0;
+    let runColumn = openRun ? openRun.column : 0;
     let broken = false;
     const isDash = (f) => f.enumerator && f.enumerator.scheme === 'bullet' && /^[–—-]$/.test(f.enumerator.raw);
-    const closeRun = () => { if (run.length >= 3) runs.push(run); run = []; };
+    const closeRun = () => {
+      if (run.length && run.length + earlier >= 3) runs.push(run);
+      run = [];
+      earlier = 0;
+    };
     for (const f of feats) {
       if (isDash(f) && f.role === 'body') {
-        if (run.length && !broken && Math.abs(f.left - runColumn) <= bodySize * 0.5) {
+        if ((run.length || earlier) && !broken && Math.abs(f.left - runColumn) <= bodySize * 0.5) {
           run.push(f);
         } else {
           closeRun();
           run = [f]; runColumn = f.left; broken = false;
         }
-      } else if (run.length && !broken) {
+      } else if ((run.length || earlier) && !broken) {
         const en = f.enumerator;
         if (f.role === 'heading' || f.role === 'title') broken = true;
         else if (en && en.scheme === 'bullet') broken = true; // a different bullet glyph is a different list
         else if (en && model.schemes[en.scheme] && model.schemes[en.scheme].active) broken = true;
       }
     }
+    if ((run.length || earlier) && !broken) dashRunOut = { n: run.length + earlier, column: runColumn };
     closeRun();
     for (const r of runs) for (const m of r) m.listConfirmed = true;
   }
 
-  // Group lines into paragraphs per page.
   const featByPage = new Map();
   for (const f of feats) {
     if (!featByPage.has(f.page)) featByPage.set(f.page, []);
@@ -2222,6 +2275,7 @@ export function analyzeLayout(pages, opts = {}) {
   const refHeadTops = new Map();
   /** @type {Set<number>} pages whose previous page ends on a references-family heading */
   const refHeadCarry = new Set();
+  if (carryIn && carryIn.refsHeadingTail) refHeadCarry.add(0);
   for (const [p2, pf2] of featByPage) {
     const tops = [];
     for (const ln of pf2) if (isRefsHeading(ln)) tops.push(ln.top);
@@ -2369,6 +2423,8 @@ export function analyzeLayout(pages, opts = {}) {
     if (!refRunsByPage.has(r.page)) refRunsByPage.set(r.page, []);
     refRunsByPage.get(r.page).push(r);
   }
+  // The qualified list that closed the page before these pages stands as that page's last run.
+  if (carryIn && carryIn.refList) refRunsByPage.set(-1, [{ ...carryIn.refList, qualified: true }]);
   // Hang evidence travels along chains of adjacent-page runs at one flush, until a fixed point, so a multi-page list qualifies its hangless spillover pages.
   let refChainGrew = true;
   while (refChainGrew) {
@@ -2394,6 +2450,8 @@ export function analyzeLayout(pages, opts = {}) {
     const runRef = { flush: r.flush, hang: r.hang, gapCut: r.gapCut };
     for (const ln of r.lines) ln.refListRun = runRef;
   }
+  const lastPageRefRuns = refRunsByPage.get(pages.length - 1);
+  const lastRefRun = lastPageRefRuns ? lastPageRefRuns[lastPageRefRuns.length - 1] : null;
 
   // inInsetRun marks >=2 consecutive same-column lines at one left edge, separating a block quote from a lone first-line indent for the per-line quote rules that run where the region pass declined.
   // Whether that margin is inset is established elsewhere (bothSideInset), not here.
@@ -2732,6 +2790,8 @@ export function analyzeLayout(pages, opts = {}) {
   }
 
   // Paragraph numbering: the document's one numbering of "12."- or "[12]"-style paragraphs, which citations name.
+  /** @type {LayoutCarry['parNum']} */
+  let parNumOut = null;
   {
     /** @type {Map<OcrLine, LineFeat>} */
     const featOf = new Map();
@@ -2837,9 +2897,8 @@ export function analyzeLayout(pages, opts = {}) {
       members = found;
       numberingScheme = scheme;
     }
+    const subItemSchemes = ['paren-alpha', 'paren-roman', 'paren-num', 'alpha-paren', 'roman-paren', 'alpha-dot', 'roman-dot', 'bullet', 'bracket-num', 'num-dot'];
     if (members.length) {
-      const subItem = new Set(['paren-alpha', 'paren-roman', 'paren-num', 'alpha-paren', 'roman-paren', 'alpha-dot', 'roman-dot', 'bullet', 'bracket-num', 'num-dot']);
-      subItem.delete(numberingScheme);
       // A heading-typed paragraph whose number fills a hole in the count is a numbered paragraph the role pass misread.
       for (let k = 0; k < members.length - 1; k++) {
         let cur = members[k];
@@ -2880,36 +2939,70 @@ export function analyzeLayout(pages, opts = {}) {
           }
         }
       }
-      for (let k = 0; k < members.length; k++) {
-        const m = members[k];
-        const stop = k + 1 < members.length ? members[k + 1].i : flat.length;
-        const lastMember = k === members.length - 1;
-        flat[m.i].par.parNum = m.v;
-        for (let i = m.i + 1; i < stop; i++) {
-          const { par, page } = flat[i];
-          if (skipped(par.type)) continue;
-          if (par.type === 'title') break;
-          // The last member has no next member to stop it, and the closing block (a prayer, a signature, a perjury clause) follows it unnumbered.
-          if (lastMember) {
-            const e = enumOf(par);
-            const pageTop = page > flat[m.i].page && !flat.slice(m.i + 1, i).some((x) => x.page === page && !skipped(x.par.type));
-            if (!pageTop && !(e && subItem.has(e.scheme))) break;
-          }
-          par.parNum = m.v;
+    }
+    // Propagate a paragraph number carried from the previous chunk into the opening paragraphs of this chunk.
+    // When this chunk continues the same sequence, extend openNum.v up to the first new number, and otherwise apply the same stopping rules used after a sequence's final number.
+    const openNum = carryIn ? carryIn.parNum : null;
+    let openNumRanOut = false;
+    if (openNum) {
+      const countsOn = members.length > 0 && numberingScheme === openNum.scheme && members[0].v > openNum.v;
+      const stop = countsOn ? members[0].i : flat.length;
+      let i = 0;
+      for (; i < stop; i++) {
+        const { par, page } = flat[i];
+        if (skipped(par.type)) continue;
+        if (par.type === 'title') break;
+        if (!countsOn) {
+          const e = enumOf(par);
+          const pageTop = !flat.slice(0, i).some((x) => x.page === page && !skipped(x.par.type));
+          if (!openNum.open || (!pageTop && !(e && e.scheme !== openNum.scheme && subItemSchemes.includes(e.scheme)))) break;
         }
+        par.parNum = openNum.v;
+      }
+      openNumRanOut = i < flat.length;
+    }
+    const subItem = new Set(subItemSchemes);
+    subItem.delete(numberingScheme);
+    let lastNumberClosed = false;
+    for (let k = 0; k < members.length; k++) {
+      const m = members[k];
+      const stop = k + 1 < members.length ? members[k + 1].i : flat.length;
+      const lastMember = k === members.length - 1;
+      flat[m.i].par.parNum = m.v;
+      for (let i = m.i + 1; i < stop; i++) {
+        const { par, page } = flat[i];
+        if (skipped(par.type)) continue;
+        if (par.type === 'title') break;
+        // The last member has no next member to stop it, and the closing block (a prayer, a signature, a perjury clause) follows it unnumbered.
+        if (lastMember) {
+          const e = enumOf(par);
+          const pageTop = page > flat[m.i].page && !flat.slice(m.i + 1, i).some((x) => x.page === page && !skipped(x.par.type));
+          if (!pageTop && !(e && subItem.has(e.scheme))) {
+            lastNumberClosed = true;
+            break;
+          }
+        }
+        par.parNum = m.v;
       }
     }
+    if (members.length) {
+      const lastM = members[members.length - 1];
+      // Leave parNumOut null when a heading follows lastM, since a continuing sequence in the next chunk propagates openNum.v even when open is false.
+      if (!flat.slice(lastM.i + 1).some((x) => x.par.type === 'title')) parNumOut = { scheme: numberingScheme, v: lastM.v, open: !lastNumberClosed };
+    } else if (openNum && !openNumRanOut) parNumOut = openNum;
   }
 
-  // Footnote linking: set the same par.footnoteRefId <-> word.footnoteParId link the .docx importer produces, so exporters can emit real footnotes rather than inline text.
   const markerRe = /^[\d*†‡]{1,3}$/;
   const labelOf = (t) => (t || '').trim().replace(/[.)\]]+$/, '');
-  const bodyMarkers = []; // { order, page, word, label }, ascending by reading order
+  const bodyMarkers = [];
+  const waitingMarks = carryIn ? carryIn.refMarks.slice() : [];
+  /** @type {Array<{n: number, wordId: string, parId: string}>} */
+  const notePatches = [];
   for (let p = 0; p < pages.length; p++) {
     const { lines } = pages[p];
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li];
-      if (line.par && (line.par.type === 'footnote' || line.par.type === 'endnote')) continue; // a marker inside a note is not a body reference
+      if (line.par && (line.par.type === 'footnote' || line.par.type === 'endnote')) continue;
       for (const word of line.words) {
         const text = labelOf(word.text);
         const symbol = /[*†‡]{1,3}$/.exec(text);
@@ -2945,9 +3038,18 @@ export function analyzeLayout(pages, opts = {}) {
       if (best) {
         par.footnoteRefId = best.word.id;
         best.word.footnoteParId = par.id;
+        continue;
+      }
+      for (let k = waitingMarks.length - 1; k >= 0; k--) {
+        if (waitingMarks[k].label !== label) continue;
+        par.footnoteRefId = waitingMarks[k].id;
+        notePatches.push({ n: waitingMarks[k].n, wordId: waitingMarks[k].id, parId: par.id });
+        waitingMarks.splice(k, 1);
+        break;
       }
     }
   }
+  for (const m of bodyMarkers) if (!m.word.footnoteParId) waitingMarks.push({ n: pages[m.page].n, id: m.word.id, label: m.label });
 
   // Exporters end a paragraph wherever a line's paragraph differs from the previous line's, so line numbers left between the rows would split each text paragraph at every row.
   for (let p = 0; p < pages.length; p++) {
@@ -2976,17 +3078,34 @@ export function analyzeLayout(pages, opts = {}) {
     page.lines = [...columnPars.flatMap((par) => par.lines), ...page.lines.filter((l) => !lnSet.has(l))];
   }
 
+  model.carry = /** @type {LayoutCarry} */ ({
+    openNoteSize: openNoteSizeOut,
+    openNoteBlock: openNoteBlockOut,
+    lineNumCols: lineNumColsOut,
+    pageNumOff: pageNumOffOut,
+    supNoteRun: supNoteRunOut,
+    baseNoteRun: baseNoteRunOut,
+    listRuns: listRunsOut,
+    dashRun: dashRunOut,
+    refsHeadingTail: refHeadCarry.has(pages.length),
+    refList: lastRefRun && lastRefRun.qualified ? { flush: lastRefRun.flush, gapCut: lastRefRun.gapCut } : null,
+    parNum: parNumOut,
+    refMarks: waitingMarks.slice(-WAITING_MARKS_MAX),
+  });
+  model.notePatches = notePatches;
+
   if (opts.debug) return { model, feats };
   return model;
 }
 
-// Decision: does line `f` start a new paragraph relative to `prev`?
 /**
+ * Decide whether line `f` starts a new paragraph relative to `prev`.
  * @param {LineFeat} f
  * @param {?LineFeat} prev
  * @param {LayoutModel} model
  * @param {?LineFeat} curParFirst
- * @param {boolean} [structMode] - group lines by their owning struct element instead of by geometry.
+ * @param {boolean} [structMode]
+ * @returns {{newPar: boolean, reason: string}}
  */
 function decideBreak(f, prev, model, curParFirst, structMode) {
   if (!prev) return { newPar: true, reason: 'first line' };
@@ -4201,17 +4320,37 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} nativeText - the document parses as born-digital text (pdfType 'text').
  * @property {boolean} ocrText - the text is a scan's OCR layer (pdfType 'ocr' or 'image').
  * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageGraphicLines - drawn horizontal separator lines per page.
+ * @property {LayoutCarry} carry - what the pages after these need from them.
+ * @property {Array<{n: number, wordId: string, parId: string}>} notePatches - reference marks on earlier pages that a note here claimed: page index, the mark's word, the note's paragraph.
  */
 
 /**
+ * Serializable cross-page layout state carried from one page run to the next.
+ * @typedef {object} LayoutCarry
+ * @property {?number} openNoteSize - type size of a footnote left open on the last page.
+ * @property {boolean} openNoteBlock - whether the last page ends mid-sentence inside a baseline-marked note block.
+ * @property {Array<{x: number, ceil: number}>} lineNumCols - confident margin line-number columns on the last page, with left edge and max line number.
+ * @property {?number} pageNumOff - printed page number minus 0-based page index on the last numbered page.
+ * @property {?{len: number, referenced: boolean, lastValue: number}} supNoteRun - superscript-note-dominated page run ending on the last page.
+ * @property {?{len: number, anchored: boolean, lastValue: number}} baseNoteRun - baseline-note-dominated page run ending on the last page, where `anchored` means a notes heading opened it.
+ * @property {Object<string, {n: number, lastValue: number, column: number}>} listRuns - open dot-marker list runs keyed by scheme, with item count and marker x.
+ * @property {?{n: number, column: number}} dashRun - open dash-bullet list run, with item count and marker x.
+ * @property {boolean} refsHeadingTail - whether one of the last page's final two content lines is a references heading.
+ * @property {?{flush: number, gapCut: (number|undefined)}} refList - qualified hanging reference list at the end of the last page.
+ * @property {?{scheme: string, v: number, open: boolean}} parNum - last paragraph number and whether unnumbered following paragraphs can still inherit it.
+ * @property {Array<{n: number, id: string, label: string}>} refMarks - unclaimed in-text note-reference marks in reading order, with 0-based page index, word ID, and marker text.
+ */
+
+/**
+ * Candidate printed page number extracted from a margin line.
  * @typedef {object} PageNumCandidate
- * @property {LineFeat} f - the line the numeral was read from.
- * @property {string} value - the numeral as printed.
- * @property {number} depth - distance of the line's middle from its nearer page edge, as a fraction of the page height.
- * @property {number} off - the value minus the page index.
- * @property {boolean} whole - the whole line is the numeral, bare or wrapped.
- * @property {boolean} head - the line is in the top band.
- * @property {number} across - horizontal center of the numeral, as a fraction of the page width.
+ * @property {LineFeat} f
+ * @property {string} value - extracted page-number digits.
+ * @property {number} depth - distance of the line's vertical midpoint from the top or bottom page edge, as a fraction of page height.
+ * @property {number} off - numeric value minus 0-based page index.
+ * @property {boolean} whole - whether the line holds only the page number, with no other header or footer text.
+ * @property {boolean} head - whether the line is in the top margin band.
+ * @property {number} across - horizontal center of the number, as a fraction of page width.
  */
 
 /**

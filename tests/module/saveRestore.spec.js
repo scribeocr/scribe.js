@@ -2,10 +2,12 @@ import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
 import scribe from '../../scribe.js';
+import { writeSavedDoc } from '../../js/export/writeSavedDoc.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 import {
   LAYOUTS, saveRestoreSave, emptyStores, scribeText, diffValues,
 } from './_scribeRoundTrip.js';
+import { docPages, expectSamePage } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -65,11 +67,11 @@ describe('Check .scribe export function.', () => {
     // standardizeOCRPages snapshots layers with clonePage, so a lossy clone silently narrows every comparison in this file to the fields it copies.
     // A restored document cannot host this check: its pages are revived plain objects, so a field added to the OCR constructors but forgotten in the clone would be absent from both sides.
     {
-      expect(doc.ocr.active[0].textSource, 'fixture page 0 carries the pdf text source').toBe('pdf');
-      expect(doc.ocr.active[0].pars.length, 'fixture page 0 carries 14 analyzed paragraphs').toBe(14);
-      expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'every fixture line belongs to a paragraph').toBe(39);
+      expect(doc.getPage(0).textSource, 'fixture page 0 carries the pdf text source').toBe('pdf');
+      expect(doc.getPage(0).pars.length, 'fixture page 0 carries 14 analyzed paragraphs').toBe(14);
+      expect(doc.getPage(0).lines.filter((l) => l.par).length, 'every fixture line belongs to a paragraph').toBe(39);
 
-      const orig = structuredClone(doc.ocr.active[0]);
+      const orig = structuredClone(doc.getPage(0));
 
       // The sentinel pass below cannot fill empty arrays or fields that need a valid value, so populate those by hand first.
       orig.angle = 1.5;
@@ -90,8 +92,7 @@ describe('Check .scribe export function.', () => {
       orig.pars[0].footnoteRefId = word0.id;
       word0.footnoteParId = orig.pars[0].id;
 
-      // Populate every defaulted field with a sentinel, so a field the clone forgets cannot pass the comparison by matching the constructor default on both sides.
-      const skipSentinel = new Set(['readings', 'chars', 'styleRuns', 'par', 'page', 'line']);
+      const skipSentinel = new Set(['readings', 'chars', 'styleRuns', 'par', 'page', 'line', 'n']);
       const populated = new Set();
       /** @param {any} obj */
       const fillSentinels = (obj) => {
@@ -110,27 +111,69 @@ describe('Check .scribe export function.', () => {
 
       const clone = scribe.utils.ocr.clonePage(orig);
 
-      // An expect() per node is too slow on a graph this size, so expect() runs only once a mismatch is found.
-      const seen = new Map();
-      /** @param {any} a @param {any} b @param {string} path */
-      const compare = (a, b, path) => {
-        if (a === null || typeof a !== 'object') {
-          if (!Object.is(a, b)) expect(b, `clonePage dropped or altered ${path}`).toBe(a);
-          return;
-        }
-        if (seen.has(a)) {
-          if (b !== seen.get(a)) expect(b, `back-reference ${path} points into the original graph instead of the clone`).toBe(seen.get(a));
-          return;
-        }
-        seen.set(a, b);
-        if (b === a) expect(b, `clonePage aliased ${path} to the original object`).not.toBe(a);
-        if (b === null || typeof b !== 'object') expect(typeof b, `clonePage dropped the object at ${path}`).toBe('object');
-        for (const k of Object.keys(a)) compare(a[k], b[k], `${path}.${k}`);
-      };
-      compare(orig, clone, 'page');
+      expectSamePage(orig, clone, 'clonePage');
 
       clone.lines[0].words[0].text = 'MUTATED';
       expect(orig.lines[0].words[0].text, 'editing the clone leaves the original word intact').not.toBe('MUTATED');
+
+      const edge = structuredClone(doc.getPage(0, { detail: true }));
+      const edgeWords = edge.lines.flatMap((line) => line.words);
+      edgeWords[0].text = '﻿UNITED';
+      edgeWords[1].text = 'STA\uD800TES';
+      const ligature = edgeWords[2].chars;
+      ligature.splice(0, 2, { text: 'DI', bbox: { ...ligature[0].bbox, right: ligature[1].bbox.right } });
+      edge.lines[0].ascHeight = undefined;
+      edgeWords[3].text = null;
+      edgeWords[4].text = undefined;
+      edgeWords[5].style = null;
+      edgeWords[6].style = undefined;
+      edgeWords[7].chars[0].text = undefined;
+
+      const pageBudget = scribe.opt.pageBudget;
+      doc.insertParsedPage(0, orig, { layer: 'every field', setActive: false, mainData: false });
+      doc.insertParsedPage(0, edge, { layer: 'edge values', setActive: false, mainData: false });
+      scribe.opt.pageBudget = 1;
+      doc.getPage(0);
+      const bare = doc.getPage(0, { layer: 'every field' });
+      const bareCharWords = bare.lines.flatMap((line) => line.words).filter((word) => word.chars).length;
+      const detailed = doc.getPage(0, { layer: 'every field', detail: true });
+      const edgeBare = doc.getPage(0, { layer: 'edge values' });
+      const edgeBareAsRead = structuredClone(edgeBare);
+      const edgeBareWords = edgeBare.lines.flatMap((line) => line.words);
+      for (const words of [edgeWords, edgeBareWords]) {
+        words[8].bbox.left -= 3;
+        words[9].style.italic = true;
+        words[10].text += 'x';
+      }
+      edgeWords[10].chars = null;
+      const edgeDetailed = doc.getPage(0, { layer: 'edge values', detail: true });
+      const changed = doc.getPage(1);
+      changed.lines[0].words[0].text += '*';
+      doc.getPage(0);
+      const changedReread = doc.getPage(1);
+      const changedRereadText = changedReread.lines[0].words[0].text;
+      changedReread.lines[0].words[0].text = '-2-';
+      scribe.opt.pageBudget = pageBudget;
+      expect(bareCharWords, 'a page read back without detail carries character boxes').toBe(0);
+      expectSamePage(orig, bare, 'the page record', 'chars');
+      expectSamePage(orig, detailed, 'the page and detail records');
+
+      const asRead = edgeBareAsRead.lines.flatMap((line) => line.words);
+      expect([asRead[0].text, asRead[1].text, edgeBareAsRead.lines[0].ascHeight, asRead[3].text, asRead[4].text, asRead[5].style, asRead[6].style],
+        'a page record keeps a leading U+FEFF, a lone surrogate, and null apart from undefined on a line height, a word text and a word style')
+        .toStrictEqual(['﻿UNITED', 'STA\uD800TES', undefined, null, undefined, null, undefined]);
+      const edgeDetailedWords = edgeDetailed.lines.flatMap((line) => line.words);
+      expect([edgeDetailedWords[2].chars?.length, edgeDetailedWords[2].chars?.[0].text, edgeDetailedWords[7].chars?.[0].text],
+        'a detail record keeps a character box that spans two letters, and a character text held as undefined')
+        .toStrictEqual([7, 'DI', undefined]);
+      expect([edgeDetailedWords[8].bbox.left, edgeDetailedWords[8].chars?.length, edgeDetailedWords[9].style.italic, edgeDetailedWords[9].chars?.length],
+        'a word moved or restyled after the page was read keeps the change and still gets its character boxes')
+        .toStrictEqual([1465, 2, true, 8]);
+      expect(edgeDetailedWords[10].chars, 'a word retyped after the page was read gets no character boxes, since the stored ones no longer line up').toBe(null);
+      expectSamePage(edge, edgeDetailed, 'the page and detail records of a page with edge values');
+      expect([changedReread === changed, changedRereadText],
+        'a word changed in place on a page from doc.getPage keeps the change after the page leaves memory and is rebuilt')
+        .toStrictEqual([false, '-2-*']);
     }
 
     const regionPage = doc.layoutRegions.pages[0];
@@ -143,7 +186,7 @@ describe('Check .scribe export function.', () => {
     });
     regionPage.boxes[imageRegion.id] = imageRegion;
 
-    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(docPages(doc));
 
     scribe.ScribeDoc.defaults.compressScribe = true;
     const scribeData = await doc.exportData('scribe');
@@ -155,11 +198,11 @@ describe('Check .scribe export function.', () => {
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
-    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(docPages(doc));
 
     expect(ocrAllComp1, 'OCR data changed on gzipped .scribe round-trip').toEqual(ocrAllComp2);
 
-    const wordMixed = doc.ocr.active[0].lines[30].words[10];
+    const wordMixed = doc.getPage(0).lines[30].words[10];
     expect(wordMixed.text, 'mixed-style word changed on .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'intra-word style runs lost on .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
 
@@ -194,10 +237,10 @@ describe('Check .scribe export function.', () => {
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [scribeDataSeg] });
 
-    expect(standardizeOCRPages(doc.ocr.active), 'OCR data changed on segmented .scribe round-trip').toEqual(ocrAllComp1);
-    expect(doc.ocr.active[0].textSource, 'textSource lost by the segmented reader’s per-page normalization').toBe('pdf');
-    expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'paragraph references not restored by the segmented reader').toBe(39);
-    const wordMixedSeg = doc.ocr.active[0].lines[30].words[10];
+    expect(standardizeOCRPages(docPages(doc)), 'OCR data changed on segmented .scribe round-trip').toEqual(ocrAllComp1);
+    expect(doc.getPage(0).textSource, 'textSource lost by the segmented reader’s per-page normalization').toBe('pdf');
+    expect(doc.getPage(0).lines.filter((l) => l.par).length, 'paragraph references not restored by the segmented reader').toBe(39);
+    const wordMixedSeg = doc.getPage(0).lines[30].words[10];
     expect(wordMixedSeg.text, 'mixed-style word changed on segmented .scribe round-trip').toBe('Ltd.,');
     expect(wordMixedSeg.styleRuns, 'intra-word style runs lost on segmented .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
     expect(doc.annotations.pages[0].length, 'highlight annotations lost on segmented .scribe round-trip').toBe(12);
@@ -210,7 +253,7 @@ describe('Check .scribe export function.', () => {
   test('Exporting to .scribe (non-gzipped) and reimporting should preserve document data', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(docPages(doc));
 
     scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
@@ -224,7 +267,7 @@ describe('Check .scribe export function.', () => {
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer] });
 
-    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(docPages(doc));
 
     expect(ocrAllComp1, 'OCR data changed on non-gzipped .scribe round-trip').toEqual(ocrAllComp2);
 
@@ -235,8 +278,8 @@ describe('Check .scribe export function.', () => {
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [encoder.encode(scribeDataNoChars).buffer] });
 
-    const wordMixed = doc.ocr.active[0].lines[30].words[10];
-    expect(wordMixed.chars, 'char boxes should be excluded by includeCharBoxesScribe: false').toBeUndefined();
+    const wordMixed = doc.getPage(0).lines[30].words[10];
+    expect(wordMixed.chars ?? null, 'char boxes should be excluded by includeCharBoxesScribe: false').toBeNull();
     expect(wordMixed.text, 'mixed-style word changed on char-box-free .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'style runs must survive the .scribe round-trip independently of char boxes').toEqual([{ i: 4, style: { italic: false } }]);
 
@@ -245,7 +288,7 @@ describe('Check .scribe export function.', () => {
     const legacyScribeData = scribeStr.replaceAll('"textSource":"pdf"', '"textSource":"stext"');
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [encoder.encode(legacyScribeData).buffer] });
-    expect(doc.ocr.active[0].textSource, "a legacy .scribe 'stext' tag must restore as 'pdf'").toBe('pdf');
+    expect(doc.getPage(0).textSource, "a legacy .scribe 'stext' tag must restore as 'pdf'").toBe('pdf');
 
     scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();
@@ -256,7 +299,7 @@ describe('Check .scribe export function.', () => {
     const pdfPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
     doc = await scribe.openDocument([pdfPath]);
 
-    doc.ocr.active[0].angle = 2.5;
+    doc.getPage(0).angle = 2.5;
 
     scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
@@ -271,7 +314,7 @@ describe('Check .scribe export function.', () => {
     // The restored text layer is the PDF's own parse, not user-supplied OCR.
     // Without that distinction every page of a restored session goes to the engine, and the OCR result replaces the native text.
     await doc.recognize({ model: MockHocrModel, ocrPages: 'autoShallow' });
-    expect(scribe.utils.ocr.getPageText(doc.ocr.active[0]).split('\n')[0], 'native text survives recognizing a restored session whose pages need no OCR').toBe('UNITED STATES DISTRICT COURT');
+    expect(scribe.utils.ocr.getPageText(doc.getPage(0)).split('\n')[0], 'native text survives recognizing a restored session whose pages need no OCR').toBe('UNITED STATES DISTRICT COURT');
     expect(doc.inputData.ocrApplied.filter(Boolean).length, 'the conservative page selection applies to a restored session as to a fresh open').toBe(0);
 
     await doc.clear();
@@ -281,7 +324,7 @@ describe('Check .scribe export function.', () => {
   test('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(docPages(doc));
 
     scribe.ScribeDoc.defaults.compressScribe = false;
     scribe.ScribeDoc.defaults.includeExtraTextScribe = true;
@@ -306,7 +349,7 @@ describe('Check .scribe export function.', () => {
     doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer] });
 
     // Verify text properties are removed after import
-    const activeOcr = doc.ocr.active;
+    const activeOcr = docPages(doc);
     expect('text' in activeOcr[0]).toBe(false);
     expect('text' in activeOcr[0].lines[0]).toBe(false);
     if (activeOcr[0].pars && activeOcr[0].pars.length > 0) {
@@ -314,7 +357,7 @@ describe('Check .scribe export function.', () => {
     }
 
     // Verify OCR data is unchanged
-    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(docPages(doc));
     expect(ocrAllComp1).toEqual(ocrAllComp2);
 
     scribe.ScribeDoc.defaults.compressScribe = true;
@@ -367,11 +410,15 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
   const changed = {};
   /** @type {Record<string, any>} The first single-layout save of the filled state. */
   let filledFile;
-  /** @type {Record<string, any>} */
-  const onDemand = {};
+  /**
+   * Results recorded from documents opened from saved files.
+   * @type {Record<string, any>}
+   */
+  const fromSaved = {};
 
   beforeAll(async () => {
     const filing = await scribe.openDocument([filingPath]);
+    const records = new Blob((await writeSavedDoc(filing)).parts);
     const image = await scribe.openDocument([imagePath, `${ASSETS_PATH}/testocr.abbyy.xml`]);
     const pages = await scribe.openDocument({ imageFiles: pagePaths });
     pages.pageMetrics[1].rotation = 90;
@@ -427,97 +474,59 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
     };
     const savedFile = /** @type {ArrayBuffer} */ (await filing.exportData('scribe', sessionOptions));
     const savedText = await scribeText(savedFile);
-    let loads = 0;
-    const seeded = await scribe.openDocument({ pdfFiles: [filingPath] }, {
-      seeded: {
-        header: JSON.parse(savedText.slice(0, savedText.indexOf('\n'))),
-        load: async () => {
-          loads += 1;
-          if (loads === 1) throw new Error('unreadable');
-          return { scribeFiles: [savedFile.slice(0)] };
-        },
-      },
-    });
-    onDemand.atOpen = {
-      hydration: seeded.hydrationState,
-      sourcePages: seeded.pageMetrics.map((pm) => pm.sourcePageN),
-      rotations: seeded.pageMetrics.map((pm) => pm.rotation),
-      pagesWithWords: seeded.ocr.active.filter(Boolean).length,
-      annotations: seeded.annotations.pages.map((p) => p.length),
-      bookmarks: seeded.outline.map((node) => node.title),
+    const work = new Blob((await writeSavedDoc(filing)).parts);
+    const closing = await scribe.openDocument({ pdfFiles: [filingPath] }, { saved: { records, work } });
+    fromSaved.atOpen = {
+      sourcePages: closing.pageMetrics.map((pm) => pm.sourcePageN),
+      rotations: closing.pageMetrics.map((pm) => pm.rotation),
+      pagesWithWords: docPages(closing).filter(Boolean).length,
+      annotations: closing.annotations.pages.map((p) => p.length),
+      bookmarks: closing.outline.map((node) => node.title),
     };
-    seeded.deletePages([0]);
-    onDemand.sourcePagesAfterRefusedDelete = seeded.pageMetrics.map((pm) => pm.sourcePageN);
-    onDemand.failedExport = await seeded.exportData('scribe', sessionOptions).then(() => 'resolved', (err) => err.message);
-    onDemand.afterFailedLoad = seeded.hydrationState;
-    const resavedText = await scribeText(await seeded.exportData('scribe', sessionOptions));
-    onDemand.afterLoad = seeded.hydrationState;
-    const savedLines = savedText.split('\n').filter(Boolean);
-    const resavedLines = resavedText.split('\n').filter(Boolean);
-    onDemand.changed = [];
-    for (let i = 0; i < Math.max(savedLines.length, resavedLines.length); i++) {
-      diffValues(savedLines[i] ? JSON.parse(savedLines[i]) : undefined, resavedLines[i] ? JSON.parse(resavedLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, onDemand.changed);
-    }
-    await seeded.close();
-
-    // With no saved file, the rest of the document is the PDF's own text.
-    const plain = await scribe.openDocument({ pdfFiles: [filingPath] }, { seeded: { load: async () => ({}) } });
-    onDemand.plainAtOpen = { hydration: plain.hydrationState, pagesWithWords: plain.ocr.active.filter(Boolean).length };
-    onDemand.plainFirstLine = /** @type {string} */ (await plain.exportData('txt')).split('\n')[0];
-    onDemand.plainAfterLoad = { hydration: plain.hydrationState, pagesWithWords: plain.ocr.active.filter(Boolean).length };
-    await plain.close();
-
-    let releaseLoad = () => {};
-    const closing = await scribe.openDocument({ pdfFiles: [filingPath] }, {
-      seeded: { load: () => new Promise((resolve) => { releaseLoad = () => resolve({}); }) },
-    });
+    closing.deletePages([0]);
+    fromSaved.sourcePagesAfterRefusedDelete = closing.pageMetrics.map((pm) => pm.sourcePageN);
     const closedExport = closing.exportData('txt').then(() => 'resolved', (err) => err.message);
     await closing.close();
-    releaseLoad();
-    onDemand.closedExport = await closedExport;
+    fromSaved.closedExport = await closedExport;
 
-    // With an OCR file beside the PDF, the rest of the document is that file's text, as it is when the two open together.
+    const reopened = await scribe.openDocument({ pdfFiles: [filingPath] }, { saved: { records, work } });
+    const resavedText = await scribeText(await reopened.exportData('scribe', sessionOptions));
+    const savedLines = savedText.split('\n').filter(Boolean);
+    const resavedLines = resavedText.split('\n').filter(Boolean);
+    fromSaved.changed = [];
+    for (let i = 0; i < Math.max(savedLines.length, resavedLines.length); i++) {
+      diffValues(savedLines[i] ? JSON.parse(savedLines[i]) : undefined, resavedLines[i] ? JSON.parse(resavedLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, fromSaved.changed);
+    }
+    fromSaved.unchangedSaveChangesText = (await writeSavedDoc(reopened)).textChanged;
+    await reopened.close();
+
+    const cutShort = await scribe.openDocument({ pdfFiles: [filingPath] }, {
+      saved: { records: records.slice(0, records.size - 2000), onError: (err) => { fromSaved.failedRead = /** @type {Error} */ (err).message; } },
+    });
+    fromSaved.failedExport = await cutShort.exportData('scribe', sessionOptions).then(() => 'resolved', (err) => err.message);
+    await cutShort.close();
+
     const ocrPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`;
     const together = await scribe.openDocument([filingPath, ocrPath]);
     const togetherLines = (await scribeText(await together.exportData('scribe', sessionOptions))).split('\n').filter(Boolean);
-    const withOcr = await scribe.openDocument({ pdfFiles: [filingPath] }, {
-      seeded: {
-        pageDims: together.pageMetrics.map((pm) => [pm.dims.width, pm.dims.height]),
-        load: async () => ({ ocrFiles: [ocrPath] }),
-      },
+    const fromOcr = await scribe.openDocument({ pdfFiles: [filingPath] }, {
+      saved: { records: new Blob((await writeSavedDoc(together)).parts), pageDims: together.pageMetrics.map((pm) => [pm.dims.width, pm.dims.height]) },
     });
     await together.close();
-    // The undo also keeps the typed text out of the comparison with the OCR file below.
-    withOcr.addFillText(0, {
-      x: 300, y: 300, contents: 'Typed before', fontSize: 46,
-    });
-    await withOcr.ensureHydrated();
-    const typedState = () => ({
-      rows: withOcr.annotations.pages[0].filter((r) => r.type === 'freetext').map((r) => r.contents),
-      words: withOcr.ocr.active[0].lines.filter((l) => l.words.length > 0 && l.words.every((w) => /^word_\d+_txt/.test(w.id))).map((l) => l.words.map((w) => w.text).join(' ')),
-    });
-    onDemand.typedAfterLoad = typedState();
-    withOcr.undo();
-    onDemand.typedAfterUndo = typedState();
-    const withOcrLines = (await scribeText(await withOcr.exportData('scribe', sessionOptions))).split('\n').filter(Boolean);
-    /** @type {Array<string>} */
-    const ocrFileDiffs = [];
-    for (let i = 0; i < Math.max(togetherLines.length, withOcrLines.length); i++) {
-      diffValues(togetherLines[i] ? JSON.parse(togetherLines[i]) : undefined, withOcrLines[i] ? JSON.parse(withOcrLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, ocrFileDiffs);
+    const fromOcrLines = (await scribeText(await fromOcr.exportData('scribe', sessionOptions))).split('\n').filter(Boolean);
+    fromSaved.ocrFileChanged = [];
+    for (let i = 0; i < Math.max(togetherLines.length, fromOcrLines.length); i++) {
+      diffValues(togetherLines[i] ? JSON.parse(togetherLines[i]) : undefined, fromOcrLines[i] ? JSON.parse(fromOcrLines[i]) : undefined, i === 0 ? 'header' : `page ${i - 1}`, fromSaved.ocrFileChanged);
     }
-    // Every import draws fresh random ids for its lines, paragraphs and tables, so two imports of the same files differ in those and in nothing else.
-    const randomId = /\.(?:lines\[\d+\]\.(?:id|parId)|pars\[\d+\]\.(?:id|lineIds\[\d+\])|tables\[\d+\]\.(?:id|boxes\[\d+\]\.id))$/;
-    onDemand.ocrFileChanged = ocrFileDiffs.filter((d) => !randomId.test(d.slice(0, d.indexOf(':'))));
-    await withOcr.close();
+    await fromOcr.close();
 
     await filing.close();
     await image.close();
     await pages.close();
   });
 
-  test('A filing opened for on-demand loading shows its saved pages before any text is read', () => {
-    expect(onDemand.atOpen, 'the saved page order, rotation, annotations and bookmarks must be in place at open, with no page of text read').toEqual({
-      hydration: 'seeded',
+  test('A filing opened from its saved files shows its saved pages before any text is read', () => {
+    expect(fromSaved.atOpen, 'the saved page order, rotation, annotations and bookmarks must be in place at open, with no page of text read').toEqual({
       sourcePages: [1, 0, 2, 3, 4],
       rotations: [0, 0, 0, 0, 90],
       pagesWithWords: 0,
@@ -526,38 +535,26 @@ describe('A standard .scribe file survives save and restore unchanged.', () => {
     });
   });
 
-  test('A document that has not loaded refuses a page edit', () => {
-    expect(onDemand.sourcePagesAfterRefusedDelete, 'a page deleted before the document loaded would be lost or misplaced when its page records arrive').toEqual([1, 0, 2, 3, 4]);
+  test('A document whose text is still being read refuses a page edit', () => {
+    expect(fromSaved.sourcePagesAfterRefusedDelete, 'a page deleted before the text is in would be lost or misplaced when its page records arrive').toEqual([1, 0, 2, 3, 4]);
   });
 
-  test('A failed load rejects the export that asked for it, and the next ask loads the document', () => {
-    expect(onDemand.failedExport, 'an export of a document whose load failed must be rejected, never written from the pages on hand').toBe('The document could not be loaded, so it was not exported.');
-    expect(onDemand.afterFailedLoad, 'a failed load must leave the document as it opened, ready to be asked again').toBe('seeded');
-    expect(onDemand.afterLoad, 'the second ask must load the document').toBe('hydrated');
+  test('A filing opened from its saved files saves the file it was saved from', () => {
+    expect(fromSaved.changed, 'values changed between the .scribe export of the edited filing and that of the filing opened from its saved files').toEqual([]);
+    expect(fromSaved.unchangedSaveChangesText, 'a save of a document just opened from its saved files must report its text as unchanged').toBe(false);
   });
 
-  test('A filing loaded on demand saves the file it was opened from', () => {
-    expect(onDemand.changed, 'values changed between the saved file and the save made after loading it on demand').toEqual([]);
+  test('An export of a document whose records file cannot be read is rejected, and the failure is reported', () => {
+    expect(fromSaved.failedRead, 'a records file cut short must be reported to the host that opened the document').toBe('The saved file is shorter than its page table says.');
+    expect(fromSaved.failedExport, 'an export of a document whose text could not be read must be rejected, never written without the text').toBe('The document could not be loaded, so it was not exported.');
   });
 
-  test('A PDF with no saved file loads its own text on demand', () => {
-    expect(onDemand.plainAtOpen, 'a PDF opened for on-demand loading must hold no text until asked').toEqual({ hydration: 'seeded', pagesWithWords: 0 });
-    expect(onDemand.plainFirstLine, 'an export must load the PDF\'s text first').toBe('UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
-    expect(onDemand.plainAfterLoad, 'every page of the PDF must hold its text once loaded').toEqual({ hydration: 'hydrated', pagesWithWords: 6 });
+  test('A PDF and its OCR file opened from their saved files save the file the two save when opened together', () => {
+    expect(fromSaved.ocrFileChanged, 'values differ between a PDF opened with its OCR file and the same pair opened from their saved files').toEqual([]);
   });
 
-  test('A PDF loaded on demand from its OCR file saves the file the two save when opened together', () => {
-    expect(onDemand.ocrFileChanged, 'values differ between a PDF opened with its OCR file and the same PDF loaded from that file on demand').toEqual([]);
-  });
-
-  test('text typed onto a page before the document loads from its OCR file stays on the page and in its text', () => {
-    expect(onDemand.typedAfterLoad, 'text typed before the load must keep its row, with its words lifted into the page the OCR file gave')
-      .toEqual({ rows: ['Typed before'], words: ['Typed before'] });
-    expect(onDemand.typedAfterUndo, 'undoing the typed text must take its row and its words off the loaded page').toEqual({ rows: [], words: [] });
-  });
-
-  test('An export waiting on a document that is closed mid-load is rejected', () => {
-    expect(onDemand.closedExport, 'an export must not be written from a document closed before its text arrived').toBe('The document could not be loaded, so it was not exported.');
+  test('An export waiting on a document that is closed while its text is read is rejected', () => {
+    expect(fromSaved.closedExport, 'an export must not be written from a document closed before its text arrived').toBe('The document could not be loaded, so it was not exported.');
   });
 
   for (const state of states) {
@@ -619,7 +616,7 @@ describe('A session whose font statistics cannot be scored still opens with its 
   });
 
   test('The session opens with every word of its page', () => {
-    expect(restored.ocr.active[0].lines.reduce((n, line) => n + line.words.length, 0), 'the restored text is lost when font optimization fails').toBe(532);
+    expect(restored.getPage(0).lines.reduce((n, line) => n + line.words.length, 0), 'the restored text is lost when font optimization fails').toBe(532);
   });
 
   test('The failed font optimization is reported as one warning', () => {

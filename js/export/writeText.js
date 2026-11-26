@@ -1,38 +1,39 @@
 import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
-import { parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
+import { clonePage, parIsFurniture, parMarkerInText } from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 const LINE_END_HYPHEN_RE = /[-‐­]$/;
 
 /**
  * Convert an array of ocrPage objects to plain text.
- *
- * @param {Object} params
- * @param {Array<OcrPage>} params.ocrCurrent -
- * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page. A reflowed export writes each table as tab-separated rows.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
- * @param {number} [params.minpage=0] - The first page to include in the document.
- * @param {number} [params.maxpage=-1] - The last page to include in the document.
- * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
- * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
- * @param {?Array<string>} [params.wordIds=null] - An array of word IDs to include in the document.
- * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being exported.
- *   Required when reflow or preserveSpacing is enabled. If omitted, all words are included.
- * @param {boolean} [params.lineNumbers=false] - Prepend `page:line` numbers to each line (e.g. `0:5  text`).
- *    When enabled, reflowText is ignored.
- * @param {boolean} [params.preserveSpacing=false] - Pad words with spaces based on their horizontal
- *    position in the document, preserving column alignment. Useful for table extraction.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document.
- *    Required when `params.doc.progressHandler` should receive per-page export events.
+ * @param {Parameters<typeof writeTextChunks>[0]} params
  */
-export function writeText({
+export function writeText(params) {
+  return [...writeTextChunks(params)].join('');
+}
+
+/**
+ * Convert an array of ocrPage objects to plain text, yielding the text of one page at a time.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrCurrent
+ * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr=null] - Used when reflowing to write tables as tab-separated rows.
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to include, overriding `minpage` and `maxpage`.
+ * @param {number} [params.minpage=0] - First 0-based page index to include.
+ * @param {number} [params.maxpage=-1] - Last 0-based page index to include, or -1 for the last page.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {boolean} [params.dropPageHeadersFooters=false] - Omit page headers, footers, page numbers, and margin line numbers when reflowing.
+ * @param {?Array<string>} [params.wordIds=null] - Word IDs to include, or null to include all words.
+ * @param {boolean} [params.lineNumbers=false] - Prepend 0-based `page:line` prefixes (e.g. `0:5  text`), disabling `reflowText`.
+ * @param {boolean} [params.preserveSpacing=false] - Pad words with spaces by horizontal position to preserve column alignment, disabling `reflowText`.
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Required when `reflowText` or `preserveSpacing` is enabled.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ */
+export function* writeTextChunks({
   ocrCurrent, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, dropPageHeadersFooters = false,
   wordIds = null, lineNumbers = false, preserveSpacing = false, pageMetrics = null, doc = null,
 }) {
-  let textStr = '';
-
   if (!pageArr) {
     if (maxpage === -1) maxpage = ocrCurrent.length - 1;
     pageArr = [];
@@ -52,12 +53,16 @@ export function writeText({
   let prevJoin = false;
 
   for (const g of pageArr) {
-    if (!ocrCurrent[g] || ocrCurrent[g].lines.length === 0) continue;
+    let pageObj = ocrCurrent[g];
+    if (!pageObj || pageObj.lines.length === 0) continue;
 
-    const pageObj = ocrCurrent[g];
+    let textStr = '';
     const pageWidth = preserveSpacing && pageMetrics[g] ? pageMetrics[g].dims.width : 0;
 
-    if (doReflow && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    if (doReflow && pageObj.pars.length === 0) {
+      pageObj = clonePage(pageObj);
+      assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    }
 
     const layoutPage = doReflow ? layoutPageArr?.[g] : null;
     const tableWordObj = layoutPage && layoutPage.tables.length > 0 ? extractTableContent(pageObj, layoutPage) : {};
@@ -158,7 +163,6 @@ export function writeText({
       prevJoin = join.joinNext;
     }
     doc?.progressHandler({ n: g, type: 'export', info: { } });
+    yield textStr;
   }
-
-  return textStr;
 }

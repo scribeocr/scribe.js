@@ -6,9 +6,10 @@ import { assignParagraphs, lineEndEvidence, lineJoin } from '../utils/reflowPars
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
 import ocr, {
-  isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
+  clonePage, isNoteLeader, parIsFurniture, parMarkerInText, splitNoteReference,
 } from '../objects/ocrObjects.js';
-import { calcBoxOverlap } from '../utils/miscUtils.js';
+import { calcBoxOverlap, collectBytes } from '../utils/miscUtils.js';
+import { writeZipChunks } from './writeZip.js';
 import { cssGenericForFontObj } from '../pdf/fonts/base14Substitution.js';
 
 const LINE_END_HYPHEN_RE = /[-‐­]$/;
@@ -32,22 +33,33 @@ export function docxFontEntry(font, docFonts) {
 
 /**
  * Convert an array of ocrPage objects to XML for a Word document.
- *
- * @param {Object} params
- * @param {Array<OcrPage>} params.ocrCurrent -
- * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page; a reflowed export writes each table as a Word table.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
- * @param {number} [params.minpage=0] - The first page to include in the document.
- * @param {number} [params.maxpage=-1] - The last page to include in the document.
- * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
- * @param {?Array<string>} [params.wordIds=null] - An array of word IDs to include in the document.
- *    If omitted, all words are included.
- * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
- *    exported. Required when reflow or preserveSpacing is enabled.
- * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document, for progress reporting and for the font table's run-font entries.
+ * @param {Parameters<typeof docxContentChunks>[0]} params
+ * @returns {{body: string, footnotesXml: string, fontsXml: string}}
  */
-export function writeDocxContent({
+export function writeDocxContent(params) {
+  const chunks = docxContentChunks(params);
+  let body = '';
+  let next = chunks.next();
+  for (; !next.done; next = chunks.next()) body += next.value;
+  return { body, ...next.value };
+}
+
+/**
+ * Yield Word document body XML one page at a time from an array of ocrPage objects.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrCurrent
+ * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr=null] - Per-page table layouts, written as Word tables when reflowText is true.
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to include, overriding minpage and maxpage.
+ * @param {number} [params.minpage=0] - First 0-based page index to include.
+ * @param {number} [params.maxpage=-1] - Last 0-based page index to include, or -1 for the last page.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {?Array<string>} [params.wordIds=null] - Subset of word IDs to include, or null for all words.
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Required when reflowText is true.
+ * @param {boolean} [params.dropPageHeadersFooters=false] - Omit page headers, footers, page numbers, and margin line numbers when reflowText is true.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document, used for progress reporting and font-table entries.
+ * @returns {Generator<string, {footnotesXml: string, fontsXml: string}>} Per-page body XML, with footnote and font-table XML as the generator return value.
+ */
+export function* docxContentChunks({
   ocrCurrent, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, wordIds = null,
   pageMetrics = null, dropPageHeadersFooters = false, doc = null,
 }) {
@@ -60,33 +72,35 @@ export function writeDocxContent({
   const evidence = reflowText ? lineEndEvidence(ocrCurrent) : null;
   const included = (wordObj) => !!wordObj && (!wordIds || wordIds.includes(wordObj.id));
 
-  // Pre-pass: assign each linked note paragraph (footnote or endnote) a Word footnote id in in-text reference order, which is how Word numbers footnotes.
-  // Unlinked note paragraphs fall through as ordinary body paragraphs, so no content is dropped.
-  const parById = new Map();
+  /** @type {Map<string, number>} The page of each note paragraph, by its id. */
+  const notePages = new Map();
+  /** @type {Array<{parId: string, label: string}>} In-text note references in reading order, with target paragraph ID and marker text. */
+  const refs = [];
   for (const g of pageArr) {
     const pageObj = ocrCurrent[g];
-    if (pageObj) for (const par of pageObj.pars) parById.set(par.id, par);
+    if (!pageObj) continue;
+    for (const par of pageObj.pars) {
+      if (par.type === 'footnote' || par.type === 'endnote') notePages.set(par.id, g);
+      else notePages.delete(par.id);
+    }
+    for (const lineObj of pageObj.lines) {
+      for (const wordObj of lineObj.words) {
+        if (included(wordObj) && wordObj.footnoteParId) refs.push({ parId: wordObj.footnoteParId, label: splitNoteReference(wordObj).label });
+      }
+    }
   }
   /** @type {Map<string, string>} */
   const footnoteIdByParId = new Map();
   // A note whose reference mark is not a number ("*", "†", "a") keeps that mark as a custom mark, since Word prints its own number for an auto-numbered reference.
   /** @type {Map<string, string>} */
   const footnoteMarkByParId = new Map();
-  const footnoteParsOrdered = [];
-  for (const g of pageArr) {
-    const pageObj = ocrCurrent[g];
-    if (!pageObj) continue;
-    for (const lineObj of pageObj.lines) {
-      for (const wordObj of lineObj.words) {
-        if (!included(wordObj) || !wordObj.footnoteParId) continue;
-        const fnPar = parById.get(wordObj.footnoteParId);
-        if (!fnPar || (fnPar.type !== 'footnote' && fnPar.type !== 'endnote') || footnoteIdByParId.has(fnPar.id)) continue;
-        footnoteIdByParId.set(fnPar.id, String(footnoteParsOrdered.length + 1));
-        footnoteParsOrdered.push(fnPar);
-        const { label } = splitNoteReference(wordObj);
-        if (/\D/.test(label)) footnoteMarkByParId.set(fnPar.id, label);
-      }
-    }
+  /** @type {Array<string>} */
+  const footnoteParIds = [];
+  for (const { parId, label } of refs) {
+    if (!notePages.has(parId) || footnoteIdByParId.has(parId)) continue;
+    footnoteIdByParId.set(parId, String(footnoteParIds.length + 1));
+    footnoteParIds.push(parId);
+    if (/\D/.test(label)) footnoteMarkByParId.set(parId, label);
   }
 
   /** @type {Set<string>} */
@@ -175,7 +189,8 @@ export function writeDocxContent({
   };
 
   let footnotesXml = '';
-  for (const par of footnoteParsOrdered) {
+  for (const parId of footnoteParIds) {
+    const par = /** @type {OcrPar} */ (ocrCurrent[/** @type {number} */ (notePages.get(parId))].pars.findLast((p) => p.id === parId));
     const runs = runsOf(par.lines, { leadSpace: true, stripLeader: true });
     const mark = footnoteMarkByParId.get(par.id);
     const font = par.lines[0]?.words[0]?.style.font;
@@ -221,10 +236,13 @@ export function writeDocxContent({
     parLines = [];
   };
   for (const g of pageArr) {
-    const pageObj = ocrCurrent[g];
+    let pageObj = ocrCurrent[g];
     if (!pageObj || pageObj.lines.length === 0) continue;
 
-    if (reflowText && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    if (reflowText && pageObj.pars.length === 0) {
+      pageObj = clonePage(pageObj);
+      assignParagraphs(pageObj, pageMetrics[g].angle || 0);
+    }
 
     const layoutPage = reflowText ? layoutPageArr?.[g] : null;
     const tableWordObj = layoutPage && layoutPage.tables.length > 0 ? extractTableContent(pageObj, layoutPage) : {};
@@ -260,6 +278,8 @@ export function writeDocxContent({
     }
     writePar();
     doc?.progressHandler({ n: g, type: 'export', info: { } });
+    yield body;
+    body = '';
   }
 
   let fontsXml = '';
@@ -272,39 +292,42 @@ export function writeDocxContent({
     }
   }
 
-  return { body, footnotesXml, fontsXml };
+  return { footnotesXml, fontsXml };
 }
 
 /**
  * Create a Word document from an array of ocrPage objects.
- *
- * @param {Object} params
- * @param {Array<OcrPage>} params.hocrCurrent -
- * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page; a reflowed export writes each table as a Word table.
- * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
- * @param {number} [params.minpage=0] - The first page to include in the document.
- * @param {number} [params.maxpage=-1] - The last page to include in the document.
- * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
- *    exported. Required when reflow or preserveSpacing is enabled.
- * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
- * @param {boolean} [params.dropPageHeadersFooters=false] - Leave page headers and footers, with page numbers and margin line numbers, out when reflowing.
- * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @param {Parameters<typeof writeDocxChunks>[0]} params
+ * @returns {Promise<Uint8Array>}
  */
-export async function writeDocx({
+export function writeDocx(params) {
+  return collectBytes(writeDocxChunks(params));
+}
+
+/**
+ * Create a Word document from an array of ocrPage objects, yielding byte chunks.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.hocrCurrent
+ * @param {?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr=null] - Used when `reflowText` is enabled to write detected tables as Word tables.
+ * @param {?Array<number>} [params.pageArr=null] - 0-based page indices to include, overriding `minpage` and `maxpage`.
+ * @param {number} [params.minpage=0]
+ * @param {number} [params.maxpage=-1]
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Required when `reflowText` is enabled.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {boolean} [params.dropPageHeadersFooters=false] - Omit page headers, footers, page numbers, and margin line numbers when `reflowText` is enabled.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting and font-table entries.
+ * @returns {AsyncGenerator<Uint8Array>}
+ */
+export function writeDocxChunks({
   hocrCurrent, layoutPageArr = null, pageArr = null, minpage = 0, maxpage = -1, pageMetrics = null, reflowText = false, dropPageHeadersFooters = false, doc = null,
 }) {
-  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
-
   if (!pageArr) {
     if (maxpage === -1) maxpage = hocrCurrent.length - 1;
     pageArr = [];
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
 
-  const zipFileWriter = new Uint8ArrayWriter();
-  const zipWriter = new ZipWriter(zipFileWriter);
-
-  const { body, footnotesXml, fontsXml } = writeDocxContent({
+  const chunks = docxContentChunks({
     ocrCurrent: hocrCurrent,
     layoutPageArr,
     pageArr,
@@ -313,19 +336,21 @@ export async function writeDocx({
     pageMetrics,
     doc,
   });
-
-  await zipWriter.add('word/document.xml', new TextReader(documentStart + body + documentEnd));
-  await zipWriter.add('word/footnotes.xml', new TextReader(footnotesStart + footnotesXml + footnotesEnd));
-  await zipWriter.add('word/fontTable.xml', new TextReader(fontTableStart + fontsXml + fontTableEnd));
-
-  for (let i = 0; i < docxStrings.length; i++) {
-    const textReaderI = new TextReader(docxStrings[i].content);
-    await zipWriter.add(docxStrings[i].path, textReaderI);
-  }
-
-  await zipWriter.close();
-
-  const zipFileData = await zipFileWriter.getData();
-
-  return zipFileData;
+  // The zip writer reads one entry at a time, so the notes and fonts the body's writer returns are known when their entries are asked for.
+  return writeZipChunks((function* docxEntries() {
+    /** @type {{footnotesXml: string, fontsXml: string}|undefined} */
+    let notesAndFonts;
+    yield {
+      path: 'word/document.xml',
+      text: (function* documentXml() {
+        yield documentStart;
+        notesAndFonts = yield* chunks;
+        yield documentEnd;
+      }()),
+    };
+    const { footnotesXml, fontsXml } = /** @type {{footnotesXml: string, fontsXml: string}} */ (notesAndFonts);
+    yield { path: 'word/footnotes.xml', text: footnotesStart + footnotesXml + footnotesEnd };
+    yield { path: 'word/fontTable.xml', text: fontTableStart + fontsXml + fontTableEnd };
+    for (const file of docxStrings) yield { path: file.path, text: file.content };
+  }()));
 }

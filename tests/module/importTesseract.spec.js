@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -20,7 +21,7 @@ describe('Check .hocr import function (basic)', () => {
   test('Should import HOCR created with Tesseract CLI', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/bill.hocr`]);
 
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
 
     const text1 = page.lines[0].words.map((x) => x.text).join(' ');
 
@@ -33,6 +34,7 @@ describe('Check .hocr import function (basic)', () => {
     expect(page.pars[0].lines.map((line) => line.id), 'the first paragraph does not hold its two lines, or the lines lost their ids').toEqual(['line_1_1', 'line_1_2']);
     expect(page.pars[2].id, 'a paragraph lost the id the file gave it').toBe('par_1_3');
     expect(page.lines[0].par, 'a line does not point back at its paragraph').toBe(page.pars[0]);
+    expect(doc.ocrRaw.active.filter(Boolean).length, 'an imported OCR file\'s raw text is still held after its pages were converted, with keepRawData off').toBe(0);
   });
 
   // When using Tesseract.js or the Tesseract API to save individual pages as .hocr files, the output is different from the output of the Tesseract CLI,
@@ -40,7 +42,7 @@ describe('Check .hocr import function (basic)', () => {
   test('Should import HOCR pages created with Tesseract API/Tesseract.js', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/bill.tesseractjs.hocr`]);
 
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
 
     const text1 = page.lines[0].words.map((x) => x.text).join(' ');
 
@@ -61,7 +63,7 @@ describe('Check .hocr import function (alt settings)', () => {
   test('Should import HOCR created with Tesseract CLI using lstm_choice_mode=1', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/simple_paragraph_lstm_choice_mode1.hocr`]);
 
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
   });
@@ -69,7 +71,7 @@ describe('Check .hocr import function (alt settings)', () => {
   test('Should import HOCR created with Tesseract CLI using lstm_choice_mode=2', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/simple_paragraph_lstm_choice_mode2.hocr`]);
 
-    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[0].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
   });
@@ -87,15 +89,15 @@ describe('Check Tesseract .hocr import function imports styles correctly.', () =
   test('Should correctly import small caps printed using font size adjustments', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/econometrica_example_tess.hocr`]);
 
-    const text1 = doc.ocr.active[0].lines[4].words.map((x) => x.text).join(' ');
+    const text1 = doc.getPage(0).lines[4].words.map((x) => x.text).join(' ');
 
-    const text2 = doc.ocr.active[0].lines[23].words.map((x) => x.text).join(' ');
+    const text2 = doc.getPage(0).lines[23].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Shubhdeep Deb');
 
     expect(text2).toBe('Wage inequality in the United States has risen sharply since the 1980s. The skill');
 
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(page.pars.length, 'the page does not carry one paragraph per ocr_par of its hOCR file').toBe(21);
     expect(page.lines[30].par.lines.length, 'an author e-mail line is not the paragraph of its own that its ocr_par makes it').toBe(1);
     expect(page.lines[34].par, 'the acknowledgment note is split across paragraphs').toBe(page.lines[43].par);
@@ -108,14 +110,14 @@ describe('Check Tesseract .hocr import function imports styles correctly.', () =
   test('Should ignore italics in imports from Tesseract', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/tesseract_italics_example_1a.hocr`]);
 
-    expect(doc.ocr.active[0].lines[0].words[0].style.italic).toBe(false);
+    expect(doc.getPage(0).lines[0].words[0].style.italic).toBe(false);
   });
 
   // This version was created with the hocr_font_info and hocr_char_boxes options enabled.
   test('Should ignore italics in imports from Tesseract (alt configs)', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/tesseract_italics_example_1b.hocr`]);
 
-    expect(doc.ocr.active[0].lines[0].words[0].style.italic).toBe(false);
+    expect(doc.getPage(0).lines[0].words[0].style.italic).toBe(false);
   });
 
   afterAll(async () => {
@@ -136,7 +138,7 @@ describe('Check .hocr import of one file per page.', () => {
   test('Should renumber the ids of a per-page file to the page\'s position in the document', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/bill.hocr`, `${ASSETS_PATH}/bill.tesseractjs.hocr`]);
 
-    const [first, second] = doc.ocr.active;
+    const [first, second] = docPages(doc);
     expect(first.lines[0].id, 'the first page\'s ids changed').toBe('line_1_1');
     expect(second.lines[0].id, 'a second page\'s line kept the page number of its own run').toBe('line_2_1');
     expect(second.pars[0].id, 'a second page\'s paragraph kept the page number of its own run').toBe('par_2_1');
@@ -164,7 +166,7 @@ describe('Check hOCR detection from content alone.', () => {
   test('Should import the bare ocr_page fragment tesseract.js writes, without a file name', async () => {
     const text = await readFileContent(`${ASSETS_PATH}/bill.tesseractjs.hocr`);
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(text).buffer] });
-    expect(doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' '), 'a fragment with no XML declaration or html root is read as hOCR').toBe('FIRST CHEQUING');
+    expect(doc.getPage(0).lines[0].words.map((x) => x.text).join(' '), 'a fragment with no XML declaration or html root is read as hOCR').toBe('FIRST CHEQUING');
   });
 
   test('Should import a double-quoted hOCR file: caption lines, character spans, padded words and a partial drop cap', async () => {
@@ -172,7 +174,7 @@ describe('Check hOCR detection from content alone.', () => {
     // Those converted from ABBYY output also pad word spans with spaces.
     const billText = doubleQuoted(await readFileContent(`${ASSETS_PATH}/bill.hocr`)).replace('>FIRST<', '><span class="ocr_dropcap">F</span>IRST <');
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(billText).buffer] });
-    const page = doc.ocr.active[0];
+    const page = doc.getPage(0);
     expect(page.lines.length, 'a double-quoted ocr_caption span was dropped on import').toBe(14);
     expect(page.lines[2].words.map((x) => x.text).join(' '), 'the caption line lost its words').toBe('Date Description Number Debits Credits Balance');
     expect(page.lines[0].words[0].text, 'a drop cap over part of a word read out of order, or whitespace padding inside the word span became part of the word').toBe('FIRST');
@@ -180,7 +182,7 @@ describe('Check hOCR detection from content alone.', () => {
 
     const charText = doubleQuoted(await readFileContent(`${ASSETS_PATH}/tesseract_italics_example_1b.hocr`));
     doc = await scribe.openDocument({ ocrFiles: [new TextEncoder().encode(charText).buffer] });
-    const charPage = doc.ocr.active[0];
+    const charPage = doc.getPage(0);
     expect(charPage.lines.map((x) => x.words.length), 'double-quoted character spans yielded no words').toEqual([10, 4, 6, 11]);
     expect(charPage.lines[0].words.map((x) => x.text).join(' '), 'a character-level line lost its text').toBe('Earnings In Line bespite Press Outages; Staying Neutral on Valuation');
     expect(charPage.lines[0].words.map((x) => x.chars.length), 'character boxes were lost on a double-quoted file').toEqual([8, 2, 4, 7, 5, 8, 7, 7, 2, 9]);

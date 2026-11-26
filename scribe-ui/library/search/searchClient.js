@@ -1,5 +1,3 @@
-import { pageInputOf } from './searchTokenizer.js';
-
 const QUERY_TIMEOUT_MS = 20000;
 const INGEST_TIMEOUT_MS = 600000;
 
@@ -69,7 +67,7 @@ export const createSearchClient = (settings = {}) => {
       return;
     }
     const id = nextId++;
-    const limit = op === 'addDoc' || op === 'removeDoc' || op === 'open' || op === 'reset' ? INGEST_TIMEOUT_MS : QUERY_TIMEOUT_MS;
+    const limit = op === 'addDoc' || op === 'addRecords' || op === 'removeDoc' || op === 'open' || op === 'reset' ? INGEST_TIMEOUT_MS : QUERY_TIMEOUT_MS;
     const timer = window.setTimeout(() => {
       if (!pending.has(id)) return;
       pending.delete(id);
@@ -119,10 +117,22 @@ export const createSearchClient = (settings = {}) => {
       return serial('open', { libraryId, settings });
     },
     /**
+     * Index a document from its saved files.
      * @param {string} hash
-     * @param {Array<?import('../../../js/objects/ocrObjects.js').OcrPage>} pages
+     * @param {Blob} records
+     * @param {?Blob} work
      */
-    addDoc: (hash, pages, entries = []) => serial('addDoc', { hash, pages: pages.map((page, i) => pageInputOf(page, entries[i] || {})) }),
+    addDoc: (hash, records, work) => serial('addDoc', { hash, records, work }),
+    /**
+     * Store a run of page records in the worker for `findRuns`.
+     * Replaces any existing run under `hash`.
+     * Does not require an open index.
+     * @param {string} hash - Worker key for the run.
+     * @param {Array<?{bytes: Uint8Array, deflated: boolean}>} records - Encoded page record for each page in the run, or null to skip that page.
+     */
+    addRecords: (hash, records) => serial('addRecords', { hash, records }),
+    /** @param {string} hash - Worker key for the run. */
+    removeRecords: (hash) => serial('removeRecords', { hash }),
     /** @param {string} hash */
     removeDoc: (hash) => serial('removeDoc', { hash }),
     /** @param {string} hash @returns {Promise<boolean>} */
@@ -156,19 +166,23 @@ export const createSearchClient = (settings = {}) => {
      */
     snippets: (hash, pages) => serial('snippets', { hash, pages }),
     /**
-     * @param {string} hash
-     * @param {number[]} pageNs
-     * @returns {Promise<Array<?import('./searchPageRecords.js').PageView>>}
-     */
-    pages: (hash, pageNs) => serial('pages', { hash, pageNs }),
-    /**
-     * Every page of one document holding the query's phrase, as typed or with a longer last word, in page order, with the ids of each occurrence's words.
+     * Find a document's indexed matches for `query` in page order.
+     * Each entry in `matches` lists 0-based word indices on the page as indexed.
      * @param {string} hash
      * @param {string} query
-     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Near matches of the document to return with its matches, as the results list shows them.
-     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<string>>}>}>}
+     * @param {Array<{page: number, tier: number, count: number, marks: Array<[number, number]>}>} [near] - Fallback-tier page hits to include in the result.
+     * @returns {Promise<{pages: Array<{page: number, count: number, matches: Array<Array<number>>}>}>}
      */
     find: (hash, query, near = []) => serial('find', { hash, query, near }),
+    /**
+     * Find matches for `query` across stored page runs in reading order.
+     * Each `wordIds` array lists 0-based word indices on the page.
+     * Rejects if any run is missing, such as after the worker is replaced.
+     * @param {Array<{hash: string, first: number}>} runs - Worker key and starting 0-based document page index for each run.
+     * @param {string} query
+     * @returns {Promise<Array<{pageN: number, wordIds: Array<number>}>>}
+     */
+    findRuns: (runs, query) => serial('findRuns', { runs, query }),
     stats: () => serial('stats'),
     reset: () => serial('reset'),
     close: () => {

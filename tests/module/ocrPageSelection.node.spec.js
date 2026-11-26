@@ -220,7 +220,7 @@ describe('autoDeep OCR keep/discard gate', () => {
     const stats = /** @type {import('../../js/pdf/ocrPageSelection.js').PageStats[]} */ (pdfDoc.inputData.pageStats);
     expect(selectOcrPages(stats, pdfDoc.inputData.pdfType, 'autoDeep')[6]).toBe(true);
     const ocrDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.p6.tesseract.hocr`]);
-    expect(ocrAddsNewText(pdfDoc.ocr.pdf[6], ocrDoc.ocr.active[0])).toBe(false);
+    expect(ocrAddsNewText(pdfDoc.getPage(6, { layer: 'pdf' }), ocrDoc.getPage(0))).toBe(false);
     await pdfDoc.close();
     await ocrDoc.close();
   });
@@ -237,10 +237,10 @@ describe('autoDeep OCR keep/discard gate', () => {
     const ocr8 = await scribe.openDocument([`${ASSETS_PATH}/${fix}.p8.tesseract.hocr`]);
     const ocr12 = await scribe.openDocument([`${ASSETS_PATH}/${fix}.p12.tesseract.hocr`]);
     // Compare against clone of input text as a control
-    expect(ocrAddsNewText(pdfDoc.ocr.pdf[8], scribe.utils.ocr.clonePage(pdfDoc.ocr.pdf[8]))).toBe(false);
-    expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], scribe.utils.ocr.clonePage(pdfDoc.ocr.pdf[12]))).toBe(false);
-    expect(ocrAddsNewText(pdfDoc.ocr.pdf[8], ocr8.ocr.active[0])).toBe(true);
-    expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], ocr12.ocr.active[0])).toBe(true);
+    expect(ocrAddsNewText(pdfDoc.getPage(8, { layer: 'pdf' }), scribe.utils.ocr.clonePage(pdfDoc.getPage(8, { layer: 'pdf' })))).toBe(false);
+    expect(ocrAddsNewText(pdfDoc.getPage(12, { layer: 'pdf' }), scribe.utils.ocr.clonePage(pdfDoc.getPage(12, { layer: 'pdf' })))).toBe(false);
+    expect(ocrAddsNewText(pdfDoc.getPage(8, { layer: 'pdf' }), ocr8.getPage(0))).toBe(true);
+    expect(ocrAddsNewText(pdfDoc.getPage(12, { layer: 'pdf' }), ocr12.getPage(0))).toBe(true);
     await pdfDoc.close();
     await ocr8.close();
     await ocr12.close();
@@ -286,29 +286,31 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     expect(mask[6]).toBe(true);
     expect(mask.every(Boolean)).toBe(false); // partial selection, so the gate runs
 
-    const parsBefore6 = intelDoc.ocr.pdf[6].pars.length;
-    const parsBefore12 = intelDoc.ocr.pdf[12].pars.length;
+    const parsBefore6 = intelDoc.getPage(6, { layer: 'pdf' }).pars.length;
+    const parsBefore12 = intelDoc.getPage(12, { layer: 'pdf' }).pars.length;
 
     await intelDoc.recognize({ model: StubOcrModel, ocrPages: 'autoDeep' });
 
     // `active` is reference-identical to the named 'Combined' layer, which is how GUI version-switching identifies the active version.
-    expect(intelDoc.ocr.active).toBe(intelDoc.ocr.Combined);
+    expect(intelDoc.activeLayer).toBe('Combined');
     // Page 6 reverted to native: a clone of the 90-line native text, not the model's 104-line OCR.
-    expect(intelDoc.ocr.active[6].lines.length).toBe(90);
-    expect(intelDoc.ocr.active[6]).not.toBe(intelDoc.ocr.pdf[6]); // a clone, so GUI edits cannot corrupt native
+    expect(intelDoc.getPage(6).lines.length).toBe(90);
+    expect(intelDoc.getPage(6)).not.toBe(intelDoc.getPage(6, { layer: 'pdf' }));
     // Non-destructive: the model's own layer still holds its parsed OCR for page 6, available to export.
-    expect(intelDoc.ocr['Mock Cloud OCR'][6].lines.length).toBe(104);
+    expect(intelDoc.getPage(6, { layer: 'Mock Cloud OCR' }).lines.length).toBe(104);
 
-    expect(intelDoc.ocr.active[6].textSource, 'a gate-reverted page keeps its pdf text source through partial recognition').toBe('pdf');
-    expect(intelDoc.ocr.active[6].pars.length, 'a gate-reverted page keeps its analyzed paragraphs through partial recognition').toBe(parsBefore6);
-    expect(intelDoc.ocr.active[12].textSource, 'a page never selected for OCR keeps its pdf text source through partial recognition').toBe('pdf');
-    expect(intelDoc.ocr.active[12].pars.length, 'a page never selected for OCR keeps its analyzed paragraphs through partial recognition').toBe(parsBefore12);
+    expect(intelDoc.getPage(6).textSource, 'a gate-reverted page keeps its pdf text source through partial recognition').toBe('pdf');
+    expect(intelDoc.getPage(6).pars.length, 'a gate-reverted page keeps its analyzed paragraphs through partial recognition').toBe(parsBefore6);
+    expect(intelDoc.getPage(12).textSource, 'a page never selected for OCR keeps its pdf text source through partial recognition').toBe('pdf');
+    expect(intelDoc.getPage(12).pars.length, 'a page never selected for OCR keeps its analyzed paragraphs through partial recognition').toBe(parsBefore12);
+    intelDoc.getPage(12, { layer: 'Mock Cloud OCR' }).lines[0].words[0].text = 'edited';
+    expect(intelDoc.getPage(12, { layer: 'pdf' }).lines[0].words[0].text, 'editing a skipped page in the model\'s layer changed the PDF\'s own text layer').toBe('market');
 
     // Regression: the export keyed on the pages sent to OCR, not the pages whose OCR was kept.
     // That flattened this page to outlines and re-typeset its text, splitting "4004" into four words.
     const exportedPdf = await intelDoc.exportData('pdf', { pageArr: [6] });
     const reimported = await scribe.openDocument({ pdfFiles: [exportedPdf] });
-    const page = reimported.ocr.pdf[0];
+    const page = reimported.getPage(0, { layer: 'pdf' });
     const wordCount = page.lines.reduce((total, line) => total + line.words.length, 0);
     expect(wordCount, 'exporting a gate-rejected page destroyed its word segmentation').toBe(337);
     expect(page.lines[11].words.map((w) => w.text).join(' '), 'exporting a gate-rejected page re-typeset its text').toBe('4004');
@@ -330,18 +332,18 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
 
     // `active` is the canonical 'Combined' layer. Page 8 kept the OCR as a clone of the model's 37-line scan result,
     // not the 1-line native header.
-    expect(candDoc.ocr.active).toBe(candDoc.ocr.Combined);
-    expect(candDoc.ocr.active[8].lines.length).toBe(37);
-    expect(candDoc.ocr.active[8]).not.toBe(candDoc.ocr['Mock Cloud OCR'][8]); // a clone, edit-isolated
-    expect(candDoc.ocr.pdf[8].lines.length).toBe(1); // native untouched
+    expect(candDoc.activeLayer).toBe('Combined');
+    expect(candDoc.getPage(8).lines.length).toBe(37);
+    expect(candDoc.getPage(8)).not.toBe(candDoc.getPage(8, { layer: 'Mock Cloud OCR' }));
+    expect(candDoc.getPage(8, { layer: 'pdf' }).lines.length).toBe(1);
 
-    expect(candDoc.ocr.active[8].pars.length, 'the kept page carries stored paragraphs, so the break-count assertion below no longer exercises the reflow fallback').toBe(0);
+    expect(candDoc.getPage(8).pars.length, 'the kept page carries stored paragraphs, so the break-count assertion below no longer exercises the reflow fallback').toBe(0);
     const keptTxt = /** @type {string} */ (await candDoc.exportData('txt', { reflow: true, pageArr: [8] }));
     expect((keptTxt.match(/\n/g) || []).length, 'a kept-OCR page exported reflowed text as a single run-on block').toBe(27);
-    const parsNative = candDoc.ocr.active[0].pars;
+    const parsNative = candDoc.getPage(0).pars.map((par) => par.id);
     const nativeTxt = /** @type {string} */ (await candDoc.exportData('txt', { reflow: true, pageArr: [0] }));
-    expect((nativeTxt.match(/\n/g) || []).length, 'analyzed paragraphs stopped driving a native page\'s reflowed export').toBe(candDoc.ocr.active[0].pars.length - 1);
-    expect(candDoc.ocr.active[0].pars, 'reflow export rebuilt the analyzed paragraphs on a native page').toBe(parsNative);
+    expect((nativeTxt.match(/\n/g) || []).length, 'analyzed paragraphs stopped driving a native page\'s reflowed export').toBe(candDoc.getPage(0).pars.length - 1);
+    expect(candDoc.getPage(0).pars.map((par) => par.id), 'reflow export rebuilt the analyzed paragraphs on a native page').toEqual(parsNative);
     await candDoc.close();
   }, 60000);
 });

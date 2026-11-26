@@ -4,6 +4,7 @@ import {
 import scribe from '../../scribe.js';
 import { writeHtmlFragment } from '../../js/export/writeHtml.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
@@ -43,7 +44,7 @@ describe('Check export for .html files.', () => {
 
     // The viewer's Export preview renders this fragment, so the fragment's markup and style rules must be the exported file's own.
     const fragmentParams = {
-      ocrPages: doc.ocr.active, docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode: /** @type {const} */ ('proof'),
+      ocrPages: docPages(doc), docFonts: doc.fonts, pageMetrics: doc.pageMetrics, displayMode: /** @type {const} */ ('proof'),
     };
     const fragment = writeHtmlFragment(fragmentParams);
     expect(cdnHtml, "the fragment's body is not the file's body").toContain(`<body>\n${fragment.body}</body>`);

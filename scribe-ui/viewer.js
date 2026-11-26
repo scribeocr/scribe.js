@@ -8,6 +8,8 @@ import { calcBoxOverlap, clearObjectProperties } from '../js/utils/miscUtils.js'
 import { docAddressLabel, parseDocAddress } from '../js/docAddress.js';
 import { nativeTextForPage } from '../js/textEdits.js';
 import { loadBuiltInFontsRaw } from '../js/fontContainerMain.js';
+import { compareOCR } from '../js/recognizeConvert.js';
+import { PageStore } from '../js/containers/pageStore.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
 import { ViewerImageCache, IOS_WEBKIT } from './js/viewerImageCache.js';
 import { IS_MAC } from './js/platform.js';
@@ -769,6 +771,7 @@ export class ScribeViewer {
   set doc(value) {
     const prev = this._doc;
     this._doc = value;
+    if (prev && prev !== value) prev.pageStore.pin(this, []);
     if (prev && prev !== value && this.scrollContainer) this.clear();
   }
 
@@ -796,6 +799,7 @@ export class ScribeViewer {
     this._commentMarks.length = 0;
     this._commentMarkGroups.length = 0;
     this.textGroupsRenderIndices.length = 0;
+    this._doc?.pageStore.pin(this, []);
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
     this._redactGroups.length = 0;
@@ -1372,23 +1376,18 @@ export class ScribeViewer {
    * @returns {boolean}
    */
   _pageEditable() {
-    // A document ignores page edits until it has loaded, and while its deferred text import runs.
-    return !!this.doc && this.doc.hydrationState === 'hydrated' && !this.doc._textReadySettle;
+    return !!this.doc && !this.doc._textReadySettle;
   }
 
   /**
-   * Resolve once the document can take a page edit.
-   * On a provisional document, calling it starts the load.
-   * @returns {Promise<boolean>} False when no document is open, the load failed, or another document took the view meanwhile.
+   * Wait until the current document is ready for page edits.
+   * @returns {Promise<boolean>} False if no document is open, or if it was closed or replaced while waiting.
    */
   async _awaitPageEditable() {
     const doc = this.doc;
     if (!doc) return false;
-    if (doc.hydrationState !== 'hydrated' && !(await doc.ensureHydrated())) return false;
-    const real = this.doc;
-    if (!real || real.hydrationState !== 'hydrated') return false;
-    if (real.textReady) await real.textReady.catch(() => {});
-    return this.doc === real;
+    await doc.textReady;
+    return this.doc === doc;
   }
 
   /**
@@ -1868,7 +1867,7 @@ export class ScribeViewer {
     if (!zoomedIn) {
       const { x: tapX, y: tapY } = this.clientToContent(center.x, center.y);
       const n = this.pageAtContentPoint(tapX, tapY);
-      const page = this.doc.ocr.active?.[n];
+      const page = this.doc.pageStore.readOnlyPage(n);
       const disp = this.getDisplayDims(n);
       if (page && disp) {
         const lines = [];
@@ -2670,7 +2669,8 @@ export class ScribeViewer {
    * @param {number} n
    */
   async renderWords(n) {
-    let ocrData = this.doc.ocr.active?.[n];
+    // Load character boxes onto rendered pages for font metrics, intra-word selection, and word editing.
+    let ocrData = this.doc.pageStore.readOnlyPage(n, 'active', true);
 
     const noInfo = this.doc.inputData.xmlMode[n] === undefined;
     const noInput = !this.doc.inputData.xmlMode[n] && !(this.doc.inputData.imageMode || this.doc.inputData.pdfMode);
@@ -2719,15 +2719,21 @@ export class ScribeViewer {
 
     if (this.doc.inputData.evalMode) {
       await this._compareGroundTruth();
-      ocrData = this.doc.ocr.active?.[n];
+      ocrData = this.doc.pageStore.readOnlyPage(n, 'active', true);
     }
 
     if (this.doc.inputData.xmlMode[n]) {
-      // Word geometry is measured against the built-in fonts, which the fast open paths (deferText imports, provisional seeds) start loading without awaiting.
-      await loadBuiltInFontsRaw();
-      // A document swapped or re-recognized during the await must not paint this page's stale words.
-      if (this.doc.ocr.active?.[n] !== ocrData) return;
-      this._renderCanvasWords(ocrData);
+      // Pin page n across await loadBuiltInFontsRaw() so eviction cannot rebuild a new OcrPage and trip the staleness check below.
+      const store = this.doc.pageStore;
+      const waiting = {};
+      store.pin(waiting, [n]);
+      try {
+        await loadBuiltInFontsRaw();
+        if (this.doc.pageStore.readOnlyPage(n) !== ocrData) return;
+        this._renderCanvasWords(/** @type {OcrPage} */ (ocrData));
+      } finally {
+        store.pin(waiting, []);
+      }
 
       // The page re-renders once when faces land, and that re-render finds every key settled, failures included, so it fires nothing and the cycle stops.
       // Awaiting the lookups instead would block the page on a worker font conversion, since `displayPage` awaits `renderWords`.
@@ -2749,7 +2755,7 @@ export class ScribeViewer {
           Promise.allSettled(pending).then((results) => {
             this._tpFontPending.delete(n);
             if (!results.some((r) => r.status === 'fulfilled' && r.value?.faceName)) return;
-            if (!this.state.tablePreview || this.doc !== doc || this.doc.ocr.active?.[n] !== ocrData) return;
+            if (!this.state.tablePreview || this.doc !== doc || this.doc.pageStore.readOnlyPage(n) !== ocrData) return;
             if (!this.textGroupsRenderIndices.includes(n)) return;
             this.renderWords(n).then(() => {
               if (this.state.layoutMode) layout.renderLayoutBoxes(this, n);
@@ -2862,11 +2868,7 @@ export class ScribeViewer {
     // Re-check the bounds at each use rather than baking them into the list.
     // The awaits below yield, so a document swapped or shrunk meanwhile must not receive renders for pages it no longer has.
     const windowArr = [n, ...this.windowPages(n).filter((p) => p !== n)];
-    const inDoc = (p) => p < this.doc.pageMetrics.length && (p === n || p < this.doc.ocr.active.length);
-
-    // A document that has not loaded holds a page's words only once they are asked for, and its host draws them when they arrive.
-    const unloaded = /** @type {{pageText?: (p: number) => Promise<void>}} */ (/** @type {unknown} */ (this.doc));
-    if (unloaded.pageText) for (const p of windowArr) if (inDoc(p)) unloaded.pageText(p);
+    const inDoc = (p) => p < this.doc.pageMetrics.length && (p === n || p < this.doc.pageStore.slotCount());
 
     if (!deferText) {
       for (const p of windowArr) {
@@ -3373,9 +3375,9 @@ export class ScribeViewer {
    * @returns {Map<string, UiOcrWord>}
    */
   ensureWordObjs(n) {
+    const page = this.doc.pageStore.readOnlyPage(n);
     const existing = this._wordObjMaps[n];
-    if (existing) return existing;
-    const page = this.doc.ocr.active?.[n];
+    if (existing && (existing.size === 0 || /** @type {UiOcrWord} */ (existing.values().next().value).word.line.page === page)) return existing;
     if (!page || !this.doc.pageMetrics[n]) return new Map();
     this._buildWordObjs(page);
     return this._wordObjMaps[n] || new Map();
@@ -3763,7 +3765,7 @@ export class ScribeViewer {
     /** @type {Array<UiOcrWord>} */
     const words = [];
     for (const idx of this.windowPages(this.state.cp.n)) {
-      if (this.useCustomSelection && this.doc.ocr.active?.[idx]) this.ensureWordObjs(idx);
+      if (this.useCustomSelection && this.doc.pageStore.hasPage(idx, 'active')) this.ensureWordObjs(idx);
       if (this._wordObjs[idx]) words.push(...this._wordObjs[idx]);
     }
     // A destroyed word can briefly linger in the registry, so drop it before a caller measuring its geometry dereferences the null `el`.
@@ -3890,6 +3892,13 @@ export class ScribeViewer {
         i--;
       }
     }
+    // ensureWordObjs can also populate _wordObjs and _wordObjMaps on unrendered pages outside textGroupsRenderIndices.
+    this._wordObjMaps.forEach((map, n) => {
+      if (!map || this.textGroupsRenderIndices.includes(n)) return;
+      this._wordObjs[n] = [];
+      this._wordObjMaps[n] = null;
+    });
+    this.doc?.pageStore.pin(this, this.textGroupsRenderIndices);
   }
 
   /**
@@ -3914,7 +3923,7 @@ export class ScribeViewer {
    * Compare the active OCR pages against the ground truth and update `evalStats`.
    */
   async _compareGroundTruth() {
-    const oemActive = Object.keys(this.doc.ocr).find((key) => this.doc.ocr[key] === this.doc.ocr.active && key !== 'active');
+    const oemActive = this.doc.activeLayer;
 
     if (!oemActive) {
       console.error('No OCR data active');
@@ -3939,13 +3948,12 @@ export class ScribeViewer {
 
       // TODO: This will overwrite any edits made by the user while `compareOCR` is running.
       // Is this a problem that is likely to occur in real use? If so, how should it be fixed?
-      const res = await this.doc.compareOCR(this.doc.ocr.active, this.doc.ocr['Ground Truth'], compOptions);
+      const store = this.doc.pageStore;
+      const res = await compareOCR(this.doc, 'active', 'Ground Truth', compOptions, null, (i, page) => {
+        store.setSnapshot(i, oemActive, PageStore.snapshotOfPage(page, oemActive === 'pdf' ? store.extras(i, false) : null));
+      });
 
-      const pagesPrev = this.doc.ocr.active;
-      this.doc.ocr[oemActive] = res.ocr;
-      this.doc.ocr.active = this.doc.ocr[oemActive];
       for (const [i, err] of Object.entries(res.errors)) {
-        this.doc.ocr.active[i] = pagesPrev[i];
         this.doc.warningHandler({ message: `Page ${Number(i) + 1}: the comparison with the ground truth failed (${err && err.message ? err.message : err}); the page is kept as it is.` });
       }
 
@@ -4056,6 +4064,7 @@ export class ScribeViewer {
     this.setTextGroupRotation(page.n, textRotation);
 
     if (!this.textGroupsRenderIndices.includes(page.n)) this.textGroupsRenderIndices.push(page.n);
+    this.doc.pageStore.pin(this, this.textGroupsRenderIndices);
 
     // Under the custom engine in `invis` mode, no text enters the DOM; highlights and search render from word objects and the engine hit-tests selection geometrically.
     // Visible modes (proof/eval/ebook/annot) instead fall through to the span path below, where the words are the display.
@@ -4253,11 +4262,9 @@ export class ScribeViewer {
 
   /**
    * The signal every annotation-mutating tool emits after changing `doc.annotations`.
-   * On a provisional document an edit is a deliberate act, so it starts the full load.
    * @param {number} pageN
    */
   annotationsEdited(pageN) {
-    if (this.doc && this.doc.hydrationState !== 'hydrated') this.doc.ensureHydrated();
     this.onAnnotationsEdited?.(pageN);
   }
 

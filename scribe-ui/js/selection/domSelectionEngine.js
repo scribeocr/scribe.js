@@ -128,7 +128,7 @@ function installDocumentHandlers() {
     const pageTexts = [];
     for (const n of v.textGroupsRenderIndices) {
       const pageText = scribe.utils.writeText({
-        ocrCurrent: v.doc.ocr.active,
+        ocrCurrent: v.doc.pageStore.pageList(),
         pageArr: [n],
         wordIds: ids,
       }).trim();

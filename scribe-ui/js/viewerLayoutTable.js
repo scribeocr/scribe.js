@@ -879,7 +879,7 @@ export function renderLayoutDataTable(viewer, layoutDataTable, skipPreviewApply 
 
   if (uiLayoutExisting) uiLayoutExisting.destroy();
 
-  const uiLayout = new UiDataTable(viewer.doc.ocr.active[layoutDataTable.page.n], layoutDataTable, true, viewer);
+  const uiLayout = new UiDataTable(viewer.doc.pageStore.readOnlyPage(layoutDataTable.page.n), layoutDataTable, true, viewer);
 
   uiLayout.columns.forEach((column) => {
     const group = viewer.getOverlayGroup(column.uiTable.layoutDataTable.page.n);

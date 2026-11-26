@@ -3,6 +3,7 @@ import {
 } from 'vitest';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { docPages } from './_pages.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -232,28 +233,28 @@ describe('Check custom model recognition with Google Vision format.', () => {
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(doc.ocr.active[i]).toBeTruthy();
-      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.getPage(i)).toBeTruthy();
+      expect(doc.getPage(i).lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.getPage(0).lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.getPage(6).lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the custom model results', async () => {
-    expect(doc.ocr.active).toBe(doc.ocr['Mock Google Vision']);
+    expect(doc.activeLayer).toBe('Mock Google Vision');
   });
 
   test('Should have correct page numbers on OcrPage objects', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(doc.ocr.active[i].n).toBe(i);
+      expect(doc.getPage(i).n).toBe(i);
     }
   });
 
@@ -280,35 +281,35 @@ describe('Check custom model recognition with Textract format.', () => {
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(doc.ocr.active[i]).toBeTruthy();
-      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.getPage(i)).toBeTruthy();
+      expect(doc.getPage(i).lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.getPage(0).lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.getPage(6).lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the custom model results', async () => {
-    expect(doc.ocr.active).toBe(doc.ocr['Mock Textract']);
+    expect(doc.activeLayer).toBe('Mock Textract');
   });
 
   test('Should have correct page numbers on OcrPage objects', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(doc.ocr.active[i].n).toBe(i);
+      expect(doc.getPage(i).n).toBe(i);
     }
   });
 
   test('Should have unique word IDs across all pages', async () => {
     const allIds = [];
     for (let i = 0; i < PAGE_COUNT; i++) {
-      for (const line of doc.ocr.active[i].lines) {
+      for (const line of doc.getPage(i).lines) {
         for (const word of line.words) {
           allIds.push(word.id);
         }
@@ -375,23 +376,23 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(doc.ocr.active[i]).toBeTruthy();
-      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.getPage(i)).toBeTruthy();
+      expect(doc.getPage(i).lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.getPage(0).lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.getPage(6).lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the documentMode model results', async () => {
-    expect(doc.ocr.active).toBe(doc.ocr['Mock Textract DocumentMode']);
+    expect(doc.activeLayer).toBe('Mock Textract DocumentMode');
   });
 
   test('Should forward non-terminal progress entries to progressHandler', async () => {
@@ -418,9 +419,8 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
 });
 
 describe('Check documentMode page selection and missing-page accounting.', () => {
-  // Each recognize() call reassigns doc.ocr.active and doc.inputData.ocrApplied.
   let selectionLayer;
-  let selectionCombined;
+  let selectionActive;
   let selectionOcrApplied;
   const selectionMsgs = [];
   const selectionWarnings = [];
@@ -452,14 +452,14 @@ describe('Check documentMode page selection and missing-page accounting.', () =>
         model: PageSelectionDocModeModel,
         ocrPages: [false, true, false, false, false, false, true],
       });
-      selectionLayer = doc.ocr.active;
-      selectionCombined = doc.ocr.Combined;
+      selectionLayer = docPages(doc);
+      selectionActive = doc.activeLayer;
       selectionOcrApplied = doc.inputData.ocrApplied.slice();
 
       scribe.opt.progressHandler = originalProgressHandler;
       scribe.opt.warningHandler = (msg) => underYieldWarnings.push(msg);
       await doc.recognize({ model: UnderYieldDocModeModel });
-      underYieldLayer = doc.ocr.active;
+      underYieldLayer = docPages(doc);
 
       scribe.opt.warningHandler = () => {};
       try {
@@ -492,7 +492,7 @@ describe('Check documentMode page selection and missing-page accounting.', () =>
     expect(selectionLayer[0].lines[0].words[0].text, 'an unselected page keeps the native text').toBe('564');
     expect(selectionLayer[5].lines.length, 'a never-yielded unselected page keeps the native line count').toBe(362);
     expect(selectionLayer[5].lines[0].words[0].text, 'a never-yielded unselected page keeps the native text').toBe('569');
-    expect(selectionLayer, 'a partial selection assembles the Combined layer').toBe(selectionCombined);
+    expect(selectionActive, 'a partial selection assembles the Combined layer').toBe('Combined');
   });
 
   test('Should narrow ocrApplied to the selection', async () => {
@@ -634,13 +634,13 @@ describe('Check custom model scattered failure handling.', () => {
 
     // Successful pages should have OCR data
     for (const i of [0, 1, 3, 4, 6]) {
-      expect(doc.ocr.active[i]).toBeTruthy();
-      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.getPage(i)).toBeTruthy();
+      expect(doc.getPage(i).lines.length > 0).toBe(true);
     }
 
     // Failed pages should have no lines
-    expect(doc.ocr.active[2].lines.length).toBe(0);
-    expect(doc.ocr.active[5].lines.length).toBe(0);
+    expect(doc.getPage(2).lines.length).toBe(0);
+    expect(doc.getPage(5).lines.length).toBe(0);
   });
 
   afterAll(async () => {
@@ -692,7 +692,7 @@ describe('Check AbortSignal handling on the per-image path.', () => {
   });
 
   test('Should preserve partial OCR results for pages that completed before abort', async () => {
-    const engineOcr = doc.ocr['Slow Abort Textract'] || [];
+    const engineOcr = docPages(doc, 'Slow Abort Textract');
     const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
     expect(completedPages.length > 0).toBe(true);
     expect(completedPages.length < PAGE_COUNT).toBe(true);
@@ -750,7 +750,7 @@ describe('Check AbortSignal handling on the documentMode path.', () => {
   });
 
   test('Should preserve partial OCR results on the documentMode engine', async () => {
-    const engineOcr = doc.ocr['Slow Abort DocumentMode'] || [];
+    const engineOcr = docPages(doc, 'Slow Abort DocumentMode');
     const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
     expect(completedPages.length > 0).toBe(true);
     expect(completedPages.length < PAGE_COUNT).toBe(true);

@@ -1,56 +1,13 @@
 // This file contains utility functions for calculating statistics using Opentype.js font objects.
 // The only import/dependency this file should have (aside from importing misc utility functions) should be fontObjects.js.
 
-import { getPrevLine, getWordStyleSegments } from '../objects/ocrObjects.js';
-import { getStyleLookup, quantile } from './miscUtils.js';
+import { getPrevLine } from '../objects/ocrObjects.js';
+import { quantile } from './miscUtils.js';
 
 import opentype from '../font-parser/src/index.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 
 /** @typedef {import('../containers/fontContainer.js').DocFonts} DocFonts */
-
-/**
- * Return an array of all characters used in the provided OCR data.
- * Used for subsetting fonts to only the necessary characters.
- * @param {Array<OcrPage>} ocrPageArr
- * @param {DocFonts} docFonts - Per-document fonts. Required; no active-document fallback.
- * @param {string} [family] - Font family to filter by. If empty, all fonts are included.
- * @param {string} [style] - Font style to filter by. If empty, all styles are included.
- */
-export const getDistinctCharsFont = (ocrPageArr, docFonts, family, style) => {
-  const charsAll = {};
-  for (const ocrPage of ocrPageArr) {
-    if (!ocrPage) continue;
-    for (const ocrLine of ocrPage.lines) {
-      for (const ocrWord of ocrLine.words) {
-        if (family || style) {
-          const wordFont = docFonts.getWordFont(ocrWord);
-          if (!wordFont) continue;
-          if (family && wordFont.family !== family) continue;
-          // The PDF text writer switches fonts mid-word, so each face's subset needs the chars of its own segments.
-          const segments = getWordStyleSegments(ocrWord);
-          if (segments) {
-            for (const segment of segments) {
-              if (style && getStyleLookup(segment.style) !== style) continue;
-              ocrWord.text.slice(segment.start, segment.end).split('').forEach((x) => {
-                charsAll[x] = true;
-              });
-            }
-            continue;
-          }
-          // Sometimes the font is 'normal' even when the requested style is 'bold' or 'italic'.
-          // For example, this currently happens for the Chinese font, which has no bold or italic variants.
-          // Therefore, as a quick fix for now, only filter by style if the current style is not 'normal'.
-          if (style && wordFont.style !== style && (wordFont.style !== 'normal')) continue;
-        }
-        ocrWord.text.split('').forEach((x) => {
-          charsAll[x] = true;
-        });
-      }
-    }
-  }
-  return Object.keys(charsAll);
-};
 
 /**
  *
