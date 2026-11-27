@@ -100,8 +100,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
 /**
  * @typedef {Object} LibraryInstanceOptions
  * @property {'library'|'portfolio'} kind
- * @property {string} name - The pinned tab's and the root crumb's label.
- * @property {string} glyph - The pinned tab's icon.
+ * @property {string} name - The root crumb's label, and a portfolio's pinned tab's.
+ * @property {string} glyph - The column head's icon, and a portfolio's pinned tab's.
  * @property {?Object} [store] - A store to open at once; the document library connects its own folder instead.
  * @property {'grid'|'list'|'compact'} [viewDefault]
  * @property {boolean} [showOthersDefault]
@@ -216,7 +216,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface { -webkit-user-select: none; user-select: none; }
 .scribe-pdf-viewer .scribe-library-surface input, .scribe-pdf-viewer .scribe-library-surface textarea, .scribe-pdf-viewer .scribe-library-surface [contenteditable] { -webkit-user-select: auto; user-select: auto; }
 .scribe-pdf-viewer .scribe-library-header { display: flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 4px 14px 4px 18px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); flex-wrap: wrap; }
-.scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
@@ -768,8 +767,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-grid.shelf .scribe-library-card { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card .shelf-act { margin-top: 6px; padding: 0; border: none; background: none; font: inherit; font-size: 12px; font-weight: 600; color: var(--scribe-accent); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-card .shelf-act:hover { text-decoration: underline; }
-.scribe-pdf-viewer .scribe-library-folder-menu { left: 0; right: auto; min-width: 230px; z-index: 60; }
-.scribe-pdf-viewer .scribe-library-folder-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
 .scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled svg { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-menu .scribe-library-menu-item.disabled:hover { background: none; }
@@ -1478,42 +1475,34 @@ export function createLibraryInstance(viewer, opts) {
     truncate: midTrunc,
   }) : null;
 
-  const homeTab = document.createElement('div');
-  homeTab.className = 'scribe-tab pinned';
-  homeTab.title = opts.name;
-  homeTab.innerHTML = `<span class="scribe-tab-icon">${opts.glyph}</span><span class="scribe-tab-name"></span>`;
-  /** @type {HTMLElement} */ (homeTab.querySelector('.scribe-tab-name')).textContent = opts.name;
-  if (opts.onClose) {
-    const close = document.createElement('span');
-    close.className = 'scribe-tab-close';
-    close.textContent = '×';
-    close.role = 'button';
-    close.ariaLabel = `Close ${opts.name}`;
-    // Stopped so closing never also selects the tab.
-    close.addEventListener('click', (e) => {
-      e.stopPropagation();
-      opts.onClose?.();
+  /** @type {?HTMLDivElement} A portfolio's pinned tab in the strip. */
+  let homeTab = null;
+  if (!isLibrary) {
+    homeTab = document.createElement('div');
+    homeTab.className = 'scribe-tab pinned';
+    homeTab.title = opts.name;
+    homeTab.innerHTML = `<span class="scribe-tab-icon">${opts.glyph}</span><span class="scribe-tab-name"></span>`;
+    /** @type {HTMLElement} */ (homeTab.querySelector('.scribe-tab-name')).textContent = opts.name;
+    if (opts.onClose) {
+      const close = document.createElement('span');
+      close.className = 'scribe-tab-close';
+      close.textContent = '×';
+      close.role = 'button';
+      close.ariaLabel = `Close ${opts.name}`;
+      // Stopped so closing never also selects the tab.
+      close.addEventListener('click', (e) => {
+        e.stopPropagation();
+        opts.onClose?.();
+      });
+      homeTab.appendChild(close);
+    }
+    homeTab.addEventListener('click', () => {
+      if (!visible) activate();
     });
-    homeTab.appendChild(close);
-  }
-  /** @type {?HTMLElement} */
-  let homeTabChev = null;
-  if (isLibrary) {
-    const chev = document.createElement('span');
-    chev.className = 'scribe-tab-chev';
-    chev.innerHTML = CHEVRON_SVG;
-    chev.title = 'Folder actions';
-    chev.role = 'button';
-    chev.tabIndex = 0;
-    // Stopped so opening the menu never also selects the tab.
-    chev.addEventListener('click', (e) => e.stopPropagation());
-    homeTab.appendChild(chev);
-    homeTabChev = chev;
-  }
-  if (viewer._tabStrip && !isLibrary) {
-    viewer._tabStrip.addPinnedTab(homeTab);
-    viewer._tabStripMinTabs = 1;
-    viewer._renderTabs();
+    if (viewer._tabStrip) {
+      viewer._tabStrip.addPinnedTab(homeTab);
+      viewer._renderTabs();
+    }
   }
 
   // --- The forms ---------------------------------------------------------
@@ -1880,8 +1869,8 @@ export function createLibraryInstance(viewer, opts) {
       if (inst !== api && inst.visible()) inst.hide();
     }
     visible = true;
-    viewer._lastPinned = api;
-    if (!isLibrary) {
+    viewer._returnSurface = api;
+    if (homeTab) {
       viewer._tabStrip?.setPinnedActive(true);
       homeTab.classList.add('active');
     }
@@ -1896,7 +1885,7 @@ export function createLibraryInstance(viewer, opts) {
     closeCardMenu();
     swapBarOut();
     viewer._searchBar?.rehome();
-    if (!isLibrary) {
+    if (homeTab) {
       viewer._tabStrip?.setPinnedActive(false);
       homeTab.classList.remove('active');
     }
@@ -2643,18 +2632,17 @@ export function createLibraryInstance(viewer, opts) {
     }
     if (inCol) {
       section('');
-      for (const entry of folderMenuEntries) {
-        if (entry === 'sep') {
+      for (const row of folderActions) {
+        if (row === 'sep') {
           const sep = document.createElement('div');
           sep.className = 'scribe-library-menu-sep';
           moreMenu.appendChild(sep);
           continue;
         }
-        const text = [...entry.item.childNodes].find((c) => c.nodeType === Node.TEXT_NODE);
-        const unknownPlace = entry.item === revealItem && !!store && !folderDirs.has(store.root.name);
-        item(text ? text.textContent ?? '' : '', {
-          icon: entry.svg, disabled: unknownPlace, hint: unknownPlace ? REVEAL_UNKNOWN_HINT : undefined, hover: entry.item === folderMenuCloseItem ? previewClose : undefined,
-        }, () => entry.item.click());
+        const hint = row.disabledHint?.() ?? null;
+        item(row.label, {
+          icon: row.svg, disabled: !!hint, hint: hint ?? undefined, hover: row.hover,
+        }, row.act);
       }
     }
   };
@@ -5903,7 +5891,6 @@ export function createLibraryInstance(viewer, opts) {
     };
     try {
       if (entry.portfolio) {
-        // A portfolio opens as its own pinned surface, never as a page tab.
         // The file is read plain, with no sidecar and no seed.
         entry.lastOpened = Date.now();
         saveManifestSoon();
@@ -7504,11 +7491,6 @@ export function createLibraryInstance(viewer, opts) {
 
   // --- Event wiring -------------------------------------------------------
 
-  homeTab.addEventListener('click', () => {
-    if (visible) return;
-    activate({ morph: true });
-  });
-
   /** @returns {Promise<?LibraryStore>} */
   const pickFolder = async () => {
     try {
@@ -7670,77 +7652,38 @@ export function createLibraryInstance(viewer, opts) {
     if (fullTextResults) runFullTextSearch(fullTextQuery);
     queue.start();
   };
-  // --- Folder menu --------------------------------------------------------
-  const folderMenu = document.createElement('div');
-  folderMenu.className = 'scribe-library-menu scribe-library-folder-menu';
-  folderMenu.setAttribute('role', 'menu');
-  folderMenu.style.display = 'none';
+  // --- Folder actions -----------------------------------------------------
   const previewClose = (/** @type {boolean} */ on) => viewer._tabStripElem?.classList.toggle('scribe-tab-close-preview', on);
-  /** @type {?HTMLElement} */
-  let revealItem = null;
-  const folderDropdown = createDropdown({
-    show: (anchor) => {
-      if (!store) return null;
-      // The shell learns a folder's location from the picker or from the permission check a restored folder raises at launch, so a folder picked under an earlier version has none until a relaunch.
-      if (revealItem) {
-        const known = folderDirs.has(store.root.name);
-        revealItem.classList.toggle('disabled', !known);
-        revealItem.title = known ? '' : REVEAL_UNKNOWN_HINT;
-      }
-      hostMenuUnder(folderMenu, anchor);
-      folderMenu.style.display = '';
-      return folderMenu;
-    },
-    hide: () => {
-      folderMenu.style.display = 'none';
-      previewClose(false);
-    },
-    rows: '.scribe-library-menu-item',
-  });
-  if (homeTabChev) folderDropdown.attachTrigger(homeTabChev);
   moreDropdown.attachTrigger(colMoreBtn);
+  const closeFolderRow = isLibrary ? {
+    svg: MENU_CLOSE_SVG, label: 'Close Folder', act: () => closeFolder(), hover: previewClose,
+  } : null;
   /**
-   * The folder menu's rows in order, with their icons.
-   * @type {Array<'sep' | {svg: string, item: HTMLElement}>}
+   * The folder actions the column's actions menu lists.
+   * A row's `disabledHint` returns why it cannot run now, or null.
+   * @type {Array<'sep' | {svg: string, label: string, act: () => void, disabledHint?: () => ?string, hover?: (on: boolean) => void}>}
    */
-  const folderMenuEntries = [];
-  /** @param {string} svg @param {string} label @param {() => void} onPick */
-  const addFolderMenuItem = (svg, label, onPick) => {
-    const item = document.createElement('div');
-    item.className = 'scribe-library-menu-item';
-    item.setAttribute('role', 'menuitem');
-    item.innerHTML = svg;
-    item.appendChild(document.createTextNode(label));
-    item.addEventListener('click', () => {
-      folderDropdown.close();
-      onPick();
-    });
-    folderMenu.appendChild(item);
-    folderMenuEntries.push({ svg, item });
-    return item;
-  };
-  const addFolderMenuSep = () => {
-    folderMenuEntries.push('sep');
-    const sep = document.createElement('div');
-    sep.className = 'scribe-library-menu-sep';
-    folderMenu.appendChild(sep);
-  };
+  const folderActions = [];
   if (isLibrary && shell?.revealFolder) {
-    revealItem = addFolderMenuItem(MENU_REVEAL_SVG, revealLabel, () => {
-      if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name);
+    folderActions.push({
+      svg: MENU_REVEAL_SVG,
+      label: revealLabel,
+      act: () => { if (store && folderDirs.has(store.root.name)) shell.revealFolder(store.root.name); },
+      // The shell learns a folder's location from the picker or from the permission check a restored folder raises at launch, so a folder picked under an earlier version has none until a relaunch.
+      disabledHint: () => (store && !folderDirs.has(store.root.name) ? REVEAL_UNKNOWN_HINT : null),
     });
   }
-  if (isLibrary) {
-    addFolderMenuItem(MENU_FOLDER_SVG, 'Open Another Folder…', () => openFolder());
-    addFolderMenuSep();
-    addFolderMenuItem(MENU_REFRESH_SVG, 'Refresh Folder', () => refreshBtn.click());
-    addFolderMenuItem(MENU_LIBRARY_SVG, 'Rebuild Search Index', () => rebuildIndex());
-    addFolderMenuItem(MENU_STORAGE_SVG, 'Library Storage…', () => openStorage());
-    addFolderMenuSep();
+  if (closeFolderRow) {
+    folderActions.push(
+      { svg: MENU_FOLDER_SVG, label: 'Open Another Folder…', act: () => openFolder() },
+      'sep',
+      { svg: MENU_REFRESH_SVG, label: 'Refresh Folder', act: () => refreshBtn.click() },
+      { svg: MENU_LIBRARY_SVG, label: 'Rebuild Search Index', act: () => rebuildIndex() },
+      { svg: MENU_STORAGE_SVG, label: 'Library Storage…', act: () => openStorage() },
+      'sep',
+      closeFolderRow,
+    );
   }
-  const folderMenuCloseItem = isLibrary ? addFolderMenuItem(MENU_CLOSE_SVG, 'Close Folder', () => closeFolder()) : null;
-  folderMenuCloseItem?.addEventListener('mouseenter', () => previewClose(true));
-  folderMenuCloseItem?.addEventListener('mouseleave', () => previewClose(false));
   /** @type {?HTMLElement} */
   let openFolderItem = null;
   /** @type {?HTMLElement} */
@@ -7769,12 +7712,9 @@ export function createLibraryInstance(viewer, opts) {
   };
   const syncFolderRows = () => {
     const n = store ? folderDocCount() : 0;
-    const relabel = (/** @type {?HTMLElement} */ item, /** @type {string} */ text) => {
-      const node = item && [...item.childNodes].find((c) => c.nodeType === Node.TEXT_NODE);
-      if (node) node.textContent = text;
-    };
-    relabel(folderMenuCloseItem, closeFolderLabel());
-    relabel(closeFolderItem, n ? `Close folder and ${n} document${n === 1 ? '' : 's'}` : 'Close folder');
+    if (closeFolderRow) closeFolderRow.label = closeFolderLabel();
+    const closeText = closeFolderItem && [...closeFolderItem.childNodes].find((c) => c.nodeType === Node.TEXT_NODE);
+    if (closeText) closeText.textContent = n ? `Close folder and ${n} document${n === 1 ? '' : 's'}` : 'Close folder';
     for (const item of [closeFolderItem, rebuildItem, storageItem]) {
       if (!item) continue;
       item.classList.toggle('disabled', !store);
@@ -8552,7 +8492,7 @@ export function createLibraryInstance(viewer, opts) {
       viewer.pdfViewerElem.removeEventListener('focusin', trackEngagement, true);
       barTitle?.remove();
       barControls?.remove();
-      if (viewer._tabStrip) {
+      if (homeTab && viewer._tabStrip) {
         viewer._tabStrip.removePinnedTab(homeTab);
         viewer._renderTabs();
       }
@@ -8560,17 +8500,15 @@ export function createLibraryInstance(viewer, opts) {
       closeFolderItem?.remove();
       rebuildItem?.remove();
       storageItem?.remove();
-      folderDropdown.destroy();
       sortDropdown.destroy();
       newDropdown.destroy();
       midDropdown?.destroy();
-      folderMenu.remove();
       closeMovePicker();
       viewer.pdfViewerElem.removeEventListener('scribe-menu-state-change', syncFolderRows);
       if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;
       const at = viewer._libraryInstances.indexOf(api);
       if (at >= 0) viewer._libraryInstances.splice(at, 1);
-      if (viewer._lastPinned === api) viewer._lastPinned = null;
+      if (viewer._returnSurface === api) viewer._returnSurface = null;
     },
   });
   return api;

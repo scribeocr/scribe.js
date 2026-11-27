@@ -691,7 +691,7 @@ const TAB_FADE_WIDTH = 24;
  * @returns {{ tabStripElem: HTMLDivElement,
  *   render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean, preview?: boolean, view?: Object, icon?: string, sub?: string }>,
  *     activeIndex: number, group?: {grouped: boolean, inGroup: (tab: Object) => boolean}) => void,
- *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, pinnedCount: () => number, setPinnedActive: (on: boolean) => void,
+ *   addPinnedTab: (elem: HTMLElement) => void, removePinnedTab: (elem: HTMLElement) => void, setPinnedActive: (on: boolean) => void,
  *   showTabNote: (index: number, message: string, options?: {actionLabel?: string, onAction?: () => void}) => void }}
  */
 export function createTabStrip({
@@ -830,11 +830,6 @@ export function createTabStrip({
       pinnedWrap = null;
     }
     syncOverflow();
-  }
-
-  /** How many tabs are pinned ahead of the lane. */
-  function pinnedCount() {
-    return pinnedWrap ? pinnedWrap.children.length - 1 : 0;
   }
 
   /**
@@ -1017,7 +1012,6 @@ export function createTabStrip({
       gapElem.className = 'scribe-tab-gap';
       laneElem.append(groupElem, gapElem);
     }
-    if (pinnedWrap) pinnedWrap.classList.toggle('scribe-tab-group-head', group.grouped);
     tabs.forEach((tab, i) => {
       const tabElem = document.createElement('div');
       tabElem.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
@@ -1337,7 +1331,6 @@ export function createTabStrip({
     d.crossing = !d.inGroup && drop.region === 'group';
     applyPositions(positionsFor(drop));
     d.tabElem.style.left = `${x}px`;
-    if (pinnedWrap) pinnedWrap.classList.toggle('drop', d.crossing);
     if (groupElem) groupElem.classList.toggle('drop', d.crossing);
     d.tabElem.classList.toggle('adding', d.crossing);
     const max = laneElem.scrollWidth - laneElem.clientWidth;
@@ -1365,7 +1358,6 @@ export function createTabStrip({
   function endDragVisuals(d) {
     cancelAnimationFrame(d.rafId);
     tabStripElem.classList.remove('tab-drag', 'settling');
-    if (pinnedWrap) pinnedWrap.classList.remove('drop');
     laneElem.style.removeProperty('--scribe-tab-drag-w');
     laneElem.style.scrollBehavior = '';
     document.body.style.cursor = '';
@@ -1422,7 +1414,7 @@ export function createTabStrip({
   }
 
   return {
-    tabStripElem, render, addPinnedTab, removePinnedTab, pinnedCount, setPinnedActive, showTabNote,
+    tabStripElem, render, addPinnedTab, removePinnedTab, setPinnedActive, showTabNote,
   };
 }
 
@@ -2902,9 +2894,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-tab-strip.pin-active .scribe-tab-lane .scribe-tab.active .scribe-tab-name { text-shadow: none; }
 
-    .${r} .scribe-tab-strip.grouped .scribe-tab-pin-sep { display: none; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-group { position: relative; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head::before, .${r} .scribe-tab-group::before, .${r} .scribe-tab-paddle-wrap.group-bridge::before {
+    .${r} .scribe-tab-group { position: relative; }
+    .${r} .scribe-tab-group::before, .${r} .scribe-tab-paddle-wrap.group-bridge::before {
       content: '';
       position: absolute;
       left: 0;
@@ -2916,15 +2907,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 1;
     }
     .${r} .scribe-tab-group { display: flex; align-items: stretch; flex: none; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned { background: color-mix(in srgb, var(--scribe-accent) 12%, var(--scribe-surface)); color: var(--scribe-ink); padding-right: 8px; }
-    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { background: var(--scribe-surface); color: var(--scribe-accent); }
     .${r} .scribe-tab-gap { width: 14px; flex: none; }
     .${r} .scribe-tab-gap.empty { width: 0; }
-    .${r} .scribe-tab-chev { width: 12px; height: 12px; flex: none; display: inline-flex; color: var(--scribe-ink-3); border-radius: 3px; }
-    .${r} .scribe-tab-chev svg { width: 100%; height: 100%; display: block; }
-    .${r} .scribe-tab-chev:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
     /* The library sets this class while its Close Folder command is hovered, previewing which tabs the command closes. */
-    .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-pin.scribe-tab-group-head, .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-group { opacity: .35; }
+    .${r} .scribe-tab-strip.scribe-tab-close-preview .scribe-tab-group { opacity: .35; }
 
     .${r} .scribe-tab-lane { position: relative; }
     .${r} .scribe-tab-strip.tab-drag .scribe-tab-lane::after { content: ''; flex: none; width: var(--scribe-tab-drag-w, 0px); }
@@ -2935,9 +2921,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-plus { display: none; width: 14px; height: 14px; border-radius: 50%; background: var(--scribe-accent); color: var(--scribe-accent-ink); align-items: center; justify-content: center; font-size: 12px; font-weight: 600; line-height: 1; flex: none; }
     .${r} .scribe-tab.dragging.adding .scribe-tab-plus { display: inline-flex; }
     .${r} .scribe-tab.dragging.adding .scribe-tab-close { display: none; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head.drop, .${r} .scribe-tab-group.drop { background: var(--scribe-accent-soft); }
-    .${r} .scribe-tab-pin.scribe-tab-group-head.drop::after, .${r} .scribe-tab-group.drop::after { content: ''; position: absolute; inset: 0; border: 2px dashed var(--scribe-accent); box-sizing: border-box; pointer-events: none; z-index: 3; }
-    .${r} .scribe-tab-pin.scribe-tab-group-head.drop::after { border-right: none; }
+    .${r} .scribe-tab-group.drop { background: var(--scribe-accent-soft); }
+    .${r} .scribe-tab-group.drop::after { content: ''; position: absolute; inset: 0; border: 2px dashed var(--scribe-accent); box-sizing: border-box; pointer-events: none; z-index: 3; }
     .${r} .scribe-tab-group.drop::after { border-left: none; }
     .${r} .scribe-tab-note { position: absolute; z-index: 70; display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 12px; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px; box-shadow: var(--scribe-menu-shadow); font-size: 13px; color: var(--scribe-ink); white-space: nowrap; }
     .${r} .scribe-tab-note::before { content: ''; position: absolute; top: -5px; left: 18px; width: 8px; height: 8px; background: var(--scribe-surface); border-left: 1px solid var(--scribe-line); border-top: 1px solid var(--scribe-line); transform: rotate(45deg); }
@@ -5418,10 +5403,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-tab-menu-item.disabled:hover { background: none; }
     .${r} .scribe-tab-anchor { width: 12px; height: 12px; flex: none; display: inline-flex; color: var(--scribe-accent); }
     .${r} .scribe-tab-anchor svg { width: 100%; height: 100%; display: block; }
-    .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active, .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin .scribe-tab.active,
-    .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin.scribe-tab-group-head .scribe-tab.pinned.active { color: var(--scribe-ink-2); border-bottom-color: var(--scribe-line-strong); }
+    .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active, .${r} .scribe-tab-strip.scribe-group-inactive.pin-active .scribe-tab-pin .scribe-tab.active { color: var(--scribe-ink-2); border-bottom-color: var(--scribe-line-strong); }
     .${r} .scribe-tab-strip.scribe-group-inactive .scribe-tab.active .scribe-tab-name { text-shadow: none; }
-    /* Above a pinned surface (30). */
+    /* Above a document library or portfolio surface (30). */
     .${r} .scribe-group-drop { position: absolute; z-index: 32; pointer-events: none; }
     .${r} .scribe-group-drop::before { content: ''; position: absolute; inset: 0; background: var(--scribe-accent-soft); opacity: .3; }
     .${r} .scribe-group-drop-ins { position: absolute; z-index: 33; width: 2px; background: var(--scribe-accent); pointer-events: none; }

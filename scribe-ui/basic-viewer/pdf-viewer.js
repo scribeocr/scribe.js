@@ -751,10 +751,6 @@ class ScribePDFViewer {
     this._announcedDocName = null;
     /** Whether the tab strip currently occupies layout space. */
     this._tabStripVisible = false;
-    /**
-     * Open-tab count at which the strip appears.
-     */
-    this._tabStripMinTabs = 1;
     this._modeTrackOpen = false;
     /** @type {?HTMLElement} */
     this._modeTrackWrap = null;
@@ -1049,11 +1045,11 @@ class ScribePDFViewer {
      * @type {Array<import('../library/libraryView.js').LibraryInstance>}
      */
     this._libraryInstances = [];
-    /** @type {?import('../library/libraryView.js').LibraryInstance} The pinned surface shown most recently, which an emptied tab strip returns to. */
-    this._lastPinned = null;
+    /** @type {?import('../library/libraryView.js').LibraryInstance} The surface shown most recently, which an emptied tab strip returns to. */
+    this._returnSurface = null;
     /** @type {'crumbs'|'finder'} */
     this._libraryBar = 'crumbs';
-    /** @type {?('focused'|'global'|'off')} The keyboard scope a pinned surface in front displaced, restored when it leaves. */
+    /** @type {?('focused'|'global'|'off')} The keyboard scope a surface covering the document displaced, restored when it leaves. */
     this._keyboardScopeBehindSurface = null;
     /**
      * Whether this viewer's window is the one a relaunch resumes.
@@ -1206,7 +1202,7 @@ class ScribePDFViewer {
       };
       /**
        * The app's command handlers by id, shared between the in-window app menu and a desktop shell's native menus.
-       * The document commands refuse while a pinned surface is in front, since a shell's menu state lags a surface change by a message and a grayed in-window row still fires.
+       * The document commands refuse while a surface covers the document, since a shell's menu state lags a surface change by a message and a grayed in-window row still fires.
        * @type {Object<string, () => (void | Promise<void>)>}
        */
       this._menuCommands = {
@@ -2716,7 +2712,8 @@ class ScribePDFViewer {
   }
 
   /**
-   * Open a PDF portfolio as a pinned surface listing its embedded files (the library's own folder view over them), or bring one already open forward.
+   * Open a PDF portfolio as a pinned tab listing its embedded files.
+   * One already open comes forward instead.
    * The library code loads on demand here in every browser, unlike the library itself, which needs the File System Access API.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc - The portfolio document; the surface owns it from here on.
    * @param {string} name
@@ -3136,7 +3133,7 @@ class ScribePDFViewer {
         else this._closeGroup();
         if (this._tabs.length) return;
       }
-      (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
+      (this._returnSurface && this._libraryInstances.includes(this._returnSurface) ? this._returnSurface : this._libraryInstances[0])?.emptied();
       return;
     }
     if (wasActive) {
@@ -4133,7 +4130,7 @@ class ScribePDFViewer {
           await this._activateTab(this._tabs.indexOf(rest[Math.min(pos, rest.length - 1)]), { keepSurface: true });
         } else {
           this.detachDoc({ terminate: false });
-          (this._lastPinned && this._libraryInstances.includes(this._lastPinned) ? this._lastPinned : this._libraryInstances[0])?.emptied();
+          (this._returnSurface && this._libraryInstances.includes(this._returnSurface) ? this._returnSurface : this._libraryInstances[0])?.emptied();
         }
       }
       await this._activateGroupTab(tab);
@@ -4474,7 +4471,7 @@ class ScribePDFViewer {
   _renderTabs() {
     const g = this._rightGroup;
     // The phone shows the strip from the second document; the desktop strip carries the Split view button, so it shows from the first.
-    const minTabs = this._phoneUi ? Math.max(2, this._tabStripMinTabs) : this._tabStripMinTabs;
+    const minTabs = this._phoneUi ? 2 : 1;
     this._setTabStripVisible(!!g || this._tabs.length >= minTabs);
     const folder = this._library?.connected?.() ? this._library : null;
     const lane = this._groupTabs(0);
@@ -6875,7 +6872,7 @@ class ScribePDFViewer {
 
   /**
    * Close what is in front, for a desktop shell's close-tab shortcut.
-   * The target is the active document's tab, or a closable pinned surface such as a portfolio.
+   * The target is the active document's tab, or a closable surface such as a portfolio.
    * A library preview is cleared rather than closed.
    * Refused when the library's browse surface is in front, or when a viewer without a library would be left with no document.
    * @returns {boolean} Whether something was closed.
@@ -6983,7 +6980,7 @@ class ScribePDFViewer {
 
   /**
    * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
-   * With a pinned surface in front the document items read as having no document.
+   * With a surface covering the document, the document items read as having no document.
    * `closeTab` says whether a close-tab command would close a tab or surface, or should fall to closing the window.
    * @returns {MenuState}
    */
@@ -7016,8 +7013,8 @@ class ScribePDFViewer {
   }
 
   /**
-   * The pinned surface covering the document, if any.
-   * A library previewing in its pane is lit but leaves the document uncovered.
+   * The surface covering the document, if any.
+   * That is the document library with nothing open, or a lit portfolio.
    * @returns {?import('../library/libraryView.js').LibraryInstance}
    */
   _frontSurface() {
@@ -7025,7 +7022,7 @@ class ScribePDFViewer {
     return this._libraryInstances.find((inst) => inst.covering()) ?? null;
   }
 
-  /** React to a pinned surface taking or leaving the front. */
+  /** React to a surface covering the document or leaving it. */
   _syncFrontSurface() {
     if (this._frontSurface()) {
       if (this._keyboardScopeBehindSurface === null) this._keyboardScopeBehindSurface = this.scribe.opt.keyboardScope;
@@ -8336,7 +8333,7 @@ class ScribePDFViewer {
     }
   }
 
-  /** Disable the controls that need a document while none is loaded or a pinned surface is in front of it. */
+  /** Disable the controls that need a document while none is loaded or a surface covers it. */
   _syncDocGatedControls() {
     const { doc } = this._activeViewer();
     // An empty viewer still holds a document object, so a document counts as open only when it has pages.
