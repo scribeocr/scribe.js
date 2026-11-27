@@ -39,9 +39,7 @@ const TOUNICODE_CMAP_CACHE_MAX = 64;
 
 /**
  * A font's code-to-text map.
- * Reads match a plain `Map` holding one entry per code, iteration order included.
- * A long single-destination `bfrange` run stays an arithmetic range rather than one entry per code.
- * `delete` does not remove a code a range defines.
+ * `delete` does not remove codes defined by `addRange`.
  * @extends {Map<number, string>}
  */
 export class ToUnicodeMap extends Map {
@@ -49,11 +47,12 @@ export class ToUnicodeMap extends Map {
   #ranges = [];
 
   /**
+   * Add a lazy code range when it overlaps no existing entry or range.
    * @param {number} start
    * @param {number} end
    * @param {(code: number) => (string|undefined)} valueAt
    * @param {number} definedCount
-   * @returns {boolean} False means it was not added, so the caller must expand it.
+   * @returns {boolean} Whether the range was added.
    */
   addRange(start, end, valueAt, definedCount) {
     // Reads prefer explicit entries and earlier ranges over this one, but eager expansion would let this range overwrite them, so an overlapping range must be expanded instead.
@@ -80,8 +79,9 @@ export class ToUnicodeMap extends Map {
   }
 
   /**
+   * Look up `code` across lazy ranges.
    * @param {number} code
-   * @returns {string|null|undefined} The range value, null where the expansion stored nothing, undefined outside every range.
+   * @returns {string|null|undefined} The mapped string, `null` for an unmapped slot inside a range, or `undefined` outside all ranges.
    */
   #rangeValue(code) {
     for (let i = 0; i < this.#ranges.length; i++) {
@@ -174,20 +174,20 @@ function parsedToUnicodeCMap(cmapText, objCache) {
   return parsed;
 }
 
-// Half-font-unit lattices in em, for the unitsPerEm values fonts use (2048, 1000, 256, 1024, 512, 4096).
-// Their least common multiple makes a coordinate snapped to any of them an integer count of 1/1024000 em.
+// Half-font-unit counts per em (2 * unitsPerEm) for standard font grids (2048, 1000, 256, 1024, 512, 4096).
+// Scaling to their LCM (1024000) turns a coordinate snapped to any of those grids into the same integer regardless of unitsPerEm.
 const GLYPH_LATTICES = [4096, 2000, 512, 2048, 1024, 8192];
 const GLYPH_LATTICE_LCM = 1024000;
 
 /**
- * Stable hex hash of a parsed Type3 glyph outline, keyed on the font program's own coordinates.
- * One outline hashes alike wherever it appears, across fonts, pages and documents.
+ * Stable hex hash of a parsed Type3 glyph outline.
+ * One outline hashes alike wherever it appears, across fonts, pages, and documents.
  * @param {Array<{ type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number }>} commands
- * @param {number[]} fontMatrix - the Type3 font's FontMatrix, mapping glyph space to text (em) space
+ * @param {number[]} fontMatrix
  */
 export function hashGlyphCommands(commands, fontMatrix) {
   const [ma, mb, mc, md, me, mf] = fontMatrix;
-  /** Em-space coordinates in command order: x, y pairs. */
+  /** Interleaved em-space x and y coordinates in command order. */
   const coords = [];
   const types = [];
   for (let i = 0; i < commands.length; i++) {
@@ -228,13 +228,13 @@ export function hashGlyphCommands(commands, fontMatrix) {
 
 /**
  * Resolve a CIDFont's embedded TrueType program bytes from its FontDescriptor.
- * Prefers /FontFile2, falling back to /FontFile when it holds a TrueType sfnt (some generators store the program there).
- * @param {string} fdText - FontDescriptor object text
+ * @param {string} fdText
  * @param {ObjectCache} objCache
- * @returns {Uint8Array | null} the font program bytes, or null when none is embedded
+ * @returns {Uint8Array | null}
  */
 function resolveCidTrueTypeProgram(fdText, objCache) {
   let ffRefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
+  // Some producers store a TrueType sfnt stream under /FontFile instead of /FontFile2.
   if (!ffRefMatch) {
     const ff1RefMatch = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(fdText);
     if (ff1RefMatch) {
@@ -249,8 +249,7 @@ function resolveCidTrueTypeProgram(fdText, objCache) {
 }
 
 /**
- * Parse a TrueType font file's cmap table and build a reverse GID→Unicode map.
- * Used for CIDFontType2 + Identity-H where CIDs are GIDs and we need GID→Unicode.
+ * Parse a TrueType font's `cmap` table into a reverse GID -> Unicode map.
  * @param {Uint8Array} fontFile
  */
 function buildGidToUnicodeFromTrueType(fontFile) {
@@ -273,8 +272,7 @@ function buildGidToUnicodeFromTrueType(fontFile) {
 }
 
 /**
- * Parse the plaintext `/Encoding ... dup N /glyphname put ...` block at the
- * start of a Type1 PFA.
+ * Parse the plaintext `/Encoding ... dup N /glyphname put ...` block at the start of a Type1 PFA.
  * @param {Uint8Array} fontFile
  * @returns {Map<number, string>|null}
  */
@@ -331,14 +329,11 @@ function buildEmptyGlyphSetFromTrueType(fontFile) {
 const glyphInkReaders = new WeakMap();
 
 /**
- * Where a glyph's outline actually sits, read from the embedded TrueType `glyf` entry's own bounding box.
- * The font descriptor is no substitute: symbol fonts routinely declare the Latin ascent/descent of the face they were derived from, which the drawn glyph ignores entirely.
- *
- * @param {Object} fontInfo - Parsed font.
+ * Read a glyph's outline bounding box from the embedded TrueType `glyf` table.
+ * Coordinates are in em units, with `x` from the pen origin and `y` upward from the baseline.
+ * @param {Object} fontInfo
  * @param {number} charCode
- * @returns {?{left: number, right: number, yMin: number, yMax: number}} Em fractions: x from the
- *   pen origin, y upward from the baseline. Null when the outline is unavailable (no embedded
- *   program, CFF or Type1 charstrings, unresolvable glyph id, or a blank glyph).
+ * @returns {?{left: number, right: number, yMin: number, yMax: number}} `null` when no non-empty TrueType outline is available.
  */
 export function glyphInkBox(fontInfo, charCode) {
   let reader = glyphInkReaders.get(fontInfo);
@@ -354,8 +349,6 @@ export function glyphInkBox(fontInfo, charCode) {
         const dir = opentype.readSfntTableDirectory(data);
         const unitsPerEm = dir.head ? data.getUint16(dir.head.offset + 18) : 0;
         if (dir.glyf && dir.loca && dir.maxp && unitsPerEm > 0) {
-          // Simple fonts address glyphs by character code through the font's own cmap.
-          // A symbol cmap (3,0) keys its codes into the F0xx private-use block.
           let codeToGid = null;
           let symbolCmap = false;
           if (!fontInfo.type0 && dir.cmap) {
@@ -404,7 +397,6 @@ export function glyphInkBox(fontInfo, charCode) {
   const end = reader.longLoca
     ? data.getUint32(reader.locaOffset + (gid + 1) * 4)
     : data.getUint16(reader.locaOffset + (gid + 1) * 2) * 2;
-  // A glyph with no contour data past its 10-byte header draws nothing.
   if (end - start < 10 || reader.glyfOffset + end > data.byteLength) return null;
   const entry = reader.glyfOffset + start;
   const upem = reader.unitsPerEm;
@@ -417,10 +409,7 @@ export function glyphInkBox(fontInfo, charCode) {
 }
 
 /**
- * Decide whether an embedded TrueType subset's high-byte encoding is MacRoman
- * or Win1252 by comparing the PDF /Widths array against the standard-font AFM
- * widths for the named font.
- *
+ * Decide whether an embedded TrueType subset's high-byte encoding is MacRoman or Win1252 by comparing `/Widths` against standard AFM widths.
  * @param {Map<number, number>} widths
  * @param {string} baseName
  */
@@ -457,9 +446,7 @@ function disambiguateMacWinByWidths(widths, baseName) {
 }
 
 /**
- * Test whether a PDF `BaseFont` / `FontName` value is informative.
- * Some producers communicate font identity only via the embedded font file and emit a placeholder names in the PDF object.
- *
+ * Whether a PDF `BaseFont` or `FontName` is a generic placeholder like `F1` or `CIDFont+F1`.
  * @param {string} name
  */
 function isPlaceholderFontName(name) {
@@ -502,7 +489,6 @@ export function extractType3GlyphBBoxes(pdfBytes) {
     const objText = objCache.getObjectText(Number(objNum));
     if (!objText) continue;
     if (!objText.includes('/Subtype') || !objText.includes('/Type3')) continue;
-    // Verify it's actually /Subtype /Type3 (not just containing those strings separately)
     if (!/\/Subtype\s*\/Type3/.test(objText)) continue;
 
     const fontInfo = parseType3Font(objText, objCache);
@@ -515,9 +501,7 @@ export function extractType3GlyphBBoxes(pdfBytes) {
 }
 
 /**
- * Enumerate every visible Type3 glyph in a PDF, deduplicated by the path-content hash.
- * The resulting map of pathHash -> string can be passed back into `extractPDFTextDirect` as `options.type3GlyphMappings`.
- *
+ * Enumerate every visible Type3 glyph in a PDF, deduplicated by path-content hash.
  * @param {Uint8Array} pdfBytes
  * @returns {Array<{
  *   pathHash: string,
@@ -578,10 +562,8 @@ export function enumerateType3Fonts(objCache) {
   return fonts;
 }
 
-// Type3 CharProc operators that provably leave no marks on the page:
-// glyph metrics (d0/d1, plus a bare `d` because the token scan reduces them to `d`),
-// graphics/colour/line state, clipping-path consumption, marked content, and compatibility sections.
-// Path-construction operators are deliberately excluded, since a CharProc that uses them is judged on its path commands.
+// Bare `d` also covers `d0` and `d1`, whose digits the `[a-zA-Z*]+` token scan strips.
+// Path-construction operators are omitted so a CharProc whose path failed to parse is not marked empty.
 const NON_MARKING_CHARPROC_OPS = new Set([
   'd0', 'd1', 'd',
   'q', 'Q', 'cm', 'gs',
@@ -607,7 +589,6 @@ export function parseType3Font(objText, objCache) {
   const name = nameMatch ? nameMatch[1] : null;
 
   const encoding = {};
-  // The Encoding might be inline or a reference
   const encRefMatch = /\/Encoding\s+(\d+)\s+\d+\s+R/.exec(objText);
   let encText = objText;
   if (encRefMatch) {
@@ -617,8 +598,6 @@ export function parseType3Font(objText, objCache) {
   const diffStr = resolveArrayValue(encText, 'Differences', objCache);
   if (diffStr) {
     const diffContent = diffStr;
-    // Tokenize: numbers and /names may be separated by whitespace or packed together (e.g. "0/0 2/1/2/3")
-    // Match either integers or /name tokens
     const tokens = diffContent.match(/\/[^\s/]+|\d+/g);
     if (tokens) {
       let charCode = 0;
@@ -633,17 +612,14 @@ export function parseType3Font(objText, objCache) {
     }
   }
 
-  // Extract CharProcs (may be inline dict or indirect reference)
   const charProcsStart = objText.indexOf('/CharProcs');
   if (charProcsStart === -1) return null;
 
   let charProcsDict;
   const charProcsAfter = objText.substring(charProcsStart + 10).trim();
   if (charProcsAfter.startsWith('<<')) {
-    // Inline dictionary
     charProcsDict = extractDict(objText, charProcsStart + 10 + (objText.substring(charProcsStart + 10).indexOf('<<')));
   } else {
-    // Indirect reference: /CharProcs N 0 R
     const cpRefMatch = /^(\d+)\s+\d+\s+R/.exec(charProcsAfter);
     if (!cpRefMatch) return null;
     const cpObjText = objCache.getObjectText(Number(cpRefMatch[1]));
@@ -651,7 +627,6 @@ export function parseType3Font(objText, objCache) {
     charProcsDict = cpObjText;
   }
 
-  // Parse CharProcs entries: /glyphName N 0 R
   const glyphs = {};
   /** @type {{ [glyphName: string]: number }} */
   const charProcObjNums = {};
@@ -664,8 +639,6 @@ export function parseType3Font(objText, objCache) {
 
     const streamBytes = objCache.getStreamBytes(streamObjNum);
     if (!streamBytes) {
-      // Unreadable CharProc: no evidence the glyph draws nothing, so it is not provably empty.
-      // Consumers must skip it, never drop it.
       glyphs[glyphName] = { bbox: null, advanceWidth: 0, provablyEmpty: false };
       continue;
     }
@@ -673,8 +646,7 @@ export function parseType3Font(objText, objCache) {
     const streamText = new TextDecoder('latin1').decode(streamBytes);
     const parsed = parseGlyphStream(streamText);
     const pathData = parseGlyphStreamPaths(streamText);
-    // Zero path commands does not prove emptiness: bitmaps, Do, nested text, and shadings paint with none,
-    // so require every token to be a known non-marking operator.
+    // Bitmaps, Do, nested text, and shadings paint with zero path commands, so emptiness requires every operator to be non-marking.
     let provablyEmpty = true;
     for (const op of streamText.replace(/%[^\r\n]*/g, '').match(/[a-zA-Z*]+/g) || []) {
       if (!NON_MARKING_CHARPROC_OPS.has(op)) { provablyEmpty = false; break; }
@@ -695,7 +667,6 @@ export function parseType3Font(objText, objCache) {
     };
   }
 
-  // Used for Type3 glyphs that paint via Do.
   /** @type {{ [name: string]: number }} */
   const xobjectResources = {};
   const resIdx = objText.indexOf('/Resources');
@@ -736,7 +707,6 @@ export function parseType3Font(objText, objCache) {
  * @returns {GlyphInfo}
  */
 function parseGlyphStream(streamText) {
-  // Parse d1 operator for advance width: wx wy llx lly urx ury d1
   let advanceWidth = 0;
   let placeholderD1 = false;
   const d1Match = /([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+d1/.exec(streamText);
@@ -746,19 +716,13 @@ function parseGlyphStream(streamText) {
     const lly = Number(d1Match[4]);
     const urx = Number(d1Match[5]);
     const ury = Number(d1Match[6]);
-    // Some producers emit a placeholder d1 with bbox [-10 -10 10 10] for every glyph.
-    // Both d1's wx and the /Widths array carry no usable metrics in that case.
-    // Callers that need visual extents must use the path-derived bbox.
     placeholderD1 = Math.abs(llx + 10) < 1e-6 && Math.abs(lly + 10) < 1e-6
       && Math.abs(urx - 10) < 1e-6 && Math.abs(ury - 10) < 1e-6;
   } else {
-    // With no d1, the glyph proc used d0 (wx wy d0) instead.
-    // Like d1, it leads with the advance wx.
     const d0Match = /([\d.-]+)\s+([\d.-]+)\s+d0(?![\dA-Za-z])/.exec(streamText);
     if (d0Match) advanceWidth = Number(d0Match[1]);
   }
 
-  // Parse cm translation: q 1 0 0 1 tx ty cm
   let tx = 0;
   let ty = 0;
   const cmMatch = /q\s+[\d.-]+\s+[\d.-]+\s+[\d.-]+\s+[\d.-]+\s+([\d.-]+)\s+([\d.-]+)\s+cm/.exec(streamText);
@@ -772,7 +736,6 @@ function parseGlyphStream(streamText) {
   const drawingStart = cmMatch ? streamText.indexOf('cm', cmMatch.index) + 2 : 0;
   const drawingPart = streamText.substring(drawingStart);
 
-  // Split into tokens (numbers and operators)
   const tokens = drawingPart.match(/[+-]?(?:\d+\.?\d*|\.\d+)|[a-zA-Z]+/g);
   if (!tokens) return { bbox: null, advanceWidth };
 
@@ -782,9 +745,8 @@ function parseGlyphStream(streamText) {
     if (!Number.isNaN(num) && /^[+-]?(?:\d+\.?\d*|\.\d+)$/.test(tok)) {
       numStack.push(num);
     } else {
-      // It's an operator
       switch (tok) {
-        case 'm': // moveto: x y m
+        case 'm':
           if (numStack.length >= 2) {
             const y = numStack.pop();
             const x = numStack.pop();
@@ -792,7 +754,7 @@ function parseGlyphStream(streamText) {
           }
           numStack.length = 0;
           break;
-        case 'l': // lineto: x y l
+        case 'l':
           if (numStack.length >= 2) {
             const y = numStack.pop();
             const x = numStack.pop();
@@ -800,7 +762,7 @@ function parseGlyphStream(streamText) {
           }
           numStack.length = 0;
           break;
-        case 'c': // curveto: x1 y1 x2 y2 x3 y3 c
+        case 'c':
           if (numStack.length >= 6) {
             const y3 = numStack.pop();
             const x3 = numStack.pop();
@@ -812,7 +774,7 @@ function parseGlyphStream(streamText) {
           }
           numStack.length = 0;
           break;
-        case 're': // rectangle: x y w h re
+        case 're':
           if (numStack.length >= 4) {
             const h = numStack.pop();
             const w = numStack.pop();
@@ -823,7 +785,6 @@ function parseGlyphStream(streamText) {
           numStack.length = 0;
           break;
         default:
-          // Other operators (f, Q, i, q, etc.) - clear the stack
           numStack.length = 0;
           break;
       }
@@ -831,8 +792,7 @@ function parseGlyphStream(streamText) {
   }
 
   if (points.length === 0) {
-    // No vector path commands found — the glyph may use inline images (BI/ID/EI)
-    // or other non-path drawing. Use the d1 bbox if it specifies a non-zero area.
+    // Non-path glyphs (inline images, XObjects) produce no points, so fall back to a non-empty d1 bbox.
     if (d1Match) {
       const llx = Number(d1Match[3]);
       const lly = Number(d1Match[4]);
@@ -880,7 +840,7 @@ function parseGlyphStream(streamText) {
  * Parse fonts from a page's Resources dictionary.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
- * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect` for semantics.
+ * @param {Map<string, string>} [type3GlyphMappings] - Optional `pathHash -> unicode` overrides for unmapped Type3 glyphs.
  */
 export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   const fonts = new Map();
@@ -889,18 +849,14 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   const fontDictText = resourcesText && resolveDictValue(scopeDictKeys(resourcesText).keyText('Font'), 'Font', objCache);
   if (!fontDictText) return fonts;
 
-  // Extract each font entry — indirect references (/F7 N 0 R) and inline dicts (/F7 << ... >>)
-  const fontEntryPairs = []; // [fontTag, fontObjText, fontObjNum|null]
+  const fontEntryPairs = [];
   const fontEntryRegex = /\/([^\s/]+)\s+(\d+)\s+\d+\s+R/g;
   for (const match of fontDictText.matchAll(fontEntryRegex)) {
     const fontObjNum = Number(match[2]);
     const fontObjText = objCache.getObjectText(fontObjNum);
-    // PDF names can hex-escape chars as #XX (NewFont#3A0 means NewFont:0).
-    // Decode here and at the Tf lookup so both sides match in one canonical form.
     const fontTag = decodePdfName(match[1]);
     if (fontObjText) fontEntryPairs.push([fontTag, fontObjText, fontObjNum]);
   }
-  // Inline font dicts: scan fontDictText at top level (depth 1) for /name << ... >>
   {
     let depth = 0;
     for (let i = 0; i < fontDictText.length; i++) {
@@ -928,10 +884,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
   }
-  // Type3 glyph CharProcs delegate to inner fonts declared in the Type3 font's
-  // own /Resources /Font (each CharProc runs `BT /Inner Tf (c) Tj ET`),
-  // not in the page /Font dict. Pull those inner fonts into the page font set so they
-  // are parsed and CSS-registered for the nested-text render path to resolve.
+  // Include inner fonts from each Type3 font's own /Resources /Font so nested BT/ET text in CharProcs can resolve and render them.
   const type3FontObjTexts = fontEntryPairs
     .filter(([, obj]) => /\/Subtype\s*\/Type3/.test(obj))
     .map(([, obj]) => obj);
@@ -953,10 +906,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
   }
   for (const [fontTag, fontObj, fontObjNum] of fontEntryPairs) {
-    // Cache hit: reuse the previously-parsed FontInfo for this font object.
-    // See ObjectCache.fontCache — shared across all containers in the document
-    // so that documents referencing the same font from many Form XObjects
-    // pay the parse cost only once.
     if (fontObjNum !== null) {
       const cachedFont = objCache.fontCache.get(fontObjNum);
       if (cachedFont !== undefined) {
@@ -964,9 +913,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         continue;
       }
     }
-    // Extract base font name (strip subset prefix like AAAAAA+)
-    // Type3 fonts may use /Name instead of /BaseFont
-    // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
     let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObj);
     let baseNameHexMatch = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f\s]+)>/.exec(fontObj);
     if (!baseNameMatch && !baseNameHexMatch) {
@@ -983,7 +929,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const hex = baseNameHexMatch[1].replace(/\s+/g, '');
       const bytes = [];
       for (let hi = 0; hi < hex.length; hi += 2) bytes.push(parseInt(hex.substring(hi, hi + 2), 16));
-      // Check for UTF-16BE BOM (feff)
       if (bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF) {
         let decoded = '';
         for (let bi = 2; bi < bytes.length - 1; bi += 2) {
@@ -997,16 +942,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     } else {
       baseNameRaw = nameMatch ? nameMatch[1] : 'Unknown';
     }
-    // Decode PDF hex-encoded name characters (#XX → char)
     let baseName = baseNameRaw.replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 
-    // Detect bold/italic/smallCaps from name (augmented by font descriptor below)
     let bold = /Bold|Black/i.test(baseName);
     let italic = /italic/i.test(baseName) || /-\w*ital/i.test(baseName) || /-it$/i.test(baseName) || /oblique/i.test(baseName);
     const smallCaps = /(small\W?cap)|(sc(?=[-+]|$))|(caps(?=[-+]|$))/i.test(baseName);
     let familyName = baseName.replace(/-.+/, '').replace(/,.*/, '');
-    // Serif flag from font descriptor /Flags bit 2 (PDF spec §9.8.2).
-    // Used as last-resort fallback when CSS font name matching fails.
     let serifFlag = false;
     let symbolicFlag = false;
     let italicAngleDeg = null;
@@ -1014,7 +955,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     let xHeightPdf = null;
     let stemV = null;
 
-    // Parse ToUnicode CMap — can be an indirect reference (N 0 R) or a name (/Identity-H)
     let toUnicode = new ToUnicodeMap();
     let toUnicodeIsIdentity = false;
     const touRefMatch = /\/ToUnicode\s+(\d+)\s+\d+\s+R/.exec(fontObj);
@@ -1026,12 +966,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         toUnicode = parsedToUnicodeCMap(cmapText, objCache).clone();
       }
     } else if (touNameMatch) {
-      // /ToUnicode /Identity-H means charCodes are Unicode codepoints directly.
       toUnicodeIsIdentity = true;
     }
 
-    // Parse encoding CMap for Type0 fonts with custom CMap encoding (not Identity-H).
-    // The encoding CMap maps charCodes → CIDs; needed for width lookups and glyph rendering.
     let charCodeToCID = null;
     /** @type {Array<{bytes: number, low: number, high: number}>|null} */
     let codespaceRanges = null;
@@ -1048,11 +985,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Adobe predefined CJK CMaps mix 1-byte ASCII codes with 2-byte CJK codes.
-    // Without a codespace the renderer reads every string as 2-byte and silently drops the 1-byte ones, so ASCII text like leading spaces disappears.
     let predefinedCJKCMap = false;
 
-    // The predefined-CMap checks below regex for a literal /Encoding name, so an indirect ref is materialized inline here.
     let fontObjEnc = fontObj;
     {
       const encRefM = /\/Encoding\s+(\d+)\s+\d+\s+R\b/.exec(fontObj);
@@ -1066,7 +1000,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const rksjMatch = /\/Encoding\s*\/([\w-]*RKSJ[\w-]*)/.exec(fontObjEnc);
       if (rksjMatch) {
         predefinedCJKCMap = true;
-        // Codespace ranges fixed by Adobe's RKSJ CMap definitions.
         codespaceRanges = [
           { bytes: 1, low: 0x00, high: 0x80 },
           { bytes: 1, low: 0xA0, high: 0xDF },
@@ -1075,7 +1008,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           { bytes: 2, low: 0xE040, high: 0xFCFC },
         ];
         // Adding ASCII charCodes 0x20-0x7E here would make rebuildFontFromGlyphs treat them as non-PUA and skip its embedded-cmap fallback.
-        // ASCII extraction still works because the renderer falls back to String.fromCharCode(charCode).
         try {
           const decoder = new TextDecoder('shift_jis');
           for (let hi = 0x81; hi <= 0xFC; hi++) {
@@ -1089,13 +1021,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           }
-        } catch (_e) {
-          // TextDecoder('shift_jis') is unavailable in this environment, so text falls back to raw charCodes.
-        }
+        } catch (_e) { /* encoding unavailable */ }
       }
     }
 
-    // GB-EUC-H uses GB2312/EUC-CN encoding which is a subset of GBK, so the GBK decoder handles both.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(fontObj)) {
       const gbkMatch = /\/Encoding\s*\/([\w-]*(?:GBK|GB-EUC|GBpc-EUC)[\w-]*)/.exec(fontObjEnc);
       if (gbkMatch) {
@@ -1117,9 +1046,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           }
-        } catch (_e) {
-          // TextDecoder('gbk') is unavailable in this environment, so text falls back to raw charCodes.
-        }
+        } catch (_e) { /* encoding unavailable */ }
       }
     }
 
@@ -1143,11 +1070,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           }
-        } catch (_e) {
-          // TextDecoder('big5') is unavailable in this environment, so text falls back to raw charCodes.
-        }
-        // ETen-B5-H sends single-byte codes 0x20-0x7E to the Adobe-CNS1 half-width Latin block, where space is CID 13648.
-        // Without this mapping the renderer uses the byte itself as the CID and finds no glyph.
+        } catch (_e) { /* encoding unavailable */ }
+        // ETen-B5-H maps single-byte ASCII 0x20-0x7E to the Adobe-CNS1 half-width Latin block starting at CID 13648.
         if (!charCodeToCID) charCodeToCID = new Map();
         for (let code = 0x20; code <= 0x7E; code++) {
           if (!charCodeToCID.has(code)) charCodeToCID.set(code, 13616 + code);
@@ -1156,11 +1080,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // KSCms-UHC is a superset of EUC-KR, and the WHATWG euc-kr decoder covers both.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
       const kscMatch = /\/Encoding\s*\/(KSC[\w-]*|UniKS[\w-]*)/.exec(fontObjEnc);
-      // UniKS-UCS2 and UniKS-UTF16 charCodes are already Unicode codepoints, so the euc-kr decoder must not touch them.
-      // The predefined-Unicode-CMap block below handles them.
       if (kscMatch && !/UCS2|UTF16/.test(kscMatch[1])) {
         predefinedCJKCMap = true;
         codespaceRanges = [
@@ -1179,9 +1100,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           }
-        } catch (_e) {
-          // TextDecoder('euc-kr') is unavailable in this environment, so text falls back to raw charCodes.
-        }
+        } catch (_e) { /* encoding unavailable */ }
       }
     }
 
@@ -1207,37 +1126,31 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       : (/\/Encoding\s*\/WinAnsiEncoding/.test(fontObj) || /\/BaseEncoding\s*\/WinAnsiEncoding/.test(encodingText) ? win1252Chars : null);
     const descFlags = resolveIntValue(String(descriptorText), 'Flags', objCache, Number.NaN);
     const isSymbolicByFlag = Number.isNaN(descFlags) ? false : (descFlags & 4) !== 0;
-    // PDF spec §9.6.6.4: a nonsymbolic font's named /Encoding is authoritative, while a symbolic font's /Encoding is ignored.
-    // Quartz re-encodes Symbol and Wingdings subsets to MacRoman and clears the Symbolic flag, so the built-in charts below would map every charCode to the wrong symbol.
+    // Per PDF spec 9.6.6.4, a named /Encoding is authoritative when the Symbolic flag is clear.
+    // Quartz re-encodes Symbol and Wingdings subsets to MacRoman and clears Symbolic, so the built-in symbol tables below must not override it.
     const namedEncodingAuthoritative = !!baseChars && !isSymbolicByFlag;
 
     // Producers often embed a broken ToUnicode CMap that runs Wingdings charCodes through Latin-1 or MacRoman instead of mapping them to the symbol characters.
     if (!namedEncodingAuthoritative && /^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
       for (const [cid, ch] of toUnicode) {
         const cp = ch.codePointAt(0);
-        // Case B fires only when the mapped codepoint is the charCode's own rendering under Latin-1, WinAnsi, or MacRoman, the fingerprint of a byte pushed through a text encoding.
-        // Subset fonts re-index charCodes and still map them correctly, so an unguarded case B would overwrite those valid entries.
+        // Subset fonts re-index charCodes to 1..N while mapping them to valid >0xFF symbols, so only remap `cid` when `ch` looks decoded as text.
         const wrongEncodingArtifact = ch === String.fromCharCode(cid)
           || (cid >= 32 && cid <= 255 && (ch === win1252Chars[cid - 32] || ch === macRomanChars[cid - 32]));
         if (cp !== undefined && cp >= 0xF000 && cp <= 0xF0FF && wingdingsToUnicode[cp & 0xFF] !== undefined) {
-          // Word writes the Microsoft symbol-cmap codepoint, whose low byte is the Wingdings position.
           toUnicode.set(cid, String.fromCodePoint(wingdingsToUnicode[cp & 0xFF]));
         } else if (cp !== undefined && cp <= 0xFF && wingdingsToUnicode[cp] !== undefined) {
-          // Case A: codepoint is a Latin-1 char that doubles as a Wingdings position
           toUnicode.set(cid, String.fromCodePoint(wingdingsToUnicode[cp]));
         } else if (wrongEncodingArtifact && wingdingsToUnicode[cid] !== undefined) {
-          // Case B: charCode is the Wingdings position, codepoint is a wrong encoding
           toUnicode.set(cid, String.fromCodePoint(wingdingsToUnicode[cid]));
         }
       }
-      // Fill in any charCodes missing from toUnicode that exist in the Wingdings table
       for (const [ccStr, unicode] of Object.entries(wingdingsToUnicode)) {
         const cc = Number(ccStr);
         if (!toUnicode.has(cc)) toUnicode.set(cc, String.fromCodePoint(unicode));
       }
     }
 
-    // Symbol font built-in encoding.
     if (!namedEncodingAuthoritative && /^Symbol(?:[-,]\w+|[A-Za-z\d]*)$/i.test(baseName)) {
       const broken = toUnicode.size > 0 && toUnicode.get(65) === 'A';
       if (broken || toUnicode.size === 0) {
@@ -1245,8 +1158,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           toUnicode.set(Number(ccStr), String.fromCodePoint(unicode));
         }
       } else {
-        // Word's Type0/Identity-H Symbol subsets emit ToUnicode entries that map each glyph to the Microsoft symbol-cmap PUA codepoint (0xF000 + symbol code) instead of real Unicode.
-        // The low byte is the Adobe Symbol position, so decode it through symbolToUnicode.
         for (const [cid, ch] of toUnicode) {
           const cp = ch.codePointAt(0);
           if (cp !== undefined && cp >= 0xF000 && cp <= 0xF0FF && symbolToUnicode[cp & 0xFF] !== undefined) {
@@ -1258,8 +1169,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
 
     /** @type {{ [charCode: number]: string }|null} */
     let differences = null;
-    // charCode to Unicode from the PDF's /Encoding, which is the codepoint the renderer draws.
-    // toUnicode is the parallel map for text extraction.
+    // charCode -> Unicode from /Encoding, which selects the rendered glyph when /ToUnicode differs.
     const encodingUnicode = new Map();
     // Kept separate from toUnicode because the two legitimately disagree, e.g. TeX charCode 0x27 draws 'quoteright' while ToUnicode reports U+0027.
     // convertType1ToOTFNew needs the encoding's glyph, not the extracted char.
@@ -1408,7 +1318,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               const zdCp = dingbatsGlyphMap[glyphName];
               if (zdCp !== undefined) unicodeStr = String.fromCodePoint(zdCp);
             }
-            // TeX Type3 fonts name glyphs like "a192", where the number is the Unicode codepoint.
             if (!unicodeStr) {
               const texMatch = /^a(\d+)$/.exec(glyphName);
               if (texMatch) {
@@ -1416,7 +1325,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 if (cp > 0 && cp <= 0xFFFF) unicodeStr = String.fromCodePoint(cp);
               }
             }
-            // A slot-index name carries no character, so it must not fill a code the ToUnicode CMap lacks either.
+            // Clear the decimal codepoint `aglLookup` assigned to `/C<n>` when `/C<n>` is just a slot index.
             if (cNamesAreSlotIndices && /^C[0-9a-fA-F]{1,5}$/.test(glyphName)) {
               unicodeStr = null;
             } else {
@@ -1483,7 +1392,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 && existingUnicode !== undefined
                 && existingUnicode !== unicodeStr;
 
-              // Broken ToUnicode entries commonly map into the private-use area, so a /Differences glyph name that resolves to real Unicode is the better answer.
               const existingCp = existingUnicode ? existingUnicode.codePointAt(0) : undefined;
               const resolvedCp = unicodeStr.codePointAt(0);
               const existingIsPUA = existingCp !== undefined
@@ -1500,8 +1408,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 && existingIsPUA
                 && !resolvedIsPUA;
 
-              // A C-name never overrides an authoritative ToUnicode entry, it only fills a code the CMap lacks.
-              // The Cnnnn conventions are producer-private, and in practice a name that disagrees with the CMap is the one that is wrong.
               if (!toUnicode.has(charCode)
                 || shouldOverrideFallbackToUnicode
                 || shouldOverrideWithGHex
@@ -1538,7 +1444,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Some ToUnicode CMaps map a charcode to a control character, so a printable /Encoding mapping at the same charcode wins.
     if (toUnicode.size > 0 && encodingUnicode.size > 0) {
       for (const [cc, tu] of toUnicode) {
         if (tu.length !== 1) continue;
@@ -1552,9 +1457,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // A Wingdings font's declared MacRoman/WinAnsi encoding resolves through AGL to meaningless Latin characters, so wingdingsToUnicode must correct encodingUnicode as well.
-    // The second branch needs no wrong-encoding-artifact guard, unlike the toUnicode block above.
-    // encodingUnicode is keyed by content-stream codes from a declared encoding, so the code is the glyph position by construction.
+    // Symbolic Wingdings fonts often still declare /WinAnsiEncoding or /MacRomanEncoding, filling encodingUnicode with Latin characters instead of Wingdings symbols.
     if (!namedEncodingAuthoritative && /^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
       for (const [cid, ch] of encodingUnicode) {
         const cp = ch.codePointAt(0);
@@ -1576,7 +1479,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     let glyphVisualWidths = null;
     let ascent = 800;
     let descent = -200;
-    // Cambria Math's genuine 3117 ascent is the largest real value in a 5,400-document corpus scan, so tightening this toward the usual 1000-unit em square would reject real metrics.
+    // Cambria Math's genuine 3117 ascent is the largest real value seen across 5,400 real PDFs, so tightening this toward the usual 1000-unit em square would reject real metrics.
     const DESCRIPTOR_METRIC_MAX = 5000;
 
     const firstChar = resolveIntValue(fontObj, 'FirstChar', objCache);
@@ -1597,15 +1500,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // If no /Widths array was found, fall back to built-in standard-font metrics.
-    // Skip Type0 fonts: their advances are keyed by CID via the /W array and /DW fallback, not by character code,
-    // so applyStandardFontWidths filling codes 32-255 would be read as CIDs and override the correct /W and /DW values.
+    // Type0 fonts populate `widths` by CID from `/W` and `/DW` below, so filling WinAnsi codes 32-255 here would corrupt those CID widths.
     const isType0Font = /\/Subtype\s*\/Type0/.test(fontObj);
     if (widths.size === 0 && !isType0Font) {
       const avgWidth = applyStandardFontWidths(baseName, widths);
       if (avgWidth !== null) defaultWidth = avgWidth;
 
-      // Apply MacRomanEncoding to remap each charCode's width to that of its MacRoman glyph.
       const isMacRoman = /\/Encoding\s*\/MacRomanEncoding/.test(fontObj);
       if (isMacRoman && widths.size > 0) {
         const unicodeToWidth = new Map();
@@ -1626,7 +1526,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      // Apply /Differences to remap each charCode's width to that of its mapped glyph.
       if (differences && widths.size > 0) {
         const unicodeToWidth = new Map();
         for (let code = 32; code <= 255; code++) {
@@ -1646,9 +1545,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      // Override each fi/fl ligature code's width with its AFM ligature width.
-      // applyStandardFontWidths can only key the WinAnsi glyph set, which omits the fi/fl ligatures,
-      // so a code resolving to one kept the width of the WinAnsi glyph that shares its code.
+      // WinAnsi omits the fi/fl ligatures, so the Win1252-keyed width tables above have no entry for codes mapped to them.
       if (avgWidth !== null) {
         for (const [code, glyphName] of charCodeToGlyphName) {
           const w = getStandardLigatureWidth(baseName, glyphName);
@@ -1674,16 +1571,11 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     /** @type {{ fontFile: Uint8Array|null, cidToGidMap: Uint8Array|string|null, unicodeCMap?: boolean }|null} */
     let type0Info = null;
     let type0ProgramIsTrueType = false;
-    // /DescendantFonts can be:
-    //   1. Array with indirect ref:  /DescendantFonts [ 15 0 R ]
-    //   2. Indirect ref to array:    /DescendantFonts 14 0 R
-    //   3. Array with inline dict:   /DescendantFonts [<< ... >>]
     const descInlineMatch = /\/DescendantFonts\s*\[\s*(\d+)\s+\d+\s+R/.exec(fontObj);
     const descIndirectMatch = !descInlineMatch && /\/DescendantFonts\s+(\d+)\s+\d+\s+R/.exec(fontObj);
     let cidFontObjNum = descInlineMatch ? Number(descInlineMatch[1]) : null;
     let cidFontText = null;
     if (!cidFontObjNum && descIndirectMatch) {
-      // Resolve the indirect reference to get the array, then extract the CIDFont ref from it
       const arrayText = objCache.getObjectText(Number(descIndirectMatch[1]));
       if (arrayText) {
         const innerRef = /(\d+)\s+\d+\s+R/.exec(arrayText);
@@ -1691,7 +1583,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
     if (!cidFontObjNum && !descIndirectMatch) {
-      // Check for inline CIDFont dictionary: /DescendantFonts[<< ... >>]
       const descStart = fontObj.indexOf('/DescendantFonts');
       if (descStart !== -1) {
         const afterDesc = fontObj.substring(descStart + 16);
@@ -1750,15 +1641,11 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         parseCIDWidths(`/W [${wArrayContent}]`, widths);
       }
 
-      // Parse FontDescriptor for ascent/descent and Type0 font file
-      // FontDescriptor can be inline (<< ... >>) or an indirect reference (N 0 R)
-      // In some PDFs, DescendantFonts points directly to a FontDescriptor (no CIDFont layer)
       const fdRefMatch = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
       let fdText = null;
       if (fdRefMatch) {
         fdText = objCache.getObjectText(Number(fdRefMatch[1]));
       } else if (/\/Type\s*\/FontDescriptor/.test(cidFontText)) {
-        // DescendantFonts points directly to a FontDescriptor — use it as-is
         fdText = cidFontText;
       } else {
         const fdInlineIdx = cidFontText.indexOf('/FontDescriptor');
@@ -1772,13 +1659,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       if (fdText) {
         const ascentVal = resolveNumValue(fdText, 'Ascent', objCache);
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
-        // A descriptor declaring 0 states no metric at all, and taking it literally collapses every box built from it onto the baseline.
         if (ascentVal !== 0 && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
-        // A descent is a depth below the baseline and the spec writes it negative; Skia's PDF writer and Aspose write the
-        // magnitude, which taken literally ends every box above the baseline.
+        // Skia and Aspose write /Descent as a positive magnitude instead of negative, so negate |descentVal|.
         if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = -Math.abs(descentVal);
 
-        // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);
         if (!bold) {
           const weight = resolveIntValue(fdText, 'FontWeight', objCache);
@@ -1786,8 +1670,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
         if (!italic) {
           const angle = resolveNumValue(fdText, 'ItalicAngle', objCache);
-          // ItalicAngle is degrees CCW from vertical; italics are typically -10..-15.
-          // Reject |angle| >= 45 — values like 180 are producer garbage.
+          // Some producers write bogus angles like 180 on upright fonts.
           if ((Math.abs(angle) > 0 && Math.abs(angle) < 45) || (fontFlags & 64)) italic = true;
         }
         if (fontFlags & 2) serifFlag = true;
@@ -1836,7 +1719,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           type0ProgramIsTrueType = true;
         }
 
-        // Extract FontFile3 for CIDFontType0 fonts (CFF-based composite fonts)
         if (!type0Info) {
           const ff3RefMatch = /\/FontFile3\s+(\d+)\s+\d+\s+R/.exec(fdText);
           if (ff3RefMatch) {
@@ -1849,16 +1731,13 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // For Adobe predefined CJK CMaps (GB-EUC-H, 90pv-RKSJ-H, etc.), set the standard ROS half-width Latin width (500) over the ASCII range.
-    // The CIDFont's /W omits these glyphs (standardized in the ROS), so otherwise they hit /DW (~1000) and mixed CJK/Latin indentation comes out ~2x too wide.
-    // Keys are charCodes because the renderer treats charCode as CID for width lookup when no charCodeToCID map exists.
+    // Predefined CJK CMaps omit half-width ASCII from /W, which would otherwise fall back to the full-width /DW (1000).
     if (predefinedCJKCMap) {
       for (let cc = 0x20; cc <= 0x7E; cc++) {
         if (!widths.has(cc)) widths.set(cc, 500);
       }
     }
 
-    // For Type0 CFF fonts, use CFF charset to enrich toUnicode or build validCIDs
     let validCIDs = null;
     let cffSummary = null;
     if (type0Info && type0Info.fontFile) {
@@ -1866,13 +1745,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       cffSummary = summary;
       if (summary.ok) {
         if (summary.isCID) {
-          // CID CFF: store valid CIDs for filtering in showHexString.
           // CID 0 (.notdef) is implicit and omitted from the charset, so add it back.
           validCIDs = new Set([0, ...(summary.cidToGID?.keys() ?? [])]);
         } else if (!summary.predefinedCharset) {
-          // Non-CID CFF with an explicit charset: populate toUnicode from glyph names + AGL.
-          // Predefined ISOAdobe/Expert charsets are skipped,
-          // as the prior parseCFFCharset returned null for them.
           for (const [gid, unicode] of cffCharsetNamesToUnicode(summary.charsetNames)) {
             if (!toUnicode.has(gid)) toUnicode.set(gid, unicode);
           }
@@ -1880,8 +1755,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // /ToUnicode /Identity-H as a name: charCodes are Unicode codepoints directly.
-    // Build toUnicode from charCodeToCID map: each charCode key is the Unicode value.
     if (toUnicodeIsIdentity && toUnicode.size === 0 && charCodeToCID) {
       for (const [charCode, cid] of charCodeToCID) {
         if (charCode > 0 && charCode <= 0x10FFFF) {
@@ -1890,19 +1763,13 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Identity-H CID font with no ToUnicode CMap (or only a partial one): build toUnicode from CIDSystemInfo.
-    // Adobe-Identity CIDs are codepoints directly. Other standard Adobe orderings (Japan1, GB1, CNS1, Korea1)
-    // use the published CID->Unicode tables, which also backfill gaps that a partial CMap left behind.
     if (cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObjEnc)) {
-      // Parse CIDSystemInfo — may be inline or indirect reference
       let cidSysText = cidFontText;
       const cidSysRef = /\/CIDSystemInfo\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
       if (cidSysRef) {
         const sysObj = objCache.getObjectText(Number(cidSysRef[1]));
         if (sysObj) cidSysText = sysObj;
       }
-      // /Registry and /Ordering are string objects that producers sometimes emit as indirect references.
-      // Resolve both the inline (literal) and "N 0 R" forms so the Adobe-Identity ROS check below is not silently defeated.
       const readCidString = (/** @type {string} */ key) => {
         const refM = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(cidSysText);
         const src = refM ? (objCache.getObjectText(Number(refM[1])) || '') : cidSysText;
@@ -1912,9 +1779,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       let registry = readCidString('Registry');
       let ordering = readCidString('Ordering');
 
-      // In encrypted PDFs, string values are encrypted per-object. getObjectText()
-      // returns raw (encrypted) text, so Registry/Ordering may be garbled.
-      // Re-extract from raw bytes and decrypt when needed.
       if (objCache.encryptionKey && registry !== 'Adobe') {
         const sysObjNum = cidSysRef ? Number(cidSysRef[1]) : cidFontObjNum;
         if (sysObjNum) {
@@ -1929,11 +1793,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const isCIDType2 = type0ProgramIsTrueType || (cidFontText && /\/Subtype\s*\/CIDFontType2/.test(cidFontText));
         let gidMap = null;
         if (isCIDType2) {
-          // Try the CIDFont's own embedded file first
           if (type0Info && type0Info.fontFile) {
             gidMap = buildGidToUnicodeFromTrueType(type0Info.fontFile);
           }
-          // If no embedded file, search sibling fonts with the same BaseFont for an embedded FontFile2
           if (!gidMap) {
             const strippedBase = baseName.replace(/^[A-Z]{6}\+/, '');
             for (const [sibTag, sibObj] of fontEntryPairs) {
@@ -1947,7 +1809,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               if (!sibBaseMatch) continue;
               const sibBase = sibBaseMatch[1].replace(/^[A-Z]{6}\+/, '');
               if (sibBase !== strippedBase) continue;
-              // Found a sibling with the same BaseFont. Read its embedded TrueType program.
               const sibFdRef = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(sibObj);
               if (!sibFdRef) continue;
               const sibFdText = objCache.getObjectText(Number(sibFdRef[1]));
@@ -1980,9 +1841,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             if (cid > 0 && cid <= 0xFFFF) toUnicode.set(cid, String.fromCodePoint(cid));
           }
         } else if (isCIDType2 && !(type0Info && type0Info.fontFile)) {
-          // No glyph outlines are available (non-embedded, no same-BaseFont sibling).
-          // Here CID equals GID, and most TrueType fonts place their low glyphs
-          // in the Macintosh standard glyph order, so map CID -> standardNames[CID] -> Unicode.
+          // Most TrueType fonts keep low GIDs in Macintosh standard glyph order, giving a best-effort fallback when no program is embedded.
           for (const cid of widths.keys()) {
             if (!isOverridable(cid)) continue;
             const glyphName = standardNames[cid];
@@ -1992,9 +1851,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           }
         }
 
-        // Override positive-advance CIDs whose ToUnicode is a non-text control
-        // char when the embedded TT confirms the glyph is structurally blank
-        // (zero-byte glyph data).
         if (isCIDType2 && type0Info?.fontFile) {
           const candidates = [];
           for (const [cid, existing] of toUnicode) {
@@ -2027,9 +1883,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             const cp = existing.codePointAt(0);
             return cp < 0x20 && cp !== 0x09 && cp !== 0x0A && cp !== 0x0D;
           };
-          // Apply NFKC only to Kangxi radicals and CJK Compatibility Ideographs, which decompose to the CJK Unified equivalents
-          // that substitute fonts actually have glyphs for. Broader NFKC would also flatten Halfwidth and Fullwidth Forms
-          // (U+FF00-U+FFEF) to ASCII, which is wrong where the fullwidth form is the intended glyph.
+          // Normalize Kangxi radicals (U+2F00-U+2FD5) and CJK Compatibility Ideographs (U+F900-U+FAD9) via NFKC to CJK Unified codepoints present in substitute fonts.
+          // Unconditional NFKC would also collapse Fullwidth Forms (U+FF00-U+FFEF) to halfwidth ASCII.
           /** @param {number} cp */
           const isCJKVariant = (cp) => (cp >= 0x2F00 && cp <= 0x2FD5) || (cp >= 0xF900 && cp <= 0xFAD9);
           if (cidSet) {
@@ -2042,9 +1897,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           } else {
-            // Non-embedded font: no charset or embedded data to determine which CIDs are used.
-            // Populate all entries from the published CID→Unicode table so any CID from the
-            // content stream can be mapped correctly.
             for (let cid = 1; cid < cidMap.length; cid++) {
               if (!isOverridable(cid)) continue;
               if (cidMap[cid] !== 0) {
@@ -2058,19 +1910,16 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Also check for non-composite fonts (Type1, TrueType) FontDescriptor
     let type3Info = null;
     let type1Info = null;
     let detectedMacRomanCmap = false;
     const isType3 = /\/Subtype\s*\/Type3/.test(fontObj);
     if (!cidFontObjNum && !cidFontText) {
-      // FontDescriptor may be an indirect reference (N 0 R) or inline (<< ... >>)
       const fdRefMatchDirect = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(fontObj);
       let fdText = null;
       if (fdRefMatchDirect) {
         fdText = objCache.getObjectText(Number(fdRefMatchDirect[1]));
       } else {
-        // Inline FontDescriptor: /FontDescriptor << ... >>
         const fdInlineStart = fontObj.indexOf('/FontDescriptor');
         if (fdInlineStart !== -1) {
           const afterFd = fontObj.substring(fdInlineStart + 15).trim();
@@ -2083,11 +1932,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const ascentVal = resolveNumValue(fdText, 'Ascent', objCache);
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
         if (ascentVal !== 0 && Math.abs(ascentVal) <= DESCRIPTOR_METRIC_MAX) ascent = ascentVal;
-        // A descent is a depth below the baseline and the spec writes it negative; Skia's PDF writer and Aspose write the
-        // magnitude, which taken literally ends every box above the baseline.
+        // Skia and Aspose write /Descent as a positive magnitude instead of negative, so negate |descentVal|.
         if (descentVal !== 0 && Math.abs(descentVal) <= DESCRIPTOR_METRIC_MAX) descent = -Math.abs(descentVal);
 
-        // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);
         if (!bold) {
           const weight = resolveIntValue(fdText, 'FontWeight', objCache);
@@ -2108,15 +1955,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const descStemV = resolveNumValue(fdText, 'StemV', objCache);
         if (descStemV > 0) stemV = descStemV;
 
-        // Use MissingWidth from FontDescriptor as defaultWidth for charCodes
-        // not covered by the /Widths array (PDF spec §9.6.2, default 0).
+        // Per PDF spec 9.6.2, a FontDescriptor's /MissingWidth defaults to 0 for codes outside /Widths, overriding the /Widths average above.
         if (widths.size > 0) {
           const mw = resolveNumValue(fdText, 'MissingWidth', objCache);
           defaultWidth = mw || 0;
         }
 
-        // Extract embedded font file for Type1/TrueType rendering
-        // /FontFile = Type1 font program, /FontFile2 = TrueType, /FontFile3 = CFF/OpenType
         if (!isType3) {
           const ff1Match = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(fdText);
           const ff2Match = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
@@ -2126,8 +1970,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             const fontFile = objCache.getStreamBytes(Number(ffMatch[1]));
             if (fontFile) type1Info = { fontFile };
 
-            // Backfill zero/missing /Widths from the embedded CFF: the renderer skips zero-width glyphs
-            // (parseDrawOps gates drawing on a nonzero width), so a subsetter's degenerate /Widths drops real glyphs.
+            // Some subsetters emit zero or missing /Widths for drawn CFF glyphs, which parseDrawOps skips unless backfilled from the charstrings.
             const widthsSparse = [...widths.values()].some((w) => !w)
               || (differences && Object.keys(differences).some((k) => widths.get(Number(k)) === undefined));
             if (fontFile && fontFile[0] === 1 && fontFile[1] === 0 && widthsSparse) {
@@ -2169,8 +2012,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             }
           }
 
-          // TrueType fonts with no /Encoding and empty ToUnicode.
-          // Apply various heuristics to detect if the embedded font file contains a Mac Roman cmap and populate ToUnicode accordingly.
           if (ff2Match && type1Info?.fontFile && toUnicode.size === 0 && encodingUnicode.size === 0) {
             const fb = type1Info.fontFile;
             if (fb.length >= 12) {
@@ -2179,7 +2020,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               let hasPlatform3 = false;
               for (let ti = 0; ti < nT && 12 + (ti + 1) * 16 <= fb.length; ti++) {
                 const te = 12 + ti * 16;
-                if (fb[te] === 0x63 && fb[te + 1] === 0x6D && fb[te + 2] === 0x61 && fb[te + 3] === 0x70) { // "cmap"
+                if (fb[te] === 0x63 && fb[te + 1] === 0x6D && fb[te + 2] === 0x61 && fb[te + 3] === 0x70) {
                   const cmapOff = (fb[te + 8] << 24) | (fb[te + 9] << 16) | (fb[te + 10] << 8) | fb[te + 11];
                   if (cmapOff + 4 <= fb.length) {
                     const numSub = (fb[cmapOff + 2] << 8) | fb[cmapOff + 3];
@@ -2197,8 +2038,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
               if (hasMacRomanCmap && !hasPlatform3) {
                 detectedMacRomanCmap = true;
-                // Only set toUnicode for charCodes 0x80-0xFF where Mac-Roman
-                // and Latin-1 produce different Unicode codepoints.
                 for (let code = 0x80; code <= 0xFF; code++) {
                   const macChar = macRomanChars[code - 32];
                   if (macChar && macChar !== String.fromCharCode(code)) {
@@ -2230,22 +2069,19 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      // Type1/TrueType fonts with no embedded program still render via CSS font-family fallback.
-      // Set a null-fontFile type1Info anyway, or showType1Literal skips their text entirely.
+      // showType1Literal requires a non-null `type1` object even when a Type1 or TrueType font has no embedded program and renders via CSS fallback.
       if (!type1Info && !isType3 && (/\/Subtype\s*\/Type1/.test(fontObj) || /\/Subtype\s*\/TrueType/.test(fontObj))) {
         type1Info = { fontFile: null };
       }
 
-      // TeX Computer Modern TEXT fonts (CMR, CMMI, CMBX, etc.) use OT1 encoding
-      // where charCodes < 0x20 map to ligatures. CMSY (symbol) and CMEX (extension)
-      // fonts use different encodings and must NOT get OT1 ligature mappings.
+      // Exclude CMSY (math symbols) and CMEX (math extensions), which do not use TeX's OT1 ligature slots 11-15.
       if (/^(cm|CM)/i.test(baseName) && !/CMSY|CMEX/i.test(baseName) && !isType3) {
         const texOT1Ligatures = [
-          [11, '\uFB00'], // ff
-          [12, '\uFB01'], // fi
-          [13, '\uFB02'], // fl
-          [14, '\uFB03'], // ffi
-          [15, '\uFB04'], // ffl
+          [11, '\uFB00'],
+          [12, '\uFB01'],
+          [13, '\uFB02'],
+          [14, '\uFB03'],
+          [15, '\uFB04'],
         ];
         for (const [code, ch] of texOT1Ligatures) {
           if (!toUnicode.has(code)) {
@@ -2299,10 +2135,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               }
             }
           }
-        } catch (_e) { /* CFF parsing failed — skip */ }
+        } catch (_e) { /* ignore malformed CFF */ }
       }
 
-      // For Type3 fonts, extract actual glyph advance widths from CharProcs streams
       if (isType3) {
         type3Info = parseType3Font(fontObj, objCache);
         if (type3Info) {
@@ -2348,7 +2183,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // In a predefined Unicode CMap the 2-byte charCode is itself the Unicode codepoint, for BMP characters.
     if (/\/DescendantFonts/.test(fontObj)) {
       const utf16Match = /\/Encoding\s*\/([\w-]*(?:UTF16|UCS2)[\w-]*)/.exec(fontObjEnc);
       if (utf16Match) {
@@ -2369,7 +2203,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
 
     const verticalMode = /\/Encoding\s*\/[\w-]+-V\b/.test(fontObjEnc);
 
-    // Some broken ToUnicode CMaps map ASCII letter charCodes to the same letter with the wrong case (e.g. charCode 69 -> "e" instead of "E").
     let preferEncodingCase = false;
     if (!cidFontText && !type3Info && toUnicode.size > 0 && encodingUnicode.size > 0) {
       let caseConflictCount = 0;
@@ -2391,7 +2224,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       preferEncodingCase = caseConflictCount >= 2 && directionConsistent;
     }
 
-    // Detect charCodes where the PDF's encoding-derived Unicode and the ToUnicode CMap disagree.
     /** @type {Map<number, { encoding: string, toUnicode: string }>|null} */
     let encodingToUnicodeConflicts = null;
     if (encodingUnicode.size > 0 && toUnicode.size > 0) {
@@ -2408,9 +2240,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Some PDFs encode widths as 32-bit packed values (e.g. 0x00020002 = 131074), far above any reasonable 1/1000-em width.
-    // Unclamped, they poison text-extraction bbox math and overflow uint16 hmtx entries during OTF rebuild.
-    // Type3 is exempt because its widths come from d1 * fontMatrix[0] * 1000, so a non-standard fontMatrix can legitimately exceed 4000.
+    // Corrupt /Widths entries (e.g. 32-bit packed values like 0x00020002) blow up glyph bboxes and overflow uint16 hmtx tables during OTF rebuild.
+    // Type3 is exempt because a non-standard FontMatrix (compensated by Tf) can put d1 * fontMatrix[0] * 1000 legitimately past 4000.
     if (!type3Info) {
       const SANE_MAX_WIDTH = 4000;
       let saneSum = 0; let saneCount = 0;
@@ -2430,7 +2261,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Do not stretch/squeeze glyphs to match widths declared in the PDF that are patently incorrect.
     let widthsUnreliable = false;
     const embedded = !!(type1Info?.fontFile || type0Info?.fontFile || type3Info);
     if (!embedded && !symbolicFlag) {
@@ -2463,8 +2293,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       widthsUnreliable = sampled >= 8 && anyFar && !allEqual;
     }
 
-    // A bold face's name and descriptor can both leave out its weight, so the embedded program's own declaration adds bold.
-    // The declaration never clears bold, because many programs declare a bold face as "Regular".
+    // Never clear `bold` from the embedded program, because subsetters often leave "Regular" or weight 400 in a bold face's tables.
     const programFile = type0Info?.fontFile || type1Info?.fontFile;
     if (!bold && programFile && programFile.length >= 4) {
       const b = programFile;
@@ -2568,13 +2397,13 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   };
 
   // Some producers write identity-mapped ToUnicode entries where glyph-name lookup failed, even when the rest of the CMap follows a consistent non-zero shift.
-  // Rescanning a 65,536-entry OCR font shared by every page would dominate font parsing.
   for (const [, font] of fonts) {
+    // `fonts` includes `ObjectCache.fontCache` hits, and rescanning a shared 65,536-entry CMap on every page or XObject would dominate parsing.
     if (identityShiftChecked.has(font)) continue;
     identityShiftChecked.add(font);
     if (font.toUnicode.size < 10) continue;
     if (font.type1 || font.type3) continue;
-    /** @type {Array<[number, number]>} sorted [charCode, codepoint] */
+    /** @type {Array<[number, number]>} */
     const singles = [];
     for (const [cc, str] of font.toUnicode) {
       if (typeof str !== 'string' || str.length === 0) continue;
@@ -2624,7 +2453,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
     if (familyDonors.length === 0) continue;
 
-    // Existing broad fallback for non-Type0 fonts.
     if (!font.type0) {
       for (const sibling of familyDonors) {
         for (const [cid, uni] of sibling.toUnicode) {
@@ -2634,7 +2462,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       continue;
     }
 
-    // Two Type0 fonts sharing a family name can assign entirely different CIDs, so inheritance here is gated far more tightly than the branch above.
+    // Type0 subsets of one family can assign different CIDs, so require matching codespaces and compatible widths.
     let bestDonor = null;
     let bestRatio = 0;
     let bestOverlap = 0;
@@ -2782,16 +2610,13 @@ export function parseToUnicodeCMap(cmapText, map) {
   const bfrangeRegex = /beginbfrange\s*([\s\S]*?)endbfrange/g;
   const bfrangeMatches = [...cmapText.matchAll(bfrangeRegex)];
   for (const bfm of bfrangeMatches) {
-    // Match each range entry: <start> <end> <unicodeStart> OR <start> <end> [<u1> <u2> ...]
-    // Use a regex per-entry to handle CMaps without newlines between entries.
     const entryRegex = /<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s*(?:\[([\s\S]*?)\]|<([0-9A-Fa-f\s]+)>)/g;
     const entries = [...bfm[1].matchAll(entryRegex)];
     for (const entry of entries) {
       const cidStart = parseInt(entry[1].replace(/\s+/g, ''), 16);
       const cidEnd = parseInt(entry[2].replace(/\s+/g, ''), 16);
       if (entry[4] !== undefined) {
-        // Single start value: <start> <end> <dst>.
-        // A range destination may be an astral code point encoded as a UTF-16BE surrogate pair (e.g. <D835DC34> = U+1D434).
+        // Split by code point (`[...dstStr]`) so UTF-16BE surrogate pairs (e.g. <D835DC34> = U+1D434) are not torn across prefix and firstCp.
         const dstStr = hexToUnicode(entry[4]);
         if (dstStr.length > 0 && !isOnlyReplacementChars(dstStr)) {
           const dstCps = [...dstStr];
@@ -2810,7 +2635,6 @@ export function parseToUnicodeCMap(cmapText, map) {
         }
       } else if (entry[3] !== undefined) {
         flushRun();
-        // Array form: <start> <end> [<u1> <u2> ...]
         // An empty string still holds its code's position in the array, so the token list keeps it.
         const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f\s]*)>/g)];
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
@@ -2825,12 +2649,11 @@ export function parseToUnicodeCMap(cmapText, map) {
 }
 
 /**
- * Parse a CID encoding CMap and populate a charCode->CID map.
+ * Parse a CID encoding CMap and populate a charCode -> CID map.
  * @param {string} cmapText
- * @param {Map<number, number>} map - charCode -> CID
+ * @param {Map<number, number>} map
  */
 function parseCIDEncodingCMap(cmapText, map) {
-  // Parse begincidchar blocks: <charCode> <CID>
   const cidcharRegex = /begincidchar\s*([\s\S]*?)endcidchar/g;
   for (const m of cmapText.matchAll(cidcharRegex)) {
     for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s+(\d+)/g)) {
@@ -2838,7 +2661,6 @@ function parseCIDEncodingCMap(cmapText, map) {
     }
   }
 
-  // Parse begincidrange blocks: <start> <end> <CIDstart>
   const cidrangeRegex = /begincidrange\s*([\s\S]*?)endcidrange/g;
   for (const m of cmapText.matchAll(cidrangeRegex)) {
     for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s+(\d+)/g)) {
@@ -2851,7 +2673,6 @@ function parseCIDEncodingCMap(cmapText, map) {
     }
   }
 
-  // Parse beginbfchar blocks used as encoding CMaps: <charCode> <CID_hex>
   // Some PDFs use bfchar/bfrange syntax in encoding CMaps where both values are hex.
   const bfcharRegex = /beginbfchar\s*([\s\S]*?)endbfchar/g;
   for (const m of cmapText.matchAll(bfcharRegex)) {
@@ -2860,7 +2681,6 @@ function parseCIDEncodingCMap(cmapText, map) {
     }
   }
 
-  // Parse beginbfrange blocks used as encoding CMaps: <start> <end> <CIDstart_hex>
   const bfrangeRegex = /beginbfrange\s*([\s\S]*?)endbfrange/g;
   for (const m of cmapText.matchAll(bfrangeRegex)) {
     for (const entry of m[1].matchAll(/<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>\s*<([0-9A-Fa-f\s]+)>/g)) {
@@ -2875,10 +2695,9 @@ function parseCIDEncodingCMap(cmapText, map) {
 }
 
 /**
- * Parse codespace ranges from a CMap to determine byte widths for character codes.
- * Returns null when the CMap is uniformly 2-byte or declares no codespace, since callers already default to 2-byte decoding.
+ * Parse character-code byte-width ranges from a CMap's `codespacerange` blocks.
  * @param {string} cmapText
- * @returns {Array<{bytes: number, low: number, high: number}>|null}
+ * @returns {Array<{bytes: number, low: number, high: number}>|null} `null` when no codespace is declared or all ranges are 2-byte.
  */
 function parseCIDCodespaceRanges(cmapText) {
   const ranges = [];
@@ -2890,7 +2709,6 @@ function parseCIDCodespaceRanges(cmapText) {
       ranges.push({ bytes: numBytes, low: parseInt(low, 16), high: parseInt(entry[2].replace(/\s+/g, ''), 16) });
     }
   }
-  // Sorted so 1-byte ranges are checked before wider ones.
   ranges.sort((a, b) => a.bytes - b.bytes);
   // A uniform 1-byte CMap must still return ranges, so this cannot collapse into an all-widths-equal check.
   if (ranges.length === 0) return null;
@@ -2913,19 +2731,16 @@ function hexToUnicode(hex) {
 }
 
 /**
- * Parse CID font /W array for per-CID widths.
- * Format: [CID [w1 w2 ...]] (sequential) or [CID1 CID2 w] (range)
+ * Parse a CIDFont `/W` array into a `CID -> width` map.
  * @param {string} cidFontText
  * @param {Map<number, number>} widths
  */
 function parseCIDWidths(cidFontText, widths) {
-  // Find /W array with balanced brackets (can't use simple regex due to nested arrays)
   const wStart = cidFontText.indexOf('/W');
   if (wStart === -1) return;
   const bracketStart = cidFontText.indexOf('[', wStart);
   if (bracketStart === -1) return;
 
-  // Find the matching closing bracket
   let depth = 0;
   let bracketEnd = -1;
   for (let j = bracketStart; j < cidFontText.length; j++) {
@@ -2960,11 +2775,9 @@ function parseCIDWidths(cidFontText, widths) {
     }
   }
 
-  // Process tokens
   i = 0;
   while (i < tokens.length) {
     if (typeof tokens[i] === 'number' && i + 1 < tokens.length && Array.isArray(tokens[i + 1])) {
-      // Sequential format: CID [w1 w2 w3 ...]
       const startCID = /** @type {number} */ (tokens[i]);
       const ws = /** @type {number[]} */ (tokens[i + 1]);
       for (let j = 0; j < ws.length; j++) {
@@ -2972,7 +2785,6 @@ function parseCIDWidths(cidFontText, widths) {
       }
       i += 2;
     } else if (typeof tokens[i] === 'number' && typeof tokens[i + 1] === 'number' && typeof tokens[i + 2] === 'number') {
-      // Range format: CID1 CID2 w
       const cidStart = /** @type {number} */ (tokens[i]);
       const cidEnd = /** @type {number} */ (tokens[i + 1]);
       const w = /** @type {number} */ (tokens[i + 2]);
@@ -3023,13 +2835,11 @@ export function extractType0Fonts(pdfBytes) {
 
 /**
  * Extract the TrueType font file for a single Type0 font object.
- * @param {string} fontObjText - The Type0 font object text
+ * @param {string} fontObjText
  * @param {ObjectCache} objCache
  * @returns {Type0FontInfo|null}
  */
 function extractType0FontFile(fontObjText, objCache) {
-  // Extract font name (strip subset prefix like AAAAAA+)
-  // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
   let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObjText);
   let baseNameHexMatch2 = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f\s]+)>/.exec(fontObjText);
   if (!baseNameMatch && !baseNameHexMatch2) {
@@ -3059,8 +2869,6 @@ function extractType0FontFile(fontObjText, objCache) {
     fontName = 'Unknown';
   }
 
-  // Follow DescendantFonts reference to get the CIDFont object.
-  // Can be inline array (/DescendantFonts [15 0 R]) or indirect (/DescendantFonts 14 0 R).
   const descInline = /\/DescendantFonts\s*\[\s*(\d+)\s+\d+\s+R/.exec(fontObjText);
   const descIndirect = !descInline && /\/DescendantFonts\s+(\d+)\s+\d+\s+R/.exec(fontObjText);
   let cidFontNum = descInline ? Number(descInline[1]) : null;
@@ -3076,7 +2884,6 @@ function extractType0FontFile(fontObjText, objCache) {
   const cidFontText = objCache.getObjectText(cidFontNum);
   if (!cidFontText) return null;
 
-  // Follow FontDescriptor reference
   const fdRefMatch = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
   if (!fdRefMatch) return null;
 
@@ -3103,7 +2910,6 @@ function extractType0FontFile(fontObjText, objCache) {
 
 /**
  * Parse a Type3 glyph stream and extract path commands with coordinates.
- * Handles d0/d1 for advance width, cm transformation, and all drawing operators.
  * @param {string} streamText
  * @returns {{ commands: PathCommand[], advanceWidth: number, inlineImage?: any,
  * doXObject?: { name: string, cm: number[] }, paintMode?: string, evenOdd?: boolean,
@@ -3111,9 +2917,6 @@ function extractType0FontFile(fontObjText, objCache) {
  * isD0?: boolean, isD1?: boolean }}
  */
 export function parseGlyphStreamPaths(streamText) {
-  // d0 and d1 differ in colour semantics so record which one this CharProc used.
-  // d1 glyphs are monochromatic, painted with the graphics-state colour.
-  // d0 glyphs supply their own colours.
   let advanceWidth = 0;
   const d1Match = /([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+d1/.exec(streamText);
   const d0Match = /([\d.+-]+)\s+([\d.+-]+)\s+d0/.exec(streamText);
@@ -3122,12 +2925,10 @@ export function parseGlyphStreamPaths(streamText) {
   if (d1Match) advanceWidth = Number(d1Match[1]);
   else if (d0Match) advanceWidth = Number(d0Match[1]);
 
-  // Parse line width (w operator)
   let glyphLineWidth = 1;
   const wMatch = /([\d.+-]+)\s+w(?:\s|$)/m.exec(streamText);
   if (wMatch) glyphLineWidth = Number(wMatch[1]);
 
-  // Parse dash pattern (d operator): [ array ] phase d
   let dashArray = [];
   let dashPhase = 0;
   const dashOpMatch = /\[\s*([\d.\s]*)\s*\]\s*([\d.+-]+)\s+d(?:\s|$)/m.exec(streamText);
@@ -3136,7 +2937,6 @@ export function parseGlyphStreamPaths(streamText) {
     dashPhase = Number(dashOpMatch[2]);
   }
 
-  // A Type3 glyph may chain several cm operators, and composing only the first shrinks the glyph bitmap to a speck.
   // Inline-image binary data can contain bytes resembling ` cm`, so only the region before BI is scanned.
   let cmA = 1;
   let cmB = 0;
@@ -3168,8 +2968,7 @@ export function parseGlyphStreamPaths(streamText) {
     cmTy = nTy;
   }
 
-  // The composed cm above suits Do and inline-image placement, which always follow every cm operator.
-  // Glyph outlines interleave cm with drawing, so each point needs the CTM in effect when it is emitted.
+  // Track a live `q`/`Q`/`cm` CTM for vector paths, which can interleave transforms with drawing (unlike regex-extracted `BI`/`Do` above).
   let lcA = 1;
   let lcB = 0;
   let lcC = 0;
@@ -3195,16 +2994,13 @@ export function parseGlyphStreamPaths(streamText) {
     const idMatch = /[\s\]>)]ID[\s]/.exec(streamText.substring(biIdx2));
     if (idMatch) {
       const idPos = biIdx2 + idMatch.index;
-      // Include the delimiter char (e.g. ']') in the dict text
       const dictText = streamText.substring(biIdx2 + 2, idPos + 1).trim();
-      // Image data starts after "ID" + the single whitespace char that follows it
       const dataStart = idPos + idMatch[0].length;
       // Searched backwards because binary image data can contain EI bytes, and the real EI sits at the end.
       const afterData = streamText.substring(dataStart);
       let eiPos = -1;
       for (let ei = afterData.length - 2; ei >= 0; ei--) {
         if (afterData.charCodeAt(ei) === 0x45 && afterData.charCodeAt(ei + 1) === 0x49) {
-          // Verify EI is followed by whitespace or end-of-string
           if (ei + 2 >= afterData.length || afterData.charCodeAt(ei + 2) <= 0x20) {
             eiPos = ei;
             break;
@@ -3231,8 +3027,6 @@ export function parseGlyphStreamPaths(streamText) {
     };
   }
 
-  // A Type3 CharProc can draw its glyph by delegating to another embedded font, with a `(char)Tj` against a single-glyph subset inside BT/ET.
-  // The vector-path parser below skips everything inside BT/ET, so without this the glyph draws nothing and the page's body text disappears.
   let nestedText = null;
   const ntRegex = /BT\s*\/(\S+)\s+([\d.+-]+)\s+Tf\s*(?:([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+Tm\s*)?\(((?:[^()\\]|\\.)*)\)\s*Tj\s*ET/;
   const ntMatch = ntRegex.exec(streamText);
@@ -3275,7 +3069,6 @@ export function parseGlyphStreamPaths(streamText) {
   let inTextBlock = false;
   // Tracks where the unpainted path begins so `n` can drop its commands instead of leaving them to be filled with the painted paths.
   let unpaintedStart = commands.length;
-  // Current point and subpath start, in output space rather than raw stream coordinates.
   let curX = 0;
   let curY = 0;
   let startX = 0;
@@ -3330,7 +3123,6 @@ export function parseGlyphStreamPaths(streamText) {
           break;
         }
         case 'v': {
-          // x2 y2 x3 y3 v. Bezier whose first control point is the current point.
           if (numStack.length >= 4) {
             const n = numStack.length;
             const p2 = transform(numStack[n - 4], numStack[n - 3]);
@@ -3344,7 +3136,6 @@ export function parseGlyphStreamPaths(streamText) {
           break;
         }
         case 'y': {
-          // x1 y1 x3 y3 y. Bezier whose second control point coincides with the endpoint.
           if (numStack.length >= 4) {
             const n = numStack.length;
             const p1 = transform(numStack[n - 4], numStack[n - 3]);
@@ -3559,37 +3350,30 @@ export function extractType3Fonts(pdfBytes) {
 
 /**
  * Build an OpenType.js font from a Type3 font object.
- * @param {string} objText - The Type3 font object text
+ * @param {string} objText
  * @param {ObjectCache} objCache
- * @param {?Map<string, { unicodes: number[], advanceWidth: number }>} [glyphOverrides] - Per CharProc name, the code points the glyph answers to and its advance in glyph space.
- *   Absent, glyphs take consecutive private-use code points in CharProcs order and the CharProc's declared advance.
+ * @param {?Map<string, { unicodes: number[], advanceWidth: number }>} [glyphOverrides] - Per-CharProc Unicode code points and glyph-space advance width.
+ *   Defaults to sequential PUA code points in CharProcs order and each CharProc's declared advance.
  * @returns {Type0FontInfo|null}
  */
 export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null) {
-  // Extract FontMatrix
   const fmStr = resolveArrayValue(objText, 'FontMatrix', objCache);
   const fontMatrix = fmStr ? fmStr.split(/\s+/).map(Number) : [0.001, 0, 0, 0.001, 0, 0];
 
-  // Extract FontBBox
   const fbStr = resolveArrayValue(objText, 'FontBBox', objCache);
   const fontBBox = fbStr ? fbStr.split(/\s+/).map(Number) : [0, 0, 0, 0];
 
   const nameMatch = /\/Name\s*\/([^\s/]+)/.exec(objText);
   const fontName = nameMatch ? nameMatch[1] : 'Type3Font';
 
-  // Scaling: convert glyph space to OpenType units.
-  // FontMatrix maps glyph space → text space. OpenType maps units → em (1 em = 1 text space unit).
-  // So: opentype_coord = glyph_coord * fontMatrix_scale * unitsPerEm
   const unitsPerEm = 1000;
   const scaleX = fontMatrix[0] * unitsPerEm;
   const scaleY = fontMatrix[3] * unitsPerEm;
 
-  // Derive ascender/descender from FontBBox if it's not the placeholder [-10,-10,10,10]
   const isPlaceholderBBox = fontBBox[0] === -10 && fontBBox[1] === -10 && fontBBox[2] === 10 && fontBBox[3] === 10;
   const ascender = isPlaceholderBBox ? Math.round(unitsPerEm * 0.8) : Math.round(fontBBox[3] * scaleY);
   const descender = isPlaceholderBBox ? Math.round(-unitsPerEm * 0.2) : Math.round(fontBBox[1] * scaleY);
 
-  // Extract CharProcs
   const charProcsStart = objText.indexOf('/CharProcs');
   if (charProcsStart === -1) return null;
 
@@ -3613,7 +3397,7 @@ export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null)
   });
 
   const glyphs = [notdefGlyph];
-  let unicodeCounter = 0xE000; // Private Use Area for placeholder encoding
+  let unicodeCounter = 0xE000;
 
   const charProcMatches = [...charProcsDict.matchAll(/\/(\S+?)\s+(\d+)\s+\d+\s+R/g)];
   for (const match of charProcMatches) {
@@ -3626,7 +3410,6 @@ export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null)
     const streamText = new TextDecoder('latin1').decode(streamBytes);
     const pathData = parseGlyphStreamPaths(streamText);
 
-    // Convert path commands to an OpenType.js Path, scaling to OpenType units
     const opPath = new opentype.Path();
     for (const cmd of pathData.commands) {
       switch (cmd.type) {
@@ -3662,7 +3445,7 @@ export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null)
     unicodeCounter++;
   }
 
-  if (glyphs.length <= 1) return null; // Only .notdef
+  if (glyphs.length <= 1) return null;
 
   const font = new opentype.Font({
     familyName: fontName,
@@ -3679,7 +3462,6 @@ export function buildType3OpentypeFont(objText, objCache, glyphOverrides = null)
 
 /**
  * Correct character bounding boxes for Type3 fonts in parsed OCR pages.
- * Upstream text extraction produces incorrect bboxes because the placeholder FontBBox [-10,-10,10,10] is used instead of actual glyph dimensions.
  * @param {Array<import('../../objects/ocrObjects.js').OcrPage>} pages
  * @param {{ [fontObjNum: number]: FontInfo }} type3Fonts
  */
@@ -3703,11 +3485,10 @@ export function correctType3CharBBoxes(pages, type3Fonts) {
 
         let wordModified = false;
         for (const char of word.chars) {
-          // Map character code to glyph name via encoding
           let charCode = char.text.charCodeAt(0);
-          // U+FFFD (replacement character) represents original byte 0
+          // Text decoding replaces original NUL byte 0 with U+FFFD.
           if (charCode === 0xFFFD) charCode = 0;
-          // Reverse PUA mapping: extractPDFTextDirect maps Type3 charCodes to U+E000+charCode
+          // Undo the U+E000 + charCode placeholder assigned to unmapped Type3 glyphs in parsePageFonts.
           if (charCode >= 0xE000 && charCode <= 0xE0FF) charCode -= 0xE000;
 
           const glyphName = fontInfo.encoding[charCode];
@@ -3716,8 +3497,7 @@ export function correctType3CharBBoxes(pages, type3Fonts) {
           const glyph = fontInfo.glyphs[glyphName];
           if (!glyph || !glyph.bbox || glyph.advanceWidth === 0) continue;
 
-          // char.bbox height is one em.
-          // Upstream extractor uses default ascent=800/descent=-200 for Type3 fonts with a placeholder FontBBox.
+          // Placeholder-FontBBox Type3 fonts keep default ascent 800 and descent -200, so `char.bbox` spans 1 em with the baseline 0.2 em above `bottom`.
           const emHeightPx = char.bbox.bottom - char.bbox.top;
           if (emHeightPx <= 0) continue;
           const scaleX = emHeightPx * fontInfo.fontMatrix[0];
