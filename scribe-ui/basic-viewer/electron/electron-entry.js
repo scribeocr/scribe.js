@@ -33,7 +33,6 @@ if (platform === 'darwin') {
   pdfViewer.toolbarElemStart.style.paddingLeft = '96px';
   // The system menu bar carries the app commands there, so the in-window menu button retires.
   pdfViewer.setMenuButtonVisible(false);
-  pdfViewer.setLibraryBar('finder');
 } else if (platform === 'win32') {
   // Windows draws the native caption buttons over the bar (Window Controls Overlay), so the end zone stays clear of them.
   // The env() fallback keeps the bar's stock 8px inset anywhere the overlay is off.

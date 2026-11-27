@@ -9,15 +9,17 @@ const ROW_BREAKPOINT = 485;
 const ROW_HEIGHT = 40;
 
 /**
+ * Manage responsive sizing and control folding for the document library's top toolbar.
  * @param {{
  *   bar: HTMLElement, controls: HTMLElement, surface: HTMLElement, title: HTMLElement,
  *   field: HTMLElement, input: HTMLInputElement, clear: HTMLElement, find: HTMLButtonElement,
  *   view: HTMLElement, sort: HTMLElement, separator: HTMLElement, add: HTMLElement, refresh: HTMLElement, more: HTMLElement,
  *   fontOf: (element: HTMLElement) => string, truncate: (text: string, width: number, font: string) => string,
- * }} elements
+ *   onFold: (folded: {view: boolean, sort: boolean, new: boolean, refresh: boolean}) => void,
+ * }} elements - Toolbar elements, measurement helpers, and the `onFold` callback invoked with the controls folded into More.
  */
 export function createFinderBar({
-  bar, controls, surface, title, field, input, clear, find, view, sort, separator, add, refresh, more, fontOf, truncate,
+  bar, controls, surface, title, field, input, clear, find, view, sort, separator, add, refresh, more, fontOf, truncate, onFold,
 }) {
   const actions = {
     view, sort, separator, add, refresh, more,
@@ -219,6 +221,9 @@ export function createFinderBar({
     pixels(field, '--finder-lip', lip);
     pixels(field, '--scribe-finder-travel', rowOpen ? lip + (ROW_HEIGHT - height) / 2 : 0);
     row.style.height = `${rowOpen ? ROW_HEIGHT : 0}px`;
+    onFold({
+      view: !slots.view, sort: !slots.sort, new: !slots.add, refresh: !slots.refresh,
+    });
   };
   // Shell insets and the app-menu button can change the available room without resizing the window.
   // An animated title also resizes these zones, so only refit for an actual change of room.
@@ -265,6 +270,9 @@ export function createFinderBar({
       el.classList.remove('finder-icon-only');
     }
     find.classList.remove('on');
+    onFold({
+      view: false, sort: false, new: false, refresh: false,
+    });
   };
   return {
     fit, focus, reset, rowOpen: () => rowOpen, iconAtRest: () => iconAtRest,

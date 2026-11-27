@@ -100,8 +100,8 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
 /**
  * @typedef {Object} LibraryInstanceOptions
  * @property {'library'|'portfolio'} kind
- * @property {string} name - The root crumb's label, and a portfolio's pinned tab's.
- * @property {string} glyph - The column head's icon, and a portfolio's pinned tab's.
+ * @property {string} name - Fallback title before a root folder is connected, or a portfolio's display name.
+ * @property {string} glyph - Icon for the column header and a portfolio's pinned tab.
  * @property {?Object} [store] - A store to open at once; the document library connects its own folder instead.
  * @property {'grid'|'list'|'compact'} [viewDefault]
  * @property {boolean} [showOthersDefault]
@@ -113,8 +113,6 @@ const RESUME_STORAGE_KEY = 'scribe-library-resume';
  * @property {?number} [libraryOwner] - With `libraryHash`, the document library instance the entry belongs to.
  * @property {() => void} [onClose] - Mounted as a close control on the pinned tab.
  * @property {?Object} [engineSettings]
- * @property {'crumbs'|'finder'} [bar] - The toolbar's form, breadcrumbs by default.
- *   'finder' shows Back, Forward and the folder's name in the toolbar and the path in a bar under the contents, as a Finder window does.
  */
 
 /**
@@ -215,7 +213,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--scribe-canvas); color: var(--scribe-ink); display: flex; flex-direction: column; overflow: hidden; font-size: 14px; }
 .scribe-pdf-viewer .scribe-library-surface { -webkit-user-select: none; user-select: none; }
 .scribe-pdf-viewer .scribe-library-surface input, .scribe-pdf-viewer .scribe-library-surface textarea, .scribe-pdf-viewer .scribe-library-surface [contenteditable] { -webkit-user-select: auto; user-select: auto; }
-.scribe-pdf-viewer .scribe-library-header { display: flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 4px 14px 4px 18px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); flex-wrap: wrap; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
@@ -242,7 +239,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hbtn:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-hbtn svg { width: 18px; height: 18px; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-hbtn svg.chev { width: 12px; height: 12px; margin-left: -2px; color: var(--scribe-ink-3); }
-/* Fills the slack roundBarButtons adds, so the chevron sits against the button's right padding on a whole pixel. */
 .scribe-pdf-viewer .scribe-library-sort-lbl { display: inline-grid; text-align: left; flex: 1 1 auto; }
 .scribe-pdf-viewer .scribe-library-add-lbl { flex: 1 1 auto; }
 .scribe-pdf-viewer .scribe-library-sort-lbl > span { grid-area: 1 / 1; white-space: nowrap; }
@@ -261,7 +257,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
 .scribe-pdf-viewer .scribe-library-menu-sep { ${MENU_SEP_CSS} }
 .scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-crumb-menu { left: 0; right: auto; }
+.scribe-pdf-viewer .scribe-library-title-menu { left: 0; right: auto; }
 .scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; box-sizing: border-box; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
 .scribe-pdf-viewer .scribe-library-seg button { width: 32px; border: none; background: none; color: var(--scribe-ink-3); padding: 5px 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .scribe-pdf-viewer .scribe-library-seg button svg { width: 16px; height: 16px; }
@@ -309,6 +305,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-colhead .scribe-library-hicon { width: 24px; height: 24px; padding: 2px; border-radius: 6px; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-colup { margin-left: -4px; }
 .scribe-pdf-viewer .scribe-library-colbar .scribe-library-field { position: absolute; right: 32px; top: 6px; width: 24px; height: 24px; margin: 0; padding: 0 4px; border-radius: 6px; border-color: transparent; background: none; opacity: 0; visibility: hidden; overflow: hidden; cursor: text; }
+.scribe-pdf-viewer .scribe-library-colbar:has(> .scribe-library-colmore[hidden]) .scribe-library-field { right: 8px; }
 .scribe-pdf-viewer .scribe-library-colbar .scribe-library-search { width: 100%; min-width: 0; flex: 1; opacity: 0; }
 .scribe-pdf-viewer .scribe-library-colbar .scribe-library-clear { display: block; opacity: 0; }
 .scribe-pdf-viewer .scribe-library-colbar.searching .scribe-library-field { width: calc(100% - 40px); height: 28px; top: 4px; padding: 0 8px; border-radius: 5px; border-color: var(--scribe-line-strong); background: var(--scribe-sunken); opacity: 1; visibility: visible; }
@@ -499,14 +496,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-rmore:hover { text-decoration: underline; }
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: var(--scribe-match); mix-blend-mode: multiply; }
 .scribe-pdf-viewer .scribe-mark.act { background: var(--scribe-match-active); }
-.scribe-pdf-viewer .scribe-library-crumbs { position: relative; display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
-.scribe-pdf-viewer .scribe-library-crumbs > .scribe-library-crumb:first-child { margin-left: -7px; }
-.scribe-pdf-viewer .scribe-library-crumb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
-.scribe-pdf-viewer .scribe-library-crumbs .cur { flex: 0 1 auto; padding-left: 7px; overflow: hidden; text-overflow: ellipsis; }
-.scribe-pdf-viewer .scribe-library-crumbs .scribe-library-crumb-ghost { position: absolute; margin: 0; box-sizing: border-box; pointer-events: none; }
 /* The Finder-style bar */
 .scribe-pdf-viewer .scribe-library-navs { display: inline-flex; align-items: center; gap: 2px; }
 .scribe-pdf-viewer .scribe-library-title { margin-left: 2px; padding: 0 6px; height: 28px; align-items: center; min-width: 0; }
@@ -655,7 +644,6 @@ const addLibraryStyles = () => {
 }
 .scribe-pdf-viewer .scribe-library-menu-head { padding: 5px 10px 3px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--scribe-ink-3); user-select: none; }
 .scribe-pdf-viewer .scribe-library-more-menu .scribe-library-menu-item.ic svg { visibility: visible; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.popped { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 260px; min-width: 0; z-index: 5; box-shadow: var(--scribe-menu-shadow); }
 .scribe-pdf-viewer .scribe-library-card .meta.fb { opacity: 1; }
 .scribe-pdf-viewer .scribe-library-surface .meta .err, .scribe-pdf-viewer .scribe-library-surface .m2 .err, .scribe-pdf-viewer .scribe-library-row .err { color: var(--scribe-danger); }
 .scribe-pdf-viewer .scribe-library-surface .undo { font: inherit; font-size: 12px; font-weight: 600; line-height: inherit; color: var(--scribe-accent); background: none; border: none; padding: 0 5px; margin: 0; border-radius: 4px; cursor: pointer; vertical-align: baseline; }
@@ -1153,19 +1141,12 @@ export function createLibraryInstance(viewer, opts) {
 
   // --- DOM scaffold -------------------------------------------------------
 
-  const finder = opts.bar === 'finder' && !!viewer.toolbarElem;
   let dirHistory = [''];
   let dirHistAt = 0;
   const surface = document.createElement('div');
   surface.className = 'scribe-library-surface';
   surface.style.display = 'none';
 
-  const header = document.createElement('div');
-  header.className = 'scribe-library-header';
-  const crumbsElem = document.createElement('div');
-  crumbsElem.className = 'scribe-library-crumbs';
-  crumbsElem.textContent = opts.name;
-  header.appendChild(crumbsElem);
   const navPair = document.createElement('span');
   navPair.className = 'scribe-library-navs';
   const backBtn = document.createElement('button');
@@ -1188,7 +1169,7 @@ export function createLibraryInstance(viewer, opts) {
   titleName.textContent = opts.name;
   titleName.setAttribute('aria-haspopup', 'menu');
   const titleMenu = document.createElement('div');
-  titleMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
+  titleMenu.className = 'scribe-library-menu scribe-library-title-menu';
   titleMenu.setAttribute('role', 'menu');
   titleMenu.style.display = 'none';
   titleWrap.append(titleName, titleMenu);
@@ -1210,7 +1191,6 @@ export function createLibraryInstance(viewer, opts) {
   clearBtn.setAttribute('aria-label', 'Clear');
   clearBtn.innerHTML = FIELD_CLEAR_SVG;
   searchField.appendChild(clearBtn);
-  header.appendChild(searchField);
   const textMeasure = /** @type {CanvasRenderingContext2D} */ (document.createElement('canvas').getContext('2d'));
   /**
    * @param {string} text
@@ -1265,7 +1245,6 @@ export function createLibraryInstance(viewer, opts) {
   viewSeg.appendChild(gridViewBtn);
   viewSeg.appendChild(listViewBtn);
   viewSeg.appendChild(compactViewBtn);
-  header.appendChild(viewSeg);
 
   const sortWrap = document.createElement('span');
   sortWrap.className = 'scribe-library-sort';
@@ -1305,11 +1284,9 @@ export function createLibraryInstance(viewer, opts) {
   sortMenu.appendChild(othersItem);
   sortWrap.appendChild(sortBtn);
   sortWrap.appendChild(sortMenu);
-  header.appendChild(sortWrap);
 
-  const headerSep = document.createElement('span');
-  headerSep.className = 'vertical-separator';
-  if (!readOnly) header.appendChild(headerSep);
+  const newSep = document.createElement('span');
+  newSep.className = 'vertical-separator';
 
   const newWrap = document.createElement('span');
   newWrap.className = 'scribe-library-sort scribe-library-new';
@@ -1346,14 +1323,12 @@ export function createLibraryInstance(viewer, opts) {
   newMenu.appendChild(addPdfsItem);
   newWrap.appendChild(newBtn);
   newWrap.appendChild(newMenu);
-  if (!readOnly) header.appendChild(newWrap);
 
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'scribe-library-hicon';
   refreshBtn.innerHTML = slotIcon('refresh22');
   refreshBtn.title = 'Re-scan the folder for new, changed, or removed files';
   refreshBtn.setAttribute('aria-label', 'Refresh folder');
-  if (!readOnly) header.appendChild(refreshBtn);
 
   const findBtn = document.createElement('button');
   findBtn.className = 'scribe-library-hicon scribe-library-find';
@@ -1382,14 +1357,12 @@ export function createLibraryInstance(viewer, opts) {
   fileInput.multiple = true;
   fileInput.accept = 'application/pdf,.pdf';
   fileInput.style.display = 'none';
-  header.appendChild(fileInput);
 
   const imageInput = document.createElement('input');
   imageInput.type = 'file';
   imageInput.multiple = true;
   imageInput.accept = 'image/png,image/jpeg,.png,.jpg,.jpeg';
   imageInput.style.display = 'none';
-  header.appendChild(imageInput);
 
   const progressElem = document.createElement('div');
   progressElem.className = 'scribe-library-progress';
@@ -1415,7 +1388,6 @@ export function createLibraryInstance(viewer, opts) {
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
 
-  // With a toolbar present the document library takes over that bar, so the header's controls are re-parented into it rather than stacking a second bar.
   /** @type {?HTMLElement} */
   let barTitle = null;
   /** @type {?HTMLElement} */
@@ -1424,14 +1396,7 @@ export function createLibraryInstance(viewer, opts) {
     barTitle = document.createElement('span');
     barTitle.className = 'scribe-library-bar-title';
     barTitle.style.display = 'none';
-    if (finder) {
-      barTitle.append(navPair, titleWrap);
-    } else {
-      const barSep = document.createElement('span');
-      barSep.className = 'vertical-separator';
-      barTitle.appendChild(barSep);
-      barTitle.appendChild(crumbsElem);
-    }
+    barTitle.append(navPair, titleWrap);
     // Placed after the app menu so the zone's last child stays visible, which is what the bar's overflow measurement reads.
     // A phone-layout boot re-homes the app menu into the dock, so only anchor on it while it is still in the start zone.
     const menuInBar = viewer._appMenu && viewer._appMenu.menuWrap.parentElement === viewer.toolbarElemStart;
@@ -1439,24 +1404,13 @@ export function createLibraryInstance(viewer, opts) {
     barControls = document.createElement('span');
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
-    const barParts = readOnly
-      ? [searchField, findBtn, viewSeg, sortWrap, moreWrap]
-      : [searchField, findBtn, viewSeg, sortWrap, headerSep, newWrap, refreshBtn, moreWrap];
-    for (const el of barParts) barControls.appendChild(el);
+    barControls.append(findBtn, moreWrap);
     // A desktop shell's window controls stay the end zone's last element, so the document library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
-    surface.appendChild(fileInput);
-    surface.appendChild(imageInput);
-  } else {
-    surface.appendChild(header);
   }
-  surface.appendChild(progressElem);
-  surface.appendChild(searchInsideBtn);
-  surface.appendChild(body);
-  if (finder) surface.appendChild(pathBar);
+  surface.append(fileInput, imageInput, progressElem, searchInsideBtn, body, pathBar);
   viewer.pdfViewerElem.appendChild(surface);
-  // `finder` implies the toolbar, which always builds `barControls`, so the Finder form always has this bar.
-  const finderBar = finder && barControls && viewer.toolbarElem ? createFinderBar({
+  const finderBar = barControls && viewer.toolbarElem ? createFinderBar({
     bar: viewer.toolbarElem,
     controls: barControls,
     surface,
@@ -1467,12 +1421,13 @@ export function createLibraryInstance(viewer, opts) {
     find: findBtn,
     view: viewSeg,
     sort: sortWrap,
-    separator: headerSep,
+    separator: newSep,
     add: newWrap,
     refresh: refreshBtn,
     more: moreWrap,
     fontOf,
     truncate: midTrunc,
+    onFold: (state) => Object.assign(folded, state),
   }) : null;
 
   /** @type {?HTMLDivElement} A portfolio's pinned tab in the strip. */
@@ -1506,9 +1461,6 @@ export function createLibraryInstance(viewer, opts) {
   }
 
   // --- The forms ---------------------------------------------------------
-  // With nothing open the document library fills the document area and its controls take the toolbar.
-  // Once a document is open it is a column at the window's left edge beside the groups, under a head of its own.
-  // The toolbar then holds the document's controls.
 
   /** @type {Array<{el: HTMLElement, display: string}>} */
   let hiddenBarElems = [];
@@ -1516,6 +1468,10 @@ export function createLibraryInstance(viewer, opts) {
   let priorEndZoneFlex = '';
   /** @type {'full'|'column'} */
   let form = 'full';
+  /** @type {?('bar'|'col')} Whether the shared controls are mounted in the toolbar or the column header, or null before initialization. */
+  let controlsIn = null;
+  /** Whether entering the phone UI hid an open side column. */
+  let columnHidByPhone = false;
   let columnOpen = true;
   let columnW = COLUMN_DEFAULT_W;
   if (persistPrefs) {
@@ -1595,7 +1551,8 @@ export function createLibraryInstance(viewer, opts) {
     viewer.pdfViewerElem.classList.add('scribe-group-drag');
     const onMove = (/** @type {PointerEvent} */ ev) => {
       const want = startW + ev.clientX - startX;
-      closing = want < COLUMN_MIN_W - 60;
+      // Without a toolbar there is no toggle to reopen a thrown-closed column.
+      closing = !!colToggle && want < COLUMN_MIN_W - 60;
       columnW = Math.max(COLUMN_MIN_W, Math.min(COLUMN_MAX_W, want));
       surface.classList.toggle('closing', closing);
       layoutColumn();
@@ -1653,7 +1610,7 @@ export function createLibraryInstance(viewer, opts) {
     colToggle.ariaLabel = colToggle.dataset.tip;
   };
   const syncColumnHead = () => {
-    if (form !== 'column') return;
+    if (colHead.hidden) return;
     const barWasHidden = colBar.hidden;
     colGlyph.hidden = storageOpen;
     colBar.hidden = storageOpen;
@@ -1674,34 +1631,33 @@ export function createLibraryInstance(viewer, opts) {
     }
     colUpBtn.setAttribute('aria-label', colUpBtn.title);
   };
-  /** What the column's head has folded into its actions menu. */
-  const colFold = {
+  /** Which controls are currently folded into the More menu. */
+  const folded = {
     view: false, sort: false, new: false, refresh: false,
   };
   const fitColBar = () => {
-    if (form !== 'column' || colHead.hidden || colBar.hidden || viewSeg.parentElement !== colBar) return;
+    if (colHead.hidden || colBar.hidden || viewSeg.parentElement !== colBar) return;
+    // Unhide before the colSearchOpen early return and before need() sums visible child widths.
+    colMoreBtn.hidden = false;
     // CSS fades the bar controls out while searching, so fold them into the menu without setting `hidden`, which snaps them to `display: none`.
     if (colSearchOpen) {
-      colFold.view = true;
-      colFold.sort = true;
-      colFold.new = !readOnly;
-      colFold.refresh = !readOnly;
+      folded.view = true;
+      folded.sort = true;
+      folded.new = !readOnly;
+      folded.refresh = !readOnly;
       return;
     }
     viewSeg.hidden = false;
     colViewBtn.hidden = true;
     sortBtn.classList.remove('icon-only');
     newBtn.classList.remove('icon-only');
-    // The bar pins its labeled buttons to whole-pixel widths; the column measures them as they are.
-    sortBtn.style.width = '';
-    newBtn.style.width = '';
     sortWrap.hidden = false;
     newWrap.hidden = readOnly;
     refreshBtn.hidden = readOnly;
-    colFold.view = false;
-    colFold.sort = false;
-    colFold.new = false;
-    colFold.refresh = false;
+    folded.view = false;
+    folded.sort = false;
+    folded.new = false;
+    folded.refresh = false;
     const need = () => {
       let w = 12 - 4;
       for (const el of colBar.children) {
@@ -1712,18 +1668,19 @@ export function createLibraryInstance(viewer, opts) {
       return w;
     };
     const steps = [
-      () => { refreshBtn.hidden = true; colFold.refresh = !readOnly; },
+      () => { refreshBtn.hidden = true; folded.refresh = !readOnly; },
       () => newBtn.classList.add('icon-only'),
       () => sortBtn.classList.add('icon-only'),
       () => { viewSeg.hidden = true; colViewBtn.hidden = false; },
-      () => { newWrap.hidden = true; colFold.new = !readOnly; },
-      () => { sortWrap.hidden = true; colFold.sort = true; },
-      () => { colViewBtn.hidden = true; colFold.view = true; },
+      () => { newWrap.hidden = true; folded.new = !readOnly; },
+      () => { sortWrap.hidden = true; folded.sort = true; },
+      () => { colViewBtn.hidden = true; folded.view = true; },
     ];
     for (const step of steps) {
       if (need() <= colBar.clientWidth) break;
       step();
     }
+    colMoreBtn.hidden = !(folderActions.length || folded.view || folded.sort || folded.new);
   };
   let colSearchOpen = false;
   /** Title the clear button "Close" while the open column field has no text, and "Clear" otherwise. */
@@ -1783,12 +1740,11 @@ export function createLibraryInstance(viewer, opts) {
   const positionSurface = () => {
     const column = visible && form === 'column';
     surface.style.top = `${column ? (viewer._phoneUi ? 0 : viewer.toolbarHeight) : viewer._topBarsHeight()}px`;
+    surface.style.bottom = `${viewer._bottomBarsHeight()}px`;
     surface.style.width = column ? `${columnW}px` : '';
     surface.style.right = column ? 'auto' : '';
-    if (column) {
-      fitColBar();
-      fitFolds();
-    }
+    if (visible && !colHead.hidden) fitColBar();
+    if (column) fitFolds();
   };
   const resizeObserver = new ResizeObserver(positionSurface);
   resizeObserver.observe(viewer.pdfViewerElem);
@@ -1804,28 +1760,28 @@ export function createLibraryInstance(viewer, opts) {
   const applyForm = ({ render: doRender = true } = {}) => {
     if (!visible) return;
     if (isLibrary && viewer._tabs.length > 0 && !columnReady()) {
+      columnHidByPhone = !!viewer._phoneUi;
       deactivate();
       return;
     }
     const next = columnReady() ? 'column' : 'full';
-    const changed = next !== form;
+    const nextHead = next === 'full' && barControls && !viewer._phoneUi ? 'bar' : 'col';
+    const changed = next !== form || nextHead !== controlsIn;
     const wasShown = surface.style.display !== 'none';
     if (changed) {
       form = next;
-      if (form === 'column') {
+      controlsIn = nextHead;
+      if (controlsIn === 'col') {
         finderBar?.reset();
         searchField.hidden = false;
-        searchField.classList.remove('popped');
-        searchField.style.width = '';
         colBar.appendChild(searchField);
         for (const el of readOnly ? [viewSeg, colViewBtn, sortWrap] : [viewSeg, colViewBtn, sortWrap, newWrap, refreshBtn]) colBar.insertBefore(el, colSearchBtn);
         setColSearch(!!searchInput.value, { still: true });
       } else {
         setColSearch(false, { still: true });
-        const ctl = barControls ?? header;
+        const ctl = /** @type {HTMLElement} */ (barControls);
         ctl.insertBefore(searchField, ctl.firstChild);
-        const before = moreWrap.parentElement === ctl ? moreWrap : null;
-        for (const el of readOnly ? [viewSeg, sortWrap] : [viewSeg, sortWrap, headerSep, newWrap, refreshBtn]) ctl.insertBefore(el, before);
+        for (const el of readOnly ? [viewSeg, sortWrap] : [viewSeg, sortWrap, newSep, newWrap, refreshBtn]) ctl.insertBefore(el, moreWrap);
         for (const el of [viewSeg, sortWrap, newWrap, refreshBtn]) el.hidden = false;
         colViewBtn.hidden = true;
         sortBtn.classList.remove('icon-only');
@@ -1834,22 +1790,22 @@ export function createLibraryInstance(viewer, opts) {
       syncViewUI();
       lastRenderKey = '';
     }
-    colHead.hidden = form !== 'column';
     colSash.hidden = form !== 'column';
     surface.classList.toggle('column', form === 'column');
+    if (controlsIn === 'bar') swapBarIn();
+    else swapBarOut();
     if (form === 'full') {
-      swapBarIn();
       if (viewer._rightGroup && !viewer._groupTabs(1).length) viewer._closeGroup();
       viewer._setActiveGroup(0);
       viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
       viewer._searchBar?.closeSearch();
       surface.style.display = 'flex';
     } else {
-      swapBarOut();
       surface.style.display = columnOpen ? 'flex' : 'none';
     }
     const endsStorage = form === 'column' && !columnOpen && storageOpen;
     if (endsStorage) storageOpen = false;
+    syncHeadForStore();
     syncColumnHead();
     syncColumnToggle();
     positionSurface();
@@ -1869,6 +1825,7 @@ export function createLibraryInstance(viewer, opts) {
       if (inst !== api && inst.visible()) inst.hide();
     }
     visible = true;
+    columnHidByPhone = false;
     viewer._returnSurface = api;
     if (homeTab) {
       viewer._tabStrip?.setPinnedActive(true);
@@ -1898,10 +1855,13 @@ export function createLibraryInstance(viewer, opts) {
   /** @type {LibraryInstance} */
   const api = /** @type {LibraryInstance} */ ({});
 
-  const syncBarForStore = () => {
-    if (!barSwapped || !barTitle || !barControls) return;
-    barTitle.style.display = store ? '' : 'none';
-    barControls.style.display = store ? '' : 'none';
+  /** Show the active header controls only while a store is open. */
+  const syncHeadForStore = () => {
+    if (barSwapped && barTitle && barControls) {
+      barTitle.style.display = store ? '' : 'none';
+      barControls.style.display = store ? '' : 'none';
+    }
+    colHead.hidden = controlsIn !== 'col' || !store;
   };
   /** Toolbar elements hidden while the document library's full-window controls occupy the toolbar. */
   const mainBarParts = () => {
@@ -1916,14 +1876,6 @@ export function createLibraryInstance(viewer, opts) {
     }
     return parts;
   };
-  // Text buttons measure fractional widths, which would put every glyph to their left in the right-aligned zone on fractional pixels.
-  const roundBarButtons = () => {
-    for (const el of [sortBtn, newBtn]) {
-      el.style.width = '';
-      const wd = el.getBoundingClientRect().width;
-      if (wd) el.style.width = `${Math.ceil(wd)}px`;
-    }
-  };
   /** Replace the toolbar's document controls with the document library's controls. */
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
@@ -1932,14 +1884,13 @@ export function createLibraryInstance(viewer, opts) {
       hiddenBarElems.push({ el, display: el.style.display });
       el.style.display = 'none';
     }
-    syncBarForStore();
-    roundBarButtons();
+    syncHeadForStore();
     // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the document library's controls off the edge.
     priorEndZoneFlex = viewer.toolbarElemEnd.style.flex;
     viewer.toolbarElemEnd.style.flex = '0 1 auto';
     viewer.toolbarElemEnd.style.minWidth = '0';
     viewer.toolbarElem?.classList.add('scribe-library-bar');
-    syncCrumbs();
+    syncBar();
   };
   const swapBarOut = () => {
     if (!barSwapped) return;
@@ -2137,7 +2088,6 @@ export function createLibraryInstance(viewer, opts) {
     filterText = '';
     searchInput.value = '';
     searchField.classList.remove('has-text');
-    crumbFadeDue = true;
     render();
     body.scrollTop = 0;
     const cameElem = came ? /** @type {?HTMLElement} */ (body.querySelector(`[data-rel-path="${CSS.escape(came)}"]`)) : null;
@@ -2174,350 +2124,49 @@ export function createLibraryInstance(viewer, opts) {
     }
     return empty;
   };
-  /** @type {?ReturnType<typeof createDropdown>} */
-  let midDropdown = null;
-  let crumbFadeDue = false;
-  // `currentDir` already names the destination when the old trail is measured, so the trail keeps the directory it was built for.
-  let crumbsDir = '';
-  /** @returns {Array<{node: Node, key: string, left: number, top: number, width: number, height: number, textLeft: number, color: string}>} */
-  const measureCrumbs = () => {
-    const base = crumbsElem.getBoundingClientRect();
-    const items = [];
-    let seps = 0;
-    for (const node of crumbsElem.childNodes) {
-      let key = '';
-      let rect;
-      let color;
-      let textLeft;
-      if (node instanceof Text) {
-        const range = document.createRange();
-        range.selectNodeContents(node);
-        rect = range.getBoundingClientRect();
-        color = getComputedStyle(crumbsElem).color;
-        textLeft = rect.left;
-        key = 'root';
-      } else if (node instanceof HTMLElement && !node.classList.contains('scribe-library-crumb-ghost')) {
-        const cs = getComputedStyle(node);
-        rect = node.getBoundingClientRect();
-        color = cs.color;
-        textLeft = rect.left + parseFloat(cs.paddingLeft);
-        if (node.classList.contains('sep')) key = `sep${++seps}`;
-        else if (node.classList.contains('cur')) key = `dir:${crumbsDir}`;
-        else if (node.classList.contains('scribe-library-sort')) key = 'dots';
-        else key = node.dataset.dirTarget ? `dir:${node.dataset.dirTarget}` : 'root';
-      } else continue;
-      items.push({
-        node, key, left: rect.left - base.left, top: rect.top - base.top, width: rect.width, height: rect.height, textLeft: textLeft - base.left, color,
-      });
-    }
-    return items;
-  };
-  // --- The bar under pressure --------------------------------------------------
-
-  let fieldLow = false;
-  /**
-   * The search field's minimum width in px.
-   * Toolbar overflow measurement sizes the field to this floor first, so controls only hide once the field reaches it.
-   */
-  const fieldFloor = () => {
-    const active = searchField.classList.contains('has-text') || document.activeElement === searchInput;
-    if (!active) return 170;
-    return fieldLow ? 180 : 300;
-  };
-  const CUR_FLOOR = 127;
-  /** Breadcrumbs folded into the hidden-folders crumb. */
-  let crumbHidden = 0;
-  let dragUnfolded = false;
   let pathBarRoot = '';
   let pathBarDir = '';
-
-  /** Rebuild the header breadcrumbs for `currentDir` at the current fold. */
-  const buildCrumbs = () => {
+  /** Sync the toolbar title, history buttons, and path bar to the current location. */
+  const syncBar = () => {
+    const segs = currentDir ? currentDir.split('/') : [];
+    const rootLabel = isLibrary && store ? store.root.name : opts.name;
+    const leaf = segs.length ? segs[segs.length - 1] : rootLabel;
     if (finderBar) {
-      const segs = currentDir ? currentDir.split('/') : [];
-      const rootLabel = isLibrary && store ? store.root.name : opts.name;
-      const full = segs.length ? segs[segs.length - 1] : rootLabel;
-      titleName.setAttribute('aria-label', full);
+      titleName.setAttribute('aria-label', leaf);
       // A portfolio can share a name with a folder of the document library, and only the folder has a place on disk.
       const parent = isLibrary ? folderDirs.get(rootLabel) : undefined;
       const separator = shell?.platform === 'win32' ? '\\' : '/';
       titleName.dataset.tip = parent ? [parent.replace(/[/\\]$/, ''), rootLabel, ...segs].join(separator) : [rootLabel, ...segs].join(' › ');
-      if (barSwapped && store) finderBar.fit(full);
+      if (barSwapped && store) finderBar.fit(leaf);
       else finderBar.reset();
       backBtn.disabled = !(fullTextResults || dirHistAt > 0);
       fwdBtn.disabled = !!fullTextResults || dirHistAt >= dirHistory.length - 1;
-      return;
     }
-    crumbsElem.replaceChildren();
-    midDropdown?.destroy();
-    midDropdown = null;
-    const segs = currentDir ? currentDir.split('/') : [];
-    const rootLabel = isLibrary && store ? store.root.name : opts.name;
-    if (!segs.length) {
-      // Wrap in an element because crumbsNeed() iterates crumbsElem.children and ignores bare text nodes.
-      const home = document.createElement('span');
-      home.textContent = rootLabel;
-      crumbsElem.appendChild(home);
-    } else {
-      const addSep = () => {
+    if (pathBarRoot === rootLabel && pathBarDir === currentDir && pathBar.hidden === !store) return;
+    pathBarRoot = rootLabel;
+    pathBarDir = currentDir;
+    pathBar.replaceChildren();
+    pathBar.hidden = !store;
+    const parts = [{ label: rootLabel, path: '' }, ...segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') }))];
+    parts.forEach((part, i) => {
+      if (i) {
         const sep = document.createElement('span');
         sep.className = 'sep';
         sep.textContent = '›';
-        crumbsElem.appendChild(sep);
-      };
-      const hidden = Math.min(crumbHidden, segs.length);
-      /** @type {Array<{label: string, path: string}>} */
-      const folded = hidden ? [{ label: rootLabel, path: '' }, ...segs.slice(0, hidden - 1).map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') }))] : [];
-      if (!hidden) {
-        const rootBtn = document.createElement('button');
-        rootBtn.className = 'scribe-library-crumb';
-        rootBtn.textContent = rootLabel;
-        rootBtn.dataset.dirTarget = '';
-        rootBtn.addEventListener('click', () => openDir(''));
-        crumbsElem.appendChild(rootBtn);
-      } else {
-        const midWrap = document.createElement('span');
-        midWrap.className = 'scribe-library-sort';
-        const midBtn = document.createElement('button');
-        midBtn.className = 'scribe-library-crumb';
-        midBtn.textContent = '…';
-        midBtn.title = folded.map((f) => f.label).join(' › ');
-        midBtn.setAttribute('aria-label', 'Hidden folders');
-        midBtn.setAttribute('aria-haspopup', 'menu');
-        const midMenu = document.createElement('div');
-        midMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
-        midMenu.setAttribute('role', 'menu');
-        midMenu.style.display = 'none';
-        const dropdown = createDropdown({
-          show: () => {
-            midMenu.style.display = '';
-            return midMenu;
-          },
-          hide: () => {
-            midMenu.style.display = 'none';
-          },
-          rows: '.scribe-library-menu-item',
-        });
-        midDropdown = dropdown;
-        for (const { label, path } of folded) {
-          const item = document.createElement('div');
-          item.className = 'scribe-library-menu-item';
-          item.setAttribute('role', 'menuitem');
-          item.appendChild(document.createTextNode(label));
-          item.addEventListener('click', () => {
-            dropdown.close();
-            openDir(path);
-          });
-          midMenu.appendChild(item);
-        }
-        dropdown.attachTrigger(midBtn);
-        midWrap.appendChild(midBtn);
-        midWrap.appendChild(midMenu);
-        crumbsElem.appendChild(midWrap);
+        pathBar.appendChild(sep);
       }
-      for (let i = Math.max(0, hidden - 1); i < segs.length; i++) {
-        addSep();
-        if (i === segs.length - 1) {
-          const cur = document.createElement('span');
-          cur.className = 'cur';
-          cur.textContent = segs[i];
-          crumbsElem.appendChild(cur);
-          cur.style.minWidth = `${Math.min(CUR_FLOOR, cur.scrollWidth)}px`;
-        } else {
-          const btn = document.createElement('button');
-          btn.className = 'scribe-library-crumb';
-          btn.textContent = segs[i];
-          const path = segs.slice(0, i + 1).join('/');
-          btn.dataset.dirTarget = path;
-          btn.addEventListener('click', () => openDir(path));
-          crumbsElem.appendChild(btn);
-        }
+      const last = i === parts.length - 1;
+      const item = document.createElement(last ? 'span' : 'button');
+      item.className = last ? 'scribe-library-pathitem cur' : 'scribe-library-pathitem';
+      item.textContent = part.label;
+      item.dataset.full = part.label;
+      if (!last) {
+        item.dataset.dirTarget = part.path;
+        item.addEventListener('click', () => openDir(part.path));
       }
-    }
-    crumbsDir = currentDir;
-  };
-
-  /**
-   * Fade the crumbs that moved between `before` and the crumbs as built now.
-   * The current name slides instead when only its place changed.
-   * @param {ReturnType<typeof measureCrumbs>} before
-   */
-  const crumbsTransition = (before) => {
-    const after = measureCrumbs();
-    const beforeBy = new Map(before.map((it) => [it.key, it]));
-    const afterBy = new Map(after.map((it) => [it.key, it]));
-    // A crumb stays only if its text keeps its place, so a name that moves fades out and back in.
-    // Names move only when ancestors collapse into the hidden-folders crumb.
-    /** @param {{textLeft: number}} a @param {{textLeft: number} | undefined} b */
-    const stays = (a, b) => !!b && Math.abs(a.textLeft - b.textLeft) <= 1;
-    const curKey = `dir:${crumbsDir}`;
-    const curWas = beforeBy.get(curKey);
-    const curNow = afterBy.get(curKey);
-    const isCur = (/** @type {{node: Node}} */ it) => it.node instanceof Element && it.node.classList.contains('cur');
-    const slideCur = !!curWas && !!curNow && isCur(curWas) && isCur(curNow) && Math.abs(curWas.left - curNow.left) > 1;
-    if (slideCur) /** @type {Element} */ (curNow.node).animate([{ transform: `translateX(${curWas.left - curNow.left}px)` }, { transform: 'none' }], { duration: 140, easing: 'ease' });
-    const leaving = before.filter((it) => !(slideCur && it.key === curKey) && !stays(it, afterBy.get(it.key)));
-    const coming = after.filter((it) => !(slideCur && it.key === curKey) && !stays(it, beforeBy.get(it.key)));
-    for (const it of after) {
-      const was = beforeBy.get(it.key);
-      if (!stays(it, was) || !was) continue;
-      if (was.color !== it.color && it.node instanceof Element) it.node.animate([{ color: was.color }, { color: it.color }], { duration: 160, easing: 'cubic-bezier(.4, 0, .2, 1)' });
-    }
-    // Where a leaving crumb and an arriving one share space, the arrival waits for the departure, so two names never show through each other.
-    const through = leaving.some((l) => coming.some((c) => l.left < c.left + c.width - 1 && c.left < l.left + l.width - 1));
-    for (const it of leaving) {
-      /** @type {HTMLElement} */
-      let ghost;
-      if (it.node instanceof HTMLElement) {
-        ghost = /** @type {HTMLElement} */ (it.node.cloneNode(true));
-      } else {
-        ghost = document.createElement('span');
-        ghost.textContent = it.node.textContent;
-      }
-      ghost.classList.add('scribe-library-crumb-ghost');
-      ghost.setAttribute('aria-hidden', 'true');
-      ghost.setAttribute('inert', '');
-      ghost.style.left = `${it.left}px`;
-      ghost.style.top = `${it.top}px`;
-      ghost.style.width = `${it.width}px`;
-      ghost.style.height = `${it.height}px`;
-      ghost.style.color = it.color;
-      crumbsElem.appendChild(ghost);
-      const fade = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: through ? 90 : 120, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' });
-      fade.finished.then(() => ghost.remove(), () => ghost.remove());
-    }
-    for (const it of coming) {
-      if (it.node instanceof Element) it.node.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 160, delay: through ? 80 : 40, easing: 'cubic-bezier(0, 0, .2, 1)', fill: 'backwards' });
-    }
-  };
-
-  const barRoom = () => {
-    const bar = /** @type {HTMLElement} */ (viewer.toolbarElem);
-    const corner = viewer.toolbarElemEnd?.querySelector('.scribe-shell-corner');
-    const cornerW = corner ? corner.getBoundingClientRect().width : 0;
-    const barRect = bar.getBoundingClientRect();
-    return barRect.width - (crumbsElem.getBoundingClientRect().left - barRect.left) - cornerW - 8;
-  };
-  /** @param {boolean} [full] - Count the current folder's crumb at its whole width. */
-  const crumbsNeed = (full = false) => {
-    let w = 0;
-    for (const el of crumbsElem.children) {
-      const c = /** @type {HTMLElement} */ (el);
-      if (c.classList.contains('scribe-library-crumb-ghost')) continue;
-      const cur = c.classList.contains('cur');
-      w += (cur ? (full ? c.scrollWidth : Math.min(CUR_FLOOR, c.scrollWidth)) : c.getBoundingClientRect().width) + 1;
-    }
-    return w + 1 + 8;
-  };
-  const controlsNeed = () => {
-    const host = /** @type {HTMLElement} */ (barControls);
-    if (host.hidden) return 0;
-    // Measured as laid out, so the dividers' margins and the gaps are included.
-    searchField.style.width = `${fieldFloor()}px`;
-    return host.scrollWidth;
-  };
-  /** Fit the path and the controls to the room the bar has. */
-  const syncCrumbs = () => {
-    for (const a of crumbsElem.getAnimations({ subtree: true })) a.finish();
-    for (const ghost of crumbsElem.querySelectorAll('.scribe-library-crumb-ghost')) ghost.remove();
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const before = visible && !reduced && !finder ? measureCrumbs() : null;
-    const due = crumbFadeDue;
-    crumbFadeDue = false;
-    const prevHidden = crumbHidden;
-    const segs = currentDir ? currentDir.split('/') : [];
-    /**
-     * Fill the Finder form's path bar from the current folder.
-     * The bar is on the surface, not the toolbar, so it fills whether or not the document library has the toolbar.
-     */
-    const fillPathBar = () => {
-      if (!finder) return;
-      const rootLabel = isLibrary && store ? store.root.name : opts.name;
-      if (finderBar && pathBarRoot === rootLabel && pathBarDir === currentDir && pathBar.hidden === !store) return;
-      pathBarRoot = rootLabel;
-      pathBarDir = currentDir;
-      pathBar.replaceChildren();
-      pathBar.hidden = !store;
-      const parts = [{ label: rootLabel, path: '' }, ...segs.map((seg, i) => ({ label: seg, path: segs.slice(0, i + 1).join('/') }))];
-      parts.forEach((part, i) => {
-        if (i) {
-          const sep = document.createElement('span');
-          sep.className = 'sep';
-          sep.textContent = '›';
-          pathBar.appendChild(sep);
-        }
-        const last = i === parts.length - 1;
-        const item = document.createElement(last ? 'span' : 'button');
-        item.className = last ? 'scribe-library-pathitem cur' : 'scribe-library-pathitem';
-        item.textContent = part.label;
-        item.dataset.full = part.label;
-        if (!last) {
-          item.dataset.dirTarget = part.path;
-          item.addEventListener('click', () => openDir(part.path));
-        }
-        pathBar.appendChild(item);
-      });
-      fitPathBar();
-    };
-    if (finderBar || !barControls || !barSwapped || !viewer.toolbarElem) {
-      crumbHidden = finder || segs.length < 3 ? 0 : segs.length - 1;
-      buildCrumbs();
-      fillPathBar();
-      if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
-      return;
-    }
-    const controls = barControls;
-    sortBtn.classList.remove('icon-only');
-    newBtn.classList.remove('icon-only');
-    // Clear inline widths set by roundBarButtons() so full-label widths can be measured.
-    sortBtn.style.width = '';
-    newBtn.style.width = '';
-    for (const el of [searchField, viewSeg, sortWrap, headerSep, newWrap, refreshBtn]) el.hidden = false;
-    const popped = searchField.classList.contains('popped');
-    findBtn.hidden = !popped;
-    moreWrap.hidden = true;
-    controls.hidden = dragUnfolded;
-    crumbHidden = 0;
-    buildCrumbs();
-    // The root and every ancestor below it can fold, but not the current name.
-    const foldable = segs.length;
-    fieldLow = false;
-    const syncMore = () => { moreWrap.hidden = controls.hidden || !(refreshBtn.hidden || newWrap.hidden || sortWrap.hidden || viewSeg.hidden); };
-    // The More button is decided before each measurement, so its width counts once something has folded into it.
-    const fits = () => {
-      syncMore();
-      return crumbsNeed() + controlsNeed() <= barRoom();
-    };
-    const foldOne = () => {
-      if (crumbHidden >= foldable) return false;
-      crumbHidden += 1;
-      buildCrumbs();
-      return true;
-    };
-    const steps = [
-      () => sortBtn.classList.add('icon-only'),
-      () => newBtn.classList.add('icon-only'),
-      foldOne,
-      () => { refreshBtn.hidden = true; },
-      () => { newWrap.hidden = true; headerSep.hidden = true; },
-      foldOne,
-      () => { sortWrap.hidden = true; },
-      foldOne,
-      () => { viewSeg.hidden = true; },
-      () => { fieldLow = true; },
-      () => { if (!popped) { searchField.hidden = true; findBtn.hidden = false; } },
-    ];
-    for (const step of steps) {
-      if (fits()) break;
-      step();
-    }
-    while (!fits() && foldOne()) { /* one more ancestor into the hidden-folders crumb */ }
-    if (popped || searchField.hidden) searchField.style.width = '';
-    else searchField.style.width = `${Math.min(320, fieldFloor() + Math.max(0, barRoom() - crumbsNeed(true) - controlsNeed()))}px`;
-    syncMore();
-    roundBarButtons();
-    fillPathBar();
-    if (before && (due || crumbHidden !== prevHidden)) crumbsTransition(before);
+      pathBar.appendChild(item);
+    });
+    fitPathBar();
   };
 
   const fitPathBar = () => {
@@ -2549,17 +2198,12 @@ export function createLibraryInstance(viewer, opts) {
       item.title = item.dataset.full ?? '';
     });
   };
-  /** @type {?ResizeObserver} */
-  let pathBarObserver = null;
-  if (finder) {
-    pathBarObserver = new ResizeObserver(() => fitPathBar());
-    pathBarObserver.observe(pathBar);
-  }
+  const pathBarObserver = new ResizeObserver(() => fitPathBar());
+  pathBarObserver.observe(pathBar);
 
   const buildMoreMenu = () => {
     moreMenu.replaceChildren();
     let sections = 0;
-    const inCol = form === 'column';
     /** @param {string} title */
     const section = (title) => {
       if (sections) {
@@ -2602,13 +2246,13 @@ export function createLibraryInstance(viewer, opts) {
       }
       moreMenu.appendChild(it);
     };
-    if (inCol ? colFold.view : viewSeg.hidden) {
+    if (folded.view) {
       section('View');
       for (const [mode, label] of [['grid', 'Grid'], ['list', 'List'], ['compact', 'Compact']]) {
         item(label, { on: viewMode === mode, role: 'menuitemradio' }, () => setViewMode(/** @type {'grid' | 'list' | 'compact'} */(mode)));
       }
     }
-    if (inCol ? colFold.sort : sortWrap.hidden) {
+    if (folded.sort) {
       section('Sort by');
       for (const sortItem of sortItems) {
         const mode = /** @type {keyof typeof SORT_LABELS} */ (sortItem.dataset.mode);
@@ -2619,18 +2263,18 @@ export function createLibraryInstance(viewer, opts) {
       moreMenu.appendChild(sep);
       item('Show other files', { on: showOthers, role: 'menuitemcheckbox' }, () => othersItem.click());
     }
-    if ((inCol ? colFold.new : newWrap.hidden) && !readOnly) {
+    if (folded.new && !readOnly) {
       section('New');
       item('New folder', { icon: MENU_FOLDER_PLUS_SVG }, () => newFolderItem.click());
       item('New PDF from images…', { icon: MENU_IMAGE_SVG }, () => newPdfItem.click());
       item('Add PDFs…', { icon: MENU_IMPORT_SVG }, () => addPdfsItem.click());
     }
     // The folder actions carry their own Refresh Folder, so the column's menu does not say it twice.
-    if (refreshBtn.hidden && !readOnly && !inCol) {
+    if (folded.refresh && !readOnly && controlsIn === 'bar') {
       section('');
       item('Refresh folder', { icon: MENU_REFRESH_SVG }, () => refreshBtn.click());
     }
-    if (inCol) {
+    if (controlsIn === 'col' && folderActions.length) {
       section('');
       for (const row of folderActions) {
         if (row === 'sep') {
@@ -2678,77 +2322,18 @@ export function createLibraryInstance(viewer, opts) {
   moreDropdown.attachTrigger(moreBtn);
 
   findBtn.addEventListener('click', () => {
-    if (finderBar && barSwapped) {
-      if (finderBar.rowOpen() && document.activeElement === searchInput && !searchInput.value) {
-        findBtn.focus();
-      } else finderBar.focus();
-      return;
-    }
-    searchField.hidden = false;
-    searchField.classList.add('popped');
-    searchField.style.width = '';
-    findBtn.hidden = true;
-    searchInput.focus();
-  });
-  const unpopField = () => {
-    if (!searchField.classList.contains('popped') || searchInput.value || document.activeElement === searchInput) return;
-    searchField.classList.remove('popped');
-    syncCrumbs();
-  };
-  searchInput.addEventListener('blur', () => {
-    if (finderBar) return;
-    window.setTimeout(() => {
-      unpopField();
-      if (barSwapped && !searchField.classList.contains('has-text')) syncCrumbs();
-    }, 0);
+    if (!finderBar || !barSwapped) return;
+    if (finderBar.rowOpen() && document.activeElement === searchInput && !searchInput.value) findBtn.focus();
+    else finderBar.focus();
   });
   if (finderBar) {
     findBtn.addEventListener('mousedown', (e) => { if (document.activeElement === searchInput) e.preventDefault(); });
     clearBtn.addEventListener('mousedown', (e) => { if (barSwapped) e.preventDefault(); });
   }
-  searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && searchField.classList.contains('popped') && !searchInput.value) {
-      searchInput.blur();
-      unpopField();
-    }
-  });
   const barObserver = new ResizeObserver(() => {
-    if (barSwapped) syncCrumbs();
+    if (barSwapped) syncBar();
   });
   if (viewer.toolbarElem) barObserver.observe(viewer.toolbarElem);
-
-  const unfoldForDrag = () => {
-    // The Finder form's path bar shows every folder at every width, so there is nothing to unfold.
-    if (finder || dragUnfolded || !barControls || !barSwapped || !viewer.toolbarElem || !crumbHidden) return;
-    dragUnfolded = true;
-    const bar = viewer.toolbarElem;
-    if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      const r = barControls.getBoundingClientRect();
-      const br = bar.getBoundingClientRect();
-      const copy = /** @type {HTMLElement} */ (barControls.cloneNode(true));
-      copy.setAttribute('inert', '');
-      copy.setAttribute('aria-hidden', 'true');
-      for (const inner of copy.querySelectorAll('[id]')) inner.removeAttribute('id');
-      copy.style.cssText = `position:absolute;left:${r.left - br.left}px;top:${r.top - br.top}px;width:${r.width}px;height:${r.height}px;display:flex;pointer-events:none;z-index:1`;
-      bar.appendChild(copy);
-      const fade = copy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: 'ease', fill: 'forwards' });
-      fade.finished.then(() => copy.remove(), () => copy.remove());
-    }
-    crumbFadeDue = true;
-    syncCrumbs();
-  };
-  /** @param {boolean} afterCrumbDrop */
-  const refoldAfterDrag = (afterCrumbDrop) => {
-    if (!dragUnfolded) return;
-    const back = () => {
-      dragUnfolded = false;
-      crumbFadeDue = true;
-      syncCrumbs();
-      if (barControls && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) barControls.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 120, easing: 'ease' });
-    };
-    if (afterCrumbDrop) window.setTimeout(back, 300);
-    else back();
-  };
 
   /**
    * View identity of the last render.
@@ -2803,7 +2388,7 @@ export function createLibraryInstance(viewer, opts) {
       // The browsed folder can vanish when a rescan follows a delete made outside the app.
       currentDir = '';
     }
-    syncCrumbs();
+    syncBar();
     if (manifest) {
       for (const p of selectedPaths) {
         if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1))) && !(manifest.others ?? []).includes(p)) selectedPaths.delete(p);
@@ -6293,7 +5878,7 @@ export function createLibraryInstance(viewer, opts) {
       if (!visible) activate({ render: false });
       else if (surface.style.display === 'none') applyForm({ render: false });
       render();
-      if (visible && form === 'column') {
+      if (visible && controlsIn === 'col') {
         storageReturnFocus = document.activeElement;
         colUpBtn.focus({ preventScroll: true });
       }
@@ -6311,10 +5896,10 @@ export function createLibraryInstance(viewer, opts) {
     render();
     const returnTo = /** @type {?HTMLElement} */ (storageReturnFocus);
     storageReturnFocus = null;
-    if (form === 'column' && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
+    if (controlsIn === 'col' && returnTo?.isConnected) returnTo.focus({ preventScroll: true });
   };
   surface.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || e.defaultPrevented || !storageOpen || form !== 'column') return;
+    if (e.key !== 'Escape' || e.defaultPrevented || !storageOpen || controlsIn !== 'col') return;
     e.preventDefault();
     closeStorage();
   });
@@ -6420,7 +6005,7 @@ export function createLibraryInstance(viewer, opts) {
     const saved = storageWork ? (storageWork.unknown ? null : storageWork.files) : 0;
     const sheet = document.createElement('div');
     sheet.className = 'scribe-library-storage';
-    if (form !== 'column') {
+    if (controlsIn !== 'col') {
       const back = document.createElement('button');
       back.type = 'button';
       back.className = 'back';
@@ -6856,7 +6441,6 @@ export function createLibraryInstance(viewer, opts) {
       const entry = manifest?.docs[relPath];
       if (entry) setThumbSrc(img, entry);
     },
-    barApproach: (reached, afterCrumbDrop) => (reached ? unfoldForDrag() : refoldAfterDrag(afterCrumbDrop)),
     foreignDrop: (phase, x, y, carried, ghost) => {
       if (carried.length !== 1 || carried[0].endsWith('/') || !viewer._cardDragTarget) return false;
       const relPath = carried[0];
@@ -7079,7 +6663,7 @@ export function createLibraryInstance(viewer, opts) {
           : `Couldn't open “${s.root.name}” — ${err instanceof Error ? err.message.replace(/\.$/, '') : 'the folder is not available'}.`);
       }
       render();
-      syncBarForStore();
+      syncHeadForStore();
       viewer._notifyMenuState();
       return;
     }
@@ -7203,10 +6787,10 @@ export function createLibraryInstance(viewer, opts) {
     shell?.getFolderPath?.(folderName).then((/** @type {any} */ r) => {
       if (!r?.dir || destroyed) return;
       folderDirs.set(folderName, r.dir);
-      if (finderBar && store?.root.name === folderName) buildCrumbs();
+      if (store?.root.name === folderName) syncBar();
       publishFolders();
     }).catch(() => { });
-    syncBarForStore();
+    syncHeadForStore();
     syncFolderRows();
     viewer._notifyMenuState();
     // Restore before the folder scan, so restore latency does not scale with library size.
@@ -7561,7 +7145,7 @@ export function createLibraryInstance(viewer, opts) {
     if (visible) applyForm();
     else positionSurface();
     syncColumnToggle();
-    syncBarForStore();
+    syncHeadForStore();
     syncFolderRows();
     viewer._notifyMenuState();
     writeResumeRecord();
@@ -7684,6 +7268,10 @@ export function createLibraryInstance(viewer, opts) {
       closeFolderRow,
     );
   }
+  if (!folderActions.length) {
+    colMoreBtn.title = 'More';
+    colMoreBtn.setAttribute('aria-label', 'More');
+  }
   /** @type {?HTMLElement} */
   let openFolderItem = null;
   /** @type {?HTMLElement} */
@@ -7732,11 +7320,7 @@ export function createLibraryInstance(viewer, opts) {
     syncClearTitle();
     if (fullTextResults && !filterText) fullTextResults = null;
     if (!fullTextResults) render();
-    else if (finderBar && barSwapped) buildCrumbs();
-  });
-  // Focus raises the field's floor, so the bar refits.
-  searchInput.addEventListener('focus', () => {
-    if (!finderBar && barSwapped) syncCrumbs();
+    else if (barSwapped) syncBar();
   });
   searchInput.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
@@ -8130,7 +7714,7 @@ export function createLibraryInstance(viewer, opts) {
   viewer.pdfViewerElem.addEventListener('focusin', trackEngagement, true);
 
   const focusSearch = () => {
-    if (form === 'column') {
+    if (controlsIn === 'col') {
       openColSearch();
       return;
     }
@@ -8249,7 +7833,7 @@ export function createLibraryInstance(viewer, opts) {
   }
   /** @param {KeyboardEvent} e */
   const onNavShortcut = (e) => {
-    if (!finder || !hasWindow() || docEngaged || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!hasWindow() || docEngaged || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
     if (e.target instanceof Element && e.target.closest('input, textarea, [contenteditable="true"]')) return;
     if (e.key === '[') goBack();
     else if (e.key === ']') goForward();
@@ -8346,6 +7930,8 @@ export function createLibraryInstance(viewer, opts) {
     },
     phoneUiChanged: () => {
       if (visible) applyForm();
+      else if (columnHidByPhone && !viewer._phoneUi && columnReady()) activate();
+      else syncColumnToggle();
     },
     docOpened: () => {
       if (!visible) {
@@ -8468,7 +8054,7 @@ export function createLibraryInstance(viewer, opts) {
       document.removeEventListener('pointerdown', noteInteraction, true);
       document.removeEventListener('keydown', noteInteraction, true);
       document.removeEventListener('keydown', onNavShortcut, true);
-      pathBarObserver?.disconnect();
+      pathBarObserver.disconnect();
       titleDropdown.destroy();
       document.removeEventListener('wheel', noteInteraction, { capture: true });
       document.removeEventListener('visibilitychange', onVisibilityChange);
@@ -8502,7 +8088,6 @@ export function createLibraryInstance(viewer, opts) {
       storageItem?.remove();
       sortDropdown.destroy();
       newDropdown.destroy();
-      midDropdown?.destroy();
       closeMovePicker();
       viewer.pdfViewerElem.removeEventListener('scribe-menu-state-change', syncFolderRows);
       if (ownsEditHooks) viewer.scribe.onAnnotationsEdited = null;
@@ -8517,12 +8102,11 @@ export function createLibraryInstance(viewer, opts) {
 /**
  * Install the document library on `viewer`.
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} viewer
- * @param {{settings?: ?Object, bar?: 'crumbs'|'finder'}} [options] - `settings` adjusts the search engine's defaults, `ENGINE_DEFAULTS` in searchEngine.js.
- *   `bar` is the toolbar's form, breadcrumbs by default.
+ * @param {{settings?: ?Object}} [options] - `settings` adjusts the search engine's defaults, `ENGINE_DEFAULTS` in searchEngine.js.
  */
-export function installLibrary(viewer, { settings = null, bar = 'crumbs' } = {}) {
+export function installLibrary(viewer, { settings = null } = {}) {
   return createLibraryInstance(viewer, {
-    kind: 'library', name: 'Library', glyph: FOLDER_TAB_SVG, persistPrefs: true, engineSettings: settings, bar,
+    kind: 'library', name: 'Library', glyph: FOLDER_TAB_SVG, persistPrefs: true, engineSettings: settings,
   });
 }
 
@@ -8551,7 +8135,6 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
     name,
     glyph: PORTFOLIO_TAB_SVG,
     store,
-    bar: viewer._libraryBar,
     viewDefault: 'compact',
     showOthersDefault: true,
     persistPrefs: false,
@@ -8564,6 +8147,8 @@ export async function openPortfolio(viewer, doc, name, fields = {}) {
       api.destroy();
       store.dispose();
       doc.close().catch(() => { });
+      // Closing a portfolio tab bypasses _closeTab, so restore the displaced view here when no document tabs remain.
+      if (viewer._tabs.length === 0) (viewer._returnSurface && viewer._libraryInstances.includes(viewer._returnSurface) ? viewer._returnSurface : viewer._libraryInstances[0])?.emptied();
     },
   });
   return api;

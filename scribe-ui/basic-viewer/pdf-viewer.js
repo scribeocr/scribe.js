@@ -1047,8 +1047,6 @@ class ScribePDFViewer {
     this._libraryInstances = [];
     /** @type {?import('../library/libraryView.js').LibraryInstance} The surface shown most recently, which an emptied tab strip returns to. */
     this._returnSurface = null;
-    /** @type {'crumbs'|'finder'} */
-    this._libraryBar = 'crumbs';
     /** @type {?('focused'|'global'|'off')} The keyboard scope a surface covering the document displaced, restored when it leaves. */
     this._keyboardScopeBehindSurface = null;
     /**
@@ -2100,7 +2098,7 @@ class ScribePDFViewer {
       import('../library/libraryView.js')
         .then(({ installLibrary }) => {
           if (this._destroyed) return;
-          this._library = installLibrary(this, { settings, bar: this._libraryBar });
+          this._library = installLibrary(this, { settings });
           this._notifyMenuState();
         })
         .catch((err) => console.error('Failed to load the document library.', err));
@@ -6832,16 +6830,6 @@ class ScribePDFViewer {
   }
 
   /**
-   * Choose the document library's toolbar form.
-   * 'finder' shows Back, Forward and the folder's name in the toolbar and the path in a bar under the contents, as a Finder window does.
-   * It applies to the library and to portfolios opened after the call.
-   * @param {'crumbs'|'finder'} bar
-   */
-  setLibraryBar(bar) {
-    this._libraryBar = bar;
-  }
-
-  /**
    * Hand the viewer the files a desktop shell can reopen by path, for the Recent list.
    * @param {Array<{label: string, dir?: string, open: () => void, remove: () => void}>} files
    * @param {() => void} [onClear] - Empties the shell's list.
@@ -6871,10 +6859,8 @@ class ScribePDFViewer {
   }
 
   /**
-   * Close what is in front, for a desktop shell's close-tab shortcut.
-   * The target is the active document's tab, or a closable surface such as a portfolio.
-   * A library preview is cleared rather than closed.
-   * Refused when the library's browse surface is in front, or when a viewer without a library would be left with no document.
+   * Close the active document tab or foreground PDF portfolio.
+   * Returns false when the document library view is in front, or when closing the sole tab has no document library or portfolio to return to.
    * @returns {boolean} Whether something was closed.
    */
   closeActiveDocument() {
@@ -6882,12 +6868,6 @@ class ScribePDFViewer {
     if (front) {
       if (!front.close) return false;
       front.close();
-      return true;
-    }
-    if (this._activeTab < 0 && this.doc) {
-      const owner = this._libraryInstances.find((inst) => inst.visible());
-      if (!owner?.clearPreview) return false;
-      owner.clearPreview();
       return true;
     }
     if (this._activeTab < 0 || (!this._libraryInstances.length && this._tabs.length < 2)) return false;
@@ -7220,6 +7200,8 @@ class ScribePDFViewer {
     // The phone layout forces single-page view, and leaving it restores the persisted preference.
     this._applyPageLayoutPref();
     this.pdfViewerElem.classList.toggle('scribe-phone', phone);
+    // Restore the toolbar before entering the phone UI so re-homed controls do not carry swapped-out display state into the dock.
+    if (phone) for (const inst of this._libraryInstances) inst.phoneUiChanged();
     if (this.toolbarElem && this._appMenu && this._searchBar) {
       if (phone) {
         this._buildPhoneUi();
@@ -7313,7 +7295,8 @@ class ScribePDFViewer {
     // A mode can be running through the flip, so its bar moves between the banner and the dock.
     this._syncModeBanner();
     this.scribe._editTextRefreshFrames?.();
-    for (const inst of this._libraryInstances) inst.phoneUiChanged();
+    // Wait until the toolbar is visible and repopulated before swapping the document library controls back into it.
+    if (!phone) for (const inst of this._libraryInstances) inst.phoneUiChanged();
     if (this.scribe.scrollContainer) this._relayout();
   }
 

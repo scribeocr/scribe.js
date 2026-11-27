@@ -46,8 +46,8 @@ const FLICK_MS = 60;
  * @property {boolean} started - Whether the press has become a drag.
  * @property {boolean} moved - Whether the pointer has traveled past the menu slop since the press.
  * @property {boolean} canReorder - Whether the current sort and view allow manual ordering.
- * @property {?string} dropDir - Move destination while over a folder or crumb, null for none.
- * @property {?HTMLElement} dropElem - The folder card, row, or crumb that destination comes from.
+ * @property {?string} dropDir - Move destination while over a folder or path bar item, null for none.
+ * @property {?HTMLElement} dropElem - The folder card, row, or path bar item that destination comes from.
  * @property {?HTMLElement} ownElem - The folder card or row under the pointer that already holds the pressed item, null for none.
  * @property {?HTMLElement} ghost - Floating copy tracking the pointer, a fan of pages for cards or a stack of rows for lists.
  * @property {?HTMLElement} line - Insertion-position line.
@@ -62,7 +62,6 @@ const FLICK_MS = 60;
  * @property {boolean} chip - Whether the drag ghost is the list's name chip (used when dragging a document row).
  * @property {number} pageW - The chip's page size at rest.
  * @property {number} pageH
- * @property {boolean} overBar - Whether the pointer has reached the bar at any time during the drag.
  * @property {boolean} foreign - Whether the pointer is over a target outside the document library.
  */
 
@@ -87,14 +86,13 @@ const FLICK_MS = 60;
  * @param {(dirPath: string, mini: boolean) => HTMLElement} deps.foldFor - A folder's fold at card or list size.
  * @param {(dirPath: string, moves: LibraryMove[], fromDir: string) => void} deps.finishLanding
  * @param {(img: HTMLImageElement, relPath: string) => void} deps.thumbFor - Point an image at a document's thumbnail.
- * @param {(reached: boolean, afterCrumbDrop: boolean) => void} deps.barApproach - Unfold a folded path when the pointer reaches the bar mid-drag, or fold it back when that drag ends.
  * @param {(phase: 'move'|'drop'|'cancel', clientX: number, clientY: number, carried: string[], ghost?: ?HTMLElement) => boolean} [deps.foreignDrop] - A target outside the document library.
  *   The drop phase passes the ghost so the target can animate its thumbnail into place before the ghost is removed.
  *   Answers whether the pointer is over such a target, and on a `drop` whether that target took the carried document.
  */
 export function createDragReorder({
   viewer, surface, body, selectedPaths, getManifest, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
-  previewFolder, unpreviewFolder, markOwnFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, barApproach, foreignDrop,
+  previewFolder, unpreviewFolder, markOwnFolder, startLanding, moveItems, foldFor, finishLanding, thumbFor, foreignDrop,
 }) {
   /** @type {?CardDrag} */
   let drag = null;
@@ -377,7 +375,7 @@ export function createDragReorder({
     if (icon) {
       const ir = icon.getBoundingClientRect();
       aimX = ir.left + ir.width / 2;
-    } else if (target.classList.contains('scribe-library-crumb') || target.classList.contains('scribe-library-pathitem')) aimX = target.getBoundingClientRect().left + 16;
+    } else if (target.classList.contains('scribe-library-pathitem')) aimX = target.getBoundingClientRect().left + 16;
     else aimX = (target.querySelector('.nm .t') ?? target).getBoundingClientRect().left + 8;
     const away = aimX - (pr.left + pr.width / 2);
     const dx = Math.abs(away) > FLICK_PX ? Math.sign(away) * FLICK_PX : away;
@@ -504,7 +502,7 @@ export function createDragReorder({
   };
 
   /**
-   * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination, and scale the drag ghost.
+   * Resolve the folder card, row, or path bar item under the pointer into the drag's move destination, and scale the drag ghost.
    * @param {CardDrag} d
    */
   const updateDropTarget = (d) => {
@@ -528,19 +526,7 @@ export function createDragReorder({
       return;
     }
     const under = document.elementFromPoint(d.lastX, d.lastY);
-    let target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
-    if (!target && viewer.toolbarElem) {
-      const bar = viewer.toolbarElem.getBoundingClientRect();
-      if (d.lastY >= bar.top && d.lastY <= bar.bottom && d.lastX >= bar.left && d.lastX <= bar.right) {
-        for (const crumb of viewer.toolbarElem.querySelectorAll('.scribe-library-crumb[data-dir-target]')) {
-          const r = crumb.getBoundingClientRect();
-          if (r.width && d.lastX >= r.left - 3 && d.lastX <= r.right + 3) {
-            target = /** @type {HTMLElement} */ (crumb);
-            break;
-          }
-        }
-      }
-    }
+    const target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
     const pressed = d.isDir ? d.relPath.slice(0, -1) : d.relPath;
     const cut = pressed.lastIndexOf('/');
     const parent = cut < 0 ? '' : pressed.slice(0, cut);
@@ -658,13 +644,6 @@ export function createDragReorder({
     }
     positionGhost(d);
     updateGap(d);
-    if (!d.overBar && viewer.toolbarElem) {
-      const bar = viewer.toolbarElem.getBoundingClientRect();
-      if (e.clientY >= bar.top - 2 && e.clientY <= bar.bottom + 2 && e.clientX >= bar.left && e.clientX <= bar.right) {
-        d.overBar = true;
-        barApproach(true, false);
-      }
-    }
     updateDropTarget(d);
     if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > MENU_SLOP) d.moved = true;
     const scrollRect = d.scroller.getBoundingClientRect();
@@ -869,7 +848,7 @@ export function createDragReorder({
   };
 
   /**
-   * Move the carried items into the dropped-on folder or crumb while the drag ghost flies into it.
+   * Move the carried items into the dropped-on folder or path bar item while the drag ghost flies into it.
    * @param {CardDrag} d
    */
   const commitMove = async (d) => {
@@ -906,7 +885,7 @@ export function createDragReorder({
     const cut = pressed.lastIndexOf('/');
     const fromDir = cut < 0 ? '' : pressed.slice(0, cut);
     const { moves, failed } = await moveItems(d.carried, destDir);
-    // Breadcrumb drops show an inline undo row in the list, so undo state must be recorded before re-rendering.
+    // Path bar drops show an inline undo row in the list, so undo state must be recorded before re-rendering.
     if (!isFolder) finishLanding(destDir, moves, fromDir);
     renderWithSlide();
     for (const p of failed) elemOf(p, d)?.classList.remove('dragging');
@@ -978,7 +957,6 @@ export function createDragReorder({
     d.line?.remove();
     surface.classList.remove('card-drag', 'chip-drag');
     viewer.pdfViewerElem.classList.remove('scribe-card-drag');
-    if (d.overBar) barApproach(false, commit && !!d.dropElem && d.dropDir != null && !d.dropElem.classList.contains('folder'));
     if (!d.started) {
       if (renderPending) {
         renderPending = false;
@@ -1099,7 +1077,6 @@ export function createDragReorder({
       chip: false,
       pageW: 0,
       pageH: 0,
-      overBar: false,
       foreign: false,
     };
     if (isTouch) {
