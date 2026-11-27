@@ -227,7 +227,7 @@ export function hashGlyphCommands(commands, fontMatrix) {
 }
 
 /**
- * Resolve a CIDFontType2's embedded TrueType program bytes from its FontDescriptor.
+ * Resolve a CIDFont's embedded TrueType program bytes from its FontDescriptor.
  * Prefers /FontFile2, falling back to /FontFile when it holds a TrueType sfnt (some generators store the program there).
  * @param {string} fdText - FontDescriptor object text
  * @param {ObjectCache} objCache
@@ -1673,6 +1673,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
 
     /** @type {{ fontFile: Uint8Array|null, cidToGidMap: Uint8Array|string|null, unicodeCMap?: boolean }|null} */
     let type0Info = null;
+    let type0ProgramIsTrueType = false;
     // /DescendantFonts can be:
     //   1. Array with indirect ref:  /DescendantFonts [ 15 0 R ]
     //   2. Indirect ref to array:    /DescendantFonts 14 0 R
@@ -1800,55 +1801,39 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const descStemV = resolveNumValue(fdText, 'StemV', objCache);
         if (descStemV > 0) stemV = descStemV;
 
-        // Extract FontFile2 for CIDFontType2 fonts (TrueType-based composite fonts)
-        const isCIDFontType2 = /\/Subtype\s*\/CIDFontType2/.test(cidFontText);
-        if (isCIDFontType2) {
-          let ffRefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
-          // Some generators store a CIDFontType2's TrueType program under the Type1 /FontFile key instead of /FontFile2.
-          // Accept it when its bytes are an sfnt, so the embedded glyphs are used instead of falling back to the ToUnicode.
-          if (!ffRefMatch) {
-            const ff1RefMatch = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(fdText);
-            if (ff1RefMatch) {
-              const probe = objCache.getStreamBytes(Number(ff1RefMatch[1]));
-              const magic = probe && probe.length >= 4
-                ? ((probe[0] << 24) | (probe[1] << 16) | (probe[2] << 8) | probe[3]) >>> 0 : 0;
-              if (magic === 0x00010000 || magic === 0x74727565) ffRefMatch = ff1RefMatch;
+        // Some producers declare /CIDFontType0 over a TrueType program, so the program is read whatever subtype the descendant declares.
+        const trueTypeProgram = resolveCidTrueTypeProgram(fdText, objCache);
+        if (trueTypeProgram) {
+          if (isPlaceholderFontName(baseName)) {
+            const dv = new DataView(trueTypeProgram.buffer, trueTypeProgram.byteOffset, trueTypeProgram.byteLength);
+            const nameEntry = opentype.readSfntTableDirectory(dv).name;
+            if (nameEntry) {
+              const names = /** @type {Object<string, Object<string, string>>} */ (
+                opentype.parseNameTable(dv, nameEntry.offset, undefined, nameEntry.length));
+              const psRaw = ((names.postScriptName && names.postScriptName.en)
+                || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
+              if (psRaw) {
+                baseName = psRaw;
+                familyName = ((names.preferredFamily && names.preferredFamily.en)
+                  || (names.fontFamily && names.fontFamily.en)
+                  || baseName.replace(/-.+/, '').replace(/,.*/, '')).replace(/^[A-Z]{6}\+/, '');
+              }
+              const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
+                || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
+              if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
+              if (/bold|black/i.test(baseName)) bold = true;
             }
           }
-          if (ffRefMatch) {
-            const fontFile = objCache.getStreamBytes(Number(ffRefMatch[1]));
-            if (fontFile) {
-              if (isPlaceholderFontName(baseName)) {
-                const dv = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
-                const nameEntry = opentype.readSfntTableDirectory(dv).name;
-                if (nameEntry) {
-                  const names = /** @type {Object<string, Object<string, string>>} */ (
-                    opentype.parseNameTable(dv, nameEntry.offset, undefined, nameEntry.length));
-                  const psRaw = ((names.postScriptName && names.postScriptName.en)
-                    || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
-                  if (psRaw) {
-                    baseName = psRaw;
-                    familyName = ((names.preferredFamily && names.preferredFamily.en)
-                      || (names.fontFamily && names.fontFamily.en)
-                      || baseName.replace(/-.+/, '').replace(/,.*/, '')).replace(/^[A-Z]{6}\+/, '');
-                  }
-                  const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
-                    || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
-                  if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
-                  if (/bold|black/i.test(baseName)) bold = true;
-                }
-              }
-              let cidToGidMap = 'identity';
-              if (!/\/CIDToGIDMap\s*\/Identity/.test(cidFontText)) {
-                const gidMapRef = /\/CIDToGIDMap\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
-                if (gidMapRef) {
-                  const mapBytes = objCache.getStreamBytes(Number(gidMapRef[1]));
-                  if (mapBytes) cidToGidMap = mapBytes;
-                }
-              }
-              type0Info = { fontFile, cidToGidMap };
+          let cidToGidMap = 'identity';
+          if (!/\/CIDToGIDMap\s*\/Identity/.test(cidFontText)) {
+            const gidMapRef = /\/CIDToGIDMap\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
+            if (gidMapRef) {
+              const mapBytes = objCache.getStreamBytes(Number(gidMapRef[1]));
+              if (mapBytes) cidToGidMap = mapBytes;
             }
           }
+          type0Info = { fontFile: trueTypeProgram, cidToGidMap };
+          type0ProgramIsTrueType = true;
         }
 
         // Extract FontFile3 for CIDFontType0 fonts (CFF-based composite fonts)
@@ -1941,9 +1926,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
 
       if (registry === 'Adobe' && ordering === 'Identity') {
-        // Adobe-Identity with CIDFontType2: CIDs are GIDs in the TrueType font.
-        // Use the font's cmap to reverse-map GID→Unicode.
-        const isCIDType2 = cidFontText && /\/Subtype\s*\/CIDFontType2/.test(cidFontText);
+        const isCIDType2 = type0ProgramIsTrueType || (cidFontText && /\/Subtype\s*\/CIDFontType2/.test(cidFontText));
         let gidMap = null;
         if (isCIDType2) {
           // Try the CIDFont's own embedded file first
@@ -3011,7 +2994,7 @@ function parseCIDWidths(cidFontText, widths) {
  */
 
 /**
- * Extract Type0 (CIDFontType2) font files directly from raw PDF bytes.
+ * Extract the TrueType programs of Type0 fonts directly from raw PDF bytes.
  * @param {Uint8Array} pdfBytes
  * @returns {{ [fontObjNum: number]: Type0FontInfo }}
  */
@@ -3092,9 +3075,6 @@ function extractType0FontFile(fontObjText, objCache) {
 
   const cidFontText = objCache.getObjectText(cidFontNum);
   if (!cidFontText) return null;
-
-  // Verify this is a CIDFontType2 (TrueType-based CID font)
-  if (!/\/Subtype\s*\/CIDFontType2/.test(cidFontText)) return null;
 
   // Follow FontDescriptor reference
   const fdRefMatch = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
