@@ -31,6 +31,7 @@ import {
 import { standardFontToCSS } from '../../pdf/fonts/standardFontMetrics.js';
 
 /** @typedef {import('../../font-parser/src/path.js').PathCommand} PathCommand */
+/** @typedef {import('../../pdf/parsePdfUtils.js').PDFToken} PDFToken */
 
 /**
  * Return the loaded supplemental opentype font backing a Base14 symbol family, or null.
@@ -453,6 +454,7 @@ function codeToHex(code, numBytes) {
  *
  * A text object whose every show converted (or carried no string bytes) is removed wholly: no BT/ET, no text state or positioning ops, no spacer TJs.
  * Text objects that keep any bytes (region miss, gated Tr mode, unresolvable glyph, invisible-text layers) retain the full skeleton so the kept shows stay positioned.
+ * Under redaction, consecutive removed glyphs and positioning ops collapse into a single move or TJ offset.
  *
  * @param {string} streamText
  * @param {Map<string, FontBinding>} fontsByTag
@@ -555,6 +557,10 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   let tl = its ? its.tl : 0;
   let tr = its ? its.tr : 0;
   let ts = its ? its.ts : 0;
+  let heldMoves = /** @type {{ ops: Array<{tokens: Array<PDFToken>, op: string}>, kind: 'Td' | 'Tm', tx: number, ty: number, dirty: boolean } | null} */ (null);
+  let heldDisp = /** @type {{ d: number, vertical: boolean, dirty: boolean, ops: Array<{tokens: Array<PDFToken>, op: string}> } | null} */ (null);
+  /** The leading the output has, which lags `tl` while a TD sits in a held chain. */
+  let emittedTl = tl;
   const hiddenOCMCNames = opts.hiddenOCMCNames || null;
   /** @type {boolean[]} */
   const mcHiddenStack = [];
@@ -600,17 +606,34 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const formInvocations = [];
   let changed = false;
 
-  /** @param {string} opVal */
-  function emitVerbatim(opVal) {
-    for (let i = 0; i < operandBuf.length; i++) {
-      out.push(serializeContentToken(operandBuf[i]));
-      out.push(i + 1 < operandBuf.length ? ' ' : '\n');
-    }
-    if (operandBuf.length === 0 || !out[out.length - 1].endsWith('\n')) {
-      if (operandBuf.length > 0) out[out.length - 1] = ' ';
+  /**
+   * Write one operator with its operands.
+   * @param {ReadonlyArray<PDFToken>} operands
+   * @param {string} opVal
+   */
+  function writeOp(operands, opVal) {
+    for (let i = 0; i < operands.length; i++) {
+      out.push(serializeContentToken(operands[i]));
+      out.push(i + 1 < operands.length ? ' ' : '\n');
     }
     out.push(opVal);
     out.push('\n');
+  }
+
+  /**
+   * Flush held moves and displacements when no glyph was removed.
+   * @param {string} opVal
+   */
+  function flushCleanHeld(opVal) {
+    if (heldMoves && !heldMoves.dirty) flushHeldMoves();
+    // Keep clean TJ spacers held across mid-line color changes so they still merge with an adjacent redacted run.
+    if (heldDisp && !heldDisp.dirty && !PAINT_STATE_OPS.has(opVal)) flushHeldDisp();
+  }
+
+  /** @param {string} opVal */
+  function emitVerbatim(opVal) {
+    flushCleanHeld(opVal);
+    writeOp(/** @type {Array<PDFToken>} */ (operandBuf), opVal);
     operandBuf.length = 0;
   }
 
@@ -620,6 +643,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
    * @param {string} opVal
    */
   function emitPersistVerbatim(opVal) {
+    // Held text ops must land before the recorded range, or removal of the text object would keep them.
+    flushCleanHeld(opVal);
     const s = out.length;
     emitVerbatim(opVal);
     if (inBT && btStart >= 0) btPersist.push([s, out.length]);
@@ -684,6 +709,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
    * Flush pending glyph converts from inside a text object.
    */
   function bounceFlushInBT() {
+    settleHeldAtEnd();
     // Paths are illegal inside a text object, so the flush must sit outside BT/ET.
     out.push('ET\n');
     flushPendingConverts();
@@ -714,6 +740,146 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         }
       }
     }
+  }
+
+  /** Write `TL` when a TD that was folded away left the output's leading behind. */
+  function syncLeading() {
+    if (emittedTl !== tl) {
+      out.push(`${fmt(tl)} TL\n`);
+      emittedTl = tl;
+    }
+  }
+
+  /** Write the held positioning operators. */
+  function flushHeldMoves() {
+    const h = heldMoves;
+    heldMoves = null;
+    if (!h) return;
+    if (!h.dirty) {
+      for (const o of h.ops) writeOp(o.tokens, o.op);
+      emittedTl = tl;
+      return;
+    }
+    if (h.kind === 'Tm') {
+      out.push(`${fmt(tlm[0], PDF_MATRIX_DECIMALS)} ${fmt(tlm[1], PDF_MATRIX_DECIMALS)} ${fmt(tlm[2], PDF_MATRIX_DECIMALS)} ${fmt(tlm[3], PDF_MATRIX_DECIMALS)} ${fmt(tlm[4], PDF_MATRIX_DECIMALS)} ${fmt(tlm[5], PDF_MATRIX_DECIMALS)} Tm\n`);
+    } else {
+      out.push(`${fmt(h.tx, PDF_MATRIX_DECIMALS)} ${fmt(h.ty, PDF_MATRIX_DECIMALS)} Td\n`);
+    }
+    syncLeading();
+  }
+
+  // Match applySpacerToMatrix, including its vertical tz scaling, so emitted spacers stay in sync with tm.
+  /**
+   * Convert a TJ spacer number into text-space displacement.
+   * @param {number} n
+   */
+  function spacerToDisp(n) {
+    return -n / 1000 * currentFontSize * tz / 100;
+  }
+  /**
+   * Convert a text-space displacement into a TJ spacer number, or null at zero scale.
+   * @param {number} d
+   */
+  function dispToSpacer(d) {
+    const k = currentFontSize * tz / 100;
+    return Math.abs(k) > 1e-12 ? -d * 1000 / k : null;
+  }
+
+  /**
+   * Hold a displacement for the next kept show.
+   * @param {number} d - text-space displacement
+   * @param {boolean} dirty - true when removed glyphs are part of it
+   * @param {boolean} vertical
+   * @param {Array<PDFToken> | null} operands
+   * @param {string | null} op
+   */
+  function holdDisplacement(d, dirty, vertical, operands, op) {
+    if (!heldDisp) {
+      heldDisp = {
+        d: 0, vertical, dirty: false, ops: [],
+      };
+    }
+    heldDisp.d += d;
+    heldDisp.vertical = vertical;
+    if (dirty) heldDisp.dirty = true;
+    else if (!heldDisp.dirty && operands && op) heldDisp.ops.push({ tokens: operands, op });
+  }
+
+  /** Write the held displacement after the chain it follows. */
+  function flushHeldDisp() {
+    const h = heldDisp;
+    heldDisp = null;
+    if (!h) return;
+    flushHeldMoves();
+    if (!h.dirty) {
+      for (const o of h.ops) writeOp(o.tokens, o.op);
+      return;
+    }
+    const s = dispToSpacer(h.d);
+    if (s !== null) out.push(`[${fmt(s)}] TJ\n`);
+  }
+
+  /** Settle the held displacement before a positioning operator. */
+  function settleDispBeforeMove() {
+    // Skip clean TJ spacers once heldMoves is dirty so they do not flush the folded move early.
+    if (heldDisp && !heldDisp.dirty && !(heldMoves && heldMoves.dirty)) flushHeldDisp();
+    heldDisp = null;
+  }
+
+  /**
+   * Hold a positioning operator instead of writing it.
+   * @param {string} op
+   * @param {number} tx
+   * @param {number} ty
+   */
+  function holdPositioning(op, tx, ty) {
+    settleDispBeforeMove();
+    if (!heldMoves) {
+      heldMoves = {
+        ops: [], kind: 'Td', tx: 0, ty: 0, dirty: false,
+      };
+    }
+    heldMoves.ops.push({ tokens: /** @type {Array<PDFToken>} */ (operandBuf.slice()), op });
+    if (op === 'Tm') heldMoves.kind = 'Tm';
+    else if (heldMoves.kind === 'Td') { heldMoves.tx += tx; heldMoves.ty += ty; }
+    operandBuf.length = 0;
+  }
+
+  /** Fold the next-line step of ' or " into the held chain. */
+  function foldLineStep() {
+    if (!heldMoves) {
+      heldMoves = {
+        ops: [], kind: 'Td', tx: 0, ty: 0, dirty: false,
+      };
+    }
+    heldMoves.ops.push({ tokens: [], op: 'T*' });
+    if (heldMoves.kind === 'Td') heldMoves.ty -= tl;
+    heldMoves.dirty = true;
+  }
+
+  /**
+   * Write a ' or " show as Tj, its next-line step having gone into the held chain.
+   * @param {string} op
+   * @param {number | null} aw
+   * @param {number | null} ac
+   */
+  function writeQuoteShowAsTj(op, aw, ac) {
+    if (op === '"' && aw !== null && ac !== null) {
+      out.push(`${fmt(aw)} Tw\n`);
+      out.push(`${fmt(ac)} Tc\n`);
+    }
+    const strTok = /** @type {PDFToken | undefined} */ (operandBuf[operandBuf.length - 1]);
+    if (strTok) writeOp([strTok], 'Tj');
+    operandBuf.length = 0;
+  }
+
+  /** Settle the held items where the text position dies, at ET or a bounce. */
+  function settleHeldAtEnd() {
+    if (heldMoves && heldMoves.dirty) heldMoves = null;
+    else flushHeldMoves();
+    if (heldDisp && !heldDisp.dirty) flushHeldDisp();
+    heldDisp = null;
+    syncLeading();
   }
 
   /**
@@ -931,6 +1097,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     }
 
     if (op === 'q') {
+      flushHeldMoves();
+      flushHeldDisp();
       flushPendingConverts();
       gsStack.push({
         tc, tw, tz, tl, tr, ts, fontTag: currentFontTag, fontSize: currentFontSize, ctm: ctm.slice(), lw, dashActive, ml,
@@ -939,6 +1107,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       continue;
     }
     if (op === 'Q') {
+      flushHeldMoves();
+      flushHeldDisp();
       flushPendingConverts();
       const s = gsStack.pop();
       if (s) {
@@ -954,10 +1124,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         dashActive = s.dashActive;
         ml = s.ml;
       }
+      emittedTl = tl;
       emitPersistVerbatim(op);
       continue;
     }
     if (op === 'cm') {
+      flushHeldMoves();
+      flushHeldDisp();
       flushPendingConverts();
       if (operandBuf.length >= 6) {
         const m = operandBuf.slice(operandBuf.length - 6).map((t) => t.value);
@@ -1010,6 +1183,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     }
 
     if (op === 'BT') {
+      settleHeldAtEnd();
       inBT = true;
       tm = [1, 0, 0, 1, 0, 0];
       tlm = [1, 0, 0, 1, 0, 0];
@@ -1023,6 +1197,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       continue;
     }
     if (op === 'ET') {
+      settleHeldAtEnd();
       inBT = false;
       if (btStart >= 0 && !btKept) {
         // Later text objects inherit Tc/Tw/Tz/TL/Tf/Tr/Ts, so a setter dropped with this skeleton has to be replayed.
@@ -1041,6 +1216,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         if ((currentFontTag !== btSnap.fontTag || currentFontSize !== btSnap.fontSize) && currentFontTag) {
           out.push(`/${currentFontTag} ${fmt(currentFontSize)} Tf\n`);
         }
+        emittedTl = tl;
         // A bare `BT` push counts 2 entries, so `dropped > 2` means the object held real content.
         // Removing an empty BT/ET pair changes no semantics and must not force a rewrite.
         if (dropped > 2) changed = true;
@@ -1062,6 +1238,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       if (operandBuf.length >= 2) {
         const nameTok = operandBuf[operandBuf.length - 2];
         const sizeTok = operandBuf[operandBuf.length - 1];
+        if (heldDisp && nameTok && nameTok.type === 'name') {
+          const next = fontsByTag.get(nameTok.value);
+          if (!!(next && next.verticalMode) !== heldDisp.vertical) flushHeldDisp();
+        }
+        if (heldDisp && sizeTok && sizeTok.type === 'number' && sizeTok.value === 0) flushHeldDisp();
         if (nameTok && nameTok.type === 'name') currentFontTag = nameTok.value;
         if (sizeTok && sizeTok.type === 'number') currentFontSize = sizeTok.value;
       }
@@ -1079,13 +1260,17 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       continue;
     }
     if (op === 'Tz') {
-      if (operandBuf.length >= 1 && operandBuf[operandBuf.length - 1].type === 'number') tz = operandBuf[operandBuf.length - 1].value;
+      if (operandBuf.length >= 1 && operandBuf[operandBuf.length - 1].type === 'number') {
+        if (heldDisp && operandBuf[operandBuf.length - 1].value === 0) flushHeldDisp();
+        tz = operandBuf[operandBuf.length - 1].value;
+      }
       emitVerbatim(op);
       continue;
     }
     if (op === 'TL') {
       if (operandBuf.length >= 1 && operandBuf[operandBuf.length - 1].type === 'number') tl = operandBuf[operandBuf.length - 1].value;
       emitVerbatim(op);
+      emittedTl = tl;
       continue;
     }
     if (op === 'Tr') {
@@ -1103,32 +1288,43 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         tm = operandBuf.slice(operandBuf.length - 6).map((t) => t.value);
         tlm = tm.slice();
       }
-      emitVerbatim(op);
+      if (redactActive && inBT) holdPositioning(op, 0, 0);
+      else emitVerbatim(op);
       continue;
     }
     if (op === 'Td') {
+      let tx = 0;
+      let ty = 0;
       if (operandBuf.length >= 2) {
-        const tx = operandBuf[operandBuf.length - 2].value;
-        const ty = operandBuf[operandBuf.length - 1].value;
+        tx = operandBuf[operandBuf.length - 2].value;
+        ty = operandBuf[operandBuf.length - 1].value;
         tlm = [tlm[0], tlm[1], tlm[2], tlm[3],
           tx * tlm[0] + ty * tlm[2] + tlm[4],
           tx * tlm[1] + ty * tlm[3] + tlm[5]];
         tm = tlm.slice();
       }
-      emitVerbatim(op);
+      if (redactActive && inBT) holdPositioning(op, tx, ty);
+      else emitVerbatim(op);
       continue;
     }
     if (op === 'TD') {
+      let tx = 0;
+      let ty = 0;
       if (operandBuf.length >= 2) {
-        const tx = operandBuf[operandBuf.length - 2].value;
-        const ty = operandBuf[operandBuf.length - 1].value;
+        tx = operandBuf[operandBuf.length - 2].value;
+        ty = operandBuf[operandBuf.length - 1].value;
         tl = -ty;
         tlm = [tlm[0], tlm[1], tlm[2], tlm[3],
           tx * tlm[0] + ty * tlm[2] + tlm[4],
           tx * tlm[1] + ty * tlm[3] + tlm[5]];
         tm = tlm.slice();
       }
-      emitVerbatim(op);
+      if (redactActive && inBT) {
+        holdPositioning(op, tx, ty);
+      } else {
+        emitVerbatim(op);
+        emittedTl = tl;
+      }
       continue;
     }
     if (op === 'T*') {
@@ -1138,13 +1334,16 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         tx * tlm[0] + ty * tlm[2] + tlm[4],
         tx * tlm[1] + ty * tlm[3] + tlm[5]];
       tm = tlm.slice();
-      emitVerbatim(op);
+      if (redactActive && inBT) holdPositioning(op, tx, ty);
+      else emitVerbatim(op);
       continue;
     }
 
     if (op === 'Do') {
       // Record the invocation for the orchestrator to recurse into. CTM is captured before any state change.
       // The form's /Resources lookup happens in the orchestrator; we just track (name, current ctm) here.
+      flushHeldMoves();
+      flushHeldDisp();
       flushPendingConverts();
       // Deletion is checked before the redaction alias below, so a draw that is both deleted and redacted is removed outright instead of replaced by a scrubbed copy.
       if (imageDeletes && parentImages && operandBuf.length >= 1) {
@@ -1379,6 +1578,19 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           // No advance can be replayed without widths, but later absolute positioning (Tm/Td/TD/T*) re-anchors, so only same-object relative text drifts.
           skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-dropped-unresolved-font-show' });
           changed = true;
+          if (inBT) {
+            if (op === "'" || op === '"') {
+              settleDispBeforeMove();
+              if (op === '"' && aw !== null && ac !== null) {
+                out.push(`${fmt(aw)} Tw\n`);
+                out.push(`${fmt(ac)} Tc\n`);
+              }
+              foldLineStep();
+            } else {
+              if (heldMoves) heldMoves.dirty = true;
+              if (heldDisp) heldDisp.dirty = true;
+            }
+          }
           operandBuf.length = 0;
           continue;
         }
@@ -1398,6 +1610,24 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       // The kept bytes still render or stay selectable, so the enclosing text object cannot be removed.
       // Tr 3 counts too, since invisible text is the selectable layer over a scanned page.
       if (inBT && operandHasBytes(operand)) btKept = true;
+      if (redactActive && inBT) {
+        if (op === "'" || op === '"') {
+          settleDispBeforeMove();
+          if (heldMoves && heldMoves.dirty) {
+            foldLineStep();
+            flushHeldMoves();
+            writeQuoteShowAsTj(op, aw, ac);
+            continue;
+          }
+        } else if (operandHasBytes(operand)) {
+          flushHeldMoves();
+          flushHeldDisp();
+        } else if ((heldMoves && heldMoves.dirty) || (heldDisp && heldDisp.dirty)) {
+          operandBuf.length = 0;
+          changed = true;
+          continue;
+        }
+      }
       emitVerbatim(op);
       continue;
     }
@@ -1414,6 +1644,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     /** @type {Array<{kind: 'glyph', code: number, numBytes: number} | {kind: 'spacer', value: number}>} */
     const outputElems = [];
     let anyConvert = false;
+    let anyDropped = false;
     // The 2x2 of trmPrefix * tm is translation-invariant across the run, so the pen width and anisotropy ratio computed on the first resolved glyph hold for every glyph.
     /** @type {number | null} */
     let runStrokeW = null;
@@ -1447,6 +1678,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           didConvert = true;
           outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
           anyConvert = true;
+          anyDropped = true;
         }
       }
 
@@ -1560,18 +1792,73 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       advanceMatrixForGlyph(tm, binding, code, numBytes);
     }
 
+    const lineStepShow = op === "'" || op === '"';
+    const keptGlyph = outputElems.some((e) => e.kind === 'glyph');
     if (!anyConvert) {
-      if (operandHasBytes(operand)) btKept = true;
+      const hasBytes = operandHasBytes(operand);
+      if (hasBytes) btKept = true;
+      if (redactActive) {
+        if (lineStepShow) {
+          settleDispBeforeMove();
+          if (heldMoves && heldMoves.dirty) {
+            foldLineStep();
+            flushHeldMoves();
+            writeQuoteShowAsTj(op, aw, ac);
+            continue;
+          }
+        } else if (!hasBytes) {
+          if (outputElems.length > 0) {
+            // Hold numbers-only TJ arrays too so a standalone spacer next to a removed run merges into one number.
+            let d = 0;
+            for (const e of outputElems) if (e.kind === 'spacer') d += spacerToDisp(e.value);
+            holdDisplacement(d, false, !!binding.verticalMode, /** @type {Array<PDFToken>} */ (operandBuf.slice()), op);
+            operandBuf.length = 0;
+            continue;
+          }
+          if ((heldMoves && heldMoves.dirty) || (heldDisp && heldDisp.dirty)) {
+            // Drop empty shows inside a removed run so interleaved () Tj ops collapse along with the surrounding moves.
+            operandBuf.length = 0;
+            changed = true;
+            continue;
+          }
+        } else {
+          flushHeldMoves();
+          flushHeldDisp();
+        }
+      }
       emitVerbatim(op);
       continue;
     }
     changed = true;
-    if (outputElems.some((e) => e.kind === 'glyph')) btKept = true;
+    if (keptGlyph) btKept = true;
 
     // Verbatim positioning ops and advance-mimicking spacer TJs have already reproduced the original tm, so the output position equals this show's start.
     // The TJ therefore goes out in place, with no ET/BT bounce and no Tm re-emit.
     // ' and " advance to the next line (and " sets Tw/Tc) as part of the op being replaced, so emit those state effects explicitly.
-    if (op === "'") {
+    // A path-only show with nothing redacted still emits TJ spacers below, so held moves must flush before it.
+    const writesAtPosition = keptGlyph || !anyDropped;
+    if (redactActive) {
+      if (lineStepShow) {
+        settleDispBeforeMove();
+        if (op === '"' && aw !== null && ac !== null) {
+          out.push(`${fmt(aw)} Tw\n`);
+          out.push(`${fmt(ac)} Tc\n`);
+        }
+        if (heldMoves && heldMoves.dirty) {
+          foldLineStep();
+          if (writesAtPosition) flushHeldMoves();
+        } else if (writesAtPosition) {
+          flushHeldMoves();
+          out.push('T*\n');
+        } else {
+          foldLineStep();
+        }
+      } else if (writesAtPosition) {
+        flushHeldMoves();
+      } else if (heldMoves) {
+        heldMoves.dirty = true;
+      }
+    } else if (op === "'") {
       out.push('T*\n');
     } else if (op === '"' && aw !== null && ac !== null) {
       out.push(`${fmt(aw)} Tw\n`);
@@ -1579,26 +1866,44 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       out.push('T*\n');
     }
 
-    /** @param {typeof outputElems} elems */
-    const emitTJ = (elems) => {
-      const parts = [];
-      let hex = '';
-      for (const e of elems) {
-        if (e.kind === 'glyph') {
-          hex += codeToHex(e.code, e.numBytes);
-        } else {
-          if (hex) { parts.push(`<${hex}>`); hex = ''; }
-          parts.push(fmt(e.value));
-        }
+    let elems = outputElems;
+    if (redactActive && (anyDropped || heldDisp)) {
+      let end = outputElems.length;
+      while (end > 0 && outputElems[end - 1].kind === 'spacer') end--;
+      elems = [];
+      if (end > 0 && heldDisp) {
+        const s = dispToSpacer(heldDisp.d);
+        heldDisp = null;
+        if (s !== null) elems.push({ kind: 'spacer', value: s });
       }
-      if (hex) parts.push(`<${hex}>`);
-      if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
-    };
+      for (let i = 0; i < end; i++) {
+        const e = outputElems[i];
+        const last = elems[elems.length - 1];
+        if (e.kind === 'spacer' && last && last.kind === 'spacer') last.value += e.value;
+        else elems.push(e.kind === 'spacer' ? { kind: 'spacer', value: e.value } : e);
+      }
+      let tail = 0;
+      for (let i = end; i < outputElems.length; i++) tail += spacerToDisp(/** @type {{kind: 'spacer', value: number}} */ (outputElems[i]).value);
+      if (end < outputElems.length) holdDisplacement(tail, true, !!binding.verticalMode, null, null);
+    }
 
-    emitTJ(outputElems);
+    const parts = [];
+    let hex = '';
+    for (const e of elems) {
+      if (e.kind === 'glyph') {
+        hex += codeToHex(e.code, e.numBytes);
+      } else {
+        if (hex) { parts.push(`<${hex}>`); hex = ''; }
+        parts.push(fmt(e.value));
+      }
+    }
+    if (hex) parts.push(`<${hex}>`);
+    if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
     operandBuf.length = 0;
   }
 
+  flushHeldMoves();
+  flushHeldDisp();
   flushPendingConverts();
   flushPathBufVerbatim();
   if (operandBuf.length > 0) {
