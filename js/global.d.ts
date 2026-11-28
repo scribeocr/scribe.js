@@ -589,8 +589,8 @@ declare global {
          */
         codes?: number[];
         /**
-         * Marks a word drawn by a Type 3 font or in vertical writing.
-         * The word's line is not editable.
+         * Marks a word whose line is not editable.
+         * Set for Type 3 fonts, vertical writing, and Form XObjects drawn more than once under one resource name.
          */
         uneditable?: true;
     };

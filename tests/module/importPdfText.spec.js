@@ -885,6 +885,29 @@ describe('Check that PDF imports split words correctly.', () => {
     expect(doc.getPage(0).lines[4].words[1].text).toBe('ANNUAL');
   });
 
+  test('Sign and Fill offers the 13 empty checkboxes of the cover page and none of its 8 checked ones', () => {
+    const targets = doc.detectFillTargets(0);
+    expect(targets.map((t) => [t.kind, t.source, t.bbox.left, t.bbox.top, t.bbox.right, t.bbox.bottom]),
+      'each empty box glyph must be offered once, at the square the glyph draws').toEqual([
+      ['checkbox', 'glyph', 88, 664, 116, 691],
+      ['checkbox', 'glyph', 1917, 1847, 1939, 1869],
+      ['checkbox', 'glyph', 1832, 1897, 1854, 1920],
+      ['checkbox', 'glyph', 356, 2026, 378, 2048],
+      ['checkbox', 'glyph', 2079, 2116, 2101, 2138],
+      ['checkbox', 'glyph', 2307, 2281, 2329, 2303],
+      ['checkbox', 'glyph', 776, 2332, 798, 2354],
+      ['checkbox', 'glyph', 2307, 2332, 2329, 2354],
+      ['checkbox', 'glyph', 2307, 2384, 2329, 2406],
+      ['checkbox', 'glyph', 1216, 2490, 1238, 2512],
+      ['checkbox', 'glyph', 901, 2670, 923, 2692],
+      ['checkbox', 'glyph', 1295, 2760, 1317, 2782],
+      ['checkbox', 'glyph', 1618, 2811, 1640, 2833],
+    ]);
+    const checked = doc.getPage(0).lines[4].words[0].bbox;
+    expect(targets.some((t) => t.bbox.left < checked.right && t.bbox.right > checked.left && t.bbox.top < checked.bottom && t.bbox.bottom > checked.top),
+      'the checked box before "ANNUAL REPORT" must not be offered').toBe(false);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -1196,6 +1219,18 @@ describe('Check that symbols are detected for PDF imports.', () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
     expect(doc.getPage(0).lines[9].words.length).toBe(4);
     expect(doc.getPage(0).lines[9].words[1].text).toBe('Attorney,');
+  });
+
+  test('Sign and Fill offers the blank form\'s checkboxes and write-in blanks on each of its 6 pages', () => {
+    const pages = [0, 1, 2, 3, 4, 5].map((n) => doc.detectFillTargets(n));
+    expect(pages.map((targets) => [targets.filter((t) => t.kind === 'checkbox').length, targets.filter((t) => t.kind === 'blank').length]),
+      'the count of checkboxes and of blanks offered on each page').toEqual([[7, 19], [14, 2], [9, 4], [4, 1], [4, 2], [2, 11]]);
+    const first = pages[0][0];
+    expect([first.kind, first.source, first.bbox.left, first.bbox.top, first.bbox.right, first.bbox.bottom],
+      'the first target of page 1 is the "Court Code" blank, at its underscores').toEqual(['blank', 'underscore', 563, 329, 963, 396]);
+    const last = pages[1][15];
+    expect([last.kind, last.source, last.bbox.left, last.bbox.top, last.bbox.right, last.bbox.bottom],
+      'the last target of page 2 is a checkbox, at the square its glyph draws').toEqual(['checkbox', 'glyph', 468, 2840, 516, 2888]);
   });
 
   afterAll(async () => {

@@ -411,9 +411,10 @@ export function detectFillTargets(doc, n, rejects) {
       // A flattened form fill leaves the box glyph unchanged and puts the mark on top of it, as a separate text word ("X") or as drawn strokes.
       // Sibling empty-box glyphs are exempt because stacked box rows overlap typographically when the row pitch is tighter than the glyph's em box.
       const drawnBox = glyphInk.get(word.id) || word.bbox;
+      const drawnArea = (drawnBox.right - drawnBox.left) * (drawnBox.bottom - drawnBox.top);
       const covered = words.some((o) => {
         if (o === word) return false;
-        if (overArea(o.bbox, word.bbox) < w * h * DETECT.boxCoverFrac) return false;
+        if (overArea(o.bbox, drawnBox) < drawnArea * DETECT.boxCoverFrac) return false;
         const oc = [...o.text];
         return !(oc.length === 1 && CHECKBOX_CODES.has(oc[0].codePointAt(0)));
       }) || boxMarked(drawnBox);

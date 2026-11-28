@@ -165,7 +165,7 @@ export async function deleteTextLines(doc, lines, label = 'Deleted text') {
         for (const w of line.words) {
           const e = nt[w.id];
           if (!e) throw new Error(`deleteTextLines: word "${w.text}" (${w.id}) is not visible native text.`);
-          if (e.uneditable) throw new Error(`deleteTextLines: word "${w.text}" (${w.id}) is native text that is not editable (a Type 3 font or vertical writing).`);
+          if (e.uneditable) throw new Error(`deleteTextLines: word "${w.text}" (${w.id}) is native text that is not editable (a Type 3 font, vertical writing, or a Form XObject drawn more than once).`);
           kept.words += 1;
           if (e.penX) {
             kept.specs.push({
@@ -298,7 +298,7 @@ export async function replaceTextLine(doc, lineIn, newText, opts) {
     const nt = nativeTextForPage(doc, line.page);
     for (const w of line.words) {
       if (!nt[w.id]) throw new Error(`replaceTextLine: word "${w.text}" (${w.id}) is not visible native text.`);
-      if (nt[w.id].uneditable) throw new Error(`replaceTextLine: word "${w.text}" (${w.id}) is native text that is not editable (a Type 3 font or vertical writing).`);
+      if (nt[w.id].uneditable) throw new Error(`replaceTextLine: word "${w.text}" (${w.id}) is native text that is not editable (a Type 3 font, vertical writing, or a Form XObject drawn more than once).`);
     }
     const newTexts = String(newText).trim().split(/\s+/).filter((t) => t.length > 0);
     if (newTexts.length === 0) {

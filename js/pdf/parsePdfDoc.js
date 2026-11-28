@@ -48,6 +48,29 @@ const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
  */
 const textPassTokenizerOpts = (streamText, glyphOpMap) => (!glyphOpMap && streamText.length > GRAPHICS_HEAVY_STREAM_BYTES ? { textOnly: true } : null);
 
+/** Per-page token budget for re-reading Form XObjects after their first draw. */
+const REPEAT_FORM_TOKEN_BUDGET = 2_000_000;
+/** Fixed token overhead charged for each repeat Form XObject draw. */
+const REPEAT_FORM_DRAW_TOKENS = 50;
+
+/**
+ * Cached stream and resource data for a Form XObject, shared across its draws on a page.
+ * `extGStates` caches the parsed state maps without (`[0]`) and with (`[1]`) paint keys.
+ * @typedef {{
+ *   objText: string, text: string, tokens: Array<PDFToken>, showsText: boolean, hasForms: boolean,
+ *   fonts: Map<string, object>, colorSpaces: Map<string, {nInputs: number, tint: object}>, matrix: number[],
+ *   extGStates: [?Map<string, ExtGStatePaint>, ?Map<string, ExtGStatePaint>],
+ *   bbox?: ?[number, number, number, number],
+ * }} ParsedForm
+ */
+
+/**
+ * Per-page state for walking Form XObject draws.
+ * `open` holds object numbers on the active recursion branch.
+ * `drawn` holds object numbers already read on the page.
+ * @typedef {{ open: Set<number>, drawn: Set<number>, repeatTokens: number, forms: Map<number, ?ParsedForm> }} FormWalk
+ */
+
 // A filter miss means the exact map or ring lookup behind it would also miss.
 // A filter hit can be a false positive, so it must fall through to that lookup.
 const DEDUP_FILTER_BITS = 20;
@@ -703,7 +726,7 @@ function hideCharsUnderFullPageImage(chars, dos, tokens, initialCtm, extGStates,
  * @param {number} pageHeightPts
  * @param {number[]} containerCtm
  * @param {ObjectCache} objCache
- * @param {Set<number>} visited
+ * @param {FormWalk} formWalk
  * @param {Map<string, ExtGStatePaint>} [parentExtGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState]
  * @param {Map<string, {nInputs: number, tint: object}>} [parentColorSpaces]
@@ -713,9 +736,11 @@ function hideCharsUnderFullPageImage(chars, dos, tokens, initialCtm, extGStates,
  * @param {?Array<StreamDo>} [containerDos] - The container's `Do` operators as its executor recorded them, given with a glyph-op map or `underImage`.
  * @param {?{ pageBox: number[], chars: Array<PositionedChar>, paintsOpaquely: () => boolean }} [underImage] - Given when the container's stream takes the test for text under a full-page image.
  *   It holds the page's box in the page frame, the glyphs the container's own stream drew, and whether the container's `Do` and every `Do` above it paint opaquely.
+ * @param {boolean} [containerShared] - Whether the container, or a form above it, is drawn more than once under one name.
  */
 function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm,
-  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces, glyphOpMap = null, records = null, pathPrefix = '', containerDos = null, underImage = null) {
+  objCache, formWalk, parentExtGStates, parentTextState, parentColorSpaces, glyphOpMap = null, records = null, pathPrefix = '', containerDos = null, underImage = null,
+  containerShared = false) {
   const chars = [];
   /** @type {?Map<string, number>} */
   const images = underImage && containerDos && containerDos.length > 0 ? new Map() : null;
@@ -728,6 +753,9 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
   if (formXObjects.size === 0) return chars;
 
   const doOps = findDoOperators(containerTokens, formXObjects, containerCtm, parentTextState);
+  /** @type {Map<string, number>} */
+  const drawsByName = new Map();
+  for (const doOp of doOps) drawsByName.set(doOp.name, (drawsByName.get(doOp.name) || 0) + 1);
   // Both walks list the container's Do operators in stream order, so each form's record is the next one of its name.
   let doCursor = 0;
   for (const doOp of doOps) {
@@ -739,36 +767,68 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
       doCursor += 1;
     }
     const form = formXObjects.get(doOp.name);
-    if (visited.has(form.objNum)) continue;
-    visited.add(form.objNum);
+    if (formWalk.open.has(form.objNum)) continue;
 
-    const formObjText = objCache.getObjectText(form.objNum);
-    if (!formObjText) continue;
-    const formBytes = objCache.getStreamBytes(form.objNum);
-    if (!formBytes) continue;
+    let parsed = formWalk.forms.get(form.objNum);
+    if (parsed === undefined) {
+      parsed = null;
+      const objText = objCache.getObjectText(form.objNum);
+      const bytes = objText ? objCache.getStreamBytes(form.objNum) : null;
+      if (objText && bytes) {
+        const text = bytesToLatin1(bytes);
+        const tokens = tokenizeContentStream(text, textPassTokenizerOpts(text, glyphOpMap));
+        parsed = {
+          objText,
+          text,
+          tokens,
+          showsText: tokens.some((t) => t.type === 'operator' && (t.value === 'Tj' || t.value === 'TJ' || t.value === '\'' || t.value === '"')),
+          hasForms: findFormXObjects(objText, objCache).size > 0,
+          fonts: parsePageFonts(objText, objCache),
+          colorSpaces: parseTextColorSpaces(objText, objCache),
+          matrix: parseFormMatrix(objText, objCache),
+          extGStates: [null, null],
+        };
+      }
+      formWalk.forms.set(form.objNum, parsed);
+    }
+    // A form with no text to give is skipped before the budget is charged, or a page that draws one tens of thousands of times would spend it all on nothing.
+    if (!parsed || (!parsed.showsText && !parsed.hasForms)) continue;
+    if (formWalk.drawn.has(form.objNum)) {
+      const cost = parsed.tokens.length + REPEAT_FORM_DRAW_TOKENS;
+      if (formWalk.repeatTokens < cost) continue;
+      formWalk.repeatTokens -= cost;
+    } else {
+      formWalk.drawn.add(form.objNum);
+    }
+
     const formPath = `${pathPrefix}${doOp.name}`;
     const formStream = { kind: /** @type {'form'} */ ('form'), path: formPath };
-    const formPatched = applyTextPatchRecords(bytesToLatin1(formBytes), records, formStream);
-    const formContentStream = formPatched.text;
-    const formFonts = parsePageFonts(formObjText, objCache);
-    const mergedFonts = new Map([...parentFonts, ...formFonts]);
+    // A patch record names a stream by its path, so only the unpatched text and its tokens are the same for every draw.
+    const formPatched = glyphOpMap || (records && records.length > 0) ? applyTextPatchRecords(parsed.text, records, formStream) : null;
+    const formContentStream = formPatched ? formPatched.text : parsed.text;
+    const formTokens = formContentStream === parsed.text
+      ? parsed.tokens
+      : tokenizeContentStream(formContentStream, textPassTokenizerOpts(formContentStream, glyphOpMap));
+    const mergedFonts = new Map([...parentFonts, ...parsed.fonts]);
     // A stream over the size limit is tokenized without the clip operators the test needs.
     const formMayTakeTest = !!underImage && !!doRecord && formContentStream.length <= GRAPHICS_HEAVY_STREAM_BYTES;
-    const formExtGStates = parseFillAlphaExtGStates(formObjText, objCache, formMayTakeTest);
+    let formExtGStates = parsed.extGStates[formMayTakeTest ? 1 : 0];
+    if (!formExtGStates) {
+      formExtGStates = parseFillAlphaExtGStates(parsed.objText, objCache, formMayTakeTest);
+      parsed.extGStates[formMayTakeTest ? 1 : 0] = formExtGStates;
+    }
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
-    const formColorSpaces = parseTextColorSpaces(formObjText, objCache);
-    const mergedColorSpaces = formColorSpaces.size > 0
-      ? new Map([...(parentColorSpaces || []), ...formColorSpaces])
+    const mergedColorSpaces = parsed.colorSpaces.size > 0
+      ? new Map([...(parentColorSpaces || []), ...parsed.colorSpaces])
       : parentColorSpaces;
-    const formMatrix = parseFormMatrix(formObjText, objCache);
-    const formCtm = matMul(formMatrix, doOp.ctm);
-    const formTokens = tokenizeContentStream(formContentStream, textPassTokenizerOpts(formContentStream, glyphOpMap));
+    const formCtm = matMul(parsed.matrix, doOp.ctm);
     /** @type {?number[]} */
     let formVisible = null;
     if (glyphOpMap) {
-      const bbox = parseFormBBox(formObjText, objCache);
+      if (parsed.bbox === undefined) parsed.bbox = parseFormBBox(parsed.objText, objCache);
+      const { bbox } = parsed;
       const visibleAtDo = doRecord ? doRecord.visible : null;
       formVisible = bbox ? intersectRects(visibleAtDo, transformedRectBounds(bbox, formCtm)) : visibleAtDo;
       glyphOpMap.stream = formStream;
@@ -776,7 +836,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
         stream: glyphOpMap.stream,
         text: formContentStream,
         tokens: formTokens,
-        segments: formPatched.segments,
+        segments: /** @type {NonNullable<typeof formPatched>} */ (formPatched).segments,
         fonts: mergedFonts,
         extGStates: mergedExtGStates,
         colorSpaces: mergedColorSpaces,
@@ -786,9 +846,13 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formEntry = glyphOpMap ? glyphOpMap.streams[glyphOpMap.streams.length - 1] : null;
     /** @type {?Array<StreamDo>} */
     const formDos = formEntry ? formEntry.dos : (formMayTakeTest ? [] : null);
+    formWalk.open.add(form.objNum);
     const formChars = executeTextOperators(
       formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces, glyphOpMap, formVisible, formDos,
     );
+    // Text patches target a form by resource-name path, so only draws sharing a name share a patch target.
+    const sharedStream = containerShared || /** @type {number} */ (drawsByName.get(doOp.name)) > 1;
+    if (sharedStream) for (let ci = 0; ci < formChars.length; ci++) formChars[ci].sharedStream = true;
     /** @type {?{ pageBox: number[], chars: Array<PositionedChar>, paintsOpaquely: () => boolean }} */
     let formUnderImage = null;
     if (formMayTakeTest && underImage && containerDos && images && doRecord && formDos && formDos.length > 0) {
@@ -809,11 +873,14 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
-    const nestedChars = extractFormXObjectText(
-      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState, mergedColorSpaces,
-      glyphOpMap, records, `${formPath}/`, formDos, formUnderImage,
-    );
-    for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
+    if (parsed.hasForms || formUnderImage) {
+      const nestedChars = extractFormXObjectText(
+        parsed.objText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, formWalk, mergedExtGStates, doOp.textState, mergedColorSpaces,
+        glyphOpMap, records, `${formPath}/`, formDos, formUnderImage, sharedStream,
+      );
+      for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
+    }
+    formWalk.open.delete(form.objNum);
   }
 
   return chars;
@@ -1270,12 +1337,13 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     const numsH = [];
     /** @type {Map<string, number>} */
     const imageObjNumsH = new Map();
-    findFormXObjects(objText, objCache, imageObjNumsH);
+    const formsH = findFormXObjects(objText, objCache, imageObjNumsH);
     let lastNameH = null;
     for (let ti = 0; ti < tokens.length; ti++) {
       const t = tokens[ti];
       if (t.type === 'number') { numsH.push(t.value); continue; }
       if (t.type === 'name') { lastNameH = t.value; clearStack(numsH); continue; }
+      if (t.type === 'operator' && t.value === 'Do' && lastNameH !== null && formsH.has(lastNameH)) { lastNameH = null; clearStack(numsH); continue; }
       if (t.type === 'inlineImage' || (t.type === 'operator' && t.value === 'Do')) {
         const corners = [
           [ctmH[4], ctmH[5]],
@@ -1389,7 +1457,11 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     glyphOpMap ? [0, 0, visualWidthPts, visualHeightPts] : null, pageDos);
 
   const formChars = extractFormXObjectText(
-    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces, glyphOpMap, records, '', pageDos,
+    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache,
+    {
+      open: new Set(), drawn: new Set(), repeatTokens: REPEAT_FORM_TOKEN_BUDGET, forms: new Map(),
+    },
+    extGStates, undefined, textColorSpaces, glyphOpMap, records, '', pageDos,
     pageBox ? { pageBox, chars, paintsOpaquely: () => true } : null,
   );
   for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
@@ -2312,7 +2384,11 @@ export function detectPdfType(pdfBytes) {
     // Also count text inside Form XObjects: a document whose entire text layer lives there would otherwise misclassify as image-based.
     // Without the page box, text under the page scan counts as visible and skews the verdict.
     const formChars = extractFormXObjectText(
-      objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, undefined, null, null, '', pageDos,
+      objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache,
+      {
+        open: new Set(), drawn: new Set(), repeatTokens: REPEAT_FORM_TOKEN_BUDGET, forms: new Map(),
+      },
+      extGStates, undefined, undefined, null, null, '', pageDos,
       pageBox ? { pageBox, chars, paintsOpaquely: () => true } : null,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
@@ -2350,6 +2426,7 @@ export function detectPdfType(pdfBytes) {
  *   structTag?: string,
  *   mcid?: (number|null),
  *   _perpDist?: number,
+ *   sharedStream?: boolean,
  *   _src?: { op: number, elem: number, byte: number, nBytes: number, advPx: number, space: boolean, tx: number, ty: number, adv: number }
  * }} PositionedChar
  */
@@ -4517,7 +4594,7 @@ export function groupCharsIntoPage(
         const ntEntry = { baselineY: round3(wordChars[0].y) };
         if (Number.isFinite(firstAlphaNum._font?.fontObjNum)) ntEntry.fontObjNum = firstAlphaNum._font.fontObjNum;
         // The edit path re-typesets along a horizontal pen with the font's own codes, which a Type 3 font or vertical writing does not give it.
-        if (wordChars.some((c) => c._font && (c._font.type3 || c._font.verticalMode))) ntEntry.uneditable = true;
+        if (wordChars.some((c) => (c._font && (c._font.type3 || c._font.verticalMode)) || c.sharedStream)) ntEntry.uneditable = true;
         // Faux-bold words are redrawn with the same stroke, or the edit visibly thins them.
         if ((firstAlphaNum.renderMode === 1 || firstAlphaNum.renderMode === 2) && firstAlphaNum.strokeWidthPx > 0) {
           ntEntry.renderMode = firstAlphaNum.renderMode;

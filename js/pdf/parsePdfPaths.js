@@ -105,24 +105,27 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
         continue;
       }
       const form = forms.get(name);
-      if (form && !visited.has(form.objNum)) {
+      if (form) {
+        // A form's `Do` is taken out whether or not the form is inlined, since the path walk records every `Do` it meets as an image.
         result.pop();
 
-        visited.add(form.objNum);
-        const formObjText = objCache.getObjectText(form.objNum);
-        const formBytes = formObjText ? objCache.getStreamBytes(form.objNum) : null;
-        if (formObjText && formBytes) {
-          const formContentStream = bytesToLatin1(formBytes);
-          const formMatrix = parseFormMatrix(formObjText, objCache);
+        if (!visited.has(form.objNum)) {
+          visited.add(form.objNum);
+          const formObjText = objCache.getObjectText(form.objNum);
+          const formBytes = formObjText ? objCache.getStreamBytes(form.objNum) : null;
+          if (formObjText && formBytes) {
+            const formContentStream = bytesToLatin1(formBytes);
+            const formMatrix = parseFormMatrix(formObjText, objCache);
 
-          const formTokens = tokenizeContentStream(formContentStream);
-          const expanded = inlineFormXObjects(formTokens, formObjText, objCache, visited);
+            const formTokens = tokenizeContentStream(formContentStream);
+            const expanded = inlineFormXObjects(formTokens, formObjText, objCache, visited);
 
-          result.push({ type: 'operator', value: 'q' });
-          for (let mi = 0; mi < formMatrix.length; mi++) result.push({ type: 'number', value: formMatrix[mi] });
-          result.push({ type: 'operator', value: 'cm' });
-          for (let ei = 0; ei < expanded.length; ei++) result.push(expanded[ei]);
-          result.push({ type: 'operator', value: 'Q' });
+            result.push({ type: 'operator', value: 'q' });
+            for (let mi = 0; mi < formMatrix.length; mi++) result.push({ type: 'number', value: formMatrix[mi] });
+            result.push({ type: 'operator', value: 'cm' });
+            for (let ei = 0; ei < expanded.length; ei++) result.push(expanded[ei]);
+            result.push({ type: 'operator', value: 'Q' });
+          }
         }
         clearStack(operandStack);
         continue;
@@ -371,7 +374,7 @@ function executePathOperators(tokens, collect) {
     switch (op) {
       // ── XObjects ─────────────────────────────────────────────────
       case 'Do':
-        // Form XObjects were inlined before this walk (parsePagePaths), so a surviving `Do` is an image or a form that could not be inlined.
+        // inlineFormXObjects strips `Do`s that resolve to a Form XObject in their container's /Resources, while images and unresolved `Do`s pass through.
         recordImagePlacement(tok.imageObjNum);
         clearStack(operandStack);
         break;
